@@ -7,7 +7,6 @@
     "AbstractHorseInvoker",
     "ChunkMapInvoker",
     "EntitySaveMixin",
-    "EntityManagerInvoker",
     "EntitySectionManagerAccessor",
     "EntityStorageAccessor",
     "IOWorkerMixin",

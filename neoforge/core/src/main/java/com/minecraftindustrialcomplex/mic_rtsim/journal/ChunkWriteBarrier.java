@@ -2,12 +2,17 @@ package com.minecraftindustrialcomplex.mic_rtsim.journal;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntityStorageAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.LevelChunkAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.RegionFileStorageAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.SimpleRegionStorageAccessor;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.storage.ChunkScanAccess;
+import net.minecraft.world.level.chunk.storage.EntityStorage;
 import net.minecraft.world.level.chunk.storage.IOWorker;
 import net.minecraft.world.level.chunk.storage.RegionFileStorage;
 import org.jetbrains.annotations.Nullable;
@@ -17,6 +22,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -52,6 +58,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * acknowledges them), and the next world save writes it, with every note still unconfirmed (JB1). Only after
  * {@link #GIVE_UP_ROUNDS} rounds in a row held does a write go ahead without its chunks, logged and counted
  * ({@link #late}).
+ *
+ * <p>Entity chunks are noted the same way ({@link #dependsOnEntities}; MOWZIE.md ledger 22): a camp record rides
+ * on a body or a marker, which vanilla stores apart from its chunk, in the {@code entities/} region files through
+ * their own IOWorker. At the arm a noted entity chunk whose entities are loaded is stored through vanilla's own
+ * {@code storeChunkSections} (what its autosave runs), and that IOWorker is asked to write it now; one whose
+ * entities have unloaded was stored at the unload (vanilla does it on the server thread, at once), and is
+ * written now the same way.
  *
  * <p>The server thread never waits: it serializes each noted unsaved chunk once (that autosave would have done
  * most of them) and queues one small task per level. The wait is on the IO chain.
@@ -140,7 +153,12 @@ public final class ChunkWriteBarrier {
     private record Failed(ServerLevel level, ChunkPos pos) {
     }
 
+    /** An entity chunk a camp record speaks for. */
+    private record EntityChunk(ServerLevel level, long pos) {
+    }
+
     private final Map<LevelChunk, Note> notes = new IdentityHashMap<>();
+    private final Map<EntityChunk, Note> entityNotes = new HashMap<>();
     private final Map<Object, LevelWrites> writers = new IdentityHashMap<>();
     private final ConcurrentLinkedQueue<Failed> failed = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<LevelChunk> offThreadUnloads = new ConcurrentLinkedQueue<>();
@@ -154,6 +172,8 @@ public final class ChunkWriteBarrier {
     // counters (the GameTests read them); the server thread's
     private long noted;
     private long forcedSaves;
+    private long entityNoted;
+    private long entityStores;
     private long rounds;
     // the IO chain's
     private final AtomicLong held = new AtomicLong();
@@ -175,6 +195,36 @@ public final class ChunkWriteBarrier {
         } else {
             n.round = nextRound; // a newer state of the chunk: an earlier round's write does not cover it
         }
+    }
+
+    /**
+     * A record just committed to the journal speaks for the entities of {@code pos} in {@code level} (a camp
+     * body's or a marker's record, MOWZIE.md §4.9): the journal's next file waits for that entity chunk's next
+     * write. Server thread.
+     */
+    public void dependsOnEntities(ServerLevel level, ChunkPos pos) {
+        EntityChunk k = new EntityChunk(level, pos.toLong());
+        Note n = entityNotes.get(k);
+        if (n == null) {
+            entityNotes.put(k, new Note(nextRound));
+            entityNoted++;
+        } else {
+            n.round = nextRound;
+        }
+    }
+
+    /** Entity chunks noted and not yet confirmed written. */
+    public int pendingEntityChunks() {
+        return entityNotes.size();
+    }
+
+    public long entityNoted() {
+        return entityNoted;
+    }
+
+    /** Entity chunks the barrier stored itself at an arm (their entities still loaded). */
+    public long entityStores() {
+        return entityStores;
     }
 
     /**
@@ -258,6 +308,7 @@ public final class ChunkWriteBarrier {
         }
         long confirmed = confirmedRound;
         notes.values().removeIf(n -> n.round <= confirmed);
+        entityNotes.values().removeIf(n -> n.round <= confirmed);
         for (Failed f; (f = failed.poll()) != null; ) {
             // a write that failed: the chunk is saved again (vanilla cleared its unsaved flag before writing); one
             // that has left its level cannot be, and holds every round until the valve
@@ -271,7 +322,7 @@ public final class ChunkWriteBarrier {
                     e.getValue().lost = true;
             }
         }
-        if (notes.isEmpty())
+        if (notes.isEmpty() && entityNotes.isEmpty())
             return null;
         long number = nextRound++;
         rounds++;
@@ -314,17 +365,47 @@ public final class ChunkWriteBarrier {
             // queued on the server thread, in ChunkMap.save).
             byLevel.computeIfAbsent(level, k -> new ArrayList<>()).add(c.getPos());
         }
+        Map<ServerLevel, List<ChunkPos>> entitiesByLevel = new LinkedHashMap<>();
+        for (Iterator<Map.Entry<EntityChunk, Note>> it = entityNotes.entrySet().iterator(); it.hasNext(); ) {
+            EntityChunk k = it.next().getKey();
+            ServerLevel level = k.level();
+            if (level.noSave()) {
+                it.remove();
+                continue;
+            }
+            if (level.areEntitiesLoaded(k.pos())) {
+                boolean stored;
+                try {
+                    stored = ((EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager()).mic_rtsim$store(k.pos(), x -> {});
+                } catch (RuntimeException ex) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] storing entity chunk {} before the journal", new ChunkPos(k.pos()), ex);
+                    stored = false;
+                }
+                if (!stored) {
+                    hold = "entity chunk " + new ChunkPos(k.pos()) + " in " + level.dimension().location() + " could not be stored";
+                    continue;
+                }
+                entityStores++;
+            }
+            // Loaded and stored now, or unloaded: its entities were stored at the unload, on the server thread.
+            entitiesByLevel.computeIfAbsent(level, x -> new ArrayList<>()).add(new ChunkPos(k.pos()));
+        }
+        int total = notes.size() + entityNotes.size();
         if (hold != null)
-            return new Round(number, hold, CompletableFuture.completedFuture(List.of()), List.of(), Set.of(), notes.size());
+            return new Round(number, hold, CompletableFuture.completedFuture(List.of()), List.of(), Set.of(), total);
         CompletableFuture<List<ChunkPos>> all = CompletableFuture.completedFuture(List.of());
-        List<CompletableFuture<?>> parts = new ArrayList<>(byLevel.size());
+        List<CompletableFuture<?>> parts = new ArrayList<>(byLevel.size() + entitiesByLevel.size());
         Set<Path> regionFiles = new LinkedHashSet<>();
         int count = 0;
-        for (Map.Entry<ServerLevel, List<ChunkPos>> e : byLevel.entrySet()) {
+        List<Map.Entry<ServerLevel, List<ChunkPos>>> groups = new ArrayList<>(byLevel.entrySet());
+        int firstEntities = groups.size();
+        groups.addAll(entitiesByLevel.entrySet());
+        for (int g = 0; g < groups.size(); g++) {
+            Map.Entry<ServerLevel, List<ChunkPos>> e = groups.get(g);
             ServerLevel level = e.getKey();
             List<ChunkPos> positions = e.getValue();
             count += positions.size();
-            LevelWrites w = writesFor(level);
+            LevelWrites w = g < firstEntities ? writesFor(level) : entityWritesFor(level);
             if (w == null)
                 continue; // warned once: this level's writes cannot be ordered
             CompletableFuture<List<ChunkPos>> f;
@@ -427,6 +508,33 @@ public final class ChunkWriteBarrier {
             }
         }
         return null;
+    }
+
+    /** The strategy for {@code level}'s entity chunk storage ({@code entities/}, its own IOWorker). */
+    @Nullable
+    private LevelWrites entityWritesFor(ServerLevel level) {
+        Object storage = ((EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager()).mic_rtsim$permanentStorage();
+        if (!(storage instanceof EntityStorage es)) {
+            if (!writers.containsKey(storage)) {
+                writers.put(storage, null);
+                MicRtsim.LOGGER.warn("[mic_rtsim] {}'s entity storage is {}, not vanilla's: the journal cannot wait for its entity chunk writes",
+                        level.dimension().location(), storage.getClass().getName());
+            }
+            return null;
+        }
+        IOWorker worker = ((SimpleRegionStorageAccessor) ((EntityStorageAccessor) es).mic_rtsim$regions()).mic_rtsim$worker();
+        LevelWrites w = writers.get(worker);
+        if (w == null && !writers.containsKey(worker)) {
+            w = strategyFor(level, worker);
+            writers.put(worker, w);
+        }
+        return w;
+    }
+
+    /** The strategy the barrier uses for {@code level}'s entity storage (for the GameTests and the log). */
+    public String entityStrategy(ServerLevel level) {
+        LevelWrites w = entityWritesFor(level);
+        return w == null ? "none" : w.kind();
     }
 
     @Nullable
