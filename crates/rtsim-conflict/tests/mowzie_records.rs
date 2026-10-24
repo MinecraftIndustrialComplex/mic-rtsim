@@ -2250,6 +2250,121 @@ fn a_death_of_the_newer_epoch_counts_against_spawned_alone() {
     assert_eq!(r.c.stats.casualties, 2);
 }
 
+/// A raid band of 6 members of its first unit's body, embodied at epoch 2 with all 6 placed.
+fn six_placed(r: &mut Run) -> (Handle<Party>, u32) {
+    let band = raid_band(r);
+    let x = &mut r.c.parties[band];
+    let u = x.units[0].0;
+    x.units = vec![(u, 6)];
+    x.start_units = 6;
+    x.epoch = 2;
+    x.embodied = true;
+    x.spawned = vec![(u, 6)];
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(u).body)
+    };
+    (band, body)
+}
+
+/// docs/replay-gate.md §5.7 (RP-9, RP-25): a copied BAND_CASUALTIES (an ended session's record,
+/// S4p's REASSERT) of a band embodied again with all 6 placed counts the death against its alive
+/// units and caps `spawned` at them. Java's despawn of the 6 it holds then leaves 5: without the
+/// cap `spawned` stays 6 and the despawn gives `5 - 6 + min(6, 6)` = 6, the death undone. Control:
+/// a live death in view and a despawn of 5 survivors, 5.
+#[test]
+fn a_copied_casualty_is_not_undone_by_the_next_despawn() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, body) = six_placed(&mut r);
+    let at = r.c.now() + 1;
+    let copy = casualty_of(band, 1, body);
+    r.c.ingest_copy(&mut r.w, &mut NoInfrastructure, &copy, at);
+    assert_eq!(r.c.parties[band].alive(), 5, "the copy counts");
+    assert_eq!(r.c.stats.casualties, 1);
+    let despawn = despawn_with(&r, band, 2, 0);
+    let Obs::Dematerialized(d) = &despawn else {
+        unreachable!()
+    };
+    assert_eq!(d.survivors[0].1, 5);
+    // Java holds 6 bodies of epoch 2: all 6 come back.
+    let mut six = d.clone();
+    six.survivors[0].1 = 6;
+    r.ingest(Obs::Dematerialized(six), at + 1);
+    let x = &r.c.parties[band];
+    assert!(!x.embodied);
+    assert_eq!(x.alive(), 5, "the copied death is not undone");
+
+    // Control: the death in view, live, and 5 survivors.
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, body) = six_placed(&mut r);
+    let at = r.c.now() + 1;
+    r.ingest(casualty_of(band, 2, body), at);
+    assert_eq!(r.c.parties[band].alive(), 5);
+    let despawn = despawn_with(&r, band, 2, 0);
+    r.ingest(despawn, at + 1);
+    assert_eq!(r.c.parties[band].alive(), 5, "control");
+}
+
+/// docs/replay-gate.md §2.3 (the conflict copy gap, RP-8, RP-9): a copied BAND_CASUALTIES names
+/// a body of an ended session. Replayed on an engine from its pages, it counts once against a
+/// band that is abstract (no stack to take from, and its epoch floor rises to the record's, so the
+/// replay end leaves the band at epoch 3), and against one embodied again at a newer epoch, whose
+/// stack is untouched (3 placed of 5 alive). Control: the same record through `ingest` is a
+/// straggler both times (the band's epoch is not the record's and no recalled stack has it).
+#[test]
+fn a_copied_casualty_counts_against_an_abstract_band_once() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, body) = six_placed(&mut r);
+    let u = r.c.parties[band].units[0].0;
+    {
+        let x = &mut r.c.parties[band];
+        x.epoch = 0;
+        x.embodied = false;
+        x.spawned.clear();
+    }
+    let at = r.c.now() + 1;
+    let record = casualty_of(band, 3, body);
+    for copy in [true, false] {
+        let mut back = restarted(&r);
+        if copy {
+            back.ingest_copy(&mut r.w, &mut NoInfrastructure, &record, at);
+        } else {
+            back.ingest(&mut r.w, &mut NoInfrastructure, &record, at);
+        }
+        let x = &back.parties[band];
+        assert_eq!(x.alive(), if copy { 5 } else { 6 }, "abstract, copy {copy}");
+        assert!(x.spawned.is_empty() && x.recalled.is_empty());
+        assert_eq!(back.stats.casualties, u64::from(copy));
+        back.replay_done();
+        let x = &back.parties[band];
+        assert_eq!(x.alive(), if copy { 5 } else { 6 }, "counted once");
+        assert_eq!(x.epoch, if copy { 3 } else { 0 }, "the copy's floor");
+    }
+    {
+        let x = &mut r.c.parties[band];
+        x.epoch = 4;
+        x.embodied = true;
+        x.spawned = vec![(u, 3)];
+    }
+    for copy in [true, false] {
+        let mut back = restarted(&r);
+        if copy {
+            back.ingest_copy(&mut r.w, &mut NoInfrastructure, &record, at);
+        } else {
+            back.ingest(&mut r.w, &mut NoInfrastructure, &record, at);
+        }
+        let x = &back.parties[band];
+        assert_eq!(x.alive(), if copy { 5 } else { 6 }, "embodied, copy {copy}");
+        assert!(x.embodied && x.epoch == 4);
+        assert_eq!(
+            x.spawned,
+            vec![(u, 3)],
+            "the newer epoch's stack is untouched"
+        );
+        assert_eq!(back.stats.casualties, u64::from(copy));
+    }
+}
+
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
 /// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
 /// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
