@@ -3646,6 +3646,47 @@ The review of 253f8d45..9d55c2b7 (the lead's brief `m9b-review-fixes`), the fixe
 - P3-11: MZB-608 (amended).
 - P3-12: test 25 is `aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine`, per MZB-601.
 
+### M9c build choices
+
+M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the brief, in M9b's range. The branch is
+`feat/mowzie-m9`; the GameTests are written and compiled only (the lead runs them).
+
+- **MZB-616** (the heir goes before any new muster; closes the open end of MZB-612; decided by the coordinator,
+  2026-10-24): since MZB-612 an heir waits while a band of its camp musters, and musters can follow one another
+  with no cap (a plunder drive and a feud's raids, each starting before the last has set out), so a grove might
+  never seat its heir. The rule: while an heir is due, its camp is in and its pair is not in flight (`Camp::mask`
+  and `Camp::seat` both clear), no new war party of the camp musters (`Conflict::heir_first`, tested in
+  `send_party` for the war kinds, which covers raids, invasions, plunder and `order_party`). The heir then waits at
+  most the muster already under way at its due tick, and the pair is ordered at that muster's end
+  (`camp_set_out` and `home` look at the camp again, MZB-612) or at once when none is. Once the pair is in flight the
+  camp's draw is already 0 (`Camp::drawable`, MZB-409), so the next muster starts after the pair's answer, and a
+  MASK that names a warrior a later muster drew is that band's loss as before (MZB-445). The details:
+  - A feud that wants a war party while the rule holds waits with `bodies_ready` = `BLOCKED` (no event booked),
+    and `camp_heir` plans the camp's feuds again (`unblock_lines`) the moment it orders the pair, so a feud's
+    raid musters in the same tick as the pair, after it. The plunder drive tries again at its next gap, as it does
+    when it has no warriors.
+  - A camp that is out is not held: `heir_first` needs the camp in, since a camp that nobody loads can order
+    nothing, and holding its raids would stop a grove that is never in. (A grove left out has no heir to
+    seat until it comes in; its census runs `camp_heir`, which orders the pair at once if no muster is under way.)
+  - A culture with no chief body has no heir and is never held (`heir_first` is false), so the goblin, bandit and
+    Frostmaw runs are unchanged.
+  - Hashes: `sim conflict` (seed 7) is identical to the base apart from `wall_ms` (checked against this tree with
+    the rule stubbed out; the committed `scenario/results/sim-conflict.json` is older than M9a's stats and
+    differs from both in `hunts_owed`, `hunts_killed`, `tribute_stacks` and its state hashes, which M9a moved and
+    this does not). `sim mowzie` moves in one place against the base (this tree with the rule stubbed out): run 10's
+    grove chaos with heirs (54 heirs seated and 20 of 418 Invasions took the Umvuthi at the base, now 56 and 20 of 416:
+    the heirs that waited for a muster chain seat sooner). Run 12 is identical to the base (106 and 59 seats, 1.822
+    and 1.003 a game year; its last waits alternate by a third of a day, a plunder muster under way at some due ticks,
+    MZB-612). The committed `scenario/results/sim-mowzie.json` was never regenerated after MZB-612 (it held 58 and 18
+    of 416, and waits without the alternation), so this commit regenerates it, which brings in both.
+  - Tests in `tests/grove.rs`: `musters_back_to_back_seat_the_heir_within_one_muster_of_due` (a grove of 120 with a
+    plunder drive every few hours and a raid ordered every tenth of a day from 1.5 days before the due tick to 3
+    days after it: nothing musters between the due tick and the pair, and the pair goes within one muster of due;
+    six seeds), `with_no_muster_under_way_the_heir_is_ordered_at_its_due_tick` (the control, the drive off: the
+    pair goes at the due tick, and a band musters again once it is ordered), and
+    `a_feud_that_climbs_while_the_heir_waits_musters_after_the_pair` (the feud waits `BLOCKED` and its raid
+    musters after the pair, in the tick the muster ends). The first and the third fail with the rule stubbed out.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so

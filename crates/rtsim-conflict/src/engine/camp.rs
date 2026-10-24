@@ -781,6 +781,10 @@ impl Conflict {
     /// (`pool_ready`), and while lines in flight hold slots back, not before one is answered or
     /// void ([`BLOCKED`], `unblock`).
     pub(super) fn bodies_ready(&self, f: u32, need: f64, at: Tick) -> Tick {
+        // An heir that is due goes first (MZB-616): the pair's order plans the feud again.
+        if self.heir_first(f, at) {
+            return BLOCKED;
+        }
         let t = self.pool_ready(f, need, at);
         if t > at {
             return t;
@@ -2434,6 +2438,26 @@ impl Conflict {
             b: 0,
         };
         self.send_lines(f, vec![mask, seat], at);
+        // The pair is in flight, so a war party may muster again (MZB-616): the feuds that waited
+        // for the heir are planned again, and the plunder drive tries at its next gap.
+        self.unblock_lines(f, at);
+    }
+
+    /// Whether the camp's heir goes before any new war party (MZB-616): the heir is due, the camp
+    /// is in and its pair is not yet in flight. Musters could else follow one another with no
+    /// cap, each ending as the next begins, and an heir that waits for a muster to end
+    /// (MZB-612) would never be seated. While it holds, `send_party` fires no war party of the
+    /// camp and a feud that wanted one waits ([`BLOCKED`]); the pair is ordered when the muster
+    /// already under way ends (`camp_heir`), or at once if none is, and a party may muster again
+    /// from then on. The heir so waits at most the muster under way.
+    pub(super) fn heir_first(&self, f: u32, at: Tick) -> bool {
+        self.chief_body_id(f).is_some()
+            && self.camp(f).is_some_and(|c| {
+                c.is_in()
+                    && c.heir.is_some_and(|h| h.due <= at)
+                    && c.mask.is_none()
+                    && c.seat.is_none()
+            })
     }
 
     /// A member of a party died at its camp, away from it: one unit of the party falls, its slot

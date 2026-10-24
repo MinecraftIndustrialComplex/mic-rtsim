@@ -5,12 +5,14 @@
 
 use std::collections::BTreeMap;
 
+use rtsim_conflict::Step;
 use rtsim_conflict::boundary::{self, Cmd, Obs};
-use rtsim_conflict::culture::{Cultures, PartyKind};
+use rtsim_conflict::culture::{Cultures, PartyKind, SignalKind};
 use rtsim_conflict::engine::{
-    CHIEF_SLOT, Conflict, HUNT_RADIUS, Party, Phase, SlotState, Target, body_id, item_of,
+    BLOCKED, CHIEF_SLOT, Conflict, HUNT_RADIUS, Party, Phase, Signal, SlotState, Target, body_id,
+    item_of,
 };
-use rtsim_conflict::synth::{self, CampRun, REFINERY_POS};
+use rtsim_conflict::synth::{self, CAMP_POS, CampRun, REFINERY_POS};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
 use rtsim_industry::threat::Threat;
@@ -472,6 +474,169 @@ fn no_warrior_of_a_mustering_band_is_masked() {
             ok(&mut r);
         }
     }
+}
+
+/// The grove's SEAT_HEIR orders: the tick each was sent.
+fn pair_ticks(r: &CampRun) -> Vec<Tick> {
+    orders(r)
+        .iter()
+        .filter(|(_, x)| {
+            x.lines
+                .iter()
+                .any(|l| l.action == boundary::ACTION_SEAT_HEIR)
+        })
+        .map(|(t, _)| *t)
+        .collect()
+}
+
+/// A grove of a hundred and twenty whose plunder drive is fast (a plunder every few hours when it can field one):
+/// enough warriors that bands could muster one after another for days.
+fn busy_grove(seed: u64) -> CampRun {
+    let mut cultures = Cultures::builtin();
+    for k in &mut cultures.list {
+        k.def.plunder_mean_days = Some(0.05);
+        k.def.pool_cap = 120;
+    }
+    CampRun::with_cultures(seed, cultures, "umvuthana", 120)
+}
+
+/// MZB-616: musters can follow one another with no cap, and since MZB-612 an heir waits while a band
+/// of its camp musters. While an heir is due and its pair is not in flight, no new war party of the
+/// camp musters, so the heir waits at most the muster under way at its due tick. A plunder drive
+/// that tries every few hours and a raid ordered every tenth of a day, from before the due tick on,
+/// seat the heir within one muster of due, and nothing musters between the due tick and the pair.
+#[test]
+fn musters_back_to_back_seat_the_heir_within_one_muster_of_due() {
+    for seed in 1..=6u64 {
+        let mut r = busy_grove(seed);
+        come_in(&mut r);
+        let due = heir_due(&r);
+        let muster = days(1.0);
+        let mut started_after_due = 0;
+        let mut t = Tick(due.0 - days(1.5));
+        let end = due + days(3.0);
+        while t < end {
+            r.run(t);
+            let before = r.c.stats.parties.iter().sum::<u64>();
+            let _ = r.raid();
+            let after = r.c.stats.parties.iter().sum::<u64>();
+            // A band that musters at or after the due tick, with the pair not yet ordered.
+            if t >= due && pair_ticks(&r).first().is_none_or(|p| *p > t) {
+                started_after_due += after - before;
+            }
+            t += days(0.1);
+        }
+        assert_eq!(
+            started_after_due, 0,
+            "seed {seed}: a war party mustered while the heir was due and unordered"
+        );
+        let pair = pair_ticks(&r);
+        assert_eq!(pair.len(), 1, "seed {seed}: one pair");
+        assert!(
+            pair[0] >= due && pair[0] <= due + muster,
+            "seed {seed}: the pair went at {} (due {}), more than one muster after",
+            pair[0].0,
+            due.0
+        );
+        assert_eq!(
+            chief(&r).map(|c| c.0),
+            Some(SlotState::Body),
+            "seed {seed}: seated"
+        );
+        ok(&mut r);
+    }
+}
+
+/// MZB-616, the control: the plunder drive off and no band mustering, the pair goes out at the due
+/// tick as before, and the rule delays nothing.
+#[test]
+fn with_no_muster_under_way_the_heir_is_ordered_at_its_due_tick() {
+    for seed in 1..=4u64 {
+        let mut r = quiet_grove(seed);
+        come_in(&mut r);
+        let due = heir_due(&r);
+        r.run(due + 100);
+        let pair = pair_ticks(&r);
+        assert_eq!(pair.len(), 1, "seed {seed}");
+        assert!(
+            pair[0] <= due + 10,
+            "seed {seed}: ordered at {} for {}",
+            pair[0].0,
+            due.0
+        );
+        assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body), "seed {seed}");
+        // After the pair, a band musters again.
+        assert!(
+            r.raid().is_some(),
+            "seed {seed}: the rule lifts with the pair"
+        );
+        ok(&mut r);
+    }
+}
+
+/// MZB-616: a feud that climbs to a raid while the heir is due and a muster is under way waits
+/// ([`BLOCKED`], no event booked), is planned again by the pair's order at the muster's end, and
+/// musters after the pair, not before it.
+#[test]
+fn a_feud_that_climbs_while_the_heir_waits_musters_after_the_pair() {
+    let mut r = quiet_grove(9);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    r.run(Tick(due.0 - days(0.5)));
+    let p = r.raid().expect("a raid");
+    let until = r.c.parties[p].until;
+    assert!(until > due + days(0.4), "the muster outlasts the due tick");
+    // A feud at the Scouts rung, whose dwell ends 0.4 day after the due tick, with the grievance
+    // well above the Raid rung's.
+    let who = r.player;
+    let s = Tick(due.0 - days(0.1));
+    r.run(s);
+    r.c.signal(
+        &mut r.w,
+        Signal {
+            faction: Some(r.key),
+            kind: SignalKind::Killing,
+            amount: 12.0,
+            actor: who,
+            pos: CAMP_POS,
+            district: None,
+        },
+        s + 1,
+    );
+    {
+        let x = r.c.feud_mut(r.f, who).expect("a feud");
+        x.step = Step::Scouts;
+        x.since = Tick(s.0 + 1 + days(0.4) - days(1.0));
+    }
+    let before = r.c.stats.parties.iter().sum::<u64>();
+    // After the dwell, with the muster still under way and the heir due.
+    r.run(due + days(0.45));
+    assert_eq!(r.c.parties[p].phase, Phase::Mustering);
+    assert!(
+        r.c.feud(r.f, who).unwrap().wait_until >= BLOCKED,
+        "the feud waits for the heir"
+    );
+    assert_eq!(
+        r.c.stats.parties.iter().sum::<u64>(),
+        before,
+        "no band mustered before the pair"
+    );
+    assert!(pair_ticks(&r).is_empty(), "the pair waits for the muster");
+    // The muster ends: the pair, then the feud's raid.
+    r.run(until + 300);
+    let pair = pair_ticks(&r);
+    assert_eq!(pair.len(), 1);
+    assert_eq!(pair[0], until, "the pair goes at the muster's end");
+    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body));
+    assert!(
+        r.c.stats.parties.iter().sum::<u64>() > before,
+        "the feud's raid mustered once the pair was ordered"
+    );
+    assert!(
+        r.c.feud(r.f, who).unwrap().wait_until < BLOCKED,
+        "and the feud no longer waits"
+    );
+    ok(&mut r);
 }
 
 /// Review P3-7: Java takes the warrior farthest from every player, so with a player near all but
