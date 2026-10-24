@@ -5135,12 +5135,31 @@ mod conflict {
         saved: WorldSave,
         gt: i64,
     ) -> (std::sync::Arc<Engine>, Java) {
-        let e = engine(dir, 256 * 1024);
+        reopen_with(dir, saved, gt, 256 * 1024)
+    }
+
+    /// [`reopen`] with an observation buffer of `capacity` bytes: a small one spreads a long
+    /// journal's replay over several hand-overs.
+    fn reopen_with(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        capacity: usize,
+    ) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, capacity);
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
         j.game_time = gt;
         assert_eq!(e.conflict_restore_check(), (None, false));
-        j.idle();
+        // Java hands its journal over while it fits: until it has sent every record.
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        assert!(j.sent_obs >= last, "the whole journal handed over");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         (e, j)
     }
@@ -5227,6 +5246,75 @@ mod conflict {
         let (alive, _, embodied, recalled, _) = books(&e, p);
         assert_eq!(alive, n - lost, "the replay counts each death once");
         assert!(!embodied);
+        assert!(!recalled, "nothing kept once the replay has caught up");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-141 (re-review P2-1): the replay of the walk-off test, but with 1,500 records between
+    /// the recall and the despawn on an engine whose buffers hold about a thousand of them, so
+    /// the despawn comes in a later hand-over than the session start. The conflict module used to
+    /// end the replay (`replay_done`, which clears the bodies kept for it) after the first
+    /// hand-over, and the despawn found nothing to count: the two dead came back.
+    #[test]
+    fn a_replay_over_several_hand_overs_still_counts_the_walk_offs_dead() {
+        let (dir, e, mut j) = camp("conflict-walk-off-long-replay");
+        j.conflict_plugin.leave_ticks = 1_500;
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+
+        let from = j.conflict.len();
+        j.conflict_plugin.walk_off_deaths = 2;
+        j.players.clear();
+        advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
+            !recalls(j, from, p).is_empty()
+        });
+        // Filler a replay must read through: casualties of a band the engine never had (64 bytes
+        // each, so about a thousand fill a minimum-size buffer), journaled before the despawn.
+        let first = j.world_save().next_obs;
+        for _ in 0..1_500 {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: 0,
+                epoch: 0,
+                by: cb::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+            }));
+        }
+        let recalled_at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the despawn journaled", |j| {
+            j.game_time >= recalled_at + 1_500 + 200
+        });
+        assert_eq!(books(&e, p).0, n - 2, "the session that went on");
+        let gt = j.game_time;
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        assert!(
+            bytes > wire::MIN_CAPACITY,
+            "the replay needs several hand-overs: {bytes} bytes"
+        );
+
+        let (e, j) = reopen_with(&dir, saved, gt, wire::MIN_CAPACITY);
+        let (alive, _, embodied, recalled, spawned) = books(&e, p);
+        assert_eq!(
+            alive,
+            n - 2,
+            "the despawn in a later hand-over still counts the dead"
+        );
+        assert!(!embodied && spawned == 0, "no body survived the crash");
         assert!(!recalled, "nothing kept once the replay has caught up");
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();

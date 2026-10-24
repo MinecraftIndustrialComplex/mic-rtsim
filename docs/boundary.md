@@ -1543,12 +1543,18 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   its dead (MZB-131). Across a restart the bodies the pages held in Minecraft are kept the same way
   until the journal's replay has caught up, so a BAND_CASUALTIES or a BAND_DEMATERIALIZED journaled
   after the last page save is counted as the session that wrote it counted it; what the replay
-  did not count is dropped then, its members alive as before (MZB-138).
+  did not count is dropped then, its members alive as before (MZB-138). The replay has caught up
+  when the engine's `Replay` has applied every record before the session's first live one, however
+  many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
+  counts off the bodies kept for its epoch live and replayed alike (MZB-142).
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
   that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
   flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
   the heir taking over at home, so the band carries on without a chief body, a chief body already in
-  Minecraft stays there until the band despawns, and a CHIEF_KILLED for it is dropped (MZB-139).
+  Minecraft stays there until the band despawns, and a CHIEF_KILLED for it is dropped (MZB-139,
+  MZB-146); the plugin still journals it when that body dies (nothing else comes of it on the Java
+  side: the death and its drops are the mob's own, and the in-world news is a no-op until it lands:
+  MZB-147).
   Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
@@ -1636,7 +1642,15 @@ and stays abstract, MZB-132): the plugin needs no rule of its own.
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
 of the item before `deadlineTick`. Paying is a TRIBUTE_PAID with the envoy's agent (the items leave
 the player's inventory; an op id); refusing or attacking is an ENVOY_ANSWER. An envoy that is
-killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3).
+killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3). Any player's blow
+on the envoy or a guard lifts the guard. A blow from the player the demand is to (or from any
+player, for a demand to none) closes it on the plugin's side (the envoy takes nothing more) and is
+answered once with an ENVOY_ANSWER 3: the engine books the insult against that player's district
+and refuses the demand (DEMAND_SETTLED 4). A blow from another player is answered once per player
+with an ENVOY_ANSWER 3 naming them: the engine books it as their own insult, at the envoy's place
+and against no district, and refuses nothing; the demand stays open to its player and the plugin
+goes on taking that player's tribute (MZB-145). ENVOY_ANSWER is an envoy party's: the engine
+ignores it for any other party (MZB-144).
 
 **The raid director.** A war band that arrives where a player watches materializes in **waves**:
 each BAND_MATERIALIZE with an `arcRadius` spawns its members on the arc of that radius around
@@ -1691,8 +1705,15 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   on its return: conservation exact). A district raid's threats carry the band's own loads (its
   units' carry and blocks broken, `Threat::loads`, C2-1); threats without loads keep the industry
   engine's per-class tunables. **Watched**, the director above.
-- **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
-  and remember the raids on them (a robbery report against the faction).
+- **The real witnesses of a rout** hear when a player breaks one of a faction's bands (a rescue report,
+  C24; CL-D61): the village the band marched on, every village that hates the faction within the
+  view radius of where the band broke (where the breaker stands for a watched fight if within the
+  view radius of the band, else where the band is), and every player base within that radius that
+  a player still marks, plus the base a band that was fighting at its target marched on. A band
+  routed on the road records the rescue as one routed in a fight does, seen there by the village it
+  marched on and a base in view. Every other
+  village hears it from travellers. Villages that
+  hate a faction also remember the raids on them (a robbery report against the faction).
 - **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
   `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands
   down at its muster's end (its warriors back in the pool, its feud a rung down, so that it climbs

@@ -161,8 +161,10 @@ under its own heading.
   always fits, and `finish` asserts it does. 1,024 is past any camp, party or route this slice can
   make (PLACEHOLDER).
 - **MZB-36** (The conflict's reports on the severity unit; the TALK review's finding): the conflict
-  records its Robbery (a camp plunders a village), Rescue (a player routs a band: each village that
-  hates the camp within `rescue_news_blocks`) and Killing (the war chief's killer, seen by the chief
+  records its Robbery (a camp plunders a village), Rescue (a player routs a band: the real witnesses,
+  CL-D61, the village the band marched on, each village that hates the camp within the view
+  radius of where it broke, and each player base within that radius, plus the base a band that
+  was fighting at its target marched on) and Killing (the war chief's killer, seen by the chief
   and the heir) at `SEVERITY_UNIT`, the kind's base delta, not at the rung codes 2, 2 and 4. The
   knowledge layer reads severity as a share of the unit, so a robbery moved the village's feeling for
   the camp by -1 instead of -50, a rescue by 0 instead of +25 (and wrote no vanilla gossip, which
@@ -624,7 +626,12 @@ under its own heading.
   nothing will report them, their members count as alive as before. No rtsim-jni change was needed.
   Not state, not a page format change. Fork (limit): records for an epoch newer than the page save
   (a band that was recalled or seen again after it) cannot be matched and are dropped, as they
-  always were; the walk-off and the fight of the epoch the pages hold are the ones counted. Tests:
+  always were; the walk-off and the fight of the epoch the pages hold are the ones counted. A
+  replayed casualty never routs the band and never brings its boredom forward: `session_start`
+  turns a Fighting band into Waiting before the replay, and both branches of `casualties` need
+  Fighting, so the replay counts the dead and their signals but not the rout the session itself
+  may have had (the band is then handled as a waiting one, which is what the restart made of its
+  fight; re-review P3-5). Tests:
   the reviewer's replayed-despawn case (alive 12 drops to 10 after the restart), the entries dropped
   at `resend_notices` (a later despawn is stale), a band embodied at the crash with a casualty and
   a despawn replayed (counted once), the multi-epoch `recalled` round trip through `save` and
@@ -632,7 +639,12 @@ under its own heading.
   fight's casualties with no despawn journaled), which fail on the old engine (12, not 10 and 6).
   Also tested, not a new rule: a restart in the middle of Peaceful goes on exactly as the run that
   kept going (the same deadline, expiry tick and commands; a jni crash-and-leave test), and two
-  Peaceful spans move a deadline by both.
+  Peaceful spans move a deadline by both. A correction to the commit message of 11eb3e62, which
+  says each of its tests was checked to fail on the old rule (re-review P3-6): the jni test
+  `a_crash_in_the_middle_of_peaceful_then_leaving_it_moves_the_deadline_by_the_whole_span` passes on
+  106bda63 too. It is a regression guard for the Peaceful rule of MZB-132 across a restart, not a
+  failing-first test; the two crash-and-replay tests above and the rtsim-conflict tests are the
+  ones that failed first.
 - **MZB-139** (the party's chief flag goes stale; TALK review): when a chief dies of age while out
   with a band, the lazy succession (`ensure_chief` on a feud wake or a plunder) cleared only the
   faction's `chief_out`; the band kept `chief == true`, so a later CHIEF_KILLED for it killed the new
@@ -658,6 +670,100 @@ under its own heading.
   `chief_killed` passes true, `ensure_chief` false). The text is "dies of age" for false, "is
   killed; the heir takes over, holding the grudge" for a player's kill, and "is killed, by no
   player; the heir takes over" for a kill with none. Test: the three texts. Fails on the old text.
+- **MZB-141** (a replay over several hand-overs; re-review P2-1): the bodies a session start keeps
+  for the replay (MZB-138) were dropped by `replay_done`, which `resend_notices` calls, and
+  `rtsim-jni`'s conflict `simulate` called `resend_notices_if_due` at the end of every step, so the
+  first hand-over of a restart ended the replay. Java hands its journal over while it fits (about a
+  thousand 64-byte BAND_CASUALTIES in a minimum-size buffer, about 4,000 in 256 KiB), so a long
+  journal spans hand-overs, and a despawn or a casualty in the second found nothing kept (the
+  reviewer's run ended with 12 alive, not 10, after 1,500 filler records). `simulate` now resends
+  the notices (and so ends the replay) only once the engine's replay has caught up with the
+  session's first live observation (`applied_through + 1 >= session_first`); the other trigger, the
+  first live conflict record in `journaled`, is unchanged. Cost: a restart whose journal tail is
+  lost (cannot happen with a world save, whose journal and `next_obs` are saved together) would
+  wait for the first live record instead of the first step. Test (rtsim-jni): the walk-off crash test
+  with 1,500 filler records between the recall and the despawn on a `MIN_CAPACITY` engine; fails on
+  the old `simulate` (12, not 10). The jni test helper `reopen_with` takes the capacity and hands
+  the journal over until Java has sent it all.
+- **MZB-142** (a walk-off death counts live as in the replay; re-review P2-2): MZB-138 counted a
+  BAND_CASUALTIES for a band that is not embodied off its recalled stack only while `replaying`.
+  Live, the same record after a recall (the player left, the band walks off, a mob or the player
+  kills a member before the despawn) was dropped at the `embodied` check, so a restart's replay
+  counted a death, a killing signal and a breaker the session itself never did (casualties 0 vs 1,
+  grievance 15.999 vs 23.999, breaker None vs Some, in the reviewer's run). The `replaying` term is
+  gone: a casualty for a band not embodied counts when it holds a recalled stack of the record's
+  epoch, replaying or not. The despawn removes the stack, so a straggler after it is still no
+  death, and the despawn counts only the dead nobody reported (units and stack went down together,
+  no double count). The decision is to count it in both (the member did die, and a player's kill is
+  an act against the faction wherever it happens). The rout and boredom branches of `casualties` need
+  Phase::Fighting, which the player-left recall turns into Waiting at once, so a walk-off death
+  never routs a band live either (as in a replay, MZB-138). `replaying` now only says that the
+  stacks kept by a session start are dropped at `replay_done`. Test: the same player's killing of a
+  recalled band ingested live and by a restart (casualties, alive, breaker, grievance equal and
+  not zero), the despawn after it and a straggler after that; fails on the old rule (casualties 0).
+- **MZB-143** (a tribute to a bored envoy on its way home; re-review P2-3, a regression of
+  MZB-137): MZB-137 found the envoy's demand through `parties[p].feud`, but `go_home` clears an
+  envoy's feud (it serves no feud while it walks home), so a payment to an envoy that got bored and
+  left with its demand still open was a gift: the demand ran out and the feud climbed, though the
+  player had paid. `pay_tribute` now finds the demand that names the envoy (`demand.envoy ==
+  Some(p)`) among the faction's feuds, so it needs no feud on the party; a payment to an envoy whose
+  demand is over (settled, expired, withdrawn) still names none and stays a gift (MZB-137's rule,
+  tested as before). The scan is over one faction's feuds, once per payment. Test: an impatient
+  culture (patience 1 day), the envoy leaves bored with the demand open, 6,600 ticks before its
+  deadline, and a full payment to it settles PAID as a tribute, not a gift; on the MZB-137 lookup it
+  was a gift and nothing settled.
+- **MZB-144** (ENVOY_ANSWER is an envoy's; re-review P3-1): an answer for a party that is not an
+  envoy (a stale or misrouted record, never sent by the bridge) used the party's feud as the demand's
+  target, so for a war band it booked the insult and refused the feud's demand. The ENVOY_ANSWER
+  arm now returns at once for a party that is not an `Envoy`, for both answers (ANSWER_REFUSED is
+  never sent by the bridge either). Test: ATTACKED for a raid band that serves the player's feud
+  changes no grievance and settles nothing; it booked the insult on the old engine.
+- **MZB-145** (a blow from another player; re-review P3-2): the ATTACKED arm used the envoy's feud
+  as the actor to refuse and the striker as the insult's actor, so a second player striking an envoy
+  sent to the first refused the first player's demand and pointed the striker's feud at the first
+  player's district. Ruling: the blow is the striker's insult. If the striker is the demand's target
+  (the feud's actor, found as in MZB-143 for an envoy going home) nothing changes: the Killing
+  signal of `envoy_insult_kills` at the envoy's place against its target's district, then the
+  refusal. Otherwise the same signal is the striker's alone, on the striker's own feud, at the
+  envoy's place, against no district (the target's is not the striker's), and the demand is not
+  refused: it stands to its target, who can still pay it. The settlers' envoy has no player for a
+  target, so any player's blow on it is a stranger's: the insult is booked, the settlers' demand runs
+  to its deadline (it used to be refused at once); a fork, since the old reading made a blow on the
+  villages' envoy a refusal. An answer for an envoy with no feud and no open demand naming it (its
+  demand is over and it is going home) still does nothing. The Java side agreed to the same rule
+  (`ConflictBridge.struck`): any player's blow lifts the guard, because the guards fight whoever
+  strikes; a blow from the demand's player (or from any player when the demand is to none) closes
+  the demand as before (`insulted`: the envoy takes nothing more and says "struck"), answered once;
+  another player's blow is answered once per player (`struckBy`) and leaves the demand open to its
+  player, so the envoy still takes that player's tribute and the engine, which has not refused it,
+  agrees. Before, the first blow of any player closed the demand on the Java side only, and a later
+  blow by the target was never sent. Not run: the GameTests (the lead's order); the Java change
+  compiles. Tests (rtsim-conflict): a stranger's blow leaves the demand open, adds nothing to the
+  target's grievance, gives the stranger an insult with a focus of no district away from the camp,
+  and the target's own blow then refuses it as ever; fails on the old arm (the demand is refused).
+- **MZB-146** (the lazy succession before a CHIEF_KILLED; re-review P3-3): `chief_killed` read the
+  band's flag before anything had asked the world's knowledge whether the faction's chief was still
+  alive. A chief who died of age out with the band, with no feud wake or plunder since to run the
+  lazy succession (`ensure_chief`), still had the flag on his band, and a CHIEF_KILLED for his body
+  ran as a killing of a dead man: a count, a rout, an heir taking over holding a grudge for a
+  killing. `chief_killed` now runs `ensure_chief` for the band's faction first (a chief alive in the
+  world's knowledge changes nothing), so the succession is the one for a death of age, `succeed`
+  clears the flag, and the record is dropped as in MZB-139. Test: the chief dies of age out with
+  the band after the engine has run past its due events (so no wake asks for the chief), then a
+  CHIEF_KILLED: one succession, no chief fell, no rout, the flag gone, the heir lives. It fails
+  without the new call (chiefs_killed 1). Replay is unaffected: the order of the journal decides, as
+  it did.
+- **MZB-147** (what Java does for a chief body killed after the succession; re-review P3-4):
+  checked `ConflictBridge.journalLoss`, which sends CHIEF_KILLED (with an op id) for any slot marked
+  `chief`, so for the old chief's body after the lazy succession (MZB-139, MZB-146). Nothing visible
+  comes of it on the Java side: the body dies and drops its loot as any mob does (the drops carry the
+  record for Carry On, a journaling matter), `chiefsKilled` is a statistic, and
+  `ConflictNews.post(CHIEF_KILLED, ...)` is a no-op counter until the in-world news lands. The rout
+  and the heir are the engine's answer to the record, and the engine now drops it, so the band
+  carries on and the new chief lives, as MZB-139 says. The record is harmless and nothing in Java
+  changes. A trap for the news slice: it must not post "the chief was killed" from `journalLoss`
+  alone, since the engine may have dropped the record; post it from what the engine did (the
+  heir's succession by a killing, `succeed(..., killed: true)`), or accept a stale line.
 
 ## M4 Camp reconciler, engine
 

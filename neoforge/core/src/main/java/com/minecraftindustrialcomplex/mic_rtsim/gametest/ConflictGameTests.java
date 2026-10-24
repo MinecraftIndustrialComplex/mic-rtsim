@@ -612,6 +612,8 @@ public final class ConflictGameTests {
         ConflictKit.envoy(late, 1, faction, dim, c.x - 2.5, c.y, c.z - 3.5, player.getUUID(), ConflictRecords.Envoy.DEMAND_TRIBUTE,
                 ConflictRecords.SIGNAL_MINING, "minecraft:emerald", 2, lateDeadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
         Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1], guardB = new Mob[1], envoyLate = new Mob[1];
+        FakePlayers.Hearer[] bystanderHolder = new FakePlayers.Hearer[1];
+        int[] heardByHolder = new int[1];
         IronGolem[] golem = new IronGolem[1];
         long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0}, saidA = {0}, saidB = {0};
         float[] health = {0};
@@ -871,14 +873,24 @@ public final class ConflictGameTests {
                             && Talkers.find(guard[0], player).attitude(guard[0], player) == Talker.Attitude.HOSTILE);
                     check("nor the envoy", Talkers.find(envoy[0], player) instanceof ConflictTalker && !chats(envoy[0], player));
                     FakePlayers.Hearer bystander = FakePlayers.hearing(level, c.add(-1.5, 0, 2.5), "conflict_envoy_bystander");
+                    bystanderHolder[0] = bystander;
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(bystander));
                     check("the guard chats with him", chats(guard[0], bystander)
                             && Talkers.find(guard[0], bystander).attitude(guard[0], bystander) == Talker.Attitude.WARY);
                     check("the envoy does not", !chats(envoy[0], bystander));
-                    int heardBy = bystander.heard.size();
+                    heardByHolder[0] = bystander.heard.size();
                     bystander.setShiftKeyDown(true);
                     bystander.interactOn(guard[0], InteractionHand.MAIN_HAND);
                     bystander.setShiftKeyDown(false);
+                })
+                // A chatting member asks the engine first (Talk.askable): on the native engine its
+                // line is spoken when the answer comes, a step later or at TalkAsks.TIMEOUT_TICKS; the
+                // stub speaks at once.
+                .thenWaitUntil(() -> check("the guard spoke to him: " + talkKeys(bystanderHolder[0]),
+                        bystanderHolder[0].heard.size() > heardByHolder[0]))
+                .thenExecute(() -> {
+                    FakePlayers.Hearer bystander = bystanderHolder[0];
+                    int heardBy = heardByHolder[0];
                     check("the guard spoke to him once: " + talkKeys(bystander), bystander.heard.size() == heardBy + 1);
                     TranslatableContents chat = spoken(bystander.heard.get(heardBy));
                     record(test, "bystander line", chat.getKey() + " " + bystander.heard.get(heardBy).getString());
