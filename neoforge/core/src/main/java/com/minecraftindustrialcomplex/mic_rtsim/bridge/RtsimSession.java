@@ -320,6 +320,7 @@ public final class RtsimSession {
     }
 
     public void close() {
+        industry.close();
         engine.close();
     }
 

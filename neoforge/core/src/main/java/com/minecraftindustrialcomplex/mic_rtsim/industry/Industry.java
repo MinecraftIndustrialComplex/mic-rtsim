@@ -60,6 +60,8 @@ public final class Industry {
     final Threats threats;
     /** The glass box's compiler (GLASSBOX.md §1.4, G1 read only). */
     final com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler glass;
+    /** Counting at the movers (SECTIONS.md §4.2): the pairs the engine named and what moved through them. */
+    private final com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting counting;
     private final Map<String, Integer> goodIds = new HashMap<>();
     private long ticks;
     private boolean started;
@@ -93,6 +95,17 @@ public final class Industry {
         this.conditions = new Conditions(this);
         this.threats = new Threats(this);
         this.glass = new com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler(this);
+        this.counting = new com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting(this);
+    }
+
+    /** The session ends: nothing is counted any more (the count points' static pointer is cleared). */
+    public void close() {
+        counting.clear();
+    }
+
+    /** Counting at the movers (SEC-1 S3). */
+    public com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting counting() {
+        return counting;
     }
 
     /** The industry module switch (C25): off restores vanilla, nothing is observed or applied. */
@@ -144,6 +157,7 @@ public final class Industry {
                 started = false;
                 wasOff = true;
             }
+            counting.clear();
             TickGate.releaseAll();
             return;
         }
@@ -214,6 +228,13 @@ public final class Industry {
             }
             case com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords.IND_PROBE_SET -> {
                 glass.probeSet(b, at, size, aux);
+                return true;
+            }
+            case com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords.IND_COUNT_SET -> {
+                // No op id and no command result: a set is taken or ignored, and the engine names it again on change.
+                // Only the server's own session counts: the count points are static, and GameTests run private sessions.
+                if (RtsimSession.current() == session)
+                    glass.countSet(b, at, size, aux);
                 return true;
             }
             case IndRecords.IND_DEPOSIT_DELTA -> {

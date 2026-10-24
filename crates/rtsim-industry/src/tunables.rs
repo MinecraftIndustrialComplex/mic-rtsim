@@ -262,6 +262,11 @@ pub struct GlassTunables {
     /// `glass.sectionRowsWorldMax`: extra window rows every district's units hold at most together;
     /// past it the district holding the most is cut down by the excess. TUNABLE, 16384.
     pub section_rows_world_max: usize,
+    /// `glass.countedStoresMax`: shared stores per district whose moves are counted at their
+    /// movers (SECTIONS.md §4.2, §7.3), the lowest positions first; the rest join their sections'
+    /// judging groups. Per district, not per dimension, so a district's cut never depends on
+    /// another's (choice SC78). TUNABLE, 256.
+    pub counted_stores_max: usize,
 }
 
 impl Default for GlassTunables {
@@ -285,6 +290,7 @@ impl Default for GlassTunables {
             sections_max: 64,
             section_rows_max: 1024,
             section_rows_world_max: 16_384,
+            counted_stores_max: 256,
         }
     }
 }
