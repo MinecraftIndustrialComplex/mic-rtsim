@@ -2159,7 +2159,560 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
 
 ## M7 Rail
 
-(none yet)
+M7 is the rail meter, `set_emission_for`, a district-free focus and the train sampler (MOWZIE.md §9: ledgers 1
+and 17; tests 10 and 11; runs 1 without its ambushes, 2, 3, 4 and 9; it needs M6). Engine line numbers below
+are at 761f5d0f; jar facts are in "M7 design for the implementer".
+
+- **MZB-300** (the branch): `feat/mowzie-m7` from the latest `feat/mowzie-m6`, once M6's engine and Java
+  are both in it. After the page format change (MZB-302), delete `neoforge/*/run-gametest/world` before
+  the first GameTest run.
+- **MZB-301** (the signal kind): `SignalKind::Rail = 6`, appended. `COUNT` becomes 7, `ALL` gains it,
+  `name` gives "rail" and `from_name("rail")` reads it. `grievance.rs`'s `K` follows `COUNT`.
+  - `frostmaw.json` gains `"rail": {"weight": 1.0, "tolerance_per_day": 2.0}` (PLACEHOLDER, §4.3).
+  - `umvuthana.json` gets no rail entry, so `Culture::resolve` gives it weight 0.
+  - The TERRITORY mask sets a bit for each kind of weight above 0 (`territory`, engine.rs:1148), so bit 6
+    is set for Frostmaw dens only and Java samples only for them.
+- **MZB-302** (the page format): RTC8 and META 7 (`persist.rs` `MAGIC` and `META_VERSION`). If M9 bumped
+  first (its MZB-437 shares RTC7 with M6), take one past whatever the base holds at landing. The fixtures
+  are regenerated; there is no migration.
+- **MZB-303** (where the meter lives): in rtsim-conflict, a new `src/engine/rail.rs` (an `impl Conflict`
+  block, as `camp.rs`), not in the composition as ledger 1 says. The meter needs the conflict's wheel, its
+  pages, `presence` and the replay of journaled records; the composition has none of them.
+- **MZB-304** (the meter): `FactionRow` gains `rail: Vec<RailMeter>`, sorted by actor, one per actor.
+  - `RailMeter { actor: ActorId, n: f64, t_ref: Tick, pushed: f64, pushed_at: Option<Tick>, stamp: u32,
+    last: Option<(Pos, i32)>, lines: Vec<LineCount> }`. `last` is the latest pass's point and y, the
+    source's position while the meter has no line.
+  - τ is 2 days (48,000 ticks, PLACEHOLDER, §4.3). The count decays as `n(t) = n e^(-(t - t_ref)/τ)`;
+    the rate is `n(t) × 24,000 / τ` legs a day.
+  - Adds are exact. A pass whose exit t is at or after `t_ref` sets `n = n(t) + 1` and `t_ref = t`. An
+    earlier one adds `e^(-(t_ref - t)/τ)` to n. A late pass therefore counts as if it had come on time.
+- **MZB-305** (the push gate): tol is the culture's rail tolerance (2 legs a day), r the rate now and p the
+  rate last pushed (`pushed`).
+  - No push when `r < tol && p < tol`.
+  - Otherwise push when `|r - p| >= max(0.1p, 1.0)`, or when a day has passed since `pushed_at` (the daily
+    resync, ledger 1).
+  - A push calls `set_emission_for` (MZB-313) with r and sets `pushed = r`, `pushed_at = at`.
+    `stats.rail_pushes`.
+  - The gate runs after each counted pass and at each wake.
+- **MZB-306** (the wake): one `Ev::Rail { faction: u32, actor: ActorId, stamp: u32 }` per meter, on wheel
+  tag 10 (M6's Arrival is 8 and M9's CampHeir 9). Booking bumps `stamp`, so a wake with another stamp is
+  stale (`stats.stale`).
+  - The wake is the earlier of the band's lower edge and `pushed_at + 1 day`. The lower edge is
+    `t_ref + ceil(τ ln(n / n_lo))`, with `n_lo` the count at rate `p - max(0.1p, 1)`.
+  - The upper edge needs no wake: only a pass raises the rate, and the gate runs on each pass.
+  - When `r < tol && p < tol`, the wake is retirement instead: the tick at which r falls to 0.01 legs a day.
+    Retirement pushes 0 if p is above 0 and drops the meter with its lines.
+- **MZB-307** (lines): `LineCount { a: u64, b: u64, n: f64, t_ref: Tick, point: Pos, y: i32, near:
+  Option<(Pos, DistrictId)> }`, with `a < b` the two station ids. They are kept per meter, at most 16
+  (PLACEHOLDER); a 17th line evicts the one with the smallest decayed count.
+  - The decay and the exact adds are MZB-304's.
+  - `point` and `y` are the latest credited pass's point, so a reroute that still crosses the circle moves
+    the focus with it (run 3).
+  - `near` is whichever of the two stations is nearer the point and has a district. It is none when
+    neither has one.
+  - The busiest line (largest decayed count) gives the source's position and pin. With no line, `last`
+    gives the position and the pin has no station.
+- **MZB-308** (held passes): a pass waits for its train's next arrival to name its line.
+  - `Conflict` gains resident `held: BTreeMap<u64, Vec<Held>>` by train and `held_oldest:
+    BTreeSet<(Tick, u64)>`, with `Held { faction: u32, actor: Option<ActorId>, exit: Tick, point: Pos, y:
+    i32 }`.
+  - The caps are 64 per train (the train's oldest pass goes first) and 4,096 in all (the oldest pass
+    overall goes first).
+  - `held` is written at the end of `put_resident` and read back in that order; `held_oldest` is rebuilt
+    at load.
+  - A pass held for 1 day (PLACEHOLDER, ledger 1) is let go. This is lazy: `let_go_due(at)` runs first in
+    `rail_pass`, `rail_call` and `rail_wake`. If none of them runs again, the pass is never let go, which
+    can only leave an ownerless pass uncounted.
+- **MZB-309** (letting go): a held pass with an owner was counted at ingest, so letting it go only drops it.
+  - A pass with no owner is counted then, at its exit, against the top of `presence.top_of` its point's
+    chunk.
+  - If nobody is present there, it counts against nobody. It never counts against the settlers: a train
+    nobody owns, through land nobody holds, is no one's grievance.
+  - `stats.rail_let_go` counts both.
+- **MZB-310** (an ownerless pass credited to a line): its actor is the presence top over both stations'
+  chunks together, else nobody. `owner_of`'s settlers fallback (engine.rs:1522) is not used for rail.
+- **MZB-311** (the call): `pub fn rail_call(&mut self, w: &mut World, call: &RailCall, at: Tick)`, with
+  `RailCall { train: u64, line: Option<(StationEnd, StationEnd)> }` and `StationEnd { id: u64, dim: u32,
+  x: i32, z: i32, district: Option<u64> }`.
+  - With a line, each held pass of the train is credited. An ownerless pass gets its actor (MZB-310) and is
+    counted. The meter's line `(min id, max id)` gets the add, the point, the y and `near`. Then the gate
+    runs.
+  - `line: None` lets the train's passes go now. It is sent for an unwatched stop, an arrival with no
+    departure booked, and a self-edge (both ends the same station).
+  - `pub fn holds_train(&self, train: u64) -> bool` lets rtsim-jni skip the call. `stats.rail_calls`.
+- **MZB-312** (rtsim-jni): in `engine/industry.rs`'s `journaled`, for TrainArrived and TrainUnwatched:
+  - Before `l.ingest`, capture the departure, since the arrival clears `last_departure`. This uses a new
+    `IndustryEngine::last_departure_of(TrainId) -> Option<StationId>`, plus the two `StationDecl`s from a
+    new `station_decl(StationId) -> Option<&StationDecl>`.
+  - After it, when the conflict is enabled and running and `holds_train` is true, call a new
+    `conflict::rail_call(st, rec, call)`. It does `shared::catch_up`, `phase1::world_tick`, `with_infra`,
+    `c.rail_call` and then `take_commands`, as `run_engine` does (conflict.rs:633).
+  - TrainUnwatched always sends `line: None`. With the industry off no call ever comes, and every pass is
+    let go after its day.
+- **MZB-313** (`set_emission_for`): `pub fn set_emission_for(&mut self, w: &mut World, f: u32, actor:
+  ActorId, per_day: f64, pos: Pos, pin: Pin, at: Tick)`.
+  - The key is `fnv1a64("rail" ++ faction key ++ actor bits)` and the kind is Rail. Ledger 1's `key` and
+    `kind` parameters are dropped, since the faction and actor fix both.
+  - `Source` gains `pin: Option<Box<Pin>>`, with `Pin { y: i32, station: Option<(Pos, DistrictId)> }`. It
+    is boxed so every other source carries only one pointer.
+  - The source has `affects = [(f, 1.0)]`, `district: None`, a fixed `actor`, no chunks and no places. So
+    `reattribute` (1641) never moves it, and `add_faction`'s pickup (1085-1123) skips a source with a pin.
+  - It is its own function beside `set_emission_inner` (1541), not a branch of it. It inserts or updates
+    the source, calls `add_reach(Rail, id)` on f's row the first time, and calls `refresh_rates(f, actor,
+    Rail, at)`. A rate of 0 removes the source and its reach.
+- **MZB-314** (the district-free focus): `Focus` gains `track: Option<TrackFocus>`, with `TrackFocus { y:
+  i32, station: Option<(Pos, DistrictId)> }`. It is Copy, so `Focus` stays Copy.
+  - `refresh_rates` (1683-1720) sets no focus from a kind whose weight is 0 for the faction.
+  - Otherwise a best source sets the focus when its class is at least the current focus's. The classes,
+    highest first, are a district, a track (a source with a pin) and a bare position.
+  - So a district focus is never displaced by a pass through the wild, as ledger 1 says, and a track focus
+    is not displaced by a kill site, which would raid nothing.
+  - Within one class the latest refresh wins, as districts do today. A rail source's focus copies its pin
+    into `track`. The signal path's focus (1453-1461) gets `track: None`.
+- **MZB-315** (the target): `Target::Track { track: Pos, spot: Pos, y: i32 }`, persisted as tag 3
+  (`put_target`, persist.rs:595).
+  - `target_of` gains the party kind: `fn target_of(&self, w: &World, f: u32, kind: PartyKind, focus:
+    Option<Focus>, at: Tick) -> Target`. Its two callers (`escalate` 1961, `envoy_again` 2135) pass the
+    kind they send.
+  - A focus with a track gives a Raid a Track target (spot from MZB-316). An Invasion gets
+    `District(station's district, station pos)` when the pin names a station, else Track. Any other kind
+    gets `Pos(focus.pos)`. The other arms are unchanged.
+  - `target_pos(Track)` is the spot. The matches over `Target` in `resolve` and its `what` (3406-3429) and
+    in `rescue_news` (4259) gain a Track arm, taken as `Pos` is (bases near the aim).
+- **MZB-316** (the spot): RAIL_PASS gives one point and no bearing.
+  - So the spot is 5 blocks (PLACEHOLDER, §4.4) from the track point toward the den (the faction's pos),
+    rounded to whole blocks and put through `canon`.
+  - The point is the pass's sample nearest the den. On a straight track the den direction is
+    perpendicular to the track up to the sampling error. Samples 20 ticks apart at 2 blocks a tick are 40
+    blocks apart, so the nearest sample is at most 20 blocks along from the perpendicular's foot: about
+    7.6 degrees off at 150 blocks.
+  - A den within 1 block of the point puts the spot +x.
+- **MZB-317** (arriving at a Track): `arrive` (3256) runs its peaceful arm, then for a Track target waits
+  until `bored_at` (`wait`, 3328). There is no watcher fight and no `resolve`.
+  - The on-the-way ambush roll (3003-3041, `trains_crossed`) is skipped for a party whose target is Track:
+    its trains come from sampling (ledger 8).
+  - A forced `resolve(Track)` notes "raids nothing" and never looks for a district.
+  - In M7 a Raid at a track waits and goes home; M8 makes it lie in wait.
+- **MZB-318** (counters): `rail_passes`, `rail_pushes`, `rail_wakes`, `rail_let_go`, `rail_unknown` and
+  `rail_calls`, appended to `stats_fields` and the stats page.
+- **MZB-319** (RAIL_PASS ingest): RAIL_PASS leaves `Conflict::later` (4911) for `rail_pass(w, rp, at)`.
+  - A pass for an unknown faction, or one whose rail weight is 0 or less, counts in `rail_unknown` and is
+    dropped.
+  - pos is `canon(dim, floor x, floor z)` and y is `floor y`. The owner maps through `player()`; a zero
+    UUID means no owner. An exit after `at` is clamped to `at`.
+  - An owned pass is counted at once (MZB-304) and held (MZB-308). An ownerless pass is only held.
+    `stats.rail_passes`.
+  - rtsim-jni's `translate` (conflict.rs:500) converts entry and exit from game time with
+    `phase1::world_tick`, as for the other timed records.
+- **MZB-320** (TrainSampler): `neoforge/create/.../TrainSampler.java`, registered in `MicRtsimCreate` on
+  `ServerTickEvent.Post` whether or not the industry is on, since the meter is the conflict's. It returns
+  at once unless the conflict is up and `Territories.anyMinding(6)` is true (MZB-324).
+- **MZB-321** (the cadence): once a second (game time % 20 == 0) it walks `Create.RAILWAYS.trains` and puts
+  each train in bucket `CreateIds.of(id) mod 20`. Each tick it samples one bucket. So each train is sampled
+  every 20 ticks: 10 trains a tick at 200.
+- **MZB-322** (a sample):
+  - The point is `Vec3 at = train.carriages.get(0).getLeadingPoint().getPosition(train.graph)`. The
+    dimension is that point's `node1.getLocation().getDimension()`.
+  - The train is skipped when `graph == null`, the point's `edge == null`, `derailed`, `invalid`, or
+    `edge.isInterDimensional()`.
+  - A segment whose dimension changed, or one longer than 128 blocks (a portal, a wrapped world's seam, a
+    teleport), is not tested; the sample starts a fresh segment. `Territories` has no wrap handling, and
+    this keeps a seam out of it.
+- **MZB-323** (passes): the segment from the train's last sample to this one is tested with
+  `Territories.crossing(dim, x0, z0, x1, z1, 6, out)` (MZB-324).
+  - A territory the segment meets opens a pass if the train has none open there. Its entry is the game
+    time of the segment's first sample.
+  - An open pass keeps the sample nearest the circle's centre, and its y. Only sample points are kept, so
+    the point is on the track. For a segment that clips the circle, the nearer of its two ends is kept.
+  - After each segment, every open pass whose circle does not contain the new sample is closed with exit
+    = now and sent.
+  - A train gone from `trains` closes its passes at its last sample.
+- **MZB-324** (Territories, core): `crossing(ResourceKey<Level> dim, double x0, double z0, double x1,
+  double z1, int signal, List<Territory> out)` gives each territory whose circle the segment meets and
+  whose mask has the signal, once. It looks in the cells of the segment's box (`CELL` 512, so at most 4)
+  and in the wide list. `anyMinding(int signal)` reads a count per bit, kept by `put`, `remove` and `clear`.
+- **MZB-325** (RAIL_PASS out):
+  - `RtsimApi.railPass(long faction, long train, UUID owner, ResourceKey<Level> dimension, double x,
+    double y, double z, long entry, long exit)` calls `ConflictBridge.railPass`. That writes the record
+    with `beginJournaled`, as `flushSignals` (2036) does, gated by `m1Records`.
+  - The train id is `CreateIds.of(train.id)` (H19). The owner is `train.owner`, or the zero UUID when it is
+    null.
+  - The sampler's state (the last sample and open passes per train) is dropped at session end and at
+    server stop. A pass open then is lost.
+- **MZB-326** (UR-1): the sampler and the meter keep nothing in the world: no saved data, attachments or
+  tags. Without the plugin no RAIL_PASS comes, and every meter decays, pushes down and retires through its
+  own wakes.
+- **MZB-327** (test 11's curves): code-built track of radius 100: a 90 degree curve, and an S-bend of two.
+  The fixture's 90 degree curve (radius 9.5, `RailFixtureGameTests`) is 15 blocks of track. That is shorter
+  than one sample's travel at 1.4 blocks a tick (28 blocks), so it cannot tell the track from the chord.
+- **MZB-328** (test 10): a real assembled train, since contraption collision needs the carriage entity. A
+  zombie on the rail is the control that is pushed.
+- **MZB-329** (the build): the create project gains `-PwithMowzie`, as dh's `-PfarIceAndFire`
+  (dh/build.gradle:12-16, 126-130, 143-144).
+  - With it, the project does `evaluationDependsOn(':mowziesmobs')`, and the GameTest run gets a `mic_rtsim_mowziesmobs` mods entry (`project(':mowziesmobs')`'s main
+    source set), `runtimeOnly project(':mowziesmobs')`, the Mowzie jars at run time and the Mowzie config
+    copy.
+  - The create project's tests name Mowzie only by registry id (`mowziesmobs:frostmaw`) and NBT, so the
+    project compiles without the jar.
+  - The Frostmaw tests' class (`RailFrostmawGameTests`) has no `@GameTestHolder`. It is registered from
+    `RegisterGameTestsEvent` only when `ModList.get().isLoaded("mowziesmobs")`.
+- **MZB-330** (sim tolerances): 8 seeds, each train's headway jittered uniformly by ±0.4 of itself, judged
+  on medians.
+  - A settled grievance is within 2%, a band crossing within ±0.6 day, and the pushes in 20 days within ±4.
+  - The runs use a chief seed `MIDDLING` whose `Temperament` is (128, 128, 128). It is found by a search
+    over seeds up to 2^28, and its own test asserts it. If none exists there, take traits within ±1 (a bend
+    within 0.4%) and widen the crossing tolerance by 0.1 day.
+- **MZB-331** (bench): `rtsim-cli bench scale --only factions,factions-paged`, an A/A pair first, then base
+  and M7 side by side. A regression above 3% beyond the A/A spread blocks landing.
+- **MZB-332** (no bearing in RAIL_PASS): RAIL_PASS's reserved u32 at 60 could carry the track's bearing at
+  the point, which would let the spot stand exactly perpendicular. It stays reserved: MZB-316's den
+  direction is within 8 degrees, the record is M1's, and a format change is Ben's to make. This is the one
+  data-format candidate, settled conservatively, so M7 has no open question for Ben.
+- **MZB-333** (boundary.md): RAIL_PASS's row says its entry and exit are game time, that it is journaled,
+  and that its point is a sample (on the track). The "come later" list (boundary.md:1752) loses RAIL_PASS.
+
+### M7 design for the implementer
+
+**Where it stands.** Design only, on `design/mowzie-m7` (from 761f5d0f). Nothing of M7 is written. Open
+questions for Ben: none. The one candidate, a bearing in RAIL_PASS, is settled by MZB-332.
+
+**Jar facts** (Create 6.0.10 with cfr in `target/m7-cfr/create` and `target/m7-cfr/create-extra`; Mowzie's
+Mobs 1.8.2 in `target/m7-cfr/mowzie`, `EntityMagicEffect` in `target/m7-cfr-magic/out`; vanilla from the
+NeoForm sources jar in `target/m7-vanilla`):
+- `GlobalRailwayManager`: `public Map<UUID, Train> trains` (57). `tick(Level level)` (208) returns unless
+  `level.dimension() == Level.OVERWORLD`, so every train moves once a server tick, in the overworld's
+  tick. `ServerTickEvent.Post` sees them after it.
+- `Train`: `public UUID id` (157), `public TrackGraph graph` (160), `public boolean invalid` (167), `public
+  List<Carriage> carriages` (173), `public boolean derailed` (182), `public UUID owner` (159), `public void
+  arriveAt(GlobalStation station)` (871), `public void leaveStation()` (863).
+- `Carriage.getLeadingPoint()` (384) and `getTrailingPoint()` (388) return `TravellingPoint`.
+  `TravellingPoint` has `public TrackNode node1` (46), `public TrackEdge edge` (48), `public double
+  position` (49), and `public Vec3 getPosition(@Nullable TrackGraph trackGraph)` (302). The last is
+  `edge.getPosition(graph, t)` plus the edge's normal, so it reads the real curve.
+- `TrackEdge`: `public boolean isInterDimensional()` (55), `public Vec3 getPosition(@Nullable TrackGraph
+  trackGraph, double t)` (97), `TrackEdge(TrackNode node1, TrackNode node2, BezierConnection turn,
+  TrackMaterial trackMaterial)` (38). `TrackNode.getLocation()` (23) gives a `TrackNodeLocation`, whose
+  `getDimension()` (73) is a `ResourceKey<Level>`.
+- `BezierConnection(Couple<BlockPos> positions, Couple<Vec3> starts, Couple<Vec3> axes, Couple<Vec3>
+  normals, boolean primary, boolean girder, TrackMaterial material)` (create-extra, 103) builds test 11's
+  curves in code.
+- `GlobalStation` inherits `getBlockEntityPos()` and `getBlockEntityDimension()`; `TrainWatch` reads both
+  (149, 229).
+- Collision: `AbstractContraptionEntity.canCollideWith(Entity e)` (822-852) refuses spectators,
+  `noPhysics`, hanging entities, glue, seats, projectiles and passengers, and ends `return
+  e.getPistonPushReaction() == PushReaction.NORMAL` (851). `ContraptionCollider` (142) collides only
+  entities it accepts. `EntityFrostmaw.getPistonPushReaction()` returns `PushReaction.IGNORE` (332), so a
+  train passes through a Frostmaw (§3.1), and test 10 guards it.
+- `AbstractContraptionEntity.isPickable()` returns false (798) and `hurt(DamageSource, float)` returns
+  false (802). It is no `LivingEntity` (this matters to M8).
+
+**Layout.**
+- Engine:
+  - `crates/rtsim-conflict/src/culture.rs` (MZB-301) and `data/cultures/frostmaw.json`.
+  - `src/engine/rail.rs` (new: `RailMeter`, `LineCount`, `Held`, `Pin`, `TrackFocus`, `RailCall`,
+    `StationEnd`, `rail_pass`, `rail_call`, `holds_train`, `let_go_due`, `rail_gate`, `rail_wake`,
+    `set_emission_for`, `spot_toward`).
+  - `src/engine.rs` (`Source.pin`, `Focus.track`, `Target::Track`, `Ev::Rail` and its dispatch,
+    `refresh_rates`, `add_faction`'s pickup, `target_of`, `target_pos`, `arrive`, the on-the-way roll,
+    `resolve`, `rescue_news`, `later`, `ingest`, stats).
+  - `src/tables.rs` (`FactionRow.rail`) and `src/persist.rs` (MZB-302).
+  - `crates/rtsim-industry/src/engine.rs` (`last_departure_of`, `station_decl`).
+  - `crates/rtsim-jni/src/engine/industry.rs` and `engine/conflict.rs` (MZB-312, 319) and its protocol test.
+  - `crates/rtsim-cli/src/sim/mowzie.rs` and its synth (the rail lines, runs 1 to 4 and 9).
+  - `crates/rtsim-conflict/tests/rail.rs` (new).
+- Core Java (`neoforge/core/.../mic_rtsim/`): `conflict/Territories.java` (`crossing`, `anyMinding`),
+  `conflict/ConflictBridge.java` (`railPass`), `conflict/ConflictRecords.java` (RAIL_PASS offsets if
+  missing), `api/RtsimApi.java` (`railPass`), `gametest/ConflictKit.java` (`railPasses(faction)`).
+- Create plugin (`neoforge/create/`):
+  - `TrainSampler.java` (new) and `MicRtsimCreate.java` (its registration).
+  - `bench/SamplerBench.java` (new).
+  - `gametest/TrainSamplerGameTests.java` (new, test 11) and `gametest/RailFrostmawGameTests.java` (new,
+    test 10, then M8's 8 and 9).
+  - `build.gradle` (MZB-329).
+- Docs: `docs/boundary.md` (MZB-333).
+
+**Engine.**
+- The meter (`rail.rs`):
+  ```rust
+  pub(crate) const RAIL_TAU: f64 = 48_000.0; // ticks (PLACEHOLDER, §4.3)
+  const RETIRE_PER_DAY: f64 = 0.01;
+
+  impl RailMeter {
+      fn n_at(&self, t: Tick) -> f64 {
+          self.n * (-(t.0.saturating_sub(self.t_ref.0) as f64) / RAIL_TAU).exp()
+      }
+      fn add(&mut self, t: Tick) {
+          if t >= self.t_ref {
+              self.n = self.n_at(t) + 1.0;
+              self.t_ref = t;
+          } else {
+              self.n += (-((self.t_ref.0 - t.0) as f64) / RAIL_TAU).exp();
+          }
+      }
+      fn per_day(&self, t: Tick) -> f64 {
+          self.n_at(t) * TICKS_PER_DAY as f64 / RAIL_TAU
+      }
+      /// The first tick at which the rate is at or below `r` legs a day.
+      fn falls_to(&self, r: f64) -> Tick {
+          let n_lo = r * RAIL_TAU / TICKS_PER_DAY as f64;
+          if self.n <= n_lo {
+              return self.t_ref;
+          }
+          self.t_ref + (RAIL_TAU * (self.n / n_lo).ln()).ceil() as u64
+      }
+  }
+  ```
+  `LineCount` has the same `n_at`, `add` and `per_day`.
+- The gate, after an add or at a wake:
+  ```rust
+  fn rail_gate(&mut self, w: &mut World, f: u32, actor: ActorId, at: Tick) {
+      let tol = self.culture(f).signals[SignalKind::Rail.index()].tolerance_per_day;
+      let Some(m) = self.factions.row_mut(f).rail_meter_mut(actor) else { return };
+      let (r, p) = (m.per_day(at), m.pushed);
+      let quiet = r < tol && p < tol;
+      if quiet && r <= RETIRE_PER_DAY {
+          // retire: push 0 if p > 0, then remove the meter (and its lines)
+          return;
+      }
+      let day_due = m.pushed_at.is_none_or(|t| at >= t + TICKS_PER_DAY);
+      if !quiet && ((r - p).abs() >= (0.1 * p).max(1.0) || day_due) {
+          // push r: set_emission_for(w, f, actor, r, pos, pin, at) from the busiest line, or `last`
+      }
+      // book: quiet -> falls_to(RETIRE_PER_DAY); else the earlier of
+      // falls_to(p - max(0.1p, 1)) (only when that is above 0) and pushed_at + 1 day
+      // (stamp += 1; schedule Ev::Rail { faction: f, actor, stamp })
+  }
+  ```
+  Borrowing: read what the push needs into locals, drop the row borrow, then call `set_emission_for`.
+- `rail_pass(w, rp, at)`: `let_go_due(at)`. Then the faction by key and the weight check (MZB-319). Find
+  or insert the meter for an owned pass, `add(exit)`, set `last`, and run the gate. Then hold it (MZB-308).
+- `rail_call(w, call, at)`: `let_go_due(at)`. Take the train's holds. With a line, credit each (MZB-311),
+  then run the gate once per touched meter in actor order. With `None`, run MZB-309 on each.
+- `rail_wake(w, f, actor, stamp, at)`: `let_go_due(at)`. A stale stamp counts in `stats.stale`; otherwise
+  `stats.rail_wakes` and the gate.
+- `set_emission_for` as MZB-313. `Source.rate` is units per tick, so it stores `per_day / TICKS_PER_DAY`.
+  `refresh_rates` subtracts the tolerance once, from this one rate per actor, as for any kind.
+- `refresh_rates`'s last lines become:
+  ```rust
+  if let Some(b) = best
+      && sd.weight > 0.0
+      && class(&b) >= feud.focus.as_ref().map_or(0, class)
+  {
+      feud.focus = Some(b);
+  }
+  // class: 2 for a district, 1 for a track, 0 for a bare position.
+  ```
+  The best's `track` is `s.pin.as_ref().map(|p| TrackFocus { y: p.y, station: p.station })`.
+- `target_of`:
+  ```rust
+  fn target_of(&self, w: &World, f: u32, kind: PartyKind, focus: Option<Focus>, at: Tick) -> Target {
+      match focus {
+          Some(Focus { district: Some(d), pos, .. }) => Target::District(d, pos),
+          Some(Focus { track: Some(t), pos, .. }) => match (kind, t.station) {
+              (PartyKind::Invasion, Some((sp, d))) => Target::District(d, sp),
+              (PartyKind::Raid | PartyKind::Invasion, _) => Target::Track {
+                  track: pos,
+                  spot: self.spot_toward(w, pos, self.factions[f as usize].pos),
+                  y: t.y,
+              },
+              _ => Target::Pos(pos),
+          },
+          Some(fo) => Target::Pos(fo.pos),
+          None => Target::Pos(self.factions[f as usize].pos),
+      }
+  }
+  ```
+  `spot_toward` works in the frame's chart (the topology's unwrapped offset, as `party_pos` routes), so a
+  den across a seam still gives the right side, then `canon`s the result.
+- Persistence (MZB-302):
+  - `put_focus` adds a flag byte, then y and the station, for `track`.
+  - `put_target` tag 3 writes track, spot and y.
+  - `put_source` adds a flag byte, then the pin.
+  - The FactionRow page writes `rail` (meters in actor order, each with its lines).
+  - `put_ev` tag 10 is Rail.
+  - `put_resident` ends with `held` (train ids in order, each with its holds).
+  - The blob and paged paths share these, as M6's `put_camp` does.
+
+**Java.**
+- `TrainSampler` (create plugin), state per train UUID: `Sample { dim, x, y, z, tick }` and `List<Open>`,
+  with `Open { territory, nearest (x, y, z, d2), entry }`. Per tick:
+  ```java
+  public static void tick(ServerTickEvent.Post e) {
+      if (!RtsimApi.conflictUp() || !RtsimApi.territories().anyMinding(SIGNAL_RAIL)) return;
+      long now = e.getServer().overworld().getGameTime();
+      if (now % 20 == 0) rebucket();            // Create.RAILWAYS.trains, CreateIds.of(id) mod 20
+      for (Train t : buckets[(int) (now % 20)]) sample(t, now);
+  }
+  ```
+  `rebucket` also closes the passes of trains no longer in `trains` and drops their state. `RtsimApi`
+  gains `conflictUp()` if it has no such test (the bridge's session is up and `m1Records` is true).
+- `Territories.crossing` and `anyMinding` as MZB-324. The segment-circle test is the distance from the
+  centre to the segment's nearest point, at most the radius.
+- `RtsimApi.railPass(...)` and `ConflictBridge.railPass(...)` as MZB-325. Offsets are from boundary.md:1511:
+  faction 24, train 32, owner 40 and 48, dimension 56 (the bridge's `EngineNames` id), reserved 60, x y z
+  64 to 80, entry 88, exit 96. The size is 104.
+- `SamplerBench` (`-Dmic_rtsim.samplerbench=true`, with `-Dmic_rtsim.farbench=true` for its 200 trains):
+  it scripts 64 territories along the bench's routes and logs, every 1,200 ticks, `[samplerbench]` with
+  trains sampled and ns per sample (the median and the 99th percentile over the window). The budget is 2
+  µs a sample (PLACEHOLDER), or 20 µs a tick at 200 trains.
+- D1: one bucket a tick, at most 4 cell lookups and a short list per sample, no allocation in steady state
+  (reused lists). The fast exit (`anyMinding`) makes a world without Frostmaw dens cost one array read a
+  tick. D4: the sampler is Create code in the create plugin; it reaches the core only through `RtsimApi`,
+  and the core knows no Create type. D3: no entities. UR-1: MZB-326.
+
+**GameTests to write** (synthetic trains run far away, out of entity-ticking chunks, since a synthetic train
+in an entity-ticking chunk is dropped; each test at its own far base; scripted engine first, then native):
+1. `theSamplerReportsPassesOnTheRealTrack` (§7 test 11, `TrainSamplerGameTests`, batch `rail_sampler`):
+   - Setup: a code-built 90 degree curve of radius 100 and an S-bend (two such curves, opposite hands),
+     each between two stations, with a synthetic train held at 1.4 blocks a tick. A second run on the curve
+     holds it at 2.0.
+   - Territories (ConflictKit's scripted TERRITORY), mask bit 6:
+     - (a) radius 15, centred 10 blocks outside the arc's midpoint: the track enters it and the chord
+       between the stations does not;
+     - (b) radius 15, centred on the chord's midpoint, 29 blocks inside the arc;
+     - (c) and (d), the S-bend's equivalents;
+     - (e) as (a) with a mask without bit 6.
+   - Assertions: (a) and (c) get exactly one RAIL_PASS per run; (b), (d) and (e) get none.
+   - Each pass: its point is within 2.5 blocks of the curve (horizontal), and its y within 1 of the
+     track's; entry is before exit; the train id is `CreateIds.of(id)`; the owner is the train's owner (one
+     run with a null owner gives (0, 0)).
+2. `aTrainPassesThroughAFrostmawWithoutTouchingIt` (§7 test 10, `RailFrostmawGameTests`, batch
+   `rail_frostmaw_pass`, `-PwithMowzie`):
+   - Setup: a 64-block straight with a station, and a train assembled at it as `RailFixtureGameTests`
+     does (`StationBlockEntity.assemble`), held at 1.0 blocks a tick. A Frostmaw (by registry id, NoAI)
+     stands on the rail 32 blocks ahead.
+   - Assertions: the carriage entity's box overlapped the Frostmaw's on some tick. The Frostmaw's health is
+     unchanged, its `hurtTime` is 0 throughout, and it moved under 0.1 blocks. The train is not derailed,
+     and its distance over the run is within 1% of speed × ticks.
+   - Control, the same run with a zombie on the rail: the zombie is moved at least 0.5 blocks.
+
+**Rust tests** (`crates/rtsim-conflict/tests/rail.rs`, on the shipped cultures unless named):
+- The meter's arithmetic: `a_late_pass_counts_as_if_on_time`, `the_meter_settles_at_n_over_tau`,
+  `falls_to_is_the_closed_form`.
+- The gate and its wakes: `the_gate_pushes_only_on_the_band_and_the_day`,
+  `the_wake_is_the_band_edge_or_the_day`, `a_quiet_meter_retires_and_pushes_zero`,
+  `a_stale_rail_wake_is_counted`.
+- Owners and held passes: `an_owned_pass_counts_at_once_and_an_ownerless_one_on_credit`,
+  `an_ownerless_pass_let_go_counts_against_the_chunks_top_or_nobody`,
+  `held_passes_are_capped_per_train_and_in_all`, `a_self_edge_or_no_departure_lets_go`.
+- Lines: `a_line_credit_moves_the_point`, `the_seventeenth_line_evicts_the_smallest`.
+- Sources and the focus: `set_emission_for_reaches_only_its_faction` (two dens, one pinned source;
+  `reattribute` and a new faction's pickup leave it alone),
+  `a_district_focus_is_not_displaced_by_a_track_nor_a_track_by_a_bare_pos`,
+  `a_zero_weight_kind_sets_no_focus`.
+- Targets: `a_raid_on_a_track_focus_targets_the_track_and_an_invasion_the_station`,
+  `the_spot_is_five_blocks_toward_the_den` (the +x fallback, and a den across a wrapped seam),
+  `a_raid_at_a_track_waits_and_goes_home_raiding_nothing` (no on-the-way roll, no resolve).
+- Ingest: `rail_pass_for_an_unknown_faction_or_a_zero_weight_culture_is_dropped`,
+  `umvuthana_minds_no_rail` (its TERRITORY mask lacks bit 6).
+- Persistence and the seed: `the_meter_round_trips_blob_and_paged` (meters, lines, holds, the pin,
+  `Focus.track`, `Target::Track`, a booked `Ev::Rail` that fires on the same tick after a round trip),
+  `the_middling_seed_is_middling`.
+- In `culture.rs`: rail parses, and a missing rail entry is weight 0.
+- rtsim-jni's protocol test: RAIL_PASS is live, not deferred, and its times are translated. A TrainArrived
+  after a departure calls `rail_call` with the line; a TrainUnwatched lets go.
+
+**Sim runs** (`rtsim-cli sim mowzie`; MZB-330's seeds, jitter and tolerances; a middling chief; the raid model
+of §4.3: a 1-day muster, 150 blocks each way at 0.02 blocks a tick, a 2-day lurk, a repeat 4 days after it
+is home; dwell 0.5 day on Notice and 4 on Raid):
+- The synth's rail: a line is a polyline between two district stations with a headway and an owner. Each
+  train's leg emits RAIL_PASS for each den circle it crosses (the sample nearest the den, in the polyline's
+  own 20-tick samples), then a TrainArrived that runs `rail_call` as rtsim-jni does.
+- **Run 1, the meter** (RUNS row 1's "the meter M7"): one line at 4, 12, 24 and 50 legs a day, and the
+  trunk of 14 lines at 1.7, each against §4.3's first table:
+
+  | Traffic | Settles at | Notice | Raid | 140 | Invasion | Pushes in 20 days |
+  |---|---|---|---|---|---|---|
+  | 4 legs a day | 17.3 | 11.8 | never | never | never | 19 |
+  | 12 | 86.6 | 3.0 | 17.1 | never | never | 24 |
+  | 24 | 190.4 | 1.8 | 6.4 | 14.1 | 17.6 | 30 |
+  | trunk of 14 at 1.7 (23.8) | 188.7 | 1.8 | 6.3 | 14.2 | 17.5 | 33 |
+  | 50 | 415.5 | 1.1 | 3.5 | 5.8 | 7.5 | 37 |
+
+  Each Raid's target is Track; each Invasion's is the station district nearest the busiest line's point.
+  `stats.rail_wakes` stays under 3 a day per meter.
+- **Run 2, cut and stopped service** (§4.3's second table): 12 legs a day, 24 from day 2, a peak of about
+  122 on day 13. From day 12:
+
+  | From day 12 | Under 70 | Under 42 | Settles at |
+  |---|---|---|---|
+  | cut to 4 legs a day | 21.4 | 28.1 | 17.3 |
+  | stopped | 19.2 | 23.6 | 0 (Notice left on day 40.5) |
+
+  The repeat raid due on day 15.1 still comes. No raid sets out once the grievance is under 70.
+- **Run 3, reroute**:
+  - (a) From day 12 the line's track moves off the circle. Its passes stop, and the grievance follows the
+    stopped row.
+  - (b) The track moves within the circle. The line's point follows the new passes, and the next Raid's
+    Track target is at the new point.
+- **Run 4, two dens on one line**: both circles get passes and both feuds follow the 12-a-day row. A den
+  found on day 10 gets its first pass from the next train and its own meter from there.
+- **Run 9, the trunk**:
+  - The 14 lines at 1.7 match the one line of 23.8 within MZB-330's tolerances (the trunk row).
+  - With one line at 6 and the others at 1.2, the focus is the busy line's point.
+  - Two owners' trains on one line make two meters and two feuds, each at its own share.
+- **Bench** (MZB-331), and the sampler bench at 200 trains on the laptop (SamplerBench).
+
+**Work split** (in order; each step's tests green and committed before the next):
+0. Branch (MZB-300).
+1. `culture.rs` (`Rail`, `COUNT`, names), `grievance.rs`'s `K`, `frostmaw.json`; the culture tests and
+   `umvuthana_minds_no_rail`.
+2. `rail.rs`: `RailMeter` and `LineCount` (`n_at`, `add`, `per_day`, `falls_to`) with the arithmetic tests.
+3. `Source.pin`, `set_emission_for`, `add_faction`'s skip; `Focus.track` and `refresh_rates`'s class
+   rule; their tests.
+4. `Target::Track`, `target_of` with the kind and its two callers, `spot_toward`, `target_pos`, `arrive`'s
+   Track arm, the on-the-way skip, `resolve`, `what` and `rescue_news`; their tests.
+5. `Held`, `rail_pass`, `rail_call`, `holds_train`, `let_go_due`, `rail_gate`, `rail_wake`, `Ev::Rail` and
+   its dispatch, the counters, `later` and `ingest`; the remaining engine tests. **Opus review A**: the
+   engine, steps 1 to 5, against §4.3 and ledger 1.
+6. Persistence (MZB-302) and `the_meter_round_trips_blob_and_paged`.
+7. rtsim-industry's `last_departure_of` and `station_decl`; rtsim-jni's capture, `conflict::rail_call`,
+   `translate`, and the protocol test.
+8. The synth's rail, `MIDDLING` and its test, runs 1 to 4 and 9. **Opus review B**: the runs against §4.3's
+   two tables.
+9. The bench pair (MZB-331).
+10. Core Java: `Territories.crossing` and `anyMinding`, `RtsimApi.railPass` (and `conflictUp`),
+    `ConflictBridge.railPass`, `ConflictRecords`, `ConflictKit.railPasses`; compile.
+11. Create: `TrainSampler`, its registration, `SamplerBench`; compile; the sampler bench.
+12. `build.gradle` (MZB-329), `TrainSamplerGameTests` and `RailFrostmawGameTests` test 10. **Opus review
+    C** before the GameTest round, then the GameTests on the scripted engine and on native.
+13. `boundary.md` (MZB-333) and, at landing, the fixtures (MZB-302).
+
+**What M7 changes in M6.** The engine's `Focus`, `Source`, `Target`, `refresh_rates`, `target_of`,
+`arrive`, the on-the-way roll, `resolve` and `rescue_news`, and the page format (RTC8 / META 7). Not
+changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin code, and `TrainMixin`.
+
+**Where the jar or the engine differs from MOWZIE.md.**
+- Ledger 1 puts the meter in the composition. It is in rtsim-conflict, which owns the wheel, the pages and
+  the replay (MZB-303).
+- Ledger 1's `set_emission_for(faction, key, kind, rate, pos, actor)` takes no key or kind; both follow
+  from the faction and actor (MZB-313).
+- §4.4 puts the spot perpendicular to the track between two samples. RAIL_PASS carries one point, so the
+  spot is toward the den, within 8 degrees of perpendicular on a straight (MZB-316, 332).
+- A pass is credited to a line only between two district stations. `TrainWatch.arrived` returns early for
+  a station with no district (TrainWatch.java:224), and an unwatched stop ends a leg; other passes are let
+  go (MZB-311).
+- The industry's clock is game time and the conflict's is world time, so RAIL_PASS's times are translated
+  (MZB-319).
+- The fixture's 90 degree curve (radius 9.5) is shorter than one sample's travel, so it cannot serve test
+  11 (MZB-327).
+- MOWZIE.md's engine line numbers are stale. At 761f5d0f, `set_emission_inner` is 1541-1626 (not
+  1337-1424), `refresh_rates`'s focus is 1715-1719 (not 1513-1517) and `resolve`'s Pos arm is 3409-3421
+  (not 2869-2878).
+- §3.1's no-collision is confirmed at the jar: IGNORE against Create's NORMAL-only `canCollideWith`.
+
+**Traps.**
+- zsh eats `"$b:crates/..."` as a history modifier: write `"${b}:crates/..."`.
+- `tail -3` fails in these shells: write `tail -n 3`.
+- A synthetic train in an entity-ticking chunk is dropped: run test 11's trains far away.
+- An unwatched lurk's segments are 28 to 40 blocks long. On a curve of radius under about 24 blocks, a
+  40-block sample's sagitta exceeds the reach of 8, so a pass can miss the track point (M8). Test 11 uses
+  radius 100, where it is 2.
+- `git log -G'MZB-3..'` shows M9's old 5d747e31, which used MZB-300 to 343 before 39db13e2 moved M9 to 400
+  to 443. Check this range with `-G'MZB-3[0-4][0-9]'` and ignore 5d747e31.
+- `refresh_rates` keeps a focus per kind, the latest refresh winning. Without MZB-314's class rule, a kill
+  site would replace the track focus and the next Raid would raid nothing.
+- The arrival clears the industry's `last_departure`: capture it before `l.ingest` (MZB-312).
 
 ## M8 Lying in wait
 
