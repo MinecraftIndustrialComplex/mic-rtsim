@@ -17,9 +17,14 @@ expressions matched against the argument's text (`--chunk`). The defaults are th
 `io(...)` wait, since in those tests each one waits for a chunk to load or unload. Another kit gives
 its own with `--chunk` (and `--no-default-chunks` to drop these).
 
+The logic waits' budget is the method's old timeoutTicks, unless `--budget NAME=TICKS` (or a line
+`NAME=TICKS` in a `--budgets` file) gives another: for a test whose timeout was raised only to cover its
+chunk waits, give the value from before the raise. A budget names a method in one of the files, or the
+script refuses it.
+
 The script can be run again on the same files. A converted method (one with `ChunkWait waits =`) keeps
-its budget, and only its waits that are not wrapped yet are wrapped. So a branch that adds tests can
-rerun it over the whole file after merging main.
+its budget (unless a `--budget` names it), and only its waits that are not wrapped yet are wrapped. So
+a branch that adds tests can rerun it over the whole file after merging main.
 
 The script refuses a method that would break under NO_TICK_TIMEOUT:
   - `helper.onEachTick`, which schedules one task for each tick up to the timeout (ten million);
@@ -32,7 +37,9 @@ Usage (from the repository root, `python3 -I` so nothing beside the script shado
   python3 -I neoforge/tools/chunk_waits.py --dry-run FILE.java
   python3 -I neoforge/tools/chunk_waits.py --only aTestName FILE.java
   python3 -I neoforge/tools/chunk_waits.py --chunk '^kit\\.loaded\\(' FILE.java
-Exit 0 when every method was converted or skipped, 1 when one was refused (nothing is written then).
+  python3 -I neoforge/tools/chunk_waits.py --budget aTestName=1500 --budgets old-timeouts.txt FILE.java
+Exit 0 when every method was converted or skipped, 1 when one was refused or a budget named no method
+(nothing is written then, in any file).
 """
 import argparse
 import re
@@ -137,11 +144,13 @@ def convert_body(body, chunks, name):
     return "".join(out), nc, nl, refused
 
 
-def convert_file(path, chunks, only, dry):
+def convert_file(path, chunks, only, budgets, seen):
+    """(refusals, report lines, the new text or None when unchanged); every method name goes in seen."""
     s = open(path, encoding="utf-8").read()
     pieces, k, refused, report, changed = [], 0, [], [], False
     for h in HEAD.finditer(s):
         name, helper = h.group("name"), h.group("helper")
+        seen.add(name)
         if only and name not in only:
             continue
         o = h.end() - 1  # the body's '{'
@@ -153,6 +162,8 @@ def convert_file(path, chunks, only, dry):
                 refused.append(f"{name}: already has a `waits` that is no ChunkWait")
                 continue
             if not any(re.search(p, m_arg.strip()) for p in chunks for m_arg in wait_args(body)):
+                if name in budgets:
+                    refused.append(f"{name}: --budget given, but it has no chunk wait (its timeoutTicks is its bound)")
                 continue  # no chunk wait: its tick timeout is right as it is
         bad = [w for w in ("onEachTick(", "succeedWhen(", "succeedIf(") if helper + "." + w in body]
         if bad:
@@ -163,6 +174,7 @@ def convert_file(path, chunks, only, dry):
             refused.extend(r)
             continue
         head = s[h.start():o + 1]
+        budget = budgets.get(name)
         if not converted:
             ticks = h.group("ticks")
             if not re.fullmatch(r"[\d_]+", ticks):
@@ -171,18 +183,26 @@ def convert_file(path, chunks, only, dry):
             head = re.sub(r"timeoutTicks\s*=\s*" + re.escape(ticks), "timeoutTicks = ChunkWait.NO_TICK_TIMEOUT", head, count=1)
             first = re.match(r"\n([ \t]*)\S", new_body)
             indent = first.group(1) if first else "        "
-            new_body = f"\n{indent}ChunkWait waits = ChunkWait.of({helper}, {ticks});" + new_body
+            new_body = f"\n{indent}ChunkWait waits = ChunkWait.of({helper}, {budget or ticks});" + new_body
+        elif budget:
+            of = re.compile(r"(\bChunkWait\s+waits\s*=\s*ChunkWait\.of\(\s*" + re.escape(helper) + r"\s*,\s*)([\w.]+)(\s*\))")
+            if len(of.findall(new_body)) != 1:
+                refused.append(f"{name}: --budget given, but its ChunkWait.of(...) is not one plain call")
+                continue
+            new_body = of.sub(lambda m: m.group(1) + budget + m.group(3), new_body)
         if new_body == body and converted:
             continue
         pieces.append(s[k:h.start()] + head + new_body)
         k = c
         changed = True
-        report.append(f"  {name}: {'more waits wrapped' if converted else 'converted'}, {nc} chunk wait(s), {nl} logic wait(s)")
+        what = "updated" if converted else "converted"
+        report.append(f"  {name}: {what}, wrapped {nc} chunk wait(s) and {nl} logic wait(s)"
+                      + (f", logic budget {budget} ticks" if budget else ""))
     pieces.append(s[k:])
     if refused:
-        return refused, report, False
+        return refused, report, None
     if not changed:
-        return [], report, False
+        return [], report, None
     out = "".join(pieces)
     pkg = re.search(r"^package ([\w.]+);", out, re.M)
     if IMPORT not in out and not (pkg and pkg.group(1) == "com.minecraftindustrialcomplex.mic_rtsim.gametest"):
@@ -190,9 +210,7 @@ def convert_file(path, chunks, only, dry):
         after = [m for m in imports if m.group(0).rstrip("\n") > IMPORT]
         at = after[0].start() if after else (imports[-1].end() if imports else out.index("\n", pkg.end()) + 1)
         out = out[:at] + IMPORT + "\n" + out[at:]
-    if not dry:
-        open(path, "w", encoding="utf-8").write(out)
-    return [], report, True
+    return [], report, out
 
 
 def wait_args(body):
@@ -208,18 +226,45 @@ def main():
     ap.add_argument("--no-default-chunks", action="store_true", help="drop the Mowzie kit's chunk waits")
     ap.add_argument("--only", action="append", default=[], help="convert only this method (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="report, write nothing")
+    ap.add_argument("--budget", action="append", default=[], metavar="NAME=TICKS",
+                    help="this method's logic budget, in place of its timeoutTicks (repeatable)")
+    ap.add_argument("--budgets", action="append", default=[], metavar="FILE",
+                    help="a file of NAME=TICKS lines (# starts a comment), as --budget")
     a = ap.parse_args()
     chunks = ([] if a.no_default_chunks else DEFAULT_CHUNKS) + a.chunk
-    failed = False
+    entries = list(a.budget)
+    for bf in a.budgets:
+        for line in open(bf, encoding="utf-8"):
+            line = line.split("#", 1)[0].strip()
+            if line:
+                entries.append(line)
+    budgets, failed = {}, False
+    for e in entries:
+        m = re.fullmatch(r"\s*(\w+)\s*=\s*([\d_]+)\s*", e)
+        if not m:
+            sys.exit(f"a budget is NAME=TICKS, not {e!r}")
+        budgets[m.group(1)] = m.group(2)
+    seen, outs = set(), []
     for f in a.files:
-        refused, report, changed = convert_file(f, chunks, set(a.only), a.dry_run)
-        print(f"{f}: {'refused' if refused else ('would change' if a.dry_run and changed else ('changed' if changed else 'unchanged'))}")
+        refused, report, out = convert_file(f, chunks, set(a.only), budgets, seen)
+        print(f"{f}: {'refused' if refused else ('unchanged' if out is None else ('would change' if a.dry_run else 'changed'))}")
         for line in report:
             print(line)
         for line in refused:
             print("  REFUSED " + line)
         failed |= bool(refused)
-    sys.exit(1 if failed else 0)
+        if out is not None:
+            outs.append((f, out))
+    for name in sorted(set(budgets) - seen):
+        print(f"REFUSED --budget {name}: no @GameTest method of that name in the files")
+        failed = True
+    if failed:
+        print("nothing written")
+        sys.exit(1)
+    if not a.dry_run:
+        for f, out in outs:
+            open(f, "w", encoding="utf-8").write(out)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
