@@ -3687,6 +3687,40 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
     `a_feud_that_climbs_while_the_heir_waits_musters_after_the_pair` (the feud waits `BLOCKED` and its raid
     musters after the pair, in the tick the muster ends). The first and the third fail with the rule stubbed out.
 
+- **MZB-625** (the maker contract and the extras' lifetime; fills in MZB-428): `ConflictBodies.registerMaker(body,
+  Maker)` is keyed by the full body name a command carries. `ConflictBridge.spawn` asks the maker for a slot's body
+  by `sl.body` and falls back to `ConflictBodies.create` when none is registered (the camp hand-off's `copy` still
+  runs on a maker's body). What the maker adds to `extras` is the bridge's from there:
+  - each extra gets the party's AGENT tag and is made persistence-required before it joins, is kept in `Slot.extras`
+    and in `extraOf` (UUID to slot) so that `admit` lets exactly that object join, and joins the level right after
+    its own body, since a raptor's follower looks for its leader in its first tick;
+  - a body that fails to join takes the whole stack back as before (all or none), extras included;
+  - `dropExtras(slot)` discards a slot's extras. It runs in `despawn(slot)` (so recall, dematerialize, a failed
+    spawn, the pass's requeue of a lost body and the Peaceful requeue all take them), and again for every slot,
+    dead ones too, when a stack goes back to pending, when a recall's stack is GONE, and when the party
+    ends (`unregister`). A follower whose raptor died therefore fights on until its stack despawns (MZB-428), and
+    no longer;
+  - extras book nothing: not in BAND_STATE's `present`, not in a BAND_DEMATERIALIZED survivor, and a death among
+    them reaches no journal (`live(e)` is null for them, and they are tagged, which `onDeath`'s territory path
+    skips). A raptor taken by Carry On leaves its extras to the stack's end;
+  - they are never saved (a tagged entity refuses to be), so a reload cannot bring one back, and a copy that tries
+    to join with a stale tag is refused like any other (`admit` checks the object, the party and its epoch);
+  - the spawn quota (`spendSpawnBudget`) counts bodies, not extras: a raptor is one against it with its four.
+- **MZB-626** (the raptor maker; fills in MZB-428 and MZB-429): `RaptorMaker` makes the jar's raptor with
+  `EntityType.create` and `moveTo`, and exactly 4 `EntityUmvuthanaFollowerToRaptor(type, level, leader)` on the
+  jar's 0.1-block circle with its weapon roll. It does not call `finalizeSpawn` (the raptor's own makes the pack;
+  `Mob`'s follow-range bonus and left-handedness go with it) and does not call `addPackMember`: a follower finds its
+  leader in its own first tick (`getLeader` within 32 blocks) and joins the pack there, so a call here would put
+  each in twice. The raptor stand-in is now `mowziesmobs:umvuthana_raptor` (it was the grove warrior until here,
+  MZB-594). On Peaceful the maker returns null (MZB-429): the raptor is a MONSTER, so `tryPlace` already keeps the
+  stack pending on Peaceful, and this is the second guard for a difficulty that changes between that test and the
+  spawn; a raptor placed before the change discards itself in its tick, which the pass takes as Peaceful's removal
+  and requeues, dropping the followers. The jar's rule that a raptor removed in its first tick sets its pack to be
+  discarded is harmless here: the pack is empty before the followers' first tick, and the bridge discards them itself.
+- GameTest `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (MZB-594) is rewritten for the maker: two
+  raptor units are two jar raptors with packs of 4, the area holds 8 followers all carrying the band's tag and
+  none untagged, each slot holds 4 extras, and a recall that times out leaves no raptor and no follower.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
