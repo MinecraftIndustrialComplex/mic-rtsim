@@ -189,6 +189,12 @@ public final class RtsimSession {
     long removedByOther;
     long passNanos;
     long reasserted;
+    /**
+     * Holders whose pending records were journaled in this session (a load's reassert or a carry), so a
+     * camp's census can journal the rest of its footprint's holders first, once each (MZB-174, MZB-201).
+     * Weak: an unloaded holder is journaled again when it loads.
+     */
+    private final java.util.Set<Entity> asserted = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
     /** Leaders steered again after a seam folded them (TP11). */
     long resteered;
 
@@ -876,6 +882,8 @@ public final class RtsimSession {
 
     /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        ensureReasserted(holder); // what it carried from disk goes first, under its own sequence
+        asserted.add(holder);
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
         holder.setData(RtsimAttachments.PENDING, old.plus(records));
         dropPendingWhenAcked(holder, lastSeq);
@@ -922,6 +930,8 @@ public final class RtsimSession {
      * once acknowledged in this session.
      */
     public void reassert(Entity holder) {
+        if (!asserted.add(holder))
+            return; // already journaled in this session (a camp's census came first, or a carry)
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
@@ -930,6 +940,21 @@ public final class RtsimSession {
             last = boundary.recommit(record);
         reasserted += p.records().size();
         dropPendingWhenAcked(holder, last);
+    }
+
+    /**
+     * Journals a holder's pending records again unless this session already has (MZB-174): a camp's
+     * census calls it for every holder in its footprint before it is sent, so a holder's answer reaches
+     * the engine before the census whose epoch would make it stale. Idempotent.
+     */
+    public void ensureReasserted(Entity holder) {
+        if (!asserted.contains(holder) && holder.hasData(RtsimAttachments.PENDING))
+            reassert(holder);
+    }
+
+    /** Whether this session has journaled the holder's pending records (GameTests). */
+    public boolean reasserted(Entity holder) {
+        return asserted.contains(holder);
     }
 
     /** The same for a chunk: its pending records are COMMAND_RESULTs of transfers applied into it. */
