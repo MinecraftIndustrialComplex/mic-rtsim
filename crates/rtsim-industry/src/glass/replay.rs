@@ -48,7 +48,7 @@ use rtsim_kernel::conserve::{Diffuser, FIXED_ONE};
 
 use super::check::{Burn, Compiled, gates, holding_threshold};
 use super::q::Q;
-use super::records::NodeKind;
+use super::records::{DomainLevel, NodeKind};
 use super::report;
 use super::sections::NONE;
 use super::solve::{NetInput, Regime, Solution, burn};
@@ -1073,6 +1073,21 @@ fn partition(comp: &Compiled, whole: &Part) -> (Vec<Vec<bool>>, BTreeMap<u32, u3
     (mines, hubs)
 }
 
+/// The least of a source's `rows` (indices into its `levels`) by (|speed|, capacity), the first of
+/// equals; None when any row is None or not one of the source's (choice SC151).
+fn least_row(levels: &[DomainLevel], rows: impl IntoIterator<Item = Option<u32>>) -> Option<u32> {
+    let mut least: Option<(u32, f64, f64)> = None;
+    for r in rows {
+        let r = r?;
+        let l = levels.get(r as usize)?;
+        let (v, cap) = (l.speed().abs(), l.capacity);
+        if least.is_none_or(|(_, lv, lc)| v < lv || (v == lv && cap < lc)) {
+            least = Some((r, v, cap));
+        }
+    }
+    least.map(|(r, _, _)| r)
+}
+
 impl Part {
     /// The whole district as one part, at the engine's levels, its flags read from them.
     fn new(
@@ -1326,26 +1341,10 @@ impl Part {
             return self.src_row.get(j).copied().flatten();
         };
         let src = &comp.graph.domains[d as usize].sources[i];
-        let key = |r: u32| {
-            src.levels
-                .get(r as usize)
-                .map(|l| (l.speed().abs(), l.capacity))
-        };
-        let mut least: Option<u32> = None;
-        for (k, m) in cy.marks.iter().enumerate() {
-            let r = m.src_row.get(j).copied().flatten()?;
-            let better = match (least, key(r)) {
-                (_, None) => return None,
-                (None, _) => true,
-                (Some(l), Some(kr)) => {
-                    key(l).is_none_or(|kl| kr.0 < kl.0 || (kr.0 == kl.0 && kr.1 < kl.1))
-                }
-            };
-            if k == 0 || better {
-                least = Some(r);
-            }
-        }
-        least
+        least_row(
+            &src.levels,
+            cy.marks.iter().map(|m| m.src_row.get(j).copied().flatten()),
+        )
     }
 
     /// Every source's published row as this part sees it, for a change test.
@@ -3093,5 +3092,47 @@ mod persist_impls {
             }
             Ok(rp)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DomainLevel, least_row};
+
+    fn row(speed: i32, capacity: f64) -> DomainLevel {
+        DomainLevel {
+            selector: 0,
+            speed_num: speed,
+            speed_den: 1,
+            capacity,
+        }
+    }
+
+    /// Choice SC151: over a cycle a source publishes its slowest row, the smaller capacity between
+    /// equal speeds, so a burner that goes out once a cycle stops its readers all cycle.
+    #[test]
+    fn a_cycle_publishes_each_sources_least_row() {
+        let engine = [row(0, 0.0), row(16, 1000.0), row(32, 4096.0)];
+        assert_eq!(least_row(&engine, [Some(2), Some(1), Some(2)]), Some(1));
+        assert_eq!(least_row(&engine, [Some(2), Some(0), Some(1)]), Some(0));
+        assert_eq!(least_row(&engine, [Some(2)]), Some(2));
+        let signed = [row(-32, 0.0), row(16, 0.0), row(-16, 0.0)];
+        assert_eq!(least_row(&signed, [Some(0), Some(1)]), Some(1));
+        assert_eq!(
+            least_row(&signed, [Some(2), Some(1)]),
+            Some(2),
+            "the first of equals"
+        );
+        let weak = [row(16, 2000.0), row(16, 1000.0)];
+        assert_eq!(least_row(&weak, [Some(0), Some(1)]), Some(1));
+    }
+
+    /// A row the source does not have, or a regime without one, publishes none.
+    #[test]
+    fn a_cycle_with_an_unknown_row_publishes_none() {
+        let engine = [row(0, 0.0), row(16, 1000.0)];
+        assert_eq!(least_row(&engine, [Some(1), None]), None);
+        assert_eq!(least_row(&engine, [Some(1), Some(2)]), None);
+        assert_eq!(least_row(&engine, []), None);
     }
 }
