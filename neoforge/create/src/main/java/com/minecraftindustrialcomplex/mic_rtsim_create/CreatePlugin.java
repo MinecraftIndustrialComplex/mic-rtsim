@@ -128,6 +128,12 @@ public final class CreatePlugin implements IndustryPlugin {
         return be instanceof PackagerBlockEntity;
     }
 
+    /** A kinetic part (a chain conveyor is one): a compile follows its network out of the district (SC77). */
+    @Override
+    public boolean networkPart(BlockEntity be) {
+        return be instanceof KineticBlockEntity;
+    }
+
     /** The anchor of a contraption (bearing, piston, pulley, gantry shaft) can come to seed: see {@link ContraptionAnchors}. */
     @Override
     public boolean mayBecomeSeed(BlockEntity be) {
