@@ -5476,7 +5476,35 @@ mod conflict {
     /// crash the replay must leave the same pool. `capacity`: the next session's buffer (`None`,
     /// no crash); `mask`: the module switches of both sessions.
     fn a_fight_kept_in_the_pages_across_a_replay(name: &str, capacity: Option<usize>, mask: u32) {
+        a_fight_kept_in_the_pages_with(name, capacity, mask, None);
+    }
+
+    /// The village a works grant during the replay is for: far from the camp, the raid and the
+    /// players, so that it changes nothing they do.
+    const GRANTED: u64 = 0x0001_0000_0000_00A1;
+
+    /// [`a_fight_kept_in_the_pages_across_a_replay`], with `given` (a test's order that runs the
+    /// clock to the hand-over's time, RP-33) given in the replay's first hand-over, so that the
+    /// engine takes it at the next step while it still replays. A works grant's village is
+    /// adopted before the save. The order's effect is there once the replay has ended.
+    fn a_fight_kept_in_the_pages_with(
+        name: &str,
+        capacity: Option<usize>,
+        mask: u32,
+        given: Option<Order>,
+    ) {
         let (dir, e, mut j) = camp_with(name, mask);
+        if let Some(Order::WorksGrant { village, .. }) = &given {
+            j.adopt(
+                *village,
+                "minecraft:village_plains",
+                "human",
+                90,
+                -4_000,
+                -4_000,
+            );
+            j.idle();
+        }
         // The player sees the band leave the camp too: only the fight's waves are fought. A
         // quarter falls, short of a rout: the fight ends sooner, not at once.
         j.conflict_plugin.fight = Some(synth::Fight {
@@ -5560,7 +5588,35 @@ mod conflict {
             "the replay's records: {bytes} bytes"
         );
 
-        let (e, j) = reopen_mask(&dir, saved, gt, capacity, mask);
+        let (e, j) = match &given {
+            None => reopen_mask(&dir, saved, gt, capacity, mask),
+            Some(order) => {
+                let e = engine(&dir, capacity);
+                let mut j = Java::open(e.clone(), saved);
+                j.module_mask = mask;
+                j.game_time = gt;
+                assert_eq!(e.conflict_restore_check(), (None, false));
+                j.idle();
+                assert_eq!(
+                    replay_counts(&e).0,
+                    0,
+                    "the replay runs on past its first hand-over"
+                );
+                let mut order = order.clone();
+                match &mut order {
+                    // The village's culture buys works, so that the grant has a purse to go to.
+                    Order::WorksGrant { .. } => j.work_catalog(&test_works()),
+                    Order::HerdFound { dimension, .. } => {
+                        *dimension = j.dict_id(wire::DICT_DIMENSION, OVERWORLD)
+                    }
+                    _ => {}
+                }
+                e.order(vec![order]).unwrap();
+                hand_over_all(&mut j);
+                j.idle();
+                (e, j)
+            }
+        };
         let (ended, hand_overs, _) = replay_counts(&e);
         assert_eq!(ended, 1, "the replay ended");
         if capacity == wire::MIN_CAPACITY {
@@ -5579,6 +5635,21 @@ mod conflict {
             after, live,
             "and the band came home when it did in the session that went on"
         );
+        // The order itself is taken once the replay has ended.
+        match given {
+            Some(Order::WorksGrant { village, amount }) => {
+                let v = e.phase1_works(village).expect("the granted village");
+                assert_eq!(
+                    v[2] + v[5],
+                    amount,
+                    "the grant in its purse or spent: {v:?}"
+                );
+            }
+            Some(Order::HerdFound { .. }) => {
+                assert_eq!(e.herd_agents().len(), 1, "a herd founded")
+            }
+            _ => {}
+        }
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
@@ -5596,6 +5667,39 @@ mod conflict {
         let long = Some(wire::MIN_CAPACITY);
         let mask = MODULES | MODULE_INDUSTRY;
         a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long-industry", long, mask);
+    }
+
+    /// RP-33 (the fix round's item 3): a works grant given while the replay runs. Applied at
+    /// once it would run the phase 1 world to the hand-over's time, Java's present, and the next
+    /// replayed record's clamp (`max(record, conflict.now, phase1.world.now)`) would carry the
+    /// conflict there: the fight's end, the walk and `home()` before the casualties, which then
+    /// find the band pooled.
+    #[test]
+    fn a_works_grant_while_replaying_undoes_no_casualty() {
+        let order = Order::WorksGrant {
+            village: GRANTED,
+            amount: 1_000_000,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        a_fight_kept_in_the_pages_with("conflict-rp33-grant", long, MODULES, Some(order));
+    }
+
+    /// The same with a HERD_FOUND, which runs the shared clock to the hand-over's time itself
+    /// (`shared::run_to`), the herds on.
+    #[test]
+    fn a_herd_found_while_replaying_undoes_no_casualty() {
+        let order = Order::HerdFound {
+            name: "Replayed flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: 0,
+            x: -4_000,
+            z: -4_000,
+            count: 6,
+            seed: 0,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        let mask = MODULES | rtsim_jni::engine::MODULE_HERDS;
+        a_fight_kept_in_the_pages_with("conflict-rp33-herd", long, mask, Some(order));
     }
 
     /// Control: the same replay in one hand-over.

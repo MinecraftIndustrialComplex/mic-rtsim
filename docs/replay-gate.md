@@ -443,8 +443,11 @@ ahead:
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
   `industry::journaled` after `shared::catch_up` to the record's time, so they follow the records
   like every other journaled record (§4.4's note).
-- **Orders** (`take_unit`, from tests and the console) run at the hand-over's time as today and
-  would move the clock; tests give them after the replay end.
+- **Orders** (`take_unit`, from tests and the console) run at the hand-over's time as today. The
+  four that run the clock there (the works grants and raids, TRIBUTE_START, HERD_FOUND) wait for
+  the replay end (RP-33, the fix round's item 3): a unit given while replaying that holds one is
+  queued, with every unit after it, and taken at the first step after the end. The rest run no
+  clock.
 
 **The rule.** rtsim-jni keeps `st.replay_clock: Tick` (not saved): set at the SESSION_START arm to
 the world's present, and raised by `shared::catch_up` to each replayed record's world tick before it

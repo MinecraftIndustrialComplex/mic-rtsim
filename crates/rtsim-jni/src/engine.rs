@@ -345,6 +345,10 @@ struct State {
     received_tx: Option<Sender<Received>>,
     /// Order units not yet written, oldest first.
     units: VecDeque<Vec<Order>>,
+    /// Order units taken while the session's replay runs that hold an order which runs the clock
+    /// to the hand-over's time, and every unit after one (docs/replay-gate.md §3.6, RP-33):
+    /// taken at the first step after the replay end, oldest first. Not saved.
+    held_units: VecDeque<Vec<Order>>,
     /// Outbox commands to resend at the start of the session, before anything new.
     resend: VecDeque<(u64, OpId, TransferCmd)>,
     /// The engine's dictionary for this session: (kind, name) to id, ids per kind from 1.
@@ -426,6 +430,7 @@ impl State {
             orders_rx,
             received_tx,
             units: VecDeque::new(),
+            held_units: VecDeque::new(),
             resend: VecDeque::new(),
             cmd_dict: HashMap::new(),
             cmd_dict_next: HashMap::new(),
@@ -576,6 +581,18 @@ fn names_of(order: &Order, out: &mut Vec<(u32, String)>) {
         }
         other => phase1::scripted_names(other, out),
     }
+}
+
+/// A test's order that runs the shared clock to the hand-over's time when taken (RP-33): the
+/// works grants and raids (`phase1::directive`, the phase 1 world), TRIBUTE_START and HERD_FOUND.
+fn runs_the_clock(o: &Order) -> bool {
+    matches!(
+        o,
+        Order::WorksGrant { .. }
+            | Order::WorksRaid { .. }
+            | Order::TributeStart { .. }
+            | Order::HerdFound { .. }
+    )
 }
 
 fn spawn_size(members: &[crate::orders::MemberOrder]) -> usize {
@@ -1313,8 +1330,20 @@ impl Engine {
                 h & 1
             ));
         }
+        // A test's order that runs the clock to the hand-over's time, Java's present, waits for
+        // the replay end, and so does every unit after it, in order (docs/replay-gate.md §3.6,
+        // RP-33): taken now it would carry the modules past the replayed records still to come.
+        if !st.replaying {
+            for unit in std::mem::take(&mut st.held_units) {
+                self.take_unit(&mut st, unit);
+            }
+        }
         for unit in st.orders_rx.try_iter().collect::<Vec<_>>() {
-            self.take_unit(&mut st, unit);
+            if st.replaying && (!st.held_units.is_empty() || unit.iter().any(runs_the_clock)) {
+                st.held_units.push_back(unit);
+            } else {
+                self.take_unit(&mut st, unit);
+            }
         }
         self.read_observations(&mut st, h, o);
         o.consumed().store(h, Ordering::Release);
