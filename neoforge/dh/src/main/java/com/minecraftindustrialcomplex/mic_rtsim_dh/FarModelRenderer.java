@@ -401,9 +401,6 @@ final class FarModelRenderer {
     /** DhApiBeforeGenericRenderCleanupEvent: fired twice a frame; draws the first time. */
     static void onDhCleanup(DhApiRenderParam p) {
         long frame = FarTrainView.frame();
-        if (BlackProbe.ENABLED)
-            BlackProbe.note("cleanup event, draw fbo " + org.lwjgl.opengl.GL11.glGetInteger(
-                    GL30.GL_DRAW_FRAMEBUFFER_BINDING) + (dhDrawnFrame == frame ? " (second)" : " (first)"));
         if (dhDrawnFrame == frame)
             return;
         dhDrawnFrame = frame;
@@ -469,18 +466,6 @@ final class FarModelRenderer {
             DRAWN.add(it);
         }
         lastDh = DRAWN.size();
-        if (BlackProbe.ENABLED) {
-            BlackProbe.note(String.format(Locale.ROOT, "models in DH's pass: %d drawn of %d placed; partial %.3f;"
-                    + " DH proj %s; DH mv %s", DRAWN.size(), ITEMS.size(), p.partialTicks, BlackProbe.m(proj),
-                    BlackProbe.m(mv)));
-            for (Item it : DRAWN) {
-                int parts = it.model.parts == null ? 0 : it.model.parts.size();
-                BlackProbe.note(String.format(Locale.ROOT, "  %s %s at %.1f %.1f %.1f from the camera, radius %.1f,"
-                        + " %d parts, live %b, body %b, local %s", it.mover.kind(), it.mover.key(), it.x - cam.x,
-                        it.y - cam.y, it.z - cam.z, it.model.radius, parts, it.drawLive, it.body != null,
-                        BlackProbe.m(it.model.local)));
-            }
-        }
         if (DRAWN.isEmpty())
             return;
 
@@ -534,8 +519,7 @@ final class FarModelRenderer {
         badPlacements++;
         if (badLogged++ < 5)
             MicRtsimDh.LOGGER.warn("mic_rtsim_dh: far model {} has a placement that is not finite; not drawn ({} so far)."
-                    + " Model {} at {} {} {}", it.mover.key(), badPlacements, BlackProbe.m(it.model.local), it.x, it.y,
-                    it.z);
+                    + " At {} {} {}", it.mover.key(), badPlacements, it.x, it.y, it.z);
         return false;
     }
 

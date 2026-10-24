@@ -98,8 +98,6 @@ final class FarTrainView {
         final IDhApiRenderableBoxGroup group;
         final RecutPacer pacer = new RecutPacer();
         double cutX, cutY, cutZ;
-        /** Where its origin was last put (for the black-frame probe's notes). */
-        double ox, oy, oz;
         /** The boxes this group was cut with, relative to its origin (the band draws these in the fade). */
         List<double[]> cut = List.of();
         int boxCount;
@@ -155,8 +153,6 @@ final class FarTrainView {
                     seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], java.util.Arrays.toString(m.prev()),
                     java.util.Arrays.toString(m.cur()), m.sampleTick(), m.sampleTick() + m.intervalTicks(), clock);
         }
-        if (BlackProbe.ENABLED)
-            BlackProbe.note(String.format(Locale.ROOT, "odd run %s %.1f blocks", m.key(), Math.sqrt(run2)));
         return true;
     }
 
@@ -198,9 +194,6 @@ final class FarTrainView {
 
     /** DhApiBeforeGenericRenderSetupEvent: fired twice a frame (the SSAO pass and the other); acts once. */
     static void beforeSetup(DhApiRenderParam param) {
-        if (BlackProbe.ENABLED)
-            BlackProbe.note("setup event, draw fbo " + org.lwjgl.opengl.GL11.glGetInteger(
-                    org.lwjgl.opengl.GL30.GL_DRAW_FRAMEBUFFER_BINDING) + (frame == updatedFrame ? " (second)" : " (first)"));
         if (frame == updatedFrame)
             return;
         updatedFrame = frame;
@@ -325,14 +318,9 @@ final class FarTrainView {
                 } else if (p.pacer.confirmDue(now)) {
                     p.group.triggerBoxChange();
                     confirms++;
-                    if (BlackProbe.ENABLED)
-                        BlackProbe.note("confirm " + probe(p));
                 }
                 p.group.setOriginBlockPos(ORIGIN);
             }
-            p.ox = ORIGIN.x;
-            p.oy = ORIGIN.y;
-            p.oz = ORIGIN.z;
             p.touchedFrame = frame;
             p.wantedAt = now;
             p.setActive(true);
@@ -355,21 +343,6 @@ final class FarTrainView {
         lastActive = active;
         lastBoxes = boxes;
         lastRegistered = PROXIES.size();
-        if (BlackProbe.ENABLED) {
-            BlackProbe.note(String.format(Locale.ROOT, "boxes: cam %.1f %.1f %.1f, %d active, %d boxes, %d registered,"
-                    + " %d candidates, %d hidden; totals %d created %d recut %d confirmed %d released", cam.x, cam.y,
-                    cam.z, active, boxes, PROXIES.size(), CANDIDATES.size(), hidden, creations, recuts, confirms,
-                    releases));
-            Proxy far = null;
-            double most = -1;
-            for (Proxy p : PROXIES.values())
-                if (p.active && reachOf(p) > most) {
-                    most = reachOf(p);
-                    far = p;
-                }
-            if (far != null)
-                BlackProbe.note("largest active " + probe(far));
-        }
         lastHidden = hidden;
         lastCandidates = CANDIDATES.size();
         CANDIDATES.clear();
@@ -386,9 +359,6 @@ final class FarTrainView {
             return null;
         }
         Proxy p = new Proxy(m.key(), group);
-        p.ox = ORIGIN.x;
-        p.oy = ORIGIN.y;
-        p.oz = ORIGIN.z;
         p.active = group.isActive();
         p.cutX = rx;
         p.cutY = ry;
@@ -399,8 +369,6 @@ final class FarTrainView {
         p.pacer.cut(now);
         PROXIES.put(m.key(), p);
         creations++;
-        if (BlackProbe.ENABLED)
-            BlackProbe.note("create " + probe(p));
         return p;
     }
 
@@ -418,24 +386,6 @@ final class FarTrainView {
         p.rgb = m.rgb();
         p.pacer.cut(now);
         recuts++;
-        if (BlackProbe.ENABLED)
-            BlackProbe.note("recut " + probe(p));
-    }
-
-    /** The farthest any of a group's box corners is from its origin, blocks. */
-    private static double reachOf(Proxy p) {
-        double most = 0;
-        for (double[] b : p.cut)
-            for (double v : b)
-                most = Math.max(most, Math.abs(v));
-        return most;
-    }
-
-    /** A group for the black-frame probe's notes. */
-    private static String probe(Proxy p) {
-        return String.format(Locale.ROOT, "%s: %d boxes reaching %.1f, origin %.1f %.1f %.1f, run %.2f %.2f %.2f,"
-                + " rgb %06x, active %b", p.key, p.boxCount, reachOf(p), p.ox, p.oy, p.oz, p.cutX,
-                p.cutY, p.cutZ, p.rgb, p.active);
     }
 
     /** Releases the group that has gone unwanted the longest, if any is not drawn this frame. */
