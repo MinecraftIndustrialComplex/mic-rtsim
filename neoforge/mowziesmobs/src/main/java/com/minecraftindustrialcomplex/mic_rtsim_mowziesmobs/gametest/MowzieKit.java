@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
@@ -23,6 +24,7 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.damagesource.DamageSource;
@@ -461,34 +463,42 @@ public final class MowzieKit {
     }
 
     /**
-     * A thief of a Frostmaw's crystal: a mock {@code Player} (not a {@code ServerPlayer}) of the given game
-     * mode, added with {@code addFreshEntity} so that the jar's {@code getPlayersNearby} (the entity manager,
-     * not {@code level.players()}) finds it, and kept at the crystal's point at the end of every tick until the
-     * Frostmaw has lost its crystal. {@code invisible} gives it the invisibility effect (a bare
-     * {@code setInvisible} is undone by the entity's first tick); {@code fullInventory} puts one dirt in each of
-     * the 36 main slots (the jar's {@code isInventoryFull} asks only whether a slot is empty). It holds no chunk
-     * ticket and is no target of any goal ({@code NearestAttackableTargetGoal} reads {@code players()}).
-     * Discarded when the test ends. UNVERIFIED on a running server: a fallback is {@code FakePlayers.addSeen}
-     * (MZB-281).
+     * A thief of a Frostmaw's crystal: a {@link FakePlayers#addSeen} server player of the given game mode
+     * (review C; M6 first used {@code helper.makeMockPlayer} added with {@code addFreshEntity}). It is in the
+     * entity manager, so that the jar's {@code getPlayersNearby} finds it, and in {@code level.players()},
+     * so that the goals' {@code NearestAttackableTargetGoal} reads it as a real player is read: a thief that
+     * is no target would make "the Frostmaw sleeps on" hold for a reason a real player does not share.
+     * It is kept at the crystal's point at the end of every tick until the Frostmaw has lost its crystal.
+     * {@code invisible} gives it the invisibility effect (a bare {@code setInvisible} is undone by the entity's
+     * first tick); {@code fullInventory} puts one dirt in each of the 36 main slots (the jar's
+     * {@code isInventoryFull} asks only whether a slot is empty). Removed when the test ends. Being a player it
+     * loads chunks round itself, so the far place is never released while it stands. UNVERIFIED on a running
+     * server (compiled only): a player joined this way may log or fail where a login would not (MZB-281).
      */
-    public static Player thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
+    public static ServerPlayer thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
         ServerLevel level = helper.getLevel();
-        Player p = helper.makeMockPlayer(mode);
         Vec3 at = crystalPoint(f);
-        p.moveTo(at.x, at.y, at.z);
+        ServerPlayer p = FakePlayers.addSeen(level, at, "mowzie-thief");
+        p.setGameMode(mode);
+        // A target the Frostmaw may strike for 100 ticks, not a casualty whose death cuts the test short.
+        p.setInvulnerable(true);
         if (fullInventory)
             for (int i = 0; i < 36; i++)
                 p.getInventory().setItem(i, new ItemStack(Items.DIRT));
-        check("the thief is added", level.addFreshEntity(p));
-        if (invisible)
+        if (invisible) {
             p.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY, MobEffectInstance.INFINITE_DURATION, 0, false, false));
+            p.setInvisible(true);
+        }
         everyTick(helper, () -> {
             if (!p.isRemoved() && !f.isRemoved() && f.getHasCrystal()) {
                 Vec3 c = crystalPoint(f);
                 p.moveTo(c.x, c.y, c.z);
             }
         });
-        ConflictKit.onEnd(helper, p::discard);
+        ConflictKit.onEnd(helper, () -> {
+            if (!p.isRemoved())
+                FakePlayers.removeSeen(p);
+        });
         return p;
     }
 

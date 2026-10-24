@@ -154,8 +154,15 @@ public final class ConflictKit {
         b.putLong(least, u.getLeastSignificantBits());
     }
 
-    /** One stack of a BAND_MATERIALIZE: a body kind, how many, and whether the war chief walks in it. */
-    public record StackSpec(String body, int count, boolean chief) {}
+    /**
+     * One stack of a BAND_MATERIALIZE: a body kind, how many, whether the war chief walks in it, and whether
+     * its units are bare (no crystal on them, STACK_BARE).
+     */
+    public record StackSpec(String body, int count, boolean chief, boolean bare) {
+        public StackSpec(String body, int count, boolean chief) {
+            this(body, count, chief, false);
+        }
+    }
 
     /** BAND_MATERIALIZE's fields but its stacks; build with {@link #band}. */
     public static final class Band {
@@ -209,7 +216,8 @@ public final class ConflictKit {
                 int o = at + ConflictRecords.Materialize.STACKS + i * ConflictRecords.Materialize.STACK;
                 b.putInt(o + ConflictRecords.Materialize.S_BODY, bodies[i]);
                 b.putInt(o + ConflictRecords.Materialize.S_COUNT, stacks.get(i).count());
-                b.putInt(o + ConflictRecords.Materialize.S_FLAGS, stacks.get(i).chief() ? ConflictRecords.Materialize.STACK_CHIEF : 0);
+                b.putInt(o + ConflictRecords.Materialize.S_FLAGS, (stacks.get(i).chief() ? ConflictRecords.Materialize.STACK_CHIEF : 0)
+                        | (stacks.get(i).bare() ? ConflictRecords.Materialize.STACK_BARE : 0));
             }
         });
     }
