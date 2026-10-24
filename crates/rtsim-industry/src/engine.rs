@@ -140,6 +140,16 @@ pub struct LineEdge {
     pub last: Tick,
 }
 
+/// Where a written `CHAIN_IN` is taken (`IndustryEngine::written_where`, choice SC113).
+enum Written {
+    /// Taken already: a record journaled again.
+    Again,
+    /// At this store's frogport position.
+    At(StoreId, BlockPos),
+    /// No store holds the write, the record's store is gone and no one store lists the frogport.
+    Nowhere,
+}
+
 /// A timed wake of the engine's own ([`Engine::advance_to`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Wake {
@@ -695,15 +705,16 @@ impl Engine {
     pub fn drain_commands(&mut self) -> Vec<Cmd> {
         let out = std::mem::take(&mut self.out);
         // A write's answer may be taken as lost only once it has left the engine (choice SC113).
+        // The write is found by its op in whichever store holds it now: a redeclaration or a
+        // merge in the same batch may have moved it from the store it named.
         for c in &out {
-            if let Cmd::WriteChain(w) = c
-                && self
-                    .stores
-                    .get(&w.store)
-                    .is_some_and(|s| s.writing_at(w.op).is_some())
-                && let Some(s) = self.stores.get_mut(&w.store)
-            {
-                s.write_drained(w.op, self.now);
+            if let Cmd::WriteChain(w) = c {
+                let now = self.now;
+                for s in self.stores.values_mut() {
+                    if s.write_drained(w.op, now) {
+                        break;
+                    }
+                }
             }
         }
         out
@@ -2039,10 +2050,10 @@ impl Engine {
         recorded: Tick,
         st: StoreId,
         pos: BlockPos,
-        goods: &GoodVec,
+        p: &ChainPackage,
         op: OpId,
     ) {
-        for (g, n) in goods.iter() {
+        for (g, n) in p.goods.iter() {
             let key = PoolKey::Chain(st, pos, g);
             let mut rest = n;
             if let Some(h) = self.cluster_with_pool(key) {
@@ -2060,38 +2071,55 @@ impl Engine {
             }
         }
         if let Some(s) = self.stores.get_mut(&st) {
+            s.counts.written += u64::from(p.packages);
             s.take_written(pos, recorded, op);
         }
     }
 
-    /// The store and frogport a written `CHAIN_IN` of `op` is taken at, or None when it was taken
-    /// already (choice SC113). The answer to a write the engine waits for is taken at the frogport
-    /// the write named. Any other (a record a chunk journaled again, or the answer to a write
-    /// forgotten) is judged by the mark at the frogport's position, in the record's store or the
-    /// store that lists it now.
-    fn written_where(
-        &mut self,
-        recorded: Tick,
-        p: &ChainPackage,
-        op: OpId,
-    ) -> Option<(StoreId, BlockPos)> {
-        if let Some(found) = self
+    /// Where a written `CHAIN_IN` of `op` is taken (choice SC113). The answer to a write the
+    /// engine waits for is taken at the frogport the write named, in whichever store holds that
+    /// write now. Any other (a record a chunk journaled again, or the answer to a write forgotten)
+    /// is judged by the marks at the frogport's position: the record's store's, and those of the
+    /// store of its dimension that lists the position now. A frogport rebuilt into a new store
+    /// leaves its old mark in the record's store, which still turns the record away.
+    fn written_where(&mut self, recorded: Tick, p: &ChainPackage, op: OpId) -> Written {
+        if let Some((id, pos)) = self
             .stores
             .iter()
             .find_map(|(id, s)| s.writing_at(op).map(|pos| (*id, pos)))
         {
-            return Some(found);
+            return Written::At(id, pos);
+        }
+        let own = self.stores.get(&p.store);
+        if own.is_some_and(|s| s.written_again(p.pos, recorded, op)) {
+            self.stats.chain_writes_again += 1;
+            return Written::Again;
         }
         let lists = |s: &crate::stores::PackageStore| s.index_of(p.pos).is_some();
-        let st = match self.stores.get(&p.store) {
+        let st = match own {
             Some(s) if lists(s) => p.store,
-            _ => *self.stores.iter().find(|(_, s)| lists(s))?.0,
+            Some(s) => {
+                let dim = s.dim;
+                self.stores
+                    .iter()
+                    .find(|(_, x)| x.dim == dim && lists(x))
+                    .map_or(p.store, |(id, _)| *id)
+            }
+            None => {
+                // The record's store is gone and its dimension unknown: a position only one
+                // store lists.
+                let mut found = self.stores.iter().filter(|(_, x)| lists(x));
+                match (found.next(), found.next()) {
+                    (Some((id, _)), None) => *id,
+                    _ => return Written::Nowhere,
+                }
+            }
         };
-        if self.stores[&st].written_again(p.pos, recorded, op) {
+        if st != p.store && self.stores[&st].written_again(p.pos, recorded, op) {
             self.stats.chain_writes_again += 1;
-            return None;
+            return Written::Again;
         }
-        Some((st, p.pos))
+        Written::At(st, p.pos)
     }
 
     /// Events and pushes after anything touched cluster `h` at `at`.
@@ -3697,15 +3725,19 @@ impl Engine {
     fn chain_package(&mut self, at: Tick, recorded: Tick, p: &ChainPackage) {
         let written = match p.op {
             Some(op) if p.direction == ChainDirection::In => {
-                // None: a write taken already, journaled again from a chunk saved before its
-                // acknowledgement, or one into a frogport no store lists.
-                let Some(at_port) = self.written_where(recorded, p, op) else {
-                    return;
-                };
-                Some((at_port, op))
+                match self.written_where(recorded, p, op) {
+                    // A write taken already, journaled again from a chunk saved before its
+                    // acknowledgement: nothing of it is new.
+                    Written::Again => return,
+                    Written::At(st, pos) => Some(((st, pos), op)),
+                    // No store to take it from or mark it in: the world's package, booked at its
+                    // port as written (no link), taken from nothing.
+                    Written::Nowhere => None,
+                }
             }
             _ => None,
         };
+        let engine_wrote = p.op.is_some() && p.direction == ChainDirection::In;
         let mut to = None;
         match self.stores.get_mut(&p.store) {
             Some(s) => {
@@ -3722,9 +3754,9 @@ impl Engine {
             None => self.stats.store_records_unknown += 1,
         }
         if let Some(((st, pos), op)) = written {
-            self.chain_written(at, recorded, st, pos, &p.goods, op);
+            self.chain_written(at, recorded, st, pos, p, op);
         }
-        let written = written.is_some();
+        let written = engine_wrote;
         let (Some(district), Some(inventory)) = (p.district, p.inventory) else {
             return;
         };

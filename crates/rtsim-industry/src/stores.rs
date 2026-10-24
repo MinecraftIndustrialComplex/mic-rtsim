@@ -480,9 +480,9 @@ impl PackageStore {
         let n = self.frogports.len();
         let packages = u64::from(p.packages);
         // The engine's own write (slice S4b): it came from what replays sent, never from the
-        // chain, and no census counts a frogport's inventory.
+        // chain, and no census counts a frogport's inventory. The store it is taken at counts it
+        // (`counts.written`), which a redeclaration may have made another.
         if p.op.is_some() && p.direction == ChainDirection::In {
-            self.counts.written += packages;
             return (p.frogport as usize) < n;
         }
         // One package's contents toward its destination, for the replay's room and the writes.
