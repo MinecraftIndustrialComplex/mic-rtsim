@@ -145,9 +145,9 @@ live in that mod's plugin (D4).
 | Villagers | `minecraft:villager` (adults by profession; babies) | core | `villager.<profession>`, `child` | the adopted village it is a resident of (`Residents.villageOf`); none outside one | friendly; wary when vanilla reputation for the player is at or below -25 | vanilla gossip |
 | Caravan merchants | `minecraft:wandering_trader` (C8a: while trade is on, every one is a caravan's puppet) | core | `trader` | the caravan's own board (HolderKind Caravan); a stray non-puppet trader has none | friendly; wary after the player robbed a caravan | none (TK6) |
 | Ribbits | `ribbits:ribbit` (gardener, fisherman, merchant, sorcerer, nitwit; nitwit musicians in a band) | `mic_rtsim_ribbits` | `ribbit.<profession>`; `ribbit.musician` for a band's puppet; plain `ribbit` for a baby | its ribbit village for a resident; a merchant puppet's caravan board; none for a band's musician (the engine keeps no board for a band), a baby, or a ribbit outside a village (TK62) | wary when its village dislikes the player (sentiment at or below -25, the sorcerers' own test); friendly otherwise. A village that likes the player (25 or more, `Snapshot.friend`) adds the `mood.liked` lines, one that dislikes him the `mood.disliked` ones (TK64) | the village's sentiment, once per village and player a game day (TK60) |
-| Conflict bands: bandits, raiders, goblins | the conflict bodies, whatever stands in for them (`BodyKinds.standIn`: pillager, vindicator, evoker and others in M3) | core (M3's ConflictBridge) | `bandit`, `raider`, `goblin`, by the party's culture; beasts (ravagers, wolves) are not talkers | the camp's board (its Haven node) | hostile in a raid or when the camp feuds with the player; wary otherwise | none (TK6) |
-| Envoys | the envoy band's body | core (M3) | `envoy.<culture>` | the camp | wary | none |
-| Umvuthana and the Umvuthi | `mowziesmobs:umvuthana`, `umvuthana_raptor`, `umvuthana_crane`, `umvuthi`, and the player-led followers `umvuthana_follower_player`, `umvuthana_crane_player`, `umvuthana_follower_raptor` | `mic_rtsim_mowzie` | `umvuthana`, `umvuthi`; followers `umvuthana.follower` | the grove's camp | by mask: friendly to a masked player, hostile to a bare face (Mowzie's own rule for trade) | none |
+| Conflict bands: bandits, raiders, goblins | the conflict bodies, whatever stands in for them (`BodyKinds.standIn`: pillager, vindicator, evoker and others in M3) | core (M3's ConflictBridge) | `bandit`, `raider`, `goblin`, by the party's culture; beasts (ravagers, wolves) are not talkers | the camp's chief's board, else its heir's (a haven is not a knowledge holder, TK71); holder kind 3 with the camp's key | hostile in a raid or when the camp feuds with the player; wary otherwise | none (TK6) |
+| Envoys | the envoy band's body | core (M3) | `envoy.<culture>` | the camp, as above | wary | none |
+| Umvuthana and the Umvuthi | `mowziesmobs:umvuthana`, `umvuthana_raptor`, `umvuthana_crane`, `umvuthi`, and the player-led followers `umvuthana_follower_player`, `umvuthana_crane_player`, `umvuthana_follower_raptor` | `mic_rtsim_mowziesmobs` | `umvuthana` for the members, `umvuthana.umvuthi` for the chief; followers `umvuthana.follower`; the envoy reuses `envoy.umvuthana` | the grove's camp (holder kind 3, FACTION, so its faction block comes too, TK72); always talks | by mask: friendly to a masked player, hostile to a bare face (Mowzie's own rule for trade) | none |
 | Not talkers | the Frostmaw, the Sculptor, golems, animals, pets, trader llamas, Create's seated shopkeepers, rctmod and Cobblemon NPCs | | | | | |
 
 Talkers whose type always talks (villager, wandering trader, ribbit, the Umvuthana types) are
@@ -194,8 +194,12 @@ engine needed:
   - **dragon:** a dragon's assault on the settlement, or one seen near it, within 10 days;
   - **hunger:** the scarce good is a food (it has `DataComponents.FOOD`) below a third of its target;
   - **prices:** a good under half its target is dear, over twice its target is cheap.
-- **A camp's own mood** (slice 4, with M3): its pool hungry or fed, a new chief, cowed after a lost
-  fight, and its anger at the player (the feud rung).
+- **A camp's own mood** (slice 4, from the faction block, §9.2; weights in TK78): `mood.cowed` (its chief
+  fell lately and it is cowed), `mood.new_chief` (a succession within ten game days, or a chief dead with the heir answering, TK75), `mood.chief_out`
+  (its war chief is out with a band), `mood.lean` (under a third of its warriors) or `mood.strong` (at its
+  full strength, TK76), and `mood.grudge`, its anger at the player: the feud has reached the first rung.
+  None takes an argument. The safety, feud and dragon moods above apply to a camp's own news as they do a
+  village's.
 
 ### 5.3 News: what they might have seen
 
@@ -212,6 +216,14 @@ did what to whom, when and where, from the talker's side:
   (§6, TK29).
 - **Named or described** (TQ-3, both): "Mudhollow raided Lowmarsh, a day's ride east" one time, "the
   goblins in the hills raided a village a day's ride east" another (§6).
+- **Outcome** (TK83): a raid report carries how the raid ended in its severity (1 held, 2 beaten, 3
+  plundered), and a held or beaten raid is told from `news.raid.<perspective>.held` or `.beaten`
+  alone, with no `.seen` variant and never the plain `news.raid.<perspective>`, whose lines all tell a
+  plunder. A plundered raid, and every other kind, is told from `.seen` then the plain topic when
+  seen, else the plain topic.
+- **Once per story** (TK84): of the holder's reports, only the newest of each kind between the same
+  two actors (`who`, `whom`) is ranked, the later report id breaking a tie, so a siege that records a
+  raid per wave or a feud that records one per rung is told once, as it stands now.
 
 Every report kind has lines (§9.4), so this is the path CL-9 and CL-10 need: the five conflict kinds
 (feuds, pacts, betrayals, raids, deaths), the ports kinds (raids on ports, blockades, closures,
@@ -360,7 +372,7 @@ envoy's, slice 4).
 |---|---|
 | `fluff`, `fluff.dawn`, `.day`, `.dusk`, `.night`, `.rain`, `.thunder`, `.snow`, `.clear`, `.hot`, `.cold`, `.wet`, `.dry`, `.ocean`, `.mountain`, `.forest`, `.plains`, `.swamp`, `.desert`, `.snowy`, `.jungle`, `.savanna`, `.taiga`, `.badlands` | §5.1 |
 | `state.asleep`, `state.busy`, `state.hurt` | §5.1 |
-| `mood.raid`, `mood.afraid`, `mood.uneasy`, `mood.monsters`, `mood.liked`, `mood.disliked`, `mood.hated`, `mood.dear` (%1$s good), `mood.cheap` (%1$s good), `mood.hungry`, `mood.feud` (%1$s camp), `mood.dragon` (%1$s dragon), `mood.port_closed`, `mood.blockade` | §5.2 |
+| `mood.raid`, `mood.afraid`, `mood.uneasy`, `mood.monsters`, `mood.liked`, `mood.disliked`, `mood.hated`, `mood.dear` (%1$s good), `mood.cheap` (%1$s good), `mood.hungry`, `mood.feud` (%1$s camp), `mood.dragon` (%1$s dragon), `mood.port_closed`, `mood.blockade`, and a camp's `mood.cowed`, `mood.new_chief`, `mood.chief_out`, `mood.grudge`, `mood.lean`, `mood.strong` | §5.2 |
 | `news.<kind>.<perspective>` (args %1$s who, %2$s whom, %3$s when, %4$s where, %5$s source) | §5.3; kinds in §9.4 |
 | `hostile.warn`, `hostile.warn.<reason>`, `hostile.insult` | §5.4 |
 | `envoy.demand`, `envoy.reason.<motive>`, `envoy.settled` | §5.5 |
@@ -425,7 +437,7 @@ free): **0x00C0 to 0x00CF** latest-wins observations, **0x0A00 to 0x0AFF** journ
 | 28 | u32 | dimension (dictionary 1) |
 | 32 | u64 | holder |
 | 40, 44 | i32 | the talker's x, z |
-| 48 | u32 | flags: 1 news, 2 faction facts |
+| 48 | u32 | flags: 1 NEWS, 2 FACTION (a camp's faction block) |
 | 52 | u32 | reserved |
 
 **TALK_FACTS (0x8A00, aux = news n, at most 4; per session, no op id, never kept).** The answer, one
@@ -442,6 +454,7 @@ tick or more later:
 | 40 | u32 | most glutted good (0 none) |
 | 44 | u32 | its stock per target, thousandths |
 | 48 | n × 120 | news |
+| 48 + 120n | 48 | the faction block, only with flag 8 |
 
 Each news item: 0 u16 report kind, 2 u8 severity, 3 u8 the report's flags, 4 u32 talk flags (1 YOU_DID,
 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago (saturating), 12 i32 dx, 16 i32 dz (the
@@ -455,9 +468,17 @@ description's locator reads, §6). Classes: 0 unknown, 1 player (a, b the UUID),
 base, 4 caravan (a its seed, b its home village), 5 camp (a the faction key), 6 chief or notable
 (a its seed, b its camp), 7 dragon, 8 lair, 9 haven, 10 ship.
 
-The faction block (slice 4, built with M3 and the conflict engine): the camp's culture, its anger rung
-at the player, the open demand (tribute, deadline), the reason (motive and memory codes, CL-D20,
-with the ally of CL-D48), its chief's seed, its pool and whether it is cowed.
+The faction block (slice 4, 48 bytes after the news, only for an ask with flag 2 about a camp; TK72):
+0 u8 rung (the camp's feud step at the asker: 0 none, 1 notice, 2 envoy, 3 scouts, 4 raid, 5 invasion,
+6 siege), 1 u8 mood flags (1 COWED, 2 CHIEF_OUT, 4 NEW_CHIEF, 8 LEAN, 16 STRONG, 32 YOU_KILLED_CHIEF,
+which is reserved and never set), 2 u16 signal (the kind holding most of the grievance: 0 smog, 1
+radiation, 2 logging, 3 mining, 4 killing, 5 building; 0xFFFF none), 4 f32 grievance (the projected
+sum), 8 u32 cowed ticks left, 12 u32 plunders, 16 a 32-byte ref of its chief (reserved for the Mowzie
+plugin's name line, zeros for now, TK80). The engine reads the conflict for it only through
+`rtsim_conflict::view::faction_facts` (TK74). Not in this block: the camp's culture (a camp's voice
+already is its culture), the open demand and its reason and the ally (the envoy's lines, §5.5), and
+the pool beyond the LEAN and STRONG moods; a later slice adds them under a flag of its own if a line
+needs them. The layout and the byte-for-byte pins are docs/boundary.md §13.3.
 
 **TALKED (0x0A00, journaled):** 24 u64 opId (Java's), 32 u64 village, 40 u64 playerMost,
 48 u64 playerLeast, 56 u32 the talker's body (dictionary 3), 60 reserved; 64 bytes. Sent only for a
@@ -468,7 +489,7 @@ that make it exactly once and what the engine refuses are in docs/boundary.md §
 ### 9.3 The engine side (`rtsim-jni/src/engine/talk.rs`)
 
 - **Holder:** village to its phase 1 node and actor; caravan agent to its caravan row's holder;
-  faction to its camp (slice 4). Unknown: an answer without HOLDER, and Java says fluff and its own
+  faction to its camp's chief, else its heir (slice 4, TK71: a haven is no holder). Unknown: an answer without HOLDER, and Java says fluff and its own
   mood.
 - **News:** the holder's board (at most 256 reports), each scored `kind weight × severity ×
   freshness × (3 about the player, 2 about us)`, the top four sent. Kind weights TUNABLE; fair trades
@@ -495,8 +516,8 @@ news is not a grudge (CONFLICT-LIFE.md §2.17).
 | 10 | Feud | the camp | its target (player, camp, village) | the rung | 10 days | `news.feud` |
 | 11 | PactSworn | the camp that swore | its ally; a second row with flag "against" names the foe | | 30 days | `news.pact_sworn` |
 | 12 | PactBroken | the camp that broke it | its ally; a betrayal is a flag | | 30 days | `news.pact_broken` |
-| 13 | Raid | the camp | the target | the outcome (held, beaten, plundered); joint by a flag | 20 days | `news.raid` |
-| 14 | Fell | the camp | the notable (the killer's actor for a killing, the camp for old age or a fever) | | 30 days | `news.fell` |
+| 13 | Raid | the camp | the target | the outcome: 1 held, 2 beaten, 3 plundered (`report::raid`); joint by a flag (unused) | 20 days | `news.raid` |
+| 14 | Fell | the camp | the fallen chief | 1 died, 2 killed (`report::fell`) | 30 days | `news.fell` |
 | 15 | spare, conflict | | | | | |
 | 16 | PortRaided | the haven | the port village | 1 | as Robbery, 6 days | `news.port_raided` |
 | 17 | Blockade | the haven holding most of the dock's lanes | the port | 1 | 6 days | `news.blockade` |
@@ -514,18 +535,38 @@ dragon (ref class 7). A closed port's villagers grumble about empty markets and 
 up (the ports agent).
 
 **Who records them** (main, 2026-10-22: no CONFLICT-LIFE builder is running). Slice 2 adds the
-kinds, their lines and the engine side, and also records them at the conflict engine's sites that
-exist today (TK26): Feud where FACTION_NOTICE fires today (a feud reaching a rung), Raid at a raid's
-and a skirmish's resolution, Fell at a chief's or champion's death. PactSworn and PactBroken (11, 12)
-stay unrecorded until alliances are built in the game (they are designed and measured in the model
-only). The ports agent records 16 to 20.
+kinds, their lines and the engine side; the conflict engine records 10, 13 and 14 at its own sites
+(TK26), each made by the camp and witnessed first-hand by its chief and heir:
+
+- **Feud** at each rung a feud reaches (FACTION_NOTICE's site and every step after it), the rung its
+  severity. Never against the settlers, whom no line can name.
+- **Raid** when an unwatched raid resolves: plundered when it took anything, else beaten when
+  warriors fell; one that took nothing and lost nobody found nothing to raid and is no news. Also
+  when a watched fight ends: a rout is beaten, a band that leaves bored or done is held (what its
+  mobs carry off comes later, as BAND_LOOTED, and is not counted), and one that leaves because the
+  world turned Peaceful is no raid. A band whose war chief or last member is killed while it is
+  out on the road or waiting at its target (a siege between rounds, a fight nobody watches any
+  more) routs there (CL-D61) and is beaten too; one still mustering at its camp had set out on
+  nobody and is no raid. Whom is the node the band marched on, a village or a rival camp's
+  haven, which witnesses it too (a haven's camp through its chief and heir), else the player its
+  feud is against; a band after neither records nothing. A fight that ends early (the watching
+  player leaves, the session restarts) and then goes home bored or done records nothing yet; a
+  siege's later rounds are told as unwatched raids, and a rout after a round is one more report.
+- **Fell** at every succession, a death of age (lazy: when the conflict next wakes) or a killing in
+  a fight (by a player or not), naming the fallen chief. The new chief and heir witness it, so the
+  camp tells its own loss (`fell.by_us`). The dead chief's actor is gone by then, so the lines name
+  it as a dead notable ("someone important"). Who is the camp, so `fell.you` is never told: the
+  killer hears of it through the chief's Killing. No champion exists in the engine yet.
+
+PactSworn and PactBroken (11, 12) stay unrecorded until alliances are built in the game (they are
+designed and measured in the model only). The ports agent records 16 to 20.
 
 ---
 
 ## 10. Cost (D1)
 
 Nothing runs until a player talks. A talk is one 64-byte ask, a board scan of at most 256 reports and
-a sort, and an answer of at most 528 bytes (48 + 4 × 120); the Java side is a few map lookups and one chat message.
+a sort, and an answer of at most 576 bytes (48 + 4 × 120, and a camp's 48-byte faction block); the Java side is a few map lookups and one chat message.
 Per player, at most one line each 10 ticks. The variant counts are read once at start. No tick
 handler, no saved state except the villager's day cap and a player's ribbit talk days.
 
