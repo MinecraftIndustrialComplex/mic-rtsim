@@ -182,3 +182,505 @@ Written by whichever lands second (§2.7), in rtsim-jni tests/reassert.rs, each 
 6. **docs/boundary.md:** S4p edits §3.2; RP edits §2.3 and §5 (items 4 and 6). Different sections.
 7. Nothing else: S4p touches no module file (engine/conflict.rs, dragons.rs, herds.rs, ships.rs,
    shared.rs), and RP touches no kernel journal code.
+
+## 3. The flag
+
+### 3.1 Where it is set and cleared (rtsim-jni)
+
+- `State.replaying: bool`, not saved.
+- **Set** true at the top of the SESSION_START arm, then to `applied_through + 1 < session_first`
+  once `session_first` is known (§2.1).
+- **Cleared** only by the replay end, `shared::replay_end` (§3.2), which runs once a session.
+- A module switched on in the middle of a session (MODULES, U10) resets as today
+  (`reset_due`, `reset_if_due`); its replay end runs at once when `st.replaying` is false, else at the
+  session's replay end.
+
+### 3.2 The replay end (rtsim-jni engine/shared.rs)
+
+- `shared::replay_end_if_due(st)`: when `st.replaying` and `applied_through + 1 >= session_first`,
+  run `replay_end(st)`. Called at the step's top and at the SESSION_START arm's end.
+- `shared::replay_end_before(st, seq)`: when `st.replaying` and `seq >= session_first`, run
+  `replay_end(st)`. Called at the top of `journaled()`.
+- `replay_end(st)`: `st.replaying = false`; one log line (the observations replayed, and each
+  module's commands dropped and skipped while replaying, §4.3); then each module's `replay_end(st)`
+  in the step's order (dragons, ships, herds, conflict).
+- A module's `replay_end(st)`: when its `replay_end_due` is set and it runs (`running(st)`): clear
+  the flag, call its engine's `replay_done`, take its commands. Conflict then re-sends its kept
+  notices (today's `resend_notices_if_due` body). A module that is switched off keeps the flag; its
+  reset on switch-on runs both.
+- A module's reset (`reset_if_due`) calls its engine's `begin_replay` and sets `replay_end_due`.
+- The two MZB-141 triggers in engine/conflict.rs and `notices_due` go (RP-2).
+
+### 3.3 How engines see it
+
+A field, not a parameter (RP-3). Each engine's outbox (§4.1) holds `replaying`; `begin_replay()` sets
+it and `replay_done()` clears it, so the gate and the engine's own early returns (§6) read one place.
+Not saved: a session sets it.
+
+### 3.4 rtsim-host, rtsim-cli and crate tests
+
+- **rtsim-host** drives rtsim-jni's `Engine` through its fake Java's SESSION_START, so it gets the
+  flag as the game does. Nothing to add.
+- **rtsim-cli** (`sim conflict`, `sim mowzie`, benches) drives engines directly and has no sessions:
+  an engine is built with `replaying` false and never gates.
+- **Each engine's `session_start` goes**, replaced by `begin_replay` and `replay_done`, so that every
+  caller fails to compile and chooses: a test that restarts an engine calls `begin_replay()`, feeds
+  whatever replayed records it wants, then `replay_done()`. The callers today: rtsim-conflict
+  tests/mowzie_records.rs; rtsim-ecology tests/herds.rs, persist.rs and tribute.rs; rtsim-ships
+  tests/blockade.rs, lifecycle.rs, paged.rs and port_raids.rs; rtsim-jni's module resets. (The
+  conflict synth plugin's `session_start` in scenario.rs is the emulated Java, not the engine.)
+
+### 3.5 Cost (D1)
+
+When not replaying: one bool test per journaled record and one per step. While replaying: less work
+than today (no routing, no sightings). At the replay end: one pass over what is embodied, which is
+today's session start, moved.
+
+## 4. The gate
+
+### 4.1 Where it lives (RP-3)
+
+At the engine's push, one choke point per engine, not at rtsim-jni's `take_commands`: the engine is
+where the decision is made, rtsim-host, rtsim-cli and crate tests use engines without rtsim-jni, and
+the type system can guard it in the engine's crate.
+
+- Each engine crate (rtsim-conflict, rtsim-ecology for dragons and nests, rtsim-ecology's herds,
+  rtsim-ships) gets a private module `outbox` with `pub(crate) struct Outbox`, holding the commands
+  (a private `Vec<Cmd>`), `replaying`, and in-memory counts (dropped, skipped, the last skipped kind).
+- The only way in is `Outbox::push(cmd)`, which applies `gate(&cmd)`. Besides: `restore` (pages, at
+  load, before any session), `take`, `retain` (removal only), and `len` and `iter` for the budgets.
+- The engine's `outbox` field becomes an `Outbox`. A push around the gate does not compile.
+- `fn gate(c: &Cmd) -> Gate`, in the same module: one arm per `Cmd` variant, no `_` arm. A new kind
+  does not compile until it is given both verdicts:
+  - `queued`: what `begin_replay` does to a command still queued (restored from the pages, or left
+    from before): **keep** or **drop**;
+  - `replaying`: what `push` does while replaying: **send** (queued as usual), **drop** (counted), or
+    **never** (a bug, RP-4: counted, the kind kept for the log, not queued, and
+    `debug_assert!(false, "{kind:#06x} decided while replaying")`).
+- No release panic (the lead's condition 2): §6's early returns make a "never" kind impossible by
+  construction; the gate is the backstop. Should one get through in release, the engine has changed
+  its state as if the body existed; the replay end makes it abstract, so the skip heals.
+
+### 4.2 Tests that hold it
+
+- Compile time: the private `Vec` and the exhaustive match.
+- One unit test per engine, `every_command_kind_has_its_replay_verdicts`: one value of each kind
+  (boundary.rs's codec tests already build one of each) against the tables below.
+- One test per engine for the "never" path:
+  `#[cfg_attr(debug_assertions, should_panic(expected = "while replaying"))]`; in release it checks
+  the count and the empty queue. The slice runs it once with `cargo test --release -p <crate> <name>`.
+
+### 4.3 The log and the counters
+
+rtsim-jni's `take_commands` for each module reads the outbox's counts after each take:
+
+- a rise in "skipped" logs a warning at once, naming the module and the kind, e.g. "conflict decided a
+  BAND_MATERIALIZE (0x....) while replaying: skipped, a bug (docs/replay-gate.md §4)";
+- the replay end's log line gives each module's dropped and skipped totals for the replay.
+
+The counts live in the module's JNI stats, not saved.
+
+### 4.4 Conflict (rtsim-conflict boundary.rs `Cmd`, main 3391a5d9)
+
+| Kind | Queued at the session start | While replaying | Why |
+|---|---|---|---|
+| Territory | drop (pushed afresh) | send | latest wins; the session start pushes every faction's |
+| Notice | drop | drop | the kept notices go at the replay end (MZB-31, RP-12) |
+| Envoy | drop | never | embodies |
+| Materialize | drop | never | embodies |
+| Steer | drop | drop | a body's order; no body of this session yet |
+| Recall | drop | drop | the same |
+| Settled | keep | drop | news only; the envoy that would name it is gone (RP-12) |
+| AmbushSpot | drop | drop | a body's lurk |
+| Reconcile | drop | never | void per session (MOWZIE.md §4.9); spawns bodies; M9 gates it on `is_in`, false all through a replay |
+| TrainRobbed | keep | drop | a roar (RP-12) |
+| ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
+| March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
+| OwedHunt (M9, not on main) | drop | drop | held hunts go again at the replay end (§7.4) |
+
+The queued column is today's `session_start` filter exactly (agent kinds, Territory, Notice and
+Reconcile dropped). On main only Territory, Notice, Settled, Envoy, Materialize, Steer and Recall
+have push sites (engine.rs about 1018, 1986, 2217, 2909, 3669, 3973, 4381, 4427); the others come
+with M5, M7 and M9, whose merges meet the exhaustive match.
+
+### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
+
+| Kind | Queued | While replaying | Why |
+|---|---|---|---|
+| Materialize | drop | never | embodies |
+| Steer | drop | drop | a body's order (no push site today) |
+| Depart | drop | drop | a body's order; Java answers one for no body with NOT_EMBODIED (§5.8) |
+| Adopt | drop | drop | decided from a replayed UNTAGGED; the engine keeps the adoption, and Java reports the entity untagged again this session (RP-13) |
+| Discard | keep | drop | the same: the entity reports again and the live record decides (RP-13) |
+| PlaceLair | keep | send | Java places once per field (LairPlacer's saved `fields`) |
+| OilSurvey | keep | send | a query, answered with OIL_CHUNKS |
+| PlaceNest | keep | send | idempotent (boundary.rs) |
+| NestRenew | keep | drop in slice D; send from slice N | not idempotent until it carries its serial (§7.1) |
+| NestSortie | drop | drop | a watched district's fight, re-derived (RP-15) |
+
+### 4.6 Herds (rtsim-ecology herds/boundary.rs `Cmd`)
+
+| Kind | Queued | While replaying | Why |
+|---|---|---|---|
+| Materialize | drop | never | embodies |
+| Steer | drop | drop | a body's order |
+| Despawn | drop | drop | the same |
+
+### 4.7 Ships (rtsim-ships boundary.rs `Cmd`)
+
+| Kind | Queued | While replaying | Why |
+|---|---|---|---|
+| Materialize | drop | never | embodies |
+| Timetable | drop | drop | a body's legs |
+| Steer | drop | drop | a body's order |
+| Depart | drop | drop | the same |
+| SetCargo | drop | drop | a body's hold, by epoch op |
+| Despawn | drop | drop | a body's order |
+
+Today dragons, herds and ships filter nothing at the session start, so a restored body command would
+reach the new session's Java. The engines' outboxes are nearly always empty at a save under
+rtsim-jni (commands are taken after each ingest and step), so this was rare; the queued column
+closes it.
+
+## 5. The observation side
+
+### 5.1 The session start keeps the bodies (RP-5)
+
+`begin_replay` changes no body: what the pages hold embodied stays embodied, at its epoch, with its
+stacks. It sets `replaying` and applies the queued verdicts; conflict also pushes every faction's
+TERRITORY, as today. Everything today's `session_start` does moves to `replay_done` (§5.6).
+
+### 5.2 A replayed *_MATERIALIZED is honoured (RP-6)
+
+A *_MATERIALIZED dispatched while replaying, and not a copy, is Java's answer to a decision of the
+last session. When its epoch is above the agent's, the agent is embodied as the last session had it:
+
+- **Conflict** (BAND_MATERIALIZED: agent, epoch, wave, spawned): if the party is embodied with bodies
+  at an older epoch, those fold into a recalled stack of that epoch (MZB-131's walk-off, which the
+  older epoch's records may still need); then `epoch` = the record's, `embodied` = true, `spawned` =
+  every alive unit. The record names how many were placed, not which, so every alive unit may be in
+  Minecraft: casualties count by body kind against the units and then the stack, as live ones do.
+  At the same epoch with the party embodied (a later wave), nothing changes.
+- **Dragons** (DRAGON_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; the dragon's
+  state becomes Embodied (since: the record's time, depart_at never, purpose home, no harass), its
+  abstract leg cancelled, `by_entity` and the embodied index updated, as `materialize` does
+  without the command.
+- **Herds** (HERD_MATERIALIZED: agent, epoch, spawned): `epoch` = the record's; `embodied` with every
+  alive member and no player (the puppets count is reset at the replay end anyway).
+- **Ships** (SHIP_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; `set_embodied(id, true)`.
+
+An epoch at or below the agent's changes nothing. A live *_MATERIALIZED is handled as today. A
+copied one embodies nothing (RP-8).
+
+### 5.3 Epochs are never reused (RP-7)
+
+An agent's next epoch is above every epoch the engine has seen for it: the pages', a replayed
+*_MATERIALIZED's (§5.2), and a copy's (conflict's casualty copies raise it, §5.7). Each module's
+`epoch + 1` stays; only the floor under it is new. Each module that has epochs has its own test:
+an epoch decided after the pages and answered in the journal is never decided again after a crash.
+
+### 5.4 The MZB-138 fold goes (RP-10)
+
+The fold at the session start existed so that replayed records found the last session's bodies.
+RP keeps them embodied instead, so there is nothing to fold. At the replay end every party's
+recalled stacks are dropped, as `replay_done` does today: nothing of an ended session reports
+again except copies, which need no stack (RP-9). The live walk-off's recalled stacks within a
+session (MZB-131, MZB-142) are unchanged.
+
+### 5.5 A record of a body Java's new session no longer has
+
+Every replayed record of such a body is history: it is applied (a death kills, damage counts, a
+despawn counts its survivors). Whatever the engine decides for that body while replaying is dropped
+by the gate. At the replay end the body becomes abstract with what the replay left. Java is told
+nothing: it never had the body in this session.
+
+### 5.6 The replay end per module (`replay_done`)
+
+Today's `session_start`, moved, plus conflict's `replay_done`:
+
+- **Conflict:** every party not embodied, no `seen_by`, `spawned` cleared, Fighting becomes Waiting,
+  every recalled stack dropped, `replaying` false; then the kept notices go (`resend_notices`).
+- **Dragons:** every embodied dragon resumed where it was last seen (`resume(.., left: true)`),
+  `by_entity` and `chests` cleared.
+- **Herds:** every embodied group abstract (clips' legs cancelled, members' `seen.last` set), every
+  player's interest leg cancelled, `puppets` 0, `pos` None.
+- **Ships:** every embodied ship abstract, `seen_by` cleared, `lay_up_if_waiting`.
+
+### 5.7 Copies, per module (RP-8, RP-9)
+
+- **Conflict:** `Conflict::ingest_copy(w, obs, at)`, called by rtsim-jni when `st.applying_copy`.
+  BAND_CASUALTIES: the party by agent alone, the units of that body kind fall (capped at those
+  alive), no stack is touched, the killer's signal and the rout follow as for a live one, and the
+  epoch floor rises to the record's. CHIEF_KILLED: as `ingest` (by party). BAND_MATERIALIZED: the
+  floor only. Every other kind: as `ingest`.
+- **Herds:** HERD_KILLED and HERD_TAKEN go by member key and op id already; a copied
+  HERD_MATERIALIZED raises the floor only.
+- **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
+
+### 5.8 The DEPART trap (RP-16)
+
+DragonBridge answers a DRAGON_DEPART for a dragon it does not hold with a DRAGON_DEMATERIALIZED of
+reason NOT_EMBODIED that carries only the agent and the epoch. The engine's Dematerialized arm
+(rtsim-ecology engine.rs about L3274) reads no reason and takes the zeros: the dragon rests at
+(0, 0, 0) with health 0. Fix in slice D: reason NOT_EMBODIED takes no position and no health; the
+dragon resumes where the engine had it, as a SPAWN_REJECTED does.
+
+## 6. Sightings wait for the replay end (RP-11)
+
+- **rtsim-jni:** `shared::simulate` returns at its top while replaying, before it takes
+  `st.shared.pending`. Player positions keep arriving (latest per player). Dragons' `player_at`
+  (engine/shared.rs about L224), conflict's `observe_presence`, `observe_area`, `route_area` and
+  the stale players' leave all wait. `present` was cleared at the session start, so the
+  mid-session `introduce_herds` and `introduce_conflict` route nothing while replaying.
+- **Engines** return early while replaying, before any state changes, from every decision that
+  embodies (counted as deferred in the outbox's counts):
+  - conflict `seen`, `spawn_wave` (a kept band's next wave, a timeline event), `materialize_envoy`;
+  - dragons `materialize` (callers: `seen`, the field flights in oil.rs, engine.rs about 1380 and
+    2695);
+  - herds `seen` (also fired by Ev::Seen events from the pages' wheel);
+  - ships `materialize_timetabled` and `materialize_pirate` (from `seen`, `seen_ships`, `raid`).
+- **At the replay end:** `shared::simulate` runs after the modules in every step, so the kept
+  positions are routed in the same step when the replay ends inside a hand-over or at the step's
+  top, and in the first step when it ends at SESSION_START. Every player who reported during the
+  replay is routed at once, from the latest position; one who did not is routed at its next report.
+  So yes: the first hand-over after the replay end.
+- **Cost (D1):** a bool test per step when not replaying. Nothing is queued for later: the kept
+  positions are the map that exists today.
+- **Phase 1** is routed through the same `shared::simulate`, so its sightings wait too. That is the
+  same rule for caravans; slice C reruns the phase 1 jni tests.
+
+## 7. Re-derived events in (S, W]
+
+While replaying, `catch_up` runs the engine's own timeline over the replayed window, so its events
+are decided again. Java may already have applied them before the crash.
+
+### 7.1 NEST_RENEW (RP-14)
+
+- Today Java adds: `n.owed += count` (Nests.java about L416), so a renewal decided again is owed twice
+  (the audit's nest test: engine 1 worm, world 2).
+- **Options:** (a) drop NEST_RENEW while replaying, which loses a renewal Java's save lost; (b) an
+  absolute owed count, which races Java's own placing (a worm placed between the engine's last census
+  and the command's arrival is owed again: a double); (c) a renewal serial. **Chosen: (c), the
+  serial,** because it never doubles by construction and loses nothing.
+- **The serial:** each nest row gains `renewals: u32`, incremented by `renew`; NEST_RENEW carries
+  it. The catch-up re-derives the same renewals in the same order, so a renewal decided again carries
+  the same serial. Java keeps per nest the last serial applied and the engine life it came under
+  (RG13), and applies a NEST_RENEW only when its serial is above the last under the same life.
+- **Fail safe on an old file:** a Nests SavedData without the serial loads with every nest's owed at
+  0 and its last serial at 0: whatever was owed is dropped, never doubled (the lead's condition 4).
+- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest; the owed count
+  stays (the new life's renewals are its own decisions) (RP-19).
+- Until slice N lands, slice D drops NEST_RENEW while replaying (option a's loss, for one slice).
+
+### 7.2 NEST_SORTIE (RP-15)
+
+Dropped while replaying. Loses: the visible worms of a raid on a watched district decided again in
+the replayed window. The raid's effect on the district is the engine's and stands.
+
+### 7.3 Conflict NOTICE, DEMAND_SETTLED, TRAIN_ROBBED (RP-12)
+
+- NOTICE: dropped while replaying. Loses nothing: a notice is kept state, and every kept notice goes
+  at the replay end (MZB-31's `resend_notices`, unchanged).
+- DEMAND_SETTLED: dropped. Loses the "demand settled" news when the last session decided it after
+  its last save and Java never showed it. The envoy it would rename is gone with the session.
+- TRAIN_ROBBED: dropped. Loses a roar.
+
+### 7.4 OWED_HUNT (M9)
+
+mz9f's re-check (R1) adds two temporary guards: no OWED_HUNT is pushed while `replaying`, in
+`owe_hunt` and in `hunt_applied`'s re-send, and `resend_notices` re-sends every hunt still held. The
+gate gives OwedHunt "drop" while replaying and "drop" queued. When feat/mowzie-m9 merges main after
+slice C, the merger deletes both guards (each carries a comment naming fix/replay-push), keeps the
+re-send, and deletes the `outbox.retain` filters for OwedHunt, which `Outbox` replaces.
+
+## 8. Formats
+
+| What | Change | Slice |
+|---|---|---|
+| Conflict, herds, ships pages | none | C, H, S |
+| Dragons pages: nest rows | `renewals: u32` | N |
+| Dragons pages: the outbox | NestRenew carries its serial | N |
+| Wire: NEST_RENEW | a u32 serial (docs/boundary.md §6.4, DragonRecords) | N |
+| SavedData: Nests | per nest the last serial and its engine life | N |
+| META | none (META_VERSION 2 is S4p's) | |
+| Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts | C to S |
+
+Nothing is released, so no compat work. After slice N: delete every `neoforge/*/run-gametest/world`
+in the worktree before the next GameTest run, and rerun crates/rtsim-view/tests/fixtures.rs; if it
+fails on the dragons pages, regenerate the core and create fixtures as 52639c6b did.
+
+## 9. Slices
+
+Before any building: an Opus review of this design (the lead's condition 5). Then one Sonnet
+implementer per slice and an Opus review per slice. Order: C first; after C lands, D, H and S may run
+side by side (each adds one line to shared.rs's list of replay ends); N after D.
+
+Every slice: `nice -n 10 cargo test --workspace --no-fail-fast`, `cargo clippy -p <touched crates>
+--all-targets -- -D warnings` (glass.rs:175 needs `-A clippy::needless_borrows_for_generic_args`),
+rustfmt only on files whose base is clean (protocol.rs is not: hand-format). The fake Java sends
+player positions only in the first hand-over at each game time. A long replay needs enough fillers
+to span three or more hand-overs on a `MIN_CAPACITY` engine (`MAX_RECORD + 128`, about 64 KB):
+4,000 small records, not 1,500.
+
+### 9.1 Slice C: the flag, the replay end, conflict
+
+Steps:
+1. rtsim-jni State: `replaying`, `applying_copy` (false until S4p's wiring), each module's
+   `replay_end_due`.
+2. SESSION_START arm, `journaled()` top, `step_inner` top: §2.1, §2.2.
+3. engine/shared.rs: `replay_end_if_due`, `replay_end_before`, `replay_end` (§3.2); the early
+   return in `simulate` (§6).
+4. engine/conflict.rs: reset calls `begin_replay` and sets `replay_end_due`; `replay_end` calls
+   `replay_done` then the notices' re-send; the MZB-141 triggers and `notices_due` go; journaled
+   calls `ingest_copy` when `st.applying_copy`; take_commands logs the gate's counts (§4.3).
+5. rtsim-conflict: `outbox` module with `Outbox` and `gate` (§4.1, §4.4); every push, the persist
+   restore, the session filter and `resend_notices`' retain go through it.
+6. rtsim-conflict: `session_start` becomes `begin_replay` (§5.1); `replay_done` per §5.6; the
+   honoured BAND_MATERIALIZED (§5.2); the epoch floor (§5.3); `ingest_copy` (§5.7); early returns
+   in `seen`, `spawn_wave`, `materialize_envoy` (§6).
+7. The callers of `session_start` (§3.4) choose `begin_replay` and `replay_done`.
+8. If S4p is on main by then: §2.7's merge, the copy wiring in `reasserted()`, §2.5's tests.
+
+Tests (each scratch test from the audit becomes a real one, with its control):
+1. `a_band_first_seen_after_the_save_is_counted_after_a_crash` (scratch audit_replay_push.rs :5601:
+   12 alive today, 6 expected). Control: the same run without the crash, 6.
+2. `a_long_replay_counts_every_casualty_against_its_band` (scratch :5586, fails today). Control: the
+   one-hand-over replay (scratch :5592, passes today and after).
+3. `no_band_materializes_while_a_long_replay_runs_with_a_player_near`: no BAND_MATERIALIZE,
+   ENVOY_MATERIALIZE or FACTION_NOTICE in any command buffer before the replay end; then the band
+   materializes from the live position, at an epoch above every replayed one. Control: no crash, it
+   materializes on the first hand-over.
+4. `a_band_epoch_decided_after_the_save_is_never_decided_again` (RP-7). Control: without the crash,
+   epochs E+1 then E+2.
+5. `every_command_kind_has_its_replay_verdicts`, and the "never" test (§4.2).
+6. `a_copied_casualty_counts_against_an_abstract_band_once` (engine level, `ingest_copy`): an
+   abstract party, and one embodied at a newer epoch whose stack is untouched. Control: the same
+   record through `ingest` is a straggler and counts nothing.
+7. The MZB-131 case (§2.3): a walk-off death of the old epoch while the band is embodied at the new
+   one. Written first; if it fails today, fixed by finding the party by agent with the epoch live or
+   recalled.
+8. A module switched on mid-session ends its replay at once (U10), and a session with nothing to
+   replay ends at SESSION_START: the existing tests, rerun.
+9. The MZB-138, MZB-141 and MZB-142 tests pass. Where an assertion read a recalled stack the fold
+   made, it reads the kept embodied state instead; no count is weakened.
+
+GameTests: `neoforge/gametest.sh core carryon` (ConflictGameTests, CarryOnConflictGameTests; core
+also runs the herd and phase 1 GameTests that the routing change touches).
+
+Opus review checks:
+1. No `_` arm in `gate`; nothing outside the outbox module touches its `Vec`.
+2. Every path to an Envoy, Materialize, Reconcile or ChiefBody push returns early while replaying
+   (list the callers).
+3. `begin_replay` changes no body; `replay_done` does what the old `session_start` and
+   `replay_done` did together.
+4. The replay end runs once a session, after the last replayed record and before the first live
+   one, at each of its three triggers, and with a journal gap.
+5. A replayed BAND_MATERIALIZED raises the epoch and embodies; a live or a copied one does not.
+6. D1: nothing new per step when not replaying beyond the bool tests.
+7. The phase 1 jni tests pass with the routing deferred.
+
+### 9.2 Slice D: dragons
+
+Steps:
+1. rtsim-ecology: `outbox` module for the dragons engine (nest.rs and oil.rs push through it), §4.5
+   with NestRenew dropped while replaying.
+2. `session_start(w, at)` becomes `begin_replay()` and `replay_done(w, at)` (§5.6).
+3. The early return in `materialize` (§6); the honoured DRAGON_MATERIALIZED (§5.2); the epoch floor.
+4. The DEPART trap (§5.8).
+5. rtsim-jni engine/dragons.rs: reset, `replay_end`, take_commands' counts; shared.rs's list.
+6. Read, do not change: DragonBridge reports an untagged dragon once per entity per session at join
+   (`reportUntagged`, Z9), and the tag is never saved, so a dragon adopted in the replayed window
+   reports untagged again (RP-13). Say so in the slice's notes, with the lines.
+
+Tests:
+1. `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (scratch :2256: 1 alive today, 0
+   expected). Control: without the crash.
+2. The epoch test (RP-7).
+3. `a_depart_answered_not_embodied_keeps_the_dragon_where_it_was`: health and position as the engine
+   had them (today health 0 at (0, 0, 0)). Control: a DEMATERIALIZED of a held dragon takes its
+   health and position.
+4. `a_replayed_untagged_dragon_is_adopted_again_by_its_live_report`: no ADOPT while replaying; the
+   live DRAGON_UNTAGGED after the replay end re-adopts it at a new epoch. Control: a live UNTAGGED
+   adopts at once.
+5. `no_dragon_materializes_while_a_long_replay_runs_with_a_player_near`, with its control.
+6. The gate tests (§4.2).
+
+GameTests: `neoforge/gametest.sh iceandfire`.
+
+Opus review checks: as slice C's 1 to 6, for dragons; the field flights' early return leaves the
+flight abstract and consistent; the DEPART fix touches only NOT_EMBODIED.
+
+### 9.3 Slice N: nest renewals
+
+Steps:
+1. rtsim-ecology nest.rs: `renewals` on the nest row, carried by NEST_RENEW; persist.rs and
+   boundary.rs (layout, codec); the gate's NestRenew becomes "send" while replaying.
+2. Java: DragonRecords' NEST_RENEW layout; Nests.java's renew applies a serial above the last under
+   the same engine life; the SavedData keeps both; an old file loads owed 0, serial 0 (§7.1).
+3. docs/boundary.md §6.4.
+
+Tests:
+1. `a_renewal_after_the_save_is_not_owed_twice_after_a_restore` (scratch
+   rtsim-ecology/tests/audit_nest_renew.rs :785: engine 1 worm, world 2 today): at engine level, the
+   restored engine's renewal carries the serial the first run's did. Control: two renewals carry two
+   serials.
+2. Java unit tests: a repeated serial adds nothing; a higher one adds its count; an old file loads
+   owed 0; a new engine life restarts the serial.
+3. The rtsim-view fixtures (§8).
+
+GameTests: `neoforge/gametest.sh iceandfire`, after deleting the worktree's run-gametest worlds.
+
+Opus review checks: never doubled on any path (a restore, a repeat, an old file, a new life); the
+serial is the catch-up's own, not a session's; the wire size matches on both sides.
+
+### 9.4 Slice H: herds
+
+Steps: the outbox and §4.6; `session_start(legs, at)` becomes `begin_replay()` and
+`replay_done(legs, at)`; the early return in `seen`; the honoured HERD_MATERIALIZED (§5.2); the epoch
+floor under `wrapping_add(1).max(1)`; rtsim-jni engine/herds.rs and shared.rs's list.
+
+Tests:
+1. `a_long_replay_with_a_player_at_the_herd_never_sends_a_killed_sheep` (scratch :3533: members
+   [0, 9, 10] sent again today). Control: the one-hand-over replay.
+2. The epoch test (today: 1 live, and 1 again after the restart).
+3. A replayed HERD_DEMATERIALIZED of a group materialized after the save captures its members'
+   positions. Control: one the pages held.
+4. The gate tests.
+
+GameTests: `neoforge/gametest.sh core` (HerdGameTests).
+
+Opus review checks: as slice C's; Ev::Seen events restored from the pages do nothing while
+replaying; the players' puppet counts end at the replay end.
+
+### 9.5 Slice S: ships
+
+Steps: the outbox and §4.7; `session_start()` becomes `begin_replay()` and `replay_done()`; early
+returns in `materialize_timetabled` and `materialize_pirate`; the honoured SHIP_MATERIALIZED; the epoch
+floor; rtsim-jni engine/ships.rs and shared.rs's list; rtsim-ships tests choose (§3.4).
+
+Tests:
+1. `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash` (scratch :2625: live (3, 800, 1),
+   after the crash (4, 1000, 0) today). Control: without the crash.
+2. The epoch test.
+3. The gate tests.
+
+GameTests: none (no ships plugin in Java); rtsim-host's ships runs.
+
+Opus review checks: as slice C's; a kept ship's NextLeg events while replaying drop their commands
+and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
+
+## 10. Questions for Ben
+
+Gameplay trade-offs at the forks, recommendation first. None blocks building: the recommendation is
+what the slices build.
+
+1. **After a crash, lose rather than repeat.** Things the last session decided after its last save
+   (a "demand settled" message, a robbed-train roar, a worm sortie at a watched base) are not shown
+   again, since Java may have shown them already. *Recommended: lose them.* The other way shows some
+   twice.
+2. **Nothing appears near players until the replay ends.** At a restart the journal's replay takes
+   the first hand-overs (a few more for a long journal); bands, dragons, herds and ships near a player
+   appear right after it. *Recommended: accept.* Players normally join after it.
+3. **A copied band death after a crash** (a dying member's drops carried its record) shrinks the band
+   by one even when it is in view again; its bodies in the world may then be one more than its count
+   until the next despawn. *Recommended: accept.* The other way leaves a dead member alive for good.
