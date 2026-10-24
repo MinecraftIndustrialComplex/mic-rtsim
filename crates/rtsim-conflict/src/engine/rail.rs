@@ -494,15 +494,14 @@ impl Conflict {
         };
         let quiet = r < tol && p < tol;
         // A meter whose rate has fallen to nothing retires, whatever the tolerance: at 0 nothing is
-        // quiet, and one that was never pushed (or pushed nothing) has no source to wind down
-        // (MZB-379).
-        let dead = r <= RETIRE_PER_DAY;
-        if dead && (quiet || p <= RETIRE_PER_DAY) {
+        // quiet, and one that was never pushed (or pushed nothing) has no source to wind down. Its
+        // one push is the 0 (MZB-379, MZB-391); the dying rate is not pushed first.
+        if r <= RETIRE_PER_DAY {
             self.retire_meter(w, f, actor, at);
             return;
         }
         let mut p = p;
-        if !quiet && ((r - p).abs() >= (0.1 * p).max(1.0) - BAND_EPS || day_due || dead) {
+        if !quiet && ((r - p).abs() >= (0.1 * p).max(1.0) - BAND_EPS || day_due) {
             let (pos, pin) = self.rail_focus(f, actor, at);
             self.set_emission_for(w, f, actor, r, pos, pin, at);
             self.stats.rail_pushes += 1;
@@ -514,10 +513,6 @@ impl Conflict {
             m.pushed = r;
             m.pushed_at = Some(at);
             p = r;
-            if dead {
-                self.retire_meter(w, f, actor, at);
-                return;
-            }
         }
         // The next wake: retirement for a quiet meter, else the earlier of the band's lower edge
         // and a day after the push (and, with no lower edge, the retirement).

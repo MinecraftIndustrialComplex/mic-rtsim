@@ -901,11 +901,9 @@ fn a_quiet_meter_retires_and_pushes_zero() {
     assert!(c.feud(f, player).is_none(), "it never made a feud");
 }
 
-/// A culture that tolerates no rail at all: every rate counts, so no meter is ever quiet. The
-/// meter still retires once its rate has fallen to nothing, with the source pushed to 0 and no
-/// wake left to run, not one a day for ever (MZB-379).
-#[test]
-fn a_meter_retires_at_tolerance_zero() {
+/// A Frostmaw den whose culture tolerates no rail at all: every rate counts, so no meter is ever
+/// quiet.
+fn zero_tolerance_den(seed: u64) -> (World, Conflict, u32, ActorId) {
     use rtsim_conflict::culture::{Culture, Cultures};
     let mut cultures = Cultures::builtin();
     let i = cultures.index_of("frostmaw").expect("the Frostmaw") as usize;
@@ -915,12 +913,21 @@ fn a_meter_retires_at_tolerance_zero() {
         .expect("a rail signal")
         .tolerance_per_day = 0.0;
     cultures.list[i] = Culture::resolve(def).expect("a Frostmaw");
-    let (mut w, _) = synth::world(47);
-    let mut c = synth::conflict_with(47, &w, cultures);
+    let (mut w, _) = synth::world(seed);
+    let mut c = synth::conflict_with(seed, &w, cultures);
     let f = c
         .add_faction(&mut w, CAMP, "frostmaw", CAMP_POS, Tick::ZERO)
         .unwrap();
     let player = c.player(&mut w, PLAYER);
+    (w, c, f, player)
+}
+
+/// A culture that tolerates no rail at all: every rate counts, so no meter is ever quiet. The
+/// meter still retires once its rate has fallen to nothing, with the source pushed to 0 and no
+/// wake left to run, not one a day for ever (MZB-379).
+#[test]
+fn a_meter_retires_at_tolerance_zero() {
+    let (mut w, mut c, f, player) = zero_tolerance_den(47);
     let mut probe = Probe::default();
     for _ in 0..4 {
         c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 10_000), Tick(10_000));
@@ -939,6 +946,40 @@ fn a_meter_retires_at_tolerance_zero() {
     // Nothing is left to wake: the wheel holds no rail event after a stale one has run.
     c.run_until(&mut w, &mut probe, Tick(retire.0 + 5 * TICKS_PER_DAY));
     assert_eq!(c.pending_by_kind().get("rail"), None);
+}
+
+/// The gate of a line that has died, and is not quiet, retires it with one push, to 0 (MZB-391).
+/// It used to push the dying rate first (a source of 0.0098 a day made and unmade in the same
+/// tick, the feud planned again between) and count that as the push. Every emission plans its
+/// feud once, so the feud's stamp counts them.
+#[test]
+fn a_dead_lines_gate_pushes_once() {
+    let (mut w, mut c, f, player) = zero_tolerance_den(48);
+    let mut probe = Probe::default();
+    for _ in 0..4 {
+        c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 10_000), Tick(10_000));
+    }
+    let retire = meter_of(&c, f, player).falls_to(0.01);
+    c.run_until(&mut w, &mut probe, Tick(retire.0 - 1));
+    let (stamp, pushes) = (
+        c.feud(f, player).expect("its feud").stamp,
+        c.stats.rail_pushes,
+    );
+    c.run_until(&mut w, &mut probe, retire);
+    assert!(c.factions.row(f).rail_meter(player).is_none(), "retired");
+    assert!(rail_source(&c, f, player).is_none(), "pushed to 0");
+    assert_eq!(
+        c.feud(f, player)
+            .expect("its feud")
+            .stamp
+            .wrapping_sub(stamp),
+        1,
+        "one emission at the retirement"
+    );
+    assert_eq!(
+        c.stats.rail_pushes, pushes,
+        "the retirement is no counted push, as a quiet one is not"
+    );
 }
 
 #[test]
