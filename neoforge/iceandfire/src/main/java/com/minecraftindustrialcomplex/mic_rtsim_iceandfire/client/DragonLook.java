@@ -206,7 +206,8 @@ public final class DragonLook implements FarLook {
             lastYaw.put(m.key(), yawDeg);
         } else
             yawDeg = lastYaw.getOrDefault(m.key(), 0f);
-        // A far dragon flies level; while its body is held it turns onto the body's heading and pitch (DHT74)
+        // A far dragon flies level; while its body is held it turns onto the body's heading and pitch, and keeps
+        // them until vanilla draws the body (DHT74)
         float pitchDeg = 0f;
         if (arrivals.turn(m.entity(), yawDeg, turned)) {
             yawDeg = turned[0];
@@ -222,7 +223,9 @@ public final class DragonLook implements FarLook {
         // The feed's point is the hitbox's middle; the model stands on its feet (DragonFeedSource)
         float centre = (float) (0.6 * Math.min(renderSize(species, age) * 0.35, 7.0));
         float lo = s * p.minY - centre, hi = s * p.maxY - centre, half = Math.max(Math.abs(lo), Math.abs(hi));
-        out.radius = (float) Math.sqrt(s * s * p.maxH2 + half * half);
+        // Pitched, it turns about its feet, and reaches from them no farther than its farthest point
+        out.radius = pitchDeg == 0f ? (float) Math.sqrt(s * s * p.maxH2 + half * half)
+                : (float) Math.sqrt(s * s * (p.maxH2 + Math.max(p.minY * p.minY, p.maxY * p.maxY))) + centre;
         if (live) {
             StandIn st = standIns.computeIfAbsent(m.key(), k -> new StandIn());
             EntityRenderer<DragonBaseEntity> r;
