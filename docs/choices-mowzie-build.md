@@ -838,6 +838,11 @@ conservative option at its fork.
   Amended (the coordinator, on §10's second question): `replay_end` counts the hand-overs the replay
   took and the records it replayed, in a stat and in one info log line at the end, so a slow replay
   shows up.
+  Amended (design review): the hand-over count rises at the step's entry whenever `st.replaying` is
+  true there, so a short replay counts 1. The trigger at the top of `journaled()` covers every
+  module's journaled entry, industry's included, so M7's `rail_call` needs no trigger of its own;
+  whichever of M7 and fix/replay-push lands second deletes M7's conflict-only one (replay-gate.md
+  §4.4's note).
 - The three §10 trade-offs (lose rather than repeat; nothing near players until the replay ends; a
   copied band death shrinks the band by one, the extra body clearing at the next despawn) were decided
   by the coordinator on 2026-10-24, as recommended, not by Ben, who can overrule.
@@ -854,17 +859,23 @@ conservative option at its fork.
   hold embodied stays so, at its epoch, until the replay end, where today's session start runs
   (moved, §5.6). Rejected: abstracting at the start and patching each replayed record kind to find its
   body (the audit's five LEAKs are that patching, failing).
+  Amended by RP-26: the arm's players leave without any module's `player_left`.
 - **RP-6** (a replayed *_MATERIALIZED is honoured; §5.2): one dispatched while replaying, and not a
   copy, at an epoch above the agent's, embodies the agent as the last session had it. A live one is
   handled as today. Conflict counts its casualties by body kind against all alive units, since the
   record names how many were placed, not which.
+  Amended by RP-22 (conflict's fill), RP-23 (a held party's fight) and RP-31 (only an engine that
+  started from pages honours).
 - **RP-7** (epochs never reused; §5.3): an agent's next epoch is above every epoch seen for it, in the
   pages, a replayed *_MATERIALIZED and a copy. Each module with epochs (conflict, dragons, herds, ships)
   gets its own test.
+  Amended by RP-30: the floor is held apart from the epoch until the replay end.
 - **RP-8** (copies never match a body; §2.3, §5.7): a REASSERT's content is an earlier session's, so a
   copied loss applies by identity (party and body kind, member key) and a copied *_MATERIALIZED only
   raises the epoch floor. rtsim-jni's `st.applying_copy`, set around S4p's `reasserted()` dispatch,
   tells the modules; a field, so S4p's signatures stay.
+  Amended (design review): the SESSION_START arm clears `applying_copy` first, since a step that
+  panicked inside a copy's dispatch (caught) leaves it `Some`.
 - **RP-9** (a copied BAND_CASUALTIES; §2.3, §5.7): `Conflict::ingest_copy` counts it against the
   party's alive units of that body kind, by party alone, touching no stack. Today, on main and on S4p,
   such a death is dropped by `party_of`'s exact epoch and the member lives on. Slice C also tests
@@ -872,6 +883,7 @@ conservative option at its fork.
   fixes it the same way if it fails. Safe because a named generation's new copy was never applied (SEC-1); the
   gap case (pages older than the journal, boundary.md §3.2's "Known limit") can count a death twice
   and stays that limit's case.
+  Amended by RP-25 (the stacks capped after a copied death) and RP-27 (the MZB-131 fix, by epoch).
 - **RP-10** (MZB-138's fold goes; §5.4): the fold of embodied bodies into recalled stacks at the
   session start existed so replayed records found them; RP-5 keeps them embodied instead. The replay
   end drops every recalled stack, as `replay_done` does today.
@@ -903,6 +915,8 @@ conservative option at its fork.
   `session_start` as both in one (callers would silently get the old behaviour).
 - **RP-19** (a new engine life; §2.6, §7.1): Java keeps the RG13 engine life beside each nest's last
   serial and starts a nest's serial afresh under a new life; the owed count stays.
+  Amended (design review): so slice N goes after D and after RG lands; RG13's engine life is only on
+  feat/reinstall-guard (35e9b082 and later).
 - **RP-20** (where the end is checked; §2.2): at the top of `journaled()`, after its `save_through`
   block, before S4p's branches and `admitted()`: it sees every kind and reads only the sequence, on
   both branches.
@@ -911,3 +925,65 @@ conservative option at its fork.
   id: a copied one of generation 0 is refused and counted, never applied. Loses a death that was
   really lost (a member lives on); never kills one twice. CHIEF_KILLED (op id) and herds' losses
   (member key and op id) apply as RP-8 says.
+- **RP-22** (conflict's fill for an honoured BAND_MATERIALIZED; §5.2; amends RP-6; the design
+  review's item 1): `spawned` is rebuilt by `spawn_wave`'s own fill, one function for both, one fill
+  per wave from the party's `wave` to the record's: the units in order, each up to its alive members
+  not placed, within `spawn_quota` less the bodies placed and less the epoch's deaths since the
+  party's previous honoured record. Never above what Java was commanded; a count below it loses
+  nothing journaled. An envoy fills nothing, as `materialize_envoy` records nothing live (the review
+  asked for every unit; that would part the replay from the live path). Rejected: every alive unit
+  (RP-6 as first written: an invasion of 26 with 16 placed despawns to 16); the record's `spawned`
+  (it omits the pending members Java reports at the despawn).
+- **RP-23** (a war party's arrival waits; §6.1; the review's item 2): while replaying, the branches
+  of `arrive()` and `wait_over()` that ask `watcher()` hold the party (in memory, its arrival tick)
+  and poll with its own Ev::Party every `REPLAY_HOLD_TICKS` (PLACEHOLDER 20), so pages saved
+  mid-replay keep an event and no format changes. A replayed, honoured BAND_MATERIALIZED of a held
+  party takes `start_fight`'s state without commands; otherwise the first poll after the replay end
+  decides as today, normally abstractly. Loses rather than doubles: a crash before the fight's
+  BAND_MATERIALIZED was journaled, and a sighting on the way home read as a fight. Slices D and S
+  check dragon raids and pirate coast raids for the same pattern. Rejected: resolving at
+  `replay_done` directly (no event in pages saved mid-replay; a restart from them would strand the
+  party).
+- **RP-24** (the clock follows the records; §3.6; the review's item 3): while replaying, with any of
+  the four modules running, every read of the hand-over's time that runs the clock is held at
+  `st.replay_clock`, the latest replayed record's world tick: the modules' `simulate`s, phase 1's
+  world, ships' `build`, herds' `found`, the non-journaled records applied at the hand-over's time;
+  worldmodel founds nothing. The world is held with the modules, since the five share one clock and
+  the world never steps back; the clamps to `phase1.world.now()` stay (the review suggested dropping
+  them; with the world held they carry nothing forward, and they still guard the world's past).
+  Industry is not held (its own clock and replay rules); a held module's train lookups and raids
+  then meet industry's later state, recorded as a known limit (the lead's call, recommended). A
+  phase 1 world alone is not held. Rejected: holding the four alone (the world's run and the next
+  clamp carry them forward).
+- **RP-25** (the copy cap; §5.7; amends RP-9; the review's item 4): after a copied BAND_CASUALTIES,
+  `spawned` and every recalled stack of that unit are capped at its alive units, as the recalled
+  despawn already caps `spawned`. Without it the next despawn undoes the death (6 placed, a copy,
+  6 survivors: 6 again). §10's third answer ("the extra body clears at the next despawn") holds
+  only with this cap.
+- **RP-26** (the arm forgets players without `player_left`; §2.1, §5.6; amends RP-5; the review's
+  item 5): `shared::session_start` calls `World::forget_player_pos` for each player with an area and
+  no viewer's `player_left`, which would recall conflict's watched kept bands and despawn herds'
+  groups. Each module's `replay_done` does the player work instead (conflict's presence spans,
+  dragons' and ships' interest legs, herds' interest and `pos`). Slice C leaves only conflict out
+  of the arm's `player_left`; slices D, H and S each leave their own out with their `replay_done`.
+- **RP-27** (a casualty's stack by epoch; §5.9; the review's item 6; MZB-131): `casualties()` finds
+  the party by agent, then takes from `spawned` when embodied at the record's epoch, else from the
+  recalled stack of that epoch, else counts nothing (a straggler). Rejected: by agent alone (an old
+  epoch's death would come off the new stack and count again at the old despawn).
+- **RP-28** (backstops; §6): `start_fight` and `wave` return at their top while replaying, `wave`
+  without scheduling the next; the gate stays the last backstop (RP-4).
+- **RP-29** (an empty replay ends at the arm; §2.1): at the SESSION_START arm's end the replay also
+  ends when Java's journal starts at or past `session_first` (`max(applied_through + 1, jf) >=
+  session_first`), so main without S4p does not wait for the first live record. A pinned JOURNAL_GEN
+  below `jf` after this end is harmless (never dispatched to a module); the S4p merger checks.
+- **RP-30** (the epoch floor apart from the epoch; §5.3; amends RP-7): an in-memory map per engine
+  of the highest epoch seen that the agent's `epoch` does not hold; the next epoch is
+  `max(epoch, floor) + 1`; `replay_done` folds the floors into the epochs (everything is abstract
+  then) and clears the map. Rejected: raising `epoch` itself (an embodied party's records at its
+  current epoch would stop matching). Lost at a restart, harmless by RP-8.
+- **RP-31** (only an engine that started from pages honours; §2.6, §5.2): `begin_replay(from_pages)`;
+  a fresh engine (first start, reinstall, a module built without saved state) honours no replayed
+  *_MATERIALIZED and only raises floors, so an old life's record on a reused handle embodies
+  nothing. Loses: a fresh engine's own records journaled before its first save are not honoured
+  after a crash before that save (today's behaviour). RG13's engine life could later tell the two
+  apart.
