@@ -76,7 +76,8 @@ neoForge {
         // `./gradlew :create:runSamplerBench -PskipJni`: the train sampler's bench (M7, bench/SamplerBench): 200
         // synthetic trains on the far bench's rings (FarTrainBench), 64 rail territories along them, the stub
         // engine, and a GameTest that keeps the server up for the bench's windows (gametest/SamplerBenchGameTests).
-        // -PsamplerTrains=<n>, -PsamplerWindows=<n> and -PsamplerTerritories=<n> change its size.
+        // -PsamplerTrains=<n>, -PsamplerWindows=<n> and -PsamplerTerritories=<n> change its size (windows 0: no end,
+        // until the server is stopped).
         samplerBench {
             type = 'gameTestServer'
             systemProperty 'neoforge.enabledGameTestNamespaces', 'mic_rtsim_samplerbench'

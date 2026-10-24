@@ -3276,7 +3276,8 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
   `FarTrainBench`'s synthetic trains with 64 territories of radius 40 (half on each of the bench's two
   rings, minding the rail, under faction keys the engine does not know and so drops) and logs
   `[samplerbench]` every 1,200 ticks: samples, passes sent, ns per sample (median, p99, max) and ns per tick
-  (mean, p99, max) of the sampler's handler, for 6 windows, then the server stops. It runs only with
+  (mean, p99, max) of the sampler's handler, for 6 windows, then the server stops (see the run length
+  below). It runs only with
   `-Dmic_rtsim.samplerbench=true`, which keeps a dev client's `/test runall` from starting it. The ordinary
   GameTest server enables `mic_rtsim_create` and the bench's structure is in another namespace, so the
   bench is not among its tests. Budget (PLACEHOLDER): 2 microseconds a sample, 20 a tick at 200 trains.
@@ -3306,6 +3307,17 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
     budget does not bound. Both budgets are PLACEHOLDERS, and these figures meet them. The numbers are
     wall time in a GameTest server that ticks unthrottled, with a JIT that has seen 72,000 samples; a
     dedicated server with the pack's mods will see more cache misses, which this bench does not model.
+  - **The run length** (Opus review C, P3-8; compiled, not run): the circles are placed when the conflict
+    bridge is up, which may be after the GameTest's start, and the windows count from the placement. The
+    test used to succeed at a fixed `windows * 1200 + 40` ticks from its own start, so a bridge more than 40
+    ticks late dropped the last window (and `windows` 0, "for ever", ran one window, by `max(1, windows)`).
+    It now succeeds when the bench has reported its last window (`SamplerBench.done()`, polled with
+    `succeedWhen`), so a late bridge delays the end and drops nothing. The timeout is `windows * 1200 +
+    12,000` ticks (`PLACE_WITHIN`: ten minutes for the bridge, a placeholder; no bridge in that time fails
+    the test with "N of M windows, the circles never placed" rather than ending quietly with a short run).
+    With `-PsamplerWindows=0` the test never succeeds and its timeout is `Integer.MAX_VALUE` (a GameTest's
+    timeout is a tick count compared as a long, so it is never reached): the server runs until it is
+    stopped.
 - **MZB-389** (tests 10 and 11, step 12): written and compiled, not run (the GameTest round is the lead's).
   - Test 11 (`TrainSamplerGameTests`, batch `rail_sampler`, one test with four runs on separate graphs 250
     blocks apart at a far base). Bends of radius 100, circles of radius 15 placed 10 blocks outside the
