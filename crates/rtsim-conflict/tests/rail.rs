@@ -849,12 +849,13 @@ fn the_wake_is_the_band_edge_or_the_day() {
         expect == edge,
         "the band edge is first: {edge:?} {pushed_at:?}"
     );
-    let before = c.stats.rail_wakes;
-    c.run_until(&mut w, &mut probe, Tick(expect.0 - 1));
-    assert_eq!(c.stats.rail_wakes, before);
+    // A wake booked before the stream's last legs may run earlier than the edge (it is kept
+    // while it is not later than the one wanted, MZB-376) and finds nothing to push; the edge
+    // itself is the push.
     let pushes = c.stats.rail_pushes;
+    c.run_until(&mut w, &mut probe, Tick(expect.0 - 1));
+    assert_eq!(c.stats.rail_pushes, pushes, "no push before the edge");
     c.run_until(&mut w, &mut probe, expect);
-    assert_eq!(c.stats.rail_wakes, before + 1);
     assert_eq!(
         c.stats.rail_pushes,
         pushes + 1,
@@ -902,19 +903,98 @@ fn a_quiet_meter_retires_and_pushes_zero() {
 
 #[test]
 fn a_stale_rail_wake_is_counted() {
-    // Each gate books the meter's wake anew: the one before it is stale when it fires.
+    // A gate books a wake only for a tick earlier than the one booked: a leg alone only moves
+    // the wanted tick later and books nothing, and a burst that is pushed wants the band's edge
+    // or the day, which comes first, so the first booking is stale when it fires.
     let (mut w, mut c, f, player) = dens(47);
     let mut probe = Probe::default();
     c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 1_000), Tick(1_000));
     c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 2_000), Tick(2_000));
+    assert_eq!(
+        c.pending_by_kind().get("rail"),
+        Some(&1),
+        "the later leg books none"
+    );
+    let booked = meter_of(&c, f, player);
+    assert_eq!((booked.stamp, booked.wake > Tick::ZERO), (1, true));
+    for _ in 0..4 {
+        c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 3_000), Tick(3_000));
+    }
+    assert_eq!(
+        c.pending_by_kind().get("rail"),
+        Some(&2),
+        "the day is earlier"
+    );
+    let m = meter_of(&c, f, player);
+    assert_eq!(m.wake, Tick(3_000 + TICKS_PER_DAY));
+    assert_eq!(m.stamp, 2, "one booking more");
+    let day = m.wake;
+    c.run_until(&mut w, &mut probe, Tick(day.0 + 10));
+    assert_eq!(
+        (c.stats.rail_wakes, c.stats.rail_stale),
+        (1, 0),
+        "the day's wake"
+    );
+    // A wake that ran is no longer booked; the gate it ran booked the next one.
+    let m = meter_of(&c, f, player);
+    assert!(m.wake > day);
     assert_eq!(c.pending_by_kind().get("rail"), Some(&2));
-    let retire = meter_of(&c, f, player).falls_to(0.01);
     let stale = c.stats.stale;
+    assert!(booked.wake > day, "the first booking is after the day");
+    c.run_until(&mut w, &mut probe, Tick(booked.wake.0 + 10));
+    assert_eq!(c.stats.rail_stale, 1, "the first booking");
+    assert_eq!(c.stats.stale, stale + 1);
+
+    // A meter that retires leaves its booked wake behind: it is stale when it fires.
+    let (mut w, mut c, f, player) = dens(49);
+    c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 1_000), Tick(1_000));
+    let retire = meter_of(&c, f, player).falls_to(0.01);
     c.run_until(&mut w, &mut probe, Tick(retire.0 + 10));
-    assert_eq!(c.stats.stale, stale + 1, "the first booking");
-    assert_eq!(c.stats.rail_wakes, 1, "the second one retired the meter");
     assert!(c.factions.row(f).rail_meter(player).is_none());
+    assert_eq!(c.stats.rail_wakes, 1, "the retirement");
     assert_eq!(c.pending_by_kind().get("rail"), None);
+}
+
+/// A leg a headway for `days` days: its owned pass, then its arrival naming the line (the review's
+/// probe, MZB-376).
+fn steady_legs(seed: u64, headway: u64, days: u64) -> (Conflict, u64, u32, ActorId) {
+    let (mut w, mut c, f, player) = dens(seed);
+    let mut probe = Probe::default();
+    let line = Some((
+        end(1, 1050, -200, Some(1001)),
+        end(2, 1050, 2400, Some(1002)),
+    ));
+    let (mut t, mut legs) = (headway, 0u64);
+    while t < days * TICKS_PER_DAY {
+        legs += 1;
+        c.run_until(&mut w, &mut probe, Tick(t));
+        c.ingest(&mut w, &mut probe, &pass(legs, PLAYER, t), Tick(t));
+        c.run_until(&mut w, &mut probe, Tick(t + 10));
+        c.rail_call(&mut w, &RailCall { train: legs, line }, Tick(t + 10));
+        t += headway;
+    }
+    c.run_until(&mut w, &mut probe, Tick((days + 1) * TICKS_PER_DAY));
+    (c, legs, f, player)
+}
+
+#[test]
+fn a_steady_flow_leaves_few_stale_pops() {
+    // Fifty legs a day for ten days. Booking a wake for every leg left two stale pops a leg (about
+    // a hundred pops a day, each reading its faction's page); a wake is booked only for a tick
+    // earlier than the booked one, so the pops are the wakes that ran, about the band's width of
+    // decay apart, and the stale ones are the few a push made earlier.
+    let (c, legs, f, player) = steady_legs(50, 480, 10);
+    let pops = c.stats.rail_wakes + c.stats.rail_stale;
+    assert!(legs >= 480, "{legs} legs");
+    assert!(
+        c.stats.rail_stale * 50 < legs,
+        "{} stale pops of {legs} legs",
+        c.stats.rail_stale
+    );
+    assert!(pops <= 6 * 11, "{pops} pops in eleven days");
+    assert_eq!(c.stats.rail_calls, legs);
+    // Every leg's pass was credited, whatever the gate did.
+    assert_eq!(meter_of(&c, f, player).lines.len(), 1);
 }
 
 #[test]

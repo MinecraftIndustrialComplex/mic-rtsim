@@ -119,6 +119,10 @@ pub struct RailMeter {
     pub pushed_at: Option<Tick>,
     /// Bumped each time a wake is booked: a wake with another stamp is stale.
     pub stamp: u32,
+    /// The tick of the wake booked under `stamp` while it is still to run, else zero (MZB-376).
+    /// A new booking is made only for an earlier tick, so a count that only grows leaves one
+    /// wake in the wheel, not one stale pop for every leg.
+    pub wake: Tick,
     /// The latest pass's point and y: the source's position while the meter has no line.
     pub last: Option<(Pos, i32)>,
     /// By station pair, sorted by (a, b).
@@ -134,6 +138,7 @@ impl RailMeter {
             pushed: 0.0,
             pushed_at: None,
             stamp: 0,
+            wake: Tick::ZERO,
             last: None,
             lines: Vec::new(),
         }
@@ -430,12 +435,14 @@ impl Conflict {
             let near = self.near_station(h.point, (pa, &a), (pb, &b));
             let line = Some(((a.id, b.id), near));
             if owned {
-                // Counted at ingest; a meter retired since has no line to credit.
+                // Counted at ingest, where its meter was gated; the credit leaves the count and
+                // the rate as they were, so there is nothing to gate (MZB-377). A meter retired
+                // since has no line to credit.
                 self.credit_only(h.faction, actor, h.exit, h.point, h.y, line);
             } else {
                 self.count_pass(h.faction, actor, h.exit, h.point, h.y, line);
+                touched.insert((actor, h.faction));
             }
-            touched.insert((actor, h.faction));
         }
         for (actor, f) in touched {
             self.rail_gate(w, f, actor, at);
@@ -452,15 +459,19 @@ impl Conflict {
         at: Tick,
     ) {
         self.let_go_due(w, at);
-        if self
+        // Read first: a stale pop must not make its page dirty.
+        let live = self
             .factions
             .row(f)
             .rail_meter(actor)
-            .is_none_or(|m| m.stamp != stamp)
-        {
+            .is_some_and(|m| m.stamp == stamp);
+        if !live {
             self.stats.stale += 1;
             self.stats.rail_stale += 1;
             return;
+        }
+        if let Some(m) = self.factions.row_mut(f).rail_meter_mut(actor) {
+            m.wake = Tick::ZERO;
         }
         self.stats.rail_wakes += 1;
         self.rail_gate(w, f, actor, at);
@@ -522,9 +533,15 @@ impl Conflict {
                 by_day
             }
         };
-        m.stamp += 1;
-        let stamp = m.stamp;
         let wake = wake.max(Tick(at.0 + 1));
+        // A wake already booked at or before it runs this gate then; only an earlier one is
+        // booked anew, and leaves the booked one stale (MZB-376).
+        if m.wake > Tick::ZERO && m.wake <= wake {
+            return;
+        }
+        m.stamp += 1;
+        m.wake = wake;
+        let stamp = m.stamp;
         self.schedule(
             wake,
             Ev::Rail {
