@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::fmt::{Display, Write as _};
 
 use rtsim_industry::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    WriteChain, WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, DrawAction,
+    HeldDraw, InvDelta, WriteChain, WritePackage,
 };
 use rtsim_industry::ids::{
     BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId,
@@ -448,6 +448,7 @@ fn code_tables(out: &mut String) {
         ChainDirection::In,
         ChainDirection::Held,
         ChainDirection::Released,
+        ChainDirection::Drawn,
     ]
     .into_iter()
     .map(|direction| {
@@ -539,6 +540,23 @@ fn code_tables(out: &mut String) {
         })
         .collect();
     table(out, "carriage_reason", &rows);
+
+    // IND_HELD_DRAW action, at 28.
+    let rows: Vec<_> = [DrawAction::Draw, DrawAction::Remove, DrawAction::Return]
+        .into_iter()
+        .map(|action| {
+            let mut bytes = Vec::new();
+            let c = Cmd::HeldDraw(HeldDraw {
+                store: StoreId(1),
+                epoch: 1,
+                action,
+                serials: Vec::new(),
+            });
+            wire::encode_cmd(1, &c, &mut bytes).expect("encode_cmd");
+            (format!("{action:?}"), u32_at(&bytes, 28))
+        })
+        .collect();
+    table(out, "draw_action", &rows);
 
     // IND_DEPOSIT_SAMPLE aux (also IND_DEPOSIT_DELTA's).
     let rows: Vec<_> = [
@@ -1469,17 +1487,23 @@ fn main() {
     }
 
     {
-        // Three serials (choice SC140).
+        // Three serials, the last one drawn (choices SC140, SC143).
         let name = "IND_HELD_LIST";
         let (mut g, mut f) = begin(name);
         let seq = f.u64("obs_seq", g.u64());
         let at = game_time(&mut f, &mut g);
         let epoch = f.u32("epoch", g.u32() | 1);
         f.sym("n_serials", 3);
-        let serials = (0..3)
+        f.sym("n_drawn", 1);
+        let mut serials: Vec<u64> = (0..3)
             .map(|i| f.u64(&format!("serial{i}"), g.u64()))
             .collect();
-        let o = Obs::HeldList(HeldList { epoch, serials });
+        let drawn = serials.split_off(2);
+        let o = Obs::HeldList(HeldList {
+            epoch,
+            serials,
+            drawn,
+        });
         obs(
             &mut out,
             name,
@@ -1875,6 +1899,28 @@ fn main() {
             goods,
         });
         cmd(&mut out, name, wire::IND_WRITE_CHAIN, seq, c, &f);
+    }
+
+    {
+        // Three serials (slice S4c2).
+        let name = "IND_HELD_DRAW";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let store = StoreId(f.u64("store", g.u64()));
+        let epoch = f.u32("epoch", g.u32() | 1);
+        let action = DrawAction::Remove;
+        f.sym("action", format!("{action:?}"));
+        f.sym("n_serials", 3);
+        let serials = (0..3)
+            .map(|i| f.u64(&format!("serial{i}"), g.u64()))
+            .collect();
+        let c = Cmd::HeldDraw(HeldDraw {
+            store,
+            epoch,
+            action,
+            serials,
+        });
+        cmd(&mut out, name, wire::IND_HELD_DRAW, seq, c, &f);
     }
 
     code_tables(&mut out);
