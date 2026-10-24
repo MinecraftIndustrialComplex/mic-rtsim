@@ -47,6 +47,9 @@ pub const CHIEF_SLOT: u32 = u32::MAX;
 pub const TRADED_CAP: usize = boundary::MAX_ENTRIES;
 /// The most items one tribute transfer carries: a stack (MZB-446).
 pub const STACK_ITEMS: i64 = 64;
+/// How long after a pair that seated no one the heir is ordered again while the camp stays in:
+/// one game hour (PLACEHOLDER, MZB-445). The pair's answer would otherwise order the next at once.
+const HEIR_RETRY: u64 = TICKS_PER_DAY / 24;
 /// The slot space of the tribute transfers' op ids (`rtsim_world::ribbits::identity_op`).
 const TRIBUTE_SLOT: u64 = 0x4d5a_0009 << 32;
 
@@ -779,6 +782,16 @@ impl Conflict {
     /// A change of a camp's room or lines: every feud waiting on it is planned again, and a camp
     /// that is in books its next refill.
     pub(super) fn unblock(&mut self, f: u32, at: Tick) {
+        self.unblock_lines(f, at);
+        // A grove that stays in gets its heir as soon as the wait is over and a warrior is home
+        // (MOWZIE.md 4.10): a due tick with no warrior is looked at again at each change of the
+        // camp's lines. It returns at once unless the heir is due, the camp is in and no pair is
+        // in flight.
+        self.camp_heir(f, at);
+    }
+
+    /// `unblock` without a look at the heir.
+    fn unblock_lines(&mut self, f: u32, at: Tick) {
         for a in self.feud_actors(f) {
             if self.feud(f, a).is_some_and(|x| x.wait_until >= BLOCKED) {
                 self.feud_mut(f, a).expect("listed").wait_until = Tick::ZERO;
@@ -1922,6 +1935,7 @@ impl Conflict {
         let mut cleared = 0;
         let is_in = camp.is_in();
         let mut heir_changed = false;
+        let mut pair_cleared = false;
         for a in &b.lines {
             // The heir's pair names no slot the engine keeps a line on (MZB-403, MZB-409).
             if a.action == ACTION_MASK || a.action == ACTION_SEAT_HEIR {
@@ -1936,6 +1950,7 @@ impl Conflict {
                 if marker.is_some_and(|m| m == (b.op, a.line)) {
                     *marker = None;
                     cleared += 1;
+                    pair_cleared = true;
                 }
                 if a.outcome != LINE_DONE && a.outcome != LINE_NOTHING {
                     continue;
@@ -2053,7 +2068,15 @@ impl Conflict {
         self.factions[f as usize].camp = Some(camp);
         self.send_lines(f, lines, at);
         if cleared > 0 || heir_changed {
-            self.unblock(f, at);
+            // A pair that seated no one is ordered again an hour on, not by this very answer.
+            let retry = pair_cleared && !heir_changed;
+            match self.camp(f).map(|c| (c.heir.is_some(), c.heir_stamp)) {
+                Some((true, stamp)) if retry => {
+                    self.unblock_lines(f, at);
+                    self.schedule(at + HEIR_RETRY, Ev::CampHeir { faction: f, stamp });
+                }
+                _ => self.unblock(f, at),
+            }
         }
     }
 

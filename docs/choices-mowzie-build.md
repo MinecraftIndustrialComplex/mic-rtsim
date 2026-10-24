@@ -2742,8 +2742,14 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - The heir's generation is derived from the faction key, the chief slot and the tick the heir is due, and
     never the generation the slot last held (`Camp::heir_generation`), so a census can tell the heir from
     an answer to a lost reconcile made over an old chief's body.
-  - The pair is tried at the heir's due event and at each census only (`camp_heir`), never at a
+  - The pair is tried at the heir's due event, at each census and at each `unblock` (`camp_heir`), never at a
     `camp_sync`, so a camp that is out or has no warrior home orders nothing and is looked at again.
+    (Amended at review, P2-1: "at each census only" left a grove that stayed in with no heir for good when
+    its due tick found no warrior home or its pair was answered stale. `unblock` ends with `camp_heir`,
+    which returns at once unless the heir is due, the camp is in and no pair is in flight.) A pair answered
+    so that no one is seated is not ordered again by that very answer, which would be one pair a tick while
+    Java answers STALE: the answer books an `Ev::CampHeir` one game hour on (`HEIR_RETRY`, PLACEHOLDER)
+    under the heir's stamp, and its `unblock` does not look at the heir.
   - A camp found without its Umvuthi whose wait an untagged one cancels resets its pressure to none: the
     cap's pressure was a stand-in, as if the camp had never been found empty.
   - A MASK answered for a warrior the books have `Left` is booked as a take: the slot goes `Gone` and keeps
