@@ -624,7 +624,7 @@ Recommended: **count at the movers**.
   known with no face mapping; movers at one block (a packager's two nodes) share its counts, each
   direction taken once (SC94).
 - The count points are Create's own movers, where they move real goods. Each wraps the one call that
-  touches the inventory (MixinExtras `@WrapOperation`, PATCHES.md rows 64 to 75), counts only a real
+  touches the inventory (MixinExtras `@WrapOperation`, PATCHES.md rows 64 to 76), counts only a real
   call (not `simulate`, a server level) and only when the mover's block has a counted pair, so a move
   is counted once; the inventory is the target's canonical inventory (`Districts.canonicalInventory`):
   - `InvManipulationBehaviour.extract` and `insert` (rows 64, 65): the andesite and brass funnels, the
@@ -648,6 +648,8 @@ Recommended: **count at the movers**.
   - the packager's extraction from its target (`PackagerBlockEntity.attemptToSend`, row 74) and its
     unpacking into it (`DefaultUnpackingHandler.unpack`, row 75); the special unpacking handlers
     (basin, crafter, a block that voids) and a mod's own are not counted;
+  - a repackager's draws out of its target (`RepackagerBlockEntity.attemptToRepackage`) and its unwrapped
+    box into it (`unwrapBox`), which override the packager's two calls without `super` (row 76, SC121);
   - fluids at `FluidNetwork.tick` :66, where a pipe network fills and drains its endpoints
     (UNVERIFIED: which position names the mover, the pump or the pipe end at the store). Not in S3:
     a fluid store is never counted, so it makes a judging group (SC79).
@@ -1230,6 +1232,7 @@ The options below stay as the record of what was offered.
 | SC96 | The section fixtures (§9.2, `SectionsFxGameTests`) are opt-in: `./gametest.sh create -Psec1fx` adds their namespace to the create run | each is a full corpus cycle of several windows; on by default they lengthen every create run on the shared heavy lock, for every session |
 | SC120 | A basin that pours through a funnel into a store is counted at the funnel: `BasinBlockEntityMixin` finds no item handler at the spout block, takes the block's `InvManipulationBehaviour` and counts (funnel position, `getTarget().getConnectedPos()`), the pair the engine names from the funnel's adjacency edge (`CreateCompile.funnelEdges`). The basin's own pair is kept for a spout block that offers an item handler. `BasinThroughFunnelFactory` (`sec1fx_basin_funnel_vault`) is the basin line of `BasinIntoASharedVaultFactory` with an andesite funnel facing up on the vault where that fixture has the chute | review B1 found the pour uncounted (the basin skips the behaviour's own count point), leaving residue at the vault and false failures at the line that draws from it; counting under the funnel is what the engine's pair asks for and needs no engine change |
 | SC122 | A district on a moving frame (`end.frame != 0`) has no counted stores: `Sections::compute_counted` returns none, so every cut (`cut_counted`, the page's and the check's) judges its shared stores as in S2, one group per shared store | Java ignores a count set on a moving frame and never samples one (`num.frame != 0`), so a store counted there had no cover, its units were discarded at every sweep and never judged (a regression against S2, where the district was judged), and the engine resent a set Java ignored at every END resend. Doing it in `compute_counted` keeps the units, the page and the persisted cut on the same rule |
+| SC121 | A repackager's moves are counted: `RepackagerBlockEntityMixin` wraps the four `extractItem` calls of `attemptToRepackage` (the real removals count out) and the `insertItem` of `unwrapBox` (counts in), as `PackagerBlockEntityMixin` and `DefaultUnpackingHandlerMixin` do for a packager. Not tested by a fixture (SC83) | the engine compiles a repackager as a packager, so it names pairs (repackager, store); the class overrides both methods the packager hooks without calling `super`, so its moves went uncounted and left residue at a shared store (review S1). The alternative, compiling a repackager to a model the engine does not count, would put the store back into group judgement for a block that is common in package lines |
 
 ---
 
