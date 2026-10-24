@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.talk;
 
+import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Faction;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Facts;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.News;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Ref;
@@ -11,7 +12,7 @@ import java.util.function.IntPredicate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** The engine-side moods an answer gives (TALK.md §5.2, TK4, TK53, TK56). */
+/** The engine-side moods an answer gives (TALK.md §5.2, TK4, TK53, TK56, and a camp's TK78). */
 class TalkMoodsTest {
     private static final long DAY = TalkTuning.DAY;
     private static final Ref CAMP = new Ref(TalkRecords.C_CAMP, 0, 1, 77, 0, 0, 0);
@@ -132,5 +133,66 @@ class TalkMoodsTest {
         assertEquals(List.of("mood.port_closed", "mood.blockade"),
                 topics(facts(TalkRecords.F_HOLDER | TalkRecords.F_PORT_CLOSED | TalkRecords.F_BLOCKADED, 0, 0, 0, 0), NO_FOOD));
         assertEquals(2.0, TalkMoods.of(facts(TalkRecords.F_HOLDER | TalkRecords.F_PORT_CLOSED, 0, 0, 0, 0), NO_FOOD).get(0).weight());
+    }
+
+    private static Faction block(int rung, int moods) {
+        return new Faction(rung, moods, TalkRecords.NO_SIGNAL, 0f, 0, 0, Ref.NONE);
+    }
+
+    private static Facts camp(Faction block, News... news) {
+        return new Facts(1, TalkRecords.F_HOLDER, 0, 0, 0, 0, 0, List.of(news), block);
+    }
+
+    @Test
+    void aCampWithNothingToSayAboutItselfGivesNoMood() {
+        assertEquals(List.of(), topics(camp(block(0, 0)), NO_FOOD));
+        // No block (a village's answer) gives no camp mood, whatever the rest says.
+        assertEquals(List.of(), topics(camp(null), NO_FOOD));
+    }
+
+    @Test
+    void eachCampMoodFlagGivesItsOwnMoodAtItsWeight() {
+        Object[][] cases = {
+                {TalkRecords.MOOD_COWED, "mood.cowed", TalkTuning.MOOD_COWED},
+                {TalkRecords.MOOD_NEW_CHIEF, "mood.new_chief", TalkTuning.MOOD_NEW_CHIEF},
+                {TalkRecords.MOOD_CHIEF_OUT, "mood.chief_out", TalkTuning.MOOD_CHIEF_OUT},
+                {TalkRecords.MOOD_LEAN, "mood.lean", TalkTuning.MOOD_LEAN},
+                {TalkRecords.MOOD_STRONG, "mood.strong", TalkTuning.MOOD_STRONG},
+        };
+        for (Object[] c : cases) {
+            List<TalkMoods.Mood> m = TalkMoods.of(camp(block(0, (Integer) c[0])), NO_FOOD);
+            assertEquals(1, m.size(), (String) c[1]);
+            assertEquals(c[1], m.get(0).topic());
+            assertEquals((Double) c[2], m.get(0).weight());
+            assertEquals(TalkMoods.Arg.NONE, m.get(0).arg());
+            assertEquals(null, m.get(0).source());
+        }
+        // The flag the engine never sets (YOU_KILLED_CHIEF is reserved) gives nothing.
+        assertEquals(List.of(), topics(camp(block(0, TalkRecords.MOOD_YOU_KILLED_CHIEF)), NO_FOOD));
+    }
+
+    @Test
+    void aFeudAtTheFirstRungOrMoreIsAGrudgeAndNoFeudIsNot() {
+        assertEquals(List.of(), topics(camp(block(0, 0)), NO_FOOD));
+        for (int rung = 1; rung <= 6; rung++)
+            assertEquals(List.of("mood.grudge"), topics(camp(block(rung, 0)), NO_FOOD), "rung " + rung);
+        assertEquals(TalkTuning.MOOD_GRUDGE, TalkMoods.of(camp(block(1, 0)), NO_FOOD).get(0).weight());
+    }
+
+    @Test
+    void severalCampMoodsComeTogetherInTheSpecsOrderAfterTheNewsMoods() {
+        int all = TalkRecords.MOOD_COWED | TalkRecords.MOOD_NEW_CHIEF | TalkRecords.MOOD_CHIEF_OUT
+                | TalkRecords.MOOD_LEAN | TalkRecords.MOOD_STRONG;
+        assertEquals(List.of("mood.cowed", "mood.new_chief", "mood.chief_out", "mood.lean", "mood.strong", "mood.grudge"),
+                topics(camp(block(2, all)), NO_FOOD));
+        // A camp's moods follow the news-derived and trade-derived ones.
+        assertEquals(List.of("mood.afraid", "mood.cowed"),
+                topics(camp(block(0, TalkRecords.MOOD_COWED), news(3, TalkRecords.TO_US, 0, CAMP)), NO_FOOD));
+    }
+
+    @Test
+    void anUnknownHolderGivesNoCampMoodEvenWithABlock() {
+        Facts f = new Facts(1, 0, 0, 0, 0, 0, 0, List.of(), block(4, TalkRecords.MOOD_COWED));
+        assertTrue(TalkMoods.of(f, NO_FOOD).isEmpty());
     }
 }
