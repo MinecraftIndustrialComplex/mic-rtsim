@@ -5184,6 +5184,165 @@ mod conflict {
         }
     }
 
+    // ---- M8: the lurk through the journal ----------------------------------------------------------
+
+    /// A Raid for the track point 100 blocks east of the camp, ordered now with no feud.
+    fn order_lurk(e: &Engine, j: &mut Java) -> Handle<Party> {
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        let p = e.with_conflict_mut(|c, w| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let camp = c.factions[f as usize].pos;
+            let track = Pos::new(camp.frame, camp.x + 100, camp.z);
+            let target = Target::Track {
+                track,
+                spot: Pos::new(camp.frame, track.x - 5, track.z),
+                y: 66,
+            };
+            c.order_party(w, CAMP, PartyKind::Raid, target, None, at.max(c.now()))
+                .expect("ordered")
+        });
+        j.idle();
+        p
+    }
+
+    /// Every AMBUSH_SPOT the plugin was sent this session, in order.
+    fn spots(j: &Java) -> Vec<cb::AmbushSpot> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::AmbushSpot(a) => Some(*a),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn pass(j: &mut Java, p: Handle<Party>, epoch: u32, train: u64) {
+        j.conflict_obs(&O::TrainPassed(cb::TrainPassed {
+            agent: Party::agent(p),
+            epoch,
+            flags: cb::PASSED_WATCHED,
+            carriage: 0,
+            train,
+        }));
+    }
+
+    /// MOWZIE.md 4.4 (MZB-355): TRAIN_PASSED is live, not deferred. It reaches the engine after the
+    /// conflict has run to its own time (not to the hand-over's), so a pass stamped inside a
+    /// band's wait meets a live lurk although the hand-over is past the band's patience, and one
+    /// stamped after its end is counted stale. The lurk's start and end reach the plugin once
+    /// each, in the engine's dictionary.
+    #[test]
+    fn a_train_passed_is_live_and_meets_the_lurk_of_its_own_time() {
+        let (_dir, e, mut j) = camp("conflict-train-passed");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let p = order_lurk(&e, &mut j);
+        advance_until(&mut j, 100, 3 * DAY, "the band lurks", |j| {
+            j.e.with_conflict(|c, _| c.lurking(p))
+        });
+        let (epoch, bored_at) = e.with_conflict(|c, _| (c.parties[p].epoch, c.parties[p].bored_at));
+        let start = spots(&j);
+        assert_eq!(start.len(), 1, "one AMBUSH_SPOT at the arrival: {start:?}");
+        assert_eq!(
+            (start[0].flags, start[0].faction, start[0].dimension),
+            (0, CAMP, dim)
+        );
+        assert_eq!(start[0].agent, Party::agent(p));
+        let deferred = e.conflict_stats().1.deferred;
+
+        // A pass inside the wait, at the hand-over's time.
+        pass(&mut j, p, epoch, 5);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (stats, link) = e.conflict_stats();
+        assert_eq!(link.deferred, deferred, "TRAIN_PASSED is live: {link:?}");
+        assert_eq!(
+            (stats.passes, stats.passes_watched, stats.stale),
+            (1, 1, 0),
+            "{stats:?}"
+        );
+
+        // Two passes in one hand-over: one stamped inside the wait, one after the band's patience
+        // ran out. The engine runs to each record's own time first (not to the hand-over's, and
+        // not to none), so the first meets the lurk and the second finds it over.
+        assert!(j.game_time < bored_at.0 as i64, "still inside the wait");
+        pass(&mut j, p, epoch, 6);
+        j.game_time = bored_at.0 as i64 + 3_000;
+        pass(&mut j, p, epoch, 7);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (stats, link) = e.conflict_stats();
+        assert_eq!(link.deferred, deferred);
+        assert_eq!(
+            (stats.passes, stats.stale),
+            (2, 1),
+            "the pass of its own time counts, the one after the end is stale: {stats:?}"
+        );
+        assert_eq!(stats.lurks_ended, 1, "the hand-over ran on to the end");
+
+        let spots = spots(&j);
+        assert_eq!(spots.len(), 2, "a start and one removal: {spots:?}");
+        assert_eq!(spots[1].flags, cb::AMBUSH_REMOVED);
+        assert_eq!((spots[1].agent, spots[1].dimension), (start[0].agent, dim));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MOWZIE.md 4.4 (MZB-353): Java's lurk table lives for one session, so each lurk goes once
+    /// more at a session start, after the replay, and only once: a lurk the replay itself made (a
+    /// journaled record ran the engine past the band's arrival) is dropped from the queue before
+    /// the resend, as a queued notice is, not sent twice. Crash restart and clean restart alike.
+    #[test]
+    fn a_lurk_goes_to_the_plugin_once_after_each_session_start() {
+        let (dir, e, mut j) = camp("conflict-lurk-resend");
+        let p = order_lurk(&e, &mut j);
+        let agent = Party::agent(p);
+        // The pages hold a band that has not arrived.
+        save(&e, &mut j);
+        assert!(!e.with_conflict(|c, _| c.lurking(p)));
+        advance_until(&mut j, 100, 3 * DAY, "the band lurks", |j| {
+            j.e.with_conflict(|c, _| c.lurking(p))
+        });
+        assert_eq!(spots(&j).len(), 1);
+        let epoch = e.with_conflict(|c, _| c.parties[p].epoch);
+        // A journaled record after the arrival (a pass of a train for no band: stale): the replay
+        // runs the engine to its time, so the arrival happens inside the replay.
+        pass(&mut j, p, epoch + 9, 5);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let restart = |saved: WorldSave, gt: i64| {
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.game_time = gt;
+            assert_eq!(e.conflict_restore_check(), (None, false));
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            (e, j)
+        };
+        let (e, mut j) = restart(saved, gt);
+        assert!(e.with_conflict(|c, _| c.lurking(p)), "the replay made it");
+        let sent = spots(&j);
+        assert_eq!(
+            sent.iter().map(|a| (a.agent, a.flags)).collect::<Vec<_>>(),
+            vec![(agent, 0)],
+            "the lurk the replay made goes once: {sent:?}"
+        );
+        save(&e, &mut j);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A clean restart: the pages hold the lurk, the session start resends it, once.
+        let (e, j) = restart(saved, gt);
+        let sent = spots(&j);
+        assert_eq!(
+            sent.iter().map(|a| (a.agent, a.flags)).collect::<Vec<_>>(),
+            vec![(agent, 0)],
+            "{sent:?}"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     // ---- M4: the camp reconciler through the journal ----------------------------------------------
 
     /// The Umvuthana's warrior, as Java names it.
