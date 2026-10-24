@@ -2600,7 +2600,7 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - HUNT_APPLIED (0x0816, journaled): faction, district, op id and killed.
   - They are the next free ids after today's DIFFICULTY 0x0815 and BAND_MARCH 0x880B. Another slice may
     take them first, so they are settled at landing.
-  - One hunt is in flight for each district. It is resent at each session start and booked once by op id.
+  - One hunt is in flight for each district. It is resent at each session start and booked once by the engine's own books (the hunt's op id, MZB-449).
     HUNT_APPLIED clears it whatever `killed` is.
 - **MZB-426** (applying a hunt): core `conflict/OwedHunts.java`, vanilla only.
   - It keeps the latest command for each faction and district, unsaved.
@@ -2850,6 +2850,20 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     DUPLICATE_OP for 60 nuggets when 30 were in the chest. What is left of the window: a stack decided
     again from different state is put down twice, the first in the chest by Java's save and the second by
     the replay, since the pages lack the first's answer.
+  - Amended at review, P3-6, memory: `Conflict::memory()` counts `placing` (a Vec of at most one stack for
+    each grove with a chest, 40 bytes or so each) as "tribute stacks". HUNT_APPLIED left `applied_ops` (see
+    MZB-449). CHIEF_PAID and TRADED stay in it, for correctness first: their op ids are the plugin's, one
+    per record, and only the set tells a copy of a payment from a second one. What they cost: each op id is
+    8 bytes in the page and 16 resident (`BTREE_U64_BYTES`), and it is never forgotten, so the set grows by
+    one entry for each payment to the Umvuthi (CHIEF_PAID) and each trade with it (TRADED). The sim has no
+    stream of either (run 5 makes one gift and one trade, for the relief's sake), so there is no sim rate to
+    quote. A game year is 96 days, 32 hours of a server at 20 ticks a second. At 5 records an hour of play
+    for one grove (a player trading now and then) that is 160 op ids a game year, 2.5 KB resident; a busy
+    grove of 4 players at 10 an hour each is 1,280 a year, 20 KB resident and 10 KB saved; one a minute, all
+    day, is 11,520 a year, 180 KB and 90 KB for that grove. The other kinds of op (CHIEF_KILLED,
+    TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED) are older and add as the player acts. The general fix is the
+    lead's and the coordinator's, not built here: a copy reasserted with its original OBS_SEQ would let the
+    replay drop it, and no op set would be needed.
   - Amended at review, P3-4: `camp_census` ends with `place_tribute`, so tribute owed to a chest named while
     the camp was out (or by a replayed record, MZB-446 above) goes at the census that brings the camp in, and
     the plugin's session-start HAVEN_CHEST is no longer what places it. A duplicate census (the camp's own
@@ -2861,16 +2875,41 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   kept in `persist.rs`'s two constants, `MAGIC` and `META_VERSION`, so that a renumber (M7's rail may take
   RTC8 first) is a two-line change. There is no migration: the mods are unreleased.
 - **MZB-449** (hunts, M9a; settles MZB-424 to MZB-427's open edges):
-  - A hunt is `Hunt { district, pos, count, op }` in `Faction.hunts`. The op is the 0x43 allocator byte over
-    `identity_op(key, HUNT_SLOT ^ hash(district, tick))`.
+  - A hunt is `Hunt { district, pos, count, op, replaced }` in `Faction.hunts` (`replaced` added at review,
+    P3-8, below). The op is the 0x43 allocator byte over `identity_op(key, HUNT_SLOT ^ hash(district, tick,
+    held op))`.
   - A raid on a district that already has a hunt adds its count to the old one, capped at `hunt_cap`, with a
     new op; the plugin keeps the latest command for the district, so the old one never applies after the
-    new one is read. A late HUNT_APPLIED for a replaced op is spent (its op id is booked) and clears
-    nothing.
+    new one is read. (Amended at review, P3-8: "a late HUNT_APPLIED for a replaced op is spent and clears
+    nothing" paid the animals twice when the plugin had applied the old hunt before it read the new one:
+    5 died, the answer was still on its way, and the 8 the replacement owed died on top. See the rule
+    below.)
   - Nothing is owed on Peaceful, by a culture with no `hunt_cap`, or by a raid the infrastructure skipped.
     A hunt already owed when Peaceful begins stays owed.
   - A replacement's op folds in the op it replaces (`owe_hunt` hashes district, tick and the held op), so
     a replacement in the very tick of the first gets a new op all the same.
+  - HUNT_APPLIED is booked by the state of the faction's hunts, in one rule (amended at review, P3-6 and
+    P3-8, with the coordinator's condition): an answer clears a hunt only when its op id is that hunt's own
+    op or the op it replaced, and never whatever hunt the faction happens to hold.
+    - A hunt keeps the op it replaced and the count that op owed (`Hunt.replaced`, one entry deep, saved in
+      RTC8 with the hunt, which is M9's own unreleased format, so no bump).
+    - The answer for the held op spends the hunt, with the replaced entry it carried. `killed` is booked.
+    - The answer for the replaced op takes its count off the held hunt's (saturating), clears the replaced
+      entry, books `killed`, and sends the held hunt to the plugin again, under its op, with the count that
+      is left (the plugin keeps the latest command for a district, so the one it holds is replaced). A held
+      hunt left at 0 is cleared and sent as a count of 0, which the plugin applies as a hunt that kills
+      none: its pending 8 are cancelled. Without the second send the engine's books were right and the
+      plugin still killed the 8.
+    - An answer for any other op finds no hunt: a copy (replayed after a save, or a holder's), an answer
+      for an op booked already, or an op older than the replaced one. It changes nothing and sends nothing.
+    - So HUNT_APPLIED is out of `applied_ops` (`Obs::op()` and rtsim-jni's `op_of` no longer name it): each
+      op is cleared at its first answer, so no set of them is needed and none would stop growing. A copy
+      for a replaced op, delivered once its first answer is booked, finds the entry gone.
+    - Residuals, named: a third hunt owed while two applied ones are unanswered forgets the oldest replaced
+      op, so its late answer takes nothing off and that hunt's animals are paid on top, at most the cap. A
+      re-sent hunt reaching a plugin that applied the held op in the meantime kills again, so Java keeps,
+      for each faction and district, the last op it applied and ignores an OWED_HUNT with that op (M9c's
+      notes). Both are bounded by the cap and need two answers in flight at once.
   - The hunts go again with the notices, after the replay has caught up (`resend_notices`), and not in
     `session_start`: a HUNT_APPLIED journaled last session must clear its hunt before the plugin hears of it,
     or the animals die twice.
@@ -3280,7 +3319,9 @@ Two fixes for M6:
     camp's chief slot as dying away (MZB-412).
 - **M9c, bands and the world:**
   1. `registerMaker`, `Slot.extras` and `RaptorMaker`, with Peaceful.
-  2. `OwedHunts` and the hunt records.
+  2. `OwedHunts` and the hunt records. Java keeps, for each faction and district, the last op it applied
+     and ignores an OWED_HUNT that names it again (the engine may send the held hunt a second time with a
+     reduced count, MZB-449); a count of 0 is applied as a hunt that kills none and is answered all the same.
   3. `GroveChests` and HAVEN_CHEST, with the tribute's transfer.
   4. `MowzieStrength`.
   5. GameTests 12, 13, 14, 16, 17 and 20.

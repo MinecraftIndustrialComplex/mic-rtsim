@@ -345,6 +345,10 @@ fn put_faction(w: &mut Writer, x: &Faction) {
         put_pos(w, h.pos);
         w.var_u64(u64::from(h.count));
         w.u64(h.op);
+        put_opt(w, &h.replaced, |w, &(op, n)| {
+            w.u64(op);
+            w.var_u64(u64::from(n));
+        });
     }
     put_opt(w, &x.camp, |w, c| put_camp(w, c));
 }
@@ -599,7 +603,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
         cap: get_u32(r)?,
         away: get_u32(r)?,
         hunts: {
-            let n = r.len_prefix(20)?;
+            let n = r.len_prefix(21)?;
             (0..n)
                 .map(|_| {
                     Ok(crate::engine::Hunt {
@@ -607,6 +611,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
                         pos: get_pos(r)?,
                         count: get_u32(r)?,
                         op: r.u64()?,
+                        replaced: get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?,
                     })
                 })
                 .collect::<codec::Result<_>>()?

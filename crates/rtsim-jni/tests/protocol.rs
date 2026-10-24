@@ -6026,6 +6026,104 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// M9 (review P3-6, and the rule that a HUNT_APPLIED clears a hunt by its op id alone): the
+    /// first hunt is answered and booked, a raid a day later makes another the held hunt, and a
+    /// late copy of the first's answer, live and again after a save and a reopen, leaves it with
+    /// its whole count; its OWED_HUNT goes again whole at the new session, and its own answer
+    /// spends it. No op set holds the first's id: the copy finds no hunt of that op.
+    #[test]
+    fn a_late_copy_of_a_booked_hunts_answer_leaves_the_hunt_now_held_alone_after_a_reopen() {
+        let (dir, e, mut j) = grove("grove-hunt-copy", 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owe = |e: &Engine, n: u32| {
+            e.with_conflict_mut(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                let now = c.now();
+                c.owe_hunt(
+                    f,
+                    rtsim_industry::ids::DistrictId(77),
+                    Pos::new(dim as u16, at.0, at.1),
+                    n,
+                    now,
+                );
+            })
+        };
+        let hunts = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                c.factions[f as usize]
+                    .hunts
+                    .iter()
+                    .map(|h| (h.district.0, h.count, h.op))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        let applied = |op: u64, killed: u32| {
+            O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 77,
+                op,
+                killed,
+            })
+        };
+        owe(&e, 2);
+        j.idle();
+        let op1 = hunts(&e)[0].2;
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "booked");
+        assert_eq!(killed(&e), 2);
+        j.game_time += 24_000;
+        j.idle();
+        owe(&e, 4);
+        j.idle();
+        let held = hunts(&e);
+        let [(77, 4, op2)] = held[..] else {
+            panic!("{held:?}");
+        };
+        assert_ne!(op1, op2);
+        // The copy, live.
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), held, "the whole count");
+        assert_eq!(killed(&e), 2, "booked once");
+        // Saved, the server dies, and the copy comes again in the new session.
+        save(&e, &mut j);
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        let saved = j.world_save();
+        let gt = j.game_time;
+        let _ = j.crash();
+        let (e, mut j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            hunts(&e),
+            held,
+            "the replay's copy finds no hunt of that op"
+        );
+        assert_eq!(killed(&e), 2);
+        j.idle();
+        j.idle();
+        let sent: Vec<_> = cmds(&j)
+            .filter_map(|c| match c {
+                C::OwedHunt(h) => Some((h.op, h.count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, vec![(op2, 4)], "its spawn goes out, whole");
+        // The plugin applies it, killing 4, and its answer comes.
+        let now = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.apply_hunts(4, now);
+        j.conflict_flush();
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "its own answer spends it");
+        assert_eq!(killed(&e), 6);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// M9 (MZB-423): with the camp in and the chest named, the stacks go one at a time, each after
     /// the last one's answer, whole stacks of at most 64, and the chest ends with every nugget.
     #[test]
@@ -6059,9 +6157,10 @@ mod conflict {
     }
 
     /// M9 (MZB-424 to MZB-426): a hunt owed after a raid on an unwatched district is written as
-    /// OWED_HUNT with the dimension's name; the plugin's HUNT_APPLIED (journaled, booked once by
-    /// its op id) spends it; a hunt owed again before the answer replaces the first with a new op,
-    /// and the first one's late answer clears nothing.
+    /// OWED_HUNT with the dimension's name; the plugin's HUNT_APPLIED (journaled, booked by the
+    /// state of the hunts, review P3-6) spends it; a hunt owed again before the answer replaces the
+    /// first with a new op, and the first one's late answer takes its count off the new one and
+    /// sends the rest again (review P3-8).
     #[test]
     fn an_owed_hunt_is_written_and_spent_by_its_answer_once() {
         let (_dir, e, mut j) = grove("grove-hunt", 3);
@@ -6125,7 +6224,8 @@ mod conflict {
         assert_eq!(both[1].count, 5);
         assert_eq!(hunts(&e), vec![(77, 5, op2)]);
 
-        // The first one's answer is late: it clears nothing.
+        // The first one's answer is late: the 2 it owed are not owed again, and the hunt goes
+        // again with the 3 that are left.
         let applied = |op: u64, killed: u32| {
             O::HuntApplied(cb::HuntApplied {
                 faction: CAMP,
@@ -6134,17 +6234,30 @@ mod conflict {
                 killed,
             })
         };
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
         j.conflict_obs(&applied(op1, 2));
         j.idle();
-        assert_eq!(hunts(&e), vec![(77, 5, op2)], "a stale answer");
-        // The second's clears it, once: a repeat of the record is spent by its op id.
-        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        j.idle();
+        assert_eq!(
+            hunts(&e),
+            vec![(77, 3, op2)],
+            "5 less the 2 that were killed"
+        );
+        assert_eq!(killed(&e), 2);
+        let again = written(&j);
+        assert_eq!(again.len(), 3, "{again:?}");
+        assert_eq!(
+            (again[2].op, again[2].count),
+            (op2, 3),
+            "the rest, sent again"
+        );
+        // The second's clears it, once: a repeat of the record finds no hunt.
         let before = killed(&e);
-        j.conflict_obs(&applied(op2, 4));
-        j.conflict_obs(&applied(op2, 4));
+        j.conflict_obs(&applied(op2, 3));
+        j.conflict_obs(&applied(op2, 3));
         j.idle();
         assert_eq!(hunts(&e), vec![], "spent");
-        assert_eq!(killed(&e), before + 4, "booked once");
+        assert_eq!(killed(&e), before + 3, "booked once");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();

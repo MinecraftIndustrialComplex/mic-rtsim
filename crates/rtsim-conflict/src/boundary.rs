@@ -565,7 +565,9 @@ impl Obs {
 
     /// The plugin's op id, for the records that move items or trade (applied once). The camp's
     /// records have none to skip by: CAMP_DEATH is idempotent by its slot and generation, and
-    /// CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
+    /// CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6). HUNT_APPLIED's op is
+    /// the engine's own, in a record that moves no items: it is booked by the state of the faction's
+    /// hunts (review P3-6), so a set of them would only grow.
     pub fn op(&self) -> Option<u64> {
         match self {
             Obs::ChiefKilled(c) => Some(c.op),
@@ -574,7 +576,6 @@ impl Obs {
             Obs::Looted(l) => Some(l.op),
             Obs::Traded(t) => Some(t.op),
             Obs::ChiefPaid(c) => Some(c.op),
-            Obs::HuntApplied(h) => Some(h.op),
             _ => None,
         }
     }

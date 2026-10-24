@@ -1474,9 +1474,11 @@ are untouched.
   they never meet phase 1's village cultures (`human`) in the one dictionary (MZB-12).
 - **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
   shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
-  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED, CHIEF_PAID and HUNT_APPLIED (the
-  OWED_HUNT's own, allocator 0x43); the engine applies each once (rtsim-jni hands them to `Replay`,
-  which spends a deferred kind's too). CAMP_DEATH has
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID; the engine applies each
+  once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). HUNT_APPLIED carries the
+  OWED_HUNT's op, the engine's own (allocator 0x43), and is booked by the state of the faction's hunts, not
+  by an op set: it clears the hunt, or the replaced hunt, whose op it names, and a copy finds none
+  (MZB-449). CAMP_DEATH has
   one in its record, but the engine does not keep it: a death is idempotent by its slot and
   generation, and a set of every camp death's op id would grow with each death of a farmed grove.
   The engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is
@@ -1623,7 +1625,8 @@ U4), so none is kept or resent, with four exceptions. TERRITORY is sent again fo
 session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that no NOTICE_SHOWN has
 answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
 notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). Every OWED_HUNT no HUNT_APPLIED has answered goes
-again with the notices, for the same reason (MZB-449). BAND_MARCH goes again for
+again with the notices, for the same reason (MZB-449); and a hunt whose replaced op's answer comes late
+goes again at once with the count that is left, a count of 0 being the hunt cancelled. BAND_MARCH goes again for
 every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
 session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
 (refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
@@ -1778,8 +1781,11 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
   chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and
-  HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for a replaced op is
-  spent and clears nothing (MZB-449). The chief's slot, the heir's MASK and SEAT_HEIR pair and its
+  HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for the op a hunt replaced
+  takes the count that op owed off the hunt held and sends it again with what is left, and any other op
+  changes nothing (MZB-449). Java keeps the latest OWED_HUNT for each faction and district until it applies
+  it, answers a count of 0 with a HUNT_APPLIED that kills none, and ignores an OWED_HUNT whose op it applied
+  since the session started (the last op for each faction and district, unsaved). The chief's slot, the heir's MASK and SEAT_HEIR pair and its
   wheel event are in MZB-401 to MZB-445.
 - **The camp records** (slice M4, MZB-150 to MZB-178) are built, with CAMP_BODIES' lines changed
   to carry their action (MZB-168). CAMP_CENSUS

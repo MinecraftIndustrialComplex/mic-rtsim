@@ -1261,6 +1261,19 @@ fn a_stack_decided_again_from_more_is_another_op() {
     ok(&mut b);
 }
 
+/// Review P3-6: the stack in flight is resident, so the engine's memory counts it.
+#[test]
+fn a_stack_in_flight_is_counted_in_the_engines_memory() {
+    let (mut r, _) = tribute_run(40);
+    assert_eq!(r.c.memory()["tribute stacks"], 0, "no chest, no stack");
+    chest(&mut r, 27);
+    assert_eq!(r.c.placings().count(), 1);
+    assert!(r.c.memory()["tribute stacks"] > 0, "the stack is counted");
+    let (op, _) = r.c.placings().next().unwrap();
+    let at = r.c.now();
+    assert!(r.c.tribute_placed(&mut r.w, op, at));
+}
+
 // ---- owed hunts ---------------------------------------------------------------------------------
 
 /// Walls that hold no one back: every raid on a district is survived whole.
@@ -1333,6 +1346,7 @@ fn applied(r: &mut CampRun, district: u64, op: u64, killed: u32) {
         }),
         at,
     );
+    r.flush(at);
 }
 
 /// MZB-424, MZB-425: a raid on a district nobody watches, survived, leaves the hunts its
@@ -1373,10 +1387,12 @@ fn a_raid_on_an_unwatched_district_leaves_its_raptors_hunts_owed() {
 }
 
 /// MZB-449: a hunt owed again in a district before the plugin answered adds to the one in flight
-/// up to the culture's `hunt_cap` (8) and replaces it with a new op; the old op's late answer is
-/// spent and clears nothing; another district has its own hunt.
+/// up to the culture's `hunt_cap` (8) and replaces it with a new op; the replaced op's late answer
+/// takes the count it owed off the new hunt (review P3-8) and sends the rest again; another
+/// district has its own hunt.
 #[test]
-fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_answer_is_stale() {
+fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_late_answer_takes_its_count_off()
+ {
     let mut r = grove(31, 9);
     owe(&mut r, 5, 6);
     let first = hunts(&r)[0];
@@ -1393,16 +1409,150 @@ fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_answer_is_st
         .map(|h| (h.district, h.count))
         .collect();
     assert_eq!(sent, [(5, 6), (5, 8), (6, 3)]);
-    // The first op's answer is late.
+    // The first op's answer is late: the 6 it owed are not owed again.
     applied(&mut r, 5, first.2, 6);
-    assert_eq!(hunts(&r).len(), 2, "clears nothing");
-    assert_eq!(r.c.stats.hunts_killed, 0);
+    assert_eq!(
+        hunts(&r).iter().map(|h| (h.0, h.1)).collect::<Vec<_>>(),
+        [(5, 2), (6, 3)],
+        "8 less the 6 it killed, and the other district untouched"
+    );
+    assert_eq!(r.c.stats.hunts_killed, 6);
+    let again = hunt_cmds(&r).pop().expect("the rest is sent again");
+    assert_eq!(
+        (again.district, again.count, again.op),
+        (5, 2, second[0].2),
+        "the held hunt, under its op, with what is left"
+    );
+    // A copy of that answer finds the replaced op gone: nothing comes off twice.
+    applied(&mut r, 5, first.2, 6);
+    assert_eq!(hunts(&r).iter().map(|h| h.1).collect::<Vec<_>>(), [2, 3]);
+    assert_eq!(r.c.stats.hunts_killed, 6);
     // The second's clears its district only, once.
-    applied(&mut r, 5, second[0].2, 4);
+    applied(&mut r, 5, second[0].2, 2);
     assert_eq!(hunts(&r).iter().map(|h| h.0).collect::<Vec<_>>(), [6]);
-    assert_eq!(r.c.stats.hunts_killed, 4);
-    applied(&mut r, 5, second[0].2, 4);
-    assert_eq!(r.c.stats.hunts_killed, 4, "once");
+    assert_eq!(r.c.stats.hunts_killed, 8);
+    applied(&mut r, 5, second[0].2, 2);
+    assert_eq!(r.c.stats.hunts_killed, 8, "once");
+    ok(&mut r);
+}
+
+/// The animals a plugin would kill for the hunts it keeps, each as many as it was told.
+fn pending_kills(r: &CampRun) -> u32 {
+    r.plugin.hunts.iter().map(|h| h.count).sum()
+}
+
+/// MZB-449, review P3-8: the plugin applies the first hunt (5) before it reads the second raid's
+/// (3, so 8 in one hunt); the first's HUNT_APPLIED is still on its way when the second is owed.
+/// Before, the 8 were paid on top of the 5. Now the late answer takes the 5 off the hunt in flight
+/// and sends it again with 3, which the plugin keeps in place of the 8: 5 and 3 animals die, the
+/// 8 that were owed. The replaced op survives a save.
+#[test]
+fn a_hunt_applied_while_a_second_raid_replaces_it_is_not_paid_twice() {
+    let mut r = grove(34, 9);
+    owe(&mut r, 5, 5);
+    let op1 = hunts(&r)[0].2;
+    // The plugin applies it: 5 die, the answer is two ticks away.
+    let at = r.c.now() + 2;
+    let before = pending_kills(&r);
+    r.plugin.apply_hunts(99, at);
+    let mut killed = before;
+    assert_eq!(killed, 5);
+    // The second raid is owed before the answer arrives.
+    owe(&mut r, 5, 3);
+    let [(_, held, op2)] = hunts(&r)[..] else {
+        panic!("one hunt: {:?}", hunts(&r));
+    };
+    assert_eq!(held, 8);
+    assert_ne!(op1, op2);
+    assert_eq!(pending_kills(&r), 8, "the plugin holds the 8");
+    // A save and load in between loses nothing of the replaced hunt.
+    r.round_trip();
+    assert_eq!(hunts(&r), [(5, 8, op2)]);
+    r.run(at + 5);
+    assert_eq!(hunts(&r), [(5, 3, op2)], "the 5 are paid");
+    assert_eq!(
+        pending_kills(&r),
+        3,
+        "the plugin keeps the hunt as sent again, in place of the 8"
+    );
+    killed += pending_kills(&r);
+    // The plugin applies what it holds; its answer spends the hunt.
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty(), "spent");
+    assert_eq!(killed, 8, "the animals that die are the animals owed");
+    assert_eq!(r.c.stats.hunts_killed, 8, "and so are the animals booked");
+    ok(&mut r);
+}
+
+/// The same race where the first hunt was the whole cap: the late answer leaves nothing owed, so
+/// the hunt is cleared and the plugin is told 0 for the one it holds, which kills none.
+#[test]
+fn a_hunt_the_plugin_already_applied_whole_leaves_none_owed_and_the_one_it_holds_is_cancelled() {
+    let mut r = grove(35, 9);
+    owe(&mut r, 5, 8);
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    owe(&mut r, 5, 3);
+    assert_eq!(pending_kills(&r), 8, "the plugin holds the second hunt");
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty(), "nothing is owed after the 8 died");
+    assert_eq!(hunt_cmds(&r).last().map(|h| h.count), Some(0), "cancelled");
+    assert_eq!(pending_kills(&r), 0, "it kills none");
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    assert_eq!(r.c.stats.hunts_killed, 8, "the animals owed, no more");
+    ok(&mut r);
+}
+
+/// MZB-449, review P3-6 and the coordinator's rule: an answer clears the hunt it names by its op
+/// id and no other. The first hunt is applied and booked; a later raid makes another the held
+/// hunt; a late copy of the first's answer, live and after a save and load, changes nothing: the
+/// held hunt keeps its whole count and goes to the plugin again, whole, at a session start.
+#[test]
+fn a_late_copy_of_a_booked_hunts_answer_leaves_the_hunt_now_held_alone() {
+    let mut r = grove(36, 9);
+    owe(&mut r, 5, 2);
+    let op1 = hunts(&r)[0].2;
+    applied(&mut r, 5, op1, 2);
+    assert!(hunts(&r).is_empty(), "booked");
+    assert_eq!(r.c.stats.hunts_killed, 2);
+    // A raid a day on: another hunt in the district, another op.
+    let to = r.c.now() + TICKS_PER_DAY;
+    r.run(to);
+    owe(&mut r, 5, 4);
+    let op2 = hunts(&r)[0].2;
+    assert_ne!(op1, op2);
+    // The copy, live.
+    let sent = hunt_cmds(&r).len();
+    applied(&mut r, 5, op1, 2);
+    assert_eq!(hunts(&r), [(5, 4, op2)], "the whole count, under its op");
+    assert_eq!(r.c.stats.hunts_killed, 2, "booked once");
+    assert_eq!(hunt_cmds(&r).len(), sent, "and nothing is sent again");
+    // Saved and loaded, and the copy again (an answer in the journal's tail replays so).
+    r.round_trip();
+    applied(&mut r, 5, op1, 2);
+    assert_eq!(hunts(&r), [(5, 4, op2)], "after a save and load");
+    assert_eq!(r.c.stats.hunts_killed, 2);
+    // The next session: the replay brings the copy again, and the hunt goes whole.
+    r.restart_to_replay();
+    applied(&mut r, 5, op1, 2);
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    let spawn = hunt_cmds(&r).pop().expect("the hunt again");
+    assert_eq!(
+        (spawn.district, spawn.count, spawn.op),
+        (5, 4, op2),
+        "its spawn goes out, the whole count"
+    );
+    r.plugin.apply_hunts(99, at + 1);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    assert_eq!(r.c.stats.hunts_killed, 6, "2 and 4");
     ok(&mut r);
 }
 

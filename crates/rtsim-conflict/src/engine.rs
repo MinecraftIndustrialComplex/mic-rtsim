@@ -136,6 +136,11 @@ pub struct Hunt {
     pub pos: Pos,
     pub count: u32,
     pub op: u64,
+    /// The hunt this one replaced while it was in flight, as its op and the count it owed, one
+    /// deep (MZB-449, review P3-8). The plugin may have applied it before the replacement was
+    /// read, its answer still on the way: the count it owed is taken off this one's when that
+    /// answer comes, so the animals are not paid twice.
+    pub replaced: Option<(u64, u32)>,
 }
 
 /// The blocks around a district's centre an owed hunt kills within (PLACEHOLDER, MZB-425).
@@ -3706,6 +3711,10 @@ impl Conflict {
         let x = &mut self.factions[f as usize];
         let (count, op) = match x.hunts.iter_mut().find(|h| h.district == d) {
             Some(h) => {
+                // The hunt in flight is the one replaced; the one it had replaced is forgotten
+                // (a third hunt inside the flight of two applied ones overpays by the oldest,
+                // bounded by the cap).
+                h.replaced = Some((h.op, h.count));
                 h.count = h.count.saturating_add(count).min(cap);
                 h.op = op;
                 h.pos = pos;
@@ -3718,6 +3727,7 @@ impl Conflict {
                     pos,
                     count,
                     op,
+                    replaced: None,
                 });
                 (count, op)
             }
@@ -3745,19 +3755,44 @@ impl Conflict {
         })
     }
 
-    /// The plugin applied a hunt, whatever it killed: the hunt is spent (MZB-425). An answer to
-    /// an op no hunt holds (one replaced since) clears nothing.
+    /// The plugin applied a hunt, whatever it killed (MZB-425, MZB-449). It is booked by the
+    /// state of the faction's hunts, never by a set of op ids: an answer clears the hunt it
+    /// names only when its op id is that hunt's own, and a copy finds nothing, the hunt being
+    /// gone.
+    ///
+    /// - The held hunt's op: the hunt is spent, with the replaced one it carried.
+    /// - The replaced op (the plugin applied it before it read the replacement, review P3-8): the
+    ///   animals it killed are not owed again, so its count comes off the held hunt's, and the
+    ///   held hunt goes to the plugin again with what is left (the plugin keeps the latest
+    ///   command for a district, so the one it holds is replaced; a count of 0 is the hunt
+    ///   cancelled, and is answered with a HUNT_APPLIED that kills none). A held hunt left at 0 is
+    ///   cleared.
+    /// - Any other op, an older one or one already booked: nothing, whatever hunt the faction
+    ///   holds.
     fn hunt_applied(&mut self, h: &boundary::HuntApplied) {
         let Some(&f) = self.by_key.get(&h.faction) else {
             return;
         };
         let x = &mut self.factions[f as usize];
-        let before = x.hunts.len();
-        x.hunts
-            .retain(|e| !(e.district.0 == h.district && e.op == h.op));
-        if x.hunts.len() != before {
-            self.stats.hunts_killed += u64::from(h.killed);
+        let Some(i) = x.hunts.iter().position(|e| {
+            e.district.0 == h.district && (e.op == h.op || e.replaced.is_some_and(|r| r.0 == h.op))
+        }) else {
+            return;
+        };
+        self.stats.hunts_killed += u64::from(h.killed);
+        let e = &mut x.hunts[i];
+        if e.op == h.op {
+            x.hunts.remove(i);
+            return;
         }
+        let (_, owed) = e.replaced.take().expect("the replaced hunt matched");
+        e.count = e.count.saturating_sub(owed);
+        let e = *e;
+        if e.count == 0 {
+            x.hunts.remove(i);
+        }
+        let cmd = self.hunt_cmd(f, e.district, e.pos, e.count, e.op);
+        self.outbox.push(cmd);
     }
 
     /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
@@ -6010,6 +6045,10 @@ impl Conflict {
             ("wheel", self.wheel.heap_bytes()),
             ("nodes", self.nodes.heap_bytes()),
             ("applied ops", self.applied_ops.len() * BTREE_U64_BYTES),
+            (
+                "tribute stacks",
+                self.placing.capacity() * std::mem::size_of::<(u32, Placing)>(),
+            ),
             ("players", self.players.len() * BTREE_PLAYER_BYTES),
         ])
     }
