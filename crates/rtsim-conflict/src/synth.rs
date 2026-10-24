@@ -262,6 +262,8 @@ pub struct CampBody {
     pub chief: bool,
     /// The chief body's crystal is on it: a steal takes it.
     pub crystal: bool,
+    /// A player stands near it: a MASK does not take it (it takes the one farthest away).
+    pub near: bool,
 }
 
 /// A camp as the plugin sees it (MOWZIE.md §4.9, emulated): its epoch while it is in (0 while it
@@ -344,6 +346,14 @@ pub struct FakeConflict {
     pub replay_answers: bool,
     /// Ticks an answer takes to reach the engine.
     pub answer_ticks: u64,
+    /// Every owed hunt the engine sent, in order (OWED_HUNT, MZB-425).
+    pub hunts_sent: Vec<boundary::OwedHunt>,
+    /// The hunts the plugin keeps, the latest for each faction and district, until it applies
+    /// them (MZB-426).
+    pub hunts: Vec<boundary::OwedHunt>,
+    /// Applies each hunt a tick after it arrives, killing up to this many animals (HUNT_APPLIED
+    /// even when it kills none); `None` keeps the hunts unapplied.
+    pub hunt_kills: Option<u32>,
     uuids: u64,
     /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
     /// counts, at the recall, first stacks first (0: none; MZB-131).
@@ -378,6 +388,9 @@ impl FakeConflict {
             split_answers: 0,
             replay_answers: false,
             answer_ticks: 1,
+            hunts_sent: Vec::new(),
+            hunts: Vec::new(),
+            hunt_kills: None,
             uuids: 0,
             walk_off_deaths: 0,
         }
@@ -496,6 +509,10 @@ impl FakeConflict {
                 m.kind,
                 m.phase,
                 m.waypoints.len()
+            ),
+            Cmd::OwedHunt(h) => format!(
+                "hunt of {:x} near district {}: {} animals within {} blocks",
+                h.faction, h.district, h.count, h.radius
             ),
         };
         self.commands.push((at.0, format!("{}: {gist}", c.name())));
@@ -655,6 +672,15 @@ impl FakeConflict {
                 }
             }
             Cmd::Reconcile(r) => self.reconcile(&r, at),
+            Cmd::OwedHunt(h) => {
+                self.hunts_sent.push(h);
+                self.hunts
+                    .retain(|e| !(e.faction == h.faction && e.district == h.district));
+                self.hunts.push(h);
+                if let Some(k) = self.hunt_kills {
+                    self.apply_hunts(k, at + self.answer_ticks);
+                }
+            }
             Cmd::Notice(n) if self.play_notices => {
                 self.push(
                     at + 1,
@@ -678,6 +704,22 @@ impl FakeConflict {
 
     pub fn embodied(&self) -> usize {
         self.bodies.len()
+    }
+
+    /// Applies every hunt the plugin keeps, each killing up to `kills` animals, at `at`: the
+    /// answer is HUNT_APPLIED whatever it killed (MZB-426).
+    pub fn apply_hunts(&mut self, kills: u32, at: Tick) {
+        for h in std::mem::take(&mut self.hunts) {
+            self.push(
+                at,
+                Obs::HuntApplied(boundary::HuntApplied {
+                    faction: h.faction,
+                    district: h.district,
+                    op: h.op,
+                    killed: kills.min(h.count),
+                }),
+            );
+        }
     }
 
     // ---- camps (MOWZIE.md §4.9, emulated) -------------------------------------------------
@@ -718,6 +760,7 @@ impl FakeConflict {
             elsewhere: false,
             chief: false,
             crystal: false,
+            near: false,
         });
         uuid
     }
@@ -900,10 +943,15 @@ impl FakeConflict {
             .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
         let mut lines = Vec::new();
         for (i, l) in r.lines.iter().enumerate() {
-            let outcome = if live {
-                self.apply_line(r.faction, l)
-            } else {
+            let mut taken = None;
+            let outcome = if !live {
                 boundary::LINE_STALE
+            } else if l.action == boundary::ACTION_MASK {
+                let (outcome, slot, generation) = self.mask(r.faction);
+                taken = Some((slot, generation));
+                outcome
+            } else {
+                self.apply_line(r.faction, l)
             };
             self.applied.push(AppliedLine {
                 at,
@@ -913,10 +961,12 @@ impl FakeConflict {
                 line: *l,
                 outcome,
             });
+            // A MASK names the warrior the plugin took, not the line's own (zero) slot.
+            let (slot, generation) = taken.unwrap_or((l.slot, l.generation));
             let answer = boundary::LineAnswer {
                 line: i as u32,
-                slot: l.slot,
-                generation: l.generation,
+                slot,
+                generation,
                 action: l.action,
                 outcome,
             };
@@ -1003,12 +1053,28 @@ impl FakeConflict {
         }
     }
 
+    /// MASK: the plugin takes the warrior at home farthest from every player (here, the last one
+    /// tagged and not near a player), for the heir (MZB-408). Its outcome, slot and generation;
+    /// no warrior to take is LINE_NOTHING with a zero generation.
+    fn mask(&mut self, faction: u64) -> (u8, u32, u32) {
+        let camp = self.camp_world(faction);
+        let Some(i) = camp
+            .bodies
+            .iter()
+            .rposition(|b| b.generation != 0 && !b.chief && !b.elsewhere && !b.near)
+        else {
+            return (boundary::LINE_NOTHING, 0, 0);
+        };
+        let b = camp.bodies.remove(i);
+        (boundary::LINE_DONE, b.slot, b.generation)
+    }
+
     /// One line, applied to the camp's world: its target state, so that applying it twice changes
     /// nothing.
     fn apply_line(&mut self, faction: u64, l: &boundary::ReconcileLine) -> u8 {
         use boundary::{
-            ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN,
-            ACTION_TAKE, LINE_DONE, LINE_NOTHING,
+            ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
+            ACTION_SPAWN, ACTION_TAKE, LINE_DONE, LINE_NOTHING,
         };
         let uuid = self.camp_uuid();
         let camp = self.camp_world(faction);
@@ -1029,6 +1095,26 @@ impl FakeConflict {
                     elsewhere: false,
                     chief: l.flags & boundary::LINE_CHIEF != 0,
                     crystal: l.flags & boundary::LINE_CRYSTAL != 0,
+                    near: false,
+                });
+                LINE_DONE
+            }
+            ACTION_SEAT_HEIR => {
+                // The heir takes the throne: the chief's body is the one of this generation. A
+                // chief body of another generation, dead away or not, is replaced (MZB-410).
+                if held.is_some() {
+                    return LINE_NOTHING;
+                }
+                camp.bodies.retain(|b| b.slot != l.slot);
+                camp.bodies.push(CampBody {
+                    uuid,
+                    body: l.body,
+                    slot: l.slot,
+                    generation: l.generation,
+                    elsewhere: false,
+                    chief: true,
+                    crystal: l.flags & boundary::LINE_CRYSTAL != 0,
+                    near: false,
                 });
                 LINE_DONE
             }

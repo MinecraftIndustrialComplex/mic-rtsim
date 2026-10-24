@@ -121,7 +121,27 @@ pub struct Faction {
     /// The ledger of the camp's bodies (MOWZIE.md §4.9), kept for a camp whose bodies a census
     /// counts. Boxed: a camp with none costs a word.
     pub camp: Option<Box<Camp>>,
+    /// The hunts its raids left owed (MZB-424), one for each district a raid fell on: a small
+    /// Vec, never a one-entry map.
+    pub hunts: Vec<Hunt>,
 }
+
+/// An owed hunt (MZB-424, MZB-425): `count` animals near a district's centre die when its chunks
+/// tick, as the raptors' packs would have hunted them had a player watched the raid. In flight
+/// until the plugin answers HUNT_APPLIED with `op`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hunt {
+    pub district: DistrictId,
+    /// The district's centre.
+    pub pos: Pos,
+    pub count: u32,
+    pub op: u64,
+}
+
+/// The blocks around a district's centre an owed hunt kills within (PLACEHOLDER, MZB-425).
+pub const HUNT_RADIUS: u32 = 48;
+/// The slot space of the hunts' op ids (`rtsim_world::ribbits::identity_op`).
+const HUNT_SLOT: u64 = 0x4d5a_000a << 32;
 
 /// What an envoy asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1090,6 +1110,7 @@ impl Conflict {
             cap: cu.def.pool_cap,
             away: 0,
             camp: None,
+            hunts: Vec::new(),
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -3573,6 +3594,7 @@ impl Conflict {
         let mut stolen_items = 0i64;
         let mut blocks = 0u32;
         let mut words = Vec::new();
+        let mut hunts = 0u32;
         for (class, (count, strength, loads)) in classes {
             let id = fnv1a64(
                 &[
@@ -3606,6 +3628,7 @@ impl Conflict {
             let missing = f64::from(count) * (1.0 - o.survived);
             let lost = ((missing * self.tun.abstract_loss_share).round() as u32).min(count);
             self.lose_units(w, p, |c| c.threat() == class, lost, LossCause::Player);
+            hunts = hunts.saturating_add(self.survivor_hunts(p, class));
             let got = self.take_industry_loot(w, infra, p, &o.stolen);
             stolen_items += got;
             blocks += o.destroyed_blocks;
@@ -3634,7 +3657,100 @@ impl Conflict {
             "raid",
             format!("raids district {} unwatched: {}", d.0, words.join("; ")),
         );
+        if hunts > 0
+            && let Target::District(_, pos) = self.parties[p].target
+        {
+            self.owe_hunt(f, d, pos, hunts, at);
+        }
         (stolen_items, blocks)
+    }
+
+    /// The hunts the party's survivors of `class` stand for: each unit's `hunts` for each member
+    /// left (MZB-424).
+    fn survivor_hunts(&self, p: Handle<Party>, class: rtsim_industry::threat::ThreatClass) -> u32 {
+        let x = &self.parties[p];
+        x.units
+            .iter()
+            .filter(|e| e.1 > 0)
+            .map(|&(u, n)| {
+                let ud = self.unit_row(x.faction, u);
+                if ud.class.threat() == class {
+                    n.saturating_mul(ud.hunts)
+                } else {
+                    0
+                }
+            })
+            .fold(0u32, u32::saturating_add)
+    }
+
+    /// A raid on an unwatched district leaves `count` hunts owed there (MZB-424, MZB-449): added
+    /// to the one already in flight for the district and capped at the culture's `hunt_cap`, with
+    /// a new op (the old hunt, if the plugin has not applied it, is replaced; its late answer
+    /// is spent and clears nothing). Nothing is owed on Peaceful, nor by a culture with no cap.
+    fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
+        let cap = self.culture(f).def.hunt_cap;
+        if cap == 0 || self.peaceful {
+            return;
+        }
+        let key = self.factions[f as usize].key;
+        let slot = fnv1a64(&[d.0.to_le_bytes(), at.0.to_le_bytes()].concat());
+        let op = boundary::AGENT_NAMESPACE << 56
+            | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
+        let x = &mut self.factions[f as usize];
+        let (count, op) = match x.hunts.iter_mut().find(|h| h.district == d) {
+            Some(h) => {
+                h.count = h.count.saturating_add(count).min(cap);
+                h.op = op;
+                h.pos = pos;
+                (h.count, h.op)
+            }
+            None => {
+                let count = count.min(cap);
+                x.hunts.push(Hunt {
+                    district: d,
+                    pos,
+                    count,
+                    op,
+                });
+                (count, op)
+            }
+        };
+        self.stats.hunts_owed += u64::from(count);
+        let cmd = self.hunt_cmd(f, d, pos, count, op);
+        self.outbox.push(cmd);
+        self.note(
+            at,
+            Some(f),
+            "hunt",
+            format!("owes {count} animals near district {}", d.0),
+        );
+    }
+
+    fn hunt_cmd(&self, f: u32, d: DistrictId, pos: Pos, count: u32, op: u64) -> Cmd {
+        Cmd::OwedHunt(boundary::OwedHunt {
+            faction: self.factions[f as usize].key,
+            district: d.0,
+            op,
+            dimension: u32::from(pos.frame),
+            count,
+            centre: (pos.x, pos.z),
+            radius: HUNT_RADIUS,
+        })
+    }
+
+    /// The plugin applied a hunt, whatever it killed: the hunt is spent (MZB-425). An answer to
+    /// an op no hunt holds (one replaced since) clears nothing.
+    fn hunt_applied(&mut self, h: &boundary::HuntApplied) {
+        let Some(&f) = self.by_key.get(&h.faction) else {
+            return;
+        };
+        let x = &mut self.factions[f as usize];
+        let before = x.hunts.len();
+        x.hunts
+            .retain(|e| !(e.district.0 == h.district && e.op == h.op));
+        if x.hunts.len() != before {
+            self.stats.hunts_killed += u64::from(h.killed);
+        }
     }
 
     /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
@@ -3715,9 +3831,19 @@ impl Conflict {
         // over its target only. Below its target a line needs imports or a mint to refill, and a
         // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).
         let m = w.market(i);
+        // A culture with `plunder_goods` takes those goods only and no more than its survivors'
+        // numbers allow, whatever they carry: raptors carry nothing (MZB-427).
+        let livestock: Vec<GoodId> = c
+            .def
+            .plunder_goods
+            .iter()
+            .filter_map(|n| w.goods.find(n))
+            .collect();
+        let only = !c.def.plunder_goods.is_empty();
         let caps: Vec<(GoodId, Amount)> = w
             .goods
             .ids()
+            .filter(|g| !only || livestock.contains(g))
             .map(|g| {
                 let surplus = (m.stock(g) - m.line(g).target).max(0);
                 (g, surplus * c.def.loot_share_milli / 1000)
@@ -3725,7 +3851,14 @@ impl Conflict {
             .filter(|e| e.1 > 0)
             .collect();
         let reach: Amount = caps.iter().map(|e| e.1).sum();
-        if self.carry_milli(p).min(reach) < MILLI {
+        let can_take = |s: &Self| {
+            if only {
+                if s.parties[p].alive() > 0 { reach } else { 0 }
+            } else {
+                s.carry_milli(p).min(reach)
+            }
+        };
+        if can_take(self) < MILLI {
             self.note(
                 at,
                 Some(f),
@@ -3758,16 +3891,18 @@ impl Conflict {
         self.stats.raids_village += 1;
         // The survivors carry off what they can of the caps read before the fight (the fight takes
         // no time, so the market has not moved).
-        let shares = apportion(self.carry_milli(p).min(reach), &caps);
+        let shares = apportion(can_take(self), &caps);
         let want: BTreeMap<GoodId, Amount> = shares.into_iter().filter(|e| e.1 > 0).collect();
-        let got = if c.def.loot_destroyed {
+        // Livestock is eaten where it stands: booked to no one, like loot a culture destroys.
+        let eaten = c.def.loot_destroyed || only;
+        let got = if eaten {
             w.take_stocks(i, &want, at)
         } else {
             w.stock_to_held(i, &want, at)
         };
         let mut items = 0;
         for (g, a) in &got {
-            if c.def.loot_destroyed {
+            if eaten {
                 add(&mut self.ledger.destroyed, *g, *a);
             } else {
                 *self.parties[p].loot.entry(*g).or_default() += a;
@@ -4771,7 +4906,10 @@ impl Conflict {
         // again from what is kept, after the replay (`resend_notices`).
         self.outbox.retain(|c| {
             c.agent().is_none()
-                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_))
+                && !matches!(
+                    c,
+                    Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_) | Cmd::OwedHunt(_)
+                )
         });
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
@@ -4807,14 +4945,22 @@ impl Conflict {
     /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
         self.replay_done();
-        self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
+        self.outbox
+            .retain(|c| !matches!(c, Cmd::Notice(_) | Cmd::OwedHunt(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
-            let kept: Vec<Cmd> = self
+            let mut kept: Vec<Cmd> = self
                 .feuds_of(f)
                 .iter()
                 .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
                 .collect();
+            // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
+            let hunts: Vec<Hunt> = self.factions[f as usize].hunts.clone();
+            kept.extend(
+                hunts
+                    .iter()
+                    .map(|h| self.hunt_cmd(f, h.district, h.pos, h.count, h.op)),
+            );
             self.outbox.extend(kept);
             if (f + 1) % per == 0 {
                 self.enforce_budget();
@@ -5119,6 +5265,7 @@ impl Conflict {
             Obs::Traded(t) => self.trade_booked(w, t, at),
             Obs::ChiefPaid(c) => self.chief_paid(w, c, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
+            Obs::HuntApplied(h) => self.hunt_applied(h),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
             Obs::CampCensus(c) => self.camp_census(c, at),
             Obs::CampBodies(b) => self.camp_bodies(b, at),
