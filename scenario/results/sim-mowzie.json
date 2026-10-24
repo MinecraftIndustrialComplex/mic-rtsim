@@ -623,7 +623,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 44c59f5ab759ce4e"
+          "detail": "state hash 5f42ebbe84861af4"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -932,7 +932,7 @@
         {
           "name": "a save and load mid-wait arrives on the same tick, to the same books",
           "ok": true,
-          "detail": "state e225280ac1fc2153 against e225280ac1fc2153, then [1, 0, 0, 0, 0]"
+          "detail": "state f7bc4f7f067d1033 against f7bc4f7f067d1033, then [1, 0, 0, 0, 0]"
         }
       ],
       "rungs": [],
