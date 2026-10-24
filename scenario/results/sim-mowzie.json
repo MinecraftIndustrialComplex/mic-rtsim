@@ -149,7 +149,7 @@
         {
           "name": "every Raid on a track sends its AMBUSH_SPOT when it arrives and the removal when it ends",
           "ok": true,
-          "detail": "12 legs a day: 32 lurks over 8 seeds, 32 started and 30 ended in the engine, 30 removals heard, 2 still waiting at the end; 32 lurking bands seen by the hour, 0 of them with no spot"
+          "detail": "12 legs a day: 32 lurks over 8 seeds, 32 started and 30 ended in the engine, 30 removals heard, 2 still waiting at the end; 32 lurking bands seen by the hour, 0 of them with no spot; the two trains made 11.9 legs a day"
         },
         {
           "name": "a train loses at most 64 items a day, in one robbery",
@@ -157,9 +157,19 @@
           "detail": "12 legs a day: 119 train-days robbed, most items 64 (limit 64), most robberies in one day 1"
         },
         {
+          "name": "each robbery takes the carry or a tenth of its train's cargo, whichever is less",
+          "ok": true,
+          "detail": "12 legs a day: 119 robberies, 0 off min(64, cargo / 10); a 1280-item train loses {64}, a 320-item train {32}"
+        },
+        {
           "name": "two trains lose at most 256 items over a middling 2-day wait",
           "ok": true,
           "detail": "12 legs a day: the most one wait took 192 items (limit 256); the longest wait 2.00 days"
+        },
+        {
+          "name": "the roll is independent from pass to pass: the rate after a miss and after a hit are both about half",
+          "ok": true,
+          "detail": "12 legs a day: 53% of 325 passes that follow a miss hit, 51% of 363 that follow a hit (limits 35% to 65%)"
         },
         {
           "name": "the robbed goods are in the ledger's destroyed share and none is carried home",
@@ -167,19 +177,19 @@
           "detail": "12 legs a day: 5696 items destroyed of 5696 taken from players, 0 carried by bands, the industry booked 5696 stolen, the engine counted 5696"
         },
         {
-          "name": "stats.lurk_robberies equals the TRAIN_ROBBED count",
+          "name": "the robberies are the same by the engine's counter, the TRAIN_ROBBED sent and the industry's books",
           "ok": true,
-          "detail": "12 legs a day: 119 robberies, 119 TRAIN_ROBBED sent (119 ambushes in all, the rest on a march)"
+          "detail": "12 legs a day: 119 robberies counted by the engine, 119 TRAIN_ROBBED sent, 119 passes with a theft in the industry's books; the same trains at the same ticks, and the same items for each: true (119 ambushes in all, the rest on a march)"
         },
         {
-          "name": "no TRAIN_PASSED is stale except after a lurk ended",
+          "name": "no TRAIN_PASSED is stale except just after a lurk ended",
           "ok": true,
-          "detail": "12 legs a day: 752 passes sent, 752 counted, 0 stale, every one after its lurk's end: true"
+          "detail": "12 legs a day: 752 passes sent, 752 counted, 0 stale, every one within 100 ticks after its lurk's end: true"
         },
         {
           "name": "every Raid on a track sends its AMBUSH_SPOT when it arrives and the removal when it ends",
           "ok": true,
-          "detail": "24 legs a day: 24 lurks over 8 seeds, 24 started and 24 ended in the engine, 24 removals heard, 0 still waiting at the end; 24 lurking bands seen by the hour, 0 of them with no spot"
+          "detail": "24 legs a day: 24 lurks over 8 seeds, 24 started and 24 ended in the engine, 24 removals heard, 0 still waiting at the end; 24 lurking bands seen by the hour, 0 of them with no spot; the two trains made 23.9 legs a day"
         },
         {
           "name": "a train loses at most 64 items a day, in one robbery",
@@ -187,9 +197,19 @@
           "detail": "24 legs a day: 96 train-days robbed, most items 64 (limit 64), most robberies in one day 1"
         },
         {
+          "name": "each robbery takes the carry or a tenth of its train's cargo, whichever is less",
+          "ok": true,
+          "detail": "24 legs a day: 96 robberies, 0 off min(64, cargo / 10); a 1280-item train loses {64}, a 320-item train {32}"
+        },
+        {
           "name": "two trains lose at most 256 items over a middling 2-day wait",
           "ok": true,
           "detail": "24 legs a day: the most one wait took 192 items (limit 256); the longest wait 2.00 days"
+        },
+        {
+          "name": "the roll is independent from pass to pass: the rate after a miss and after a hit are both about half",
+          "ok": true,
+          "detail": "24 legs a day: 49% of 437 passes that follow a miss hit, 53% of 450 that follow a hit (limits 35% to 65%)"
         },
         {
           "name": "the robbed goods are in the ledger's destroyed share and none is carried home",
@@ -197,14 +217,14 @@
           "detail": "24 legs a day: 5408 items destroyed of 5408 taken from players, 0 carried by bands, the industry booked 5408 stolen, the engine counted 5408"
         },
         {
-          "name": "stats.lurk_robberies equals the TRAIN_ROBBED count",
+          "name": "the robberies are the same by the engine's counter, the TRAIN_ROBBED sent and the industry's books",
           "ok": true,
-          "detail": "24 legs a day: 96 robberies, 96 TRAIN_ROBBED sent (112 ambushes in all, the rest on a march)"
+          "detail": "24 legs a day: 96 robberies counted by the engine, 96 TRAIN_ROBBED sent, 96 passes with a theft in the industry's books; the same trains at the same ticks, and the same items for each: true (112 ambushes in all, the rest on a march)"
         },
         {
-          "name": "no TRAIN_PASSED is stale except after a lurk ended",
+          "name": "no TRAIN_PASSED is stale except just after a lurk ended",
           "ok": true,
-          "detail": "24 legs a day: 939 passes sent, 935 counted, 4 stale, every one after its lurk's end: true"
+          "detail": "24 legs a day: 939 passes sent, 935 counted, 4 stale, every one within 100 ticks after its lurk's end: true"
         },
         {
           "name": "the share of each train's first open pass of a day of the wait that robs is about half",
@@ -1167,9 +1187,9 @@
           "detail": "seed 0: at tick 436751 (2 lurking, 0 held, cowed false), 2240 command bytes, 2160 grievances by bits, 6 lurks begun after, blob same, paged same; seed 1: at tick 434052 (2 lurking, 0 held, cowed false), 2272 command bytes, 2160 grievances by bits, 6 lurks begun after, blob same, paged same"
         },
         {
-          "name": "a restart in the middle of a lurk says each lurking band's spot once more, and the lurk goes on",
+          "name": "a restart in the middle of a lurk, also after a load from pages, says each lurking band's spot once more, and the lurk goes on",
           "ok": true,
-          "detail": "seed 0: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going"
+          "detail": "seed 0, restart: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 0, paged restart: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1, restart: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1, paged restart: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going"
         },
         {
           "name": "a save in a cowed time, with the other den lurking, blob and paged, goes on as the run that kept going",
@@ -1177,19 +1197,19 @@
           "detail": "seed 0: at tick 460797 (1 lurking, 2 held, cowed true), 2240 command bytes, 2880 grievances by bits, 5 lurks begun after, blob same, paged same; seed 1: at tick 458307 (1 lurking, 2 held, cowed true), 2336 command bytes, 2880 grievances by bits, 5 lurks begun after, blob same, paged same"
         },
         {
-          "name": "a restart in a cowed time says the lurking den's spot once more, and the lurks come as they would have",
+          "name": "a restart in a cowed time, also after a load from pages, says the lurking den's spot once more, and the lurks come as they would have",
           "ok": true,
-          "detail": "seed 0: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going"
+          "detail": "seed 0, restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 0, paged restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1, restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1, paged restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going"
         },
         {
-          "name": "a save in a meter's decay, with passes held and a wake booked, goes on as the run that kept going",
+          "name": "a save in a meter's decay, with a band lurking, passes held and a wake booked, goes on as the run that kept going",
           "ok": true,
-          "detail": "seed 0: at tick 267207 (0 lurking, 1 held, cowed false), 112 command bytes, 720 grievances by bits, 0 lurks begun after, blob same, paged same; seed 1: at tick 267000 (0 lurking, 1 held, cowed false), 112 command bytes, 720 grievances by bits, 0 lurks begun after, blob same, paged same"
+          "detail": "seed 0: at tick 222640 (1 lurking, 1 held, cowed false), 432 command bytes, 720 grievances by bits, 0 lurks begun after, blob same, paged same; seed 1: at tick 222682 (1 lurking, 1 held, cowed false), 400 command bytes, 720 grievances by bits, 0 lurks begun after, blob same, paged same"
         },
         {
-          "name": "a restart in a meter's decay changes no lurk, no grievance and no count",
+          "name": "a restart in a meter's decay, with a band lurking and also after a load from pages, changes no lurk, no grievance and no count",
           "ok": true,
-          "detail": "seed 0: 0 lurking, 0 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1: 0 lurking, 0 spots said again, the lurk stream the same as and the grievances match the run that kept going"
+          "detail": "seed 0, restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 0, paged restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1, restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1, paged restart: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going"
         }
       ],
       "rungs": [],
