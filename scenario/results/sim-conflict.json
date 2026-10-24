@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 184.937527,
+      "wall_ms": 184.910658,
       "checks": [
         {
           "name": "conservation",
@@ -316,7 +316,13 @@
         "withdrawn": 0,
         "peace_held": 0,
         "notices_shown": 1,
-        "repeats": 0
+        "repeats": 0,
+        "camp_censuses": 0,
+        "camp_orders": 0,
+        "camp_lines": 0,
+        "camp_answers": 0,
+        "camp_deaths": 0,
+        "camp_written_off": 0
       },
       "log": [
         {
@@ -703,7 +709,7 @@
       ],
       "wire_bytes": 3080,
       "state_hashes": [
-        "482d72bd59412678",
+        "1818871f4d80622f",
         "3fdc97b0aa9a0b1e"
       ],
       "archive": {
@@ -748,7 +754,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 181.516577,
+      "wall_ms": 178.961227,
       "checks": [
         {
           "name": "conservation",
@@ -956,7 +962,13 @@
         "withdrawn": 0,
         "peace_held": 0,
         "notices_shown": 1,
-        "repeats": 0
+        "repeats": 0,
+        "camp_censuses": 0,
+        "camp_orders": 0,
+        "camp_lines": 0,
+        "camp_answers": 0,
+        "camp_deaths": 0,
+        "camp_written_off": 0
       },
       "log": [
         {
@@ -1258,7 +1270,7 @@
       ],
       "wire_bytes": 2480,
       "state_hashes": [
-        "c30c8c224c3ac172",
+        "7ddf4775fdbba926",
         "2e011f2e20fe53ce"
       ],
       "archive": {
@@ -1297,7 +1309,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 191.29384,
+      "wall_ms": 181.915991,
       "checks": [
         {
           "name": "conservation",
@@ -1483,7 +1495,13 @@
         "withdrawn": 0,
         "peace_held": 0,
         "notices_shown": 1,
-        "repeats": 0
+        "repeats": 0,
+        "camp_censuses": 0,
+        "camp_orders": 0,
+        "camp_lines": 0,
+        "camp_answers": 0,
+        "camp_deaths": 0,
+        "camp_written_off": 0
       },
       "log": [
         {
@@ -1690,7 +1708,7 @@
       ],
       "wire_bytes": 1344,
       "state_hashes": [
-        "46d4ef24773e7627",
+        "2ecc82aa68a5dcd1",
         "5e89df06352b796f"
       ],
       "archive": {
@@ -1733,7 +1751,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 482d72bd59412678, world 3fdc97b0aa9a0b1e (uninterrupted 482d72bd59412678, 3fdc97b0aa9a0b1e)"
+    "detail": "saved and loaded on day 9.3: conflict 1818871f4d80622f, world 3fdc97b0aa9a0b1e (uninterrupted 1818871f4d80622f, 3fdc97b0aa9a0b1e)"
   },
   "archive": {
     "rows_per_day": 8.25,

@@ -51,5 +51,6 @@
   "repeat_days": 4.0,
   "source": "boss",
   "loot_destroyed": true,
-  "haven": false
+  "haven": false,
+  "camp_bodies": true
 }

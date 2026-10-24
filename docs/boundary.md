@@ -244,7 +244,8 @@ overworld's save event and chains a marker onto NeoForge's SavedData write chain
 smaller of that value and the last sequence the journal's file on disk actually holds
 (`JournalSavedData.writtenThrough`): a write the chunk barrier held, or one that failed, does not
 count (docs/choices-journal-barrier.md JB1). The next hand-over carries the value; the engine may then
-forget op ids applied at or before it.
+forget op ids applied at or before it, and a camp ledger forgets the CAMP_BODIES answers it booked from
+records at or before it (MOWZIE.md §4.9, MZB-177).
 
 **Idempotent events.** TAKEN, DIED and COMMAND_RESULT may arrive more than once (§3.1). The engine
 applies each at most once: by op id while it remembers it, and by state after that (a member that
@@ -1425,8 +1426,10 @@ body mod is verified: it is the contract a plugin would have to meet.
 **Mowzie's Mobs** (2026-10-22: MOWZIE.md §2, §4.12 and ledger 14; slice M1, choices MZB-1 to MZB-49 in
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
-plugin. The engine half of most of the new kinds comes with a later slice (§9.6); until then the
-engine decodes them, counts them as deferred and drops them, and sends none of the new commands.
+plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178); that of the
+rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
+deferred and drops them, and sends none of their commands.
 
 ### 9.1 Kind ranges (reserved)
 
@@ -1469,11 +1472,14 @@ are untouched.
   they never meet phase 1's village cultures (`human`) in the one dictionary (MZB-12).
 - **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
   shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
-  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID; the engine
-  applies each once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). The
-  engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is the
-  engine's, allocator 0x43 in bits 56 to 62 (§2.2) over 56 bits derived from the faction, the epoch
-  and the decision, and CAMP_BODIES carries it back so that an answer is booked once (MOWZIE.md §4.9).
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID; the engine applies
+  each once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). CAMP_DEATH has
+  one in its record, but the engine does not keep it: a death is idempotent by its slot and
+  generation, and a set of every camp death's op id would grow with each death of a farmed grove.
+  The engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is
+  the engine's, allocator 0x43 in bits 56 to 62 (§2.2) over 56 bits derived from the faction, the
+  epoch and the decision, and CAMP_BODIES carries it back with each line's index, so that an
+  answer's line is booked once, by (op, line), while its epoch is the camp's latest (MOWZIE.md §4.9).
 - **Camps** (MOWZIE.md §4.9). A camp's **epoch** is a Java op id (top bit set) that the plugin takes
   each time the camp comes in (CAMP_CENSUS) and ends with CAMP_OUT; CAMP_BODIES, CAMP_RECONCILE and
   a CHIEF_BODY at home carry it. A camp body is known by its **slot and generation**; one found with
@@ -1508,14 +1514,15 @@ are untouched.
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief; u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
-| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u32 outcome: 1 done, 2 nothing to do, 3 stale) | 48 + 16n |
+| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
 All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY and NOTICE_SHOWN today; the rest are
-deferred (§9.6).
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN and the camp records
+(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the rest are deferred
+(§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1571,8 +1578,11 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   every body of the camp's kinds in the footprint (by slot and generation, or a stray by UUID), the
   camp's tagged bodies loaded elsewhere, and for an Umvuthi its throne spot and trade memory; CAMP_OUT
   when a footprint chunk drops below FULL; CAMP_BODIES as the answer to a CAMP_RECONCILE, line by
-  line; CAMP_DEATH once per body UUID, at home or left behind. CAMP_BODIES and CAMP_DEATH are carried
-  on the bodies and markers they changed until acknowledged, and journaled again at load.
+  line, each line with the action of the line it answers; CAMP_DEATH once per body UUID, at home or
+  left behind. CAMP_BODIES and CAMP_DEATH are carried on the bodies and markers they changed until
+  acknowledged, and journaled again at load. One reconcile can therefore have several CAMP_BODIES
+  records (a holder's, journaled again, and held lines answered later), each with its lines'
+  indexes: the engine books each (op, line) once.
 - **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5);
   **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`), with that body's
   slot and generation; **TRADED** a masked trade with the grove's minions; **HAVEN_CHEST** a grove
@@ -1739,12 +1749,21 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
 - **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
-  (M9), RAIL_PASS (M7), TRAIN_PASSED (M8) and the camp records (M4) come later, as do the commands,
-  which the engine does not send yet, and FACTION_FOUND's census (M4). Until then rtsim-jni decodes
-  each, translates its ids, counts it (`ConflictLinkStats::deferred`) and drops it before the shared
-  clock runs for it: no module catches up for a deferred record. One with an op id spends it in
-  the engine, in rtsim-jni as in `Conflict::ingest`, so the same record again is not counted twice
-  (MZB-23).
+  (M9), RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
+  not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
+  (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
+  catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
+  `Conflict::ingest`, so the same record again is not counted twice (MZB-23).
+- **The camp records** (slice M4, MZB-150 to MZB-178) are built, with CAMP_BODIES' lines changed
+  to carry their action (MZB-168). CAMP_CENSUS
+  (a camp that is in, at an epoch), CAMP_OUT, CAMP_BODIES and CAMP_DEATH are ingested by
+  `engine/camp.rs`, and the engine sends CAMP_RECONCILE only to a camp that is in, at most one line
+  in flight per slot, voiding its lines at CAMP_OUT and at a session start and never resending one.
+  A census ingested inside the session's replay window (`Conflict::replaying`, from `session_start`
+  to `replay_done`) only marks its camp out (MZB-159, MZB-178). An answer
+  line is booked by its own action, not by the state its slot has now (a line voided at CAMP_OUT is
+  still answered), once by its (op, line), and only while its epoch is the latest a census named; a
+  CAMP_DEATH by its slot and generation, with no op id kept (MZB-168 to MZB-170).
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
