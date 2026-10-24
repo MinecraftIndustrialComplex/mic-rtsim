@@ -173,11 +173,11 @@ final class FarBench {
                 MicRtsimDh.LOGGER.info(String.format(Locale.ROOT,
                         "far bench result %s dragons: drawn %d, groups %d, boxes %d, registered %d, hidden %d; "
                                 + "recuts %d, confirms %d, wing flips %d in the window; band: %d movers, %d boxes, "
-                                + "%.1f us/frame over %d frames",
+                                + "%d dragons counted, %d past the tier's count, %.1f us/frame over %d frames",
                         LABEL, FarDragonView.lastDrawn, FarDragonView.lastGroups, FarDragonView.lastBoxes,
                         FarDragonView.lastRegistered, FarDragonView.lastHidden, FarDragonView.recuts,
                         FarDragonView.confirms, FarDragonView.flips, FarBandRenderer.lastDrawn,
-                        FarBandRenderer.lastBoxes,
+                        FarBandRenderer.lastBoxes, FarBandRenderer.lastDragons, FarBandRenderer.lastDragonsOver,
                         FarBandRenderer.frames == 0 ? 0.0 : FarBandRenderer.nanos / 1e3 / FarBandRenderer.frames,
                         FarBandRenderer.frames));
                 for (String line : FarModelRenderer.stats())
