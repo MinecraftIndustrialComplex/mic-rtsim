@@ -2972,8 +2972,9 @@ Where the design left a gap the build took the conservative option; each is undo
 `crates/rtsim-conflict/src/engine/rail.rs` unless it says otherwise.
 
 M7 took MZB-348, MZB-349 and MZB-375 to MZB-389 (assigned at the Opus engine review of 0fb08ef5; 390 to
-399 stay spare). The review's fixes are MZB-348, 349 and 375 to 384, after MZB-347 below; 385 to 389 are
-left for the rest of M7.
+399 stay spare, and are M7's too if the Java half needs them). The review's fixes are MZB-348, 349 and
+375 to 384, after MZB-347 below; MZB-385 is the lead's decision on the wakes check; 386 to 389 are for
+the Java half.
 
 - **MZB-334** (a late pass and the line's point): a line's point, y and nearer station are set by a pass
   only if its exit is not before the line's reference time. A pass reported late still counts (adds are
@@ -3149,8 +3150,9 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
   binary gives the same state hashes on every run (ce5e9ae4, 94b07803). The sweep's resident peak is not flat per den: every den takes a leg every 480
   ticks, so a step dirties nearly every row page, and dirty pages are pinned until the save (the peak is
   the budget plus a step's changes, which grows with the dens). Measured slopes 0.119 (256 to 512), 0.097
-  (512 to 1,024) and 0.107 (256 to 1,024); the declared slope is 0.15 (`RAIL_RESIDENT_SLOPE`), as the
-  dragons' and herds' sweeps declare theirs. Both contracts pass.
+  (512 to 1,024) and 0.107 (256 to 1,024); the declared slope is 0.15 (`RAIL_RESIDENT_SLOPE`) because every den's
+  leg dirties row pages that stay pinned until the save (measured 0.097 to 0.119), as the dragons' and herds'
+  sweeps declare theirs. Both contracts pass.
 - **MZB-379** (P3-5, tolerance 0): with a tolerance of 0 nothing is quiet (`r < 0` is never true), so no
   meter retired: it woke once a day for ever and pushed a vanishing rate. A meter now retires when its
   rate has fallen to `RETIRE_PER_DAY` and it is quiet or its pushed rate is as low; a dead meter that
@@ -3169,19 +3171,32 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
   push count and peak is as before; the "wakes a day" figure is not comparable with the committed one,
   which counted live wakes only (0.93 to 0.97 a day), where it now counts live and stale pops.
   `RTC8` fixtures regenerate at landing, as the brief said.
-- **MZB-382** (finding: the wakes check still fails): after MZB-376 the pops are 2.09, 5.46, 5.24 and
+- **MZB-382** (finding: the wakes check failed): after MZB-376 the pops are 2.09, 5.46, 5.24 and
   5.22 a day at 4, 12, 24 and 50 legs a day and 5.79 on the trunk (were 8.85, 24.80, 48.75, 100.56 and
-  48.34), so "under 3 a day" passes at 4 legs a day and fails from 12. The remaining pops are live
+  48.34), so "under 3 a day" passed at 4 legs a day and failed from 12. The remaining pops are live
   wakes, not stale ones: the wake is the tick the rate would fall to the band's lower edge if no leg
   came (MZB-306), and in a steady flow a leg always comes, so each wake finds the rate in its band and
   books the next, `tau ln(1/0.9)` = 0.21 days later at a 10% band: 4.76 a day whatever the rate, once
   the band is relative (above about 10 legs a day, where `max(0.1 p, 1)` is `0.1 p`). Before the fix
   every leg moved the wake later, so the live wakes were rare (0.9 a day) and the stale ones were the
   cost; now the stale ones are rare (a leg in 80) and the live ones are the cost, at 5 row reads a day
-  a meter instead of 100. The check was not loosened. The choices: accept it and change the check to
-  what the design gives (the lead's), or make a live wake that finds nothing to push book a later wake
-  from the observed flow, which moves push times (the cut-service timings of run 2 are asserted to
-  0.2 days) and so is a design change, not a fix.
+  a meter instead of 100. The check was not loosened at the time; the lead decided it in MZB-385.
+- **MZB-385** (the lead's decision on the wakes check; step 0 of the Java half): the engine stays as
+  it is. A later idle wake would move push times (run 2's cut-service timings are asserted to 0.2 days),
+  and the pops are the meter doing its job: a service that stops is seen within the band, at a bounded
+  cost that does not grow with the rate. The design's "a meter wakes under 3 times a day" counted the
+  live wakes before the booked wake (MZB-376) existed, when a leg moved the wake later and so most
+  wakes were stale; it was never a bound on every pop. The check is now what D1 needs: at most 6.5
+  `Ev::Rail` pops a day (live and stale) per meter at every rate and on the trunk, and the 50-leg figure
+  at most 1.1 times the 24-leg figure (no growth with the rate). Pops a day, median of the seeds:
+
+  | legs a day | 4 | 12 | 24 | 50 | trunk (14 at 1.7) |
+  |------------|---|----|----|----|-------------------|
+  | before MZB-376 | 8.85 | 24.80 | 48.75 | 100.56 | 48.34 |
+  | after MZB-376 | 2.09 | 5.46 | 5.24 | 5.22 | 5.79 |
+
+  The 50-leg figure over the 24-leg one is 1.00. `sim mowzie` passes every check; only its
+  check names and details changed.
 - **MZB-383** (note for Java review C, the sampler): a station inside the circle, or within one sample
   past its edge, makes TRAIN_ARRIVED come before that leg's RAIL_PASS (the pass is reported when the
   train leaves the circle, the arrival when it stops), so the pass is held past the arrival it belongs

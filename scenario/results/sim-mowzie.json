@@ -57,9 +57,9 @@
           "detail": "0 raids on the track, 0 invasions on station 1's district 1001"
         },
         {
-          "name": "a meter wakes under 3 times a day, stale pops counted",
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
           "ok": true,
-          "detail": "4 legs a day at 4 legs a day: 2.09"
+          "detail": "4 legs a day at 4 legs a day: 2.09 pops a day"
         },
         {
           "name": "12 legs a day",
@@ -72,9 +72,9 @@
           "detail": "8 raids on the track, 0 invasions on station 1's district 1001"
         },
         {
-          "name": "a meter wakes under 3 times a day, stale pops counted",
-          "ok": false,
-          "detail": "12 legs a day at 12 legs a day: 5.46"
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
+          "ok": true,
+          "detail": "12 legs a day at 12 legs a day: 5.46 pops a day"
         },
         {
           "name": "24 legs a day",
@@ -87,9 +87,9 @@
           "detail": "2 raids on the track, 5 invasions on station 1's district 1001"
         },
         {
-          "name": "a meter wakes under 3 times a day, stale pops counted",
-          "ok": false,
-          "detail": "24 legs a day at 24 legs a day: 5.24"
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
+          "ok": true,
+          "detail": "24 legs a day at 24 legs a day: 5.24 pops a day"
         },
         {
           "name": "50 legs a day",
@@ -102,14 +102,24 @@
           "detail": "1 raids on the track, 5 invasions on station 1's district 1001"
         },
         {
-          "name": "a meter wakes under 3 times a day, stale pops counted",
-          "ok": false,
-          "detail": "50 legs a day at 50 legs a day: 5.22"
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
+          "ok": true,
+          "detail": "50 legs a day at 50 legs a day: 5.22 pops a day"
+        },
+        {
+          "name": "a meter's pops do not grow with the rate",
+          "ok": true,
+          "detail": "50 legs a day 5.22 pops a day, 24 legs a day 5.24: x1.00"
         },
         {
           "name": "14 lines at 1.7 legs a day on one trunk (23.8)",
           "ok": true,
           "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state 81d68e44f763963c"
+        },
+        {
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
+          "ok": true,
+          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): 5.79 pops a day"
         }
       ],
       "rungs": [
