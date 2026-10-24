@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.bobmowzie.mowziesmobs.server.item.ItemHandler;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
@@ -25,13 +26,19 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
@@ -444,6 +451,54 @@ public final class MowzieKit {
             e.setHealth(0f);
             e.die(source);
         }
+    }
+
+    // ---- a thief of the crystal (MZB-281) -------------------------------------------------------
+
+    /** Where a sleeping Frostmaw's ice crystal is, as {@code EntityFrostmaw.tick} works it out (a thief must stand within 1.8 blocks of it). */
+    public static Vec3 crystalPoint(EntityFrostmaw f) {
+        return new Vec3(1.6, 0.4, 1.8).yRot((float) Math.toRadians(-f.getYRot() - 90.0f)).add(f.position());
+    }
+
+    /**
+     * A thief of a Frostmaw's crystal: a mock {@code Player} (not a {@code ServerPlayer}) of the given game
+     * mode, added with {@code addFreshEntity} so that the jar's {@code getPlayersNearby} (the entity manager,
+     * not {@code level.players()}) finds it, and kept at the crystal's point at the end of every tick until the
+     * Frostmaw has lost its crystal. {@code invisible} gives it the invisibility effect (a bare
+     * {@code setInvisible} is undone by the entity's first tick); {@code fullInventory} puts one dirt in each of
+     * the 36 main slots (the jar's {@code isInventoryFull} asks only whether a slot is empty). It holds no chunk
+     * ticket and is no target of any goal ({@code NearestAttackableTargetGoal} reads {@code players()}).
+     * Discarded when the test ends. UNVERIFIED on a running server: a fallback is {@code FakePlayers.addSeen}
+     * (MZB-281).
+     */
+    public static Player thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
+        ServerLevel level = helper.getLevel();
+        Player p = helper.makeMockPlayer(mode);
+        Vec3 at = crystalPoint(f);
+        p.moveTo(at.x, at.y, at.z);
+        if (fullInventory)
+            for (int i = 0; i < 36; i++)
+                p.getInventory().setItem(i, new ItemStack(Items.DIRT));
+        check("the thief is added", level.addFreshEntity(p));
+        if (invisible)
+            p.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY, MobEffectInstance.INFINITE_DURATION, 0, false, false));
+        everyTick(helper, () -> {
+            if (!p.isRemoved() && !f.isRemoved() && f.getHasCrystal()) {
+                Vec3 c = crystalPoint(f);
+                p.moveTo(c.x, c.y, c.z);
+            }
+        });
+        ConflictKit.onEnd(helper, p::discard);
+        return p;
+    }
+
+    /** How many ice crystals a player's main inventory holds. */
+    public static int crystals(Player p) {
+        int n = 0;
+        for (ItemStack s : p.getInventory().items)
+            if (s.is(ItemHandler.ICE_CRYSTAL.get()))
+                n += s.getCount();
+        return n;
     }
 
     // ---- tags -----------------------------------------------------------------------------------

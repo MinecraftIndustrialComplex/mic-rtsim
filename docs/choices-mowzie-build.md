@@ -1879,7 +1879,11 @@ The tests:
   owner, for 100 ticks) or else `lastHurtByMob`, so a pet's kill, and a death within 5 s of a player's hit,
   are the player's (EQUILIBRIUM item 9: "vanilla's kill credit or the killer's owner"). Used by
   `Camps.onDeath` and by `ConflictBridge.onDeath` for a chief puppet (CHIEF_KILLED). BAND_CASUALTIES keep
-  M3's `byKind`, since nothing of M6 reads them.
+  M3's `byKind`, since nothing of M6 reads them. Built as a package-private `record Credit(int by, UUID
+  killer)`; the killer is null (a zero UUID in the record) unless the credit is a player. A machine
+  (`FakePlayer`) that deals the blow is BY_OTHER by `byKind` (MZB-111), and the vanilla fallback then still
+  names a real player whose hit came within the 100 ticks: the credit goes to the player, not to the machine.
+  `Camps.onDeath` takes the credit when the death event fires, so a hit after that moment changes nothing.
 - **MZB-262** (one fall for every chief death): M4's `chief_killed` is split. `chief_falls(w, f, killer,
   fall: At, at)` does what both paths share: `stats.chiefs_killed`, the Killing report witnessed by the old
   chief and the heir when there is a killer, `die`, `succeed(killer, true)`, the cowed time and the tape
@@ -1940,7 +1944,14 @@ The tests:
   before `poll`, so it precedes any CAMP_DEATH settled in the same tick. Each is written with
   `boundary().direct(CHIEF_STATE, 24, flags, now)`, the faction at 8 and the health at 16, kept for the
   next tick while `direct` returns less than 0, and dropped with the session (`Camps.clear`). A Peaceful
-  world sends it too: the steal happens there.
+  world sends it too: the steal happens there. Built with three differences: the queue is also flushed in
+  `sessionStopping` and in `switchedOff` (before `off = true`, while the camps still count as live), so a
+  state queued in the last tick of a session is not lost; it is cleared at `sessionStarted`,
+  `sessionFailed` and `clear`; and the camp-body check is `kind.isChief(body)` on the site's kind (or the
+  kind that claims the body when the site is gone), so a camp's non-chief body reports nothing.
+  `ConflictBridge.chiefPuppetFaction(Entity)` answers for a chief puppet. The counters are `chiefStatesQueued`
+  (every call that queued, a replaced entry counted again) and `chiefStates` (records written), both
+  public for the GameTests; `ConflictKit.chiefStates(faction)` reads the records by faction.
 - **MZB-275** (a chief's camp death is news): `Camps.death` posts `ConflictNews` CHIEF_KILLED for
   FLAG_CHIEF, as `ConflictBridge.journalLoss` does for a puppet. No chat, action-bar or title line comes of
   it; NOTICE_SHOWN keeps only the roar and the gong.
@@ -1985,11 +1996,25 @@ The tests:
   trouble. The fallback is `FakePlayers.addSeen(level, at, name)`, built as `add` but joined with
   `level.addNewPlayer(p)`, given the effect and `setInvisible(true)` (its effects never tick), removed with
   `removePlayerImmediately` before any release (it loads chunks round itself). The implementer records
-  which one ran.
+  which one ran. Built (M6 step 10, compiled and not run: the lead keeps the GameTest flock for another
+  round): the mock `Player`, as `MowzieKit.thief(helper, frostmaw, mode, invisible, fullInventory)`; no
+  `addSeen` exists. I read the paths a plain `Player` takes on a server: `Player.tick` posts
+  `PlayerTickEvent.Pre/Post` (Mowzie's handler only uses attachments and the inventory, with no cast), the
+  rtsim join hooks ignore anything that is not a `Mob` or an `ItemEntity`, the jar's steal breaks out
+  before its `ServerPlayer` advancement when the thief is none, and the mixin's injection point (right
+  after `setHasCrystal(false)`) comes before that break. Still UNVERIFIED on a running server: whether a mock `Player` ticks in the entity
+  list without trouble. The thief moves to the crystal's point (`MowzieKit.crystalPoint`) at the end of
+  every tick until the Frostmaw has lost its crystal; the spectator thief is also invisible, so that only
+  the jar's no-spectator filter can explain a robbery that does not happen; the full-inventory thief holds
+  one dirt in each of the 36 main slots. Test 3 puts its five Frostmaws 48 blocks apart, not 40, so that
+  each has its own 3 x 3 forced chunks.
 - **MZB-282** (test 6 without TaCZ): the Mowzie GameTest run holds only rtsim, Mowzie's Mobs and GeckoLib
   (D4), so the bullet is a Snowball, a `Projectile` that is not an `AbstractArrow`; TaCZ's
   `EntityKineticBullet extends Projectile` takes the same branch (cfr). The jar's arrow branch catches
   `source.getDirectEntity() instanceof AbstractArrow`, which a `ThrownTrident` is.
+  Built with the player 80 blocks from the Frostmaw, beyond its follow range of 50: a nearer survival player
+  in `level.players()` is picked as the target by `NearestAttackableTargetGoal` while it sleeps, which would
+  leave the arrow's `setTarget` (taken only when it has none) with nothing to show.
 - **MZB-283** (test 15's Umvuthi half is M9's): M6 tests the Frostmaw half only.
 - **MZB-284** (sim run 6, the den): checks and tolerances as in the design below. The farmed waits are
   compared with the kernel's own `delay_days` on the run's days (exact), and with the whole-day closed form
