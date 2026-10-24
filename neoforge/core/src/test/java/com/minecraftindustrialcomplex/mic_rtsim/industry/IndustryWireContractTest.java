@@ -88,7 +88,9 @@ class IndustryWireContractTest {
             // stress worlds' station fixes (SG30, SG32)
             "IND_TRAIN_ARRIVED_APPROACH", "IND_STATION_PORTS",
             // the syn200 fixes (SG50)
-            "IND_TRAIN_UNWATCHED");
+            "IND_TRAIN_UNWATCHED",
+            // SEC-1 S4a: package stores
+            "IND_PACKAGE_STORE", "IND_CHAIN_PACKAGE", "IND_STORE_CENSUS");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -122,6 +124,7 @@ class IndustryWireContractTest {
                 "PlayerPickup", IndRecords.Port.PLAYER_PICKUP, "StockBroken", IndRecords.Port.STOCK_BROKEN,
                 "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
+        group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN);
         group("cargo_from", "Arrival", 0, "Approach", IndRecords.Train.FLAG_APPROACH,
                 "Departure", IndRecords.Train.FLAG_DEPARTURE);
         group("not_learnable",
@@ -692,6 +695,69 @@ class IndustryWireContractTest {
                         .put32("season_count", IndRecords.Conditions.SEASON_COUNT, f.u32("season_count"))
                         .put64("season_length", IndRecords.Conditions.SEASON_LENGTH, f.i64("season_length"))
                         .put64("season_origin", IndRecords.Conditions.SEASON_ORIGIN, f.i64("season_origin"));
+            case "IND_PACKAGE_STORE": {
+                int c = f.count("n_frogports");
+                Rec r = journaled(n, IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(c), c, f)
+                        .put64("store", IndRecords.PackageStore.STORE, f.u64("store"))
+                        .put32("dim", IndRecords.PackageStore.DIM, f.u32("dim"))
+                        .put64("into", IndRecords.PackageStore.INTO, f.u64("into"));
+                for (int i = 0; i < c; i++) {
+                    String p = "frogport" + i + ".";
+                    int o = IndRecords.PackageStore.FROGPORTS + IndRecords.PackageStore.FROGPORT * i;
+                    r.put64(p + "district", o + IndRecords.PackageStore.F_DISTRICT, f.none(p + "district") ? 0 : f.u64(p + "district"))
+                            .put32(p + "inventory", o + IndRecords.PackageStore.F_INVENTORY,
+                                    f.none(p + "inventory") ? Integer.toUnsignedLong(IndRecords.NO_INVENTORY) : f.u32(p + "inventory"))
+                            .put32(p + "star", o + IndRecords.PackageStore.F_FLAGS, f.bool(p + "star") ? IndRecords.PackageStore.FLAG_STAR : 0)
+                            .put32(p + "x", o + IndRecords.PackageStore.F_X, f.i32(p + "x"))
+                            .put32(p + "y", o + IndRecords.PackageStore.F_Y, f.i32(p + "y"))
+                            .put32(p + "z", o + IndRecords.PackageStore.F_Z, f.i32(p + "z"))
+                            .put32(p + "conveyor_x", o + IndRecords.PackageStore.F_CONVEYOR_X, f.i32(p + "conveyor_x"))
+                            .put32(p + "conveyor_y", o + IndRecords.PackageStore.F_CONVEYOR_Y, f.i32(p + "conveyor_y"))
+                            .put32(p + "conveyor_z", o + IndRecords.PackageStore.F_CONVEYOR_Z, f.i32(p + "conveyor_z"))
+                            .put64(p + "from", o + IndRecords.PackageStore.F_FROM, f.none(p + "from") ? 0 : f.u64(p + "from"));
+                }
+                int k = 0;
+                for (int a = 0; a < c; a++)
+                    for (int b = a + 1; b < c; b++, k++)
+                        r.put16("hops" + k, IndRecords.PackageStore.hopAt(c, a, b), (int) f.u32("hops" + k));
+                return r;
+            }
+            case "IND_CHAIN_PACKAGE": {
+                int c = f.count("n_entries");
+                return journaled(n, IndRecords.IND_CHAIN_PACKAGE, IndRecords.ChainPackage.size(c), c, f)
+                        .put64("store", IndRecords.ChainPackage.STORE, f.u64("store"))
+                        .put64("district", IndRecords.ChainPackage.DISTRICT, f.u64("district"))
+                        .put32("inventory", IndRecords.ChainPackage.INVENTORY, f.u32("inventory"))
+                        .put32("direction", IndRecords.ChainPackage.DIRECTION, code("chain_direction", f.sym("direction")))
+                        .put32("frogport", IndRecords.ChainPackage.FROGPORT, f.u32("frogport"))
+                        .put32("destination", IndRecords.ChainPackage.DESTINATION, f.u32("destination"))
+                        .put32("packages", IndRecords.ChainPackage.PACKAGES, f.u32("packages"))
+                        .put32("address", IndRecords.ChainPackage.ADDRESS, f.u32("address"))
+                        .put64("op", IndRecords.ChainPackage.OP_ID, f.u64("op"))
+                        .entries(IndRecords.ChainPackage.ENTRIES, f, "entry", c);
+            }
+            case "IND_STORE_CENSUS": {
+                int m = f.count("m"), c = f.count("n_entries");
+                Rec r = latest(n, IndRecords.IND_STORE_CENSUS, IndRecords.StoreCensus.size(m, c), c,
+                        IndRecords.StoreCensus.GAME_TIME, f)
+                        .put64("store", IndRecords.StoreCensus.STORE, f.u64("store"))
+                        .put32("m", IndRecords.StoreCensus.M, m);
+                for (int i = 0; i < m; i++) {
+                    String d = "dest" + i;
+                    int o = IndRecords.StoreCensus.PACKAGES + IndRecords.StoreCensus.PAIR * i;
+                    r.put32(d, o, f.none(d) ? Integer.toUnsignedLong(IndRecords.NO_INVENTORY) : f.u32(d))
+                            .put32(d + ".packages", o + 4, f.u32(d + ".packages"));
+                }
+                for (int i = 0; i < c; i++) {
+                    String e = "entry" + i;
+                    int o = IndRecords.StoreCensus.goodsAt(m) + 16 * i;
+                    String dest = f.sym(e + ".dest");
+                    r.put32(e + ".good", o, f.u32(e + ".good"))
+                            .put32(e + ".dest", o + 4, dest.equals("none") ? Integer.toUnsignedLong(IndRecords.NO_INVENTORY) : f.u32(dest))
+                            .put64(e + ".amount", o + 8, f.i64(e + ".amount"));
+                }
+                return r;
+            }
             case "IND_POWER_LINK":
                 return journaled(n, IndRecords.IND_POWER_LINK, IndRecords.PowerLink.SIZE, 0, f)
                         .put64("sink", IndRecords.PowerLink.SINK, f.u64("sink"))
