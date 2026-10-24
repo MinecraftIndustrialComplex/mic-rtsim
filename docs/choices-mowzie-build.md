@@ -1298,9 +1298,9 @@ The tests:
 
 ## M9 Umvuthana
 
-- **MZB-400** (ids and base): M9 takes MZB-400 to 349, as its lead assigned. The header above gives M7 300 to
-  349 and M9 400 to 449, so M7 takes 400 to 449 instead (the header is outside this heading and is not
-  edited here). M5 has also written MZB-290 to 292, inside M6's range, so M6 starts after 292. The design
+- **MZB-400** (ids and base): M9 takes MZB-400 to 449, the header's range (the design was first written as
+  300 to 343 and renumbered by the lead). M5 has also written MZB-290 to 292, inside M6's range; M6 uses
+  250 to 289. The design
   reads M4 at `feat/mowzie-m4` 2b239fe2 (the engine, as `target/m4-src`) and M5 at `feat/mowzie-m5`
   d5b45b22 (the Java). They are separate branches, so M9's branch merges both before anything else.
 - **MZB-401** (the chief's slot): a culture with `chief_body: Option<String>` keeps its chief in one slot of
