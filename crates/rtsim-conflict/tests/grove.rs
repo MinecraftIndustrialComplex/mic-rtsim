@@ -489,15 +489,18 @@ fn pair_ticks(r: &CampRun) -> Vec<Tick> {
         .collect()
 }
 
-/// A grove of a hundred and twenty whose plunder drive is fast (a plunder every few hours when it can field one):
-/// enough warriors that bands could muster one after another for days.
+/// A grove of a hundred or so whose plunder drive is fast (a plunder every few hours when it can field one):
+/// enough warriors that bands could muster one after another for days. The seed does not change a run of this
+/// path (six seeds of one grove were one run, and the first form of the test below said so six times), so the
+/// seed sets the grove: its size, 102 to 132, and the drive's mean, 0.03 to 0.08 of a day.
 fn busy_grove(seed: u64) -> CampRun {
+    let size = 96 + 6 * seed as u16;
     let mut cultures = Cultures::builtin();
     for k in &mut cultures.list {
-        k.def.plunder_mean_days = Some(0.05);
-        k.def.pool_cap = 120;
+        k.def.plunder_mean_days = Some(0.02 + 0.01 * seed as f64);
+        k.def.pool_cap = size as u32;
     }
-    CampRun::with_cultures(seed, cultures, "umvuthana", 120)
+    CampRun::with_cultures(seed, cultures, "umvuthana", size)
 }
 
 /// MZB-616: musters can follow one another with no cap, and since MZB-612 an heir waits while a band
@@ -513,11 +516,14 @@ fn musters_back_to_back_seat_the_heir_within_one_muster_of_due() {
         let due = heir_due(&r);
         let muster = days(1.0);
         let mut started_after_due = 0;
-        let mut t = Tick(due.0 - days(1.5));
+        // The sampling grid starts a different part of a step in for each seed.
+        let mut t = Tick(due.0 - days(1.5) + days(0.1) * (seed - 1) / 6);
         let end = due + days(3.0);
         while t < end {
-            r.run(t);
+            // The count is read before the step: the plunder drive starts its parties inside it, and a count taken
+            // after it would see only the raid ordered below.
             let before = r.c.stats.parties.iter().sum::<u64>();
+            r.run(t);
             let _ = r.raid();
             let after = r.c.stats.parties.iter().sum::<u64>();
             // A band that musters at or after the due tick, with the pair not yet ordered.

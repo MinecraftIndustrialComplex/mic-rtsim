@@ -3936,6 +3936,16 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   no-op now: `answer` removed it). No GameTest: an exception in a kill needs another mod's handler to throw, and the
   integration's own handlers do not.
 
+- **MZB-647** (the MZB-616 test counts the plunder drive and varies by seed; test only; review P3-2):
+  `musters_back_to_back_seat_the_heir_within_one_muster_of_due` read its party count after `r.run(t)`, so a party the
+  plunder drive started inside the step was never counted, only the raid the test ordered. The count is now read
+  before the step. And `busy_grove(seed)` was one grove six times (the seed changes nothing on this path: all six
+  runs had the same due tick, 4608001, and the same counts), so the seed now sets the grove's size (96 plus 6 times
+  the seed: 102 to 132, pool cap the same) and the drive's mean (0.02 plus 0.01 times the seed, in days), and the
+  start of the sampling grid (a sixth of a step further in for each seed). The six runs now differ (the drive's
+  extra parties fall at 4605601 for seed 1, at 4596801 and 4668801 for seed 3, and so on, before and after the
+  due tick) and none starts a party between the due tick and the pair.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
