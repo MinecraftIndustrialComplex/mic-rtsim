@@ -13,8 +13,9 @@
 //! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
 //!   are BAND_STATE (counted) and CHIEF_STATE (given to the engine at its own time, M6); 0x0092
 //!   and 0x0093 are retired. The journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
-//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED, CHIEF_PAID and
-//!   HUNT_APPLIED by their op ids too) into `Conflict::ingest`, at their own time with the other
+//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID by their op ids
+//!   too; CAMP_DEATH and HUNT_APPLIED by the engine's own books, which a copy finds spent) into
+//!   `Conflict::ingest`, at their own time with the other
 //!   modules and the world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY
 //!   among them (no war party leaves on Peaceful, MZB-17), and HAVEN_CHEST (M9, MZB-446: a replay
 //!   after a crash knows the chest the session knew; it names the chest's state, so a copy is
@@ -479,7 +480,6 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
         boundary::BAND_LOOTED => (40, 48),
         boundary::TRADED => (56, 64),
         boundary::CHIEF_PAID => (64, 72),
-        boundary::HUNT_APPLIED => (40, 48),
         _ => return 0,
     };
     if rec.size() >= size {
