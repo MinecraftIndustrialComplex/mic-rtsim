@@ -9,11 +9,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * The journal (A9, PLAN.md §4.9): what keeps the sim and Minecraft consistent across saves and
@@ -24,6 +22,10 @@ import java.util.Set;
  *       go into a buffer. The engine acknowledges an observation once a page that includes it is on
  *       disk; the journal is then trimmed up to it;</li>
  *   <li>the next observation sequence, so sequences are never reused in this world;</li>
+ *   <li>the newest JOURNAL_GEN the engine acknowledged, kept past the trim ({@link #pinnedGen()}): the
+ *       entries after it (up to the next JOURNAL_GEN among them) are that generation's, and an engine whose
+ *       pages are older than the journal must hear which generation they are before it judges a copy of one
+ *       (docs/boundary.md §3.2);</li>
  *   <li>Java's dictionary (dimension, item and body-kind names behind the ids observations use),
  *       because a journaled record replayed in a later session must still mean the same thing.</li>
  * </ul>
@@ -47,8 +49,13 @@ public final class Journal {
     private long nextObsSeq = 1;
     private final ArrayDeque<Entry> entries = new ArrayDeque<>();
     private long entryBytes;
-    /** Op ids of engine commands applied in Minecraft whose COMMAND_RESULT is still unacknowledged. */
-    private final Set<Long> appliedCmdOps = new HashSet<>();
+    /** The newest acknowledged JOURNAL_GEN ({@link #pinnedGen()}), or null. Always below every entry. */
+    private Entry pinnedGen;
+    /**
+     * Op ids of engine commands applied in Minecraft whose COMMAND_RESULT is still unacknowledged, each
+     * with how many entries hold it (a COMMAND_RESULT and copies of it, REASSERT, trimmed one by one).
+     */
+    private final Map<Long, Integer> appliedCmdOps = new HashMap<>();
     private final List<DictEntry> dict = new ArrayList<>();
     private final Map<DictEntry, Integer> dictIds = new HashMap<>();
     private Runnable onChange = () -> {};
@@ -78,7 +85,7 @@ public final class Journal {
 
     /** True when an engine op id was already applied in Minecraft and the engine may not know yet. */
     public boolean commandOpApplied(long opId) {
-        return appliedCmdOps.contains(opId);
+        return appliedCmdOps.containsKey(opId);
     }
 
     /** GameTests: a crash rolled the journal back to before this op id was applied. */
@@ -126,9 +133,9 @@ public final class Journal {
         byte[] bytes = record.array();
         entries.addLast(new Entry(seq, bytes));
         entryBytes += bytes.length;
-        int kind = Short.toUnsignedInt(record.getShort(Layout.R_KIND));
-        if (kind == Obs.COMMAND_RESULT && record.getInt(Layout.R_AUX) == Obs.CommandResult.APPLIED)
-            appliedCmdOps.add(record.getLong(Obs.CommandResult.OP_ID));
+        int opAt = appliedOpAt(record);
+        if (opAt >= 0)
+            appliedCmdOps.merge(record.getLong(opAt), 1, Integer::sum);
         onChange.run();
         return seq;
     }
@@ -156,12 +163,17 @@ public final class Journal {
         return commit(copy);
     }
 
-    /** Drops every entry the engine acknowledged (its pages on disk include them). */
+    /**
+     * Drops every entry the engine acknowledged (its pages on disk include them), except the newest
+     * JOURNAL_GEN among them, which becomes {@link #pinnedGen()}.
+     */
     public void trim(long ackedObsSeq) {
         boolean changed = false;
         while (!entries.isEmpty() && entries.peekFirst().seq() <= ackedObsSeq) {
             Entry e = entries.removeFirst();
             entryBytes -= e.bytes().length;
+            if (kindOf(e.bytes()) == Obs.JOURNAL_GEN)
+                pinnedGen = e;
             forgetOp(e);
             changed = true;
         }
@@ -169,19 +181,58 @@ public final class Journal {
             onChange.run();
     }
 
+    /**
+     * The newest JOURNAL_GEN the engine acknowledged, or null.
+     * Sent first at each session start like an entry ({@link #drainInto}); an engine whose pages include it
+     * skips it. Without it, an engine whose pages are older than the journal (restored, or lost after the
+     * trim) would admit the entries under the wrong generation, and a copy of one of them (REASSERT)
+     * would apply a second time (docs/boundary.md §3.2). The entries after it, up to the next JOURNAL_GEN
+     * among them, are its generation's. Not an entry: not in {@link #size}, {@link #bytes},
+     * {@link #entries} or {@link #firstSeq}.
+     */
+    public Entry pinnedGen() {
+        return pinnedGen;
+    }
+
+    private static int kindOf(byte[] record) {
+        return Short.toUnsignedInt(ByteBuffer.wrap(record).order(Layout.ORDER).getShort(Layout.R_KIND));
+    }
+
     private void forgetOp(Entry e) {
         ByteBuffer b = ByteBuffer.wrap(e.bytes()).order(Layout.ORDER);
-        if (Short.toUnsignedInt(b.getShort(Layout.R_KIND)) == Obs.COMMAND_RESULT
-                && b.getInt(Layout.R_AUX) == Obs.CommandResult.APPLIED)
-            appliedCmdOps.remove(b.getLong(Obs.CommandResult.OP_ID));
+        int opAt = appliedOpAt(b);
+        if (opAt >= 0)
+            appliedCmdOps.computeIfPresent(b.getLong(opAt), (op, n) -> n > 1 ? n - 1 : null);
     }
 
     /**
-     * Copies entries with a sequence above {@code afterSeq}, in order, while they fit. Returns the last
-     * sequence copied, or {@code afterSeq} when none was.
+     * Where a record holds the op id of an engine command Java applied: a COMMAND_RESULT APPLIED's, or
+     * the one inside a copy of one (REASSERT, docs/boundary.md §3.2). -1 for any other record.
+     */
+    static int appliedOpAt(ByteBuffer b) {
+        int base = 0;
+        if (Short.toUnsignedInt(b.getShort(Layout.R_KIND)) == Obs.REASSERT)
+            base = Obs.Reassert.INNER;
+        if (b.limit() < base + Obs.CommandResult.SIZE)
+            return -1;
+        if (Short.toUnsignedInt(b.getShort(base + Layout.R_KIND)) == Obs.COMMAND_RESULT
+                && b.getInt(base + Layout.R_AUX) == Obs.CommandResult.APPLIED)
+            return base + Obs.CommandResult.OP_ID;
+        return -1;
+    }
+
+    /**
+     * Copies entries with a sequence above {@code afterSeq}, in order, while they fit, the pinned
+     * generation ({@link #pinnedGen()}) first. Returns the last sequence copied, or {@code afterSeq} when
+     * none was.
      */
     public long drainInto(RecordWriter writer, long afterSeq) {
         long last = afterSeq;
+        if (pinnedGen != null && pinnedGen.seq() > afterSeq) {
+            if (!writer.copy(pinnedGen.bytes()))
+                return last;
+            last = pinnedGen.seq();
+        }
         for (Entry e : entries) {
             if (e.seq() <= afterSeq)
                 continue;
@@ -247,9 +298,9 @@ public final class Journal {
 
     // ---- persistence (the SavedData encodes this snapshot as NBT) --------------------------------
 
-    /** A plain snapshot of the journal for encoding. */
+    /** A plain snapshot of the journal for encoding. {@code pinnedGen}: {@link #pinnedGen()}'s record, or null. */
     public record Snapshot(long lastAppliedCmdSeq, long nextObsSeq, long[] seqs, byte[][] records,
-                           int[] dictKinds, String[] dictNames) {}
+                           int[] dictKinds, String[] dictNames, byte[] pinnedGen) {}
 
     public Snapshot snapshot() {
         long[] seqs = new long[entries.size()];
@@ -266,7 +317,8 @@ public final class Journal {
             kinds[d] = dict.get(d).kind();
             names[d] = dict.get(d).name();
         }
-        return new Snapshot(lastAppliedCmdSeq, nextObsSeq, seqs, records, kinds, names);
+        return new Snapshot(lastAppliedCmdSeq, nextObsSeq, seqs, records, kinds, names,
+                pinnedGen == null ? null : pinnedGen.bytes());
     }
 
     public static Journal restore(Snapshot s) {
@@ -278,9 +330,19 @@ public final class Journal {
             j.entries.addLast(e);
             j.entryBytes += e.bytes().length;
             ByteBuffer b = ByteBuffer.wrap(e.bytes()).order(Layout.ORDER);
-            if (Short.toUnsignedInt(b.getShort(Layout.R_KIND)) == Obs.COMMAND_RESULT
-                    && b.getInt(Layout.R_AUX) == Obs.CommandResult.APPLIED)
-                j.appliedCmdOps.add(b.getLong(Obs.CommandResult.OP_ID));
+            int opAt = appliedOpAt(b);
+            if (opAt >= 0)
+                j.appliedCmdOps.merge(b.getLong(opAt), 1, Integer::sum);
+        }
+        byte[] pinned = s.pinnedGen();
+        if (pinned != null) {
+            if (pinned.length < Obs.JournalGen.SIZE || kindOf(pinned) != Obs.JOURNAL_GEN)
+                throw new IllegalStateException("mic_rtsim journal is corrupt: its kept generation is not a JOURNAL_GEN");
+            j.pinnedGen = new Entry(ByteBuffer.wrap(pinned).order(Layout.ORDER).getLong(Obs.OBS_SEQ), pinned);
+            long first = j.entries.isEmpty() ? j.nextObsSeq : j.entries.peekFirst().seq();
+            if (j.pinnedGen.seq() <= 0 || j.pinnedGen.seq() >= first)
+                throw new IllegalStateException("mic_rtsim journal is corrupt: its kept generation " + j.pinnedGen.seq()
+                        + " is not below its first entry " + first);
         }
         for (int d = 0; d < s.dictNames().length; d++) {
             DictEntry key = new DictEntry(s.dictKinds()[d], s.dictNames()[d]);
@@ -290,9 +352,14 @@ public final class Journal {
         return j;
     }
 
-    /** Sanity: entries are strictly increasing and below the next sequence. */
+    /** Sanity: entries are strictly increasing and below the next sequence, the pinned generation below them. */
     public boolean consistent() {
         long prev = 0;
+        if (pinnedGen != null) {
+            if (pinnedGen.seq() <= 0 || pinnedGen.seq() >= nextObsSeq || kindOf(pinnedGen.bytes()) != Obs.JOURNAL_GEN)
+                return false;
+            prev = pinnedGen.seq();
+        }
         Iterator<Entry> it = entries.iterator();
         while (it.hasNext()) {
             long s = it.next().seq();

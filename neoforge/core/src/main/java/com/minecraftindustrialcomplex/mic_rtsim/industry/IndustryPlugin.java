@@ -84,10 +84,25 @@ public interface IndustryPlugin {
     /**
      * The shape of a store this plugin declared with {@code KIND_PLUGIN} (a PowerGrid battery):
      * {@code {extra kind bits, item slots, fluid capacity, energy capacity}}, or null when it is not this
-     * plugin's. Without one the core reads the shape from the capabilities.
+     * plugin's. Without one the core reads the shape from the capabilities. Also asked for an inventory whose
+     * parts are not all loaded ({@link #partsLoaded}): its shape then, without reading the parts; without one
+     * the detection leaves it out, as an inventory in a chunk that is not loaded.
      */
     default long[] describe(ServerLevel level, BlockPos pos) {
         return null;
+    }
+
+    /**
+     * Whether reading {@code be}'s capabilities reads only chunks that are loaded (FULL), {@code be}'s own
+     * chunk being loaded (R2-11): false for a multiblock inventory with a part in a chunk that is not, whose
+     * handler reads that part through {@code Level.getBlockEntity} (a Create vault's controller builds its
+     * handler from every part). That read waits for a chunk still loading, running every other chunk load due
+     * on the server thread meanwhile, and loads a chunk that is not loaded. The core then treats the inventory
+     * as one in a chunk not loaded: a sweep skips it, a detection takes its shape from {@link #describe}. The
+     * default: true.
+     */
+    default boolean partsLoaded(ServerLevel level, BlockEntity be) {
+        return true;
     }
 
     /** Boundary inventories this block entity adds beyond tagged storage (I3): packager targets, postboxes. */
