@@ -302,9 +302,43 @@ pub(super) fn run_to(st: &mut State, at: Tick) {
 pub(super) fn catch_up(st: &mut State, rec: &Rec<'_>) {
     if rec.size() >= obs::BODY {
         let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
-        let at = Tick(phase1::world_tick(st, gt));
-        run_to(st, at);
+        catch_up_to(st, Tick(phase1::world_tick(st, gt)));
     }
+}
+
+/// [`catch_up`] to world tick `at`, a journaled record's own time. While replaying the record
+/// is a replayed one (the first record at or past `session_first` ends the replay before it is
+/// admitted), and the replay clock rises to it first (docs/replay-gate.md §3.6, RP-24): the
+/// clock follows the records.
+pub(super) fn catch_up_to(st: &mut State, at: Tick) {
+    if st.replaying {
+        st.replay_clock = st.replay_clock.max(at);
+    }
+    run_to(st, at);
+}
+
+/// The world tick a run of the clock may reach for world tick `at` (docs/replay-gate.md §3.6,
+/// RP-24). While the session's replay runs and a module that shares the world runs
+/// ([`any_viewer`]), no later than the replay clock: the world's present at SESSION_START,
+/// raised by each replayed record ([`catch_up_to`]). The hand-over's time is Java's present, at
+/// or past the last replayed record, and running the clock there would fire the whole window's
+/// events (a fight's end, a band home and pooled) before the later hand-overs' records of that
+/// window arrive. Otherwise `at`: with none of the four running a phase 1 world alone keeps
+/// today's clock.
+pub(super) fn clock_target(st: &State, at: Tick) -> Tick {
+    if st.replaying && any_viewer(st) {
+        at.min(st.replay_clock)
+    } else {
+        at
+    }
+}
+
+/// The hand-over's game time as a run of the clock may reach it: [`clock_target`] of its world
+/// tick. Every read of the hand-over's time that runs the clock takes it (the four modules'
+/// `simulate` and resets, phase 1's `simulate` and latest-state inputs, the ships' build, the
+/// records applied at the hand-over's time: STATE kinds and the rejects).
+pub(super) fn hand_over_target(st: &State) -> Tick {
+    clock_target(st, Tick(phase1::world_tick(st, st.game_time)))
 }
 
 // ---- the replay end ---------------------------------------------------------------------------------

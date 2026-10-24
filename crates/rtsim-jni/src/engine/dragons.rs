@@ -319,7 +319,7 @@ fn set_enabled(st: &mut State, on: bool) {
 fn reset_if_due(st: &mut State) {
     if st.dragons.reset_due && running(st) {
         st.dragons.reset_due = false;
-        let at = Tick(super::phase1::world_tick(st, st.game_time));
+        let at = shared::hand_over_target(st);
         let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
         d.session_start(w, at.max(d.now()));
         // Java's far table is per session: every dragon goes out again (far.rs).
@@ -349,7 +349,9 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             }
             let dict = java_species(st);
             if let Ok((_, _, _, o)) = boundary::decode_obs(b, &dict) {
-                ingest(st, &o, st.game_time);
+                // At the hand-over's time, held while replaying (docs/replay-gate.md §3.6).
+                let at = shared::hand_over_target(st);
+                ingest(st, &o, at);
             }
         }
         _ => {}
@@ -396,7 +398,8 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         define_items(st, &ids);
     }
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
-    ingest(st, &o, gt);
+    let at = Tick(super::phase1::world_tick(st, gt));
+    ingest(st, &o, at);
 }
 
 /// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a
@@ -466,9 +469,10 @@ pub(super) fn nest_day(st: &mut State, ticks: u64) {
     st.phase1.taint();
 }
 
-fn ingest(st: &mut State, o: &Obs, game_time: i64) {
+/// Applies one record at world tick `at` (a journaled record's own time, or the hand-over's as
+/// the clock may reach it, `shared::hand_over_target`).
+fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.dragons.records += 1;
-    let at = Tick(super::phase1::world_tick(st, game_time));
     let at = at.max(st.dragons.engine.now()).max(st.phase1.world.now());
     with_infra(st, |d, w, infra| d.ingest(w, infra, o, at));
     st.phase1.taint();
@@ -543,7 +547,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    let at = Tick(super::phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
 }
 
@@ -613,8 +617,8 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
                             reason: 3,
                             cmd_seq: 0,
                         });
-                        let gt = st.game_time;
-                        ingest(st, &rejected, gt);
+                        let at = shared::hand_over_target(st);
+                        ingest(st, &rejected, at);
                     } else {
                         // An oil gate ask (a lair placed, a survey) is only an ask: dropped.
                         super::log_warn(&format!(

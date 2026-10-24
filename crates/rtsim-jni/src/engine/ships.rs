@@ -357,7 +357,8 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 return;
             }
             if let Ok((_, _, _, o)) = boundary::decode_obs(b) {
-                let at = Tick(phase1::world_tick(st, st.game_time));
+                // At the hand-over's time, held while replaying (docs/replay-gate.md §3.6).
+                let at = shared::hand_over_target(st);
                 ingest(st, &o, at);
             }
         }
@@ -411,8 +412,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     }
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
-    // Everything before it happens first: the dragons, the ships and the world, in time order.
-    shared::run_to(st, at);
+    // Everything before it happens first: the dragons, the ships and the world, in time order
+    // (the replay clock rises to it while replaying).
+    shared::catch_up_to(st, at);
     match &o {
         Obs::PortFound(p) if st.phase1.world.node_of_key(p.village).is_none() => {
             // A port names an adopted village (VILLAGE_ADOPTED comes at its structure start,
@@ -505,7 +507,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
     if !st.ships.engine.is_built() {
         let mut groups: BTreeSet<(u16, rtsim_travel::Medium)> = BTreeSet::new();
@@ -620,7 +622,7 @@ fn reject(st: &mut State, agent: u64, epoch: u32, reason: u32) {
         reason,
         cmd_seq: 0,
     });
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     ingest(st, &o, at);
 }
 
