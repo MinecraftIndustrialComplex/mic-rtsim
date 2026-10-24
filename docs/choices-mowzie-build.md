@@ -1594,6 +1594,14 @@ under its own heading.
     the tick its footprint went down read the entity after the chunks had unloaded; it now checks that the
     Frostmaw was not taken (not discarded) and is still tagged. (7) `Den.at` and `Grove.at` read `spot` before
     the camp was declared; they use the chunk's middle until then.
+  - A body hidden and tracked again (read from NeoForge 21.1.249's patched `ServerLevel.EntityCallbacks`:
+    `onTrackingEnd` posts `EntityLeaveLevelEvent` with no removal reason, `onTrackingStart` posts no
+    `EntityJoinLevelEvent`; only `addEntity` does, on a load or a spawn) stays in the books: `Camps.onLeave`
+    returns at once for a body with no removal reason, so it keeps its index entry and is never written off; a
+    footprint body's chunk going down is CAMP_OUT and coming back is a census that lists it again, and an
+    elsewhere body is listed by every census as long as its object is alive; one that then unloads leaves the
+    index at the next prune and comes back with a join from disk and a recount (the one gap is a record
+    carrier hidden when its acknowledgement comes, which keeps its records until the next session, MZB-241).
   - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
     and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
   - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
