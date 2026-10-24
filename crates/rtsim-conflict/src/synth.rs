@@ -373,6 +373,12 @@ pub struct FakeConflict {
     /// Applies each hunt a tick after it arrives, killing up to this many animals (HUNT_APPLIED
     /// even when it kills none); `None` keeps the hunts unapplied.
     pub hunt_kills: Option<u32>,
+    /// The last op the plugin applied for each faction and district (docs/boundary.md §9.6, M9c):
+    /// an OWED_HUNT naming it again is ignored, and one whose `replaced` is it kills `rest`
+    /// (MZB-449, the re-check). Unsaved: a session's end clears it.
+    pub hunt_last: BTreeMap<(u64, u64), u64>,
+    /// The animals the hunts it applied killed, in the world.
+    pub animals_killed: u32,
     uuids: u64,
     /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
     /// counts, at the recall, first stacks first (0: none; MZB-131).
@@ -429,6 +435,8 @@ impl FakeConflict {
             hunts_sent: Vec::new(),
             hunts: Vec::new(),
             hunt_kills: None,
+            hunt_last: BTreeMap::new(),
+            animals_killed: 0,
             uuids: 0,
             walk_off_deaths: 0,
             held: Vec::new(),
@@ -715,11 +723,15 @@ impl FakeConflict {
             Cmd::Reconcile(r) => self.reconcile(&r, at),
             Cmd::OwedHunt(h) => {
                 self.hunts_sent.push(h);
-                self.hunts
-                    .retain(|e| !(e.faction == h.faction && e.district == h.district));
-                self.hunts.push(h);
-                if let Some(k) = self.hunt_kills {
-                    self.apply_hunts(k, at + self.answer_ticks);
+                // The plugin's rule (MZB-449): the op it applied last is ignored when it comes
+                // again; it was answered when it was applied.
+                if self.hunt_last.get(&(h.faction, h.district)) != Some(&h.op) {
+                    self.hunts
+                        .retain(|e| !(e.faction == h.faction && e.district == h.district));
+                    self.hunts.push(h);
+                    if let Some(k) = self.hunt_kills {
+                        self.apply_hunts(k, at + self.answer_ticks);
+                    }
                 }
             }
             Cmd::Notice(n) if self.play_notices => {
@@ -748,19 +760,37 @@ impl FakeConflict {
     }
 
     /// Applies every hunt the plugin keeps, each killing up to `kills` animals, at `at`: the
-    /// answer is HUNT_APPLIED whatever it killed (MZB-426).
+    /// answer is HUNT_APPLIED whatever it killed (MZB-426). A hunt whose `replaced` is the last op
+    /// applied for its faction and district kills `rest` instead of `count` (MZB-449); the op is
+    /// the last applied from then on.
     pub fn apply_hunts(&mut self, kills: u32, at: Tick) {
         for h in std::mem::take(&mut self.hunts) {
+            let key = (h.faction, h.district);
+            let owed = if h.replaced != 0 && self.hunt_last.get(&key) == Some(&h.replaced) {
+                h.rest
+            } else {
+                h.count
+            };
+            let killed = kills.min(owed);
+            self.hunt_last.insert(key, h.op);
+            self.animals_killed += killed;
             self.push(
                 at,
                 Obs::HuntApplied(boundary::HuntApplied {
                     faction: h.faction,
                     district: h.district,
                     op: h.op,
-                    killed: kills.min(h.count),
+                    killed,
                 }),
             );
         }
+    }
+
+    /// A session's end: the hunts the plugin kept and the last ops it applied are in its memory
+    /// (MZB-426, MZB-449), which is not saved. The animals it killed are the world's.
+    pub fn forget_hunts(&mut self) {
+        self.hunts.clear();
+        self.hunt_last.clear();
     }
 
     // ---- camps (MOWZIE.md §4.9, emulated) -------------------------------------------------
@@ -1739,7 +1769,7 @@ impl CampRun {
         self.plugin.drop_queued();
         // What the plugin held is in its memory, which a session's end clears.
         self.plugin.take_held(None);
-        self.plugin.hunts.clear();
+        self.plugin.forget_hunts();
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }
