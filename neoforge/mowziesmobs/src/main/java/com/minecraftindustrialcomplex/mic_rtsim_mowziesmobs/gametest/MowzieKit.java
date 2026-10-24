@@ -299,14 +299,20 @@ public final class MowzieKit {
      * A body of the jar standing where it is told, untagged (a stray), added to the level; {@code noAi}
      * keeps it where it stands. Finalized as the jar's worldgen does, with STRUCTURE.
      */
-    @SuppressWarnings("deprecation")
     public static <T extends Mob> T stray(ServerLevel level, EntityType<T> type, double x, double y, double z, boolean noAi) {
+        return stray(level, type, x, y, z, noAi, true);
+    }
+
+    /** As above; {@code finalize} false leaves the body as its constructor made it (no mask or weapon roll, no escort). */
+    @SuppressWarnings("deprecation")
+    public static <T extends Mob> T stray(ServerLevel level, EntityType<T> type, double x, double y, double z, boolean noAi, boolean finalize) {
         T m = type.create(level);
         if (m == null)
             throw new IllegalStateException("no " + type);
         m.moveTo(x, y, z, level.random.nextFloat() * 360f - 180f, 0f);
         m.setYHeadRot(m.getYRot());
-        m.finalizeSpawn(level, level.getCurrentDifficultyAt(m.blockPosition()), MobSpawnType.STRUCTURE, null);
+        if (finalize)
+            m.finalizeSpawn(level, level.getCurrentDifficultyAt(m.blockPosition()), MobSpawnType.STRUCTURE, null);
         m.setNoAi(noAi);
         check(type + " is added", level.addFreshEntity(m));
         return m;
