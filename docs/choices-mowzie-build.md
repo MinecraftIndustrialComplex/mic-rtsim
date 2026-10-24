@@ -835,6 +835,12 @@ conservative option at its fork.
   last record was the hand-over's last, and at the SESSION_START arm's end when there is nothing to
   replay. It replaces conflict's two MZB-141 triggers and `notices_due`. Rejected: one end per module
   (four places that can disagree on when a session's live part starts).
+  Amended (the coordinator, on §10's second question): `replay_end` counts the hand-overs the replay
+  took and the records it replayed, in a stat and in one info log line at the end, so a slow replay
+  shows up.
+- The three §10 trade-offs (lose rather than repeat; nothing near players until the replay ends; a
+  copied band death shrinks the band by one, the extra body clearing at the next despawn) were decided
+  by the coordinator on 2026-10-24, as recommended, not by Ben, who can overrule.
 - **RP-3** (the gate at each engine's push; §4.1): an `Outbox` type per engine with a private `Vec`,
   whose only entry is a gated `push`, and one exhaustive `gate` match with no `_` arm giving each kind
   a queued verdict (keep or drop at the session start) and a replaying verdict (send, drop or never).
