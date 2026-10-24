@@ -577,6 +577,11 @@ class BoundaryProtocolTest {
         Journal back = Journal.restore(j.snapshot());
         assertEquals(g2, back.pinnedGen().seq(), "a world save keeps it");
         assertTrue(back.consistent());
+        Journal.Snapshot ok = j.snapshot();
+        Journal.Snapshot above = new Journal.Snapshot(ok.lastAppliedCmdSeq(), ok.nextObsSeq(), ok.seqs(), ok.records(),
+                ok.dictKinds(), ok.dictNames(), ok.records()[0]);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> Journal.restore(above),
+                "a kept generation that is not a JOURNAL_GEN below the first entry is a corrupt journal");
         j.trim(t2);
         assertEquals(g2, j.pinnedGen().seq(), "a record that is not a JOURNAL_GEN leaves it");
         assertEquals(0, j.size());

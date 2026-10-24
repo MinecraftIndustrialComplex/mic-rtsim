@@ -120,11 +120,14 @@ impl Journal {
             ));
         }
         let pinned_gen = match data.get("pinnedGen") {
-            Some(Tag::ByteArray(b)) if b.len() >= wire::obs::BODY => {
+            Some(Tag::ByteArray(b))
+                if b.len() >= wire::obs::journal_gen::SIZE
+                    && wire::u16_at(b, wire::R_KIND) == wire::obs::JOURNAL_GEN =>
+            {
                 Some((wire::u64_at(b, wire::obs::OBS_SEQ), b.clone()))
             }
             None => None,
-            Some(_) => return Err("pinnedGen is not a journaled record".into()),
+            Some(_) => return Err("pinnedGen is not a JOURNAL_GEN".into()),
         };
         let data_version = root
             .get("DataVersion")
@@ -386,7 +389,8 @@ mod tests {
         j.save.next_obs = 12;
         j.save.journal.push_back((10, vec![1; 24]));
         j.save.journal.push_back((11, vec![2; 32]));
-        let mut g = vec![0; 32];
+        let mut g = vec![0; wire::obs::journal_gen::SIZE];
+        wire::put_u16(&mut g, wire::R_KIND, wire::obs::JOURNAL_GEN);
         wire::put_u64(&mut g, wire::obs::OBS_SEQ, 4);
         j.save.pinned_gen = Some((4, g));
         j.save.dict = vec![(1, "minecraft:overworld".into()), (3, "x:y".into())];

@@ -259,6 +259,87 @@ fn a_copy_of_a_record_replayed_into_older_pages_never_applies_twice() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// A copy of the engine's folder (its pages), as a backup takes it.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &dest);
+        } else {
+            std::fs::copy(e.path(), dest).unwrap();
+        }
+    }
+}
+
+/// Pages restored from a backup a session older than the kept JOURNAL_GEN: the replay skips to
+/// it, it closes the pages' own generation where the pages left it, and every copy is judged
+/// against what those pages hold. Session A: records 2 to 6, the backup taken with the pages at
+/// 3. Session B: records 8 to 11, a trim through 9 (the kept JOURNAL_GEN is B's).
+#[test]
+fn copies_against_pages_restored_from_an_older_backup() {
+    let dir = tmpdir("reassert-backup");
+    let backup = tmpdir("reassert-backup-copy");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    let mut held = std::collections::HashMap::new();
+    for s in 2..=3 {
+        held.insert(s, carried(&mut j, s, 1));
+    }
+    j.idle();
+    save_pages(&mut j);
+    assert_eq!(j.e.durable_obs_seq(), 3);
+    for s in 4..=6 {
+        held.insert(s, carried(&mut j, s, 1));
+    }
+    j.idle();
+    let saved = j.world_save();
+    let _ = j.crash(); // the pages stay at 3
+    copy_dir(&dir, &backup);
+
+    let mut j = start(&dir, saved);
+    assert_eq!(j.journal.front().unwrap().0, 4, "the trim kept 4 to 6");
+    assert_eq!(j.next_obs, 8, "7 is session B's JOURNAL_GEN");
+    for s in 8..=9 {
+        held.insert(s, carried(&mut j, s, 1));
+    }
+    j.idle();
+    save_pages(&mut j);
+    j.run_until("the acknowledgement", |j| {
+        j.journal.front().is_none_or(|(s, _)| *s > 9)
+    });
+    assert_eq!(j.pinned_gen.as_ref().map(|(s, _)| *s), Some(7));
+    j.hold_acks = true;
+    for s in 10..=11 {
+        held.insert(s, carried(&mut j, s, 1));
+    }
+    j.idle();
+    let saved = stop(j);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::rename(&backup, &dir).unwrap();
+
+    let mut j = start(&dir, saved);
+    let ledgers = |j: &Java| (2..=11).map(|s| ledger(&j.e, s)).collect::<Vec<_>>();
+    assert_eq!(
+        ledgers(&j),
+        [1, 1, 0, 0, 0, 0, 0, 0, 1, 1],
+        "the backup's 2 and 3, the replayed 10 and 11"
+    );
+    for s in [5, 10, 8, 2] {
+        reassert(&mut j, &held[&s]);
+    }
+    j.idle();
+    no_error(&j);
+    assert_eq!(
+        ledgers(&j),
+        [1, 1, 0, 1, 0, 0, 0, 0, 1, 1],
+        "A's 5 (past the backup's 3) applies; B's replayed 10, B's trimmed 8 and A's 2 do not"
+    );
+    assert_eq!(copies(&j.e), (1, 3));
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// A holder unloaded across two later sessions before any acknowledgement reached it: its copy
 /// is judged by the session that first journaled the record each time. `copy_saved`: the
 /// session that applied the copy saved its pages before it crashed.
