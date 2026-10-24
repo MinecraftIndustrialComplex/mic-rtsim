@@ -3748,6 +3748,36 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   do), so the journal's next file waits for the entity chunks to be written and a restart cannot see the answer
   without the deaths. An answer given without applying (the cases above) notes no chunk. The record carries no Java
   op id: the engine books it by the hunt's own op, not by a journal op set (MZB-449).
+- **MZB-630** (the grove's chest; fills in MZB-422): `GroveChests` (plugin) is a `SessionPlugin` and sends HAVEN_CHEST
+  (0x0817, 56 bytes, journaled, never carried by a holder). The chest is a `ChestBlockEntity` or `BarrelBlockEntity`
+  (trapped chests are chests) in a loaded footprint chunk, inside the footprint's circle, with an empty slot or a loot
+  table not rolled yet (all its slots count free; a slot is never read on such a chest, which would roll it); the
+  nearest to the fire pit's centre, ties by position. A double chest's halves are two chests, each counted by its own
+  slots: the handler at one half takes into both, so a half that reports room is never wrong, only short, and a
+  full half with an empty twin names the twin. Every 200 ticks (PLACEHOLDER) each grove that is in is looked at, and
+  nothing else is scanned (D1); a grove that is out drops its record of what it told. A record goes:
+  - when the grove is new to the engine in this epoch (`Sent.epoch` differs from the site's: a session start, or a
+    grove that came in, since the engine forgets the chest at CAMP_OUT and a session start), with the chest found;
+  - when the chest or its free count changed since the last record;
+  - with 0 free at the chest last told of, once, when that chest is gone or full and there is no other (a grove never
+    told of a chest has nothing to take back, so it sends nothing);
+  - after every answer to a transfer into the chest last told of (MZB-631), whether or not the free count changed
+    (the re-check, R5), and after a FAILED, which makes the engine forget the chest. They are collected in a set and
+    handled at the end of the tick, so a grove sends at most once a tick, however many stacks went in.
+  It does not ask the chunk barrier for the chest's chunk: the record names a place and a count and claims nothing the
+  world must keep, and a replay that names a chest the world lost meets a FAILED transfer, which this answers with the
+  chest as it is. A grove that comes in is told of at the first scan after its census (up to 200 ticks, a tribute
+  waits that long and no longer). The conflict module going off forgets what was told, so a switch back on tells
+  again. `GroveChests.scanNextTick()` and `chestOf` / `freeOf` are for the GameTests.
+- **MZB-631** (the tribute's transfer; fills in MZB-423 and MZB-446): no Java applies the tribute but the core's own
+  TRANSFER_TO_CONTAINER (`CommandDispatcher.transferToContainer`), which already refuses a stack above the item's size,
+  inserts all or nothing, answers APPLIED, DUPLICATE_OP (the journal's applied op, or the chunk's carried op) or FAILED,
+  and drops a remainder at the container if a handler disagrees with its own simulation. The grove's plugin adds one
+  generic hook to the core: `SessionPlugin.containerTransferred(session, level, pos, status)`, called for every plugin
+  after each of that command's answers (any status, every plugin, whoever sent the command; nothing for a dimension the
+  server has not got). `transferToContainer` now reads the dimension and position before the duplicate test so the hook
+  has them, which changes no answer. `GroveChests` is the only user. Dragon tribute transfers call it too and are
+  ignored, since it matches by the dimension and position it told the engine of.
 
 ## M10 March
 

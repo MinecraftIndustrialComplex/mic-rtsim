@@ -53,6 +53,7 @@ public final class MicRtsimMowziesMobs {
         ConflictBodies.registerMaker(RAPTOR, new RaptorMaker());
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
+        RtsimApi.registerPlugin(GroveChests.INSTANCE); // HAVEN_CHEST (MZB-422): the chest a grove's tribute goes into
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(LivingDamageEvent.Post.class, FightWatch::onDamage);
         bus.addListener(ChunkEvent.Load.class, MowzieCamps::onChunkLoad);
