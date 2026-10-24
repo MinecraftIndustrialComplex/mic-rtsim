@@ -430,7 +430,7 @@ fn chain_pools_and_debts_survive_a_restore() {
     e.drain_commands();
     let c = e.save_changed();
     let pages: Vec<(PageKey, Vec<u8>)> = c.put;
-    let mut back = Engine::restore(pages.into_iter(), Tunables::default()).expect("restore");
+    let mut back = Engine::restore(pages, Tunables::default()).expect("restore");
     assert_eq!(back.stores(), e.stores());
     back.advance_to(Tick(9_000));
     e.advance_to(Tick(9_000));
