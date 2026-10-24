@@ -985,6 +985,9 @@ pub struct CampRun {
     pub watch: bool,
     /// Whether the chaos run's saves are made (off, they are skipped: the run to compare with).
     pub round_trips: bool,
+    /// Whether the chaos run checks the books after each event (off, it checks nothing until
+    /// asked: the run to compare with, for an audit that must change nothing).
+    pub audits: bool,
     /// What the chaos run did, with when: for a failure's report.
     pub events: Vec<(Tick, String)>,
     next_obs: Tick,
@@ -1044,6 +1047,7 @@ impl CampRun {
             failures: Vec::new(),
             watch: false,
             round_trips: true,
+            audits: true,
             events: Vec::new(),
             next_obs: Tick::ZERO,
         };
@@ -1335,9 +1339,12 @@ impl CampRun {
             7 | 8 => {
                 // The draw's bound (ledger 6): no more than the smaller of the pool's whole
                 // members and the slots it may take, as they stand when the order is given.
-                let _ = self.c.camp_audit(self.f, now);
-                let room = self.c.camp(self.f).map_or(0, |c| c.drawable());
                 let whole = self.c.pool_at(self.f, now).floor() as u32;
+                // Slots the pool gained and the books have not added yet are drawable too.
+                let room = self
+                    .c
+                    .camp(self.f)
+                    .map_or(0, |c| c.drawable() + whole.saturating_sub(c.home_count()));
                 let p = self.raid();
                 if let (Some(p), Some(c)) = (p, self.c.camp(self.f)) {
                     let drawn = c.slots.iter().filter(|s| s.party == p).count() as u32;
@@ -1395,6 +1402,8 @@ impl CampRun {
             let to = self.c.now() + 3;
             self.run(to);
         }
-        self.audit();
+        if self.audits {
+            self.audit();
+        }
     }
 }

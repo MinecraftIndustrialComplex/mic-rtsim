@@ -619,6 +619,8 @@ impl Conflict {
             .filter(|&i| camp.slots[i].state.home() && camp.slots[i].line.is_none())
             .collect();
         order.sort_by_key(|&i| (class(&camp.slots[i]), camp.slots[i].id));
+        // `send_party` draws no more than the slots at home with no line in flight; a draw past
+        // them takes the slots there are, never one a line holds.
         debug_assert!(order.len() >= n as usize, "a draw past its slots");
         for i in order.into_iter().take(n as usize) {
             let s = &mut camp.slots[i];
@@ -873,6 +875,13 @@ impl Conflict {
                 }
                 SlotState::Left | SlotState::Gone => {
                     let phase = self.parties.get(s.party).map(|x| x.phase);
+                    // A party leaves the books through `home`, which settles its slots first.
+                    debug_assert!(
+                        phase.is_some(),
+                        "slot {} {:?} is in a party that is gone",
+                        s.id,
+                        s.state
+                    );
                     if s.state == SlotState::Gone && found {
                         s.state = SlotState::Left;
                     }
@@ -1022,6 +1031,9 @@ impl Conflict {
         if self.camp(f).is_none_or(|k| k.seen != b.epoch) {
             return;
         }
+        // Every change of the slots follows a sync, as the lowest free number a new slot takes
+        // would else depend on whether an audit (or any read) synced before a freed one.
+        self.camp_sync(f, at);
         let mut camp = self.factions[f as usize].camp.take().expect("a ledger");
         let mut lines: Vec<ReconcileLine> = Vec::new();
         let mut cleared = 0;
@@ -1081,10 +1093,30 @@ impl Conflict {
                     s.state = SlotState::Body;
                     s.misses = 0;
                 }
+                // The stray an adoption was to take is gone: the slot is still owed its body, and
+                // at a camp that is in it is spawned, as a body found gone is (MOWZIE.md ledger 7).
+                (SlotState::Owed, false, false) if action == ACTION_ADOPT => {
+                    if is_in && s.line.is_none() {
+                        lines.push(ReconcileLine {
+                            slot: s.id,
+                            generation: s.generation,
+                            body: s.body,
+                            action: ACTION_SPAWN,
+                            flags,
+                            a: 0,
+                            b: 0,
+                        });
+                    }
+                }
                 (SlotState::Gone, _, true) => {
                     s.state = SlotState::Left;
                     s.misses = 0;
                     let phase = self.parties.get(s.party).map(|x| x.phase);
+                    debug_assert!(
+                        phase.is_some(),
+                        "slot {} was gone in a party that is gone",
+                        s.id
+                    );
                     match phase {
                         Some(Phase::Mustering) => {}
                         Some(_) => {
@@ -1198,18 +1230,19 @@ impl Conflict {
 
     /// Every way a camp's ledger breaks the engine's side of §4.9's invariants at `at` (empty when
     /// it holds): I1 (each slot in one state, one line each, numbers and generations unique and
-    /// nonzero), I2 (the slots at home are the pool's whole warriors, the slots away the war
-    /// parties' units, the cap kept), and the books' own bookkeeping (`away`, the parties). A camp
-    /// with no ledger has none to break.
-    pub fn camp_audit(&mut self, f: u32, at: Tick) -> Vec<String> {
-        self.camp_sync(f, at);
+    /// nonzero), I2 (the slots at home are no more than the pool's whole warriors, the rest being
+    /// owed slots the next sync adds; the slots away the war parties' units; the cap kept), and
+    /// the books' own bookkeeping (`away`, the parties). A camp with no ledger has none to break.
+    /// It changes nothing: a sync here would number the slots by when the audit ran, so an
+    /// audited run would differ from an unaudited one.
+    pub fn camp_audit(&self, f: u32, at: Tick) -> Vec<String> {
         let Some(c) = self.camp(f) else {
             return Vec::new();
         };
         let x = &self.factions[f as usize];
         let mut bad = Vec::new();
         let whole = self.pool_at(f, at).floor() as u32;
-        if c.home_count() != whole {
+        if c.home_count() > whole {
             bad.push(format!(
                 "I2: {} slots at home, the pool holds {whole}",
                 c.home_count()
@@ -1252,7 +1285,7 @@ impl Conflict {
             }
             if s.line.is_some() && !c.is_in() {
                 bad.push(format!(
-                    "I4: slot {} has a line in flight with its camp out",
+                    "ledger 7: slot {} has a line in flight with its camp out",
                     s.id
                 ));
             }

@@ -444,7 +444,13 @@ under its own heading.
   arrival (M6), the Umvuthi's slot, heir, seat, Rule U and throne lines (M9 to M11), BAND_MARCH and
   the walk home in bodies (M10), AMBUSH_SPOT's removed flag (M8). A held line (Rule U, the
   Frostmaw's spawn wait) is Java's (M5) and is not emulated: the fake plugin applies every line in
-  the tick it arrives, and answers it after `answer_ticks`.
+  the tick it arrives, and answers it after `answer_ticks`. One more is M10's: a CAMP_DEATH for a
+  slot left behind (its body still in the camp while the party musters or is out) whose party is
+  embodied makes `member_died` take one unit off the party's books, but the puppet of that unit
+  stays in the world, since the body that died is the camp's and not the puppet; the books and the
+  world then disagree by one puppet until the party is recalled. No `debug_assert` fits: the chaos
+  run reaches it (a kill step with the player watching a fight), so it is a known state and not a
+  bug in M4's flows. M10, which owns the embodied walk, ends that puppet with its party's recall.
 - **MZB-165** (pages): the conflict page magic is RTC5 and `META_VERSION` is 4: a camp's ledger
   (slots, retired generations, throne, refill stamp) is saved with its faction, and the stats grew
   six camp counters; a camp's page also holds the latest epoch a census named and the (op, line)
@@ -536,6 +542,30 @@ under its own heading.
   8.08 + 12 on the first day out). A fork (reported): the lead's decision to keep the room for every
   culture, as the plan's ledger 6 words it, over a flag that would keep M2's pool for a culture
   with no ledger.
+
+- **MZB-172** (the review's smaller fixes): four things the review of 408d4a07 found, each with a
+  test that fails without it. (1) An adoption answered "nothing to do" (the stray died before the
+  order was applied) leaves the slot owed with no body there; a camp that is in now sends it a
+  spawn line, as it does for a body found gone, where it used to wait for the next census (test:
+  `an_adoption_with_nothing_to_adopt_is_followed_by_a_spawn`). (2) Every change of a ledger's slots
+  follows a sync: `camp_bodies` syncs first (it freed a dead slot with the pool's gained members
+  not yet added, so the lowest free number a later sync takes depended on whether anything had
+  synced in between), and `camp_audit` is `&self` and adds nothing (the slots at home must be no
+  more than the pool's whole warriors; a gain not yet added is the books as they should be). An
+  audited run is now the run not audited: the chaos run's state hash is the same with its audit
+  after every event and without (`auditing_after_every_event_changes_nothing`; the answer's sync is
+  `an_answer_syncs_the_books_before_it_frees_a_slot`). Two tests that read the slots after an audit
+  read the pool instead, since the audit no longer adds them. (3) Two guards no flow reaches, a
+  slot left or gone whose party is not in the books (a party leaves the books through `home`,
+  which settles its slots first), have a `debug_assert!` at the census and at the answer; the
+  release arms stay as they were (two `should_panic` tests, debug builds only). (4) A war party is
+  never drawn larger than the slots at home with no line in flight: every unit kind keeps one at
+  least, so a make-up of two kinds from a camp with one warrior at home was two units on one slot
+  and `away` one too many; the last kinds now give theirs up, so a party can have fewer kinds than
+  its make-up when the camp is that short, and `send_party` sends nothing when `have` is 0
+  (`a_party_is_never_drawn_larger_than_the_slots_at_home`). The member-died puppet is noted in
+  MZB-164. A fork (reported) for (4): the plan says a party takes at least half its make-up and
+  does not say which kinds go first.
 
 ## M5 Camp reconciler, Java
 

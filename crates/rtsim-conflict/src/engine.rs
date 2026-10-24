@@ -2591,7 +2591,7 @@ impl Conflict {
             if let Some(slots) = self.camp_drawable(f) {
                 have = have.min(slots);
             }
-            if have * 2 < want {
+            if have == 0 || have * 2 < want {
                 return None;
             }
             let share = f64::from(have.min(want)) / f64::from(want.max(1));
@@ -2603,7 +2603,17 @@ impl Conflict {
             if total > have {
                 v[0].1 = v[0].1.saturating_sub(total - have).max(1);
             }
-            let total: u32 = v.iter().map(|u| u.1).sum();
+            // Every kind keeps one, so a make-up with more kinds than `have` (or a pair of one
+            // each with one warrior at home) still overdraws: the last kinds give theirs up. A
+            // party never has more units than the slots (or the pool) it was drawn from.
+            let mut total: u32 = v.iter().map(|u| u.1).sum();
+            for u in v.iter_mut().rev() {
+                let cut = total.saturating_sub(have).min(u.1);
+                u.1 -= cut;
+                total -= cut;
+            }
+            v.retain(|u| u.1 > 0);
+            debug_assert!(total <= have && total > 0, "a draw of {total} from {have}");
             self.pool_add(f, -f64::from(total), at);
             v
         } else {
