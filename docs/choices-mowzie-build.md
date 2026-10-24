@@ -2490,6 +2490,20 @@ are at 761f5d0f; jar facts are in "M7 design for the implementer".
   - It is its own function beside `set_emission_inner` (1541), not a branch of it. It inserts or updates
     the source, calls `add_reach(Rail, id)` on f's row the first time, and calls `refresh_rates(f, actor,
     Rail, at)`. A rate of 0 removes the source and its reach.
+  - **Amended by the lead for MZB-331's gate** (MZB-347): a world with no rail pays what base paid.
+    The Rail kind keeps no slot in the per-feud arrays. `Grievance.level` and `rate` and `Feud.raw` are
+    six f64s again (`KB = K - 1`, the kinds before Rail); the Rail kind's level, rate and raw rate are
+    one `Option<Box<RailTail>>` on the grievance, which a feud has only while one of the three is
+    non-zero (`level_of`, `rate_of`, `Feud::raw_of`, `Feud::set_raw` read and write either side, and
+    `project`, `commit`, `add`, `scale`, `relieve`, `set_rate` treat the tail as one more kind, so every
+    number is bit-identical to the seven-array form). `FactionRow.rail` is `Option<Box<Vec<RailMeter>>>`,
+    `None` while there is no meter (read it through `rail()`; clippy's `box_collection` is allowed there
+    on purpose: the box makes it one pointer, not a Vec's three words). `Source.pin` stays boxed.
+  - Encoding (RTC8 and META 7 stay, since they are M7's own): the feud's last byte is a flags byte (bit 0
+    the envoy hold, bit 1 the tail follows with its level, rate and raw rate), a source's district tag is
+    a flags byte (bit 0 a district, bit 1 a pin that ends the source), a faction row ends with its meter
+    count (one byte when none). A feud, a focus and a source with no rail encode to 176, 197, 32 and 40
+    bytes, the same as at f6321fa5 (a test pins them).
 - **MZB-314** (the district-free focus): `Focus` gains `track: Option<TrackFocus>`, with `TrackFocus { y:
   i32, station: Option<(Pos, DistrictId)> }`. It is Copy, so `Focus` stays Copy.
   - `refresh_rates` (1683-1720) sets no focus from a kind whose weight is 0 for the faction.
@@ -2499,6 +2513,14 @@ are at 761f5d0f; jar facts are in "M7 design for the implementer".
     is not displaced by a kill site, which would raid nothing.
   - Within one class the latest refresh wins, as districts do today. A rail source's focus copies its pin
     into `track`. The signal path's focus (1453-1461) gets `track: None`.
+  - **Amended by the lead for MZB-331's gate** (MZB-347): `Focus.track` is `Option<Box<TrackFocus>>`,
+    so `Focus` is 48 bytes, base's 40 plus one pointer (an inline `Option<Pin>` made it 80), and `Focus`
+    is not `Copy`. What losing `Copy` cost: `escalate` and `envoy_again` clone the focus (one allocation
+    only when it has a track; `target_of` takes `Option<&Focus>`), `refresh_rates` builds the focus once
+    after its loop from a tuple of the best source's fields (it allocates the box only for the focus it
+    keeps), and a few readers (`rtsim-layers`, tests) use `as_ref()`. The class rule is unchanged. The
+    encoded form is the feud's focus tag: 0 none, 1 a focus with no track, 2 a focus with its pin written
+    last, so a world with no rail pays no byte for the track.
 - **MZB-315** (the target): `Target::Track { track: Pos, spot: Pos, y: i32 }`, persisted as tag 3
   (`put_target`, persist.rs:595).
   - `target_of` gains the party kind: `fn target_of(&self, w: &World, f: u32, kind: PartyKind, focus:
@@ -2988,6 +3010,9 @@ Where the design left a gap the build took the conservative option; each is undo
   prints the design's day beside it. The disagreement is in the design's model, not the rail meter: the
   Notice, Raid and 140 columns and the settled levels all match. Fixing it would need a field decoupling
   the repeat's anchor from the climb's dwell; that is a ladder change and is left to Ben.
+  **The lead decided: MZB-341 stands.** The design table's Invasion days (17.6, 17.5, 7.5) are superseded by
+  the engine's (21.6, 21.6, 11.2): the ladder's dwell rule is M2's, tested and left alone, and the sim's
+  assertion is the engine's rule.
 - **MZB-342** (sim windows): runs 2 and 3 run 90 days, not 60, because the grievance is still coming down
   from its peak of about 122 (day 13) at day 60. A cut to 4 a day settles at 17.3 on a window of days 60
   to 90 (one seed's own reading wanders by about 1.5, so a long window); a stopped service reads
@@ -3018,7 +3043,35 @@ Where the design left a gap the build took the conservative option; each is undo
   its events, and with the budget fixed fewer rows stay resident. Events (28,375, 56,748, 113,227) and
   conservation are the same as base. Mitigations if the gate is held: pack `Focus.track` (an
   `Option<Pin>` is 40 bytes and doubles `Focus` from 40 to 80), or carry the Rail rate outside
-  `Feud.raw`. Neither is done: both change a row layout the design fixes (MZB-313, MZB-314).
+  `Feud.raw`. Neither was done then, since both change a row layout the design fixes (MZB-313, MZB-314);
+  the lead held the gate and ordered both, and MZB-347 is the result.
+- **MZB-347** (the layout amendment and the bench again; amends MZB-313 and MZB-314 "for MZB-331's
+  gate"): a world with no rail pays base's bytes but for pointers. What changed is written under
+  MZB-313 and MZB-314. The sizes, with `size_of` pinned by `a_world_with_no_rail_keeps_base_layout_but_
+  for_pointers`: `Focus` 40 to 48 (an inline pin made it 80), `Feud` 296 to 312 (the grievance's tail
+  pointer and the focus's track pointer), `FactionRow` 200 to 208 (the meter list's pointer), a source
+  unchanged from M7's (its pin was already boxed). The encoded rows: a feud, a focus and a source with no
+  rail are 176, 197, 32 and 40 bytes, equal to base's (measured at f6321fa5 and pinned by
+  `a_world_with_no_rail_encodes_what_it_did_before_m7`); a faction row adds one byte (its meter count).
+  Every number the engine computes is bit-identical, since a tail adds a trailing term to the sums
+  (`the_rail_kind_projects_as_any_other_kind_does`), so `sim mowzie` reads the same Notice, Raid, 140,
+  Invasion, push and settled values and only two state hashes moved; `sim conflict` moved only its state
+  hashes. The tests: the workspace's 1,411 pass, and the same five fail as before (rtsim-host `gametest_worlds_open_in_the_host_with_their_saved_state`,
+  rtsim-view fixtures twice and hashes twice, which need GameTest saves).
+  - **Bench** (as MZB-346: release, `--only factions,factions-paged`, nice 10, side by side, machine load
+    10 to 25). A/A pair (base against itself): paged CPU per day 0.991, 0.996, 0.984 at 1,024, 2,048
+    and 4,096 factions, so the A/A spread is 1.6 points. New head (35ca0370) over base f6321fa5, pair 1:
+    1.024, 1.024, 1.038 (mean 1.028); pair 2: 1.013, 1.033, 0.954 (mean 1.000); all six mean 1.014, which
+    is below the A/A spread, against MZB-346's 1.047. The resident `factions` sweep at 1,024: 1.023 and
+    0.998. Gate (3% beyond the A/A spread): met. Events (28,375, 56,748, 113,227) and conservation are
+    base's; the state hashes differ from base's, as the encoded bytes do by the meter-count byte.
+  - **Bytes**: `save_full` at 1,024 factions is 528,119 against base's 527,088 (+1,031, +0.2%: one byte
+    a faction row for its meter count, and 7 more of which M7's six stats counters are 6, the other
+    byte not traced), against 554,743 before the amendment;
+    at 2,048 1,060,076 against 1,058,021; at 4,096 2,124,451 against 2,120,348. The paged resident
+    estimate at 1,024 is 975,888 against base's 943,656 (+3.4%; it was 1,074,208, +13.8%), at 2,048
+    1,828,672 against 1,755,120 (+4.2%), and at 4,096 3,528,688 against 3,384,128 (+4.3%): the pointers
+    only (the tail, the track and the meter list, 8 bytes each, on a feud, a feud's focus and a row).
 
 ## M8 Lying in wait
 
