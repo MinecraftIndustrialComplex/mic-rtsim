@@ -808,51 +808,73 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
 - **The hold.** The party goes into an in-memory map `held`, party to its arrival tick. The first
   hold sets `bored_at` as `arrive()` does today; a later one keeps it.
 - **The poll.** Its Ev::Party is scheduled again with the same plan, `REPLAY_HOLD_TICKS` later
-  (PLACEHOLDER 20 world ticks), so that pages saved in the middle of the replay hold an event for the
-  party and a restart from them arrives again. The poll must not move the route: `party_event`'s Out
-  arm increments `seg` before it calls `arrive()` (about L2826), and the wheel's events are saved, so
-  no new `Ev` kind (a page format change). Recommended: the held check in the Ev::Party arm answers
-  a held party's poll before `party_event`, and the first hold puts `seg` back by one, so that a
-  poll that does reach `party_event` (after the replay end, or after a restart that lost the map)
-  lands on the last segment again and arrives. The slice checks `party_pos` and `book_leg` with `seg`
-  one short and tests the restart.
+  (PLACEHOLDER 20 world ticks), so that pages saved in the middle of the replay hold an event for
+  the party and a restart from them arrives again, and once more at the hold's slack (below), where
+  the hold ends. The poll must not move the route: `party_event`'s Out arm increments `seg` before
+  it calls `arrive()` (about L2826), and the wheel's events are saved, so no new `Ev` kind (a page
+  format change). Recommended: the held check in the Ev::Party arm answers a held party's poll
+  before `party_event`, and the first hold puts `seg` back by one, so that a poll that does reach
+  `party_event` (at the slack, after the replay end, or after a restart that lost the map) lands on
+  the last segment again and arrives. The slice checks `party_pos` and `book_leg` with `seg` one short and
+  tests the restart.
 - **Honoured.** A replayed, honoured BAND_MATERIALIZED of a held party (§5.2) is the last session's
   watched fight. The party takes the state `start_fight` leaves, without its commands: Fighting;
   `until` = `min(arrival + watched_fight_ticks, bored_at)` from the held arrival tick;
   `fight_strength`; its leg booked from the record's time to `until`; `seg` on the last segment; an
-  Ev::Party at `until` with a bumped plan, which voids the poll; the epoch and the fill as §5.2 says;
-  `seen_by` None (`wave` returns early while replaying, and the replay end clears it). It leaves
-  `held`. Its replayed casualties count and rout as live ones, and the fight ends at `until` inside
-  the window (§3.6) or becomes Waiting at the replay end, as every Fighting party does.
-- **Not honoured.** A held party with no such record keeps its poll. `replay_done` clears `held`,
-  and the poll's next firing, after the replay end, runs `arrive()` or `wait_over()` as today.
-  An arrival that arrives again so keeps its arrival tick, its route's last time, and its patience
-  runs from there, as in the session that went on (RP-45).
-  Positions are routed only after the modules run in a step (§6 above), so that first decision
-  normally finds no watcher and resolves abstractly: the reviewer's rule (resolve only when no
-  replayed BAND_MATERIALIZED embodied the party), once.
+  Ev::Party at `until` with a bumped plan, which voids the poll; the epoch and the fill as §5.2
+  says; `seen_by` None (`wave` returns early while replaying, and the replay end clears it). It
+  leaves `held`. Only a record inside the hold's slack is honoured so (RP-48). Its replayed
+  casualties count and rout as live ones, and the fight ends at `until` inside the window (§3.6) or
+  becomes Waiting at the replay end, as every Fighting party does.
+- **Not honoured: the slack** (RP-48). A held party with no such record keeps its poll until the
+  hold's slack, `REPLAY_HOLD_SLACK_TICKS` (PLACEHOLDER 600 world ticks, 30 s) after its arrival or
+  round. A watched decision's BAND_MATERIALIZED comes a hand-over or two after it (Java journals it
+  as it applies the command), so a hold that no record answered by then was not fought: the poll at
+  the slack ends the hold and runs `arrive()` or `wait_over()`, which, still replaying and past the
+  slack, take the unwatched branch at once (recall, `resolve`, then wait or go home), as the session
+  that went on did. The replay clock follows the records (§3.6), and the events up to a record's
+  time run before it, so that poll runs before any record at or past the slack and after every
+  record before it. A later BAND_MATERIALIZED of the party is then a sighting: it finds no hold and
+  embodies the band as `seen()` did live.
+- **Not honoured: the replay end.** If the replay ends inside the slack, `replay_done` clears
+  `held`, and the poll's next firing runs `arrive()` or `wait_over()` as today. Positions are routed
+  only after the modules run in a step (§6 above), so that first decision normally finds no watcher
+  and resolves abstractly: the reviewer's rule (resolve only when no replayed BAND_MATERIALIZED
+  embodied the party), once.
+- **From the arrival or round.** Either way the decision is taken as of the hold's tick: an arrival
+  keeps its arrival tick, its route's last time, and its patience runs from there (RP-45); a siege's
+  next round is that tick plus its interval, and its patience is checked at that tick (RP-48). So a
+  later round, and a fight at it, falls where the session that went on had it. Live the hold's tick
+  is the event's own, and nothing changes.
 
 **Losses accepted** (lose, never double):
 
-- A crash right after a watched arrival, before Java journaled its BAND_MATERIALIZED: the fight
-  Java may have shown is resolved abstractly at the replay end.
-- A held party's BAND_MATERIALIZED that was a sighting, not a fight. A party that resolved unwatched
-  and was then seen on its way home answers with a BAND_MATERIALIZED too, and the record does not
-  say which. It is read as a fight at the target: the abstract resolution the live engine made is
-  lost, and the band walks home later.
+- A crash right after a watched arrival, before Java journaled its BAND_MATERIALIZED: the fight Java
+  may have shown is resolved abstractly at the replay end.
+- A sighting inside the slack (RP-48's residual). A party that resolved unwatched and was then seen,
+  on its way home or waiting for its next round, answers with a BAND_MATERIALIZED too, and the
+  record does not say which (it carries the agent, epoch, dimension, wave and units spawned, and a
+  fight's first wave and a sighting's are both wave 0 at the next epoch). A sighting within
+  `REPLAY_HOLD_SLACK_TICKS` of the decision is read as a fight at the target: the abstract
+  resolution the live engine made is lost, and the band walks home or waits later. Past the slack a
+  sighting is a sighting.
+- Time: an unwatched decision while replaying is resolved at its slack, up to
+  `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
+  session that went on (a siege's next round does not move).
 - An M7 track-target party held at a track Java has removed since (§4.4's note).
 
-**More than one crash** (the fix round's item 8). A held arrival stays held until the replay end of
-the first session that reaches one. A session that crashes before its replay end takes no page
-(RP-42, §3.2), so the next opens on the same pages and replays the last live session's records and
-then the crashed session's own: the arrival comes again in the replayed window, is held again, and
-its poll runs once, after that session's replay end
+**More than one crash** (the fix round's item 8). A held arrival stays held until its slack or the
+replay end of the first session that reaches one, whichever comes first. A session that crashes
+before its replay end takes no page (RP-42, §3.2), so the next opens on the same pages and replays
+the last live session's records and then the crashed session's own: the arrival comes again in the
+replayed window, is held again, and is decided once, at its slack or after that session's replay end
 (`a_held_arrival_across_a_second_crash_before_the_replay_end_is_resolved_once`, rtsim-jni
-tests/protocol.rs: one resolution in S1 and S2 together, the band's books as in S0). What is lost
-is time: the arrival is resolved, or fought by its honoured record, after the replay end of the
-session that completes one, not at its tick in the session that went on, so an unwatched band walks
-home later. The crashed session's in-memory replay state (`held`, the floors and the fill's deaths,
-§5.3) goes with it and is rebuilt from the same records.
+tests/protocol.rs: one resolution in S1 and S2 together, the band's books as in S0). A decision a
+crashed session made at the slack goes with it (no page, its commands deferred) and is made again
+from the same records. What is lost is time: an arrival resolved after the replay end of the session
+that completes one is resolved later than its tick in the session that went on, so an unwatched band
+walks home later. The crashed session's in-memory replay state (`held`, the floors and the fill's
+deaths, §5.3) goes with it and is rebuilt from the same records.
 
 **Slices D and S** check dragon raids and pirate coast raids for the same pattern: a decision in the
 replayed window that asks whether a player watches, which while replaying always hears no.
