@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
@@ -68,7 +69,7 @@ public final class DenKind implements CampKind {
     /**
      * The Frostmaw nearest the spot, not a puppet: present, its crystal and health. The core hands over the
      * footprint's entities and the den's own bodies loaded elsewhere, so a tagged Frostmaw out of the
-     * cylinder still answers as the chief (MZB-232).
+     * cylinder still answers as the chief (MZB-232). A Frostmaw tagged by another den is not this den's.
      */
     @Override
     public Chief chief(ServerLevel level, Camps.Site site, List<Entity> footprint) {
@@ -77,6 +78,9 @@ public final class DenKind implements CampKind {
         for (Entity e : footprint) {
             if (!(e instanceof EntityFrostmaw f) || !f.isAlive() || RtsimAttachments.isTagged(f))
                 continue;
+            CampMember m = RtsimAttachments.campMember(f);
+            if (m != null && m.faction() != site.faction)
+                continue; // another den's Frostmaw that walked in is that den's chief (MZB-599)
             double d = f.distanceToSqr(site.spot);
             if (d < bd) {
                 bd = d;

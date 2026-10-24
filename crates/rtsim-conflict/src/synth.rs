@@ -764,7 +764,7 @@ impl FakeConflict {
                     boundary::BODY_ELSEWHERE
                 } else {
                     0
-                }),
+                }) | (if b.chief { boundary::BODY_CHIEF } else { 0 }),
             })
             .collect();
         self.push(

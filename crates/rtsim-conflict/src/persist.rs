@@ -363,6 +363,7 @@ fn put_camp(w: &mut Writer, c: &Camp) {
             w.u8(l.action);
             w.u64(l.op);
         });
+        w.u64(s.chief.to_bits());
     }
     put_usize(w, c.retired.len());
     for t in &c.retired {
@@ -405,7 +406,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let seq = get_u32(r)?;
     let refill = get_u32(r)?;
     let refill_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
-    let n = r.len_prefix(25)?;
+    let n = r.len_prefix(33)?;
     let mut slots: Vec<Slot> = Vec::with_capacity(n);
     for _ in 0..n {
         let id = get_u32(r)?;
@@ -423,6 +424,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
                 op: r.u64()?,
             })
         })?;
+        let chief = handle(r)?;
         if slots.last().is_some_and(|l| l.id >= id) || generation == 0 {
             return bad(format!("slot {id} out of order or with generation 0"));
         }
@@ -435,6 +437,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             misses,
             missed_at,
             line,
+            chief,
         });
     }
     let n = r.len_prefix(6)?;

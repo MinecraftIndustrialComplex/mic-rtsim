@@ -56,13 +56,15 @@ final class TalkNews {
             if (kind == null)
                 continue;
             String chosen = null, topic = null;
+            perspectives:
             for (String p : TalkTuning.perspectives(n.talkFlags())) {
-                String base = "news." + kind + "." + p;
-                String t = n.has(TalkRecords.SEEN) && !Lines.levels(voice, base + ".seen").isEmpty() ? base + ".seen" : base;
-                if (!Lines.levels(voice, t).isEmpty()) {
-                    chosen = p;
-                    topic = t;
-                    break;
+                // The first candidate topic of the perspective that has lines (TK83: a held or beaten raid has one).
+                for (String t : TalkTuning.topics(kind, n.kind(), n.severity(), p, n.has(TalkRecords.SEEN))) {
+                    if (!Lines.levels(voice, t).isEmpty()) {
+                        chosen = p;
+                        topic = t;
+                        break perspectives;
+                    }
                 }
             }
             if (topic == null || !TalkTuning.tellable(n.talkFlags(), chosen))

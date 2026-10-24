@@ -4,8 +4,19 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim_create.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "ChainConveyorBlockEntityMixin",
+    "ChainConveyorFrogportTargetMixin",
+    "ChunkMapPromotionMixin",
+    "GeneratingKineticBlockEntityMixin",
     "GlobalStationMixin",
+    "KineticBlockEntityMixin",
+    "KineticNetworkInvoker",
+    "KineticNetworkMixin",
+    "LevelChunkInvoker",
     "PortableStorageInterfaceMixin",
+    "PoweredShaftBlockEntityMixin",
+    "RotationPropagatorInvoker",
+    "RotationPropagatorMixin",
     "TrainMixin"
   ],
   "injectors": {
