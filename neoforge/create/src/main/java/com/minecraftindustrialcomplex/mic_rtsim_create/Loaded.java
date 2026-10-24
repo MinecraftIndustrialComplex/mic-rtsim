@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create;
 
 import com.minecraftindustrialcomplex.mic_rtsim_create.mixin.LevelChunkInvoker;
+import com.simibubi.create.content.fluids.tank.FluidTankBlockEntity;
 import com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -89,6 +90,22 @@ public final class Loaded {
         if (be instanceof IMultiBlockEntityContainer m && !multiblockLoaded(level, p, m))
             return null;
         return level.getCapability(cap, p, c.getBlockState(p), be, context);
+    }
+
+    /**
+     * Whether reading {@code be}'s capabilities reads only loaded chunks, {@code be}'s own chunk being loaded
+     * (the core's {@code IndustryPlugin.partsLoaded}, R2-11): true but for a Create multiblock with a chunk of
+     * its box not loaded. A part's handler is its controller's ({@code getControllerBE}, a
+     * {@code Level.getBlockEntity}), and a vault's controller builds its handler from every part
+     * ({@code ConnectivityHandler.partAt}); a fluid tank's controller reads only itself
+     * ({@code handlerForCapability}).
+     */
+    public static boolean partsLoaded(Level level, BlockEntity be) {
+        if (!(be instanceof IMultiBlockEntityContainer m))
+            return true;
+        if (be instanceof FluidTankBlockEntity && m.isController())
+            return true;
+        return multiblockLoaded(level, be.getBlockPos(), m);
     }
 
     /**

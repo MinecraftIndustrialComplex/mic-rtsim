@@ -352,6 +352,11 @@ exact. The holder keeps the record as first journaled, never the copy, so a hold
 before the acknowledgement journals the same copy again. A known gap: an item picked up before the acknowledgement takes
 its record into a player's inventory, where nothing carries it.
 
+The records carry the engine life they were written in (docs/choices-reinstall-guard.md RG14). A
+holder that loads into another life, after a sim reset, drops them without journaling them: the new
+engine took the world's state from the world, so the old records could only apply something twice. An
+op id of another life is not looked up for DUPLICATE either.
+
 **The other way round** (the journal ahead of a chunk): vanilla writes the journal in `saveLevelData`,
 before it serializes any chunk, and skips a chunk saved in the last 10 s, so a journal could say applied
 while the chunk on disk did not have it, and the engine would never send the command again. Every chunk

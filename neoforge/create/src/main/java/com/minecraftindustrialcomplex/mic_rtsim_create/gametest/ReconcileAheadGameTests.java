@@ -388,7 +388,7 @@ public final class ReconcileAheadGameTests {
                     chest.setItem(0, new ItemStack(Items.GOLD_INGOT, 12));
                     LevelChunk chunk = level.getChunkSource().getChunkNow(fx, fz);
                     chunk.setData(IndustryAttachments.RECONCILE.get(), IndustryAttachments.Epochs.EMPTY
-                            .with(new IndustryAttachments.EpochEntry(id[0], 2)));
+                            .with(new IndustryAttachments.EpochEntry(id[0], 2, ind().engineLife())));
                     chunk.setUnsaved(true);
                     ind().reconciler().restartForTest(d4); // the journal rolled back to the same save: d never happened
                     level.setChunkForced(fx, fz, false);

@@ -56,24 +56,27 @@ public final class IndustryAttachments {
     /**
      * One district's reconcile state in a chunk (I8): the last applied epoch and, until the engine
      * acknowledges it, the IND_RECONCILE_RESULT that applied it, with the generation it was journaled in
-     * (docs/boundary.md §3.2; 0 with no result).
+     * (docs/boundary.md §3.2; 0 with no result). {@code life} is the engine life that issued the epoch
+     * ({@code RtsimSession.engineLife}): an engine whose pages are new numbers its epochs from 1 again, so an
+     * entry of another life says nothing about this engine's epochs (0 when the entry predates the field).
      */
-    public record EpochEntry(long district, int epoch, Optional<byte[]> pendingResult, long gen) {
+    public record EpochEntry(long district, int epoch, Optional<byte[]> pendingResult, long life, long gen) {
         /** No pending result. */
-        public EpochEntry(long district, int epoch) {
-            this(district, epoch, Optional.empty(), 0);
+        public EpochEntry(long district, int epoch, long life) {
+            this(district, epoch, Optional.empty(), life, 0);
         }
 
         public static final Codec<EpochEntry> CODEC = RecordCodecBuilder.create(i -> i.group(
                 Codec.LONG.fieldOf("district").forGetter(EpochEntry::district),
                 Codec.INT.fieldOf("epoch").forGetter(EpochEntry::epoch),
                 Codec.BYTE_BUFFER.optionalFieldOf("result").forGetter(e -> e.pendingResult.map(ByteBuffer::wrap)),
+                Codec.LONG.optionalFieldOf("life", 0L).forGetter(EpochEntry::life),
                 Codec.LONG.optionalFieldOf("gen", 0L).forGetter(EpochEntry::gen)
-        ).apply(i, (d, e, r, g) -> new EpochEntry(d, e, r.map(b -> {
+        ).apply(i, (d, e, r, l, g) -> new EpochEntry(d, e, r.map(b -> {
             byte[] bytes = new byte[b.remaining()];
             b.duplicate().get(bytes);
             return bytes;
-        }), g)));
+        }), l, g)));
     }
 
     /** {@code mic_rtsim:reconcile}: per district, the epoch applied in this chunk (I8). */
@@ -92,9 +95,33 @@ public final class IndustryAttachments {
             return null;
         }
 
+        /** The district's applied epoch, whatever life issued it (what a test reads back). */
         public int epoch(long district) {
             EpochEntry e = get(district);
             return e == null ? 0 : e.epoch;
+        }
+
+        /** The district's applied epoch as engine life {@code life} numbers them: 0 for an entry of another life. */
+        public int epoch(long district, long life) {
+            EpochEntry e = get(district);
+            return e == null || e.life != life ? 0 : e.epoch;
+        }
+
+        /** Whether an entry is of another engine life than {@code life}. */
+        public boolean hasStale(long life) {
+            for (EpochEntry e : entries)
+                if (e.life != life)
+                    return true;
+            return false;
+        }
+
+        /** The entries of engine life {@code life} only. */
+        public Epochs ofLife(long life) {
+            List<EpochEntry> out = new ArrayList<>(entries.size());
+            for (EpochEntry e : entries)
+                if (e.life == life)
+                    out.add(e);
+            return new Epochs(List.copyOf(out));
         }
 
         public Epochs with(EpochEntry entry) {
