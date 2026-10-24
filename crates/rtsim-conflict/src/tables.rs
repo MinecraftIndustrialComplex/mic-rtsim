@@ -88,6 +88,11 @@ impl FactionRow {
             .map(|e| e.1)
     }
 
+    /// [`FactionRow::reach_of`] collected.
+    pub fn reach_ids(&self, kind: SignalKind) -> Vec<u32> {
+        self.reach_of(kind).collect()
+    }
+
     pub(crate) fn add_reach(&mut self, kind: SignalKind, id: u32) {
         if let Err(i) = self.reach.binary_search(&(kind, id)) {
             self.reach.insert(i, (kind, id));
@@ -196,6 +201,11 @@ impl Row for SourceRow {
     fn heap_bytes(&self) -> usize {
         self.s.affects.capacity() * std::mem::size_of::<(u32, f64)>()
             + self.s.chunks.capacity() * std::mem::size_of::<ChunkKey>()
+            + self
+                .s
+                .pin
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<crate::engine::Pin>())
     }
 }
 
