@@ -195,6 +195,7 @@ fn same_factory(held: &graph::Graph, c: &store::Complete) -> bool {
             && x.flags == y.flags
             && x.levels == y.levels
             && x.foreign == y.foreign
+            && x.peers == y.peers
             && x.members == y.members
             && all(&x.sources, &y.sources, source)
     };

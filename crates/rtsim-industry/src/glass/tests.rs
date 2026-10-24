@@ -558,6 +558,7 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
             2,
         )],
         foreign: 0,
+        peers: Vec::new(),
         members: vec![
             Member {
                 node: Some(m),
@@ -704,6 +705,7 @@ fn two_tanks(
         levels: speeds.iter().map(|&v| DomainLevel::speed_row(v)).collect(),
         sources,
         foreign: 0,
+        peers: Vec::new(),
         members: vec![member(Some(m), 1, 8.0), member(None, load, 16.0)],
     });
     let g = b.graph();
@@ -814,6 +816,7 @@ fn an_overstressed_domain_without_a_driver_stops_its_members() {
         levels: vec![DomainLevel::speed_row(64)],
         sources: vec![DomainSource::fixed(0, 64, capacity)],
         foreign: 0,
+        peers: Vec::new(),
         members: vec![Member {
             node: Some(m),
             count: 1,
@@ -5021,6 +5024,7 @@ mod replay_path {
         use crate::glass::check::{Liveness, UnitState};
         use crate::glass::page::{
             GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4, GLASS_MAGIC_IGL5,
+            GLASS_MAGIC_IGL6,
         };
         use crate::glass::page::{PageRead, district_page, read_district_page};
         use crate::glass::replay::Replay;
@@ -5629,6 +5633,7 @@ mod replay_path {
                 GLASS_MAGIC_IGL3,
                 GLASS_MAGIC_IGL4,
                 GLASS_MAGIC_IGL5,
+                GLASS_MAGIC_IGL6,
             ] {
                 let mut old = page.clone();
                 old[..4].copy_from_slice(&magic.to_le_bytes());
@@ -6621,6 +6626,7 @@ mod replay_path {
                     2,
                 )],
                 foreign: 0,
+                peers: Vec::new(),
                 members: vec![Member {
                     node: Some(p1),
                     count: 1,
@@ -6754,6 +6760,7 @@ mod replay_path {
                     levels: vec![DomainLevel::speed_row(64)],
                     sources: vec![DomainSource::fixed(0, 64, 1024.0)],
                     foreign: 0,
+                    peers: Vec::new(),
                     members: vec![member(Some(p1), 1), member(None, others)],
                 });
                 (b, p0, p1)
