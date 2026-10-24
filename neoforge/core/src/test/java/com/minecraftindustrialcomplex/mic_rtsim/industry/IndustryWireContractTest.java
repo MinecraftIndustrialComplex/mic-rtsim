@@ -72,7 +72,7 @@ class IndustryWireContractTest {
 
     /** The command fixtures; every other record fixture is an observation. */
     private static final Set<String> COMMANDS = Set.of("IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA",
-            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE", "IND_WRITE_CHAIN");
+            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE", "IND_WRITE_CHAIN", "IND_HELD_DRAW");
 
     /** What the Rust program must have printed. A missing one fails, so a shrunken file cannot pass. */
     private static final List<String> REQUIRED = List.of(
@@ -94,7 +94,9 @@ class IndustryWireContractTest {
             // SEC-1 S4b: writes into a loaded frogport
             "IND_WRITE_CHAIN",
             // SEC-1 S4c: the frontier's held list
-            "IND_HELD_LIST");
+            "IND_HELD_LIST",
+            // SEC-1 S4c2: the far replay's draw
+            "IND_HELD_DRAW");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -129,7 +131,8 @@ class IndustryWireContractTest {
                 "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
         group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN,
-                "Held", IndRecords.ChainPackage.CHAIN_HELD, "Released", IndRecords.ChainPackage.CHAIN_RELEASED);
+                "Held", IndRecords.ChainPackage.CHAIN_HELD, "Released", IndRecords.ChainPackage.CHAIN_RELEASED,
+                "Drawn", IndRecords.ChainPackage.CHAIN_DRAWN);
         group("cargo_from", "Arrival", 0, "Approach", IndRecords.Train.FLAG_APPROACH,
                 "Departure", IndRecords.Train.FLAG_DEPARTURE);
         group("not_learnable",
@@ -149,6 +152,8 @@ class IndustryWireContractTest {
                 "PLUGIN", IndRecords.Inventory.KIND_PLUGIN);
         group("carriage_reason",
                 "Exchange", IndRecords.CarriageDelta.EXCHANGE, "Loot", IndRecords.CarriageDelta.LOOT);
+        group("draw_action",
+                "Draw", IndRecords.HeldDraw.DRAW, "Remove", IndRecords.HeldDraw.REMOVE, "Return", IndRecords.HeldDraw.RETURN);
         group("deposit_plugin",
                 "OreExcavation", IndRecords.DepositPlugin.ORE_EXCAVATION, "DieselOil", IndRecords.DepositPlugin.DIESEL_OIL,
                 "DestroyCrude", IndRecords.DepositPlugin.DESTROY_CRUDE);
@@ -750,7 +755,8 @@ class IndustryWireContractTest {
             case "IND_HELD_LIST": {
                 int c = f.count("n_serials");
                 Rec r = journaled(n, IndRecords.IND_HELD_LIST, IndRecords.HeldList.size(c), c, f)
-                        .put32("epoch", IndRecords.HeldList.EPOCH, f.u32("epoch"));
+                        .put32("epoch", IndRecords.HeldList.EPOCH, f.u32("epoch"))
+                        .put32("n_drawn", IndRecords.HeldList.DRAWN, f.u32("n_drawn"));
                 for (int i = 0; i < c; i++)
                     r.put64("serial" + i, IndRecords.HeldList.SERIALS + 8 * i, f.u64("serial" + i));
                 return r;
@@ -1058,6 +1064,16 @@ class IndustryWireContractTest {
                     r.u32("entry" + i + ".good", at + E_GOOD, f.u32("entry" + i + ".good"))
                             .b64("entry" + i + ".amount", at + E_AMOUNT, f.i64("entry" + i + ".amount"));
                 }
+                break;
+            }
+            case "IND_HELD_DRAW": {
+                int c = f.count("n_serials");
+                r.header(IndRecords.IND_HELD_DRAW, IndRecords.HeldDraw.size(c), c, f);
+                r.b64("store", IndRecords.HeldDraw.STORE, f.u64("store"))
+                        .u32("epoch", IndRecords.HeldDraw.EPOCH, f.u32("epoch"))
+                        .u32("action", IndRecords.HeldDraw.ACTION, code("draw_action", f.sym("action")));
+                for (int i = 0; i < c; i++)
+                    r.b64("serial" + i, IndRecords.HeldDraw.SERIALS + 8 * i, f.u64("serial" + i));
                 break;
             }
             default:

@@ -71,6 +71,13 @@ import java.util.concurrent.ThreadLocalRandom;
  *       tick looks among its packages for those last held on it and releases the ones gone ({@link #firstTick}).
  *       Conveyor tables are read only at the tick their soonest entry may expire and on the conveyor's turn
  *       ({@link #beforeRoutes}).</li>
+ *   <li><b>The draw</b> (slice S4c2, choices SC141 to SC143). The far district's replay takes the goods of
+ *       packages held toward its frogport: the engine asks ({@code IND_HELD_DRAW}, {@link #heldDraw}) and Java
+ *       marks each key drawn and answers {@code CHAIN_DRAWN}. A drawn package circles its boundary conveyor
+ *       whatever ticks ahead ({@link #refusesDrawn}), until the engine has it removed (Remove: taken off the
+ *       chain, at once or at the conveyor's first tick once it loads, and answered {@code CHAIN_RELEASED}) or
+ *       gives it back (Return: held again, and told again). A drawn package a frogport takes off the chain
+ *       lands as any held one (its goods go back into the replay's pool first, the engine's).</li>
  *   <li><b>The epoch</b> (choice SC136). It starts anywhere (a random nonzero value, so an engine reset that
  *       also lost this state never meets its old keys again), changes at every announce (the engine forgot
  *       what it was told) and reaches the engine in each IND_PACKAGE_STORE. Keys of any other epoch are not
@@ -93,8 +100,24 @@ public final class Frontier {
     /** A kept route on a boundary conveyor: Create's entry, as it was when it would have expired, and its store. */
     public record Kept(String port, int distance, BlockPos connection, long store) {}
 
-    /** A package Java holds: its store, the far frogport it heads for, the boundary conveyor it circles. */
-    public record Held(long store, ResourceKey<Level> dim, BlockPos destination, BlockPos at) {}
+    /**
+     * A package Java holds: its store, the far frogport it heads for, the boundary conveyor it circles; whether
+     * the far replay drew it (it circles there until removed or given back), and whether its removal waits for
+     * that conveyor to load (slice S4c2).
+     */
+    public record Held(long store, ResourceKey<Level> dim, BlockPos destination, BlockPos at, boolean drawn, boolean removing) {
+        Held(long store, ResourceKey<Level> dim, BlockPos destination, BlockPos at) {
+            this(store, dim, destination, at, false, false);
+        }
+
+        Held inStore(long s) {
+            return new Held(s, dim, destination, at, drawn, removing);
+        }
+
+        Held marked(boolean drawn, boolean removing) {
+            return new Held(store, dim, destination, at, drawn, removing);
+        }
+    }
 
     /** A package's key. */
     public record Key(long store, int epoch, long serial) {}
@@ -118,10 +141,16 @@ public final class Frontier {
      */
     private final LongOpenHashSet unverified = new LongOpenHashSet();
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<LongArrayList>> unverifiedAt = new HashMap<>();
+    /** The drawn packages Java holds ({@link #refusesDrawn} looks no further while there are none). */
+    private int drawnCount;
+    /** The drawn packages whose removal waits for their conveyor's first tick, by that conveyor. */
+    private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<LongArrayList>> removingAt = new HashMap<>();
+    /** GameTests: Return asks are not applied (the engine gives back a draw no replay of its own covers). */
+    public static volatile boolean ignoreReturnsForTest;
     /** The saved state, kept up to date in place: {@code epoch}, {@code kept} (written whole), {@code held} (by serial). */
     private final CompoundTag tag;
     // Counters (perfLine).
-    long captured, insertedAgain, dropped, handedOver, holds, followed, landed, released, stripped, unfound;
+    long captured, insertedAgain, dropped, handedOver, holds, followed, landed, released, stripped, unfound, drawn, removed, returned;
 
     Frontier(Industry ind, PackageStores stores) {
         this.ind = ind;
@@ -170,6 +199,8 @@ public final class Frontier {
         sent.clear();
         unverified.clear();
         unverifiedAt.clear();
+        drawnCount = 0;
+        removingAt.clear();
         tag.putInt("epoch", epoch);
         tag.put("held", new CompoundTag());
         save();
@@ -308,8 +339,13 @@ public final class Frontier {
      * release).
      */
     private void firstTick(ServerLevel level, ChainConveyorBlockEntity cc) {
-        if (unverified.isEmpty())
-            return;
+        if (!unverified.isEmpty())
+            verify(level, cc);
+        if (!removingAt.isEmpty())
+            removeWaiting(level, cc);
+    }
+
+    private void verify(ServerLevel level, ChainConveyorBlockEntity cc) {
         Long2ObjectOpenHashMap<LongArrayList> m = unverifiedAt.get(level.dimension());
         LongArrayList l = m == null ? null : m.remove(cc.getBlockPos().asLong());
         if (l == null)
@@ -332,6 +368,22 @@ public final class Frontier {
                 continue;
             unfound++;
             release(new Key(h.store(), epoch, serial), pos);
+        }
+    }
+
+    /** The drawn packages whose removal waited for {@code cc} to load: taken off it now ({@link #take}). */
+    private void removeWaiting(ServerLevel level, ChainConveyorBlockEntity cc) {
+        Long2ObjectOpenHashMap<LongArrayList> m = removingAt.get(level.dimension());
+        LongArrayList l = m == null ? null : m.remove(cc.getBlockPos().asLong());
+        if (l == null)
+            return;
+        if (m.isEmpty())
+            removingAt.remove(level.dimension());
+        for (int i = 0; i < l.size(); i++) {
+            long serial = l.getLong(i);
+            Held h = held.get(serial);
+            if (h != null && h.removing() && h.at().equals(cc.getBlockPos()) && h.dim().equals(level.dimension()))
+                take(level, cc, serial, h);
         }
     }
 
@@ -498,6 +550,9 @@ public final class Frontier {
             return;
         if (h != null)
             unverified.remove(k.serial());
+        // Drawn: it circles here ({@link #refusesDrawn} answers first), whatever its route says now.
+        if (h != null && h.drawn())
+            return;
         if (k != null && h == null) {
             // Not Java's: another epoch's, or a key Java no longer holds (the engine may: released).
             strip(box);
@@ -531,7 +586,7 @@ public final class Frontier {
             serial = k.serial();
             boolean moved = h.store() != s.id || !h.destination().equals(destination);
             if (moved || !h.at().equals(pos) || !h.dim().equals(dim))
-                putHeld(serial, new Held(s.id, dim, destination, pos.immutable()));
+                putHeld(serial, new Held(s.id, dim, destination, pos.immutable(), false, h.removing()));
             if (!moved && sent.contains(serial))
                 return;
             followed++;
@@ -728,7 +783,7 @@ public final class Frontier {
         if (serials != null)
             for (long serial : serials) {
                 Held h = held.get(serial);
-                putHeld(serial, new Held(to, h.dim(), h.destination(), h.at()));
+                putHeld(serial, h.inStore(to));
             }
     }
 
@@ -746,17 +801,18 @@ public final class Frontier {
         for (long serial : serials) {
             Held h = held.get(serial);
             if (into != 0)
-                putHeld(serial, new Held(into, h.dim(), h.destination(), h.at()));
+                putHeld(serial, h.inStore(into));
             else
                 removeHeld(serial);
         }
     }
 
     /**
-     * Once a session (PackageStores.tick): IND_HELD_LIST, the serials Java holds in this epoch; the engine strikes
-     * any other key of the epoch it holds (choice SC140: a crash kept {@code IndustryData} and chunks that are
-     * ahead of the journal, so the engine holds a key no package has). A list longer than one record takes is
-     * not sent (logged once): the engine keeps what it holds until a release or a new epoch.
+     * Once a session (PackageStores.tick): IND_HELD_LIST, the serials Java holds in this epoch, the drawn ones last
+     * (slice S4c2); the engine strikes any other key of the epoch it holds (choice SC140: a crash kept
+     * {@code IndustryData} and chunks that are ahead of the journal, so the engine holds a key no package has), and
+     * puts the drawn marks as Java has them (choice SC143). A list longer than one record takes is not sent (logged
+     * once): the engine keeps what it holds until a release or a new epoch.
      */
     void listOnce() {
         if (listed)
@@ -768,25 +824,187 @@ public final class Frontier {
                     n, IndRecords.HeldList.MAX_SERIALS);
             return;
         }
-        long[] serials = held.keySet().toLongArray();
-        java.util.Arrays.sort(serials);
+        LongArrayList undrawn = new LongArrayList(n);
+        LongArrayList drawnSerials = new LongArrayList();
+        for (Long2ObjectMap.Entry<Held> e : held.long2ObjectEntrySet())
+            (e.getValue().drawn() ? drawnSerials : undrawn).add(e.getLongKey());
+        undrawn.sort(null);
+        drawnSerials.sort(null);
+        undrawn.addAll(drawnSerials);
         ByteBuffer r = ind.journal(IndRecords.IND_HELD_LIST, IndRecords.HeldList.size(n), n);
         r.putInt(IndRecords.HeldList.EPOCH, epoch);
-        r.putInt(IndRecords.HeldList.EPOCH + 4, 0);
+        r.putInt(IndRecords.HeldList.DRAWN, drawnSerials.size());
         for (int i = 0; i < n; i++)
-            r.putLong(IndRecords.HeldList.SERIALS + 8 * i, serials[i]);
+            r.putLong(IndRecords.HeldList.SERIALS + 8 * i, undrawn.getLong(i));
         ind.commit(r);
+    }
+
+    // ---- the draw (IND_HELD_DRAW, slice S4c2) -------------------------------------------------------
+
+    /**
+     * Whether {@code box}, about to be handed on from {@code cc}, is a drawn package Java holds: it keeps circling
+     * there ({@code ChainConveyorBlockEntityMixin}), whatever ticks ahead, until the engine has it removed or gives
+     * it back (choice SC141: its goods are the far replay's meanwhile).
+     */
+    public static boolean refusesDrawn(ChainConveyorBlockEntity cc, ItemStack box) {
+        if (!(cc.getLevel() instanceof ServerLevel) || box == null || box.isEmpty())
+            return false;
+        try {
+            Industry ind = IndustryApi.current();
+            if (ind == null)
+                return false;
+            Frontier f = PackageStores.of(ind).frontier;
+            if (f.drawnCount == 0)
+                return false;
+            Key k = key(box);
+            Held h = k == null || k.epoch() != f.epoch ? null : f.held.get(k.serial());
+            return h != null && h.drawn();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * IND_HELD_DRAW (slice S4c2; no op id, no COMMAND_RESULT): the engine draws held keys of one store and epoch
+     * into the far replay, has drawn ones removed, or gives them back. Each key is answered by a record: Draw by
+     * {@code CHAIN_DRAWN} (choice SC141; none while its frogport ticks, where the package goes on), Remove by
+     * {@code CHAIN_RELEASED} once its package is off the chain (choice SC142), Return by nothing (held again, and
+     * told again with {@code CHAIN_HELD} where it is held next, choice SC143). A key of this epoch Java does not
+     * hold is released; one of another epoch is not Java's, and is skipped.
+     */
+    public static boolean heldDraw(Industry ind, ByteBuffer b, int at, int size, int n, long cmdSeq) {
+        if (size < IndRecords.HeldDraw.SERIALS || n < 0 || IndRecords.HeldDraw.size(n) > size)
+            return true;
+        try {
+            PackageStores.of(ind).frontier.heldDraw(b, at, n);
+        } catch (RuntimeException e) {
+            if (!warnedDraw) {
+                warnedDraw = true;
+                MicRtsim.LOGGER.warn("[mic_rtsim] create: an IND_HELD_DRAW was not applied", e);
+            }
+        }
+        return true;
+    }
+
+    private static boolean warnedDraw;
+
+    private void heldDraw(ByteBuffer b, int at, int n) {
+        long store = b.getLong(at + IndRecords.HeldDraw.STORE);
+        int action = b.getInt(at + IndRecords.HeldDraw.ACTION);
+        if (b.getInt(at + IndRecords.HeldDraw.EPOCH) != epoch || (action == IndRecords.HeldDraw.RETURN && ignoreReturnsForTest))
+            return;
+        for (int i = 0; i < n; i++) {
+            long serial = b.getLong(at + IndRecords.HeldDraw.SERIALS + 8 * i);
+            Held h = held.get(serial);
+            if (h == null) {
+                release(new Key(store, epoch, serial), BlockPos.ZERO);
+                continue;
+            }
+            switch (action) {
+                case IndRecords.HeldDraw.DRAW -> draw(serial, h);
+                case IndRecords.HeldDraw.REMOVE -> remove(serial, h);
+                case IndRecords.HeldDraw.RETURN -> giveBack(serial, h);
+                default -> {}
+            }
+        }
+    }
+
+    /** Marks a held package drawn and answers {@code CHAIN_DRAWN} (again for one drawn already: the engine may have lost it). */
+    private void draw(long serial, Held h) {
+        if (!h.drawn()) {
+            ServerLevel level = ind.level(h.dim());
+            // Its frogport ticks now: no replay covers it, and the package goes on there.
+            if (level == null || Loaded.ticks(level, h.destination()))
+                return;
+            putHeld(serial, h.marked(true, false));
+            drawn++;
+        }
+        PackageStores.journalKey(ind, h.store(), h.at(), IndRecords.ChainPackage.CHAIN_DRAWN, epoch, serial);
+    }
+
+    /**
+     * Takes a drawn package off its conveyor ({@link #take}), or, while that conveyor is not loaded, marks it to be
+     * taken at its first tick ({@link #firstTick}). One Java does not hold drawn is removed all the same: the
+     * engine drew it (Java's mark was lost).
+     */
+    private void remove(long serial, Held h) {
+        ServerLevel level = ind.level(h.dim());
+        if (level == null || !Loaded.at(level, h.at())) {
+            if (!h.drawn() || !h.removing()) {
+                putHeld(serial, h.marked(true, true));
+                removingAt.computeIfAbsent(h.dim(), d -> new Long2ObjectOpenHashMap<>())
+                        .computeIfAbsent(h.at().asLong(), p -> new LongArrayList()).add(serial);
+            }
+            return;
+        }
+        if (Loaded.blockEntity(level, h.at()) instanceof ChainConveyorBlockEntity cc) {
+            take(level, cc, serial, h);
+            return;
+        }
+        // No conveyor there now (Create drops the packages of one destroyed, and they were released then).
+        unfound++;
+        release(new Key(h.store(), epoch, serial), h.at());
+    }
+
+    /**
+     * Takes the package keyed {@code serial} off {@code cc} and answers {@code CHAIN_RELEASED}, whose next journal
+     * file waits for the chunk (R21: the journal never claims a removal the chunk on disk lacks). Not there: released
+     * (it left the chain some way no hook saw).
+     */
+    private void take(ServerLevel level, ChainConveyorBlockEntity cc, long serial, Held h) {
+        boolean found = takeKeyed(cc.getLoopingPackages(), serial);
+        if (!found)
+            for (List<ChainConveyorPackage> t : cc.getTravellingPackages().values())
+                if (takeKeyed(t, serial)) {
+                    found = true;
+                    break;
+                }
+        BlockPos pos = cc.getBlockPos();
+        if (found) {
+            removed++;
+            cc.notifyUpdate();
+        } else
+            unfound++;
+        release(new Key(h.store(), epoch, serial), pos);
+        LevelChunk chunk = found ? Loaded.chunk(level, pos) : null;
+        if (chunk != null)
+            ind.journalDependsOn(chunk);
+    }
+
+    private boolean takeKeyed(List<ChainConveyorPackage> l, long serial) {
+        for (int i = 0; i < l.size(); i++) {
+            ItemStack box = l.get(i).item;
+            Key k = box == null || box.isEmpty() ? null : key(box);
+            if (k != null && k.epoch() == epoch && k.serial() == serial) {
+                l.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The engine gives a drawn package back: held again, and told again where it is held next. */
+    private void giveBack(long serial, Held h) {
+        if (h.drawn() || h.removing())
+            putHeld(serial, h.marked(false, false));
+        sent.remove(serial);
+        returned++;
     }
 
     // ---- persistence (IndustryData, under KEY) ----------------------------------------------------
 
     private void putHeld(long serial, Held h) {
-        held.put(serial, h);
+        Held old = held.put(serial, h);
+        drawnCount += (h.drawn() ? 1 : 0) - (old != null && old.drawn() ? 1 : 0);
         CompoundTag e = new CompoundTag();
         e.putLong("store", h.store());
         e.putString("dim", h.dim().location().toString());
         e.putLong("destination", h.destination().asLong());
         e.putLong("at", h.at().asLong());
+        if (h.drawn())
+            e.putBoolean("drawn", true);
+        if (h.removing())
+            e.putBoolean("removing", true);
         if (!tag.contains("held", Tag.TAG_COMPOUND))
             tag.put("held", new CompoundTag());
         tag.getCompound("held").put(Long.toHexString(serial), e);
@@ -794,7 +1012,9 @@ public final class Frontier {
     }
 
     private void removeHeld(long serial) {
-        held.remove(serial);
+        Held old = held.remove(serial);
+        if (old != null && old.drawn())
+            drawnCount--;
         sent.remove(serial);
         unverified.remove(serial);
         tag.getCompound("held").remove(Long.toHexString(serial));
@@ -842,7 +1062,13 @@ public final class Frontier {
             try {
                 long n = Long.parseUnsignedLong(serial, 16);
                 BlockPos at = BlockPos.of(e.getLong("at"));
-                held.put(n, new Held(e.getLong("store"), dim, BlockPos.of(e.getLong("destination")), at));
+                Held loaded = new Held(e.getLong("store"), dim, BlockPos.of(e.getLong("destination")), at, e.getBoolean("drawn"),
+                        e.getBoolean("removing"));
+                held.put(n, loaded);
+                if (loaded.drawn())
+                    drawnCount++;
+                if (loaded.removing())
+                    removingAt.computeIfAbsent(dim, d -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(at.asLong(), p -> new LongArrayList()).add(n);
                 unverified.add(n);
                 unverifiedAt.computeIfAbsent(dim, d -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(at.asLong(), p -> new LongArrayList()).add(n);
             } catch (NumberFormatException ex) {
@@ -864,6 +1090,6 @@ public final class Frontier {
         return "frontier epoch " + Integer.toUnsignedString(epoch) + " kept routes " + routes + " held " + held.size() + " captured " + captured
                 + " inserted again " + insertedAgain + " dropped " + dropped + " handed over " + handedOver + " holds " + holds + " followed " + followed
                 + " landed " + landed + " released " + released + " stripped " + stripped + " unfound " + unfound + " unverified "
-                + unverified.size();
+                + unverified.size() + " drawn " + drawnCount + " (marked " + drawn + ", removed " + removed + ", given back " + returned + ")";
     }
 }

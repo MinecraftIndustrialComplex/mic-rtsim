@@ -847,11 +847,19 @@ public final class PackageStores {
      * {@code epoch}/{@code serial}, last at {@code pos}; no frogport, destination, packages or goods.
      */
     static void journalRelease(Industry ind, long store, BlockPos pos, int epoch, long serial) {
+        journalKey(ind, store, pos, IndRecords.ChainPackage.CHAIN_RELEASED, epoch, serial);
+    }
+
+    /**
+     * Journals and commits one record of a key only, {@code CHAIN_RELEASED} or {@code CHAIN_DRAWN} (slice S4c2: the
+     * frontier marked the package keyed {@code epoch}/{@code serial} drawn), at {@code pos}.
+     */
+    static void journalKey(Industry ind, long store, BlockPos pos, int direction, int epoch, long serial) {
         ByteBuffer r = ind.journal(IndRecords.IND_CHAIN_PACKAGE, IndRecords.ChainPackage.size(0), 0);
         r.putLong(IndRecords.ChainPackage.STORE, store);
         r.putLong(IndRecords.ChainPackage.DISTRICT, 0);
         r.putInt(IndRecords.ChainPackage.INVENTORY, IndRecords.NO_INVENTORY);
-        r.putInt(IndRecords.ChainPackage.DIRECTION, IndRecords.ChainPackage.CHAIN_RELEASED);
+        r.putInt(IndRecords.ChainPackage.DIRECTION, direction);
         r.putInt(IndRecords.ChainPackage.FROGPORT, IndRecords.NO_INVENTORY);
         r.putInt(IndRecords.ChainPackage.DESTINATION, IndRecords.NO_INVENTORY);
         r.putInt(IndRecords.ChainPackage.PACKAGES, 0);
