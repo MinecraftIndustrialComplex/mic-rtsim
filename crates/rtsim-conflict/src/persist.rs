@@ -62,7 +62,7 @@ use crate::tunables::ConflictTunables;
 /// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
 /// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
-/// arrival (M6, MZB-271).
+/// arrival (M6, MZB-271); a party ends with the op ids of the casualties it counted (MZB-589).
 const MAGIC: u32 = u32::from_le_bytes(*b"RTC7");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -660,6 +660,10 @@ fn put_party(w: &mut Writer, x: &Party) {
     w.bool(x.chief);
     put_opt(w, &x.breaker, |w, a| w.u64(a.to_bits()));
     w.f64(x.fight_strength);
+    put_usize(w, x.casualty_ops.len());
+    for op in &x.casualty_ops {
+        w.u64(*op);
+    }
 }
 
 fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
@@ -716,6 +720,10 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
         chief: r.bool()?,
         breaker: get_opt(r, handle)?,
         fight_strength: r.f64()?,
+        casualty_ops: {
+            let n = r.len_prefix(8)?;
+            (0..n).map(|_| r.u64()).collect::<codec::Result<Vec<_>>>()?
+        },
     })
 }
 

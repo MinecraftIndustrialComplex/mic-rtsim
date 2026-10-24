@@ -862,7 +862,7 @@
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state dd3b0008289825eb against dd3b0008289825eb, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state 76e81b6e3902b1d9 against 76e81b6e3902b1d9, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",

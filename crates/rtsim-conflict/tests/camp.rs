@@ -11,6 +11,14 @@ use rtsim_conflict::engine::{Phase, SlotState};
 use rtsim_conflict::synth::{self, CampRun};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
+/// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death, so none
+/// repeats another's op.
+fn next_op() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    (1 << 63) | (N.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 fn days(d: f64) -> u64 {
     (d * TICKS_PER_DAY as f64) as u64
 }
@@ -738,6 +746,7 @@ fn a_member_lost_on_a_walk_off_books_once_in_the_camp() {
             body,
             count: 1,
             killer: (0, 0),
+            op: next_op(),
         }),
         at,
     );

@@ -153,9 +153,13 @@ public final class ConflictRecords {
         }
     }
 
-    /** BAND_CASUALTIES (aux = killer kind). */
+    /**
+     * BAND_CASUALTIES (aux = killer kind), with a Java op id (MZB-589): a record journaled on an entity or a
+     * chunk can be committed again by the reassert (a new OBS_SEQ, the same bytes), and the engine skips the
+     * op it has already counted for that party.
+     */
     public static final class Casualties {
-        public static final int AGENT = 24, EPOCH = 32, BODY = 36, COUNT = 40, KILLER_MOST = 48, KILLER_LEAST = 56, SIZE = 64;
+        public static final int AGENT = 24, EPOCH = 32, BODY = 36, COUNT = 40, KILLER_MOST = 48, KILLER_LEAST = 56, OP_ID = 64, SIZE = 72;
     }
 
     /** CHIEF_KILLED (aux = killer kind), with a Java op id. */

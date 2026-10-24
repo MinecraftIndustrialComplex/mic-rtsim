@@ -611,6 +611,9 @@ impl FakeConflict {
                             {
                                 *n = n.saturating_sub(k);
                             }
+                            // Its own op id, as Java commits each (MZB-589): the engine counts a
+                            // repeated op once. A counter, so the sims stay deterministic.
+                            let op = self.op();
                             self.push(
                                 at + f.after,
                                 Obs::Casualties(boundary::BandCasualties {
@@ -620,6 +623,7 @@ impl FakeConflict {
                                     body: s.body,
                                     count: k,
                                     killer: self.player,
+                                    op,
                                 }),
                             );
                         }
