@@ -3293,7 +3293,12 @@ mod herds {
             "the live session's budget took saves of its own"
         );
 
-        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| c.row_budget = BUDGET);
+        // Not in TEST mode: TEST mode reads every page back for its state hash at the start and
+        // at each save (`herds.rs`, `paging.rs`), which this peak would count as the replay's.
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+            c.row_budget = BUDGET;
+            c.test = false;
+        });
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
         j.game_time = gt;
@@ -3311,12 +3316,11 @@ mod herds {
         [peak, unpaged, replay]
     }
 
-    /// RP-49 for the herds (fixes4 item 7): the replay's resident herd rows are the pages the
-    /// crashed session touched since its last durable save, bounded by the unpaged footprint.
-    /// A herd page holds 32 herds and one herd's event dirties it, so a window of two steps
-    /// (2,400 ticks, less than one vanilla autosave interval) already touches nearly every page
-    /// here: the replay holds most of the unpaged footprint, whatever the window's length. The
-    /// live peaks are printed, not asserted: they ride on when the IO lane's saves come back.
+    /// RP-49 for the herds (fixes4 item 7, RP-55): the replay's resident herd rows are the pages
+    /// the crashed session touched since its last durable save, bounded by the unpaged footprint.
+    /// No page is taken while replaying (RP-42), so they grow with the window: two steps hold
+    /// about half of it here, eighty nearly all. The live peaks are printed, not asserted: they
+    /// ride on when the IO lane's saves come back.
     #[test]
     fn a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save() {
         let short = the_replays_herd_peak_against_the_live_sessions("herds-rp49-short", 2);
@@ -3329,10 +3333,10 @@ mod herds {
             );
         }
         assert!(
-            short[2] * 2 > short[1],
-            "two steps touch most of the herd pages: {short:?}"
+            short[2] < short[1],
+            "a short window holds the pages it touched, not every page: {short:?}"
         );
-        assert!(long[2] >= short[2], "{short:?} {long:?}");
+        assert!(long[2] > short[2], "{short:?} {long:?}");
     }
 
     /// The herds through the native engine and a fake vanilla herd adapter (rtsim-ecology's

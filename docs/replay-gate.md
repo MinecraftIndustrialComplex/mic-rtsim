@@ -420,10 +420,12 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
   footprint: for most modules only after a lost save request (fixed in 63d1b4fa: the oldest pending
   request is kept) or one of the causes the engine logs (RP-55): a save Java asked for that is not
   made, an engine that stops simulating, an earlier session past the pages that ended with no save.
-  The herds are the exception: 32 herds a page, every herd moving, so two steps touch nearly every
-  page and their replay holds near their unpaged footprint in any window
-  (`a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save`: 177,178 B against 186,606
-  B after 2,400 ticks).
+  The herds hold the most: 32 herds a page and one herd's event dirties it, so their replay's rows
+  grow fast with the window
+  (`a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save`, outside TEST mode: 95,540
+  B against 186,606 B unpaged after 2,400 ticks, 191,730 B against 203,970 B after 96,000). TEST
+  mode reads every page of each paged module back for its state hash at a start and at each save
+  (main's, RP-55), so a test that measures a replay's rows runs the replayed engine outside it.
 
 ### 3.3 How engines see it
 
