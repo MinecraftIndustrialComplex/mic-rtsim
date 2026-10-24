@@ -378,6 +378,14 @@ fn mix_key(h: &mut u64, k: PoolKey) {
             mix(h, u64::from(i));
             mix(h, u64::from(g.0));
         }
+        PoolKey::Chain(s, to, g) => {
+            mix(h, 4);
+            mix(h, s.0);
+            mix(h, to.x as u64);
+            mix(h, to.y as u64);
+            mix(h, to.z as u64);
+            mix(h, u64::from(g.0));
+        }
     }
 }
 
@@ -2112,7 +2120,8 @@ impl Part {
                         changed = true;
                     }
                 }
-                PoolKey::Mail(..) => {}
+                // A glass replay has no links (choice SC107).
+                PoolKey::Mail(..) | PoolKey::Chain(..) => {}
             }
         }
         // (c) Full: a store an arriving good has no room in for a tick.
