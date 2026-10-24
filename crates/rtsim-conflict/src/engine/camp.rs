@@ -23,6 +23,8 @@
 //!   a replayed answer is a no-op by its engine op id, and one for a generation the slot no longer
 //!   holds books nothing.
 
+use rtsim_kernel::renewal::Pressure;
+
 use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
@@ -154,6 +156,12 @@ pub struct Camp {
     pub slots: Vec<Slot>,
     pub retired: Vec<Retired>,
     pub throne: Option<Throne>,
+    /// Recent player-caused losses of a renewal culture's camp (EQUILIBRIUM.md §2.2, MZB-254).
+    pub pressure: Pressure,
+    /// The stamp of the booked arrival event, and its tick: a renewal culture's wait for its next
+    /// member, booked whether the camp is in or out.
+    pub arrival: u32,
+    pub arrival_at: Option<Tick>,
 }
 
 impl Camp {
@@ -541,6 +549,36 @@ impl Conflict {
         if let Some(t) = t {
             self.schedule(t, Ev::Refill { faction: f, stamp });
         }
+    }
+
+    /// A renewal culture's wait ran out (MZB-256): its camp gains a member, owed a body, and with
+    /// it the crystal a new Frostmaw holds (MZ-4 (a)). A camp that is in is ordered to spawn it at
+    /// once, so one that never unloads gets its arrival when the wait ends (EQUILIBRIUM item 8); one
+    /// that is out has it spawned by its next census, as any owed slot is.
+    pub(super) fn camp_arrival(&mut self, f: u32, stamp: u32, at: Tick) {
+        match self.camp_mut(f) {
+            Some(c) if c.arrival == stamp && c.arrival_at.is_some() => c.arrival_at = None,
+            _ => {
+                self.stats.stale += 1;
+                return;
+            }
+        }
+        // `pool_add` syncs first, so the slot the arrival adds is the one the sync after it makes.
+        self.pool_add(f, 1.0, at);
+        self.camp_sync(f, at);
+        self.factions[f as usize].crystal = true;
+        self.stats.arrivals += 1;
+        self.note(
+            at,
+            Some(f),
+            "arrival",
+            "a member arrives at the camp".to_string(),
+        );
+        if self.camp_is_in(f) {
+            let lines = self.spawn_lines(f, &[]);
+            self.send_lines(f, lines, at);
+        }
+        self.unblock(f, at);
     }
 
     pub(super) fn camp_refill(&mut self, f: u32, stamp: u32, at: Tick) {
