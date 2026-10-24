@@ -3904,6 +3904,14 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   experience orbs within 40 blocks are unchanged ten ticks later (a follower's `xpReward` is 6, so a base that
   dropped would show orbs); written and compiled, not run.
 
+- **MZB-644** (leashed means a leash on the save, not a holder; amends MZB-442; review P2-3): the hunt's
+  eligibility test asks `Leashable.mayBeLeashed()` (leash data present), not `isLeashed()` (a holder present). An
+  animal that has just loaded has its leash data from the save and no holder until `Leashable.tickLeash` restores it
+  in its first ticks (up to 100 when the holder is an entity not loaded yet, then the lead drops), and the hunt is
+  applied on the tick its last chunk is entities-loaded, before most of them have ticked. `mayBeLeashed` is
+  `getLeashData() != null` in the 1.21.1 sources (checked in the decompiled `Leashable`), so it also covers a
+  restored leash. The test is 17b's outer-ring leashed animal (MZB-645).
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so

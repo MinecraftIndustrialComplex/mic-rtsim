@@ -223,7 +223,10 @@ public final class OwedHunts {
         float volume = a.getBbWidth() * a.getBbWidth() * a.getBbHeight();
         if (!((double) volume > 0.1 && volume < 6.0f))
             return false;
-        if (a.hasCustomName() || a.isLeashed() || a.isVehicle() || a.isPassenger())
+        // mayBeLeashed, not isLeashed: a leashed animal that has just loaded has its leash data from the save but no
+        // holder yet (Leashable.tickLeash restores it in the first ticks, and for up to 100 when the holder is an
+        // entity not loaded yet), and isLeashed says false until then (MZB-644).
+        if (a.hasCustomName() || a.mayBeLeashed() || a.isVehicle() || a.isPassenger())
             return false;
         if (a instanceof OwnableEntity o && o.getOwnerUUID() != null)
             return false;
