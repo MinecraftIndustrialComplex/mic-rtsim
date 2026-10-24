@@ -1394,6 +1394,73 @@ fn a_stack_decided_again_from_more_is_another_op() {
     ok(&mut b);
 }
 
+/// MZB-446 (amended at the re-check): the real bound of a crash's gift. A session names the chest
+/// and then takes three payments (30, 50, 40), each stack put down and answered before the next
+/// payment: 120 nuggets are in the chest and nothing is owed. The chest's chunk is saved after
+/// those stacks but the pages are not, and then the server dies. The replay books the three
+/// payments and the chest, places nothing (the camp is out), and the census decides stacks of 64
+/// and 56 from the 120 owed: ops the plugin never saw (the amount is in the op), so both are put
+/// down, on top of the 120 the chunk kept. The gift is every stack answered since the last save
+/// (120, not one stack), the journal ahead of the world, as a replayed CHIEF_PAID after a
+/// player's inventory rolled back gifts the same way. Nothing is ever lost, and the books stay
+/// right.
+#[test]
+fn a_crash_after_several_answered_stacks_gifts_those_stacks_and_loses_nothing() {
+    let (mut a, mut b, id) = twin_groves(27);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let tail = [
+        (t1, chest_record(key, 27)),
+        (t1 + 50, pay_record(key, id, 0x6201, 30)),
+        (t1 + 100, pay_record(key, id, 0x6202, 50)),
+        (t1 + 150, pay_record(key, id, 0x6203, 40)),
+    ];
+    let paid = 30 + 50 + 40;
+    let mut in_chest = 0;
+    let mut answered = Vec::new();
+    for (t, o) in &tail {
+        a.run(*t);
+        a.c.ingest(&mut a.w, &mut *a.infra, o, *t);
+        loop {
+            let next = a.c.placings().next();
+            let Some((op, p)) = next else { break };
+            in_chest += p.amount / MILLI;
+            answered.push(op);
+            let at = a.c.now();
+            assert!(a.c.tribute_placed(&mut a.w, op, at));
+        }
+    }
+    assert_eq!(in_chest, paid);
+    assert_eq!(owed(&a), 0);
+    assert_eq!(answered.len(), 3, "a stack for each payment");
+    // The crash. The COMMAND_RESULTs of the three stacks replay too, but no stack is in flight
+    // in the replay (the camp is out), so `tribute_placed` finds none of them.
+    restart_and_replay(&mut b, &tail);
+    let mut replayed = Vec::new();
+    loop {
+        let next = b.c.placings().next();
+        let Some((op, p)) = next else { break };
+        replayed.push(p.amount / MILLI);
+        assert!(!answered.contains(&op), "an op the plugin answered once");
+        let at = b.c.now();
+        assert!(b.c.tribute_placed(&mut b.w, op, at));
+    }
+    assert_eq!(owed(&b), 0, "the books are right");
+    ok(&mut b);
+    // The chunk kept the first session's stacks and the replay puts the owed ones down again.
+    let replayed_total: i64 = replayed.iter().sum();
+    assert!(
+        replayed_total >= paid,
+        "nothing lost: the replay owes all {paid}, stacks {replayed:?}"
+    );
+    let chest_holds = in_chest + replayed_total;
+    let gift = chest_holds - paid;
+    assert_eq!(
+        gift, in_chest,
+        "the gift is every stack answered since the save: {replayed:?}"
+    );
+}
+
 /// Review P3-6: the stack in flight is resident, so the engine's memory counts it.
 #[test]
 fn a_stack_in_flight_is_counted_in_the_engines_memory() {

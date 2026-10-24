@@ -1784,7 +1784,10 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   TRANSFER_TO_CONTAINER through the core's outbox under an op id derived from the faction and a
   saved counter, the good and the amount (the same decision re-derived after a crash is the same op,
   a different one never is, §2.2), so a restart sends it again and Java answers DUPLICATE_OP
-  (MZB-446). APPLIED or
+  (MZB-446). When a crash loses the pages but keeps the chest's chunk, the replay decides its stacks
+  from everything it owes, ops the plugin never saw, and puts them down on top of the stacks the chunk
+  kept: the gift is every stack answered since the last save (not one stack), the journal ahead of the
+  world, and nothing is ever lost (MZB-446, amended at the re-check). APPLIED or
   DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
   chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and
