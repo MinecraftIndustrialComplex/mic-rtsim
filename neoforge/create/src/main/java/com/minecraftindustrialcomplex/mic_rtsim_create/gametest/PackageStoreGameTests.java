@@ -191,6 +191,9 @@ public final class PackageStoreGameTests {
                 .thenWaitUntil(IndustryKit.paced(() -> {
                     for (int cx = y.ax; cx <= y.bx; cx++)
                         check("A to B load", level.getChunkSource().getChunkNow(cx, y.az) != null);
+                    // A chunk is FULL a tick or more before it ticks blocks, and S1's guard keeps rotation out of
+                    // a chunk that does not tick: a chain joined then would leave CB still for good.
+                    check("both conveyors' chunks tick", Loaded.ticks(level, y.ca) && Loaded.ticks(level, y.cb));
                 }))
                 .thenExecute(() -> {
                     clear(level, y);
@@ -238,7 +241,8 @@ public final class PackageStoreGameTests {
                         check("frogport " + f.pos.toShortString() + " is an inventory of its district",
                                 d != null && d.inventoryAt(f.pos) != null);
                     }
-                    check("the chain turns", conveyor(level, y.ca).getSpeed() != 0 && conveyor(level, y.cb).getSpeed() == conveyor(level, y.ca).getSpeed());
+                    float sa = conveyor(level, y.ca).getSpeed(), sb = conveyor(level, y.cb).getSpeed();
+                    check("the chain turns: CA " + sa + ", CB " + sb + ", CB ticks " + Loaded.ticks(level, y.cb), sa != 0 && sb == sa);
                 });
     }
 
