@@ -124,11 +124,18 @@ fn a_session_start_deletes_a_stale_view_store() {
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.module_mask = PHASE1;
     j.idle();
+    // The tap's thread counts the delete after remove_dir_all returns: wait for the count, which comes
+    // last (a poll between the two saw view/ gone and 0 deletes).
     let deadline = Instant::now() + Duration::from_secs(10);
-    while dir.join(vstore::VIEW_DIR).exists() {
-        assert!(Instant::now() < deadline, "view/ was never deleted");
+    while stat(&e, "deletes") == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "view/ was never deleted (still there: {})",
+            dir.join(vstore::VIEW_DIR).exists()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
+    assert!(!dir.join(vstore::VIEW_DIR).exists(), "view/ is gone");
     assert_eq!(stat(&e, "deletes"), 1);
     e.close(false, Duration::from_secs(5)).unwrap();
 }
