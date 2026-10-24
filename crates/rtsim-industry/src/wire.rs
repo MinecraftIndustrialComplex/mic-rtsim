@@ -24,10 +24,10 @@ use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, Store
 use crate::obs::{
     BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
     ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
-    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind, InventoryDecl,
-    LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer, ReconcileResult,
-    ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl, StoreFrogport,
-    SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind,
+    InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer,
+    ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl,
+    StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use crate::threat::ThreatClass;
 

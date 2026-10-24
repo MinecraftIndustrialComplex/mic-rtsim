@@ -620,11 +620,23 @@ fn on_hold(e: &Engine, s: StoreId, f: StoreFrogport) -> Vec<HeldKey> {
 fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
     let mut e = engine();
     e.set_page_check(true);
-    send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
     send(
         &mut e,
         1,
-        chain(S, Some(D1), ChainDirection::Out, 0, Some(1), 2, &[(IRON, 128)]),
+        chain(
+            S,
+            Some(D1),
+            ChainDirection::Out,
+            0,
+            Some(1),
+            2,
+            &[(IRON, 128)],
+        ),
     );
     send(&mut e, 40, held(S, 1, key(1, 7), &[(IRON, 64)]));
     send(&mut e, 41, held(S, 1, key(1, 8), &[(IRON, 64)]));
@@ -676,7 +688,11 @@ fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
 #[test]
 fn a_census_and_another_epoch_clear_the_held() {
     let mut e = engine();
-    send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
     send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
     send(&mut e, 11, held(S, 0, key(1, 2), &[(GOLD, 3)]));
     assert_eq!(on_hold(&e, S, a()), vec![key(1, 2)]);
@@ -695,7 +711,11 @@ fn a_census_and_another_epoch_clear_the_held() {
     send(&mut e, 201, held(S, 1, key(1, 4), &[(IRON, 64)]));
     assert_eq!(on_hold(&e, S, b()), vec![key(1, 4)]);
     // Java's epoch moves on (an engine reset, a re-enable): it declares every store again.
-    send(&mut e, 300, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 2)));
+    send(
+        &mut e,
+        300,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 2)),
+    );
     assert!(e.stores()[&S].on_hold.is_empty());
     send(&mut e, 301, held(S, 1, key(1, 5), &[(IRON, 64)]));
     assert!(e.stores()[&S].on_hold.is_empty());
@@ -706,7 +726,11 @@ fn a_census_and_another_epoch_clear_the_held() {
     assert_eq!(e.stores()[&S].epoch, 2);
     assert!(on_hold(&e, S, a()).is_empty());
     // A lower epoch is another epoch: it drops the keys of the one before.
-    send(&mut e, 400, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(
+        &mut e,
+        400,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
     assert!(e.stores()[&S].on_hold.is_empty());
     send(&mut e, 401, held(S, 0, key(1, 8), &[(GOLD, 3)]));
     assert_eq!(on_hold(&e, S, a()), vec![key(1, 8)]);
@@ -718,10 +742,18 @@ fn a_census_and_another_epoch_clear_the_held() {
 #[test]
 fn held_packages_follow_their_frogport() {
     let mut e = engine();
-    send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
     send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
     // b moves to U.
-    send(&mut e, 20, Obs::PackageStore(epoch(decl(S, vec![a(), c()]), 1)));
+    send(
+        &mut e,
+        20,
+        Obs::PackageStore(epoch(decl(S, vec![a(), c()]), 1)),
+    );
     send(
         &mut e,
         20,
@@ -730,7 +762,11 @@ fn held_packages_follow_their_frogport() {
     assert_eq!(on_hold(&e, U, b()), vec![key(1, 1)]);
     assert!(e.stores()[&S].on_hold.is_empty());
     // U goes, into S, which lists b again.
-    send(&mut e, 30, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(
+        &mut e,
+        30,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
     send(&mut e, 30, Obs::PackageStore(removal(U, Some(S))));
     assert_eq!(on_hold(&e, S, b()), vec![key(1, 1)]);
 }
