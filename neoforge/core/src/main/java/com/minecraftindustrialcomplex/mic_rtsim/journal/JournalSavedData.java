@@ -136,6 +136,8 @@ public final class JournalSavedData extends SavedData {
         for (String n : s.dictNames())
             names.add(StringTag.valueOf(n));
         tag.put("dictNames", names);
+        if (s.pinnedGen() != null)
+            tag.putByteArray("pinnedGen", s.pinnedGen());
         return tag;
     }
 
@@ -155,7 +157,8 @@ public final class JournalSavedData extends SavedData {
         if (kinds.length != names.length)
             throw new IllegalStateException("mic_rtsim journal dictionary is corrupt");
         JournalSavedData d = new JournalSavedData(Journal.restore(new Journal.Snapshot(
-                tag.getLong("lastAppliedCmdSeq"), tag.getLong("nextObsSeq"), seqs, records, kinds, names)));
+                tag.getLong("lastAppliedCmdSeq"), tag.getLong("nextObsSeq"), seqs, records, kinds, names,
+                tag.contains("pinnedGen", Tag.TAG_BYTE_ARRAY) ? tag.getByteArray("pinnedGen") : null)));
         d.writtenThrough = Math.max(0, tag.getLong("nextObsSeq") - 1);
         return d;
     }
