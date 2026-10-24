@@ -84,6 +84,10 @@ neoForge {
             systemProperty 'mic_rtsim.engine', 'stub'
             systemProperty 'mic_rtsim.farbench', 'true'
             systemProperty 'mic_rtsim.farbench.trains', (project.findProperty('samplerTrains') ?: '200').toString()
+            // One carriage a train: 200 trains of the default four, 38 blocks long, overlap on the two rings (100 a ring,
+            // 19 to 31 blocks apart) and Create crashes them all (derailed), so the sampler would skip every one. It reads
+            // only a train's first carriage, so its cost does not depend on the count.
+            systemProperty 'mic_rtsim.farbench.carriages', (project.findProperty('samplerCarriages') ?: '1').toString()
             systemProperty 'mic_rtsim.farbench.dress', 'false'
             systemProperty 'mic_rtsim.samplerbench', 'true'
             systemProperty 'mic_rtsim.samplerbench.windows', (project.findProperty('samplerWindows') ?: '6').toString()

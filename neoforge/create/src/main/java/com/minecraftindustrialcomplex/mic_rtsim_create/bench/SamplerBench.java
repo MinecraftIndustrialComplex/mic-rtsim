@@ -5,6 +5,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainSampler;
+import com.simibubi.create.Create;
+import com.simibubi.create.content.trains.entity.Train;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -106,10 +108,17 @@ public final class SamplerBench {
         lastSamples = TrainSampler.samples;
         lastPasses = TrainSampler.passes;
         windows++;
-        MicRtsimCreate.LOGGER.info("[samplerbench] window {}: {} samples, {} passes sent, {} tracked; ns per sample: median {}, p99 {}, max {}; "
-                        + "ns per tick: mean {}, p99 {}, max {}",
-                windows, taken, sent, TrainSampler.tracked(), at(s, 0.5), at(s, 0.99), at(s, 1.0),
+        // A derailed train is skipped by the sampler: a bench of them measures nothing
+        int derailed = 0;
+        for (Train t : Create.RAILWAYS.trains.values())
+            if (t.derailed)
+                derailed++;
+        MicRtsimCreate.LOGGER.info("[samplerbench] window {}: {} samples, {} passes sent, {} tracked, {} derailed; ns per sample: median {}, "
+                        + "p99 {}, max {}; ns per tick: mean {}, p99 {}, max {}",
+                windows, taken, sent, TrainSampler.tracked(), derailed, at(s, 0.5), at(s, 0.99), at(s, 1.0),
                 k.length == 0 ? 0 : sum / k.length, at(k, 0.99), at(k, 1.0));
+        if (derailed > 0)
+            MicRtsimCreate.LOGGER.warn("[samplerbench] {} trains are derailed: this window's numbers are not the sampler's work", derailed);
     }
 
     private static long at(long[] sorted, double q) {
