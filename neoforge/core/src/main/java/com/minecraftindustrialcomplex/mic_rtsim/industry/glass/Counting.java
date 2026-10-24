@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry.glass;
 
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
@@ -126,6 +127,8 @@ public final class Counting {
     long samplesSent;
     long samplesDropped;
     long movesCounted;
+    /** Count points that threw (logged, the move uncounted). */
+    long failures;
 
     public Counting(Industry ind) {
         this.ind = ind;
@@ -138,10 +141,27 @@ public final class Counting {
      * (server) level. One hash lookup; a count point asks it before it works out the move's target.
      */
     public boolean isMover(Level level, BlockPos mover) {
-        if (!(level instanceof ServerLevel))
+        try {
+            if (!(level instanceof ServerLevel))
+                return false;
+            Long2ObjectOpenHashMap<Key[]> map = byMover.get(level.dimension());
+            return map != null && map.containsKey(mover.asLong());
+        } catch (RuntimeException e) {
+            failed("the mover test at " + mover, e);
             return false;
-        Long2ObjectOpenHashMap<Key[]> map = byMover.get(level.dimension());
-        return map != null && map.containsKey(mover.asLong());
+        }
+    }
+
+    /**
+     * A count point failed: it runs inside Create's block entity tick, where an exception would break the
+     * machine, so it is logged as the bridge logs a failure ({@code Industry.fail}) and the move goes
+     * uncounted (a residue the unit's window shows, SC88). Logged for the first failure and each time the
+     * number of failures doubles, so a point that throws at every move does not flood the log.
+     */
+    public void failed(String what, Throwable t) {
+        long n = ++failures;
+        if ((n & (n - 1)) == 0)
+            MicRtsim.LOGGER.error("[mic_rtsim] industry: counting {} (failure {})", what, n, t);
     }
 
     /**
@@ -151,21 +171,25 @@ public final class Counting {
      * skipped here). Counted when the (mover, canonical inventory of target) pair is one the engine named.
      */
     public void moved(Level level, BlockPos mover, BlockPos target, ItemStack stack, int n, boolean into) {
-        if (n <= 0 || stack.isEmpty() || !(level instanceof ServerLevel serverLevel))
-            return;
-        Long2ObjectOpenHashMap<Key[]> map = byMover.get(level.dimension());
-        if (map == null)
-            return;
-        Key[] ks = map.get(mover.asLong());
-        if (ks == null)
-            return;
-        BlockPos store = Districts.canonicalInventory(serverLevel, target);
-        if (store == null)
-            return;
-        long sp = store.asLong();
-        for (Key k : ks)
-            if (k.store == sp)
-                count(k, stack, n, into);
+        try {
+            if (n <= 0 || stack.isEmpty() || !(level instanceof ServerLevel serverLevel))
+                return;
+            Long2ObjectOpenHashMap<Key[]> map = byMover.get(level.dimension());
+            if (map == null)
+                return;
+            Key[] ks = map.get(mover.asLong());
+            if (ks == null)
+                return;
+            BlockPos store = Districts.canonicalInventory(serverLevel, target);
+            if (store == null)
+                return;
+            long sp = store.asLong();
+            for (Key k : ks)
+                if (k.store == sp)
+                    count(k, stack, n, into);
+        } catch (RuntimeException e) {
+            failed("a move at " + mover + " to " + target, e);
+        }
     }
 
     private void count(Key k, ItemStack stack, int n, boolean into) {
@@ -212,7 +236,11 @@ public final class Counting {
         for (Map.Entry<Pair, Key> e : next.entrySet())
             if (old == null || !old.keys.containsKey(e.getKey()))
                 index(dim, e.getValue());
-        held.put(district, new Held(dim, next));
+        // A set that leaves nothing holds nothing: `active` must go null, or every hooked move pays for isMover.
+        if (next.isEmpty())
+            held.remove(district);
+        else
+            held.put(district, new Held(dim, next));
         setsTaken++;
         refresh();
     }
@@ -424,7 +452,7 @@ public final class Counting {
         return setsTaken;
     }
 
-    /** Count sets ignored: a compile that is not the latest complete one, a moving frame, nothing resolvable. */
+    /** Count sets ignored: a compile that is not the latest complete one, a moving frame, nothing resolvable, a malformed one. */
     public long setsIgnored() {
         return setsIgnored;
     }

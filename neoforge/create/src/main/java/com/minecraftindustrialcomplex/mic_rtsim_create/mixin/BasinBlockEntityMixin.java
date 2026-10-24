@@ -45,18 +45,22 @@ public abstract class BasinBlockEntityMixin {
         int before = stack.getCount();
         ItemStack remainder = original.call(target, stack, simulate);
         if (seen != null) {
-            BasinBlockEntity self = (BasinBlockEntity) (Object) this;
-            Level level = self.getLevel();
-            Direction facing = self.getBlockState().getValue(BasinBlock.FACING);
-            BlockPos spout = self.getBlockPos().below().relative(facing);
-            int n = before - remainder.getCount();
-            InvManipulationBehaviour behind = level.getCapability(Capabilities.ItemHandler.BLOCK, spout, facing.getOpposite()) != null ? null
-                    : BlockEntityBehaviour.get(level, spout, InvManipulationBehaviour.TYPE);
-            if (behind != null) {
-                if (c.isMover(level, spout))
-                    c.moved(level, spout, behind.getTarget().getConnectedPos(), seen, n, true);
-            } else if (c.isMover(level, self.getBlockPos())) {
-                c.moved(level, self.getBlockPos(), spout, seen, n, true);
+            try {
+                BasinBlockEntity self = (BasinBlockEntity) (Object) this;
+                Level level = self.getLevel();
+                Direction facing = self.getBlockState().getValue(BasinBlock.FACING);
+                BlockPos spout = self.getBlockPos().below().relative(facing);
+                int n = before - remainder.getCount();
+                InvManipulationBehaviour behind = level.getCapability(Capabilities.ItemHandler.BLOCK, spout, facing.getOpposite()) != null ? null
+                        : BlockEntityBehaviour.get(level, spout, InvManipulationBehaviour.TYPE);
+                if (behind != null) {
+                    if (c.isMover(level, spout))
+                        c.moved(level, spout, behind.getTarget().getConnectedPos(), seen, n, true);
+                } else if (c.isMover(level, self.getBlockPos())) {
+                    c.moved(level, self.getBlockPos(), spout, seen, n, true);
+                }
+            } catch (RuntimeException e) {
+                c.failed("a basin's spout", e); // never break the basin's tick
             }
         }
         return remainder;

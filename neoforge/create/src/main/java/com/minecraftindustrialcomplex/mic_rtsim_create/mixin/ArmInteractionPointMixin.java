@@ -21,6 +21,11 @@ import org.spongepowered.asm.mixin.injection.At;
  * the composter's) override these methods and do not reach an inventory through them, and the crafter's
  * point calls {@code super.extract}, which is one count: no arm move is counted twice. A funnel point's
  * insert goes through the funnel's own {@code InvManipulationBehaviour}, counted there under the funnel.
+ *
+ * <p>No point of Create's own lands on a store node: a funnel point is counted under the funnel (the engine
+ * names (funnel, store) beside (arm, store)), and the packager's points use the base calls on the packager's
+ * own handler. These two hooks therefore matter for a third-party store block that an arm reaches through the
+ * base point; nothing is double counted either way.
  */
 @Mixin(value = ArmInteractionPoint.class, remap = false)
 public abstract class ArmInteractionPointMixin {
@@ -28,11 +33,12 @@ public abstract class ArmInteractionPointMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItem(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countInsert(IItemHandler handler, ItemStack stack, boolean simulate, Operation<ItemStack> original,
             @Local(argsOnly = true) ArmBlockEntity arm) {
+        Counting c = Counting.active();
+        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
         int before = stack.getCount();
         ItemStack remainder = original.call(handler, stack, simulate);
-        Counting c = Counting.active();
-        if (c != null && !simulate && c.isMover(arm.getLevel(), arm.getBlockPos()))
-            c.moved(arm.getLevel(), arm.getBlockPos(), ((ArmInteractionPoint) (Object) this).getPos(), stack, before - remainder.getCount(), true);
+        if (seen != null && c.isMover(arm.getLevel(), arm.getBlockPos()))
+            c.moved(arm.getLevel(), arm.getBlockPos(), ((ArmInteractionPoint) (Object) this).getPos(), seen, before - remainder.getCount(), true);
         return remainder;
     }
 

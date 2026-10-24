@@ -44,13 +44,14 @@ public abstract class ChuteBlockEntityMixin {
     @WrapOperation(method = "handleDownwardOutput", at = @At(value = "INVOKE",
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countDown(IItemHandler inv, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
+        Counting c = Counting.active();
+        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
         int before = stack.getCount();
         ItemStack remainder = original.call(inv, stack, simulate);
-        Counting c = Counting.active();
-        if (c != null && !simulate) {
+        if (seen != null) {
             ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
             if (c.isMover(self.getLevel(), self.getBlockPos()))
-                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), stack, before - remainder.getCount(), true);
+                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), seen, before - remainder.getCount(), true);
         }
         return remainder;
     }
@@ -58,13 +59,14 @@ public abstract class ChuteBlockEntityMixin {
     @WrapOperation(method = "handleUpwardOutput", at = @At(value = "INVOKE",
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countUp(IItemHandler inv, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
+        Counting c = Counting.active();
+        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
         int before = stack.getCount();
         ItemStack remainder = original.call(inv, stack, simulate);
-        Counting c = Counting.active();
-        if (c != null && !simulate) {
+        if (seen != null) {
             ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
             if (c.isMover(self.getLevel(), self.getBlockPos()))
-                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().above(), stack, before - remainder.getCount(), true);
+                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().above(), seen, before - remainder.getCount(), true);
         }
         return remainder;
     }
