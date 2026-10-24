@@ -951,10 +951,16 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   unwatched at the slack, and the late record raises the floor only: the watched fight is booked
   as the abstract raid, its own casualties and loot are dropped. Until RP-56 it embodied the band
   as a sighting and counted them again.
-- A refused sighting inside the slack (RP-54's residual). BAND_SPAWN_REJECTED carries no flags and
-  has no free bytes (36 its wave, 40 its u64 cmdSeq), so a refusal of a newer epoch's wave 0 inside
-  a held party's slack is still read as its fight: the abstract resolution the live engine made is
-  lost. Telling them apart needs a layout change.
+- A refused sighting inside the slack (RP-54's residual, accepted by the coordinator).
+  BAND_SPAWN_REJECTED carries no flags and has no free bytes (24 u64 agent, 32 u32 epoch, 36 u32
+  wave, 40 u64 cmdSeq, 48 bytes), so a replayed refusal of a newer epoch's first wave inside a held
+  fight's slack is read as the fight's refusal: the hold ends early, at the refusal, and the band
+  fights its round unembodied; the fight's own BAND_MATERIALIZED then finds no hold and is lost as
+  RP-56 says (its casualties and loot count against nothing). The books hold, one resolution; only
+  live parity is lost, and only for a sighting refused inside a held fight's slack. Not taken: the
+  refusal's wave is a u32 and the command's a u16, so its high half (bytes 38 and 39) could carry
+  the echoed flags as BAND_MATERIALIZED's 44 does (boundary.md's BAND_SPAWN_REJECTED row); the
+  coordinator wants no change to that field now.
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
