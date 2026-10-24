@@ -5520,6 +5520,85 @@ mod conflict {
         a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None);
     }
 
+    /// RP-22 (the review's amendment a): an invasion of 26 of one body kind, seen leaving the
+    /// camp after the save, the quota's 16 placed; `killed` of them die in view (BAND_CASUALTIES),
+    /// then the player leaves, the band is recalled and Java despawns it with 16 - `killed`
+    /// survivors. Returns the band's alive count: in the session that went on (`crash` false),
+    /// or after a crash and the replay of those records. The honour must place what Java was
+    /// commanded (16), not every alive member (26): Java's despawn counts only the placed.
+    fn an_invasion_seen_after_the_save(name: &str, killed: u32, crash: bool) -> u32 {
+        let (dir, e, mut j) = camp(name);
+        if killed > 0 {
+            // Of one stack of 16: floor(16 * 0.2) = 3, 200 ticks after it spawns.
+            j.conflict_plugin.fight = Some(synth::Fight {
+                kill_share: 0.2,
+                after: 200,
+                kill_chief: false,
+                only_at_base: false,
+            });
+        }
+        // Far, so that it is seen leaving the camp and walks on, not fought.
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Invasion, Step::Invasion, far);
+        on_step(&e, p, Step::Invasion);
+        e.with_conflict_mut(|c, _| {
+            let x = &mut c.parties[p];
+            let u = x.units[0].0;
+            x.units = vec![(u, 26)];
+            x.start_units = 26;
+        });
+        assert_eq!(books(&e, p).2, false, "not seen yet");
+        save(&e, &mut j);
+        advance_until(&mut j, 100, 3 * DAY, "the invasion out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        assert_eq!(books(&e, p).4, 16, "the quota placed");
+        if killed > 0 {
+            advance_until(&mut j, 100, 3_000, "the casualties", |j| {
+                books(&j.e, p).0 < 26
+            });
+            assert_eq!(books(&e, p).0, 26 - killed);
+        }
+        let from = j.conflict.len();
+        j.players.clear();
+        advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
+            !recalls(j, from, p).is_empty()
+        });
+        advance_until(&mut j, 100, 3_000, "the despawn", |j| !books(&j.e, p).3);
+        let live = books(&e, p);
+        assert!(!live.2 && live.4 == 0, "despawned: {live:?}");
+        if !crash {
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return live.0;
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, j) = reopen(&dir, saved, gt);
+        let (alive, _, embodied, recalled, spawned) = books(&e, p);
+        assert!(!embodied && !recalled && spawned == 0, "abstract after the replay");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        alive
+    }
+
+    #[test]
+    fn an_invasion_seen_after_the_save_is_counted_as_placed_after_a_crash() {
+        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22", 0, true), 26);
+    }
+
+    #[test]
+    fn an_invasion_seen_after_the_save_counts_its_dead_once_after_a_crash() {
+        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22-dead", 3, true), 23);
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn an_invasion_seen_and_despawned_without_a_crash() {
+        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22-live", 0, false), 26);
+        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22-live-dead", 3, false), 23);
+    }
+
     /// RP-26 (the review's item): a watched fight kept in the pages, its casualties journaled
     /// after the save, then 4,000 fillers. After the crash the arm changes no body (conflict
     /// hears no `player_left` there): in the replay's hand-overs that carry the casualties the

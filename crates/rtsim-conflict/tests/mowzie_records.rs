@@ -1944,6 +1944,140 @@ fn a_fresh_engines_replayed_materialize_raises_the_epoch_floor_only() {
     assert_eq!(next_body(true), (4, 5));
 }
 
+/// A raid band of 26 members of its first unit's body, abstract at epoch 0.
+fn band_of_26(r: &mut Run) -> (Handle<Party>, u32) {
+    let band = raid_band(r);
+    let x = &mut r.c.parties[band];
+    let u = x.units[0].0;
+    x.units = vec![(u, 26)];
+    x.start_units = 26;
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(u).body)
+    };
+    (band, body)
+}
+
+fn placed(c: &Conflict, band: Handle<Party>) -> u32 {
+    c.parties[band].spawned.iter().map(|s| s.1).sum()
+}
+
+/// docs/replay-gate.md §5.2 (RP-6, RP-22): a replayed BAND_MATERIALIZED on an engine from its
+/// pages embodies the party at the record's epoch with the quota's members (16 of 26), not every
+/// alive member; a live one changes nothing. At a newer epoch an older embodied epoch's bodies
+/// walk off as its recalled stack; a record below the party's wave, or of an older epoch,
+/// changes nothing.
+#[test]
+fn a_replayed_materialize_embodies_with_what_java_was_commanded() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, _) = band_of_26(&mut r);
+    // Live: nothing.
+    let mut live = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    let at = r.c.now() + 1;
+    live.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 1, 0, 16),
+        at,
+    );
+    assert!(
+        !live.parties[band].embodied,
+        "a live record embodies nothing"
+    );
+    assert_eq!(live.parties[band].epoch, 0);
+    // Replayed, from the pages.
+    let mut back = restarted(&r);
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 1, 0, 16),
+        at,
+    );
+    let x = &back.parties[band];
+    assert!(x.embodied && x.epoch == 1 && x.wave == 1);
+    assert_eq!(x.seen_by, None);
+    assert_eq!(placed(&back, band), 16, "the quota, not all 26");
+    // Below its wave, and an older epoch: nothing.
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 1, 0, 16),
+        at + 1,
+    );
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 0, 3, 16),
+        at + 2,
+    );
+    assert_eq!((back.parties[band].epoch, back.parties[band].wave), (1, 1));
+    assert_eq!(placed(&back, band), 16);
+    // A newer epoch: epoch 1's bodies walk off as its stack, epoch 2 has the quota.
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 2, 0, 16),
+        at + 3,
+    );
+    let x = &back.parties[band];
+    assert_eq!((x.epoch, x.wave), (2, 1));
+    assert_eq!(x.recalled.len(), 1);
+    assert_eq!(x.recalled[0].0, 1);
+    assert_eq!(x.recalled[0].1.iter().map(|s| s.1).sum::<u32>(), 16);
+    assert_eq!(placed(&back, band), 16);
+}
+
+/// RP-22: the same epoch's next wave, replayed. The pages hold the band embodied at epoch 1,
+/// wave 0 placed, 20 alive and 10 of them in Minecraft (6 died before the save). Its wave 1,
+/// decided after the save, is filled from the room the quota leaves: 6. With 2 more deaths in
+/// view journaled before the record, the live engine may have placed 6 or 8 (the deaths read or
+/// not); the honour counts them as placed and fills 6, never above what Java was commanded.
+#[test]
+fn a_same_epoch_wave_is_filled_never_above_what_java_was_commanded() {
+    let fill = |deaths: u32| {
+        let mut r = Run::new(36, quiet_goblins());
+        let (band, body) = band_of_26(&mut r);
+        {
+            let x = &mut r.c.parties[band];
+            let u = x.units[0].0;
+            x.units = vec![(u, 20)];
+            x.epoch = 1;
+            x.embodied = true;
+            x.spawned = vec![(u, 10)];
+            x.wave = 1;
+        }
+        let mut back = restarted(&r);
+        let at = r.c.now() + 1;
+        if deaths > 0 {
+            back.ingest(
+                &mut r.w,
+                &mut NoInfrastructure,
+                &Obs::Casualties(boundary::BandCasualties {
+                    agent: Party::agent(band),
+                    epoch: 1,
+                    by: boundary::BY_MOB,
+                    body,
+                    count: deaths,
+                    killer: (0, 0),
+                }),
+                at,
+            );
+        }
+        let before = placed(&back, band);
+        back.ingest(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &materialized(band, 1, 1, 6),
+            at + 1,
+        );
+        let x = &back.parties[band];
+        assert_eq!((x.epoch, x.wave), (1, 2));
+        (before, placed(&back, band), x.alive())
+    };
+    assert_eq!(fill(0), (10, 16, 20), "the room: 16 less 10 in Minecraft");
+    assert_eq!(fill(2), (8, 14, 18), "6 more, not 8");
+}
+
 /// MZB-142 (re-review P2-2): a player's killing of a band on its walk-off, after it was recalled
 /// and before its despawn, counts the same live as in a replay. The live run used to return at
 /// once (the band is not embodied), so the replay of the same record counted a death, a signal
