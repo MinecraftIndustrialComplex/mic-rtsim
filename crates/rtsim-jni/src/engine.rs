@@ -1179,7 +1179,15 @@ impl Engine {
             std::thread::sleep(Duration::from_millis(1));
         }
         let mut result = Ok(());
-        if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
+        let save =
+            save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire);
+        // No page is taken while the session's replay runs (docs/replay-gate.md §3.2, RP-42): the
+        // pages stay as they are, and the next start replays what they lack from Java's journal.
+        let replaying = save && lock(&self.state).replaying;
+        if replaying {
+            log_info("closed while the session's replay runs: the pages stay as they were");
+        }
+        if save && !replaying {
             let save = self.take_save(&mut lock(&self.state), false);
             let this = Arc::clone(self);
             result = self.run_io_waiting(move || this.commit(save));
@@ -1327,20 +1335,25 @@ impl Engine {
         conflict::simulate(&mut st);
         shared::simulate(&mut st);
         phase1::simulate(&mut st);
+        // No page is taken while the session's replay runs (docs/replay-gate.md §3.2, RP-42): a
+        // save asked for waits for the replay end, and so does the budget's, so the resident rows
+        // may pass their budget by what the replay's hand-overs change until then.
         let req = self.save_through.load(Ordering::Acquire);
-        if self.save_at_step_end.swap(false, Ordering::AcqRel) {
-            self.save_now(&mut st, false);
-        } else if req != 0 && st.replay.applied_through().0 >= req - 1 {
-            let _ = self
-                .save_through
-                .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
-            self.save_now(&mut st, false);
+        if !st.replaying {
+            if self.save_at_step_end.swap(false, Ordering::AcqRel) {
+                self.save_now(&mut st, false);
+            } else if req != 0 && st.replay.applied_through().0 >= req - 1 {
+                let _ =
+                    self.save_through
+                        .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
+                self.save_now(&mut st, false);
+            }
         }
         // The paged modules' budgets, at this step boundary: saved rows leave; a module whose
         // resident rows all changed since the last save gets a save of its own, one at a time
         // (PF15).
         paging::drain(&mut st);
-        if paging::enforce_budget(&mut st) && st.paging.in_flight == 0 {
+        if paging::enforce_budget(&mut st) && st.paging.in_flight == 0 && !st.replaying {
             self.save_now(&mut st, true);
         }
         archive::absorb(&mut st, &self.stats);
@@ -1602,18 +1615,21 @@ impl Engine {
             return;
         }
         let seq = wire::u64_at(b, obs::OBS_SEQ);
+        // The first record of this session ends the replay before it is admitted
+        // (docs/replay-gate.md §2.2, trigger 1), and before a save it is due for: no page is
+        // taken while replaying (RP-42).
+        shared::replay_end_before(st, seq);
         // A save for a world save whose journal ended at `through` is taken right before the first
-        // journaled record past it: the pages never get ahead of that world save.
+        // journaled record past it: the pages never get ahead of that world save. Java's journal
+        // ends at or past the session's JOURNAL_GEN, so one due below `session_first` is older
+        // than the session: it waits for the replay end.
         let req = self.save_through.load(Ordering::Acquire);
-        if req != 0 && seq > req - 1 {
+        if req != 0 && seq > req - 1 && !st.replaying {
             let _ = self
                 .save_through
                 .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
             self.save_now(st, false);
         }
-        // The first record of this session ends the replay before it is admitted
-        // (docs/replay-gate.md §2.2, trigger 1).
-        shared::replay_end_before(st, seq);
         if rec.kind == obs::JOURNAL_GEN {
             self.journal_gen(st, h, rec, seq);
             return;

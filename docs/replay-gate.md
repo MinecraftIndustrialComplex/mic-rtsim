@@ -108,9 +108,10 @@ checked against what landed and amended where main differs from what they assume
 - **RP** moves both into one transition for every module, `shared::replay_end(st)`, reached at
   three points (RP-2), each through its own guard of the one predicate (`replay_end_before`,
   `replay_end_if_due`, `replay_end_at_session_start`):
-  1. **`journaled()`** (engine.rs), first thing after its `save_through` block, for a record whose
-     OBS_SEQ is at or past `session_first`. That is before S4p's JOURNAL_GEN branch, its unnamed
-     generation branch, its REASSERT branch and `admitted()`. On S4p the first live record is the
+  1. **`journaled()`** (engine.rs), first thing, before its `save_through` block (RP-42), for a
+     record whose OBS_SEQ is at or past `session_first`. So a save due at that record is taken after
+     the replay end (§3.2), and the end is before S4p's JOURNAL_GEN branch, its unnamed generation
+     branch, its REASSERT branch and `admitted()`. On S4p the first live record is the
      session's JOURNAL_GEN, so the replay ends just before that record is admitted. On main it is the
      first live record of any kind. Every module's journaled entry is reached through this function,
      industry's included, so the end also runs before an industry record that calls into another
@@ -295,7 +296,8 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
 1. **engine.rs, SESSION_START arm:** keep S4p's `session_gen_seen = false` and RP's lines (§2.1).
 2. **engine.rs, `journaled()`:** S4p restructured its body (JOURNAL_GEN, unnamed generation and
    REASSERT branches, `admitted()`, `dispatch()`, `answered_again()`); RP adds two lines at its top. A
-   textual conflict: take S4p's body and put RP's check right after the `save_through` block.
+   textual conflict: take S4p's body and put RP's check right after the `save_through` block. (The
+   fix round moved it above that block, RP-42.)
 3. **`reasserted()`:** set `st.applying_copy = Some(nonce)` before its dispatch and `None` after,
    one line each side. If RP lands first, S4p's merge adds them; if S4p lands first, slice C does.
 4. **tests/protocol.rs:** S4p shifts the journal's sequences by one (the JOURNAL_GEN) and
@@ -352,6 +354,21 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
 - A module's reset (`reset_if_due`) calls its engine's `begin_replay(from_pages)` (RP-31: whether
   that module's engine was restored from pages) and sets `replay_end_due`.
 - The two MZB-141 triggers in engine/conflict.rs and `notices_due` go (RP-2).
+- **No page is taken while replaying** (RP-42). Pages saved mid-replay would hold what only the
+  replay end undoes: bodies still embodied, kept fights still Fighting, held parties' `seg` one
+  short, floors and `fill_deaths` unfolded. So every path that saves waits while `st.replaying`:
+  - `journaled()`'s `save_through` block, which runs after trigger 1, so a save due at the first
+    live record is taken after the end; a request still due while replaying is taken at the first
+    journaled record or step end after it;
+  - the step end's (`SaveAtNextStep`, and a `save_through` that `applied_through` has reached);
+  - the budget's (`paging::enforce_budget`);
+  - `close(save = true)`, which leaves the pages as they were; the next start replays what they
+    lack from Java's journal.
+- **The cost** is the budget: the resident rows may pass it by what the replay's hand-overs change,
+  until the first budget save after the end. Measured in rtsim-jni's
+  `a_long_replay_takes_no_budget_save_before_its_end` (200 factions and 4,000 filler records
+  replayed in 5 hand-overs under a 4,096 B row budget): 56,792 B at the peak while replaying, 2,680 B
+  after the end's budget save.
 
 ### 3.3 How engines see it
 
