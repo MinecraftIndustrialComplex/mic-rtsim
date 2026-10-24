@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -59,6 +60,13 @@ final class FarTrainView {
     static final String GROUP_NAME = MicRtsimDh.MODID + ":carriage";
     /** A carriage far away: 3 wide, 3 tall, 1 block past each bogey point (research note §4.1). */
     static final double WIDTH = 3.0, HEIGHT = 3.0, OVERHANG = 1.0;
+    /**
+     * The longest run between a carriage's bogey points that is drawn (DHT73). Create assembles no carriage
+     * longer than its maxAssemblyLength (128 blocks by default); a longer run is a bad sample or a bad
+     * extrapolation, and drawn it would be a box hundreds of blocks long. Such a mover is skipped, counted and
+     * logged instead.
+     */
+    static final double MAX_RUN = 160.0;
     /** How long a carriage nobody sees keeps its group before it is released. */
     private static final long FORGET_NANOS = 10_000_000_000L;
 
@@ -77,6 +85,9 @@ final class FarTrainView {
     // What the last frame did, for the log and the bench
     static int lastActive, lastBoxes, lastRegistered, lastHidden, lastCandidates;
     static long recuts, confirms, creations, releases;
+    /** Carriage samples skipped for a run longer than {@link #MAX_RUN} (DHT73), and how many were logged. */
+    static long oddRuns;
+    private static int oddLogged;
     static long controllerNanos, controllerFrames;
 
     private FarTrainView() {}
@@ -87,6 +98,8 @@ final class FarTrainView {
         final IDhApiRenderableBoxGroup group;
         final RecutPacer pacer = new RecutPacer();
         double cutX, cutY, cutZ;
+        /** Where its origin was last put (for the black-frame probe's notes). */
+        double ox, oy, oz;
         /** The boxes this group was cut with, relative to its origin (the band draws these in the fade). */
         List<double[]> cut = List.of();
         int boxCount;
@@ -115,6 +128,36 @@ final class FarTrainView {
     /** The farthest a carriage's boxes reach from its run's midpoint, for a run (rx, ry, rz) between bogeys. */
     static double reach(double rx, double ry, double rz) {
         return Math.sqrt(rx * rx + ry * ry + rz * rz) / 2.0 + OVERHANG + WIDTH;
+    }
+
+    /** True when the run in {@code seg} is not finite or is longer than {@link #MAX_RUN}; logs nothing. */
+    static boolean tooLong(double[] seg) {
+        double rx = seg[0] - seg[3], ry = seg[1] - seg[4], rz = seg[2] - seg[5];
+        return !(rx * rx + ry * ry + rz * rz <= MAX_RUN * MAX_RUN);
+    }
+
+    /**
+     * True when carriage {@code m}'s run at {@code clock} ({@code seg}, as {@link FarMover#segmentAt} wrote it)
+     * is not a finite vector or is longer than {@link #MAX_RUN}: it is not drawn, by the boxes or the models
+     * (DHT73). Counted, and the first few logged with the samples it came from.
+     */
+    static boolean oddRun(FarMover m, double[] seg, double clock) {
+        if (!tooLong(seg))
+            return false;
+        double rx = seg[0] - seg[3], ry = seg[1] - seg[4], rz = seg[2] - seg[5];
+        double run2 = rx * rx + ry * ry + rz * rz;
+        oddRuns++;
+        if (oddLogged < 10 || oddRuns % 1000 == 0) {
+            oddLogged++;
+            MicRtsimDh.LOGGER.warn("mic_rtsim_dh: carriage {} has a run of {} blocks between its bogey points (over {});"
+                    + " not drawn ({} so far). Drawn at {} {} {} to {} {} {}, from {} to {} between far clock {} and"
+                    + " {}, now {}", m.key(), String.format(Locale.ROOT, "%.1f", Math.sqrt(run2)), MAX_RUN, oddRuns,
+                    seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], java.util.Arrays.toString(m.prev()),
+                    java.util.Arrays.toString(m.cur()), m.sampleTick(), m.sampleTick() + m.intervalTicks(), clock);
+        }
+        if (BlackProbe.ENABLED)
+            BlackProbe.note(String.format(Locale.ROOT, "odd run %s %.1f blocks", m.key(), Math.sqrt(run2)));
+        return true;
     }
 
     /**
@@ -155,6 +198,9 @@ final class FarTrainView {
 
     /** DhApiBeforeGenericRenderSetupEvent: fired twice a frame (the SSAO pass and the other); acts once. */
     static void beforeSetup(DhApiRenderParam param) {
+        if (BlackProbe.ENABLED)
+            BlackProbe.note("setup event, draw fbo " + org.lwjgl.opengl.GL11.glGetInteger(
+                    org.lwjgl.opengl.GL30.GL_DRAW_FRAMEBUFFER_BINDING) + (frame == updatedFrame ? " (second)" : " (first)"));
         if (frame == updatedFrame)
             return;
         updatedFrame = frame;
@@ -233,7 +279,7 @@ final class FarTrainView {
             double mx = (SEG[0] + SEG[3]) / 2.0, my = (SEG[1] + SEG[4]) / 2.0, mz = (SEG[2] + SEG[5]) / 2.0;
             double dx = mx - cam.x, dz = mz - cam.z;
             double d2 = dx * dx + dz * dz;
-            if (!(d2 <= radiusSq))
+            if (!(d2 <= radiusSq) || oddRun(m, SEG, clock))
                 continue;
             // The real carriage's look, where it has one (FarModelRenderer); its group, if any, goes dark
             if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
@@ -279,9 +325,14 @@ final class FarTrainView {
                 } else if (p.pacer.confirmDue(now)) {
                     p.group.triggerBoxChange();
                     confirms++;
+                    if (BlackProbe.ENABLED)
+                        BlackProbe.note("confirm " + probe(p));
                 }
                 p.group.setOriginBlockPos(ORIGIN);
             }
+            p.ox = ORIGIN.x;
+            p.oy = ORIGIN.y;
+            p.oz = ORIGIN.z;
             p.touchedFrame = frame;
             p.wantedAt = now;
             p.setActive(true);
@@ -304,6 +355,21 @@ final class FarTrainView {
         lastActive = active;
         lastBoxes = boxes;
         lastRegistered = PROXIES.size();
+        if (BlackProbe.ENABLED) {
+            BlackProbe.note(String.format(Locale.ROOT, "boxes: cam %.1f %.1f %.1f, %d active, %d boxes, %d registered,"
+                    + " %d candidates, %d hidden; totals %d created %d recut %d confirmed %d released", cam.x, cam.y,
+                    cam.z, active, boxes, PROXIES.size(), CANDIDATES.size(), hidden, creations, recuts, confirms,
+                    releases));
+            Proxy far = null;
+            double most = -1;
+            for (Proxy p : PROXIES.values())
+                if (p.active && reachOf(p) > most) {
+                    most = reachOf(p);
+                    far = p;
+                }
+            if (far != null)
+                BlackProbe.note("largest active " + probe(far));
+        }
         lastHidden = hidden;
         lastCandidates = CANDIDATES.size();
         CANDIDATES.clear();
@@ -320,6 +386,9 @@ final class FarTrainView {
             return null;
         }
         Proxy p = new Proxy(m.key(), group);
+        p.ox = ORIGIN.x;
+        p.oy = ORIGIN.y;
+        p.oz = ORIGIN.z;
         p.active = group.isActive();
         p.cutX = rx;
         p.cutY = ry;
@@ -330,6 +399,8 @@ final class FarTrainView {
         p.pacer.cut(now);
         PROXIES.put(m.key(), p);
         creations++;
+        if (BlackProbe.ENABLED)
+            BlackProbe.note("create " + probe(p));
         return p;
     }
 
@@ -347,6 +418,24 @@ final class FarTrainView {
         p.rgb = m.rgb();
         p.pacer.cut(now);
         recuts++;
+        if (BlackProbe.ENABLED)
+            BlackProbe.note("recut " + probe(p));
+    }
+
+    /** The farthest any of a group's box corners is from its origin, blocks. */
+    private static double reachOf(Proxy p) {
+        double most = 0;
+        for (double[] b : p.cut)
+            for (double v : b)
+                most = Math.max(most, Math.abs(v));
+        return most;
+    }
+
+    /** A group for the black-frame probe's notes. */
+    private static String probe(Proxy p) {
+        return String.format(Locale.ROOT, "%s: %d boxes reaching %.1f, origin %.1f %.1f %.1f, run %.2f %.2f %.2f,"
+                + " rgb %06x, active %b", p.key, p.boxCount, reachOf(p), p.ox, p.oy, p.oz, p.cutX,
+                p.cutY, p.cutZ, p.rgb, p.active);
     }
 
     /** Releases the group that has gone unwanted the longest, if any is not drawn this frame. */
