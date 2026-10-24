@@ -1796,6 +1796,10 @@ public final class Districts {
     private static final Direction[] DIRECTIONS = Direction.values();
 
     private static boolean hasCapability(ServerLevel level, BlockEntity be) {
+        // A handler that reads a part in a chunk not loaded (a double chest's other half, R2-11) would load it,
+        // or wait for its load: an inventory of parts has one (NeoForge's chest handler is the pair's).
+        if (!StockAccess.partsLoaded(level, be))
+            return true;
         BlockPos p = be.getBlockPos();
         BlockState s = be.getBlockState();
         if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, null) != null
@@ -1907,10 +1911,10 @@ public final class Districts {
 
     /**
      * The boundary inventory at {@code pos} as a detection describes it, {@code kind} the candidate's own kind
-     * bits; null when it is in a chunk that is not loaded. Never loads a chunk, nor waits for one (R2-11): a
-     * multiblock with a part in a chunk that is not loaded (a Create vault across a chunk still loading) takes
-     * its shape from its plugin ({@link IndustryPlugin#describe}), not from its capability, which would read
-     * that part. Public for the GameTests.
+     * bits; null when it is in a chunk that is not loaded. Never loads a chunk, nor waits for one (R2-11): an
+     * inventory with a part in a chunk that is not loaded (a Create vault, a double chest, across a chunk still
+     * loading) takes its shape from its plugin ({@link IndustryPlugin#describe}) or, a double chest, from its
+     * loaded half, not from its capability, which would read that part. Public for the GameTests.
      */
     public static District.Inventory describeInventory(ServerLevel level, BlockPos pos, int kind) {
         if (level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null)
@@ -1926,8 +1930,14 @@ public final class Districts {
                 if (shape != null && shape.length == 4)
                     return new District.Inventory(0, pos, kind | (int) shape[0], (int) shape[1], shape[2], shape[3]);
             }
-            if (!whole)
-                return null; // as an inventory in a chunk that is not loaded
+            if (!whole) {
+                // A double chest: the pair's slots, as its handler (a CompoundContainer of the two halves,
+                // both the same block) counts them; anything else as an inventory in a chunk not loaded.
+                BlockEntity be = loadedBlockEntity(level, pos);
+                if (be != null && StockAccess.chestPair(be) != null && be instanceof net.minecraft.world.Container c)
+                    return new District.Inventory(0, pos, kind | IndRecords.Inventory.KIND_ITEMS, 2 * c.getContainerSize(), 0, 0);
+                return null;
+            }
         }
         IItemHandler items = StockAccess.items(level, pos);
         if (items != null) {
@@ -2000,6 +2010,11 @@ public final class Districts {
         if (pendingHere != null)
             pendingHere.removeIf(c -> ChunkPos.getX(c) >= minCx && ChunkPos.getX(c) <= maxCx && ChunkPos.getZ(c) >= minCz && ChunkPos.getZ(c) <= maxCz);
         data.setDirty();
+    }
+
+    /** GameTests: whether a detection counts {@code be} industrial, asked afresh (no cache). */
+    public boolean industrialForTest(ServerLevel level, BlockEntity be) {
+        return industrial(level, be, kindCache());
     }
 
     /**
