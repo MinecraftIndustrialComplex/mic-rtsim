@@ -1649,11 +1649,7 @@ mod dragons {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            answers,
-            vec![("discard", 1)],
-            "the natural dragon is discarded"
-        );
+        assert_eq!(answers, vec![("discard", 1)], "the natural dragon is discarded");
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
@@ -2063,31 +2059,17 @@ mod dragons {
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
         let (agent, epoch) = (first[0].agent, first[0].epoch);
-        let last = |j: &Java| {
-            *j.far
-                .iter()
-                .rev()
-                .find(|r| r.agent == agent)
-                .expect("a far leg")
-        };
+        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
         let body = last(&j);
-        assert_eq!(
-            body.state,
-            FarState::Body,
-            "an adopted dragon is a body in the game"
-        );
+        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
         assert_eq!(body.kind, FAR_KIND_DRAGON);
         assert_eq!(
-            j.cmd_dict
-                .get(&(wire::DICT_BODY, body.body))
-                .map(String::as_str),
+            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
             Some("iceandfire:fire_dragon"),
             "its species in the engine's dictionary"
         );
         assert_eq!(
-            j.cmd_dict
-                .get(&(wire::DICT_DIMENSION, body.dimension))
-                .map(String::as_str),
+            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
@@ -2106,11 +2088,7 @@ mod dragons {
             j.game_time
         );
         if after.state == FarState::Roost {
-            assert_eq!(
-                (after.x0, after.z0),
-                (HOME.0, HOME.2),
-                "it rests at its lair"
-            );
+            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
         }
 
         // Quiet steps send nothing.
