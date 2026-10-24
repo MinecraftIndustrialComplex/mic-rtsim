@@ -37,7 +37,7 @@ import net.minecraft.world.entity.Entity;
  *       ({@code DragonLook.startOnBakeClock}), at its own ticks as far back as its far model's loop started, so its
  *       flight loop starts in phase with the far model's beat, and a render at each loop's end keeps it there;</li>
  *   <li>the far renderer draws the far model as if the body were not there yet ({@link DragonLook#holds}), turning
- *       it onto the body's heading and pitch by the hold's end ({@link #turn}).</li>
+ *       it onto the body's heading and pitch before the hold ends ({@link #turn}).</li>
  * </ul>
  *
  * <p>Then vanilla draws it, already flying. The hold is decided in the looks' frame ({@link #frame}) and forgotten
@@ -52,6 +52,11 @@ final class DragonArrivals {
     static final double HOLD_TICKS = 5.0;
     /** And at most this long in wall time from its arrival, for a game that pauses or freezes its ticks. */
     static final long HOLD_NANOS = 1_000_000_000L;
+    /**
+     * The far model's turn onto the body ({@link #turn}) ends this far into the hold: a hold ends at the first frame
+     * past its end, so the last frame held, up to a frame short of it, already has the body's angles.
+     */
+    static final double TURN_SHARE = 0.8;
     private static final long NONE = Long.MIN_VALUE, LOOP = (long) DragonLook.LOOP,
             STEP = (long) (DragonLook.LOOP / DragonLook.FRAMES);
 
@@ -72,6 +77,11 @@ final class DragonArrivals {
     /** New bodies not drawn by vanilla yet, each until its hold ends. */
     private final Map<Entity, Arrival> arrivals = new IdentityHashMap<>();
     private final Set<Entity> held = Collections.newSetFromMap(new IdentityHashMap<>());
+    /**
+     * Bodies whose hold ran out before vanilla drew them (its section not built yet, say): the far model still
+     * stands in for them, and keeps the body's angles ({@link #turn}) until vanilla's first render of it.
+     */
+    private final Set<Entity> released = Collections.newSetFromMap(new IdentityHashMap<>());
     /** A warm render is running: its own GeckoLib event goes through. */
     private boolean warming;
     private int errors;
@@ -85,6 +95,7 @@ final class DragonArrivals {
         long now = System.nanoTime();
         // Without a far view nothing calls frame: the map keeps only the last second's arrivals all the same
         arrivals.values().removeIf(a -> a.body.isRemoved() || now - a.joined > HOLD_NANOS);
+        released.removeIf(Entity::isRemoved);
         arrivals.put(d, new Arrival(d, now));
     }
 
@@ -94,20 +105,24 @@ final class DragonArrivals {
      */
     void frame(ClientLevel level, Predicate<Entity> mayCopy) {
         held.clear();
+        if (!released.isEmpty())
+            released.removeIf(e -> e.isRemoved() || e.level() != level);
         if (arrivals.isEmpty())
             return;
         long now = System.nanoTime();
         for (Iterator<Arrival> it = arrivals.values().iterator(); it.hasNext(); ) {
             Arrival a = it.next();
             DragonBaseEntity d = a.body;
-            if (d.isRemoved() || d.level() != level || now - a.joined > HOLD_NANOS) {
+            if (d.isRemoved() || d.level() != level) {
                 it.remove();
                 continue;
             }
             float partial = partial(d);
             double t = d.tickCount + (double) partial;
-            if (!Double.isNaN(a.first) && t - a.first >= HOLD_TICKS) {
+            if (now - a.joined > HOLD_NANOS || !Double.isNaN(a.first) && t - a.first >= HOLD_TICKS) {
                 it.remove();
+                if (!Double.isNaN(a.first))
+                    released.add(d);
                 continue;
             }
             // Vanilla draws it from now on: so it is never held after it was seen
@@ -219,14 +234,15 @@ final class DragonArrivals {
 
     /**
      * The heading and pitch, in degrees, to draw the far model of entity {@code id} at this frame, into {@code out}:
-     * false, and {@code out} untouched, when no body of that id is held. While a body is held its server turns it,
-     * and the far model keeps the feed's heading and no pitch; so through the hold the far model turns from
-     * {@code farYaw} and level onto the body's heading and pitch as Ice and Fire's renderer reads them (the body's
-     * {@code yBodyRot} and {@code dragonPitch}, interpolated), all the way by the hold's end, by its ticks or its
-     * wall time, whichever ends it, and the body takes over at the same angles (DHT74).
+     * false, and {@code out} untouched, when no body of that id is held or {@link #released}. While a body is held
+     * its server turns it, and the far model keeps the feed's heading and no pitch; so through the hold the far
+     * model turns from {@code farYaw} and level onto the body's heading and pitch as Ice and Fire's renderer reads
+     * them (the body's {@code yBodyRot} and {@code dragonPitch}, interpolated), all the way by {@link #TURN_SHARE}
+     * of the hold, by its ticks or its wall time, whichever is further, so the body takes over at the same angles;
+     * a released body's far model has its angles outright (DHT74).
      */
     boolean turn(int id, float farYaw, float[] out) {
-        if (held.isEmpty())
+        if (held.isEmpty() && released.isEmpty())
             return false;
         for (Entity e : held) {
             if (e.getId() != id)
@@ -237,15 +253,26 @@ final class DragonArrivals {
             DragonBaseEntity d = a.body;
             float partial = partial(d);
             double w = Math.max((d.tickCount + (double) partial - a.first) / HOLD_TICKS,
-                    (System.nanoTime() - a.joined) / (double) HOLD_NANOS);
-            float f = (float) Mth.clamp(w, 0.0, 1.0);
-            float bodyYaw = Mth.rotLerp(partial, d.yBodyRotO, d.yBodyRot);
-            float bodyPitch = Mth.lerp(partial, d.prevDragonPitch, d.getDragonPitch());
-            out[0] = farYaw + f * Mth.wrapDegrees(bodyYaw - farYaw);
-            out[1] = f * bodyPitch;
+                    (System.nanoTime() - a.joined) / (double) HOLD_NANOS) / TURN_SHARE;
+            angles(d, partial, (float) Mth.clamp(w, 0.0, 1.0), farYaw, out);
+            return true;
+        }
+        for (Entity e : released) {
+            if (e.getId() != id)
+                continue;
+            DragonBaseEntity d = (DragonBaseEntity) e;
+            angles(d, partial(d), 1f, farYaw, out);
             return true;
         }
         return false;
+    }
+
+    /** {@code f} of the way from {@code farYaw} and level to body {@code d}'s heading and pitch, into {@code out}. */
+    private static void angles(DragonBaseEntity d, float partial, float f, float farYaw, float[] out) {
+        float bodyYaw = Mth.rotLerp(partial, d.yBodyRotO, d.yBodyRot);
+        float bodyPitch = Mth.lerp(partial, d.prevDragonPitch, d.getDragonPitch());
+        out[0] = farYaw + f * Mth.wrapDegrees(bodyYaw - farYaw);
+        out[1] = f * bodyPitch;
     }
 
     /**
@@ -259,6 +286,8 @@ final class DragonArrivals {
             return true;
         if (!arrivals.isEmpty())
             arrivals.remove(body);
+        if (!released.isEmpty())
+            released.remove(body);
         return false;
     }
 
@@ -271,12 +300,13 @@ final class DragonArrivals {
     void clear(ClientLevel keep) {
         held.clear();
         arrivals.values().removeIf(a -> keep == null || a.body.level() != keep);
+        released.removeIf(e -> keep == null || e.level() != keep);
     }
 
     /** What it did since the last call, for the bench's log. */
     String stats() {
         String s = "arrivals: " + bodies + " bodies held (" + onBeat + " on the far beat) for " + frames + " frames, "
-                + arrivals.size() + " waiting";
+                + arrivals.size() + " waiting, " + released.size() + " released and not drawn yet";
         bodies = onBeat = frames = 0;
         return s;
     }
