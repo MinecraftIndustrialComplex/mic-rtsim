@@ -2450,10 +2450,11 @@ struct Arrival {
 /// saved while it marches there unseen. `watched`: the player stands at the refinery from the
 /// save on, so the band is fought there (a quarter of each wave at the base falls) and walks
 /// home. The session goes on until the band is home. `crash`: the session ends there instead,
-/// and a restart from the pages replays the plugin's records (the player's position forgotten,
-/// as the arm forgets it), ends its replay and runs on two days with nobody near. `restart`:
-/// also a second restart, from pages saved once the replay holds the arrival, whose clock then
-/// runs that many ticks before the next record (past the poll: it arrives again first).
+/// and a restart from the pages, the world's and the engine's, replays the plugin's records (the
+/// player's position forgotten, as the arm forgets it), ends its replay and runs on two days
+/// with nobody near. `restart`: also a second restart, from both pages saved once the replay
+/// holds the arrival, whose clock then runs that many ticks before the next record (past the
+/// poll: it arrives again first).
 /// `straggler`: a body of the band's older epoch dies in its fight ([`straggler`], RP-46).
 fn a_raid_arriving_after_the_save(
     watched: bool,
@@ -2480,7 +2481,7 @@ fn a_raid_arriving_after_the_save(
     run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
     let x = &r.c.parties[band];
     assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
-    let pages = r.c.save();
+    let (pages, world) = (r.c.save(), r.w.save());
     let (casualties, raids_watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
     journal.clear();
     r.watch = watched;
@@ -2509,8 +2510,10 @@ fn a_raid_arriving_after_the_save(
     if !crash {
         return arrival_of(&r.c, &walls);
     }
-    r.w.forget_player_pos(r.p);
-    r.watch = false;
+    // The restart: the world and the engine from the pages (the world the live session went on
+    // with is not the one Java restarts with).
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
     let tun = r.c.tun.clone();
     let cultures = r.c.cultures.clone();
     let mut back = Conflict::load(tun.clone(), cultures.clone(), &pages).unwrap();
@@ -2518,7 +2521,7 @@ fn a_raid_arriving_after_the_save(
     let mut walls = Walls::default();
     let mut restarted_once = restart.is_none();
     for (at, o) in &journal {
-        back.run_until(&mut r.w, &mut walls, *at);
+        back.run_until(&mut w, &mut walls, *at);
         if let Some(x) = back.parties.get(band) {
             assert!(
                 (x.seg as usize) < x.route.len(),
@@ -2538,19 +2541,20 @@ fn a_raid_arriving_after_the_save(
             let target = *x.route.last().unwrap();
             assert_eq!(back.party_pos(band, back.now()), target, "where it arrived");
             back = Conflict::load(tun.clone(), cultures.clone(), &back.save()).unwrap();
+            w = world_from(36, &w.save());
             back.begin_replay(true);
             let to = back.now() + restart.unwrap_or(0);
-            back.run_until(&mut r.w, &mut walls, to);
+            back.run_until(&mut w, &mut walls, to);
             assert_eq!(back.parties[band].phase, Phase::Out, "held again");
         }
-        back.ingest(&mut r.w, &mut walls, o, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
         let _ = back.take_commands();
     }
     assert!(restarted_once);
     let replay_end = back.now();
     back.resend_notices();
     assert!(!back.replaying());
-    back.run_until(&mut r.w, &mut walls, end + 2 * TICKS_PER_DAY);
+    back.run_until(&mut w, &mut walls, end + 2 * TICKS_PER_DAY);
     let mut a = arrival_of(&back, &walls);
     if !watched {
         assert!(
@@ -2701,7 +2705,7 @@ fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
     let round = x.until;
     assert!(round < x.bored_at, "a next round, not bored");
     let saved_at = r.c.now();
-    let pages = r.c.save();
+    let (pages, world) = (r.c.save(), r.w.save());
     let end = round + 600;
     run_journaled(&mut r, &mut walls, end, &mut journal);
     let after = |walls: &Walls| -> Vec<Tick> {
@@ -2716,18 +2720,19 @@ fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
         return (after(&walls), round);
     }
     journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
     let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
     back.begin_replay(true);
     let mut walls = Walls::default();
     for (at, o) in journal.iter().filter(|(at, _)| *at > saved_at) {
-        back.run_until(&mut r.w, &mut walls, *at);
-        back.ingest(&mut r.w, &mut walls, o, *at);
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
     }
     assert!(walls.raids.is_empty(), "nothing raided while replaying");
     assert_eq!(back.parties[band].phase, Phase::Waiting, "held");
     let replay_end = back.now();
     back.resend_notices();
-    back.run_until(&mut r.w, &mut walls, end + 600);
+    back.run_until(&mut w, &mut walls, end + 600);
     (after(&walls), replay_end)
 }
 
