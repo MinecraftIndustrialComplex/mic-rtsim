@@ -831,13 +831,20 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
   section 6.6's one-off `unknown or non-serializable data attachment mic_rtsim:*` errors, one per chunk
   that carries one as it loads (round 2: 74). What rtsim leaves on disk is inert (6.6): `world/rtsim/`,
   `world/data/mic_rtsim_*.dat`, `config/mic_rtsim*.toml` and the `mic_native/` folder can stay or go.
-- **Putting rtsim back** after the world ran without it (UR-1): put the jars back, delete `world/rtsim/`
-  before the first start (the sim reset below), then `rtsim district adopt` the factories again where
-  they stand. Round 2 put the jars back without the reset (10.6): rtsim does not see that it was out,
-  restores its pages as they were, and every district dissolves as its chunks load, because the
-  uninstall's save dropped their seed attachments. The reset keeps the villages and makes the engine
-  forget production it owed, which a reconcile could otherwise replay (UR-1); the districts need the
-  adopt either way. This holds until rtsim detects the gap itself, as UR-1 asks.
+- **Putting rtsim back** after the world ran without it (UR-1): put the jars back and start; nothing
+  else. rtsim reads `level.dat`'s mod list at the start, sees that the world ran without it, and resets
+  the whole sim itself (docs/choices-reinstall-guard.md). Expect, at ERROR, `[mic_rtsim] REINSTALL:
+  ...` and `[mic_rtsim] REINSTALL RESET (UR-1): ...`, which say that `world/rtsim/` moved to
+  `world/rtsim-reinstall-<time>/`; then `[industry] reinstall reset: N chunks of M districts are
+  adopted again as they load`, the sim reset's two `the engine's pages lack observations the journal no
+  longer holds (the reinstall reset)` lines, and `reinstall reset: saved; marker
+  mic_rtsim-reinstall.txt deleted` at the first save. `rtsim perf` says `reinstall guard: SIM RESET at
+  this start (UR-1)` with the re-adoption's progress for the whole session. Check that `rtsim district
+  list` keeps its districts as their chunks load. `rtsim district adopt` only the machines built during
+  the gap in a chunk that was in no district. Delete `world/rtsim-reinstall-*` once satisfied. To undo
+  the reset (a gap known to be harmless): stop, move that directory back to `world/rtsim/`, delete
+  `world/mic_rtsim-reinstall.txt` if it is still there, and start (RG9). Measured on a copy of round 2's
+  uninstalled world (10.6): 6 districts before and after, none dissolved.
 - **Everything**: stop; `sudo mv /var/lib/mc/server /var/lib/mc/server-failed`; `sudo mv
   /var/lib/mc/server-backup-<date> /var/lib/mc/server`; start.
 - **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/` and
@@ -949,8 +956,10 @@ and Ben has two choices to make before rtsim goes on: DR6, changed by DS-10, and
   restores its pages as they were, villages and herds included, and every district dissolves as its
   chunks load, without a log line, because the uninstall's save dropped their seed attachments (6
   districts at the start, 0 at the end). No block or block entity changed, and no reconcile replayed,
-  but none was owed in this world, so UR-1's replay risk was not exercised. 8.6 now says how to put
-  rtsim back: the sim reset, then `district adopt` again.
+  but none was owed in this world, so UR-1's replay risk was not exercised. **Fixed** by the reinstall
+  guard (UR-1, docs/choices-reinstall-guard.md): rtsim now sees the gap in `level.dat`'s mod list and
+  resets the whole sim itself, adopting the stripped districts again as their chunks load. Rerun on a
+  copy of r-uninstall's world (10.6): 6 districts kept, none dissolved. 8.6 says what to expect.
 - **R2-10. What the new features showed without a player** (10.8): the syn200 commands work on the real
   base (two merges and a rescan); the ships module's `RTS4` pages and phase 1's `RTW4` pages were written
   and read back, but this world has no docks, so S8b's ports and havens had nothing to run on (`ships
@@ -1115,8 +1124,15 @@ ticks in r1-rtsim (311 us a tick mean, p50 120 us) and 3.0 s over 8,516 in r3-rt
   without rtsim. `rtsim district list` showed 4 districts after the start and 0 at the end (`detections
   3`): each district dissolved as its chunks loaded with no seed attachment left, and no line in the log
   says so. `reconciles: 0 applied`, and the world's block entities and chunks match r-uninstall's
-  (18,212 and 18,732, none missing). The fix UR-1 names (detect the gap and reset) is still to build;
-  until then 8.6 says to reset by hand and adopt again.
+  (18,212 and 18,732, none missing).
+  **Rerun with the reinstall guard** (2026-10-24, a copy of r-uninstall's world, the branch's build):
+  the start logged `REINSTALL` and `REINSTALL RESET (UR-1)`, moved `world/rtsim/` aside, and the engine
+  started over with a new engine life; `reinstall reset: 69 chunks of 6 districts are adopted again as
+  they load`, all 69 already loaded at the session's start (796 machines adopted again, none found
+  with its seeds kept). Phase 1 adopted the 2 villages again and the industry announced the 6
+  districts again. `rtsim district list` showed the same 6 districts at 2, 3 and 8 minutes, with
+  every base forceloaded, `reconciles: 0 applied, 0 duplicates`, and the first save deleted the
+  marker. Started again (no gap), it kept the engine life and the 6 districts.
 - **The first detection after a start takes one long tick.** Where districts exist at the start (the
   reload, reset and reinstall runs), the session's first detection looked at 271 to 305 block entities
   in one tick of 0.68 s (r1-reload, load 19), 1.33 s (r-reset, load 10) and 2.2 s (r-reset-reload, load
