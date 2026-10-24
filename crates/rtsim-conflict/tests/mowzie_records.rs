@@ -2365,6 +2365,312 @@ fn a_copied_casualty_counts_against_an_abstract_band_once() {
     }
 }
 
+/// The abstract district raids an infrastructure was asked for (`Infrastructure::raid`): one
+/// tick per raid, whatever its classes.
+#[derive(Default)]
+struct Walls {
+    raids: std::collections::BTreeSet<Tick>,
+}
+
+impl rtsim_ecology::infra::Infrastructure for Walls {
+    fn districts_near(
+        &mut self,
+        _: u16,
+        _: i64,
+        _: i64,
+        _: i64,
+    ) -> Vec<rtsim_ecology::infra::DistrictSite> {
+        Vec::new()
+    }
+    fn raid(
+        &mut self,
+        t: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_ecology::infra::RaidOutcome> {
+        self.raids.insert(t.at);
+        None
+    }
+    fn good_name(&self, _: rtsim_industry::ids::Good) -> Option<String> {
+        None
+    }
+    fn trains_crossed(
+        &mut self,
+        _: u16,
+        _: &[(i32, i32)],
+        _: Tick,
+        _: Tick,
+    ) -> Vec<rtsim_ecology::infra::TrainSighting> {
+        Vec::new()
+    }
+}
+
+/// [`Run::run`] on `infra`, the plugin's records also kept in `journal` with when Java wrote
+/// them.
+fn run_journaled(
+    r: &mut Run,
+    infra: &mut dyn rtsim_ecology::infra::Infrastructure,
+    to: Tick,
+    journal: &mut Vec<(Tick, Obs)>,
+) {
+    let mut t = r.c.now();
+    while t < to {
+        let next = [
+            r.c.next_due(),
+            r.plugin.next_due(),
+            r.watch.then_some(r.next_obs),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(to)
+        .clamp(t + 1, to);
+        for (at, o) in r.plugin.due(next) {
+            r.c.ingest(&mut r.w, infra, &o, at);
+            journal.push((at, o));
+        }
+        r.c.run_until(&mut r.w, infra, next);
+        if r.watch && next >= r.next_obs {
+            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.next_obs = next + 1_200;
+        }
+        r.flush(next);
+        t = next;
+    }
+}
+
+/// What a raid's arrival came to: the abstract raids (by when), the casualties counted, the
+/// raids fought in view, and the camp's pool on day 9 (its closed form, so that a band pooled
+/// earlier or later, or with other members, shows).
+#[derive(Debug, PartialEq)]
+struct Arrival {
+    raids: Vec<Tick>,
+    casualties: u64,
+    watched: u64,
+    pool: f64,
+}
+
+/// RP-23 (the review's amendment b, docs/replay-gate.md §6.1): a raid on the refinery, the pages
+/// saved while it marches there unseen. `watched`: the player stands at the refinery from the
+/// save on, so the band is fought there (a quarter of each wave at the base falls) and walks
+/// home. The session goes on until the band is home. `crash`: the session ends there instead,
+/// and a restart from the pages replays the plugin's records (the player's position forgotten,
+/// as the arm forgets it), ends its replay and runs on two days with nobody near. `restart`:
+/// also a second restart, from pages saved once the replay holds the arrival, whose clock then
+/// runs that many ticks before the next record (past the poll: it arrives again first).
+fn a_raid_arriving_after_the_save(watched: bool, crash: bool, restart: Option<u64>) -> Arrival {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let f = r.f;
+    let now = r.c.now();
+    r.c.factions[f as usize].pool = 10.0;
+    r.c.factions[f as usize].pool_at = now;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
+    let pages = r.c.save();
+    let (casualties, raids_watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
+    journal.clear();
+    r.watch = watched;
+    r.next_obs = r.c.now();
+    let mut end = arrival;
+    while r.c.parties.get(band).is_some() {
+        end = end + 600;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    // Java journals other records all along: one past the band's, so that the replayed window
+    // holds its arrival whatever the band's records are.
+    journal.push((end, fillers_casualty()));
+    let arrival_of = |c: &Conflict, walls: &Walls| Arrival {
+        raids: walls.raids.iter().copied().collect(),
+        casualties: c.stats.casualties - casualties,
+        watched: c.stats.raids_watched - raids_watched,
+        pool: c.pool_at(f, day(9.0)),
+    };
+    if !crash {
+        return arrival_of(&r.c, &walls);
+    }
+    r.w.forget_player_pos(r.p);
+    r.watch = false;
+    let tun = r.c.tun.clone();
+    let cultures = r.c.cultures.clone();
+    let mut back = Conflict::load(tun.clone(), cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    let mut restarted_once = restart.is_none();
+    for (at, o) in &journal {
+        back.run_until(&mut r.w, &mut walls, *at);
+        if let Some(x) = back.parties.get(band) {
+            assert!(
+                (x.seg as usize) < x.route.len(),
+                "seg past the route: {} of {}",
+                x.seg,
+                x.route.len()
+            );
+        }
+        if !restarted_once && back.now() > arrival {
+            // Pages saved while the replay holds the arrival, and a restart from them.
+            restarted_once = true;
+            let phase = back.parties.get(band).map(|x| x.phase);
+            assert_eq!(phase, Some(Phase::Out), "held, not resolved");
+            assert!(walls.raids.is_empty());
+            let x = &back.parties[band];
+            assert_eq!(x.seg as usize + 2, x.route.len(), "on its last segment");
+            let target = *x.route.last().unwrap();
+            assert_eq!(back.party_pos(band, back.now()), target, "where it arrived");
+            back = Conflict::load(tun.clone(), cultures.clone(), &back.save()).unwrap();
+            back.begin_replay(true);
+            let to = back.now() + restart.unwrap_or(0);
+            back.run_until(&mut r.w, &mut walls, to);
+            assert_eq!(back.parties[band].phase, Phase::Out, "held again");
+        }
+        back.ingest(&mut r.w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(restarted_once);
+    let replay_end = back.now();
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.run_until(&mut r.w, &mut walls, end + 2 * TICKS_PER_DAY);
+    let mut a = arrival_of(&back, &walls);
+    if !watched {
+        assert!(
+            a.raids.iter().all(|&t| t >= replay_end),
+            "after the replay end ({replay_end:?}): {a:?}"
+        );
+        // Resolved after the replay end, the band comes home later than in the session that
+        // went on: its pool is not compared.
+        a.pool = f64::NAN;
+    }
+    a
+}
+
+/// A filler record: a casualty of a band the engine never had.
+fn fillers_casualty() -> Obs {
+    Obs::Casualties(boundary::BandCasualties {
+        agent: 0,
+        epoch: 0,
+        by: boundary::BY_MOB,
+        body: 0,
+        count: 1,
+        killer: (0, 0),
+    })
+}
+
+/// RP-23 (amendment b): a raid reaching a watched target in the replayed window, its
+/// BAND_MATERIALIZED and casualties replayed: resolved once, by the fight (no abstract raid), its
+/// casualties counted, and its pool as the session that went on left it.
+#[test]
+fn a_watched_arrival_in_the_replayed_window_is_resolved_once() {
+    let live = a_raid_arriving_after_the_save(true, false, None);
+    assert!(live.raids.is_empty(), "fought, not raided: {live:?}");
+    assert_eq!(live.watched, 1);
+    assert!(live.casualties >= 2, "{live:?}");
+    assert_eq!(a_raid_arriving_after_the_save(true, true, None), live);
+}
+
+/// RP-23: the same with a restart from pages saved while the replay holds the arrival: its
+/// fight's record comes before the poll arrives again (found by the pages' `seg` and route), and
+/// after it (the map again).
+#[test]
+fn a_held_arrival_survives_a_restart_from_pages_saved_mid_replay() {
+    let live = a_raid_arriving_after_the_save(true, false, None);
+    assert_eq!(a_raid_arriving_after_the_save(true, true, Some(0)), live);
+    assert_eq!(a_raid_arriving_after_the_save(true, true, Some(50)), live);
+}
+
+/// RP-23's control: an unwatched arrival in the window resolves abstractly once, after the
+/// replay end (and once in the session that went on).
+#[test]
+fn an_unwatched_arrival_in_the_replayed_window_is_resolved_once_after_the_replay_end() {
+    let live = a_raid_arriving_after_the_save(false, false, None);
+    assert_eq!(live.raids.len(), 1, "{live:?}");
+    assert_eq!((live.watched, live.casualties), (0, 0));
+    let back = a_raid_arriving_after_the_save(false, true, None);
+    assert_eq!(back.raids.len(), 1, "{back:?}");
+    assert_eq!((back.watched, back.casualties), (0, 0));
+}
+
+/// RP-23 (§6.1): a siege's next round is held as an arrival is. A siege on the refinery, nobody
+/// near, waiting after its first round when the pages are saved; its next round comes in the
+/// replayed window. The session that went on raids at the round; the replay raids nothing, and
+/// the round comes once, after the replay end. Returns the raids after the save, and the replay
+/// end (the round's tick without a crash).
+fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let mut to = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        to = to + 600;
+        assert!(to < day(6.0), "the siege waits at its target");
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    assert_eq!(walls.raids.len(), 1, "its first round");
+    let x = &r.c.parties[band];
+    let round = x.until;
+    assert!(round < x.bored_at, "a next round, not bored");
+    let saved_at = r.c.now();
+    let pages = r.c.save();
+    let end = round + 600;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let after = |walls: &Walls| -> Vec<Tick> {
+        walls
+            .raids
+            .iter()
+            .copied()
+            .filter(|&t| t > saved_at)
+            .collect()
+    };
+    if !crash {
+        return (after(&walls), round);
+    }
+    journal.push((end, fillers_casualty()));
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in journal.iter().filter(|(at, _)| *at > saved_at) {
+        back.run_until(&mut r.w, &mut walls, *at);
+        back.ingest(&mut r.w, &mut walls, o, *at);
+    }
+    assert!(walls.raids.is_empty(), "nothing raided while replaying");
+    assert_eq!(back.parties[band].phase, Phase::Waiting, "held");
+    let replay_end = back.now();
+    back.resend_notices();
+    back.run_until(&mut r.w, &mut walls, end + 600);
+    (after(&walls), replay_end)
+}
+
+#[test]
+fn a_siege_round_in_the_replayed_window_waits_for_the_replay_end() {
+    let (live, round) = a_siege_round_after_the_save(false);
+    assert_eq!(live, vec![round], "the session that went on");
+    let (back, replay_end) = a_siege_round_after_the_save(true);
+    assert_eq!(back.len(), 1, "once: {back:?}");
+    assert!(back[0] >= replay_end, "after the replay end: {back:?}");
+}
+
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
 /// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
 /// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
