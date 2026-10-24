@@ -262,7 +262,9 @@ public final class RtsimApi {
 
     /**
      * Whether the conflict engine is up for a plugin that reports rail passes ({@link #railPass}): a live
-     * session with the conflict module on (M7, MZB-320). The train sampler asks it before anything else.
+     * session with the conflict module on (M7, MZB-320). The train sampler asks
+     * {@code territories().anyMinding(...)} first (one array read, and with no territory minding the rail
+     * nothing else matters) and this second (MZB-386).
      */
     public static boolean conflictUp() {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.up();
