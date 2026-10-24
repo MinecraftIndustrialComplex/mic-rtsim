@@ -680,6 +680,125 @@ mod tests {
         assert_eq!(r.applied_through(), ObsSeq(14));
     }
 
+    /// Saves and loads as rtsim-jni does: the meta part, then the closed blocks it counts.
+    fn reloaded(r: &Replay) -> Replay {
+        let mut out = Replay::from_bytes(&r.to_bytes()).unwrap();
+        for k in 0..out.closed_expected().div_ceil(GEN_BLOCK) {
+            out.load_closed_block(&r.closed_block(k)).unwrap();
+        }
+        assert_eq!(out.closed_len(), out.closed_expected());
+        out
+    }
+
+    #[test]
+    fn copies_are_judged_by_their_generation() {
+        let (a, b, c) = (0xA, 0xB, 0xC);
+        let mut r = Replay::new(ObsSeq(0));
+        assert!(r.copy_is_new(a, ObsSeq(1)), "nothing known");
+        assert_eq!(r.admit_gen(ObsSeq(1), a), Verdict::Apply);
+        assert_eq!(r.admit_gen(ObsSeq(1), a), Verdict::AlreadyApplied);
+        r.admit(ObsSeq(2), None);
+        r.admit(ObsSeq(3), Some(OpId::bridge(1)));
+        assert_eq!(r.open_gen().map(|g| (g.nonce, g.last)), Some((a, ObsSeq(3))));
+        assert!(!r.copy_is_new(a, ObsSeq(2)), "admitted in the open generation");
+        assert!(r.copy_is_new(a, ObsSeq(4)), "not yet");
+        // A crash lost 4 and 5 of a; the next session takes them again as b's.
+        assert_eq!(r.admit_gen(ObsSeq(4), b), Verdict::Apply);
+        r.admit(ObsSeq(5), None);
+        assert!(!r.copy_is_new(a, ObsSeq(3)));
+        assert!(r.copy_is_new(a, ObsSeq(4)), "a's lost stretch");
+        assert!(r.copy_is_new(a, ObsSeq(5)), "b took 5, a's 5 is lost");
+        assert!(!r.copy_is_new(b, ObsSeq(5)));
+        // A copy of a's lost 5 applies once, carried by 6.
+        assert_eq!(r.admit(ObsSeq(6), None), Verdict::Apply);
+        assert_eq!(r.admit_copy(a, ObsSeq(5), ObsSeq(6), None), Verdict::Apply);
+        assert!(!r.copy_is_new(a, ObsSeq(5)), "a second copy of it");
+        // A generation the pages never saw (case b): applies once, by the copies set.
+        assert!(r.copy_is_new(c, ObsSeq(9)));
+        r.admit(ObsSeq(7), None);
+        assert_eq!(r.admit_copy(c, ObsSeq(9), ObsSeq(7), None), Verdict::Apply);
+        assert!(!r.copy_is_new(c, ObsSeq(9)));
+        assert!(r.copy_is_new(c, ObsSeq(10)));
+        // A copy whose op id is known is recorded and answered by op.
+        r.admit(ObsSeq(8), None);
+        assert_eq!(
+            r.admit_copy(c, ObsSeq(10), ObsSeq(8), Some(OpId::bridge(1))),
+            Verdict::DuplicateOp
+        );
+        assert!(!r.copy_is_new(c, ObsSeq(10)));
+        // Nonce 0 names no generation: always new, never recorded.
+        r.admit(ObsSeq(9), None);
+        assert_eq!(r.admit_copy(0, ObsSeq(2), ObsSeq(9), None), Verdict::Apply);
+        assert!(r.copy_is_new(0, ObsSeq(2)));
+        // All of it survives a save, the open generation's copies included.
+        let back = reloaded(&r);
+        assert_eq!(back, r);
+        for (n, q) in [(a, 3), (a, 4), (a, 5), (b, 5), (b, 10), (c, 9), (c, 10), (c, 11), (0, 2)] {
+            assert_eq!(
+                back.copy_is_new(n, ObsSeq(q)),
+                r.copy_is_new(n, ObsSeq(q)),
+                "({n:#x}, {q})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_generation_older_than_any_bound_is_still_judged() {
+        let mut r = Replay::new(ObsSeq(0));
+        // Ten years of daily restarts, a few records each.
+        let sessions = 3650u64;
+        for g in 1..=sessions {
+            let at = r.applied_through().0 + 1;
+            assert_eq!(r.admit_gen(ObsSeq(at), g), Verdict::Apply);
+            r.admit(ObsSeq(at + 1), None);
+            r.admit(ObsSeq(at + 2), None);
+        }
+        assert_eq!(r.closed_len(), sessions as usize - 1);
+        let back = reloaded(&r);
+        assert_eq!(back, r);
+        // The first session's records (1 is its JOURNAL_GEN, 2 and 3 its own).
+        assert!(!back.copy_is_new(1, ObsSeq(2)));
+        assert!(!back.copy_is_new(1, ObsSeq(3)));
+        assert!(back.copy_is_new(1, ObsSeq(4)), "past what it admitted");
+        let bytes: usize = (0..r.closed_len().div_ceil(GEN_BLOCK))
+            .map(|k| r.closed_block(k).len())
+            .sum();
+        assert!(bytes < 16 * sessions as usize, "{bytes} bytes for {sessions} sessions");
+        assert!(r.to_bytes().len() < 64, "the meta part does not grow with them");
+    }
+
+    #[test]
+    fn closed_blocks_load_in_order_or_not_at_all() {
+        let mut r = Replay::new(ObsSeq(0));
+        for g in 1..=GEN_BLOCK as u64 + 2 {
+            let at = r.applied_through().0 + 1;
+            r.admit_gen(ObsSeq(at), g);
+        }
+        let mut back = Replay::from_bytes(&r.to_bytes()).unwrap();
+        back.load_closed_block(&r.closed_block(1)).unwrap();
+        assert_eq!(back.closed_len(), 1, "the partial last block");
+        assert!(
+            back.load_closed_block(&r.closed_block(0)).is_err(),
+            "nothing after a partial block"
+        );
+        let mut junk = r.closed_block(0);
+        junk[0] ^= 1;
+        assert!(Replay::new(ObsSeq(0)).load_closed_block(&junk).is_err());
+        let mut long = r.closed_block(1);
+        long.push(0);
+        assert!(Replay::new(ObsSeq(0)).load_closed_block(&long).is_err());
+    }
+
+    #[test]
+    fn a_skipped_gap_does_not_extend_the_open_generation() {
+        let mut r = Replay::new(ObsSeq(0));
+        r.admit_gen(ObsSeq(1), 5);
+        r.admit(ObsSeq(2), None);
+        r.skip_to(ObsSeq(9));
+        assert_eq!(r.open_gen().map(|g| g.last), Some(ObsSeq(2)));
+        assert!(r.copy_is_new(5, ObsSeq(4)));
+    }
+
     impl Encode for u32 {
         fn encode(&self, w: &mut Writer) {
             w.u32(*self);
