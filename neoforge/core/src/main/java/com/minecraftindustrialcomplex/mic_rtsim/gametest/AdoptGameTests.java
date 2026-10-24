@@ -226,7 +226,10 @@ public final class AdoptGameTests {
                     District d = districtAt(helper, ms[0][3]);
                     z[0] = d.id;
                     z[1] = d.revision;
+                    // The count budget is what this test is about: the time limit (R2-11) would end the call early on a loaded machine.
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, 0);
                     Districts.Adopted a = adopt(helper, level);
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, null);
                     check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
                     check("done in the call, nothing left running", a.detected() && !ind().districts().rescanning());
                     check("in one tick", ind().districts().lastRescanSlices() == 1);

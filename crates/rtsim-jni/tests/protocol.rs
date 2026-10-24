@@ -84,6 +84,22 @@ fn save_durable(e: &Engine, j: &mut Java) {
     }
 }
 
+/// Runs Java in lockstep with the engine until `done`: one game tick a step (`Java::flush` hands
+/// over, waits for that step and applies its commands), at most `max_ticks` of game time. For a
+/// wait whose outcome counts game time: `Java::run_until` ticks on the wall clock, so under load
+/// the engine falls behind, one step takes in hundreds of game ticks, and a clock the test races
+/// (wool regrowing, a player's presence going stale) runs out between two of the engine's answers.
+fn flush_until(j: &mut Java, what: &str, max_ticks: i64, mut done: impl FnMut(&mut Java) -> bool) {
+    let start = j.game_time;
+    while !done(j) {
+        assert!(
+            j.game_time - start < max_ticks,
+            "timed out waiting for {what}: not within {max_ticks} game ticks in lockstep"
+        );
+        j.flush();
+    }
+}
+
 /// `save_durable` covers what the save step's own commands bring back: an engine transfer is
 /// written in the step that takes the save, Java's answer is applied one step after it, and the
 /// pages must hold that answer too. (One order and one wait on `durable_obs_seq` never ends here.)
@@ -644,10 +660,35 @@ fn a_save_failing_partway_costs_that_save_not_the_engine() {
         );
         let world = j.world_save();
         let through = j.next_obs - 1;
-        e.request_save(through);
-        j.run_until("the next save", |j| j.e.durable_obs_seq() >= through);
+        // The failed commit counts its failure (what the wait above saw) a moment before it
+        // reopens the store and hands its tickets back, and a save the step builds in that
+        // moment is stale (PF14, `paging::Job::stale`): refused, counted as a failure too, and
+        // the save after it writes the pages. The test cannot tell which side of that moment its
+        // next save falls on, so a refused save is asked for again, at most twice more (as
+        // industry.rs's `industry_save_tries`).
+        let mut refused = 0;
+        loop {
+            let failed = e.stats_array()[15];
+            e.request_save(through);
+            j.run_until("the next save, made or refused", |j| {
+                j.e.durable_obs_seq() >= through || j.e.stats_array()[15] != failed
+            });
+            if e.durable_obs_seq() >= through {
+                break;
+            }
+            refused += 1;
+            assert!(
+                refused < 3,
+                "{fault:?}: {refused} saves after the failed one refused too (failed saves {})",
+                e.stats_array()[15]
+            );
+        }
         j.run_until("its acknowledgement", |j| j.acks.contains(&through));
-        assert_eq!(e.stats_array()[15], 1, "{fault:?}: one failure");
+        assert_eq!(
+            e.stats_array()[15],
+            1 + refused,
+            "{fault:?}: one failure, and {refused} stale save(s) refused after it"
+        );
         assert!(
             e.protocol_error().is_none(),
             "{fault:?}: {:?}",
@@ -1971,16 +2012,19 @@ mod dragons {
                 _ => None,
             })
         };
-        let mut ticks = 0;
+        // In lockstep. A roll draws only while the player's last report is fresh (within
+        // `presence_fresh_ticks`, 200), and a step runs the dragons to its time before it reads
+        // the step's players. A step that takes in more than 200 game ticks (Java ticking ahead
+        // of a loaded engine) finds a roll late in it stale: the rolls stop, start again from the
+        // next report with a new wait, and the 12,000 ticks ran out under load.
+        let start = j.game_time;
         while drawn(&j).is_none() {
             assert!(
-                ticks < 12_000,
+                j.game_time - start < 12_000,
                 "no field flight drawn: {:?}",
                 e.dragon_stats()
             );
-            j.tick();
-            ticks += 1;
-            std::thread::sleep(Duration::from_micros(100));
+            j.flush();
         }
         j.idle();
         let m = drawn(&j).unwrap();
@@ -2414,11 +2458,15 @@ mod ships {
                 m.role == sb::Role::Merchant && !m.cargo.is_empty() && m.times[3] > now + 400
             })
         };
-        let mut ticks = 0;
-        j.run_until("a merchant with a hold in view", |j| {
-            ticks += 1;
+        // In lockstep: "most of its voyage ahead" is the engine's clock, and the fight and the loot
+        // below land at Java's. Ticking on the wall clock (`run_until`) let Java run ahead of a
+        // loaded engine, so the loot landed after the merchant had docked and sold its hold: no
+        // loot booked.
+        let t0 = j.game_time;
+        flush_until(&mut j, "a merchant with a hold in view", 12_000, |j| {
             laden(j, &j.e.clone()).is_some()
         });
+        let ticks = j.game_time - t0;
         let m = laden(&j, &e).expect("found");
         assert_eq!(m.agent >> 56, 0x53, "a ship's agent id");
         assert_eq!(m.dimension, dim, "the dimension in Java's dictionary");
@@ -3200,6 +3248,9 @@ mod herds {
         let sheared = j.herd_plugin.shear(agent, 1, PLAYER);
         let led = j.herd_plugin.lead(agent, PLAYER).expect("one led away");
         assert_eq!((killed.len(), sheared.len()), (1, 1));
+        // From here to the second group, Java runs in lockstep with the engine: the sheared sheep
+        // is still sheared only while its wool has not regrown (`sheared_ticks` of game time).
+        let shorn_at = j.game_time;
         j.herd_flush();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -3262,7 +3313,7 @@ mod herds {
 
         // The player leaves: the group is captured, each member with its state.
         j.players.clear();
-        j.run_until("the group captured", |j| {
+        flush_until(&mut j, "the group captured", 1_000, |j| {
             j.herds
                 .iter()
                 .any(|(_, c)| matches!(c, H::Despawn(d) if d.agent == agent && d.epoch == m.epoch))
@@ -3282,8 +3333,16 @@ mod herds {
 
         // The player is back: the same sheep, the sheared one still sheared, no dead one.
         j.players = vec![(PLAYER, dim, pos)];
-        j.run_until("the group again", |j| materializations(j).len() >= 2);
+        flush_until(&mut j, "the group again", 1_000, |j| {
+            materializations(j).len() >= 2
+        });
         j.idle();
+        let regrow = e.with_herds(|h, _| h.tun.sheared_ticks) as i64;
+        assert!(
+            j.game_time - shorn_at < regrow,
+            "the group came back {} game ticks after the shearing, past the {regrow} its wool takes to regrow",
+            j.game_time - shorn_at
+        );
         let m2 = materializations(&j).remove(1);
         assert!(m2.epoch > m.epoch, "a new epoch for every materialization");
         let first: std::collections::BTreeMap<u64, u32> =

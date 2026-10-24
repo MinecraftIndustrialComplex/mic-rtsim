@@ -117,7 +117,8 @@ public final class Phase1 {
                     int v = VillageAdoption.announceAgain(session, villages, now);
                     int b = bases.forgetMarks();
                     MicRtsim.LOGGER.warn("[mic_rtsim] phase 1: the engine's pages lack observations the journal no longer holds"
-                            + " (a sim reset?): {} villages adopted again, {} base marks to be made again", v, b);
+                            + " ({}): {} villages adopted again, {} base marks to be made again",
+                            ReinstallGuard.reset(session.server()) != null ? "the reinstall reset" : "a sim reset?", v, b);
                 });
         }
         guard("works catalogue", () -> {

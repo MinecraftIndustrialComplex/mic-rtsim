@@ -26,21 +26,23 @@ public final class IndustryConfig {
     public static final String RESCAN_INTERVAL = "rescanIntervalTicks";
     public static final String PERIODIC_RESCAN = "periodicRescanTicks";
     public static final String RESCAN_BLOCK_ENTITIES_PER_TICK = "rescanBlockEntitiesPerTick";
+    public static final String RESCAN_SLICE_MICROS = "rescanSliceMicros";
     public static final String LOAD_CHECK_INTERVAL = "loadCheckIntervalTicks";
     public static final String WATCHED_RESEND = "watchedResendTicks";
     public static final String APPROACH_RADIUS = "approachRadiusBlocks";
 
-    private static final Map<String, Integer> DEFAULTS = Map.of(
-            SWEEP_PERIOD, 100,
-            INVENTORIES_PER_TICK, 64,
-            SLOTS_PER_TICK, 20_000,
-            RECONCILE_OPS_PER_TICK, 512,
-            RESCAN_INTERVAL, 20,
-            PERIODIC_RESCAN, 6000,
-            RESCAN_BLOCK_ENTITIES_PER_TICK, 256,
-            LOAD_CHECK_INTERVAL, 20,
-            WATCHED_RESEND, 100,
-            APPROACH_RADIUS, 256);
+    private static final Map<String, Integer> DEFAULTS = Map.ofEntries(
+            Map.entry(SWEEP_PERIOD, 100),
+            Map.entry(INVENTORIES_PER_TICK, 64),
+            Map.entry(SLOTS_PER_TICK, 20_000),
+            Map.entry(RECONCILE_OPS_PER_TICK, 512),
+            Map.entry(RESCAN_INTERVAL, 20),
+            Map.entry(PERIODIC_RESCAN, 6000),
+            Map.entry(RESCAN_BLOCK_ENTITIES_PER_TICK, 256),
+            Map.entry(RESCAN_SLICE_MICROS, 5000),
+            Map.entry(LOAD_CHECK_INTERVAL, 20),
+            Map.entry(WATCHED_RESEND, 100),
+            Map.entry(APPROACH_RADIUS, 256));
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -61,6 +63,9 @@ public final class IndustryConfig {
         INTS.put(RESCAN_BLOCK_ENTITIES_PER_TICK, b.comment("Block entities a district detection looks at per tick (as the glass fingerprint pass has), so a big detection finishes over several ticks.",
                         "A chunk is looked at whole, so one tick can overshoot by the block entities of one chunk. The district set changes only when the whole detection is done.")
                 .defineInRange(RESCAN_BLOCK_ENTITIES_PER_TICK, DEFAULTS.get(RESCAN_BLOCK_ENTITIES_PER_TICK), 1, 10_000_000));
+        INTS.put(RESCAN_SLICE_MICROS, b.comment("Microseconds of wall time a district detection may spend in one tick: past it, the tick's share stops at the next chunk (R2-11).",
+                        "Bounds a tick that the block entity budget does not, when looks cost far more than usual (cold classes, a slow plugin). One look at one chunk is never cut. 0: no time limit.")
+                .defineInRange(RESCAN_SLICE_MICROS, DEFAULTS.get(RESCAN_SLICE_MICROS), 0, 1_000_000));
         INTS.put(LOAD_CHECK_INTERVAL, b.comment("Ticks between load-state and watched checks of a district with loaded chunks.")
                 .defineInRange(LOAD_CHECK_INTERVAL, DEFAULTS.get(LOAD_CHECK_INTERVAL), 1, 1200));
         INTS.put(WATCHED_RESEND, b.comment("Ticks between IND_WATCHED repeats while a loaded district's flag holds.")
