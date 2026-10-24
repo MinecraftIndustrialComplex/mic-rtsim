@@ -330,11 +330,13 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   goes as IND_DEPOSIT_DELTA every `live_pollution_ticks` while its district replays (I14: "level-wide
   types apply live while unloaded"), the rest at the reconcile; chunk types ride the chunk's reconcile.
 - **IND_WRITE_CHAIN** (SECTIONS.md §2.5, SC113): whole packages into the frogport's inventory while
-  its chunk is loaded, addressed to its filter, as many as fit. Java journals one IND_CHAIN_PACKAGE
-  `CHAIN_IN` with the command's op id at 64 for what it wrote, then the COMMAND_RESULT; the chunk
-  carries both until the engine acknowledges them, and the engine's Replay takes the `CHAIN_IN` once
-  by that op id. Nothing written (the frogport is not loaded, is full, or takes no packages) is
-  FAILED, with no record; the engine still owes it and writes again later.
+  its chunk is loaded, addressed to its filter, as many as fit with one slot kept free (a package
+  Create is catching lands there). Java journals one IND_CHAIN_PACKAGE `CHAIN_IN` with the command's
+  op id at 64 for what it wrote, then the COMMAND_RESULT; the chunk carries both until the engine
+  acknowledges them, and the engine takes the `CHAIN_IN` once: by op id while Replay remembers it,
+  by the store's mark of the frogport's last written record after. Nothing written (the frogport is
+  not loaded, has no slot to spare, or takes no packages) is FAILED, with no record; the engine still
+  owes it and writes again later.
 
 ## 5. What the sampler must never do
 

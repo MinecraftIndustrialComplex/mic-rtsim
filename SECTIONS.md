@@ -261,24 +261,34 @@ pools, so the exporter and the importer of one store replay as one cluster, up t
 `cluster_districts_max` districts (choice SC112). Each (store, destination frogport, good) is one
 cluster pool, `PoolKey::Chain`, which starts from what the store owes that frogport (choice SC109). The
 exporter's link books its exports into the pool toward the room as its target, and stops there; it
-starts again one batch below (SC110). The importer's link draws from the pool into the district's stock
-no earlier than the route's travel time, the hops to the farthest frogport of the store times
-`chain_ticks_per_hop` (60; choice SC111, an ESTIMATE for a chain at 64 RPM, where GLASSBOX.md §1 gives
-`RPM / 360` blocks per tick). When the cluster stops, each pool goes back to what its store owes the
-frogport; when that store is gone, to another store that has the frogport, else it is lost
-(`chain_pools_lost`).
+starts again one batch below (SC110). The importer's link draws from the pool into the district's stock;
+once it stops on an empty pool, it starts again no earlier than the route's travel time, the hops
+to the farthest frogport of the store times `chain_ticks_per_hop` (60; choice SC111, an ESTIMATE for
+a chain at 64 RPM, where GLASSBOX.md §1 gives `RPM / 360` blocks per tick). A replay covers only
+the district's unloaded inventories, so a district replayed in part whose frogport's chunk is loaded
+has no chain link there: packages Create moves at that frogport are an ordinary port, never the
+replay's stock, and the engine writes to it as to any loaded frogport. When the cluster stops, each
+pool goes back to what the store that lists the frogport now owes it (a split may have moved it);
+with none, to its own store, which keeps it for a frogport that comes back; with that store gone
+too, it is lost (`chain_pools_lost`).
 
 **Writes** (choice SC113). While a frogport is loaded and its store owes it packages, or a cluster
-holds a pool toward it, the engine sends one IND_WRITE_CHAIN for each good at most once in
-`chain_write_ticks` (200): whole batches, at most 18 packages (a frogport's slots), or one part package
-when no cluster draws on it. Java writes what fits into the frogport's inventory as real packages
-addressed to its own filter, where Create moves them on as packages that came off the chain, and
-journals one `CHAIN_IN` with the command's op id; the engine takes it from the cluster's pool first,
-then from what the store owes (never below zero). Nothing written is FAILED, and the engine writes
-again later. A frogport is saved with its chunk, so the chunk carries the `CHAIN_IN` and the
-COMMAND_RESULT until the engine acknowledges them, and the engine's Replay takes each op once. What
-the store owes a frogport that is still away is production owed to an unloaded chunk, which UR-1 lets
-a reset lose.
+holds a pool toward it, the engine sends one IND_WRITE_CHAIN for each good, every
+`chain_write_ticks` (200) at most, and none while an earlier write there is unanswered (an answer
+missing for ten periods is taken as lost): whole batches, at most 18 packages (a frogport's slots),
+or one part package when no cluster draws on it. Java writes what fits into the frogport's inventory
+as real packages addressed to its own filter, keeping one slot free for a package Create is
+catching (one that lands in a full frogport drops into the world), where Create moves them on as
+packages that came off the chain, and journals one `CHAIN_IN` with the command's op id; the engine
+takes it from the cluster's pool first, then from what the store owes (never below zero). Nothing
+written is FAILED, which answers the write, and the engine writes again later. A frogport is saved
+with its chunk, so the chunk carries the `CHAIN_IN` and the COMMAND_RESULT until the engine
+acknowledges them. The engine's Replay takes each op once while it remembers the op; a chunk that
+unloaded before the acknowledgement journals them again at its next load, after a world save let
+Replay forget it, so the store also marks each frogport's last written record (its game time and
+op): a written record no later than the mark is dropped (`chain_writes_again`). What the store owes
+a frogport that is still away is production owed to an unloaded chunk, which UR-1 lets a reset lose
+(`chain_owed_lost` counts what a store removed with no heir held).
 
 **One end loaded, the other away** (Q5). Recommended, the G2-11 way:
 
@@ -1234,11 +1244,11 @@ The options below stay as the record of what was offered.
 | SC106 | A store is declared again at its first walk after a restart, and every store at once when the engine forgot what it was told (`PackageStores.announce`, run with the districts' announce) | Java keeps no copy of the last declaration across a restart; the engine keeps its stores in pages, rolled back with them (P29), so a repeat changes nothing there. A store whose saved hops do not fit its frogports keeps its id with unknown hops until the next walk |
 | SC107 | A district with chain links runs the black box, as one with mail links does; replaying a chain port in the glass box is left for a follow-up | the glass box has no port for a link that moves goods out of the district's window; the black box already replays links at their learned rates |
 | SC108 | `LinkKey::Chain` (inventory, destination frogport, good) is learned only while the district is loaded and not replaying: a `CHAIN_OUT` toward a frogport in a district books it negative, a `CHAIN_IN` with no op id positive; a `CHAIN_IN` an IND_WRITE_CHAIN wrote (op id set) is a port, never a link | a write is the replay's own draw coming back; learning from it would count the draw twice. An export to a frogport of no district has no importer to replay it |
-| SC109 | A cluster pool `PoolKey::Chain` (store, destination frogport, good), save tag 4, starts from what the store owes that frogport and goes back to it when the cluster stops; when that store is gone, to another store holding the frogport, else it is lost and counted (`chain_pools_lost`) | the store's owed count is the one ledger both ends see while loaded; a pool that outlived its store has nowhere else to go, and UR-1 lets a reset lose production owed to unloaded chunks |
+| SC109 | A cluster pool `PoolKey::Chain` (store, destination frogport, good), save tag 4, starts from what the store owes that frogport and goes back, when the cluster stops, to the store that lists the frogport now; with none, to its own store (kept as its `left` pools are); with that gone too, it is lost and counted (`chain_pools_lost`) | the store's owed count is the one ledger both ends see while loaded; a pool that outlived its store has nowhere else to go, and UR-1 lets a reset lose production owed to unloaded chunks |
 | SC110 | The export's room is a target: `chain_room_per_conveyor` (20, TUNABLE) times the conveyors from the exporter to the destination (hops plus 1), less the real packages the last census counted toward it; the link stops there and starts again one batch below. The batch is the frogport's last `CHAIN_OUT`, else the good's stack | §2.5's room estimate, in whole batches as Create's own exports leave; the restart gap keeps a full pool from toggling every step |
-| SC111 | The import link draws from the pool into stock no earlier than the hops to the store's farthest frogport times `chain_ticks_per_hop` (60, TUNABLE) | an ESTIMATE that needs no chain speed: a replay does not know the RPM of an unloaded chain, and the farthest hop bounds every route of the store |
+| SC111 | The import link draws from the pool into stock; after it stops on an empty pool it restarts no earlier than the hops to the store's farthest frogport times `chain_ticks_per_hop` (60, TUNABLE). A replay's chain links are those of its part's (unloaded) inventories, so a loaded frogport of a district replayed in part is a port and is written, never drawn by the replay | an ESTIMATE that needs no chain speed: a replay does not know the RPM of an unloaded chain, and the farthest hop bounds every route of the store |
 | SC112 | A replay that starts joins the clusters that hold its district's chain pools; past `cluster_districts_max` (16) it drops its chain links instead (`chain_links_dropped`, logged once for each store) | one cluster per store keeps both ends on one pool; the cap bounds a cluster's step cost (D1), and a district without its links replays as one that does not replay the store |
-| SC113 | IND_WRITE_CHAIN (0x8409): while a frogport is loaded and owed, or a cluster holds a pool toward it, one command for each good every `chain_write_ticks` (200, TUNABLE), of min(whole batches, 18) packages, or one part package when no cluster holds the pool; one write in flight per frogport. Java writes what fits addressed to the frogport's filter and journals one `CHAIN_IN` with the op id, which the chunk carries with the COMMAND_RESULT until acknowledged and Replay takes once by op; the engine takes it from the pool, then from owed, never below zero. FAILED moved nothing and the engine writes again | real packages written into a loaded frogport keep UR-1 (Rust never holds the only copy of a package that exists in the world); carrying the record in the chunk covers a chunk saved before the journal reaches disk |
+| SC113 | IND_WRITE_CHAIN (0x8409): while a frogport is loaded and owed, or a cluster holds a pool toward it, one command for each good every `chain_write_ticks` (200, TUNABLE), of min(whole batches, 18) packages, or one part package when no cluster holds the pool; none while an earlier write there is unanswered, an answer missing for 10 periods taken as lost. Java writes what fits, one slot kept free, addressed to the frogport's filter, and journals one `CHAIN_IN` with the op id, which the chunk carries with the COMMAND_RESULT until acknowledged and Replay takes once by op; the store marks each frogport's last written record (game time, ops) and drops a written record no later than the mark (a chunk saved before the acknowledgement journals it again after Replay forgot the op). The engine takes it from the pool, then from owed, never below zero. FAILED moved nothing, answers the write, and the engine writes again | real packages written into a loaded frogport keep UR-1 (Rust never holds the only copy of a package that exists in the world); carrying the record in the chunk covers a chunk saved before the journal reaches disk |
 
 ---
 
