@@ -208,6 +208,14 @@ public final class SectionsChunkLoadGameTests {
             level.setChunkForced(cx, cz, on);
     }
 
+    /** Whether the chunks from {@code minCx} to {@code maxCx} in row {@code cz} tick (at their middle, at {@code Y}). */
+    private static boolean allTick(ServerLevel level, int minCx, int maxCx, int cz) {
+        for (int cx = minCx; cx <= maxCx; cx++)
+            if (!Loaded.ticks(level, new BlockPos(cx * 16 + 8, Y, cz * 16 + 8)))
+                return false;
+        return true;
+    }
+
     private static boolean allLoaded(ServerLevel level, int minCx, int maxCx, int cz) {
         for (int cx = minCx; cx <= maxCx; cx++)
             if (level.getChunkSource().getChunkNow(cx, cz) == null)
@@ -501,6 +509,9 @@ public final class SectionsChunkLoadGameTests {
         helper.startSequence()
                 .thenExecute(() -> force(level, ax, bx, az, true))
                 .thenWaitUntil(io(() -> check("the fourteen chunks load", allLoaded(level, ax, bx, az))))
+                // forced chunks come FULL before they tick, under load by many ticks: a part placed in one that
+                // does not tick yet attaches at its first tick
+                .thenWaitUntil(io(() -> check("the fourteen chunks tick", allTick(level, ax, bx, az))))
                 .thenExecute(() -> {
                     clear(level, ax - 1, az - 1, bx + 1, az + 1);
                     GlassCorpusKit.motor(helper, motor, Direction.UP, 64);
@@ -515,13 +526,20 @@ public final class SectionsChunkLoadGameTests {
                     playerPlaced(helper, millA);
                     playerPlaced(helper, millB);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     District da = districtAt(helper, millA), db = districtAt(helper, millB);
                     check("both districts exist", da != null && db != null && da.id != db.id);
                     ids[0] = da.id;
                     ids[1] = db.id;
-                })
-                .thenWaitUntil(() -> check("the motor in B turns millstone A: " + speedOf(level, millA), Math.abs(speedOf(level, millA)) == 64))
+                }))
+                .thenWaitUntil(io(() -> {
+                    KineticNetwork n = net.get();
+                    check("the motor in B turns millstone A: " + speedOf(level, millA) + " (motor " + speedOf(level, motor)
+                            + ", capacity " + n.calculateCapacity() + ", stress " + n.calculateStress() + ", sources "
+                            + n.sources.size() + ", members " + n.members.size() + ", A and B tick " + Loaded.ticks(level, millA)
+                            + ", " + Loaded.ticks(level, motor) + ", test tick " + helper.getTick() + ")",
+                            Math.abs(speedOf(level, millA)) == 64);
+                }))
                 .thenExecute(() -> {
                     KineticNetwork n = net.get();
                     cap[0] = n.calculateCapacity();
