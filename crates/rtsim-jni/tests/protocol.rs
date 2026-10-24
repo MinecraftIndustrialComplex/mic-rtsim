@@ -5007,7 +5007,10 @@ mod conflict {
             let (calls, held, replaying) =
                 e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes(), c.replaying));
             assert_eq!((calls, held), (1, 0), "the arrival called the rail");
-            assert!(!replaying, "the replay ended with the session's first record");
+            assert!(
+                !replaying,
+                "the replay ended with the session's first record"
+            );
             let kept = e.with_conflict(|c, _| c.kept_notices());
             assert_eq!(kept.len(), 1, "the feud's notice is kept: {kept:?}");
             assert_eq!(notices(&j), kept, "the plugin was sent it, once");
@@ -5016,6 +5019,106 @@ mod conflict {
                 .map(|c| c.name())
                 .collect();
             assert_eq!(order, vec!["TERRITORY", "FACTION_NOTICE"]);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+
+        /// MZB-345: a pass's entry and exit are game time, translated to the engine's clock
+        /// (the world tick, the phase 1 test offset added) before the conflict sees them. With an
+        /// offset of three days the meter's decay reference is the exit plus the offset, not
+        /// the bare game time (which the engine would clamp to a pass in its far past).
+        #[test]
+        fn a_pass_is_counted_on_the_worlds_clock() {
+            const OFFSET: u64 = 3 * 24_000;
+            let (_dir, e, mut j, dim) = line("conflict-rail-offset");
+            e.order(vec![Order::Phase1Advance(OFFSET)]).unwrap();
+            j.idle();
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 500;
+            let exit = j.game_time - 50;
+            passed(&mut j, dim, 77, PLAYER, exit);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let meter = e.with_conflict_mut(|c, w| {
+                let f = c.faction_of_key(CAMP).expect("the den");
+                let a = w.player_uuid(PLAYER.0, PLAYER.1);
+                c.factions.row(f).rail_meter(a).cloned()
+            });
+            let meter = meter.expect("the pass made a meter");
+            assert_eq!(
+                meter.t_ref.0,
+                exit as u64 + OFFSET,
+                "the exit, on the world's clock"
+            );
+            assert!(
+                meter.t_ref.0 <= e.with_conflict(|c, _| c.now().0),
+                "and not ahead of it"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+
+        /// A pass held for its train when the server saves is still held after the restart: the
+        /// train's arrival, journaled after the save and replayed, credits it to the line as it did
+        /// before the crash (MZB-312, RTC8).
+        #[test]
+        fn a_held_pass_crosses_a_restart_to_the_replayed_arrival() {
+            let (dir, e, mut j, dim) = line("conflict-rail-held");
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 500;
+            let exit = j.game_time - 50;
+            passed(&mut j, dim, 77, PLAYER, exit);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            assert_eq!(
+                e.with_conflict(|c, _| c.held_passes()),
+                1,
+                "held for train 77"
+            );
+            save(&e, &mut j);
+
+            // The arrival comes after the save: journaled, not in the pages.
+            j.game_time += 1_500;
+            arrive(&mut j, 77, EAST);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let meter = |e: &Engine| {
+                e.with_conflict_mut(|c, w| {
+                    let f = c.faction_of_key(CAMP).expect("the den");
+                    let a = w.player_uuid(PLAYER.0, PLAYER.1);
+                    c.factions
+                        .row(f)
+                        .rail_meter(a)
+                        .map(|m| (m.n.to_bits(), m.t_ref, m.lines.len()))
+                })
+            };
+            let counts = |e: &Engine| e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes()));
+            assert_eq!(counts(&e), (1, 0), "the arrival called the rail");
+            let before = meter(&e).expect("the meter");
+            assert_eq!(before.2, 1, "and the pass is credited to the line");
+            let (gt, saved) = (j.game_time, j.world_save());
+            let _ = j.crash();
+
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES | MODULE_INDUSTRY;
+            j.game_time = gt;
+            assert_eq!(
+                e.conflict_restore_check(),
+                (None, false),
+                "the pages read back"
+            );
+            j.idle();
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            assert_eq!(
+                counts(&e),
+                (1, 0),
+                "the replayed arrival called the rail once"
+            );
+            assert_eq!(
+                meter(&e),
+                Some(before),
+                "and left the meter as it was before the crash"
+            );
             e.close(true, Duration::from_secs(5)).unwrap();
         }
     }
