@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
@@ -1291,9 +1292,25 @@ public final class SectionsChunkLoadGameTests {
         restore(s, level, f).thenSucceed();
     }
 
-    /** IND_EDIT records journaled for district {@code d}. */
-    private static List<ByteBuffer> edits(long d) {
-        return received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, d);
+    /**
+     * The IND_EDIT records of district {@code d} journaled at or after {@code mark} (a {@link #journalMark}) that
+     * the engine has received, as views. Counted from a journal mark, not from the received log's size then: the
+     * engine takes in what a tick journaled in its own step, so a size read right after an edit can miss edits
+     * journaled ticks before (three cogs of a line, counted later as edits of the next mark's).
+     */
+    private static List<ByteBuffer> edits(long d, long mark) {
+        List<ByteBuffer> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : engine().received(IndRecords.IND_EDIT)) {
+            ByteBuffer v = r.view();
+            if (r.obsSeq() >= mark && !r.skipped() && v.capacity() >= IndRecords.Edit.DISTRICT + 8 && v.getLong(IndRecords.Edit.DISTRICT) == d)
+                out.add(v);
+        }
+        return out;
+    }
+
+    /** The sequence the next record journaled gets: what an edit made after this is journaled under, at the least. */
+    private static long journalMark() {
+        return RtsimSession.current().boundary().journal().nextObsSeq();
     }
 
     /**
@@ -1318,7 +1335,7 @@ public final class SectionsChunkLoadGameTests {
         List<BlockPos> line = List.of(f.ca.above().east(), f.ca.above().east(2), f.ca.above().east(3));
         BlockPos cogM = f.ca.above().east(4);
         long chunkB = ChunkPos.asLong(f.bx, f.az), chunkM = ChunkPos.asLong(f.ax + 1, f.az);
-        long[] mark = {0, 0};
+        long[] mark = {0, 0, 0};
         String t = "anEditOutsideEveryDistrictReachesTheDistrictOnItsNetwork";
         GameTestSequence s = helper.startSequence()
                 .thenExecute(() -> {
@@ -1363,14 +1380,14 @@ public final class SectionsChunkLoadGameTests {
                     check("A's compile is not pending", !ind().glass().pending(f.da()));
                 }))
                 .thenExecute(() -> {
-                    mark[0] = edits(f.da()).size();
+                    mark[0] = journalMark();
                     mark[1] = ind().glass().compileNo(f.da());
                     GlassCorpusKit.cog(helper, cogB, Direction.Axis.Y);
                     playerPlacedBare(helper, cogB);
                 })
                 .thenWaitUntil(io(() -> {
-                    List<ByteBuffer> e = edits(f.da());
-                    check("one more IND_EDIT of A: " + (e.size() - mark[0]), e.size() == mark[0] + 1);
+                    List<ByteBuffer> e = edits(f.da(), mark[0]);
+                    check("one more IND_EDIT of A: " + e.size(), e.size() == 1);
                     ByteBuffer last = e.get(e.size() - 1);
                     check("placed, at the cog in B: " + aux(last) + " at " + last.getInt(IndRecords.Edit.X) + ", " + last.getInt(IndRecords.Edit.Z),
                             aux(last) == IndRecords.Edit.PLACED && last.getInt(IndRecords.Edit.X) == cogB.getX()
@@ -1381,36 +1398,37 @@ public final class SectionsChunkLoadGameTests {
                 }))
                 .thenIdle(40)
                 .thenExecute(() -> {
-                    check("one edit of A for the cog: " + (edits(f.da()).size() - mark[0]), edits(f.da()).size() == mark[0] + 1);
-                    record(t, "A's edits, compiles after the placement", (edits(f.da()).size() - mark[0]) + ", " + (ind().glass().compileNo(f.da()) - mark[1]));
+                    check("one edit of A for the cog: " + edits(f.da(), mark[0]).size(), edits(f.da(), mark[0]).size() == 1);
+                    record(t, "A's edits, compiles after the placement", edits(f.da(), mark[0]).size() + ", " + (ind().glass().compileNo(f.da()) - mark[1]));
                     NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, cogB, level.getBlockState(cogB),
                             com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
                     level.removeBlock(cogB, false);
                 })
                 .thenWaitUntil(io(() -> {
-                    List<ByteBuffer> e = edits(f.da());
-                    check("one more IND_EDIT of A: " + (e.size() - mark[0]), e.size() == mark[0] + 2);
+                    List<ByteBuffer> e = edits(f.da(), mark[0]);
+                    check("two IND_EDITs of A since the cog's placement: " + e.size(), e.size() == 2);
                     ByteBuffer last = e.get(e.size() - 1);
                     check("broken, at the cog in B", aux(last) == IndRecords.Edit.BROKEN && last.getInt(IndRecords.Edit.X) == cogB.getX());
                 }))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     check("B's chunk is a member chunk of no district", ind().districts().at(level.dimension(), chunkB) == null);
-                    mark[0] = edits(f.da()).size();
+                    mark[0] = journalMark();
                     GlassCorpusKit.set(helper, chestB, net.minecraft.world.level.block.Blocks.CHEST.defaultBlockState());
                     playerPlacedBare(helper, chestB);
                 })
                 .thenIdle(40)
                 .thenExecute(() -> {
-                    check("a chest placed in B is no edit of A: " + (edits(f.da()).size() - mark[0]), edits(f.da()).size() == mark[0]);
+                    check("a chest placed in B is no edit of A: " + edits(f.da(), mark[0]).size(), edits(f.da(), mark[0]).isEmpty());
                     NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, chestB, level.getBlockState(chestB),
                             com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
                     level.removeBlock(chestB, false);
                 })
                 .thenIdle(40)
                 .thenExecute(() -> {
-                    check("nor is breaking it: " + (edits(f.da()).size() - mark[0]), edits(f.da()).size() == mark[0]);
+                    check("nor is breaking it: " + edits(f.da(), mark[0]).size(), edits(f.da(), mark[0]).isEmpty());
                     mark[1] = ind().glass().compileNo(f.da());
+                    mark[2] = journalMark();
                     for (BlockPos c : line) {
                         GlassCorpusKit.cog(helper, c, Direction.Axis.Y);
                         playerPlacedBare(helper, c);
@@ -1435,14 +1453,17 @@ public final class SectionsChunkLoadGameTests {
                     check("A's compile reaches M across the line's last face: " + java.util.Arrays.toString(by), by.length == 1 && by[0] == f.da());
                 }))
                 .thenExecute(() -> {
-                    mark[0] = edits(f.da()).size();
+                    // how many of the line's three edits the engine had taken in here: a count of the received
+                    // log at this point (as the test once took) is short by the rest
+                    record(t, "the line's IND_EDITs of A received before the cog in M", edits(f.da(), mark[2]).size() + " of " + line.size());
+                    mark[0] = journalMark();
                     mark[1] = ind().glass().compileNo(f.da());
                     GlassCorpusKit.cog(helper, cogM, Direction.Axis.Y);
                     playerPlacedBare(helper, cogM);
                 })
                 .thenWaitUntil(io(() -> {
-                    List<ByteBuffer> e = edits(f.da());
-                    check("an IND_EDIT of A for the cog in M: " + (e.size() - mark[0]), e.size() == mark[0] + 1);
+                    List<ByteBuffer> e = edits(f.da(), mark[0]);
+                    check("an IND_EDIT of A for the cog in M: " + e.size(), e.size() == 1);
                     ByteBuffer last = e.get(e.size() - 1);
                     check("placed, at the cog in M", aux(last) == IndRecords.Edit.PLACED && last.getInt(IndRecords.Edit.X) == cogM.getX()
                             && last.getInt(IndRecords.Edit.Z) == cogM.getZ());
@@ -1451,7 +1472,7 @@ public final class SectionsChunkLoadGameTests {
                             ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
                 }))
                 .thenExecute(() -> {
-                    record(t, "A's edits for the cog in M, compiles after it", (edits(f.da()).size() - mark[0]) + ", " + (ind().glass().compileNo(f.da()) - mark[1]));
+                    record(t, "A's edits for the cog in M, compiles after it", edits(f.da(), mark[0]).size() + ", " + (ind().glass().compileNo(f.da()) - mark[1]));
                     for (BlockPos c : List.of(cogM, line.get(2), line.get(1), line.get(0))) {
                         NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, c, level.getBlockState(c),
                                 com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
