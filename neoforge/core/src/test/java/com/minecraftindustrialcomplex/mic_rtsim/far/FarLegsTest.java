@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 class FarLegsTest {
     /** rtsim-ecology far.rs, {@code the_bytes_java_reads}: encode(42, sample(), body 9, dimension 3, offset 4000). */
     static final String RUST = "008c5000010000002a000000000000000700000000000044090000000300000001020400b400000050fbffff"
-            + "2c01000000100000b3ffffff701700000000000034210000000000000000000000000000";
+            + "2c01000000100000b3ffffff701700000000000034210000000000000000000057000000";
 
     static final SessionPlugin.EngineNames NAMES = (dict, id) -> {
         if (dict == Obs.DICT_BODY && id == 9)
@@ -51,6 +51,7 @@ class FarLegsTest {
         assertEquals(6_000, r.t0(), "game time: the engine tick less the link's offset");
         assertEquals(8_500, r.t1());
         assertEquals(0, r.radius());
+        assertEquals(87, r.ageDays(), "the age in days (DH-7)");
     }
 
     @Test

@@ -71,6 +71,19 @@ public final class FarLooks {
         return out;
     }
 
+    /** Each look's {@link FarLook#reset} (the far feed started over). Render thread. */
+    public static void resetAll() {
+        for (FarLook look : looks) {
+            if (look == null)
+                continue;
+            try {
+                look.reset();
+            } catch (RuntimeException | LinkageError e) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] a far look would not reset", e);
+            }
+        }
+    }
+
     /** Frees every look's meshes (the client left its world). Render thread. */
     public static void clearAll() {
         for (FarLook look : looks) {
