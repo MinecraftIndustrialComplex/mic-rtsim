@@ -38,8 +38,12 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Hop
  * <p>The checks: two units and a bystander; Java took the engine's count set and holds pairs at the vault and
  * sends samples; the counts are exact (over a stretch, the vault's stock changes by what the movers counted in
  * less what they counted out, so no move is missed and none counted twice); an edit that breaks and replaces
- * the second line's press stales that unit only, the first keeps its passed window, and the second learns
- * again; while away the first replays and nothing counts.
+ * the second line's press within one tick leaves the first line's unit with its passed window, the recompile
+ * that finds the press as it was clears the second's edit (SECTIONS.md §3.6), and the pairs' counters go on
+ * across it (their {@code since} is unchanged); while away both replay and nothing counts.
+ *
+ * <p>A compile that sees the press missing is not part of this fixture: it changes the vault's section
+ * fingerprints and drops both units' state and the counters (SC84).
  */
 public final class VaultBetweenMixersFactory implements CorpusFactory {
     private final HopperAtASharedVaultFactory lines = new HopperAtASharedVaultFactory(false, "vault_mixers");
@@ -98,6 +102,17 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
         return out.isEmpty() ? "no pairs" : String.join("; ", out);
     }
 
+    /** The {@code since} of each of the district's pairs, in the order held. */
+    static List<Long> sinces(long district) {
+        Counting c = IndustryKit.ind().counting();
+        List<Long> out = new ArrayList<>();
+        for (BlockPos[] p : c.pairs(district)) {
+            long[] k = c.counters(district, p[0], p[1]);
+            out.add(k == null ? -1L : k[0]);
+        }
+        return out;
+    }
+
     /** The canonical inventory position of the block at {@code abs} (what a count's store is keyed by). */
     static BlockPos storeOf(GlassReplayGameTests.Run run, BlockPos abs) {
         return Districts.canonicalInventory(run.level(), abs);
@@ -138,19 +153,21 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
     // ---- the checks ----------------------------------------------------------------------------------
 
     static final class Check implements GlassReplayGameTests.Scenario {
-        enum Phase { LEARN, COUNT, RECOMPILE, RELEARN, DONE }
+        enum Phase { LEARN, COUNT, RECOMPILE, DONE }
 
         static final int READ = 10;
         /** The stretch over which the count is compared with the vault's stock. */
         static final int COUNT_TICKS = 600;
         static final int SETTLE_AFTER_COMPILE = 40, COMPILE_DEADLINE = 1500;
-        static final int LEARN_DEADLINE = 9000, RELEARN_DEADLINE = 9000;
+        static final int LEARN_DEADLINE = 9000;
 
         private Phase phase = Phase.LEARN;
         private long phaseAt, nextRead, acceptedBefore, settleAt;
         private boolean firstStaled;
         private String firstStaledNote = "";
         private long stock0, in0, out0;
+        private List<Long> sinceBefore = List.of();
+        private String editSeen;
         private long[] awayCounted;
 
         @Override
@@ -166,6 +183,8 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             firstStaled = false;
             firstStaledNote = "";
             awayCounted = null;
+            sinceBefore = List.of();
+            editSeen = null;
         }
 
         @Override
@@ -198,7 +217,6 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
                 case LEARN -> learn(run, fr, now);
                 case COUNT -> count(run, fr, now);
                 case RECOMPILE -> recompile(run, fr, first, second, now);
-                case RELEARN -> relearn(run, fr, first, second, now);
                 default -> { }
             }
         }
@@ -258,6 +276,8 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             // The edit: break the second line's press and place it again within one tick. A compile between the two would see
             // line B without its press, the vault interior to line A, and reset both lines' units (SC84).
             acceptedBefore = fr.checksum().acceptedAt();
+            sinceBefore = sinces(run.fd);
+            editSeen = null;
             BlockPos[] abs = {run.helper.absolutePos(PRESS), run.far.absolutePos(PRESS)};
             SectionsFx.info(run, "edit", "break the press at " + SectionsFx.pos(abs[1]) + " and place it again in the same tick; compile accepted at " + acceptedBefore);
             for (BlockPos p : abs) {
@@ -270,38 +290,32 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             go(Phase.RECOMPILE, now);
         }
 
-        // ---- RECOMPILE: the second stale, the first not ---------------------------------------------------
+        // ---- RECOMPILE: the compile finds the press as it was ---------------------------------------------
 
         private void recompile(GlassReplayGameTests.Run run, GlassReport fr, GlassReport.Unit first, GlassReport.Unit second, long now) {
+            if (editSeen == null)
+                editSeen = (second == null ? "no unit" : second.summary()) + " (compile accepted at " + fr.checksum().acceptedAt() + ", before the edit "
+                        + acceptedBefore + ")";
             if (settleAt < 0) {
                 if (fr.checksum().acceptedAt() > acceptedBefore) {
                     settleAt = now + SETTLE_AFTER_COMPILE;
                 } else if (now - phaseAt > COMPILE_DEADLINE) {
                     SectionsFx.check(run, "the district recompiles after the press is replaced", false,
                             "compile accepted at " + fr.checksum().acceptedAt() + " since " + acceptedBefore + ", " + SectionsFx.describe(fr));
-                    go(Phase.RELEARN, now);
+                    go(Phase.DONE, now);
                 }
                 return;
             }
             if (now < settleAt)
                 return;
             String d = SectionsFx.describe(fr);
-            SectionsFx.check(run, "the edit at the press stales the second line's unit", second != null && second.stale() && !SectionsFx.learned(second),
-                    second == null ? d : second.summary());
-            SectionsFx.check(run, "...and only it: the first line's unit keeps its passed window", SectionsFx.learned(first), first == null ? d : first.summary());
-            go(Phase.RELEARN, now);
-        }
-
-        // ---- RELEARN: the second learns again --------------------------------------------------------------
-
-        private void relearn(GlassReplayGameTests.Run run, GlassReport fr, GlassReport.Unit first, GlassReport.Unit second, long now) {
-            boolean learned = SectionsFx.learned(second);
-            if (!learned && now - phaseAt <= RELEARN_DEADLINE)
-                return;
-            String d = SectionsFx.describe(fr);
-            SectionsFx.check(run, "the second line's unit learns again after the press is replaced", learned, second == null ? d : second.summary());
+            SectionsFx.info(run, "the second line's unit at the first read after the edit", editSeen);
+            SectionsFx.check(run, "the recompile found the press as it was: the first line keeps its passed window and the second's edit is cleared (§3.6)",
+                    SectionsFx.learned(first) && SectionsFx.learned(second), first == null || second == null ? d : first.summary() + "; " + second.summary());
+            List<Long> since = sinces(run.fd);
+            SectionsFx.check(run, "the counters went on across the edit and the recompile (every pair keeps its since)", !since.isEmpty() && since.equals(sinceBefore),
+                    "since " + sinceBefore + " to " + since);
             SectionsFx.check(run, "the first line's unit was never stale or frozen from the edit on", !firstStaled, firstStaled ? firstStaledNote : "never");
-            SectionsFx.check(run, "the first line's unit has passed", SectionsFx.learned(first), first == null ? d : first.summary());
             SectionsFx.info(run, "pairs after the edit", pairsText(run.fd));
             go(Phase.DONE, now);
         }
