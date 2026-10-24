@@ -1324,3 +1324,151 @@ fn the_meter_round_trips_blob_and_paged() {
     assert_eq!(rail_run(81, Trip::Blob), whole, "blob");
     assert_eq!(rail_run(81, Trip::Paged), whole, "paged");
 }
+
+// ---- the synthetic trains of `rtsim-cli sim mowzie` (MZB-330, MZB-339) ---------------------------
+
+mod synthetic {
+    use rtsim_conflict::engine::StationEnd;
+    use rtsim_conflict::synth::{self, RailDen, RailEvent, RailLine, Service};
+    use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+    use rtsim_knowledge::{Temperament, Trait};
+
+    fn end(id: u64, x: i32, z: i32) -> StationEnd {
+        StationEnd {
+            id,
+            dim: 0,
+            x,
+            z,
+            district: Some(id + 1000),
+        }
+    }
+
+    /// A north-south line at x = 1000, 2,600 blocks, 12 legs a day from the start.
+    fn line(per_day: f64) -> RailLine {
+        RailLine::steady(
+            end(1, 1000, -200),
+            end(2, 1000, 2400),
+            vec![(1000.0, -200.0), (1000.0, 2400.0)],
+            synth::PLAYER,
+            per_day,
+        )
+    }
+
+    fn den(since: Tick) -> RailDen {
+        RailDen {
+            key: synth::CAMP,
+            x: 900,
+            z: 1000,
+            radius: 200,
+            since,
+        }
+    }
+
+    #[test]
+    fn the_middling_seed_is_middling() {
+        // The chief the sim's runs use has every trait at the middle of its kind, so the
+        // culture's own thresholds are the ladder's (MOWZIE.md 4.3's runs are "middling").
+        let t = Temperament::from_seed(synth::MIDDLING);
+        assert_eq!((t.bold, t.sociable, t.aggressive), (128, 128, 128), "{t:?}");
+        for tr in [Trait::Bold, Trait::Sociable, Trait::Aggressive] {
+            assert_eq!(t.bend(tr, 1000, 40), 1000, "{tr:?}");
+        }
+    }
+
+    #[test]
+    fn a_leg_passes_each_den_once_then_arrives() {
+        let l = line(12.0);
+        let events =
+            synth::rail_events(&[l.clone()], &[den(Tick::ZERO)], 5, 0.0, Tick::from_days(3));
+        let mut passes = Vec::new();
+        let mut arrivals = Vec::new();
+        for (t, e) in &events {
+            match e {
+                RailEvent::Pass(p) => passes.push((*t, *p)),
+                RailEvent::Arrive(a) => arrivals.push((*t, *a)),
+            }
+        }
+        // 12 a day for 3 days, the first one up to a headway in.
+        assert!(
+            (35..=36).contains(&arrivals.len()),
+            "{} arrivals",
+            arrivals.len()
+        );
+        assert_eq!(passes.len(), arrivals.len(), "one pass for each leg");
+        assert!(events.windows(2).all(|w| w[0].0 <= w[1].0), "in order");
+        for (at, a) in &arrivals {
+            let (t, p) = passes
+                .iter()
+                .find(|(_, p)| p.train == a.train)
+                .expect("the train's pass");
+            assert!(p.entry < p.exit, "{p:?}");
+            assert_eq!(t.0 as i64, p.exit, "reported when it leaves the circle");
+            assert!(*t < *at, "the pass comes before the arrival");
+            assert_eq!(p.owner, synth::PLAYER);
+            assert_eq!(p.faction, synth::CAMP);
+            // The nearest sample to the den: on the track, at the den's latitude.
+            assert_eq!(p.pos.0, 1000.0);
+            assert!((p.pos.2 - 1000.0).abs() <= synth::SAMPLE_TICKS as f64 * synth::TRAIN_SPEED);
+        }
+        // The legs alternate their direction.
+        let dirs: Vec<u64> = arrivals
+            .iter()
+            .map(|(_, a)| a.line.expect("a line").0.id)
+            .collect();
+        assert!(dirs.windows(2).all(|w| w[0] != w[1]), "{dirs:?}");
+    }
+
+    #[test]
+    fn a_den_unknown_to_the_sampler_sees_no_pass_yet() {
+        let l = line(12.0);
+        let since = Tick::from_days(1);
+        let events = synth::rail_events(&[l], &[den(since)], 5, 0.0, Tick::from_days(2));
+        let first = events
+            .iter()
+            .find_map(|(t, e)| matches!(e, RailEvent::Pass(_)).then_some(*t))
+            .expect("a pass");
+        assert!(first >= since, "{first:?}");
+        // The legs went on running: arrivals from the first day too.
+        let early = events
+            .iter()
+            .filter(|(t, e)| matches!(e, RailEvent::Arrive(_)) && t.0 < TICKS_PER_DAY)
+            .count();
+        assert!(early >= 10, "{early} arrivals before the den was found");
+    }
+
+    #[test]
+    fn a_stopped_service_runs_no_legs() {
+        let mut l = line(12.0);
+        l.service.push(Service {
+            from: Tick::from_days(1),
+            per_day: 0.0,
+            path: 0,
+        });
+        let events = synth::rail_events(&[l], &[den(Tick::ZERO)], 5, 0.4, Tick::from_days(4));
+        let departed_after = events
+            .iter()
+            .filter(|(t, e)| matches!(e, RailEvent::Pass(_)) && t.0 > TICKS_PER_DAY + 4_000)
+            .count();
+        assert_eq!(departed_after, 0, "no pass after the last leg is through");
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn the_same_seed_runs_the_same_trains_and_another_does_not() {
+        let l = line(12.0);
+        let run = |seed| {
+            synth::rail_events(
+                &[l.clone()],
+                &[den(Tick::ZERO)],
+                seed,
+                0.4,
+                Tick::from_days(2),
+            )
+            .iter()
+            .map(|(t, _)| t.0)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(run(1), run(1));
+        assert_ne!(run(1), run(2));
+    }
+}
