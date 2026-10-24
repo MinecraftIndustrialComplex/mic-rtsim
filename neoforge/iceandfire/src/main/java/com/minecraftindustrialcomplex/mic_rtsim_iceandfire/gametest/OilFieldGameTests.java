@@ -379,7 +379,7 @@ public final class OilFieldGameTests {
         int[] ticks = {0};
         long start = level.getGameTime();
         Data0 before = Data0.of(placer.data());
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (nat && got[0] == null && ticks[0]++ % 20 == 0)
                 DragonKit.reportPlayerAt(player, level, site.getX() + 0.5, 70, site.getZ() + 0.5);
         });
@@ -531,7 +531,7 @@ public final class OilFieldGameTests {
         long[] drawn = {0};
         long[] agent = {0};
         Vec3 high = new Vec3(site.getX() + 0.5, 70, site.getZ() + 0.5);
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (ticks[0]++ % 20 != 0)
                 return;
             switch (phase[0]) {

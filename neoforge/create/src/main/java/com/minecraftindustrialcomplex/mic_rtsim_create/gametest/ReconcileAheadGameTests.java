@@ -770,7 +770,7 @@ public final class ReconcileAheadGameTests {
         ServerPlayer[] player = {null};
         int[] mark = {0};
         int[] walk = {0}; // blocks a tick east
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (player[0] != null && walk[0] != 0)
                 player[0].moveTo(player[0].getX() + walk[0], player[0].getY(), player[0].getZ());
         });

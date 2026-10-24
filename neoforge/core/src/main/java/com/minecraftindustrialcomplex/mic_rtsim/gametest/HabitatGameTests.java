@@ -314,7 +314,7 @@ public final class HabitatGameTests {
         boolean[] watching = {false};
         long[] agent = {0};
         int[] seen = {0};
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (player[0] != null && RtsimTests.session().gameTime() % 20 == 0)
                 reportPlayer(player[0]);
             if (watching[0] && agent[0] != 0)
