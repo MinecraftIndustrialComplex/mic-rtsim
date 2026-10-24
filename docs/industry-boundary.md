@@ -514,12 +514,14 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
   at, as a rational; selector and capacity 0. The rows are distinct, nonzero, sorted by |speed|
   (the negative first), at most 32; Rate24's `level` indexes them. As a **source row**: the
   source's own generated speed and its capacity in SU at that speed; `selector` is the boiler level
-  (0 to 18) that picks the row for a driven source, 0 for a fixed one.
+  (0 to 18) that picks the row for a driven source, or 19 (`PASSIVE_SELECTOR`) for its passive row,
+  0 for a fixed one.
 - **Source32:** `0 u32 driver (the boiler node, NONE), 4 u32 first source row, 8 u32 row count,
   12 u32 current row (NONE), 16 i32 ratioNum, 20 u32 ratioDen (0: unknown), 24 i64 position`: one
   per Create source on the network, ascending by `BlockPos.asLong`, its rows contiguous in source
-  order. A driven source (an engine shaft on a tank the compile has a boiler node for) has 19 rows,
-  level 0 to 18; any other source, and every source of a domain Java cannot model, has one row,
+  order. A driven source (an engine shaft on a tank the compile has a boiler node for) has 20 rows,
+  level 0 to 18 and the passive row (SECTIONS.md SC154), its current row 19 while Create's boiler is
+  passive; any other source, and every source of a domain Java cannot model, has one row,
   its speed now. `ratio` is the source's speed over the reference's. The fastest source sets the
   speed, every source adds its row's capacity, and sources that disagree in sign stop the network
   (SECTIONS.md §2.6, §13 SC144 onward). On a **shared** part (flag 4: a network that crosses the
@@ -627,7 +629,11 @@ it does; a machine's recipes are exactly those its entries name (choice GB15).
   water accepted in mB per tick and `activeHeat` the sum of its Heat edges' params over lit heaters. It
   drives its domain: the domain's `driver` is the boiler and each Level24's `selector` is a boiler level
   (Java tabulates every level the engines can see, with each level's speed and capacity); the domain runs
-  at the level with the largest selector at or below the boiler's level. A heater with
+  at the level with the largest selector at or below the boiler's level. A boiler is **passive**
+  (`BoilerData.isPassive`, SECTIONS.md SC154) when no Heat edge is lit, at least one comes from a heater
+  that is out (a blaze burner below FADING gives Create's passive heat), and its water and size each
+  allow a level above 0: its sources then take their passive row (selector 19: 16 RPM, an eighth of the
+  engines' efficiency shared by the engines). A heater with
   duty strictly between 0 and 1 makes the boiler's goods bounded: L counts heaters at duty 1, U every
   heater with duty above 0.
 - **Source:** emits its recipe's outputs (no inputs) at its entries' rate; unlimited without entries

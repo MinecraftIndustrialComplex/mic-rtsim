@@ -370,8 +370,8 @@ Inside a district nothing changes here (Q1 is about sections).
   districts on one network saw different drivers, or none, and a district with no engine of its own
   took the network as one fixed level, which kept running when the boiler stopped. Since S5-1 a
   domain lists every source on its network with its rows (choices SC144 and SC145): each tank drives
-  its own engine shafts, and the rules below hold within a district. A network that crosses districts
-  stays bounded (S1's rule) until S5-2 shares it.
+  its own engine shafts, and the rules below hold within a district. Since S5-2 a network that
+  crosses districts is shared (below).
 - **What Create keeps.** A network's `sources` and `members` keep a block entity whose chunk unloaded,
   as it last was: `SmartBlockEntity.setRemoved` skips `remove()` on a chunk unload (lines 135 to 137).
   After a restart, the saved network's `unloadedCapacity` and `unloadedStress` stand for the members
@@ -380,38 +380,59 @@ Inside a district nothing changes here (Q1 is about sections).
   `Level.getBlockEntity` (lines 139 and 155) and drops those no longer there; that lookup loads their
   chunks, and S1's guard skips the ones whose chunk is not loaded, leaving them as Create last saw them
   (§2.8). So the loaded half of a network keeps an away source's last capacity.
-- **The shared network** (Q2). A network whose members lie in chunks of more than one district is a
-  shared network in Rust, owned by no district. Each district's compile reports **its own part**: the
-  members in its own chunks with their stress impact, and its own sources: each boiler with its engines
-  (speed and capacity at each of its levels, tabulated as today, `:454` to `:473`) and each fixed
-  source with its speed and capacity. Members and sources in chunks of no district (chain conveyors on
-  the way) are reported by the district holding the network's root, else by the lowest district id on
-  the network, as last loaded. Rust keeps every part as its district last compiled it, so an unloaded
-  district's part is known.
-- **The network's state** is the tuple of its boilers' levels. As in Create, the fastest source sets
-  the speed (a steam engine runs at 16, 32, 48 or 64 RPM by its boiler's efficiency,
+- **The shared network** (Q2; slice S5-2, choice SC153). A network whose members lie in chunks of more
+  than one district, or of no district, is a shared network in Rust, owned by no district. Each
+  district's compile reports **its own part**, a SHARED domain (IND_GRAPH_DOMAIN v3,
+  docs/industry-boundary.md §9): every source Create lists on the network, by position, each with its
+  ratio in the part's frame (its own sources as S5-1 has them, driven by one of its boilers or fixed; a
+  fixed source in chunks of no district at its one row; every other source foreign, with no rows); the
+  members in its own chunks with their stress impact; the members in chunks of no district as a tail
+  (chain conveyors on the way); and its peers, the other districts whose chunks hold a member or a
+  source of the network or a chunk it reaches. Members in another district's chunks are that
+  district's to list. The speed rows add each foreign source's possible speeds (an engine's shaft its
+  16 to 64 RPM, any other its speed now). A crossing network Java cannot share stays bounded, as S1 has
+  it: sources that disagree in sign, a driven source with an unknown ratio, a split tank, more than 32
+  rows, or no source with a known ratio. Rust keeps every part as its district last compiled it, so an
+  unloaded district's part is known.
+- **The registry** (`glass/net.rs`, derived from the compiled graphs, never saved). Parts of one
+  dimension that list a source at the same position are one network (a union-find; Create's network
+  id is a hint only, it changes when another source takes over). A network is coupled when it has at
+  most `industry.clusterDistrictsMax` parts, one per district, a part for every peer a part names, an
+  anchor (the lowest source position every part lists with a known ratio: the frame every part's
+  speeds go through), every source tabulated by some part, and in every part a speed row for each
+  speed an owner's source gives. Otherwise (incomplete, or past the cap) each of its parts runs
+  decoupled: at its compile row, its members bounded (why `SHARED_NETWORK`), S1's rule at run time. A
+  source's owner is the part with its driven rows, else the lowest district tabulating it; the tail
+  counts in the lowest district's part.
+- **The network's state** is its owners' source rows. As in Create, the fastest source sets the speed
+  (a steam engine runs at 16, 32, 48 or 64 RPM by its boiler's efficiency,
   `PoweredShaftBlockEntity.getGeneratedSpeed` :110 and `getSpeedModifier` :118; the efficiency comes
   from heat, boiler size, water supply and engine count, `BoilerData.getEngineEfficiency` :179), and
   every source adds its capacity at its own speed, a slower one included
   (`GeneratingKineticBlockEntity.applyNewSpeed`, lines 142 to 163; `updateGeneratedRotation`, lines 94
-  to 97). The network runs while that capacity carries the summed stress at that speed, and stops
-  otherwise. No district is picked as "the source".
-- **Replay.** The districts on one shared network replay in one cluster (`Cluster`, as I13's power
-  links already make clusters), stepped in time order, on the cross-district cluster slice S4 builds
-  for package stores. A district holding a boiler writes its level changes into the shared network as
-  breakpoints of the cluster, and every district reads the network's state from it. This is
-  glass-to-glass coupling across districts, new code (§10.3). G2-16's rule (a power link sends its
-  districts to the black box, `engine.rs:1594` to `:1595`, its doc at `:1577` to `:1580`) does not
-  apply: both sides model the network. A black-box district on a shared network couples as I13's
-  `requires` does: its part runs while the network runs, and a source it holds counts only while its
-  box processes run (the safe side).
-- **Loaded districts.** A loaded district's network is Create's. The shared network matters for away
-  districts; a loaded district's boiler level reaches it from that district's sweeps. The other way is
-  not modelled: a loaded half runs on Create's last view of an away source, whatever that source's
-  replay does (§14).
-- **Tested in slice S5-1:** the loaded half keeps its speed, is not overstressed and keeps the away
+  to 97). Each part's solve takes what the rest gives it (`NetInput`: the fastest speed each way other
+  owners' sources give in its frame, their capacity, and the other parts' stress per RPM; in the
+  regime's key) and runs while the whole capacity carries the whole stress at that speed, stopping
+  otherwise. No district is picked as "the source". A boiler with water and no heat (its burner out)
+  runs its engines on the passive row, as Create does (choice SC154).
+- **Replay** (choices SC151 to SC153). Each district replays in its own cluster; the network couples
+  them. A replaying district publishes its sources' rows: a driven source the row of the part holding
+  its boiler (the least row over a running cycle, SC151), none while that boiler is gated, frozen, or
+  its district does not replay on glass (SC152); a fixed source its one row. A loaded district's rows
+  are its check solve's. When an owner's rows change at a tick, each replaying reader's cluster settles
+  to that tick and its parts on the network re-run on the new input, for up to 8 rounds a tick; a
+  reader whose input still changes after that falls back as oscillating. G2-16's rule (a power link
+  sends its districts to the black box, `engine.rs:1594` to `:1595`, its doc at `:1577` to `:1580`)
+  does not apply: both sides model the network. A black-box district on a shared network runs its box
+  as today, ungated by the network, and gives the network no driven rows (§14).
+- **Loaded districts.** A loaded district's network is Create's. Its check solves read the other
+  parts' rows from their last solves (the live view), so its windows are judged on the whole network.
+  The other way is not modelled: a loaded half runs on Create's last view of an away source, whatever
+  that source's replay does (§14).
+- **Tested.** In slice S5-1: the loaded half keeps its speed, is not overstressed and keeps the away
   source's capacity when the source's chunk unloads, with S1's guard on, for 600 ticks and through a
-  recount (S1's `aNetworkRecountKeepsAnUnloadedSource`, extended; choice SC148).
+  recount (S1's `aNetworkRecountKeepsAnUnloadedSource`, extended; choice SC148). In S5-2:
+  `aBoilerOnAChainDrivesTheNextDistrict` (§9.1) and the shared network's engine tests (§9.3).
 
 ### 2.7 Data coupling across districts
 
@@ -606,8 +627,10 @@ part of it. A network's load on the section is §3.6's domain check, not the fin
   section makes nothing while away, where today's black box would run the district's learned rates; the
   glass is the better model where it works, and the black box's rates are the whole district's, not
   one line's.
-- A frozen section holding a network's boiler stops that domain for every section on it, and for every
-  district on a shared network (conservative: nothing runs on an engine the sim does not trust).
+- A frozen section holding a network's boiler stops that domain for every section on it, and drops
+  the boiler's sources from a shared network (choice SC152): the other districts' parts run on what
+  the network's other sources give, if anything (conservative: nothing runs on an engine the sim does
+  not trust).
 - **Partly loaded districts** (I7, G2-11). Sections whose nodes all lie in ticking chunks are live and
   learn. The others replay if the verdict allows; G2-11's cut runs between live nodes and the simulated
   nodes of replaying sections, as it runs between live and simulated nodes today. A section that may
@@ -902,15 +925,21 @@ No migration code (no backward compatibility before release; G2-85). On load:
 - **Saves.** Every glass page is written whole at every save today (G2-83); the extra rows add to that
   until For Ben 15 writes only changed pages. Package store pages are small: a pool per destination
   and the held packages.
-- **Clusters.** Every district on one shared network or package store replays in one cluster. The
-  work is the sum of the members' replays, but a cluster settles as one model, and its catch-up costs
-  its breakpoints times its diffusers (`cluster.rs`, the module comment: one multiply per diffuser per
-  settle). Coupling n districts of similar size costs about n times more per breakpoint than replaying
-  them apart. `industry.clusterDistrictsMax` (TUNABLE, 16) bounds it: a shared object whose districts
-  exceed it is not coupled. Its districts then treat a shared network as S1 does (each bounds its
-  members on it and learns their rates, as unstable domains today), and a package store moves nothing
-  while any of its ends is away. Each such object is logged once and shown by `/rtsim district info`,
-  so the lost coupling is never silent (Q2, Q4).
+- **Clusters.** Every district on one package store replays in one cluster. The work is the sum of
+  the members' replays, but a cluster settles as one model, and its catch-up costs its breakpoints
+  times its diffusers (`cluster.rs`, the module comment: one multiply per diffuser per settle).
+  Coupling n districts of similar size costs about n times more per breakpoint than replaying them
+  apart. `industry.clusterDistrictsMax` (TUNABLE, 16) bounds it: a package store whose districts
+  exceed it is not coupled, and moves nothing while any of its ends is away.
+- **Shared networks** (choice SC153). Each district replays in its own cluster, never merged by a
+  network. A change in an owner's published rows settles each replaying reader's cluster to that tick
+  and re-runs the reader's parts: one settle and one re-solve per reader per change, at most 8 rounds
+  a tick (`NET_ROUNDS`), then the readers still changing fall back as oscillating. The registry is
+  rebuilt (a union-find over the parts' source positions, linear in sources) at a compile accepted or
+  dropped, a district removed and a restore, and is never saved. A network with parts in more
+  districts than `industry.clusterDistrictsMax` is past the cap: its parts run decoupled (each bounds
+  its members on it and learns their rates, as S1's unstable domains). A network's status change is a
+  note in the engine's industry log, so the lost coupling is never silent (Q2, Q4).
 - The replay costs what it costs today inside a district: parts are formed as today, over the
   replaying nodes. A fallback's rebuild repeats at most one replay step per frozen section.
 
@@ -982,7 +1011,7 @@ inside the yard, as `CreateSeedGameTests`' chain helper does.
 | `twoFrogportsOfOneDistrictOnASharedChain` | a third frogport of the first factory on the same chain | its packages to the first frogport are counted once each way, with no `CHAIN` edge |
 | `anUnloadedMemberKeepsItsJoins` | a district with one member chunk unloaded before a detection | the same district after it (saved pairs) |
 | `aStationBetweenTwoFactories` | a station touching two factories, its interfaces serving the one whose chunk it does not share | two districts; the station's chunk and its cargo with the one its interfaces serve, also after a restart before the next docking |
-| `aBoilerOnAChainDrivesTheNextDistrict` | a boiler and engines in one factory, a chain carrying rotation to a press line | both compiles report parts of one shared network; away, the press line stops when the boiler starves |
+| `aBoilerOnAChainDrivesTheNextDistrict` | a boiler (one burner, a pumped tank, one engine) and a millstone line in one district, a chain carrying rotation to a millstone line in the next | loaded, both compiles report SHARED parts of one network (each the other's one peer, the engine's shaft driven in A and foreign in B, no tail, members not bounded); away, both lines grind at the boiler's speed until the burner runs out in A's replay and at the passive 16 RPM after (SC154), as each district's reconcile shows in the wheat |
 | `aPackageIntoAChunkThatDoesNotTick` | a chain from a ticking chunk into one that does not tick, with a reversal | first records what Create does (route expiry, the reversal at line 175); with S1's guards the package waits on the last ticking conveyor and the next chunk is not loaded |
 | `aRouteToAnAwayFrogportIsKept` | the same, the far frogport's district away, then a restart | with the frontier, packages for the far frogport reach the boundary conveyor and are held there, before and after the restart; one `CHAIN_HELD` each |
 | `aHeldPackageDrawnIsRemovedOnce` | the far district drew a held package | it is never handed on; after the far reconcile it is gone from the chain; after an engine reset before the reconcile its key is stripped and it lands as a normal `CHAIN_IN` |
@@ -1026,8 +1055,12 @@ Each runs the corpus cycle: loaded for a window, away for a replay, back for a r
   goes to the black box only when no section replays; a frozen boiler stops its domain; per-section
   liveness; G2-84's paging tests extended to sections (a save and restore before each step, equal pages
   and commands).
-- Shared objects: a shared network's state from parts in three districts, two with boilers (the
-  fastest source's speed, every source's capacity); a package store's split and merge; routing per
+- Shared objects: a shared network's parts joined through their frames (a ratio 2 chain), a peer
+  without a part, more parts than the cap, two parts in one district, parts that cannot agree, the
+  tail counted once; a part solving on its input and one without an input (decoupled, bounded); a
+  boiler in one district driving the next's press line until its coal runs out, through a restore; a
+  frozen boiler giving its network nothing; a peer with no compile; a cycle's least row (SC151); a
+  burner out running its engines on the passive row (SC154); a package store's split and merge; routing per
   exporter with a frogport on the way, `*` last and ties by position; room per route; the census and
   the floor at zero; an end in the black box neither books nor draws; held packages, drawn keys,
   epochs and what is owed; `clusterDistrictsMax` and its fallback.
@@ -1052,7 +1085,7 @@ repeated on the laptop copy after each slice. That check stays local; nothing fr
 | **S2** | Sections in the engine: cut, residual groups (Java), fold, state, fingerprints, per-section windows, liveness and discards, the verdict rule, judging groups from the compile, staleness by box, edits between districts and the domain check, per-section freeze with the rebuild at the fallback's tick, `IGL2` with the per-district drop; train cargo through `IND_STATION_PORTS` | §9.3, `BeltIntoPressFactory`, `SharedBoilerTwoLinesFactory`, `FrozenNeighbourFactory`, `StationPressLineFactory`, `HalfLoadedFactory`, `HopperAtASharedVaultFactory` | nothing: sections inside today's districts already pay off |
 | **S3** | Counting at the movers (Q3): `IND_COUNT_SET`, `IND_COUNT_SAMPLE`, the mover mixins, judging groups by residue | `VaultBetweenMixersFactory`, `ResidueAtASharedVaultFactory`, `BasinIntoASharedVaultFactory` | S2 |
 | **S4** | Package stores (Q4): `IndustryData` format 3 with the drop and the engine reset (§6), the store record and identity, `CHAIN_OUT` and `CHAIN_IN` at the frogports of package stores, no `CHAIN` edges on them, pools per destination with routing, room and the census, and the both-away replay on the first cluster that couples districts (a pool shared between them); then the frontier (Q5): routes kept, the hold, `CHAIN_HELD`, drawn keys and their removal | `aChainInsideOneDistrictStaysEdges`, `aChainBetweenTwoFactoriesLeavesThemTwo`, `twoFrogportsOfOneDistrictOnASharedChain`, `aPlayerTakesAPackageOffTheChain`, then `aRouteToAnAwayFrogportIsKept`, `aHeldPackageDrawnIsRemovedOnce`, the store's engine tests | S1. Useful before S6: chains between districts that are apart today are counted nowhere since DS-10 |
-| **S5** | Shared kinetic networks (Q2), in two parts: S5-1 every domain's sources and speed rows within a district (SC144 to SC148), then S5-2 parts per compile, the network's state, coupling on S4's cross-district cluster | the extended `aNetworkRecountKeepsAnUnloadedSource` first (S5-1), then `aBoilerOnAChainDrivesTheNextDistrict` (away part), the shared network's engine tests | S1, S2 (the domain check), S4 (the cluster) |
+| **S5** | Shared kinetic networks (Q2), in two parts: S5-1 every domain's sources and speed rows within a district (SC144 to SC148), then S5-2 a part per compile, the network registry, the network's state in each part's solve, readers settled at each change (SC151 to SC154) | the extended `aNetworkRecountKeepsAnUnloadedSource` first (S5-1), then `aBoilerOnAChainDrivesTheNextDistrict` (away part), the shared network's engine tests | S1, S2 (the domain check), S4 (the clusters) |
 | **S6** | Level 1: joins J1 to J6, no bare adjacency, saved join pairs, the station rule with `TrainWatch.ports` resolving any district, `IndustryData` format 4 through S4's reset; the stale comment at `CreatePlugin.java:169` to `:171` | §9.1's join and station rows, and the existing detection tests | S1, S4, S5: no district is split before its packages and its network have somewhere to go |
 | **S7** | Reach: `sections` command, info line, `rtsim-cli stores`, viewer layer and card | command GameTests, rtsim-view fixtures | S2; S4 and S5 for stores and networks |
 
@@ -1141,9 +1174,10 @@ Ana builds a brass works next to her rail line.
    the press hall's replay draws them, and they leave the chain when the press hall loads and its
    reconcile writes what it made. If she stays long, the waiting packages fill the near conveyors and
    the brass works' packager backs up, as it would before a full press hall.
-7. **The boiler.** If Ana starves the boiler of water while both buildings are away, its engines lose
-   capacity, the shared network overstresses, and the press hall's replay stops with the brass works'.
-   While a building is loaded, Create's own network does the same.
+7. **The boiler.** If the boiler's burner runs out while both buildings are away, the brass works'
+   replay drops its engines to Create's passive heat (16 RPM, SC154). The press hall's replay re-runs
+   at that speed at the same tick, slower, or stops if the network's capacity no longer carries both
+   buildings' stress there. While a building is loaded, Create's own network does the same.
 
 ---
 
@@ -1237,7 +1271,7 @@ The options below stay as the record of what was offered.
 | SC9 | The frontier keeps far routes alive on the boundary conveyor, holds packages by refusing the hand-off, keys them in `minecraft:custom_data` with the store, the engine's epoch and a serial, and removes only keys of the current epoch that the far reconcile lists; nothing is removed at a landing | Create forgets routes to a chunk that does not tick; UR-1 after a reset; a mod component may not survive an uninstall |
 | SC10 | No chunk loads: every compile read through `getChunkNow`, Create's chain lookups and network recount guarded, all in S1 | each load pulls an away district into a partial load |
 | SC11 | Until S5, a network whose members lie in more than one district is an unstable domain in every district on it, the boiler's included | defined behaviour that exists today, the same everywhere |
-| SC12 | A shared network has no source district: its state is the tuple of boiler levels, its speed the fastest source's, its capacity every source's at its own speed; members in no district reported by the root's district | Create's rules; several districts can hold boilers |
+| SC12 | A shared network has no source district: its state is the tuple of boiler levels, its speed the fastest source's, its capacity every source's at its own speed; members in no district reported by the root's district (S5-2: every part lists them as its tail and the lowest district's part counts them, SC153) | Create's rules; several districts can hold boilers |
 | SC13 | Sections cut only at `STORE` nodes; `CHAIN` and `LINE` edges join | SEC-1's stores; `LINE` is a depot's own chain |
 | SC14 | Residual groups, one per face-connected group of unclaimed block entities, joined across an Ender channel; working when they touch a store, idle when they touch nothing; virtual nodes have no position | one residual per district glues every line; an unknown machine fails alone |
 | SC15 | The fold: transfer into working, downstream first, ties by lowest position; storage systems merge; idle pieces keep nothing; merges by store, then domain, then size, ties by position, and a merged section starts learning | sections are working lines; shared stores become few; the cap is always reachable |
@@ -1356,11 +1390,15 @@ The options below stay as the record of what was offered.
 | SC141 | The draw (slice S4c2): at a store's write wake (`Engine::store_write_wake`), for each frogport a replay covers, the packages held toward it with a good in some cluster's pool toward it are asked drawn, each key once a session (`draws_asked`, cleared at the session start), by IND_HELD_DRAW (0x840B: store u64 at 16, epoch u32 at 24, action u32 at 28, Draw 0, Remove 1, Return 2; serials u64 from 32, aux n, at most (0xFFF8 - 32) / 8 a record; no op id, no COMMAND_RESULT; 0x840A left free). Java (`Frontier.heldDraw`) marks the key drawn (its held tag's `drawn`) and journals `CHAIN_DRAWN` (IND_CHAIN_PACKAGE direction 7, key only, at the boundary conveyor), again for a key drawn already, none while the far frogport ticks (a declined Draw: Java forgets that it told the key, so its next hold tells it again and the engine, at that `CHAIN_HELD`, may ask again). The engine books the draw at that record (`Engine::chain_drawn`): the package moves from `PackageStore::on_hold` to `PackageStore::drawn` (store pages IST4) and its goods into the cluster's pool toward the frogport, else the store's owed. Every hand-off of a drawn package is refused (`Frontier.refusesDrawn`, first in the `exitTicks` wrap, PATCHES.md row 51; a count of drawn packages keeps the check to one field read while there are none), so it circles its boundary conveyor, and the store census does not count it (its goods are the replay's until it is removed or given back) | Java's mark comes first, so the goods move to the replay only once the package is pinned in the world (UR-1: the package is still there, only refused); asking once a session bounds the commands; the key-only layout is the release's; a `CHAIN_DRAWN` told again is harmless (the engine holds it drawn already) and covers one a crash lost |
 | SC142 | The removal: at a store's write wake (`Engine::remove_drawn`), a drawn package whose drawing district replays no more and has no reconcile pending, toward a frogport the store owes nothing, writes nothing to, and toward which no cluster holds a pool (what the replay did not use is written in first), is asked removed (Remove, once a session, `removes_asked`). Java takes it off its conveyor (the looping or a travelling list, then `notifyUpdate`) while the conveyor's chunk is loaded, else marks it `removing` (saved) and takes it at that conveyor's first tick once it loads (`Frontier.firstTick`, after SC140's look); then journals `CHAIN_RELEASED`, the chunk noted for the journal barrier (R21). The engine strikes it (`drawn_removed`). A Remove of a key Java holds but not drawn removes it all the same (the engine drew it: Java's mark was lost); a package not on its conveyor is released (`unfound`) | the replay's results are then in the world, so the package's goods have reached it; the barrier keeps the journal from claiming a removal the chunk on disk lacks; a chunk saved without the package and a crash before the release reached the journal is SC140's case (released at the first tick) |
 | SC143 | Giving back and restarts: a drawn package whose drawing district is gone, and a `CHAIN_DRAWN` of a key the engine does not hold or whose frogport no replay pool covers now (it loaded meanwhile), are given back (Return): Java clears the mark and forgets that it told the key this session, so the next refused hand-off tells it again (`CHAIN_HELD`); the engine's own drawn package goes back into its pools (`undraw`). IND_HELD_LIST carries the drawn keys last (u32 m at 28, the last m serials; each part ascending). The engine asks Draw again for a key it drew that Java lists as held or tells again as held (a `CHAIN_HELD` of a key it holds drawn), and takes a key Java lists drawn that it only holds as that key's `CHAIN_DRAWN` (booked when a replay still covers it, else given back). A drawn key that lands (a keyed `CHAIN_IN`) goes back first into the pool of the frogport it landed at (in the store it landed in) and then lands there (into no pool when a census counted the landing already, that census counting no drawn package); one released (a census, a drop, a player) is struck; a drawn key of another epoch goes back into the pools at the declaration. Known limits, each a duplicate at worst: a crash after `IndustryData` saved a removal but before the chunk did brings the package back with a key Java no longer holds (stripped and held again); a player who takes a drawn package keeps goods the replay also has; a store removed with no heir drops its drawn packages in the engine, and the packages go on | UR-1 prefers a duplicate to a loss; the held list makes the marks agree after either side lost some, as SC140 does for the keys |
-| SC144 | Slice S5-1: every kinetic domain lists every source Create lists on its network (`Source32`, docs/industry-boundary.md §9), ascending by position, with its ratio to the reference. An engine shaft on a tank the compile has a boiler node for is a driven source: 19 rows, boiler level 0 to 18, each its own speed and its capacity at that speed; any other source is fixed at one row, its speed now. The domain's speed rows are the nonzero source row speeds over their ratios, distinct; rates index them. In the solve each driven source takes the row of the largest selector at or below its boiler's level; the fastest source sets the speed, every source adds its row's capacity, a slower one included, and the domain runs while that carries its members' stress at that speed (or always with stress disabled). `singleBoiler` goes: each tank drives its own shafts, so engines on several tanks are modelled. The LP's possible rows are an upper bound: a row some allowed source row gives where every source has an allowed row no faster and of no other sign, and the summed most capacity carries the stress at the row's speed, matching within twice the solve's rounding so it never drops a row the solve reaches. An engine's shaft and tank are read without loading a chunk; a speed row needs capacity too (a capacity of 0 in the config gives none, as `getGeneratedSpeed`) | Create's own rules (§2.6): `PoweredShaftBlockEntity.getGeneratedSpeed`, `GeneratingKineticBlockEntity.applyNewSpeed`; the old ladder modelled one tank and took the network as one fixed level otherwise, which kept running when the boiler stopped; rows by speed keep rate tables at a few rows, not 19 |
-| SC145 | A domain Java cannot model has every source fixed and one speed row, the reference's speed now, and its members bounded: a crossing network (S1's rule, until S5-2), more than 32 speed rows, sources whose speeds over their ratios disagree in sign, a driven source whose ratio is unknown (a powered shaft on a stopped network), a tank whose engines turn shafts on two networks of the compile, an engine's shaft whose tank or engine the district does not model (outside it, or not loaded), or a speed or quotient that does not fit an i32 over a u32 exactly. A shaft that two engines could power takes the tank of the engine Create powers it from (`enginePos`), else the first seen. A network listing two block entities at one position (inside a deferred join) gives one source, the one there now. In the solve, sources that disagree in sign stop the domain; a driven domain without a row for a speed one of its sources gives is refused by `Graph::build` (Java builds every one), so the solve's row is always that speed's, within rounding. A chute hand-off whose arm's domain has no current row gets no rate | the safe side; Create breaks a block where speeds disagree (`RotationPropagator`); a missing row was a fallback the LP bound did not cover (the S5-1 review) |
+| SC144 | Slice S5-1: every kinetic domain lists every source Create lists on its network (`Source32`, docs/industry-boundary.md §9), ascending by position, with its ratio to the reference. An engine shaft on a tank the compile has a boiler node for is a driven source: 19 rows, boiler level 0 to 18 (20 since SC154: the passive row), each its own speed and its capacity at that speed; any other source is fixed at one row, its speed now. The domain's speed rows are the nonzero source row speeds over their ratios, distinct; rates index them. In the solve each driven source takes the row of the largest selector at or below its boiler's level; the fastest source sets the speed, every source adds its row's capacity, a slower one included, and the domain runs while that carries its members' stress at that speed (or always with stress disabled). `singleBoiler` goes: each tank drives its own shafts, so engines on several tanks are modelled. The LP's possible rows are an upper bound: a row some allowed source row gives where every source has an allowed row no faster and of no other sign, and the summed most capacity carries the stress at the row's speed, matching within twice the solve's rounding so it never drops a row the solve reaches. An engine's shaft and tank are read without loading a chunk; a speed row needs capacity too (a capacity of 0 in the config gives none, as `getGeneratedSpeed`) | Create's own rules (§2.6): `PoweredShaftBlockEntity.getGeneratedSpeed`, `GeneratingKineticBlockEntity.applyNewSpeed`; the old ladder modelled one tank and took the network as one fixed level otherwise, which kept running when the boiler stopped; rows by speed keep rate tables at a few rows, not 19 |
+| SC145 | A domain Java cannot model has every source fixed and one speed row, the reference's speed now, and its members bounded: a crossing network S5-2 cannot share (SC153), more than 32 speed rows, sources whose speeds over their ratios disagree in sign, a driven source whose ratio is unknown (a powered shaft on a stopped network), a tank whose engines turn shafts on two networks of the compile, an engine's shaft whose tank or engine the district does not model (outside it, or not loaded), or a speed or quotient that does not fit an i32 over a u32 exactly. A shaft that two engines could power takes the tank of the engine Create powers it from (`enginePos`), else the first seen. A network listing two block entities at one position (inside a deferred join) gives one source, the one there now. In the solve, sources that disagree in sign stop the domain; a driven domain without a row for a speed one of its sources gives is refused by `Graph::build` (Java builds every one), so the solve's row is always that speed's, within rounding. A chute hand-off whose arm's domain has no current row gets no rate | the safe side; Create breaks a block where speeds disagree (`RotationPropagator`); a missing row was a fallback the LP bound did not cover (the S5-1 review) |
 | SC146 | The domain check (§3.6) keeps the least capacity a window ran at per speed it ran at (a faster row may have more capacity and fail first), keyed by the own speed of the domain's lowest source with a known ratio, by position, else by the reference's speed; a recompile without that source counts as past the capacity (the unit goes stale). The capacity is the solve's sum over the sources at the solved state | a root change moves the reference (SC44), a source's own speed does not; unknown is the safe side |
 | SC147 | Glass pages go to IGL6 (the solve's per-source rows and capacities, the domain check's keys); an IGL5 page is read as dropped and its district learns again | the format changed; no compatibility before a release |
 | SC148 | The away-source check (§2.6) extends S1's `aNetworkRecountKeepsAnUnloadedSource` instead of a new `aNetworkWhoseSourceChunkUnloads`: with B (the motor) away, millstone A turns at 64 RPM, is not overstressed and the network keeps the motor's capacity, at once, 600 ticks on and after the recount | that test already builds the layout (a motor 13 chunks away, the chunks between held below FULL, a watch that no chunk two or more from A loads); one fewer 16,000-tick test |
+| SC151 | While a replay's cycle runs, a part publishes for each driven source the least row over the cycle's marks (least by speed, then capacity; none when a mark has none); outside a cycle, its running regime's row | a cycle repeats, so readers following each mark would re-run at every mark and never settle; the least row is the safe side. Cost: where an owner's boiler level changes within its cycle (a burner a controller lights and puts out), its readers run on the cycle's slowest row all trip, slower than the average Create would give. A possible point for Ben |
+| SC152 | Refines SC28 for shared networks: an away owner that is frozen, gated (its unit does not replay) or not replaying on glass (the black box, none) gives its network no driven rows, as if its boilers were cold; its fixed sources always count, at their one row; a loaded owner gives its check solve's rows. Inside a district a gated boiler still stops its whole domain (SC68) | the safe side: nothing runs on an engine the sim does not trust; a fixed source (a creative motor, a water wheel) needs no model |
+| SC153 | Slice S5-2: a crossing network is a SHARED part in each district's compile (§2.6), its parts joined in Rust by shared source positions (`glass/net.rs`, derived from the compiled graphs, never saved), in each part's frame through the network's anchor. A coupled network's part solves with what the rest gives (`NetInput` per domain, in the regime and its key). One cluster per district: an owner's change settles each reader to that tick and re-runs its parts, up to `NET_ROUNDS` (8) rounds a tick, then oscillating. An incomplete network or one past `industry.clusterDistrictsMax` parts runs decoupled: each part at its compile row, its members bounded (why `SHARED_NETWORK`, 20). After each rebuild the domain check runs across districts (§3.6): a unit whose passed capacity is below its own stress plus the others' at that speed goes stale. Glass pages go to IGL7 (the regimes' and replays' network inputs and published rows); an IGL6 page is read as dropped | one cluster per district keeps the costs S4 bounds and needs no merge for a network (plan review, fix 3); a part per compile keeps each compile reading only its own chunks (S1); positions identify a network where Create's id changes when another source takes over; no compatibility before a release |
+| SC154 | A boiler with water and size but no heat (its burners out: a blaze burner below FADING) is passive, as Create's `BoilerData.isPassive`: its engines run at an efficiency of 1/8 shared by its engines (16 RPM, 128 SU per RPM over the engine count). Each driven source has a 20th row (selector 19, `PASSIVE_SELECTOR`), which the solve takes when every heater under the boiler is out and it has water and size; Java's current row is 19 when Create's boiler is passive | Create keeps a line turning slowly on a passive boiler (`BoilerHeaters.blazeBurner` gives passive heat below FADING); without the row, a burner out stopped the line in the model. Limits: heaters Create counts as passive by tag (a campfire, lava, magma) are not heaters in the model, so a boiler on them alone is not passive there (§14) |
 
 ---
 
@@ -1390,10 +1428,27 @@ The options below stay as the record of what was offered.
   record). A Create update can break them; the contract test catches it, and Q5 (b) is the fallback.
 - **One gated boiler stops a domain two boilers drive** (S5-1): the solve gates the whole domain when
   any of its boilers is gated, the safe side, where Create would run on the other tank's share. S5-2's
-  SC152 refines it (a gated boiler drops only its own sources).
+  SC152 does better only across districts (an away owner's gated boiler drops its own sources from the
+  network); inside a district the gate still stops the whole domain.
 - **A loaded half of a shared network runs on Create's last view of an away source** (§2.6): if the
   away boiler starves in the sim, the loaded machines keep Create's speed. Writing the sim's boiler
   state into a loaded network is not part of this design.
+- **What S5-2 leaves out of the shared network** (§2.6, SC151 to SC154):
+  - A black-box district on a shared network runs its box as before, not gated by the network; a
+    black-box owner's box state is not read either, so its driven sources give the network nothing
+    (SC152, the safe side).
+  - A district with no compile (a cold district) has no part: the network is incomplete and its other
+    parts run decoupled until that district compiles.
+  - Peers go stale when districts appear, merge or split: a part names the districts of its last
+    compile until its district compiles again, so the network can stay incomplete (decoupled, bounded)
+    or count a restored part's members Create no longer lists until then.
+  - The live view reads the owners' last check solves, so a loaded part's input lags an owner's change
+    by up to one sweep.
+  - Heaters Create counts as passive by block tag (a campfire, lava, magma) are not heaters in the
+    model: a boiler on them alone is not passive there (SC154).
+  - No test drives the oscillation cap (`NET_ROUNDS`); a network that changes at every round is
+    reasoned, not shown.
+  - A network's status shows only in the engine's industry log, not in `/rtsim district info`.
 - **Fluid counting** (§4.2): which position names a pipe network's mover is UNVERIFIED. Until it is, a
   store shared by two sections through pipes is a judging group.
 - **Counting at the movers** (§4.2, S3). Verified by GameTest at a vault between two lines
@@ -1417,8 +1472,9 @@ The options below stay as the record of what was offered.
   compile does not model across districts. Splitting districts makes this more common; until it is
   modelled, the gated machine takes its compile-time state.
 - **Members and sources in chunks of no district** on a shared network are reported as last loaded by
-  one district's compile (§2.6); an edit there now asks for a recompile (§3.6), but a change that is
-  not an edit (a source's chunk unloading) is not seen until that district compiles again.
+  each part's compile (its tail, counted by the lowest district's part, SC153; §2.6); an edit there
+  now asks for a recompile (§3.6), but a change that is not an edit (a source's chunk unloading) is
+  not seen until a district on the network compiles again.
 - **A unit's edit box is its nodes' positions** (a store's controller block, a residual group's
   extent; §3.6). An edit at another block of a multiblock store, or along a pipe or belt between
   two nodes, lands in no unit's box: the district's window goes, the units go on. Java recompiles
