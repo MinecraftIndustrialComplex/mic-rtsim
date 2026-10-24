@@ -2456,7 +2456,9 @@ struct Arrival {
 /// player's position forgotten, as the arm forgets it), ends its replay and runs on two days
 /// with nobody near. `restart`: also a second restart, from both pages saved once the replay
 /// holds the arrival, whose clock then runs that many ticks before the next record (past the
-/// poll: it arrives again first).
+/// poll: it arrives again first). Since RP-42 the host takes no page while replaying, so this
+/// restart happens only here, at engine level: it keeps `held_since`'s inference from the pages
+/// tested as a defence.
 /// `straggler`: a body of the band's older epoch dies in its fight ([`straggler`], RP-46).
 fn a_raid_arriving_after_the_save(
     watched: bool,
@@ -2638,7 +2640,9 @@ fn a_watched_arrival_in_the_replayed_window_is_resolved_once() {
 
 /// RP-23: the same with a restart from pages saved while the replay holds the arrival: its
 /// fight's record comes before the poll arrives again (found by the pages' `seg` and route), and
-/// after it (the map again).
+/// after it (the map again). The host takes no such page since RP-42 (rtsim-jni's
+/// `a_held_arrival_across_a_clean_close_before_the_replay_end_is_resolved_once`); this restart,
+/// at engine level, keeps `held_since`'s inference, the defence, tested.
 #[test]
 fn a_held_arrival_survives_a_restart_from_pages_saved_mid_replay() {
     let live = a_raid_arriving_after_the_save(true, false, None, false);
