@@ -108,9 +108,12 @@ struct PassLog {
     stale: bool,
     /// The roll hit and the industry's cooldown said no.
     skipped: bool,
-    /// Items robbed.
+    /// Items robbed, as the engine counted them.
     items: i64,
-    /// No robbery of this train by a lurk in the day before: its cooldown is clear.
+    /// Items the industry booked as stolen by this pass, from its own books.
+    stolen: i64,
+    /// The industry's cooldown on this train was over when the pass came (a robbery of it by any
+    /// band in the day before sets it).
     open: bool,
     /// The day of the wait it fell on, from 0.
     day: u64,
@@ -185,8 +188,6 @@ struct Rig {
     passes: Vec<PassLog>,
     /// TRAIN_ROBBED, by the tick it was said and the train.
     robbed: Vec<(Tick, u64)>,
-    /// The last robbery by a lurk of each train.
-    last_rob: BTreeMap<u64, Tick>,
     /// AMBUSH_SPOTs sent again by session starts.
     resent: u64,
     /// The agents the hourly look found lurking.
@@ -299,7 +300,6 @@ impl Rig {
             lurks: Vec::new(),
             passes: Vec::new(),
             robbed: Vec::new(),
-            last_rob: BTreeMap::new(),
             resent: 0,
             lurking_seen: BTreeSet::new(),
             store,
@@ -526,10 +526,8 @@ impl Rig {
             self.c.stats.items_from_districts,
             self.engine.stats.attacks_skipped,
         );
-        let open = self
-            .last_rob
-            .get(&tp.train)
-            .is_none_or(|t| at.0 >= t.0 + TICKS_PER_DAY);
+        let open = at >= self.engine.train_cooldown_until(TrainId(tp.train));
+        let stolen_before = self.engine.books.stolen.iter().map(|(_, n)| n).sum::<i64>();
         {
             let mut link = IndustryLink {
                 engine: &mut self.engine,
@@ -553,12 +551,10 @@ impl Rig {
             stale: self.c.stats.stale > stale,
             skipped: self.engine.stats.attacks_skipped > skipped,
             items: got,
+            stolen: self.engine.books.stolen.iter().map(|(_, n)| n).sum::<i64>() - stolen_before,
             open,
             day,
         };
-        if got > 0 {
-            self.last_rob.insert(tp.train, at);
-        }
         if let Some(l) = self.lurks.iter_mut().rev().find(|l| l.agent == tp.agent) {
             l.passes += u32::from(log.counted);
             l.items += got;
@@ -706,7 +702,10 @@ struct Ambushes {
     lurks: Vec<LurkLog>,
     passes: Vec<PassLog>,
     stats: ConflictStats,
-    robbed: usize,
+    /// TRAIN_ROBBED, by the tick said and the train.
+    robbed: Vec<(Tick, u64)>,
+    /// Legs the line's trains ran.
+    legs: usize,
     open: usize,
     seen: usize,
     unseen: usize,
@@ -726,7 +725,8 @@ fn one_line(seed: u64, per_day: f64, days: u64) -> Ambushes {
         open: r.lurking(),
         seen: r.lurking_seen.len(),
         unseen: r.lurking_seen.difference(&started).count(),
-        robbed: r.robbed.len(),
+        robbed: r.robbed.clone(),
+        legs: r.legs.len(),
         destroyed: r.c.ledger.destroyed_from_players.values().sum(),
         carried: r.c.ledger.from_players.values().sum(),
         home: r
@@ -776,7 +776,9 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
             format!(
                 "{name}: {lurks} lurks over {SEEDS} seeds, {started} started and {ended} ended in \
                  the engine, {heard_ended} removals heard, {open} still waiting at the end; {seen} \
-                 lurking bands seen by the hour, {unseen} of them with no spot"
+                 lurking bands seen by the hour, {unseen} of them with no spot; the two trains \
+                 made {:.1} legs a day",
+                runs.iter().map(|a| a.legs).sum::<usize>() as f64 / (SEEDS * 45) as f64
             ),
         );
 
@@ -879,6 +881,38 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
         let roll = hits as f64 / counted_all.max(1) as f64;
         shares.push((name, n, hit, roll));
 
+        // The roll is drawn afresh at each pass: the rate on the pass that follows a miss of the
+        // same lurk and train, and on the one that follows a hit, are both about half. (A roll
+        // keyed by the train alone repeats its answer: nothing after a miss, all after a hit.)
+        let mut next = [(0u64, 0u64); 2];
+        for a in &runs {
+            let mut last: BTreeMap<(u64, u64), bool> = BTreeMap::new();
+            for p in a.passes.iter().filter(|p| p.counted) {
+                let hit = p.items > 0 || p.skipped;
+                if let Some(before) = last.insert((p.agent, p.train), hit) {
+                    next[usize::from(before)].0 += 1;
+                    next[usize::from(before)].1 += u64::from(hit);
+                }
+            }
+        }
+        let rate = |i: usize| next[i].1 as f64 / next[i].0.max(1) as f64;
+        check(
+            out,
+            "the roll is independent from pass to pass: the rate after a miss and after a hit are both about half",
+            next.iter().all(|n| n.0 >= 100)
+                && (0..2).all(|i| (SHARE.0..=SHARE.1).contains(&rate(i))),
+            format!(
+                "{name}: {:.0}% of {} passes that follow a miss hit, {:.0}% of {} that follow a hit \
+                 (limits {:.0}% to {:.0}%)",
+                rate(0) * 100.0,
+                next[0].0,
+                rate(1) * 100.0,
+                next[1].0,
+                SHARE.0 * 100.0,
+                SHARE.1 * 100.0
+            ),
+        );
+
         // The goods are destroyed, not carried home.
         let destroyed: i128 = runs.iter().map(|a| a.destroyed).sum();
         let carried: i128 = runs.iter().map(|a| a.carried).sum();
@@ -902,17 +936,36 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
             ),
         );
 
-        // The roar's count, and the passes.
-        let told: usize = runs.iter().map(|a| a.robbed).sum();
+        // The robberies are counted three ways that share no source: the engine's counter, the
+        // TRAIN_ROBBED commands the rig heard, and the industry's own books for each pass.
+        let told: usize = runs.iter().map(|a| a.robbed.len()).sum();
         let robberies: u64 = runs.iter().map(|a| a.stats.lurk_robberies).sum();
         let ambushes: u64 = runs.iter().map(|a| a.stats.ambushes).sum();
+        let booked: usize = runs
+            .iter()
+            .map(|a| a.passes.iter().filter(|p| p.stolen > 0).count())
+            .sum();
+        let alike = runs.iter().all(|a| {
+            let mut from_passes: Vec<(Tick, u64)> = a
+                .passes
+                .iter()
+                .filter(|p| p.items > 0)
+                .map(|p| (p.at, p.train))
+                .collect();
+            from_passes.sort();
+            let mut said = a.robbed.clone();
+            said.sort();
+            from_passes == said && a.passes.iter().all(|p| p.stolen == p.items)
+        });
         check(
             out,
-            "stats.lurk_robberies equals the TRAIN_ROBBED count",
-            told as u64 == robberies && robberies > 0,
+            "the robberies are the same by the engine's counter, the TRAIN_ROBBED sent and the industry's books",
+            told as u64 == robberies && booked as u64 == robberies && alike && robberies > 0,
             format!(
-                "{name}: {robberies} robberies, {told} TRAIN_ROBBED sent ({ambushes} ambushes in \
-                 all, the rest on a march)"
+                "{name}: {robberies} robberies counted by the engine, {told} TRAIN_ROBBED sent, \
+                 {booked} passes with a theft in the industry's books; the same trains at the same \
+                 ticks, and the same items for each: {alike} ({ambushes} ambushes in all, the rest \
+                 on a march)"
             ),
         );
         let counted: u64 = runs.iter().map(|a| a.stats.passes).sum();

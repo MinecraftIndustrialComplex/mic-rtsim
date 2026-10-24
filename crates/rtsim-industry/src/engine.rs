@@ -577,6 +577,15 @@ impl Engine {
         self.now
     }
 
+    /// The tick before which no threat of any class may attack `train` (I25): the latest of its
+    /// per-class cooldowns, [`Tick::ZERO`] for a train never attacked. A read for the sims.
+    pub fn train_cooldown_until(&self, train: TrainId) -> Tick {
+        self.train_cooldown
+            .get(&train)
+            .and_then(|cd| cd.iter().copied().max())
+            .unwrap_or(Tick::ZERO)
+    }
+
     /// A GOOD dictionary entry from Java (docs/industry-boundary.md §2.2).
     pub fn define_good(&mut self, g: Good, info: GoodInfo) {
         self.goods.insert(g, info);
