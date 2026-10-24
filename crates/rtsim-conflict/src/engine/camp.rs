@@ -28,10 +28,10 @@ use rtsim_kernel::renewal::{LossCause, Pressure};
 use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
-    BODY_CHIEF, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL, CENSUS_THRONE,
-    CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut, CampReconcile, CensusBody,
-    ChiefState, DEATH_CHIEF, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING,
-    ReconcileLine,
+    BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL,
+    CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut, CampReconcile,
+    CensusBody, ChiefState, DEATH_CHIEF, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE,
+    LINE_NOTHING, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -1041,8 +1041,10 @@ impl Conflict {
         // Each slot against its body.
         let ids: Vec<(u32, u32)> = camp.slots.iter().map(|s| (s.id, s.generation)).collect();
         let mut matched: BTreeSet<(u32, u32)> = BTreeSet::new();
-        // Whether a chief body the books keep is among the bodies (MZB-269).
+        // Whether a chief body the books keep is among the bodies, and whether the crystal is on
+        // it (MZB-269, amended at review C: the body's own bit, not the camp's byte).
         let mut kept_chief = false;
+        let mut kept_crystal = false;
         for (id, generation) in ids {
             let Some(i) = camp.index(id, generation) else {
                 continue;
@@ -1050,7 +1052,7 @@ impl Conflict {
             let found = held.contains_key(&(id, generation));
             let chief_body = held
                 .get(&(id, generation))
-                .is_some_and(|b| b.flags & BODY_CHIEF != 0);
+                .filter(|b| b.flags & BODY_CHIEF != 0);
             if found {
                 matched.insert((id, generation));
             }
@@ -1118,12 +1120,13 @@ impl Conflict {
             }
             // A found body of a slot that is a member of the camp now (a Dead slot's is removed,
             // and a body the books do not keep says nothing about the chief the books do).
-            if chief_body
+            if let Some(b) = chief_body
                 && camp.index(id, generation).is_some_and(|i| {
                     matches!(camp.slots[i].state, SlotState::Body | SlotState::Left)
                 })
             {
                 kept_chief = true;
+                kept_crystal |= b.flags & BODY_CRYSTAL != 0;
             }
         }
         // Tagged bodies no slot holds, and strays: a body whose generation the books retired at
@@ -1162,9 +1165,11 @@ impl Conflict {
                     camp.slots[i].body = b.body;
                 }
                 kept_chief |= b.flags & BODY_CHIEF != 0;
+                kept_crystal |= b.flags & (BODY_CHIEF | BODY_CRYSTAL) == BODY_CHIEF | BODY_CRYSTAL;
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
             } else if camp.home_count() + camp.away_count() < cap {
                 kept_chief |= b.flags & BODY_CHIEF != 0;
+                kept_crystal |= b.flags & (BODY_CHIEF | BODY_CRYSTAL) == BODY_CHIEF | BODY_CRYSTAL;
                 self.factions[f as usize].camp = Some(camp);
                 self.pool_shift(f, 1.0, at);
                 let id = self.camp_alloc(
@@ -1189,13 +1194,14 @@ impl Conflict {
         self.factions[f as usize].camp = Some(camp);
         // The chief the census found says whether its crystal is on it, when it is a chief the
         // books keep: this mends a CHIEF_STATE lost in a crash, which is latest-wins and not
-        // journaled (MZB-269). The census names no body for the crystal byte, and the plugin's
-        // chief may be the leftover body of a slot that died away (a robbed Frostmaw killed on a
-        // raid, its body left in the den): that one is to be removed and says nothing, or the
-        // arrival's crystal would be read off a body about to go (MZB-269). The lines made so far
-        // are asked again with the crystal as it now stands.
+        // journaled (MZB-269). The camp's crystal byte names no body, and the plugin's chief may
+        // be the leftover body of a slot that died away (a robbed Frostmaw killed on a raid, its
+        // body left in the den): that one is to be removed and says nothing. So the crystal is
+        // read off the kept chief body's own `BODY_CRYSTAL` bit, never off the camp's byte, which
+        // a leftover body nearest the spot could set or clear (amended at review C). The lines
+        // made so far are asked again with the crystal as it now stands.
         if c.flags & CENSUS_CHIEF != 0 && kept_chief {
-            self.factions[f as usize].crystal = c.flags & CENSUS_CRYSTAL != 0;
+            self.factions[f as usize].crystal = kept_crystal;
             let now = self.line_flags(f);
             for l in lines.iter_mut().filter(|l| l.generation != 0) {
                 l.flags = now;
