@@ -24,7 +24,7 @@ CHECKS = {
 
 
 def norm(s):
-    s = re.sub(r'/\S*?/runs/[^/\s]+', 'RUNDIR', s)
+    s = re.sub(r'/\S*?/(runs|r2)/[^/\s]+', 'RUNDIR', s)
     s = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'UUID', s)
     s = re.sub(r'-?\d+(\.\d+)?', 'N', s)
     return s[:150]
