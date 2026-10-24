@@ -225,6 +225,9 @@ public final class Camps {
     /** A tagged body's death, journaled at the end of the tick once certain (or at the next reconcile). */
     private record Dying(LivingEntity body, int by, UUID killer) {}
 
+    /** A chief's CHIEF_STATE waiting to be written: its flags and health (MZB-274). */
+    private record ChiefState(int flags, float health) {}
+
     private final ConflictBridge bridge;
     private final List<CampKind> kinds = new ArrayList<>();
     private final Map<Long, Site> sites = new LinkedHashMap<>();
@@ -241,6 +244,8 @@ public final class Camps {
     private final List<Held> held = new ArrayList<>();
     private final List<SetOut> setOuts = new ArrayList<>();
     private final Map<UUID, Dying> dying = new LinkedHashMap<>();
+    /** CHIEF_STATE records not yet written, by faction, the latest of each (MZB-274). */
+    private final Map<Long, ChiefState> chiefStatesPending = new LinkedHashMap<>();
     private boolean off;
 
     // Counters for logs and the GameTests (this session).
@@ -248,6 +253,8 @@ public final class Camps {
             deaths, carried, markers, heldSpawns, recounts, strayWatches, strays;
     /** Camps polled, and the footprint chunks whose level the poll (or a play-time check) found moved (MZB-290). */
     public long polls, pollChanges;
+    /** CHIEF_STATE records written, and reports queued (a later one for the same faction replaces the first; MZB-287). */
+    public long chiefStates, chiefStatesQueued;
 
     /**
      * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
@@ -276,14 +283,17 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
         polls = pollChanges = 0;
+        chiefStates = chiefStatesQueued = 0;
     }
 
     /** The session ends: deaths seen are journaled; nothing else (the next session starts every camp out). */
     void sessionStopping(long now) {
+        flushChiefStates(now);
         settleDeaths(now);
     }
 
@@ -291,6 +301,7 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
     }
 
     /** The server stopped: nothing of its world outlives it. */
@@ -307,6 +318,7 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
         off = false;
     }
 
@@ -314,6 +326,7 @@ public final class Camps {
     void switchedOff(long now) {
         if (off)
             return;
+        flushChiefStates(now); // while the camps still count as live
         off = true;
         settleDeaths(now);
         for (SetOut so : setOuts)
@@ -585,6 +598,7 @@ public final class Camps {
             off = false;
             attention.addAll(sites.values()); // switched back on: every camp is looked at again
         }
+        flushChiefStates(now); // before the deaths settled below: a robbed chief's state precedes its CAMP_DEATH
         poll(now);
         settleDeaths(now);
         resolveSetOuts(now);
@@ -1253,9 +1267,8 @@ public final class Camps {
     void onDeath(LivingEntity dead, DamageSource source) {
         if (RtsimAttachments.campMember(dead) == null || RtsimAttachments.isTagged(dead))
             return;
-        Entity killer = source.getEntity();
-        int by = ConflictBridge.byKind(killer);
-        dying.putIfAbsent(dead.getUUID(), new Dying(dead, by, by == ConflictRecords.BY_PLAYER ? killer.getUUID() : null));
+        ConflictBridge.Credit credit = ConflictBridge.credit(dead, source); // MZB-261: vanilla's kill credit
+        dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer()));
     }
 
     void settleDeaths(long now) {
@@ -1311,6 +1324,60 @@ public final class Camps {
         untag(e);
         s.carryOnCampHolder(mk, records, r.getLong(Obs.OBS_SEQ));
         deaths++;
+        if (chief) // news only: nothing reaches a player's chat, action bar or title (MZB-275)
+            ConflictNews.post(ConflictNews.Event.CHIEF_KILLED, m.faction(), killer);
+    }
+
+    // ---- a chief's state ------------------------------------------------------------------------
+
+    /**
+     * A plugin saw a chief at home change its crystal (the Frostmaw's steal, MZB-274): CHIEF_STATE with
+     * {@code flags} (1 holds the crystal) and the body's health, for the faction of a camp's own chief body
+     * or of a chief puppet; anything else is ignored. Queued by faction, the latest of each, and written at
+     * the start of the next tick, before any death settled in it. Peaceful sends it too (the steal happens
+     * there).
+     */
+    public void chiefState(LivingEntity body, int flags) {
+        if (!live())
+            return;
+        long faction = 0L;
+        CampMember m = RtsimAttachments.campMember(body);
+        if (m != null && !RtsimAttachments.isTagged(body)) {
+            Site c = sites.get(m.faction());
+            CampKind kind = c != null ? c.kind : kindOf(body);
+            if (kind != null && kind.isChief(body))
+                faction = m.faction();
+        } else {
+            faction = bridge.chiefPuppetFaction(body);
+        }
+        if (faction == 0L)
+            return;
+        chiefStatesPending.put(faction, new ChiefState(flags, body.getHealth()));
+        chiefStatesQueued++;
+    }
+
+    /** Writes the queued CHIEF_STATE records; one that finds no room stays for the next tick. */
+    private void flushChiefStates(long now) {
+        if (chiefStatesPending.isEmpty() || !live())
+            return;
+        RtsimSession s = bridge.session();
+        Iterator<Map.Entry<Long, ChiefState>> it = chiefStatesPending.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, ChiefState> e = it.next();
+            int at = s.boundary().direct(ConflictRecords.CHIEF_STATE, ConflictRecords.ChiefState.SIZE, e.getValue().flags(), now);
+            if (at < 0)
+                return; // dropped for space: the rest wait for the next tick
+            ByteBuffer b = s.boundary().openBuffer();
+            b.putLong(at + ConflictRecords.ChiefState.FACTION, e.getKey());
+            b.putFloat(at + ConflictRecords.ChiefState.HEALTH, e.getValue().health());
+            chiefStates++;
+            it.remove();
+        }
+    }
+
+    /** Reports queued and not yet written (GameTests). */
+    public int chiefStatesPending() {
+        return chiefStatesPending.size();
     }
 
     private CampKind kindOf(Entity e) {
