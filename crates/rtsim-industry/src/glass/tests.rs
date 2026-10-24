@@ -796,6 +796,113 @@ fn a_load_only_the_second_tanks_share_carries() {
     assert!(s.converged);
 }
 
+/// A press on a part of a shared network (SEC-1 S5-2): brass in store 0, sheets out to store 1,
+/// one sheet per 20 ticks at 16 RPM and per 10 at 32. Its only source is the engine's shaft at
+/// position 9 in `peer`'s chunks (foreign: no rows here); it ran at 32 RPM at compile.
+fn shared_press(peer: DistrictId) -> B {
+    let mut b = B::default();
+    let input = b.store(0);
+    let out = b.store(1);
+    let press = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+    let m = b.node(
+        NodeKind::Machine,
+        model::PRESS,
+        node_flags::ANY_OUTPUT_BLOCKS,
+        vec![
+            RateEntry {
+                level: 0,
+                ..entry(Some(press), 1, 20)
+            },
+            RateEntry {
+                level: 1,
+                ..entry(Some(press), 1, 10)
+            },
+        ],
+    );
+    b.nodes[m as usize].domain = Some(0);
+    b.edge(input, m);
+    b.edge(m, out);
+    b.domains.push(GraphDomain {
+        head: head(0),
+        network: 1,
+        current: Some(1),
+        flags: domain_flags::SHARED,
+        live_stress: 0.0,
+        live_capacity: 0.0,
+        levels: vec![DomainLevel::speed_row(16), DomainLevel::speed_row(32)],
+        sources: vec![DomainSource {
+            driver: None,
+            levels: Vec::new(),
+            current: None,
+            ratio_num: 1,
+            ratio_den: 1,
+            pos: 9,
+        }],
+        foreign: 0,
+        peers: vec![peer],
+        members: vec![Member {
+            node: Some(m),
+            count: 1,
+            ratio_num: 1,
+            ratio_den: 1,
+            impact: 8.0,
+        }],
+    });
+    b.window = 2000;
+    b
+}
+
+/// What the rest of the network gives the press's part: the shaft at `fwd` RPM with `cap` SU, and
+/// `stress` SU per RPM of the other parts' members.
+fn shaft_input(fwd: f64, cap: f64, stress: f64) -> solve::NetInput {
+    solve::NetInput {
+        own: vec![false],
+        fwd,
+        back: 0.0,
+        cap,
+        stress,
+        tail: false,
+    }
+}
+
+/// A part of a shared network runs at the speed its network gives it, exactly: the press at 32
+/// RPM makes a sheet per 10 ticks, at 16 per 20, and stops when the shaft stands or the network's
+/// stress (its own 8 per RPM and the other parts' 200) passes the capacity.
+#[test]
+fn a_shared_part_runs_at_what_its_network_gives() {
+    let g = shared_press(DistrictId(8)).graph();
+    let mut rg = regime(&g, &[(0, &[BRASS])]);
+    for (input, level, sheets) in [
+        (shaft_input(32.0, 4096.0, 0.0), Some(1), Q::new(1, 10)),
+        (shaft_input(16.0, 1000.0, 0.0), Some(0), Q::new(1, 20)),
+        (shaft_input(0.0, 0.0, 0.0), None, Q::ZERO),
+        (shaft_input(32.0, 4096.0, 200.0), None, Q::ZERO),
+        (shaft_input(16.0, 4096.0, 200.0), Some(0), Q::new(1, 20)),
+    ] {
+        rg.net.insert(0, input.clone());
+        let s = run(&g, &rg);
+        assert_eq!(s.dom_level, vec![level], "{input:?}");
+        assert_eq!(s.dom_cap, vec![input.cap], "{input:?}");
+        let b = bound(&s, SHEET);
+        assert_eq!(b.class, class::EXACT, "{input:?}");
+        assert_eq!(b.in_l, sheets, "{input:?}");
+    }
+}
+
+/// A part whose network is not coupled (incomplete, or past the cap) has no input: it runs at the
+/// speed it ran at at compile, as S1 runs an unstable domain, and its goods are bounded.
+#[test]
+fn a_shared_part_without_an_input_keeps_its_compile_speed_and_is_bounded() {
+    let g = shared_press(DistrictId(8)).graph();
+    let rg = regime(&g, &[(0, &[BRASS])]);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    let b = bound(&s, SHEET);
+    assert_eq!(b.class, class::BOUNDED);
+    assert_eq!(b.why.0, why::SHARED_NETWORK);
+    assert_eq!(b.in_l, Q::new(1, 10));
+}
+
 #[test]
 fn an_overstressed_domain_without_a_driver_stops_its_members() {
     let mut b = B::default();
@@ -7952,5 +8059,303 @@ mod replay_path {
                 ));
             }
         }
+    }
+
+    // ---- shared kinetic networks (SEC-1 S5-2) ---------------------------------------------------
+
+    use crate::glass::net::{PartId, Status};
+
+    /// The boiler's district in the shared network tests; the press's is `D`.
+    const DA: DistrictId = DistrictId(5);
+
+    /// District A of a shared network: a blaze burner at `burner` (burn left, heat, burn per coal,
+    /// the threshold it takes coal at) on coal from store 0 heats a boiler a pump fills at 40 mB
+    /// per tick, level 4 while lit and 0 once out; its engine's shaft, at position 9, drives part
+    /// 0 of the network `peer`'s press is on (16 RPM and 1,000 SU at level 2, 32 and 4,096 at 4).
+    fn shared_boiler(burner: [i64; 4], peer: DistrictId) -> B {
+        let mut b = B::default();
+        let coal = b.store(0);
+        let water = b.node(
+            NodeKind::Source,
+            model::WATER_SOURCE,
+            node_flags::FLUID,
+            Vec::new(),
+        );
+        let p = b.node(
+            NodeKind::Mover,
+            model::PUMP,
+            node_flags::FLUID,
+            vec![RateEntry {
+                flags: rate_flags::SHARED,
+                ..entry(None, 40, 1)
+            }],
+        );
+        let boiler = b.node(
+            NodeKind::Boiler,
+            model::BOILER,
+            node_flags::FLUID,
+            Vec::new(),
+        );
+        b.nodes[boiler as usize].params = [16, 1, 0, 0];
+        let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+        b.nodes[h as usize].params = burner;
+        b.edge_k(EdgeKind::Adjacency, coal, h, &[COAL]);
+        b.edge_k(EdgeKind::Pipe, water, p, &[WATER]);
+        b.edge_k(EdgeKind::Pipe, p, boiler, &[WATER]);
+        let he = b.edge_k(EdgeKind::Heat, h, boiler, &[]);
+        b.edges[he as usize].param = 4;
+        b.domains.push(GraphDomain {
+            head: head(0),
+            network: 1,
+            current: Some(1),
+            flags: domain_flags::SHARED,
+            live_stress: 0.0,
+            live_capacity: 0.0,
+            levels: vec![DomainLevel::speed_row(16), DomainLevel::speed_row(32)],
+            sources: vec![DomainSource::driven(
+                boiler,
+                9,
+                &[(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)],
+                2,
+            )],
+            foreign: 0,
+            peers: vec![peer],
+            members: Vec::new(),
+        });
+        b.window = 2000;
+        b
+    }
+
+    /// `b`'s records as district `d`'s compile `compile`.
+    fn records_of(b: &B, d: DistrictId, compile: u32) -> Vec<GlassObs> {
+        b.records(compile)
+            .into_iter()
+            .map(|r| match r {
+                GlassObs::Node(mut x) => {
+                    x.head.district = d;
+                    GlassObs::Node(x)
+                }
+                GlassObs::Edge(mut x) => {
+                    x.head.district = d;
+                    GlassObs::Edge(x)
+                }
+                GlassObs::Recipe(mut x) => {
+                    x.head.district = d;
+                    GlassObs::Recipe(x)
+                }
+                GlassObs::Domain(mut x) => {
+                    x.head.district = d;
+                    GlassObs::Domain(x)
+                }
+                GlassObs::End(mut x) => {
+                    x.district = d;
+                    GlassObs::End(x)
+                }
+                other => other,
+            })
+            .collect()
+    }
+
+    /// District `d` with `invs` inventories, live, and `b` compiled, at 0.
+    fn setup_of(d: DistrictId, b: &B, invs: u32) -> Vec<Timed> {
+        let mut out = vec![at(
+            0,
+            Obs::District(DistrictDecl {
+                district: d,
+                revision: 1,
+                dim: 0,
+                name: 0,
+                not_learnable: None,
+                inventory_count: invs,
+            }),
+        )];
+        for i in 0..invs {
+            let mut decl = inventory(i, &[]).decl;
+            decl.district = d;
+            out.push(at(0, Obs::Inventory(decl)));
+        }
+        out.push(load_of(d, 0, LoadState::Live));
+        for r in records_of(b, d, 1) {
+            out.push(at(0, Obs::Glass(r)));
+        }
+        out
+    }
+
+    /// One live sweep of `d` at `t`.
+    fn sweep_of(out: &mut Vec<Timed>, d: DistrictId, k: u32, t: u64, contents: &[&[(Good, i64)]]) {
+        let mut one = Vec::new();
+        sweep(&mut one, k, t, contents);
+        for mut x in one {
+            match &mut x.obs {
+                Obs::StockSample { district, .. } => *district = d,
+                Obs::SweepEnd(e) => e.district = d,
+                _ => {}
+            }
+            out.push(x);
+        }
+    }
+
+    fn load_of(d: DistrictId, t: u64, state: LoadState) -> Timed {
+        at(
+            t,
+            Obs::LoadState {
+                district: d,
+                state,
+                ticking_chunks: u32::from(state == LoadState::Live),
+                total_chunks: 1,
+            },
+        )
+    }
+
+    /// [`pass`] for district `d`.
+    fn pass_of(e: &mut Engine, d: DistrictId) {
+        let c = e
+            .glass
+            .districts
+            .get_mut(&d)
+            .and_then(|g| g.compiled.as_mut())
+            .expect("a compile");
+        c.passed = Some(WindowResult {
+            start: Tick(0),
+            ticks: 1,
+            verdict: verdict::PASS,
+            goods: Vec::new(),
+            stores: Vec::new(),
+        });
+        c.edited = false;
+    }
+
+    /// A's boiler, lit with 1,593 ticks of burn left and `coal` coal (out at 1,593 + 1,600 per
+    /// coal), and B's press with 10,000 brass, both compiled and swept at 100.
+    fn shared_pair(coal: i64) -> Engine {
+        let a = shared_boiler([1593, i64::from(heat::KINDLED), 1600, 500], D);
+        let b = shared_press(DA);
+        let mut s = setup_of(DA, &a, 1);
+        s.extend(setup_of(D, &b, 2));
+        sweep_of(&mut s, DA, 1, 100, &[&[(COAL, coal)]]);
+        sweep_of(&mut s, D, 1, 100, &[&[(BRASS, 10_000)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        e
+    }
+
+    fn sheet_class(e: &Engine) -> u32 {
+        let c = e.glass.districts[&D].compiled.as_ref().expect("a compile");
+        bound(&c.sol, SHEET).class
+    }
+
+    /// SEC-1 S5-2's exit (SECTIONS.md §9.1): a boiler in A drives B's press over a shared shaft.
+    /// Loaded, B's check solve runs the press at A's 32 RPM, exactly. Both away, B's replay runs
+    /// it at what A's replay gives, through a save and a restore, and stops it at the tick A's
+    /// burner runs out of coal (4,793), not before and not after.
+    #[test]
+    fn a_boiler_in_one_district_drives_the_next_districts_press_until_its_coal_runs_out() {
+        let mut e = shared_pair(2);
+        let part = PartId {
+            district: D,
+            domain: 0,
+        };
+        let net = e.glass.nets.net_of(part).expect("a network");
+        assert_eq!(net.status, Status::Coupled, "{}", net.why);
+        assert_eq!(net.districts().collect::<Vec<_>>(), vec![DA, D]);
+        let c = e.glass.districts[&D].compiled.as_ref().expect("a compile");
+        assert_eq!(c.sol.dom_level, vec![Some(1)]);
+        assert_eq!(sheet_class(&e), class::EXACT);
+        pass_of(&mut e, DA);
+        pass_of(&mut e, D);
+        feed(&mut e, &load_of(DA, 200, LoadState::Unloaded));
+        feed(&mut e, &load_of(D, 200, LoadState::Unloaded));
+        e.advance_to(Tick(201));
+        for d in [DA, D] {
+            let r = e.glass.report(d).expect("a compile");
+            assert_eq!(
+                r.replay.model,
+                replay_model::GLASS,
+                "{d:?}: {:?}",
+                e.glass.districts[&d].fallback
+            );
+        }
+        // A sheet per 10 ticks while A's boiler is lit.
+        e.advance_to(Tick(3_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert!((277..=280).contains(&st.get(SHEET)), "{st:?}");
+        // Through a save and a restore: the registry is rebuilt and B's replay keeps its input.
+        let pages = e.snapshot();
+        let mut e = Engine::restore(pages.clone(), Tunables::default()).expect("restore");
+        assert!(e.snapshot() == pages, "the restore changes no page");
+        e.advance_to(Tick(4_500));
+        let st = e.sim_stock(D).expect("replaying");
+        assert!((427..=430).contains(&st.get(SHEET)), "{st:?}");
+        // Out at 4,793: the press stops there.
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        let made = st.get(SHEET);
+        assert!((456..=460).contains(&made), "{st:?}");
+        // The press keeps the brass it held when its shaft stopped.
+        assert!((0..=1).contains(&(10_000 - made - st.get(BRASS))), "{st:?}");
+        assert_eq!(e.sim_stock(DA).expect("replaying").get(COAL), 0);
+        for d in [DA, D] {
+            let r = e.glass.report(d).expect("a compile");
+            assert_eq!(r.replay.model, replay_model::GLASS, "{d:?}");
+            assert_eq!(r.replay.oscillations, 0, "{d:?}");
+        }
+        e.check_books().expect("books");
+    }
+
+    /// A boiler whose district does not replay its glass model gives the network nothing (choice
+    /// SC152): B away runs at A's check solve while A is loaded, and stops when A unloads with no
+    /// window passed (it freezes). A's return gives B its speed again.
+    #[test]
+    fn a_frozen_boiler_gives_its_network_nothing() {
+        let mut e = shared_pair(16);
+        pass_of(&mut e, D);
+        feed(&mut e, &load_of(D, 200, LoadState::Unloaded));
+        e.advance_to(Tick(2_000));
+        let st = e.sim_stock(D).expect("replaying");
+        let made = st.get(SHEET);
+        assert!((176..=180).contains(&made), "{st:?}");
+        feed(&mut e, &load_of(DA, 2_000, LoadState::Unloaded));
+        e.advance_to(Tick(6_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert!((made..=made + 1).contains(&st.get(SHEET)), "{st:?}");
+        assert_eq!(
+            e.glass.report(DA).expect("a compile").replay.model,
+            replay_model::NONE
+        );
+        feed(&mut e, &load_of(DA, 6_000, LoadState::Live));
+        e.advance_to(Tick(7_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert!((made + 97..=made + 101).contains(&st.get(SHEET)), "{st:?}");
+        e.check_books().expect("books");
+    }
+
+    /// A part whose peer has no part (A's compile is not in) is decoupled: B replays the press at
+    /// the speed it ran at at compile, its sheets bounded, as S1 replays an unstable domain.
+    #[test]
+    fn a_part_whose_peer_has_no_compile_runs_decoupled() {
+        let b = shared_press(DA);
+        let mut s = setup_of(D, &b, 2);
+        sweep_of(&mut s, D, 1, 100, &[&[(BRASS, 10_000)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        let part = PartId {
+            district: D,
+            domain: 0,
+        };
+        let net = e.glass.nets.net_of(part).expect("a network");
+        assert_eq!(net.status, Status::Incomplete);
+        assert_eq!(sheet_class(&e), class::BOUNDED);
+        let c = e.glass.districts[&D].compiled.as_ref().expect("a compile");
+        assert_eq!(bound(&c.sol, SHEET).why.0, why::SHARED_NETWORK);
+        pass_of(&mut e, D);
+        feed(&mut e, &load_of(D, 200, LoadState::Unloaded));
+        e.advance_to(Tick(2_200));
+        let st = e.sim_stock(D).expect("replaying");
+        assert!((196..=200).contains(&st.get(SHEET)), "{st:?}");
+        e.check_books().expect("books");
     }
 }
