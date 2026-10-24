@@ -1752,9 +1752,9 @@ fn the_stacks_a_restart_kept_are_dropped_when_the_replay_has_caught_up() {
     };
     let alive = r.c.parties[band].alive();
     let mut back = restarted(&r);
-    assert!(back.replaying);
+    assert!(back.replaying());
     back.resend_notices();
-    assert!(!back.replaying);
+    assert!(!back.replaying());
     assert!(
         back.parties[band].recalled.is_empty(),
         "nothing left to count"
@@ -1866,7 +1866,7 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
     });
     // The restart that replays it: the bodies the pages held are a recalled stack.
     let mut replayed = restarted(&r);
-    assert!(replayed.replaying);
+    assert!(replayed.replaying());
     // The session that went on: the player left, the band was recalled, its bodies walk off.
     let mut live = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     {
@@ -1874,7 +1874,7 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
         x.recalled = vec![(epoch, std::mem::take(&mut x.spawned))];
         x.embodied = false;
     }
-    assert!(!live.replaying);
+    assert!(!live.replaying());
     let at = r.c.now() + 1;
     for c in [&mut live, &mut replayed] {
         c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at);
@@ -2389,7 +2389,9 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
     let w = World::load(synth::world_config(seed), goods, book, &a.w.save()).unwrap();
     let mut c = Conflict::load(a.c.tun.clone(), a.c.cultures.clone(), &a.c.save()).unwrap();
     synth::define_names(&mut c, &w);
+    // Nothing to replay: what follows is the new session's.
     c.begin_replay(true);
+    c.replay_done();
     let mut b = Run {
         w,
         c,

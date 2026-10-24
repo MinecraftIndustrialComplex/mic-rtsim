@@ -42,6 +42,7 @@ pub mod boundary;
 pub mod culture;
 pub mod engine;
 pub mod grievance;
+mod outbox;
 mod persist;
 pub mod presence;
 pub mod scenario;
