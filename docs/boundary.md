@@ -1426,7 +1426,7 @@ body mod is verified: it is the contract a plugin would have to meet.
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
 plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
-CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-174); that of the
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-175); that of the
 rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
 deferred and drops them, and sends none of their commands.
 
@@ -1714,7 +1714,7 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
   catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
   `Conflict::ingest`, so the same record again is not counted twice (MZB-23).
-- **The camp records** (slice M4, MZB-150 to MZB-174) are built, with CAMP_BODIES' lines changed
+- **The camp records** (slice M4, MZB-150 to MZB-175) are built, with CAMP_BODIES' lines changed
   to carry their action (MZB-168). CAMP_CENSUS
   (a camp that is in, at an epoch), CAMP_OUT, CAMP_BODIES and CAMP_DEATH are ingested by
   `engine/camp.rs`, and the engine sends CAMP_RECONCILE only to a camp that is in, at most one line

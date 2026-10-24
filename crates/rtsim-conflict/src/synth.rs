@@ -310,10 +310,11 @@ pub struct FakeConflict {
     pub holders: Vec<Holder>,
     /// The deaths a marker carries where the body was, until the engine has them.
     pub death_holders: Vec<boundary::CampDeath>,
-    /// Journals the holders' records again at a session start ([`FakeConflict::journal_holders`],
-    /// which [`CampRun::restart`] calls): the real plugin does. Off, a record lost is lost, and a
-    /// party that comes home before a census meanwhile leaves a ghost body (three censuses write
-    /// it off): the case the crash table says the holders prevent.
+    /// Journals the holders' records again as the real plugin does (MOWZIE.md §4.9): at a session
+    /// start ([`FakeConflict::journal_holders`], which [`CampRun::restart`] calls) and at each
+    /// camp-in, before the census, which waits for the footprint's holders (MZB-174). Off, a
+    /// record lost is lost, and a party that comes home before a census meanwhile leaves a ghost
+    /// body (three censuses write it off): the case the crash table says the holders prevent.
     pub holders_again: bool,
     /// The most lines a CAMP_BODIES record carries (0: all of a reconcile's): one reconcile has
     /// several records, as holders in several chunks answer it (docs/boundary.md §9.6).
@@ -684,6 +685,11 @@ impl FakeConflict {
 
     /// [`FakeConflict::camp_in`] with the census's flags (`CENSUS_*`).
     pub fn camp_in_with(&mut self, faction: u64, flags: u32, at: Tick) -> u64 {
+        // The census waits until every holder in the footprint has journaled its record again: the
+        // records reach the engine first, carrying the epoch that is still the latest (MZB-174).
+        if self.holders_again {
+            self.journal_holders_of(Some(faction), at);
+        }
         let epoch = self.op();
         let camp = self.camp_world(faction);
         camp.epoch = epoch;
@@ -892,8 +898,18 @@ impl FakeConflict {
     /// again at `at` with its reconcile's op id, grouped by op and split as answers are
     /// (MOWZIE.md §4.9: the engine skips what it has, and books the rest by the action it carries).
     pub fn journal_holders(&mut self, at: Tick) {
+        self.journal_holders_of(None, at + self.answer_ticks);
+    }
+
+    /// The holders of one camp (every camp's with `None`) journal their records again at `at`: the
+    /// records first, grouped by op, then the deaths.
+    fn journal_holders_of(&mut self, only: Option<u64>, at: Tick) {
         let mut groups: Vec<((u64, u64, u64), Vec<boundary::LineAnswer>)> = Vec::new();
-        for h in &self.holders {
+        for h in self
+            .holders
+            .iter()
+            .filter(|h| only.is_none_or(|f| f == h.faction))
+        {
             let k = (h.faction, h.epoch, h.op);
             match groups.iter_mut().find(|g| g.0 == k) {
                 Some(g) => g.1.push(h.line),
@@ -902,11 +918,13 @@ impl FakeConflict {
         }
         for ((faction, epoch, op), lines) in groups {
             for o in self.records(faction, epoch, op, lines) {
-                self.push(at + self.answer_ticks, o);
+                self.push(at, o);
             }
         }
         for d in self.death_holders.clone() {
-            self.push(at + self.answer_ticks, Obs::CampDeath(d));
+            if only.is_none_or(|f| f == d.faction) {
+                self.push(at, Obs::CampDeath(d));
+            }
         }
     }
 
@@ -1145,11 +1163,12 @@ impl CampRun {
 
     /// Looks at the books against the world for the ghosts (`ghosts`, `ghosts_gone`): a member
     /// whose slot is a body at home with no body in the world, and no record queued for the camp
-    /// that could tell the books. A record only a holder has does not count: it reaches the engine
-    /// at the next session start at the earliest, and only if no census has superseded its epoch
-    /// by then. It is a ghost until three censuses write it off, or a record or a draw changes the
-    /// slot first. The set is looked at after every step of [`CampRun::run`] while `audits` is on,
-    /// so a ghost, which lives two days at least, is seen.
+    /// that could tell the books. A record only a holder has is cover when the plugin journals
+    /// holders again (`holders_again`): it reaches the engine at the next camp-in, before the
+    /// census, or at the next session start, and books by the action it carries (MZB-174). Without
+    /// it the member is a ghost until three censuses write it off, or a record or a draw changes
+    /// the slot first. The set is looked at after every step of [`CampRun::run`] while `audits` is
+    /// on, so a ghost, which lives two days at least, is seen.
     pub fn track(&mut self) {
         let Some(camp) = self.c.camp(self.f) else {
             return;
@@ -1167,24 +1186,39 @@ impl CampRun {
             })
             .unwrap_or_default();
         let quiet = !self.plugin.camp_pending(self.key);
+        // A record on a holder tells the books at the next camp-in, if holders journal again.
+        let covered = |slot: u32, generation: u32| {
+            self.plugin.holders_again
+                && (self.plugin.holders.iter().any(|h| {
+                    h.faction == self.key && h.line.slot == slot && h.line.generation == generation
+                }) || self
+                    .plugin
+                    .death_holders
+                    .iter()
+                    .any(|d| d.faction == self.key && d.slot == slot && d.generation == generation))
+        };
         let mut now = BTreeSet::new();
         for &(id, generation) in &self.ghosts {
             match camp.index(id, generation) {
                 None => self.ghosts_gone += 1,
                 Some(i)
                     if camp.slots[i].state == crate::engine::SlotState::Body
-                        && !held.contains(&(id, generation)) =>
+                        && !held.contains(&(id, generation))
+                        && !covered(id, generation) =>
                 {
                     now.insert((id, generation));
                 }
-                // Drawn, or its body is back.
+                // Drawn, its body is back, or a holder's record is on its way.
                 Some(_) => {}
             }
         }
         if quiet {
             for s in &camp.slots {
                 let pair = (s.id, s.generation);
-                if s.state == crate::engine::SlotState::Body && !held.contains(&pair) {
+                if s.state == crate::engine::SlotState::Body
+                    && !held.contains(&pair)
+                    && !covered(s.id, s.generation)
+                {
                     now.insert(pair);
                 }
             }
