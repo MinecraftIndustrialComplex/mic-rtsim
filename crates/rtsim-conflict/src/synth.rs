@@ -63,14 +63,28 @@ pub fn world(seed: u64) -> (World, SynthGoods) {
 /// A conflict engine on the built-in cultures, with the plugin's dictionary as the fake plugin
 /// names things (items by the world's catalogue, bodies by the culture data).
 pub fn conflict(seed: u64, w: &World) -> Conflict {
-    let mut c = Conflict::new(
-        seed,
-        ConflictTunables::default(),
-        Cultures::builtin(),
-        Tick::ZERO,
-    );
+    conflict_with(seed, w, Cultures::builtin())
+}
+
+/// [`conflict`] on the given cultures.
+pub fn conflict_with(seed: u64, w: &World, cultures: Cultures) -> Conflict {
+    let mut c = Conflict::new(seed, ConflictTunables::default(), cultures, Tick::ZERO);
     define_names(&mut c, w);
     c
+}
+
+/// The built-in cultures with the Frostmaw refilling by rate again (MZB-286): the renewal off and
+/// `recruits_per_day` back at 1/6, the rate it had before M6. For the engine tests of the refill
+/// path (a renewal faction with a rate of 0 and no ledger never refills), which the grove still
+/// uses.
+pub fn rate_den_cultures() -> Cultures {
+    let mut cultures = Cultures::builtin();
+    let i = cultures.index_of("frostmaw").expect("the Frostmaw") as usize;
+    let mut def = cultures.list[i].def.clone();
+    def.renewal = None;
+    def.recruits_per_day = 1.0 / 6.0;
+    cultures.list[i] = crate::culture::Culture::resolve(def).expect("a Frostmaw with a rate");
+    cultures
 }
 
 /// Java's dictionary as [`FakeConflict`] uses it: item ids as the engine's, body ids as the
@@ -1118,8 +1132,13 @@ impl CampRun {
     /// A camp of `culture` (`frostmaw` or `umvuthana`) found with `found` of its own bodies
     /// standing in it, at the first tick. The camp is out: nothing has loaded its chunks yet.
     pub fn new(seed: u64, culture: &str, found: u16) -> CampRun {
+        CampRun::with_cultures(seed, Cultures::builtin(), culture, found)
+    }
+
+    /// [`CampRun::new`] on the given cultures.
+    pub fn with_cultures(seed: u64, cultures: Cultures, culture: &str, found: u16) -> CampRun {
         let (mut w, _) = world(seed);
-        let mut c = conflict(seed, &w);
+        let mut c = conflict_with(seed, &w, cultures);
         let ci = c.cultures.index_of(culture).expect("a built-in culture");
         let structure = c.cultures.get(ci).def.structures[0].clone();
         c.define(4, CAMP_STRUCTURE, &structure);

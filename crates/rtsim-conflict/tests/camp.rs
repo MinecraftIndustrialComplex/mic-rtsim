@@ -8,7 +8,7 @@
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::engine::{Phase, SlotState};
-use rtsim_conflict::synth::CampRun;
+use rtsim_conflict::synth::{self, CampRun};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
 fn days(d: f64) -> u64 {
@@ -23,8 +23,10 @@ fn grove(seed: u64, found: u16) -> CampRun {
     CampRun::new(seed, "umvuthana", found)
 }
 
+/// The Frostmaw's den refilling by rate (MZB-286): the renewal is the Frostmaw's own, and M6's
+/// tests (`tests/frostmaw.rs`) play it; these are M4's, of the refill path.
 fn den(seed: u64, found: u16) -> CampRun {
-    CampRun::new(seed, "frostmaw", found)
+    CampRun::with_cultures(seed, synth::rate_den_cultures(), "frostmaw", found)
 }
 
 /// Slots by state: body, owed, left, gone, dead.
