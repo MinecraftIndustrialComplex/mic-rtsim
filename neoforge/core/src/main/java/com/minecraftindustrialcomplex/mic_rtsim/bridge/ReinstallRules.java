@@ -144,20 +144,31 @@ public final class ReinstallRules {
 
     // ---- the engine life ------------------------------------------------------------------------
 
+    /**
+     * Whether the engine starts over (RG13): its pages include no observation ({@code pagesObsSeq} 0) and the
+     * journal no longer holds what earlier pages included ({@code observationsLost}), so the engine numbers every
+     * district's reconcile epochs from 1 again without the results of the old ones. A first install loses
+     * nothing, and an engine that crashed before its first page save replays the whole journal and numbers its
+     * epochs as before: neither starts over.
+     */
+    public static boolean startsOver(long pagesObsSeq, boolean observationsLost) {
+        return pagesObsSeq == 0 && observationsLost;
+    }
+
     /** The engine life's file, inside the engine's page directory, so it goes wherever the pages go. */
     public static final String LIFE_FILE = "bridge-life.txt";
 
     /**
      * The engine life for a session (RG13): a token that changes exactly when the engine's state starts
-     * over. An engine whose pages are new ({@code pagesFresh}: they include no observation) numbers every
-     * district's reconcile epochs from 1 again, so it gets a new token, written and synced before anything
-     * is stamped with it. Pages that are not new keep the token in {@code pagesDir}, or 0 when there is
-     * none (pages from before the token, whose chunk entries carry none either). The file lives in the
-     * page directory itself: deleting, moving or restoring {@code world/rtsim/} takes the token with it.
+     * over ({@code startsOver}, {@link #startsOver}): such an engine numbers every district's reconcile epochs
+     * from 1 again, so it gets a new token, written and synced before anything is stamped with it. Otherwise
+     * the session keeps the token in {@code pagesDir}, or 0 when there is none (a first install, or pages from
+     * before the token, whose chunk entries carry none either). The file lives in the page directory itself:
+     * deleting, moving or restoring {@code world/rtsim/} takes the token with it.
      */
-    public static long engineLife(Path pagesDir, boolean pagesFresh, java.util.function.LongSupplier random) throws IOException {
+    public static long engineLife(Path pagesDir, boolean startsOver, java.util.function.LongSupplier random) throws IOException {
         Path f = pagesDir.resolve(LIFE_FILE);
-        if (!pagesFresh) {
+        if (!startsOver) {
             if (Files.exists(f))
                 return Long.parseUnsignedLong(Files.readString(f, StandardCharsets.UTF_8).strip(), 16);
             writeLife(pagesDir, 0);
