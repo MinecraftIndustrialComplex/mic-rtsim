@@ -238,6 +238,8 @@ impl Glass {
                         comp.graph.end.compile = c.end.compile;
                         comp.probe_set.clear();
                         comp.probes.clear();
+                        // and the last session's count sample, whose sweep numbers it may collide with.
+                        comp.counts = None;
                         if let Some(rp) = dg.replay.as_mut() {
                             rp.renumber(c.end.compile);
                         }
@@ -292,7 +294,10 @@ impl Glass {
                     EndOutcome::ResendIgnored => {
                         // Java may no longer hold the count set it was sent: send it again.
                         self.stats.resends_ignored += 1;
-                        self.count_held.insert(d, (COUNT_UNKNOWN, Vec::new()));
+                        // Only a district whose set Java may have held (one never sent is not sent an empty one).
+                        if self.count_held.contains_key(&d) {
+                            self.count_held.insert(d, (COUNT_UNKNOWN, Vec::new()));
+                        }
                     }
                     EndOutcome::Dropped => self.stats.compiles_dropped += 1,
                     EndOutcome::Stale => self.stats.compiles_stale += 1,
@@ -801,6 +806,8 @@ impl Glass {
             }
             if let Some(c) = dg.compiled.as_mut() {
                 c.discard(at, tun);
+                // A new session's sweep numbers start over: the last session's sample is not theirs.
+                c.counts = None;
             }
             dg.asm = store::Assembler::default();
             dg.ticking.clear();
