@@ -127,7 +127,7 @@ class IndustryWireContractTest {
                 "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
         group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN,
-                "Held", IndRecords.ChainPackage.CHAIN_HELD);
+                "Held", IndRecords.ChainPackage.CHAIN_HELD, "Released", IndRecords.ChainPackage.CHAIN_RELEASED);
         group("cargo_from", "Arrival", 0, "Approach", IndRecords.Train.FLAG_APPROACH,
                 "Departure", IndRecords.Train.FLAG_DEPARTURE);
         group("not_learnable",

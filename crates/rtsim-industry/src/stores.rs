@@ -17,9 +17,10 @@
 //!   otherwise than Create did).
 //! - **The frontier** (slice S4c): a package Java holds on a boundary conveyor, its hand-off toward
 //!   a frogport whose chunk does not tick refused, is a `CHAIN_HELD` with a key; the store keeps
-//!   the held packages toward each frogport, oldest first ([`PackageStore::on_hold`]). A keyed
-//!   `CHAIN_IN` strikes its key, a census clears them (nothing is held while all of it ticks), and
-//!   a declaration of another epoch drops the keys of the one before (Java dropped them).
+//!   the held packages toward each frogport, oldest first ([`PackageStore::on_hold`]). A key told
+//!   again moves to where the record puts it. A keyed `CHAIN_IN` or a `CHAIN_RELEASED` strikes its
+//!   key wherever it is held, and a declaration of another epoch drops the keys of the one before
+//!   (Java dropped them). A census leaves them: Java releases what it does not find.
 //! - **Pages**: one per store (`STORE_TABLE`, id = the store id), starting with [`STORE_MAGIC`].
 //!
 //! The pools above are the world's packages: no replay draws them, and nothing is written from
@@ -110,12 +111,16 @@ pub struct StoreCounts {
     pub in_census: u64,
     /// Packages the engine wrote into frogports from what replays sent (`CHAIN_IN` with an op).
     pub written: u64,
-    /// Packages the frontier held (`CHAIN_HELD`), and keyed packages that landed (`CHAIN_IN`).
+    /// Packages the frontier held (`CHAIN_HELD` of a key the store did not hold), and keyed
+    /// packages that landed (`CHAIN_IN`).
     pub held: u64,
     pub held_landed: u64,
-    /// `CHAIN_HELD` records turned away: a key already held, of another epoch than the store's,
-    /// or one the last census came after.
+    /// `CHAIN_HELD` records turned away: no key, or a key of another epoch than the store's.
     pub held_stale: u64,
+    /// Packages of `CHAIN_HELD` records of a key held already (moved, or told again in a session).
+    pub held_again: u64,
+    /// Packages whose key a `CHAIN_RELEASED` struck.
+    pub held_released: u64,
 }
 
 /// What a district's replay needs of a package store for one of its chain links (slice S4b).
@@ -556,27 +561,31 @@ impl PackageStore {
         });
     }
 
-    /// A `CHAIN_HELD`: the package joins those held toward its destination, unless its key is held
-    /// already, of another epoch than the last declaration's, or recorded no later than the last
-    /// census (which cleared them).
-    fn hold(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
+    /// A `CHAIN_HELD`: the package joins those held toward its destination, unless its key is of
+    /// another epoch than the last declaration's. A key the store holds already moves there (Java
+    /// tells a key again when it moved to another destination, and once in each session), keeping
+    /// its place in the order, as does `moved`, the key another store held (the engine struck it
+    /// there). A census does not clear them: Java releases what it does not find.
+    pub fn hold(&mut self, p: &ChainPackage, recorded: Tick, moved: Option<Held>) -> bool {
         let Some(f) = p.destination.and_then(|d| self.frogports.get(d as usize)) else {
             self.counts.stale_records += 1;
             return false;
         };
         let pos = f.pos;
-        let Some(key) = p.key else {
+        let Some(key) = p.key.filter(|k| k.epoch == self.epoch) else {
             self.counts.held_stale += 1;
             return false;
         };
-        if key.epoch != self.epoch
-            || self.census_at.is_some_and(|c| recorded <= c)
-            || self.holds(key)
-        {
-            self.counts.held_stale += 1;
-            return false;
-        }
-        self.counts.held += u64::from(p.packages);
+        let since = match self.strike(key).or(moved) {
+            Some(old) => {
+                self.counts.held_again += u64::from(p.packages);
+                old.since
+            }
+            None => {
+                self.counts.held += u64::from(p.packages);
+                recorded
+            }
+        };
         self.add_held(
             pos,
             vec![Held {
@@ -584,7 +593,7 @@ impl PackageStore {
                 packages: u64::from(p.packages),
                 goods: p.goods.clone(),
                 at: p.pos,
-                since: recorded,
+                since,
             }],
         );
         true
@@ -598,9 +607,12 @@ impl PackageStore {
     pub fn chain(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
         let n = self.frogports.len();
         let packages = u64::from(p.packages);
-        // The frontier's hold: the package's `CHAIN_OUT` booked it already.
-        if p.direction == ChainDirection::Held {
-            return self.hold(p, recorded);
+        // The frontier's hold: the package's `CHAIN_OUT` booked it already. A release is the
+        // engine's (`Engine::chain_package`): it strikes the key in whichever store holds it.
+        match p.direction {
+            ChainDirection::Held => return self.hold(p, recorded, None),
+            ChainDirection::Released => return true,
+            ChainDirection::Out | ChainDirection::In => {}
         }
         // The engine's own write (slice S4b): it came from what replays sent, never from the
         // chain, and no census counts a frogport's inventory. The store it is taken at counts it
@@ -626,7 +638,9 @@ impl PackageStore {
         let counted = self.census_at.is_some_and(|c| recorded <= c);
         if counted {
             let known = match p.direction {
-                ChainDirection::Out | ChainDirection::Held => (p.frogport as usize) < n,
+                ChainDirection::Out | ChainDirection::Held | ChainDirection::Released => {
+                    (p.frogport as usize) < n
+                }
                 ChainDirection::In => (p.frogport as usize) < self.pools.len(),
             };
             if !known {
@@ -641,7 +655,7 @@ impl PackageStore {
                     }
                 }
                 ChainDirection::In => self.counts.packages_in += packages,
-                ChainDirection::Held => {}
+                ChainDirection::Held | ChainDirection::Released => {}
             }
             self.counts.in_census += packages;
             return true;
@@ -676,7 +690,7 @@ impl PackageStore {
                 let short = pool.take(packages, &p.goods);
                 self.counts.in_beyond += short.packages;
             }
-            ChainDirection::Held => {}
+            ChainDirection::Held | ChainDirection::Released => {}
         }
         true
     }
@@ -712,8 +726,8 @@ impl PackageStore {
         self.pools = pools;
         self.no_route = no_route;
         self.left.clear();
-        // Nothing is held while every chunk of the store ticks: Java cleared its keys too.
-        self.on_hold.clear();
+        // The held packages stay held (choice SC137): they are on the chain, counted in the pools,
+        // and Java releases each key the census did not find.
         let after = self.held();
         self.residue = after.goods.minus(&before.goods);
         self.residue_packages = after.packages as i64 - before.packages as i64;
@@ -844,7 +858,9 @@ persist_struct!(StoreCounts {
     written,
     held,
     held_landed,
-    held_stale
+    held_stale,
+    held_again,
+    held_released
 });
 persist_struct!(Sent { op, at });
 persist_struct!(WriteMark { at, ops });

@@ -89,7 +89,7 @@ CODES.load_state Unloaded=0 Partial=1 Live=2
 CODES.port_kind TrainCargo=1 Package=2 PlayerSession=3 PlayerToss=4 PlayerPickup=5 StockBroken=6 Other=9
 CODES.cargo_from Arrival=0 Approach=2 Departure=4
 CODES.package_direction In=1 Out=2
-CODES.chain_direction Out=3 In=4 Held=5
+CODES.chain_direction Out=3 In=4 Held=5 Released=6
 CODES.not_learnable RotationCrossesBoundary=1 ElectricLineCrossesBoundary=2 MixtureNotSteady=3 FiniteDepositUnknown=4 MovingContraption=5 SpawnFedFarm=6
 CODES.sweep_flag live=1 creative=2 overstressed=4
 CODES.inv_kind ITEMS=1 FLUIDS=2 ENERGY=4 POSTBOX=8 PACKAGER_TARGET=16 PLUGIN=32
