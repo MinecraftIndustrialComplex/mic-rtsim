@@ -36,7 +36,8 @@ import net.minecraft.world.entity.Entity;
  *       unseen. A flying body's first warm renders are the ones a live stand-in starts with
  *       ({@code DragonLook.startOnBakeClock}), at its own ticks as far back as its far model's loop started, so its
  *       flight loop starts in phase with the far model's beat, and a render at each loop's end keeps it there;</li>
- *   <li>the far renderer draws the far model as if the body were not there yet ({@link DragonLook#holds}).</li>
+ *   <li>the far renderer draws the far model as if the body were not there yet ({@link DragonLook#holds}), turning
+ *       it onto the body's heading and pitch by the hold's end ({@link #turn}).</li>
  * </ul>
  *
  * <p>Then vanilla draws it, already flying. The hold is decided in the looks' frame ({@link #frame}) and forgotten
@@ -214,6 +215,37 @@ final class DragonArrivals {
     /** Whether the far renderer draws the far model for {@code body} this frame, vanilla's render held back. */
     boolean holds(Entity body) {
         return held.contains(body);
+    }
+
+    /**
+     * The heading and pitch, in degrees, to draw the far model of entity {@code id} at this frame, into {@code out}:
+     * false, and {@code out} untouched, when no body of that id is held. While a body is held its server turns it,
+     * and the far model keeps the feed's heading and no pitch; so through the hold the far model turns from
+     * {@code farYaw} and level onto the body's heading and pitch as Ice and Fire's renderer reads them (the body's
+     * {@code yBodyRot} and {@code dragonPitch}, interpolated), all the way by the hold's end, by its ticks or its
+     * wall time, whichever ends it, and the body takes over at the same angles (DHT74).
+     */
+    boolean turn(int id, float farYaw, float[] out) {
+        if (held.isEmpty())
+            return false;
+        for (Entity e : held) {
+            if (e.getId() != id)
+                continue;
+            Arrival a = arrivals.get(e);
+            if (a == null || Double.isNaN(a.first))
+                return false;
+            DragonBaseEntity d = a.body;
+            float partial = partial(d);
+            double w = Math.max((d.tickCount + (double) partial - a.first) / HOLD_TICKS,
+                    (System.nanoTime() - a.joined) / (double) HOLD_NANOS);
+            float f = (float) Mth.clamp(w, 0.0, 1.0);
+            float bodyYaw = Mth.rotLerp(partial, d.yBodyRotO, d.yBodyRot);
+            float bodyPitch = Mth.lerp(partial, d.prevDragonPitch, d.getDragonPitch());
+            out[0] = farYaw + f * Mth.wrapDegrees(bodyYaw - farYaw);
+            out[1] = f * bodyPitch;
+            return true;
+        }
+        return false;
     }
 
     /**
