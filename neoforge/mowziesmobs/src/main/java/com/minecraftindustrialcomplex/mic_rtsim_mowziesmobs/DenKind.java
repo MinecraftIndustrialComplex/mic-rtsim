@@ -24,6 +24,16 @@ public final class DenKind implements CampKind {
 
     /** A home Frostmaw is restricted to its den's spot this far each time it joins (§4.9, PLACEHOLDER). */
     public static final int RESTRICT = 8;
+    /**
+     * The den's footprint reaches this far beyond the restriction (MZB-230): the Frostmaw strolls inside its
+     * restriction while awake and falls asleep where it stands (EntityFrostmaw.java:606-616), so it rests
+     * anywhere inside, and a footprint only as big as the template would miss it two times in three.
+     */
+    public static final int FOOTPRINT_SLACK = 3;
+    /** The footprint's radius, and its half-height: a cylinder round the spot. */
+    public static final double FOOTPRINT_RADIUS = RESTRICT + FOOTPRINT_SLACK;
+    /** A loose Frostmaw this near a den with a free slot is the den's stray (MZB-232). */
+    public static final double STRAY_RADIUS = 64.0;
     /** A Frostmaw's spawn waits while a player is this near its spot: its tracking range (§4.9, test 5). */
     public static final double HOLD_RANGE = 160.0;
 
@@ -44,7 +54,22 @@ public final class DenKind implements CampKind {
         return e instanceof EntityFrostmaw;
     }
 
-    /** The Frostmaw nearest the spot, not a puppet: present, its crystal and health. */
+    /** A den keeps one Frostmaw. */
+    @Override
+    public int slots(Camps.Site site) {
+        return 1;
+    }
+
+    @Override
+    public double strayRadius(Camps.Site site) {
+        return STRAY_RADIUS;
+    }
+
+    /**
+     * The Frostmaw nearest the spot, not a puppet: present, its crystal and health. The core hands over the
+     * footprint's entities and the den's own bodies loaded elsewhere, so a tagged Frostmaw out of the
+     * cylinder still answers as the chief (MZB-232).
+     */
     @Override
     public Chief chief(ServerLevel level, Camps.Site site, List<Entity> footprint) {
         EntityFrostmaw best = null;
