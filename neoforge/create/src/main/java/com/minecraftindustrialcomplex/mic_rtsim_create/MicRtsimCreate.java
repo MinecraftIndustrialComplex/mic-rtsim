@@ -35,6 +35,9 @@ public final class MicRtsimCreate {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::joined);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::left);
         StaleKinetics.register();
+        // M7's train sampler (MZB-320): the rail meter is the conflict's, so it runs whether or not the industry is on
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(TrainSampler::tick);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(TrainSampler::stopped);
         // The far feed's trains (docs/boundary.md §12.3): read on the server, sent to subscribers only
         com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerFarSource(new TrainFeedSource());
         // Last, and only if no one cancelled the join: a REAL for a carriage that never joins would hide it
@@ -47,5 +50,7 @@ public final class MicRtsimCreate {
             FarTrainBench.register();
             com.minecraftindustrialcomplex.mic_rtsim_create.bench.BenchCarriages.register();
         }
+        if (com.minecraftindustrialcomplex.mic_rtsim_create.bench.SamplerBench.ENABLED)
+            com.minecraftindustrialcomplex.mic_rtsim_create.bench.SamplerBench.register();
     }
 }
