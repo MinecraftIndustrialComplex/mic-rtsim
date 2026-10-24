@@ -84,6 +84,8 @@ public final class Industry {
         this.data = IndustryData.get(server);
         this.goods = new Goods(data, server.registryAccess());
         this.districts = new Districts(this);
+        if (com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard.reset(server) != null)
+            districts.planReadopt(); // UR-1: before anything looks at a chunk
         this.sampler = new Sampler(this);
         this.reconciler = new Reconciler(this);
         this.ports = new PlayerPorts(this);
@@ -151,7 +153,9 @@ public final class Industry {
             firstStart = false;
             if (lost)
                 MicRtsim.LOGGER.warn("[mic_rtsim] industry: the engine's pages lack observations the journal no longer holds"
-                        + " (a sim reset?): {} districts are announced again", districts.all().size());
+                        + " ({}): {} districts are announced again",
+                        com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard.reset(server) != null ? "the reinstall reset" : "a sim reset?",
+                        districts.all().size());
             boolean again = wasOff || lost;
             wasOff = false;
             if (again)

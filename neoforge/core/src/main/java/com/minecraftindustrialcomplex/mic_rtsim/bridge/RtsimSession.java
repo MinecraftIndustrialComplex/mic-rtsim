@@ -92,6 +92,15 @@ public final class RtsimSession {
             current.close();
         current = null;
         startFailure = null;
+        // UR-1: a world that ran without rtsim is reset before the engine opens; a reset that cannot be done opens nothing.
+        try {
+            ReinstallGuard.beforeEngineOpens(server);
+        } catch (java.io.IOException | RuntimeException e) {
+            startFailure = "the world ran without rtsim and the reinstall reset failed (" + e + "); move world/rtsim/ aside by hand"
+                    + " and start again (docs/deploy-rehearsal-live.md runbook 8.6)";
+            MicRtsim.LOGGER.error("[mic_rtsim] {}; the bridge does not run this session", startFailure, e);
+            return;
+        }
         String kind = "configured";
         Engine engine = null;
         try {
@@ -132,6 +141,20 @@ public final class RtsimSession {
             current.close();
             current = null;
         }
+    }
+
+    /**
+     * GameTests only: what a restart does to the session, in this server: stopping (every puppet captured),
+     * the world saved, stopped, started again (UR-1's reinstall test). The world's saved data stay the same
+     * objects, as a restart would read them back.
+     */
+    public static void restartGlobalForTest(MinecraftServer server) {
+        if (!RtsimConfig.Test.ENABLED)
+            throw new IllegalStateException("a session restart is for GameTests only");
+        stoppingGlobal();
+        server.saveEverything(true, true, true);
+        stopGlobal();
+        startGlobal(server);
     }
 
     // ---- state ----------------------------------------------------------------------------------
