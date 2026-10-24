@@ -24,13 +24,15 @@ use rtsim_industry::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
     WritePackage,
 };
-use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
+use rtsim_industry::ids::{
+    BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId,
+};
 use rtsim_industry::obs::{
-    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
+    BlockFlags, CargoFrom, Carriage, ChainDirection, ChainPackage, CarriageResult, CarriageResultEntry, Conditions,
     DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
     EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
     PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
-    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+    StationPorts, StoreCensus, StoreDecl, StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
@@ -438,6 +440,27 @@ fn code_tables(out: &mut String) {
         })
         .collect();
     table(out, "package_direction", &rows);
+
+    // IND_CHAIN_PACKAGE direction, at 44.
+    let rows: Vec<_> = [ChainDirection::Out, ChainDirection::In]
+        .into_iter()
+        .map(|direction| {
+            let b = obs_bytes(Obs::ChainPackage(ChainPackage {
+                store: StoreId(1),
+                district: Some(d),
+                inventory: Some(1),
+                direction,
+                frogport: 2,
+                destination: None,
+                packages: 3,
+                address: 4,
+                op: None,
+                goods: GoodVec::new(),
+            }));
+            (format!("{direction:?}"), u32_at(&b, 44))
+        })
+        .collect();
+    table(out, "chain_direction", &rows);
 
     // IND_DISTRICT aux.
     let rows: Vec<_> = [
@@ -1315,6 +1338,155 @@ fn main() {
             name,
             wire::IND_POWER_LINK,
             seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // Three frogports (three hops, 200 bytes): one in no district, one with no inventory, one
+        // from another store, one with a `*` filter.
+        let name = "IND_PACKAGE_STORE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let store = StoreId(f.u64("store", g.u64()));
+        let dim = f.u32("dim", g.u32());
+        let into = StoreId(f.u64("into", g.u64()));
+        let n = 3usize;
+        f.sym("n_frogports", n);
+        let frogports: Vec<StoreFrogport> = (0..n)
+            .map(|i| {
+                let p = format!("frogport{i}.");
+                let district = if i == 2 {
+                    f.sym(&format!("{p}district"), "none");
+                    None
+                } else {
+                    Some(DistrictId(f.u64(&format!("{p}district"), g.u64())))
+                };
+                let inventory = if i == 1 {
+                    f.sym(&format!("{p}inventory"), "none");
+                    None
+                } else {
+                    Some(f.u32(&format!("{p}inventory"), g.u32()))
+                };
+                let star = i == 0;
+                f.sym(&format!("{p}star"), star);
+                let at = pos(&mut f, &mut g, &p);
+                let conveyor = pos(&mut f, &mut g, &format!("{p}conveyor_"));
+                let from = if i == 1 {
+                    Some(StoreId(f.u64(&format!("{p}from"), g.u64())))
+                } else {
+                    f.sym(&format!("{p}from"), "none");
+                    None
+                };
+                StoreFrogport {
+                    district,
+                    inventory,
+                    star,
+                    pos: at,
+                    conveyor,
+                    from,
+                }
+            })
+            .collect();
+        let hops: Vec<u16> = (0..n * (n - 1) / 2)
+            .map(|i| f.u32(&format!("hops{i}"), g.u32() & 0x7FFF) as u16)
+            .collect();
+        let o = Obs::PackageStore(StoreDecl {
+            store,
+            dim,
+            into: Some(into),
+            frogports,
+            hops,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_PACKAGE_STORE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        let name = "IND_CHAIN_PACKAGE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let store = StoreId(f.u64("store", g.u64()));
+        let district = district(&mut f, &mut g);
+        let inventory = f.u32("inventory", g.u32());
+        let direction = ChainDirection::Out;
+        f.sym("direction", format!("{direction:?}"));
+        let frogport = f.u32("frogport", g.u32());
+        let destination = f.u32("destination", g.u32());
+        let packages = f.u32("packages", g.u32());
+        let address = f.u32("address", g.u32());
+        let op = g.bridge_op();
+        f.num("op", op.0);
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let o = Obs::ChainPackage(ChainPackage {
+            store,
+            district: Some(district),
+            inventory: Some(inventory),
+            direction,
+            frogport,
+            destination: Some(destination),
+            packages,
+            address,
+            op: Some(op),
+            goods,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_CHAIN_PACKAGE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // Two destinations, one of them no route; three goods entries.
+        let name = "IND_STORE_CENSUS";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let store = StoreId(f.u64("store", g.u64()));
+        f.sym("m", 2);
+        let d0 = f.u32("dest0", g.u32());
+        let p0 = f.u32("dest0.packages", g.u32());
+        f.sym("dest1", "none");
+        let p1 = f.u32("dest1.packages", g.u32());
+        f.sym("n_entries", 3);
+        let goods: Vec<(Option<u32>, Good, i64)> = (0..3)
+            .map(|i| {
+                let good = Good(f.u32(&format!("entry{i}.good"), g.u32()));
+                let dest = if i == 1 {
+                    f.sym(&format!("entry{i}.dest"), "none");
+                    None
+                } else {
+                    f.sym(&format!("entry{i}.dest"), "dest0");
+                    Some(d0)
+                };
+                let sign = if i % 2 == 0 { Sign::Pos } else { Sign::Neg };
+                let amount = f.i64(&format!("entry{i}.amount"), g.i64(sign));
+                (dest, good, amount)
+            })
+            .collect();
+        let o = Obs::StoreCensus(StoreCensus {
+            store,
+            packages: vec![(Some(d0), p0), (None, p1)],
+            goods,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_STORE_CENSUS,
+            0,
             Timed { at, obs: o },
             &f,
         );
