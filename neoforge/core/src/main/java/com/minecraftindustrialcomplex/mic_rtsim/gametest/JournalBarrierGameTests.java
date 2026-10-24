@@ -14,6 +14,8 @@ import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Marker;
 import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -371,6 +373,82 @@ public final class JournalBarrierGameTests {
                     check("the marker is the file: " + a[0] + " == " + a[1], a[0] == a[1]);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * A camp record's holder is noted by its UUID and the chunk is decided at the arm (MZB-238): a holder that
+     * walks into the next chunk between its record and the journal's save is noted where it stands then, not
+     * where it stood. Four forced chunks in a row; holder A stands in the first when its record is committed and
+     * walks to the second; holder B in the third is discarded (it cannot be found at the arm: counted, and its
+     * commit-time chunk noted instead, since an unload's store may not be on disk); holder C in the fourth
+     * stays. After the save: the second, third and fourth chunks are noted and the first is not (nothing but A
+     * spoke for it), the counters read 2 holders found, 1 of them moved and 1 not found, and the barrier stored
+     * the three chunks itself (their entities were loaded).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_holder", timeoutTicks = 6000)
+    public static void aRecordsHolderThatWalksIntoTheNextChunkIsNotedWhereItStandsAtTheSave(GameTestHelper helper) {
+        String test = "aRecordsHolderThatWalksIntoTheNextChunkIsNotedWhereItStandsAtTheSave";
+        ServerLevel level = helper.getLevel();
+        JournalSavedData data = JournalSavedData.fresh();
+        ChunkWriteBarrier b = data.chunks();
+        int[] base = ConflictKit.farBase();
+        int k = base[0] >> 4, z0 = base[1] >> 4;
+        ConflictKit.releaseFarChunks(level);
+        ConflictKit.onEnd(helper, () -> {
+            for (int i = 0; i < 4; i++)
+                ConflictKit.force(level, k + i, z0, false);
+        });
+        Path[] file = {null};
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    for (int i = 0; i < 4; i++)
+                        ConflictKit.force(level, k + i, z0, true);
+                })
+                .thenWaitUntil(io(() -> {
+                    for (int i = 0; i < 4; i++)
+                        check("chunk " + (k + i) + " is loaded with its entities", level.hasChunk(k + i, z0) && level.areEntitiesLoaded(ChunkPos.asLong(k + i, z0)));
+                }))
+                .thenExecute(() -> {
+                    try {
+                        file[0] = testFile(level);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    Marker a = holder(level, k, z0), bb = holder(level, k + 2, z0), c = holder(level, k + 3, z0);
+                    for (Marker m : List.of(a, bb, c))
+                        b.dependsOnHolder(level, m);
+                    check("nothing is noted by the commit itself", !b.entityChunkNoted(level, new ChunkPos(k, z0)) && b.pendingEntityChunks() == 0);
+                    a.moveTo((k + 1) * 16 + 8, 64, z0 * 16 + 8);
+                    check("A walked into the second chunk", a.chunkPosition().equals(new ChunkPos(k + 1, z0)));
+                    bb.discard();
+                    data.setDirty();
+                    data.save(file[0].toFile(), level.registryAccess());
+                    record(test, "counters", "resolved " + b.holdersResolved() + ", moved " + b.holdersMoved() + ", not found " + b.holdersUnresolved()
+                            + ", stored " + b.entityStores());
+                    check("A's new chunk is noted", b.entityChunkNoted(level, new ChunkPos(k + 1, z0)));
+                    check("A's old chunk is not (nothing else spoke for it)", !b.entityChunkNoted(level, new ChunkPos(k, z0)));
+                    check("the discarded holder's commit-time chunk is noted", b.entityChunkNoted(level, new ChunkPos(k + 2, z0)));
+                    check("the holder that stayed is noted where it is", b.entityChunkNoted(level, new ChunkPos(k + 3, z0)));
+                    check("two holders found, one of them moved, one not found (" + b.holdersResolved() + ", " + b.holdersMoved() + ", " + b.holdersUnresolved() + ")",
+                            b.holdersResolved() == 2 && b.holdersMoved() == 1 && b.holdersUnresolved() == 1);
+                    check("the barrier stored the three entity chunks itself (" + b.entityStores() + ")", b.entityStores() == 3);
+                })
+                .thenWaitUntil(io(() -> check("the journal was written once the entity chunks landed", data.writes() == 1)))
+                .thenExecute(() -> {
+                    try {
+                        Files.deleteIfExists(file[0]);
+                    } catch (IOException ignored) {
+                    }
+                })
+                .thenSucceed();
+    }
+
+    private static Marker holder(ServerLevel level, int cx, int cz) {
+        Marker m = EntityType.MARKER.create(level);
+        m.moveTo(cx * 16 + 8, 64, cz * 16 + 8);
+        check("the holder is added", level.addFreshEntity(m));
+        return m;
     }
 
     /** One chunk's NBT straight from its region file (a sector table, then length, compression, data). */
