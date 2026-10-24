@@ -20,11 +20,12 @@ import org.spongepowered.asm.mixin.injection.At;
  * {@code simulate} true first. The special points ({@code FunnelPoint}, {@code BeltPoint}, {@code DepotPoint},
  * the composter's) override these methods and do not reach an inventory through them, and the crafter's
  * point calls {@code super.extract}, which is one count: no arm move is counted twice. A funnel point's
- * insert goes through the funnel's own {@code InvManipulationBehaviour}, counted there under the funnel.
+ * insert goes through the funnel's own {@code InvManipulationBehaviour}, counted there under the arm
+ * ({@code ArmFunnelPointMixin}, choice SC125).
  *
- * <p>No point of Create's own lands on a store node: a funnel point is counted under the funnel (the engine
- * names (funnel, store) beside (arm, store)), and the packager's points use the base calls on the packager's
- * own handler. These two hooks therefore matter for a third-party store block that an arm reaches through the
+ * <p>No point of Create's own lands on a store node: a funnel point is counted at the funnel's behaviour
+ * (under the arm, as the compile's ARM edge to the store behind it names it), and the packager's points use
+ * the base calls on the packager's own handler. These two hooks therefore matter for a third-party store block that an arm reaches through the
  * base point; nothing is double counted either way.
  */
 @Mixin(value = ArmInteractionPoint.class, remap = false)
