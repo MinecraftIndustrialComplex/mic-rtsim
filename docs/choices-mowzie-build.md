@@ -1090,3 +1090,14 @@ conservative option at its fork.
   4,000 fillers, and a replay at MIN_CAPACITY: (markets, caravans) sent while replaying (1, 2),
   want (0, 0). The control, the same replay in one hand-over, sends both in its first hand-over
   on either code.
+- **RP-45** (a held siege's patience; §6.1; the fix round's item 5): `arrive()` takes a war party's
+  arrival as its route's last time, capped at `at`, for every war arrival, not only in the hold:
+  after the replay end `replay_done` clears `held`, so the poll reaches `arrive()` again at the
+  poll's tick, and `bored_at` was reset from there. Live, a war party's last segment is scheduled
+  at its route's last time and never late (the Out chain runs from the muster's end, and Peaceful
+  stands a mustering war party down), so live arrivals are unchanged. Envoys and scouts keep `at`:
+  an envoy held through Peaceful while mustering (MZB-132) can arrive after its route's last time,
+  and its patience runs from its real arrival as before. Failing first, a siege on the refinery
+  with nobody near, the pages saved 3,000 ticks before its arrival, the replay 600 past it: the
+  replayed siege's (`bored_at`, turn for home) (123570, 123570), want the session that went on's
+  (122950, 122950), 620 ticks late (the replay's 600 and one 20-tick poll).

@@ -822,6 +822,8 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   the window (§3.6) or becomes Waiting at the replay end, as every Fighting party does.
 - **Not honoured.** A held party with no such record keeps its poll. `replay_done` clears `held`,
   and the poll's next firing, after the replay end, runs `arrive()` or `wait_over()` as today.
+  An arrival that arrives again so keeps its arrival tick, its route's last time, and its patience
+  runs from there, as in the session that went on (RP-45).
   Positions are routed only after the modules run in a step (§6 above), so that first decision
   normally finds no watcher and resolves abstractly: the reviewer's rule (resolve only when no
   replayed BAND_MATERIALIZED embodied the party), once.

@@ -2671,6 +2671,96 @@ fn a_siege_round_in_the_replayed_window_waits_for_the_replay_end() {
     assert!(back[0] >= replay_end, "after the replay end: {back:?}");
 }
 
+/// The world as `pages` (its `save`) left it, for a restart (`Run::new`'s world, seed `seed`).
+fn world_from(seed: u64, pages: &[u8]) -> World {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    World::load(synth::world_config(seed), goods, book, pages).unwrap()
+}
+
+/// RP-45 (the fix round's item 5): a siege on the refinery, nobody near, the pages saved while it
+/// marches there unseen. Its arrival comes in the replayed window and is held; its poll arrives
+/// again after the replay end. `crash`: the restart, the world and the engine from the pages.
+/// Returns the siege's `bored_at` once it waits at its target, and the tick it turns for home.
+fn a_siege_arriving_after_the_save(crash: bool) -> (Tick, Tick) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    assert_eq!(r.c.parties[band].phase, Phase::Out, "on its road");
+    let (pages, world) = (r.c.save(), r.w.save());
+    journal.clear();
+    let end = arrival + 600;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    if !crash {
+        return siege_patience(&mut r.c, &mut r.w, &mut walls, band);
+    }
+    // Java journals other records all along: one past the arrival.
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(walls.raids.is_empty(), "nothing raided while replaying");
+    assert_eq!(back.parties[band].phase, Phase::Out, "held");
+    back.resend_notices();
+    assert!(!back.replaying());
+    siege_patience(&mut back, &mut w, &mut walls, band)
+}
+
+/// A siege's `bored_at` once it waits at its target, and the tick it turns for home (its road
+/// home's first time).
+fn siege_patience(
+    c: &mut Conflict,
+    w: &mut World,
+    walls: &mut Walls,
+    band: Handle<Party>,
+) -> (Tick, Tick) {
+    let mut bored_at = None;
+    let mut t = c.now();
+    loop {
+        let x = c.parties.get(band).expect("the siege is out");
+        match x.phase {
+            Phase::Waiting => {
+                bored_at.get_or_insert(x.bored_at);
+            }
+            Phase::Home => return (bored_at.expect("it waited"), x.times[0]),
+            _ => {}
+        }
+        t += 600;
+        assert!(t < day(8.0), "the siege turns for home");
+        c.run_until(w, walls, t);
+        let _ = c.take_commands();
+    }
+}
+
+/// RP-45: a held siege's patience runs from its arrival, as the session that went on has it:
+/// bored on the same tick, home from there on the same tick. It used to run from the poll that
+/// arrived again after the replay end.
+#[test]
+fn a_held_siege_arrival_is_bored_when_the_session_that_went_on_was() {
+    let live = a_siege_arriving_after_the_save(false);
+    assert_eq!(a_siege_arriving_after_the_save(true), live);
+}
+
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
 /// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
 /// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
