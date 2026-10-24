@@ -1127,6 +1127,55 @@ fn a_drawn_package_that_lands_goes_back_into_the_pool_first() {
     e.check_books().expect("books");
 }
 
+/// A drawn package that lands at another frogport than the one it was held toward goes back into
+/// the pool of the frogport it landed at, so that landing takes it and no other pool is short.
+#[test]
+fn a_drawn_package_that_lands_elsewhere_goes_back_where_it_landed() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(chain_packages(&e), 2);
+    let mut landed = chain(MINE, ChainDirection::In, 1, None);
+    if let Obs::ChainPackage(p) = &mut landed {
+        p.key = Some(K7);
+    }
+    send(&mut e, 310, landed);
+    let s = &e.stores()[&S];
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(
+        (
+            s.counts.held_landed,
+            s.counts.drawn_back,
+            s.counts.in_beyond
+        ),
+        (1, 1, 0),
+        "{:?}",
+        s.counts
+    );
+    assert_eq!(
+        s.pools[0].packages, 0,
+        "the landing took it where it landed"
+    );
+    assert_eq!(chain_packages(&e), 2, "the mill's pool is not given it");
+    e.check_books().expect("books");
+}
+
+/// A draw Java declined (its frogport ticked then) comes back as a held record: the engine may
+/// ask it again.
+#[test]
+fn a_declined_draw_is_asked_again() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    send(&mut e, 230, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(235));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    assert_eq!(e.stats.held_draws_asked, 2);
+}
+
 /// After a restart the drawn packages are as saved (IST4), and Java's held list puts the marks
 /// right (choice SC143): a key Java does not name goes back to the pools, one the engine drew that
 /// Java lists only held is drawn again, and one Java marked drawn whose record was lost is booked
