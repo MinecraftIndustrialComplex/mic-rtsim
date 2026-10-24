@@ -1577,6 +1577,23 @@ under its own heading.
     assertion is logged (its stack once per site) and fails that test as `unexpected <exception>`, the way a
     wait's last assertion is reported when it times out. A GameTest-only helper in the plugin (D4); the other
     projects' tests are untouched.
+  - The second round (`target/m5-gt1-mowzie.log`) ran all 27 Mowzie tests: 20 passed and 7 failed, every one
+    read as a fault of the test and none of the product code (the Nether and the reload cases are read from the
+    code and the log, and the next round confirms them). (1) The fire pit test: the jar's `FirepitPiece.postProcess`
+    makes no warrior on ground at y 0 or below (`bPos.getY() <= 0`) and the GameTest world's ground is at y -61,
+    so the real piece made none; the test lays its floor at y 63 (`MowzieKit.platform` and `Grove.lay` take a
+    minimum height). (2) and (6) Two tests waited for a record marker or a holder's pending records to be
+    acknowledged, which only a saved engine page does, and a GameTest server never reaches the periodic save:
+    `MowzieKit.acknowledge()` asks the engine to save at its next step, as core's pending-record tests do.
+    (3) and (6) A chunk released and forced again was taken to have been reloaded from disk once its
+    entity was gone from `level.getEntity`, but a chunk whose ticket dropped is only hidden then, and a hidden
+    chunk forced again is promoted with no join: the tests now wait for the chunk itself to be unloaded and the
+    old object removed (`MowzieKit.unloadedWithout`). (4) The Nether chunk's load runs on other threads and the
+    wait was not an `io` wait, so on a busy machine it timed out in about two seconds of real time; it is an
+    `io` wait now and names what it saw. (5) The check that the Frostmaw "stands" after a line went stale in
+    the tick its footprint went down read the entity after the chunks had unloaded; it now checks that the
+    Frostmaw was not taken (not discarded) and is still tagged. (7) `Den.at` and `Grove.at` read `spot` before
+    the camp was declared; they use the chunk's middle until then.
   - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
     and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
   - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
