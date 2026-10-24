@@ -2093,8 +2093,9 @@ impl<'a> Solver<'a> {
             if lit && ed.param > 0 {
                 heat += ed.param;
             } else {
-                // Out, or lit at no heat (a creative burner set below FADING): passive heat either
-                // way, as `BoilerHeaters.blazeBurner` gives 0 for anything below FADING.
+                // Out, or lit at no heat (a creative burner set to SMOULDERING): passive heat
+                // either way, as `BoilerHeaters.blazeBurner` gives 0 at SMOULDERING (an empty
+                // burner, NONE, gives none, but it has no block entity and is no heater node).
                 out = true;
             }
         }
