@@ -258,7 +258,8 @@ public final class UmvuthiGameTests {
     // ---- 25: a masked payment ---------------------------------------------------------------------
 
     /**
-     * A masked payment to the adopted Umvuthi is booked by the engine (§7 test 25, the Java part; MZB-418). Native
+     * A masked payment to the adopted Umvuthi reaches the engine (§7 test 25, the Java part; MZB-418; named for what it
+     * asserts, MZB-601: the CHIEF_PAID record, not the engine's booking of it). Native
      * engine only (the grove is declared under the structure a culture claims, and the engine adopts the Umvuthi that
      * stands in it): a masked player pays the Umvuthi's own desires through the jar's trade handler; exactly one
      * CHIEF_PAID reaches the engine, with the camp's faction, the chief's slot and generation, flags 0 (a tagged
@@ -267,8 +268,8 @@ public final class UmvuthiGameTests {
      * gift, the engine's P) is the engine's and is not read from Java (MZB-601).
      */
     @GameTest(template = ARENA, timeoutTicks = 2000, batch = "umvuthi_paid", skyAccess = true)
-    public static void aMaskedPaymentToTheAdoptedUmvuthiIsBookedByTheEngine(GameTestHelper helper) {
-        String test = "aMaskedPaymentToTheAdoptedUmvuthiIsBookedByTheEngine";
+    public static void aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine(GameTestHelper helper) {
+        String test = "aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine";
         if (!(RtsimTests.engine() instanceof NativeEngine)) {
             record(test, "skipped", "the grove is the engine's only on the native engine");
             helper.succeed();
