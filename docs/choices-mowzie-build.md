@@ -1183,3 +1183,12 @@ conservative option at its fork.
   100 camps and 56,792 B after 200, against the 28,616 B and 56,880 B the same sessions touched
   with a budget they never reached. The test asserts the bound and the growth. Reported to the
   build lead as a finding (an excess that is no constant); no fix built.
+- **RP-50** (a copy whose op id was heard; §2.3; SEC-1's meeting-point review, item 2): in
+  `reasserted()` the copy bit is set and `copies_applied` counted only on `admit_copy`'s Apply. A
+  new copy whose op id the engine already heard (generation 0 is new each time) is dispatched as
+  DuplicateOp without the bit and counted in `copies_dropped`, so every admitted copy counts once,
+  applied or dropped. `dispatch` debug-asserts the bit only on Apply. No module read the bit on that
+  path, so only the count moves. Failing first, rtsim-jni's
+  `a_copy_whose_op_id_was_heard_is_dropped_not_applied` and its replayed twin: (applied, dropped)
+  (1, 0) against (0, 1); with the assertion and not the fix, both stop at "the copy bit on a
+  DuplicateOp". Rejected: leaving a duplicate-op copy out of both counts.

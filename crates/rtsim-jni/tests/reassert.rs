@@ -512,3 +512,66 @@ fn the_replay_ends_right_before_each_sessions_journal_gen() {
         saved = j.crash();
     }
 }
+
+/// SEC-1's meeting-point review, item 2 (docs/replay-gate.md §2.3, RP-50): a copy new by its
+/// generation (generation 0 is new each time) whose op id the engine already heard is answered as
+/// a duplicate. It applies nothing, so it is counted as dropped, not applied, and is dispatched
+/// without the copy bit (`dispatch` asserts the bit only on the apply path). `replaying`: the copy
+/// was journaled after the pages and is replayed after a crash, where the replay counts no record
+/// for it (§3.2); otherwise it comes live.
+fn a_copy_whose_op_id_was_heard(replaying: bool) {
+    let dir = tmpdir(if replaying {
+        "reassert-dup-op-replayed"
+    } else {
+        "reassert-dup-op"
+    });
+    let op = wire::JAVA_OP_BIT | 0x52;
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    let seq = j.transfer(op, 1, 7, 5);
+    let held = Held {
+        nonce: 0,
+        bytes: j.journaled(seq).unwrap(),
+    };
+    j.idle();
+    assert_eq!(ledger(&e, 7), 5);
+    if replaying {
+        save_pages(&mut j);
+    }
+    reassert(&mut j, &held);
+    j.idle();
+    no_error(&j);
+    assert_eq!(ledger(&e, 7), 5, "answered as a duplicate, live");
+    assert_eq!(copies(&e), (0, 1), "dropped, not applied, live");
+    if !replaying {
+        e.close(true, Duration::from_secs(5)).unwrap();
+        return;
+    }
+    let saved = j.crash();
+    let j = start(&dir, saved);
+    no_error(&j);
+    let e = &j.e;
+    assert!(
+        e.inspect().replay.knows_op(rtsim_kernel::journal::OpId(op)),
+        "the pages hold the op id"
+    );
+    assert_eq!(e.stats.replays_ended.load(Ordering::Acquire), 1);
+    assert_eq!(ledger(e, 7), 5, "answered as a duplicate, replayed");
+    assert_eq!(copies(e), (0, 1), "dropped, not applied, replayed");
+    assert_eq!(
+        e.stats.replay_records.load(Ordering::Acquire),
+        0,
+        "and no record applied while replaying"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn a_copy_whose_op_id_was_heard_is_dropped_not_applied() {
+    a_copy_whose_op_id_was_heard(false);
+}
+
+#[test]
+fn a_replayed_copy_whose_op_id_was_heard_is_dropped_not_applied() {
+    a_copy_whose_op_id_was_heard(true);
+}

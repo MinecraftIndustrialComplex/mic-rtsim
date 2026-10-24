@@ -180,7 +180,11 @@ checked against what landed and amended where main differs from what they assume
   before its `self.dispatch(st, &r, seq, verdict)` and cleared just after, and read by the modules'
   `journaled`. A field, not a parameter, so `dispatch()` and every module's `journaled()` keep S4p's
   signatures (RP-8). It holds the copy's generation nonce, `Option<u64>`, `Some` only on the apply
-  path: a copy judged not new goes to `answered_again` and is never dispatched. A copy of the open
+  path: a copy judged not new goes to `answered_again` and is never dispatched, and a new one whose
+  op id was already heard (`admit_copy`'s DuplicateOp) is dispatched as that verdict, answered again,
+  without the bit; `dispatch` debug-asserts the bit only on Apply. Both count in `copies_dropped`,
+  never `copies_applied` (RP-50; the merge set the bit and counted the copy applied before the
+  verdict, SEC-1's meeting-point review). A copy of the open
   generation's own record is always dropped while replaying (`reasserted()` admits the REASSERT's own
   sequence first, which moves `open.last` past the copy's `of`). On main the merge (9b942f61) sets
   it around `reasserted()`'s dispatch; without it five of §2.5's tests fail (RP-43).
