@@ -16,14 +16,15 @@
 //!   decode makes the whole restore fail, as any other industry page does (the host then starts
 //!   the industry engine afresh and says so).
 //! - **Sections** (SECTIONS.md §5, slice S2): the compile's sections are not saved but recomputed
-//!   from its records, and the page keeps their fingerprints. A page whose fingerprints are not
-//!   those its compile cuts into now (a changed `glass.sectionsMax`, or a changed fold), or one of
+//!   from its records, and the page keeps their fingerprints and a hash of its counted stores
+//!   (slice S3). A page whose keys are not those its compile cuts into now (a changed
+//!   `glass.sectionsMax` or `glass.countedStoresMax`, or a changed fold), or one of
 //!   the format before sections ([`GLASS_MAGIC_IGL1`]), before unit windows
-//!   ([`GLASS_MAGIC_IGL2`]) or before the station discards ([`GLASS_MAGIC_IGL3`]), drops that
-//!   district's glass state alone ([`PageRead::Dropped`]): the
-//!   district learns again. The judging units are recomputed with the sections (a row cap's cut
-//!   held, `DistrictGlass::sections_cap`), their bounds from the solve, and their saved windows are
-//!   checked against them.
+//!   ([`GLASS_MAGIC_IGL2`]), before the station discards ([`GLASS_MAGIC_IGL3`]) or before the
+//!   counted stores' window bases ([`GLASS_MAGIC_IGL4`]), drops that district's glass state
+//!   alone ([`PageRead::Dropped`]): the district learns again. The judging units are recomputed
+//!   with the sections (a row cap's cut held, `DistrictGlass::sections_cap`), their bounds from
+//!   the solve, and their saved windows are checked against them.
 
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 
@@ -38,9 +39,13 @@ use super::solve::{GoodBound, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-/// The glass page's magic ("IGL4": the glass page with judging units' windows and the station
-/// discards' count, SECTIONS.md §5, choice SC63).
-pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL4");
+/// The glass page's magic ("IGL5": the glass page with judging units' windows, the station
+/// discards' count and each unit window's base at its counted stores, SECTIONS.md §4.2, §5).
+pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL5");
+
+/// The magic of the glass page before counted stores (slice S2d): read as a dropped district,
+/// never decoded.
+pub const GLASS_MAGIC_IGL4: u32 = u32::from_le_bytes(*b"IGL4");
 
 /// The magic of the glass page before the station discards' count (slices S2b, S2c): read as a
 /// dropped district, never decoded.
@@ -53,15 +58,15 @@ pub const GLASS_MAGIC_IGL1: u32 = u32::from_le_bytes(*b"IGL1");
 /// district, never decoded.
 pub const GLASS_MAGIC_IGL2: u32 = u32::from_le_bytes(*b"IGL2");
 
-/// A district's glass page: the state, then its compile's section fingerprints (none without a
-/// compile).
+/// A district's glass page: the state, then its compile's cut keys (`Sections::cut_keys`: the
+/// section fingerprints and its counted stores; none without a compile).
 pub fn district_page(dg: &DistrictGlass) -> Vec<u8> {
     let mut w = Writer::new();
     w.u32(GLASS_MAGIC);
     dg.put(&mut w);
     dg.compiled
         .as_ref()
-        .map(|c| c.sections.fingerprints())
+        .map(|c| c.sections.cut_keys())
         .put(&mut w);
     w.into_bytes()
 }
@@ -86,8 +91,9 @@ impl PageRead {
 }
 
 /// The glass state a [`district_page`] holds, its sections recomputed with `sections_max`
-/// (`glass.sectionsMax`). An error only for a page that does not decode.
-pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
+/// (`glass.sectionsMax`) and `counted_max` (`glass.countedStoresMax`). An error only for a page
+/// that does not decode.
+pub fn read_district_page(b: &[u8], sections_max: usize, counted_max: usize) -> Result<PageRead> {
     let mut r = Reader::new(b);
     let magic = r.u32()?;
     if magic == GLASS_MAGIC_IGL1 {
@@ -105,6 +111,11 @@ pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
             "a page of the format before the station discards (IGL3)",
         ));
     }
+    if magic == GLASS_MAGIC_IGL4 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before counted stores (IGL4)",
+        ));
+    }
     if magic != GLASS_MAGIC {
         return Err(CodecError::Invalid(format!(
             "glass page magic {magic:#010x}, not {GLASS_MAGIC:#010x}: another format"
@@ -120,8 +131,9 @@ pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
             let max = dg
                 .sections_cap
                 .map_or(sections_max, |cap| (cap as usize).min(sections_max));
-            c.sections = super::sections::Sections::compute(&c.graph, max);
-            if c.sections.fingerprints() != fps {
+            c.sections =
+                super::sections::Sections::cut_counted(&c.graph, max, sections_max, counted_max);
+            if c.sections.cut_keys() != fps {
                 return Ok(PageRead::Dropped(
                     "sections that are not those its compile cuts into now",
                 ));

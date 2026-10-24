@@ -466,6 +466,42 @@ pub struct ProbeSample {
     pub goods: GoodVec,
 }
 
+/// IND_COUNT_SAMPLE (0x004F): what Java counted at the count set's pairs in a sweep (SECTIONS.md
+/// §4.2, slice S3), each pair's counters read with its store's stock. Not counted in the sweep's
+/// records, as a probe sample is not: a unit missing a pair's entries skips that sweep's sample.
+/// A large sample comes in several records of one sweep; each entry says how many entries its
+/// pair has in all ([`Count::entries`]), so a pair split over records, one of them lost, is seen
+/// to be incomplete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CountSample {
+    pub district: DistrictId,
+    pub sweep: u32,
+    pub compile: u32,
+    pub counts: Vec<Count>,
+}
+
+/// One (mover, store, good) counter of an IND_COUNT_SAMPLE (Count40): the goods the mover put
+/// into the store and took from it since `since`, cumulative. A pair that counted nothing yet
+/// comes with no good, for its `since`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Count {
+    /// The mover's node in the sample's compile.
+    pub mover: u32,
+    /// The store's node.
+    pub store: u32,
+    pub good: Option<Good>,
+    /// The game time the pair's counters started at: they restart when Java forgets the pair (a
+    /// count set without it, a restart).
+    pub since: i64,
+    pub moved_in: i64,
+    pub moved_out: i64,
+    /// How many entries (one per good, or the one with no good) the sample holds for this entry's
+    /// (mover, store) pair in all, over every record of the sweep: the reserved u32 of the wire
+    /// entry. A pair the records of the sweep hold fewer entries of than this lost a part; its
+    /// counters are partial and the pair gives no cover (a lost good would read as not moved).
+    pub entries: u32,
+}
+
 /// IND_CHUNK_TICKING (0x040B, journaled): a chunk of a district started or stopped block-ticking
 /// (§6.1, I7). Ticking is not the same as loaded: a loaded chunk outside the simulation distance
 /// does not tick.
@@ -485,6 +521,7 @@ pub enum GlassObs {
     Domain(GraphDomain),
     End(GraphEnd),
     ProbeSample(ProbeSample),
+    CountSample(CountSample),
     ChunkTicking(ChunkTicking),
 }
 
@@ -501,6 +538,7 @@ impl GlassObs {
             GlassObs::Domain(d) => d.head.district,
             GlassObs::End(e) => e.district,
             GlassObs::ProbeSample(p) => p.district,
+            GlassObs::CountSample(c) => c.district,
             GlassObs::ChunkTicking(c) => c.district,
         }
     }
@@ -513,4 +551,18 @@ pub struct ProbeSet {
     pub district: DistrictId,
     pub compile: u32,
     pub nodes: Vec<u32>,
+}
+
+/// IND_COUNT_SET (0x8408): the (mover, store) node pairs whose moves Java counts for a district
+/// (SECTIONS.md §4.2, slice S3), in the numbers of the compile it names: every edge between a
+/// counted store between units and its mover. Sent when the district's units change and the set
+/// differs from the one Java holds (after an ignored resend, again), and empty when nothing is
+/// counted now. Java keys each pair's counters by its mover's and store's positions, so a pair a
+/// later set names again keeps its counters and `since`; an empty set drops the district's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CountSet {
+    pub district: DistrictId,
+    pub compile: u32,
+    /// (mover node, store node), ascending.
+    pub pairs: Vec<(u32, u32)>,
 }

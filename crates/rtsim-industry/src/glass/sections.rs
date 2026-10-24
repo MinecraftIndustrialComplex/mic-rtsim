@@ -21,8 +21,10 @@
 //! another line fills reads a level, it moves nothing there.
 //!
 //! **Judging groups** (§4.3). Sections at a shared store whose moves are not counted are judged on one
-//! row. Slice S2 counts no mover, so every shared store joins its sections' group; S3's counts split
-//! them ([`Sections::compute_with`]).
+//! row. A shared store is **counted** (slice S3, §4.2) when it is an item store and every goods edge
+//! at it runs to a mover Java counts at ([`COUNTED_MODELS`]): its sections join no group there, each
+//! judged on what its own movers put in and took out. Past `glass.countedStoresMax` per district, the
+//! lowest positions first, the rest are not ([`Sections::compute_counted`], choice SC78).
 //!
 //! **Fingerprints** (§3.3). FNV-1a 64 over the section's records with positions in place of Java's
 //! indices, each record encoded alone and the encodings sorted, so the same factory gives the same
@@ -40,6 +42,21 @@ use crate::ids::BlockPos;
 
 /// No section: idle nodes, shared stores and stores no section touches.
 pub const NONE: u16 = u16::MAX;
+
+/// The models whose moves at a store Java counts (SECTIONS.md §4.2): chutes and smart chutes
+/// (their transfers), funnels (`InvManipulationBehaviour`), arms (`ArmInteractionPoint`), a
+/// basin's outputs, a frogport's push and pull and a packager's extraction and unpacking. Hoppers,
+/// belts, tunnels, depots, pumps and pipes are not counted.
+pub const COUNTED_MODELS: [u32; 8] = [
+    model::CHUTE,
+    model::FUNNEL_ANDESITE,
+    model::FUNNEL_BRASS,
+    model::ARM,
+    model::SMART_CHUTE,
+    model::PACKAGER,
+    model::FROGPORT,
+    model::BASIN,
+];
 
 /// One section of a compile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +100,30 @@ pub struct Sections {
     pub group_of: Vec<u16>,
     /// Merges `glass.sectionsMax` made.
     pub merged: u32,
+    /// The shared stores whose moves are counted at their movers (§4.2), ascending.
+    pub counted: Vec<u32>,
+}
+
+/// Can moves at store `h` be counted at its movers (§4.2): an item store with an inventory, with
+/// at least one goods edge, each to a node of [`COUNTED_MODELS`] (`edges`: those at `h`).
+fn countable(g: &Graph, h: u32, edges: &[u32]) -> bool {
+    let n = g.node(h);
+    if n.kind != NodeKind::Store || n.model != model::STORE_ITEMS || n.inventory.is_none() {
+        return false;
+    }
+    let mut any = false;
+    for &e in edges {
+        let ed = g.edge(e);
+        if !carries_goods(ed.kind) {
+            continue;
+        }
+        let far = if ed.from == h { ed.to } else { ed.from };
+        if far == h || !COUNTED_MODELS.contains(&g.node(far).model) {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// The void sink: goods leave the world at no place of their own.
@@ -233,6 +274,54 @@ impl Sections {
     /// The sections of `g`; `counted(store)` says a shared store's moves are counted per section
     /// (S3), so it joins no judging group.
     pub fn compute_with(g: &Graph, max: usize, counted: impl Fn(u32) -> bool) -> Sections {
+        Sections::compute_picking(g, max, |_, shared| {
+            shared.iter().copied().filter(|&h| counted(h)).collect()
+        })
+    }
+
+    /// The sections of `g` with the shared stores its movers can be counted at counted (§4.2), at
+    /// most `counted_max` of them (`glass.countedStoresMax`), the lowest positions first: what a
+    /// compile is cut into. A graph on a moving frame (`end.frame != 0`) counts no store: Java neither
+    /// takes a count set for one nor samples it (`num.frame != 0`), so a counted store there could never
+    /// be covered, and its units would be discarded at every sweep instead of judged with the store
+    /// shared (choice SC122).
+    pub fn compute_counted(g: &Graph, max: usize, counted_max: usize) -> Sections {
+        Sections::compute_picking(g, max, |ctx, shared| {
+            if g.end.frame != 0 {
+                return Vec::new();
+            }
+            let mut c: Vec<(BlockPos, u32)> = shared
+                .iter()
+                .filter(|&&h| countable(g, h, &ctx.edges_at[h as usize]))
+                .map(|&h| (g.node(h).pos, h))
+                .collect();
+            c.sort_unstable();
+            c.truncate(counted_max);
+            c.into_iter().map(|(_, h)| h).collect()
+        })
+    }
+
+    /// The sections of `g` cut into at most `max` sections, below `base_max` (`glass.sectionsMax`;
+    /// a row cap's cut, choice SC57): counted are the stores [`Sections::compute_counted`] counts at
+    /// `base_max` that this cut still shares, so a row cap never counts a store the full cut did not
+    /// (choice SC78).
+    pub fn cut_counted(g: &Graph, max: usize, base_max: usize, counted_max: usize) -> Sections {
+        let base = Sections::compute_counted(g, base_max, counted_max);
+        let clamp = |m: usize| m.clamp(1, usize::from(NONE) - 1);
+        if clamp(max) >= clamp(base_max) {
+            return base;
+        }
+        Sections::cut_with(g, max, &base.counted)
+    }
+
+    /// The sections of `g` cut into at most `max`, counted the shared stores of `base` (ascending).
+    pub fn cut_with(g: &Graph, max: usize, base: &[u32]) -> Sections {
+        Sections::compute_with(g, max, |h| base.binary_search(&h).is_ok())
+    }
+
+    /// The sections of `g`; `pick(ctx, shared)` names the shared stores (ascending) that are
+    /// counted.
+    fn compute_picking(g: &Graph, max: usize, pick: impl Fn(&Ctx, &[u32]) -> Vec<u32>) -> Sections {
         let n = g.nodes.len();
         // `section_of` is a u16 with NONE kept apart.
         let max = max.clamp(1, usize::from(NONE) - 1);
@@ -459,18 +548,24 @@ impl Sections {
             }
         }
         let mut shared = Vec::new();
-        let mut gu = Uf::new(list.len());
         for (h, ss) in touching {
             if ss.len() == 1 {
                 section_of[h as usize] = ss[0];
                 continue;
             }
-            if !counted(h) {
+            shared.push((h, ss));
+        }
+        let ids: Vec<u32> = shared.iter().map(|(h, _)| *h).collect();
+        let mut counted = pick(&ctx, &ids);
+        counted.sort_unstable();
+        counted.dedup();
+        let mut gu = Uf::new(list.len());
+        for (h, ss) in &shared {
+            if counted.binary_search(h).is_err() {
                 for w in ss.windows(2) {
                     gu.join(u32::from(w[0]), u32::from(w[1]));
                 }
             }
-            shared.push((h, ss));
         }
         let group_of = (0..list.len() as u32).map(|s| gu.find(s) as u16).collect();
         Sections {
@@ -479,6 +574,7 @@ impl Sections {
             shared,
             group_of,
             merged,
+            counted,
         }
     }
 
@@ -510,6 +606,17 @@ impl Sections {
     /// The fingerprints, in section order (what the page keeps, §5).
     pub fn fingerprints(&self) -> Vec<u64> {
         self.list.iter().map(|s| s.fingerprint).collect()
+    }
+
+    /// What a page keeps to check that its restore cuts as it did (§5): the fingerprints, then,
+    /// with counted stores, a hash of their node indices (the page saves the graph they index).
+    pub fn cut_keys(&self) -> Vec<u64> {
+        let mut k = self.fingerprints();
+        if !self.counted.is_empty() {
+            let b: Vec<u8> = self.counted.iter().flat_map(|h| h.to_le_bytes()).collect();
+            k.push(rtsim_kernel::rng::fnv1a64(&b));
+        }
+        k
     }
 }
 
@@ -1063,6 +1170,69 @@ mod tests {
         assert_eq!(c.group_of, vec![0, 1]);
         assert!(s.list.iter().all(|x| x.working));
         let _ = m2;
+    }
+
+    /// Counted stores (§4.2): a vault between lines whose every goods edge runs to a mover Java
+    /// counts at; past `glass.countedStoresMax` the lowest positions first; a row cap's cut counts
+    /// only stores the full cut counts and still shares (choice SC78).
+    #[test]
+    fn the_counted_stores_are_those_counted_movers_reach_up_to_the_cap() {
+        let (b, [_, _, _, _, vault, f3, _]) = vault_between_two_lines();
+        let s = Sections::compute_counted(&b.graph(), 64, 256);
+        assert_eq!(s.counted, vec![vault]);
+        assert_eq!(s.group_of, vec![0, 1]);
+        // A belt at the vault: Java does not count it, and the vault joins the two lines.
+        let mut belt = vault_between_two_lines().0;
+        belt.nodes[f3 as usize].model = model::BELT;
+        let s = Sections::compute_counted(&belt.graph(), 64, 256);
+        assert!(s.counted.is_empty());
+        assert_eq!(s.group_of, vec![0, 0]);
+        // Three lines on two vaults: with room for one, the lower is counted.
+        let mut b = B::new();
+        let src = b.store(0);
+        let f1 = b.mover(1);
+        let m1 = b.machine(2);
+        let f2 = b.mover(3);
+        let va = b.store(4);
+        let f3 = b.mover(5);
+        let m2 = b.machine(6);
+        let f4 = b.mover(7);
+        let vb = b.store(8);
+        let f5 = b.mover(9);
+        let m3 = b.machine(10);
+        b.link(&[src, f1, m1, f2, va, f3, m2, f4, vb, f5, m3]);
+        let g = b.graph();
+        assert_eq!(Sections::compute_counted(&g, 64, 256).counted, vec![va, vb]);
+        let one = Sections::compute_counted(&g, 64, 1);
+        assert_eq!(one.counted, vec![va]);
+        assert_eq!(one.group_of, vec![0, 1, 1]);
+        assert!(Sections::compute_counted(&g, 64, 0).counted.is_empty());
+        // Cut to two sections, one vault is interior; the other is still counted.
+        let cut = Sections::cut_counted(&g, 2, 64, 256);
+        assert_eq!(cut.len(), 2);
+        assert_eq!(cut.counted.len(), 1);
+        assert!(cut.shared.iter().any(|(h, _)| *h == cut.counted[0]));
+        // The keys name the counted stores: the same sections counted otherwise differ.
+        assert_ne!(
+            Sections::compute_counted(&g, 64, 256).cut_keys(),
+            Sections::compute_counted(&g, 64, 1).cut_keys()
+        );
+    }
+
+    /// A graph on a moving frame has no counted store (choice SC122): Java never samples one, so the
+    /// store stays shared and the lines at it are one judging group, as in S2; `cut_counted` agrees.
+    #[test]
+    fn a_moving_frame_counts_no_store() {
+        let (b, [_, _, _, _, vault, _, _]) = vault_between_two_lines();
+        let mut g = b.graph();
+        assert_eq!(Sections::compute_counted(&g, 64, 256).counted, vec![vault]);
+        g.end.frame = 7;
+        let s = Sections::compute_counted(&g, 64, 256);
+        assert!(s.counted.is_empty());
+        assert_eq!(s.group_of, vec![0, 0]);
+        let cut = Sections::cut_counted(&g, 2, 64, 256);
+        assert!(cut.counted.is_empty());
+        assert_eq!(s.cut_keys(), Sections::compute(&g, 64).cut_keys());
     }
 
     #[test]
