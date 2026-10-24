@@ -5163,16 +5163,19 @@ impl Conflict {
     }
 
     fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick) {
-        let Some(p) = self.party_of(cs.agent, cs.epoch) else {
+        // The party by agent alone, as the despawn finds it, then the stack by the record's epoch
+        // (docs/replay-gate.md §5.9, RP-27): `spawned` when it is embodied at that epoch, else the
+        // recalled stack of that epoch, the walk-off's deaths of a band the player left (counted
+        // the same whether replaying or live, MZB-142), also while the band is embodied again at
+        // a newer epoch (MZB-131). The despawn removes the stack, so a straggler after it is no
+        // death.
+        let Some(p) = Party::of_agent(cs.agent).filter(|&p| self.parties.get(p).is_some()) else {
             return;
         };
-        // A casualty of bodies kept as a recalled stack of their epoch: the walk-off's deaths of a
-        // band the player left, and a replay's, whose session start kept the last session's
-        // bodies the same way (MZB-138). Both are counted off that stack, whether replaying or
-        // live (MZB-142). The despawn removes the stack, so a straggler after it is no death.
-        let replayed =
-            !self.parties[p].embodied && self.parties[p].recalled.iter().any(|e| e.0 == cs.epoch);
-        if !self.parties[p].embodied && !replayed {
+        let x = &self.parties[p];
+        let in_view = x.embodied && x.epoch == cs.epoch;
+        let walk_off = !in_view && x.recalled.iter().any(|e| e.0 == cs.epoch);
+        if !in_view && !walk_off {
             // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
             return;
         }
@@ -5190,7 +5193,7 @@ impl Conflict {
         let t = x.units[k].1.min(cs.count);
         x.units[k].1 -= t;
         let u = x.units[k].0;
-        let stacks = if replayed {
+        let stacks = if walk_off {
             x.recalled
                 .iter_mut()
                 .find(|e| e.0 == cs.epoch)
