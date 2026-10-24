@@ -846,8 +846,9 @@ impl Conflict {
     /// (`start_fight` and `seen` bump the party's epoch, so the record's is older than the party's
     /// after a watch: stale only when it is later), else the record is counted stale. The roll
     /// does not care whether a player watched: a watched line loses what an unwatched one would
-    /// (P28). A hit is I24's attack on the train; when it took anything, the plugin is told the
-    /// train was robbed.
+    /// (P28). A hit is I24's attack on the train; when it took anything, of any good, the plugin
+    /// is told the train was robbed (MOWZIE.md's cue is the cargo gone, and a good the world has
+    /// no name for is gone from the train all the same, MZB-356).
     pub fn train_passed(
         &mut self,
         w: &mut World,
@@ -873,8 +874,8 @@ impl Conflict {
         if (roll as u32) >= self.tun.ambush_milli {
             return;
         }
-        let got = self.ambush(infra, p, tp.train, at, w, "by the track");
-        if got > 0 {
+        let taken = self.ambush(infra, p, tp.train, at, w, "by the track");
+        if taken > 0 {
             let faction = self.factions[self.parties[p].faction as usize].key;
             self.outbox.push(Cmd::TrainRobbed(boundary::TrainRobbed {
                 faction,

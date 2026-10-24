@@ -672,8 +672,8 @@ fn a_train_passed_rolls_and_robs() {
     assert_eq!(l.robbed(), vec![7]);
 }
 
-/// A robbery of nothing sends no TRAIN_ROBBED: the industry skipped the attack (its cooldown), the
-/// attack found no cargo, or what it found is not a good of the world's.
+/// A robbery of nothing sends no TRAIN_ROBBED: the industry skipped the attack (its cooldown) or
+/// the attack found no cargo.
 #[test]
 fn a_robbery_of_nothing_sends_no_train_robbed() {
     // Skipped: no loot at all. Asked, not counted as an ambush.
@@ -694,8 +694,13 @@ fn a_robbery_of_nothing_sends_no_train_robbed() {
     l.pass(&mut rails, 7, 0, 10);
     assert_eq!(l.c.stats.ambushes, 1, "an attack that found nothing is one");
     assert!(l.robbed().is_empty());
+}
 
-    // A good the world has no name for goes to the unmapped ledger and counts for nothing.
+/// A robbery of goods the world has no name for still robs the train, and the plugin is told: the
+/// cargo is gone from it, the roar is MOWZIE.md's cue (MZB-356). The goods go to the unmapped
+/// ledger, the note counts only the world's goods, and the party carries nothing home.
+#[test]
+fn a_robbery_of_unmapped_goods_still_sends_train_robbed() {
     let mut l = Lurk::raid(78);
     let mut rails = Rails::new(&l.w, Some(5));
     rails.name = "mic_rtsim:not_a_good".to_string();
@@ -703,8 +708,20 @@ fn a_robbery_of_nothing_sends_no_train_robbed() {
     l.c.tun.ambush_milli = 1000;
     l.pass(&mut rails, 7, 0, 10);
     assert_eq!(l.c.stats.ambushes, 1);
-    assert!(l.robbed().is_empty(), "nothing the world knows was taken");
+    assert_eq!(
+        l.robbed(),
+        vec![7],
+        "the train lost its cargo: the roar goes"
+    );
+    assert_eq!(l.c.stats.items_from_districts, 0, "no good of the world's");
     assert!(l.c.ledger.unmapped.contains_key("mic_rtsim:not_a_good"));
+    assert!(
+        l.c.log
+            .iter()
+            .any(|e| e.kind == "ambush" && e.what == "falls on train 7 by the track: 0 items"),
+        "the note counts the world's goods only"
+    );
+    l.c.check(&l.w).expect("books");
 }
 
 /// A TRAIN_PASSED is counted stale when no party answers it: a pass for an agent that is not a

@@ -3310,8 +3310,10 @@ impl Conflict {
 
     /// A war band falls on a train it crosses (C16, I24): one threat per class of unit, each with
     /// that class's count, strength and carry (MOWZIE.md ledger 9, MZB-53), as district raids
-    /// send them. One ambush however many classes took something. Returns the items it took
-    /// (0 when Peaceful holds it, nothing was robbed, or what was is not a good of the world's);
+    /// send them. One ambush however many classes took something. Returns the items it took, of
+    /// any good (0 when Peaceful holds it or nothing was robbed): goods the world has no name for
+    /// are taken too (they go to `ledger.unmapped`, and the note counts only the world's), so the
+    /// caller that tells the plugin of a robbery asks this, not the note's count (MZB-356);
     /// `how` is the note's wording: "on the way" for a band that crosses the train on its march,
     /// "by the track" for one that lies in wait there (MZB-356).
     pub(crate) fn ambush(
@@ -3331,6 +3333,7 @@ impl Conflict {
         let source = self.culture(f).def.source.threat();
         let mut hit = false;
         let mut got = 0;
+        let mut taken = 0;
         for (class, (count, strength, loads)) in self.strength_by_class(p) {
             let id = fnv1a64(
                 &[
@@ -3358,7 +3361,9 @@ impl Conflict {
                 continue;
             };
             hit = true;
-            got += self.take_industry_loot(w, infra, p, &loot);
+            let (mapped, all) = self.take_industry_loot(w, infra, p, &loot);
+            got += mapped;
+            taken += all;
         }
         if !hit {
             return 0;
@@ -3381,7 +3386,7 @@ impl Conflict {
             "ambush",
             format!("falls on train {train} {how}: {got} items"),
         );
-        got
+        taken
     }
 
     /// Goods `a` (thousandths) of `g` taken from players by party `p`: carried home, or destroyed
@@ -3395,16 +3400,20 @@ impl Conflict {
         }
     }
 
-    /// Maps industry goods to the world's by name into the party's players' goods. Returns items.
+    /// Maps industry goods to the world's by name into the party's players' goods. Returns the
+    /// items of the world's goods and the items of all of them (goods the world has no name for
+    /// go to the unmapped ledger and count only in the second).
     fn take_industry_loot(
         &mut self,
         w: &World,
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
         loot: &rtsim_industry::ids::GoodVec,
-    ) -> i64 {
+    ) -> (i64, i64) {
         let mut got = 0;
+        let mut all = 0;
         for (g, n) in loot.iter() {
+            all += n.max(0);
             let name = infra
                 .good_name(g)
                 .unwrap_or_else(|| format!("good {}", g.0));
@@ -3418,7 +3427,7 @@ impl Conflict {
             }
         }
         self.stats.items_from_districts += got.max(0) as u64;
-        got
+        (got, all)
     }
 
     /// A party reaches its target.
@@ -3702,7 +3711,7 @@ impl Conflict {
             let missing = f64::from(count) * (1.0 - o.survived);
             let lost = ((missing * self.tun.abstract_loss_share).round() as u32).min(count);
             self.lose_units(w, p, |c| c.threat() == class, lost, LossCause::Player);
-            let got = self.take_industry_loot(w, infra, p, &o.stolen);
+            let (got, _) = self.take_industry_loot(w, infra, p, &o.stolen);
             stolen_items += got;
             blocks += o.destroyed_blocks;
             self.stats.blocks_destroyed += u64::from(o.destroyed_blocks);
