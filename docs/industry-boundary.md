@@ -76,6 +76,7 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 | 0x0043 | (retired: IND_CHANNEL_SAMPLE) | | read as an unknown kind (I13 as corrected, IR13) | |
 | 0x0044 | (retired: IND_LEDGER_REQUEST) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
 | 0x0045 | IND_WATCHED | 1 a player is near enough to fight for real, 0 not | 8 i64 gameTime, 16 u64 district | 24 |
+| 0x0051 | IND_STORE_CENSUS | n goods | 8 i64 gameTime, 16 u64 store, 24 u32 m, 28 u32 zero, 32 m × (u32 destination, u32 packages), then n × (u32 good, u32 destination, i64 amount); a destination is a frogport index of the store's last IND_PACKAGE_STORE, 0xFFFFFFFF for packages with no route; every 200 ticks while every chunk of the store ticks (SECTIONS.md §2.5, choice SC99) | 32 + 8m + 16n |
 
 **Sweeps.** The sampler reads a district's boundary inventories round-robin, K per tick (INDUSTRY.md
 §3.2), numbering each full pass a sweep. Each inventory's contents go in one IND_STOCK_SAMPLE, or in
@@ -116,6 +117,8 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0414 | IND_PACKAGE | n entries | 24 u64 district, 32 u32 inventory, 36 u32 direction (1 in, 2 out), 40 u32 address (NAME), 44 u32 packages, 48 u64 opId (0 none), 56 n × Entry16 | 56 + 16n |
 | 0x0415 | IND_STATION_PORTS | n inventories | 24 u64 station, 32 u64 district, 40 n × u32 inventory (indices of the district's current revision); at a loaded call's departure, when the set changed (choice SG32) | (40 + 4n) rounded up to 8 |
 | 0x0416 | IND_TRAIN_UNWATCHED | 0 | 24 u64 train, 32 u64 station; a watched train called at a station outside every district: the engine ends its leg (choice SG50) | 40 |
+| 0x0418 | IND_PACKAGE_STORE | n frogports | 24 u64 store, 32 u32 dim, 36 u32 zero, 40 u64 into (0 none), 48 n × Frogport48 in position order, then the hops between their conveyors as the upper triangle row by row ((0,1), (0,2) .. (1,2) ..), u16 each, 0xFFFF where the walk did not reach; padded to 8. n = 0: the store is gone and what it held joins `into` (SECTIONS.md §2.5) | 48 + 48n + 2·n(n-1)/2, rounded up to 8 |
+| 0x0419 | IND_CHAIN_PACKAGE | n entries | 24 u64 store, 32 u64 district (0 none), 40 u32 inventory (0xFFFFFFFF none), 44 u32 direction (3 chain out, 4 chain in; 5 kept for the frontier's chain held), 48 u32 frogport (index in the store's last IND_PACKAGE_STORE), 52 u32 destination (a frogport index, 0xFFFFFFFF no route; chain in: the frogport itself), 56 u32 packages, 60 u32 address (NAME), 64 u64 opId (0 none; a chain in that an IND_WRITE_CHAIN wrote: that command's op id, SC113), 72 i32 x, 76 i32 y, 80 i32 z (the frogport's position, SC113), 84 u32 zero, 88 n × Entry16; a package store's frogport put packages on its chain or took them off (choice SC97) | 88 + 16n |
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
@@ -128,6 +131,9 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
   20 u32 reserved, 24 entryCount × Entry16`; 24 + 16n bytes.
 - **Result24:** `0 u32 inventory (or carriage), 4 u32 good, 8 i64 requested, 16 i64 applied`.
 - **Pos16:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 reserved`.
+- **Frogport48** (IND_PACKAGE_STORE): `0 u64 district (0 none), 8 u32 inventory (0xFFFFFFFF none),
+  12 u32 flags (1 its address filter is "*"), 16 i32 x, 20 i32 y, 24 i32 z (the frogport), 28 i32 x,
+  32 i32 y, 36 i32 z (its conveyor), 40 u64 from (the store it came from, 0 none)`.
 - **Block24:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 state (BLOCK_STATE), 16 u32 flags (1 perimeter,
   2 roofless, 4 machine, 8 boundary inventory, 16 roof: the top block over a roofed machine within
   roofReachBlocks, OGB-7, 32 subterranean: a machine or inventory under at least 5 blocks of cover,
@@ -187,6 +193,11 @@ sends IND_CHUNK_UNLOADED is read the old way: when no chunk ticks, every chunk c
 **Ports** (INDUSTRY.md §3.3). Everything that crosses the boundary while loaded:
 - train cargo diffs at `Train.arriveAt` and `leaveStation`;
 - train mail at postboxes, as IND_PACKAGE;
+- packages a package store's frogport puts on its chain or takes off it, as IND_CHAIN_PACKAGE
+  (SECTIONS.md §2.5): the engine books each into the store, in the pool of its destination (choice
+  SC100: Java resolves it as Create would route the package), and as a port of the district's window,
+  never as a link. IND_PACKAGE_STORE says which frogports a store has, in which districts; a store's
+  IND_STORE_CENSUS sets its pools to what is on the chain, and the difference is the store's residue;
 - player container sessions (`PlayerContainerEvent.Open` to `Close`, the session's diff);
 - tosses, pickups, and stock blocks broken by players.
 
@@ -267,6 +278,7 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
 | 0x8403 | IND_DEPOSIT_DELTA | plugin | 16 u64 opId, 24 u32 dim, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 good, 40 i64 delta | 48 |
 | 0x8404 | IND_WRITE_PACKAGE | n entries | 16 u64 opId, 24 u64 district, 32 u32 inventory, 36 i32 x, 40 i32 y, 44 i32 z, 48 u32 address (NAME), 52 u32 count, 56 n × Entry16 (one package's contents) | 56 + 16n |
 | 0x8405 | (retired: IND_LEDGER) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
+| 0x8409 | IND_WRITE_CHAIN | n entries | 16 u64 opId, 24 u64 store, 32 u64 district, 40 u32 inventory, 44 u32 frogport (index in the store's last IND_PACKAGE_STORE), 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 count, 64 n × Entry16 (one package's contents); packages replays sent along a package store's chain, written into its loaded frogport (SECTIONS.md §2.5, SC113) | 64 + 16n |
 
 - **Delta32:** `0 u32 inventory, 4 u32 good, 8 i32 x, 12 i32 y, 16 i32 z, 20 u32 reserved,
   24 i64 delta`.
@@ -317,6 +329,15 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   delta by good first (IR11): Destroy's level-wide pollution (greenhouse, ozone depletion, acid rain)
   goes as IND_DEPOSIT_DELTA every `live_pollution_ticks` while its district replays (I14: "level-wide
   types apply live while unloaded"), the rest at the reconcile; chunk types ride the chunk's reconcile.
+- **IND_WRITE_CHAIN** (SECTIONS.md §2.5, SC113): whole packages into the frogport's inventory while
+  its chunk is loaded, addressed to its filter, as many as fit with one slot kept free (a package
+  Create is catching lands there). Java journals one IND_CHAIN_PACKAGE `CHAIN_IN` with the command's
+  op id at 64 for what it wrote, then the COMMAND_RESULT; the chunk carries both until the engine
+  acknowledges them, and the engine takes the `CHAIN_IN` once: by op id while Replay remembers it,
+  as the answer to a write it still waits for (at that write's frogport), and else by the store's
+  mark of the last written record at the frogport's position (72 to 80). Nothing written (the frogport is
+  not loaded, has no slot to spare, or takes no packages) is FAILED, with no record; the engine still
+  owes it and writes again later.
 
 ## 5. What the sampler must never do
 
@@ -404,13 +425,14 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   by name, as for every command.
 - **Op ids** are derived from the command's identity (W3): the same decision made again after a
   crash carries the same id, and a different one never takes an id an earlier one had.
-- **Answers.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are
+- **Answers.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and IND_WRITE_CHAIN are
   kept from the moment they are written until their answer (IND_CARRIAGE_RESULT, or COMMAND_RESULT
   applied, duplicate or failed) is admitted, and written again first after a restart with their
   original sequences and op ids (W4). IND_CHUNK_RECONCILE is resent at the chunk's next
   IND_CHUNK_LOADED instead (F27). A failed IND_CARRIAGE_DELTA counts as nothing applied, taken back
   from the engine's exchange record; a failed deposit or package command is logged and the
-  engine keeps its books as if applied (W10). A command waits a while for a dictionary name Java
+  engine keeps its books as if applied (W10); a failed IND_WRITE_CHAIN moved nothing, and the store
+  still owes it. A command waits a while for a dictionary name Java
   has not sent yet (W21).
 - **The switch (U10, replacing W8).** With `Module.INDUSTRY` off the engine ignores every industry
   record, journaled ones included (counted), runs nothing and writes nothing; its queue, outbox and
