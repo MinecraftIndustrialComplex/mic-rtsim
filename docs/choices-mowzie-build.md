@@ -875,7 +875,9 @@ conservative option at its fork.
   raises the epoch floor. rtsim-jni's `st.applying_copy`, set around S4p's `reasserted()` dispatch,
   tells the modules; a field, so S4p's signatures stay.
   Amended (design review): the SESSION_START arm clears `applying_copy` first, since a step that
-  panicked inside a copy's dispatch (caught) leaves it `Some`.
+  panicked inside a copy's dispatch (caught) leaves it `Some`. Amended again (SEC-1's meeting-point
+  review, item 4): that cannot happen, since a panicked step fails the engine for good and no later
+  step reads a record; the reset stays as a defence.
 - **RP-9** (a copied BAND_CASUALTIES; §2.3, §5.7): `Conflict::ingest_copy` counts it against the
   party's alive units of that body kind, by party alone, touching no stack. Today, on main and on S4p,
   such a death is dropped by `party_of`'s exact epoch and the member lives on. Slice C also tests

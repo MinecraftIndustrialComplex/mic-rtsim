@@ -64,9 +64,11 @@ checked against what landed and amended where main differs from what they assume
 - **RP** adds three things to the same arm:
   1. `st.replaying = true;` and `st.applying_copy = None;` first, before any module's
      `session_start`, so that a module reset inside the arm never sees the last session's `false`
-     and ends a replay that has not started, and a step that panicked inside a copy's dispatch
-     (caught, so the field stayed `Some`) marks no record of this session a copy (RP-8). The replay
-     clock starts at the world's present (§3.6).
+     and ends a replay that has not started. The `applying_copy` reset is a defence only (RP-8):
+     `reasserted()` clears the field after every dispatch, and a step that panics inside one sets
+     the engine failed for good (the step's `catch_unwind`), so no later step reads a record, this
+     arm included. It keeps a field that should already be `None` from marking a record of this
+     session a copy. The replay clock starts at the world's present (§3.6).
   2. `shared::session_start` forgets every player's position and area (`World::forget_player_pos`)
      and calls no module's `player_left` (RP-26). Today it calls `leave`, whose `player_left`s recall
      conflict's watched bands and despawn herds' groups: bodies that RP-5 keeps until the replay end.

@@ -1553,9 +1553,10 @@ impl Engine {
                 let journal_first = wire::u64_at(b, obs::session_start::JOURNAL_FIRST_OBS_SEQ);
                 let world_next = wire::u64_at(b, obs::session_start::WORLD_NEXT_OBS_SEQ);
                 // The session's replay starts before any module resets, so that a reset inside
-                // the arm never reads the last session's `false`, and no record of this session
-                // is a copy (docs/replay-gate.md §2.1, RP-1, RP-8). The clock is held at the
-                // world's present until the replayed records move it (§3.6).
+                // the arm never reads the last session's `false` (docs/replay-gate.md §2.1, RP-1).
+                // The copy bit's reset is a defence (RP-8): `reasserted()` clears it after each
+                // dispatch, and a step that panics inside one fails the engine for good. The clock
+                // is held at the world's present until the replayed records move it (§3.6).
                 st.replaying = true;
                 st.applying_copy = None;
                 st.replay_clock = st.phase1.world.now();
