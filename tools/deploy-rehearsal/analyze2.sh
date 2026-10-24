@@ -58,8 +58,16 @@ done
     echo "Done line: $(grep -m1 -oE 'Done \([0-9.]+s\)' $f)"
   done
 } > $A/checks.txt 2>&1
-# gamerule replies (C8a) and census
-for t in "${ALL[@]}"; do have $A/replies-$t.txt && { echo "== $t"; grep -E 'doTraderSpawning|execute if entity' $A/replies-$t.txt | head -6; }; done > $A/gamerule-census.txt 2>&1
+# gamerule replies (C8a) and the entity census, from the runs' replies
+for t in "${ALL[@]}"; do have $R/out-$t.json && py -c '
+import json, sys
+o = json.load(open(sys.argv[1]))
+print("==", sys.argv[2])
+for s in o["steps"]:
+    c = s["step"].get("cmd", "")
+    if c.startswith(("gamerule", "execute if entity")) and "reply" in s:
+        print("  [%.0f] %s: %s" % (s["t"], c, s["reply"].strip()))
+' $R/out-$t.json $t; done > $A/gamerule-census.txt 2>&1
 # GC: the live set after each full or young collection's end, the largest pause
 for t in "${ALL[@]}"; do
   f=$R/gc-$t.log; have $f || continue
