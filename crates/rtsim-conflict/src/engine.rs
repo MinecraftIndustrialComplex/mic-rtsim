@@ -70,6 +70,13 @@ pub const TRIBUTE_PRICE_CAP: f64 = 4.0;
 /// How often a held arrival's poll comes again while the session's replay runs
 /// (docs/replay-gate.md §6.1, RP-23). PLACEHOLDER: 20 world ticks, one second of game time.
 pub const REPLAY_HOLD_TICKS: u64 = 20;
+/// How long a held arrival or siege round waits, while the session's replay runs, for a
+/// replayed BAND_MATERIALIZED to show that the last session fought it (docs/replay-gate.md
+/// §6.1, RP-48). Past it no fight answered the hold, and it resolves unwatched as the last
+/// session did. A watched decision's record comes a hand-over or two after it, plus what the
+/// step lagged Java by. PLACEHOLDER: 600 world ticks (30 s of game time), far past both and a
+/// fortieth of the shortest siege interval (a day).
+pub const REPLAY_HOLD_SLACK_TICKS: u64 = 600;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
@@ -3270,12 +3277,19 @@ impl Conflict {
             }
             _ => {
                 // While replaying no player is routed, so `watcher` would say no one watches:
-                // the arrival waits for the replay end or for its replayed fight (§6.1, RP-23).
-                if self.outbox.defer() {
-                    self.hold(p, arrival, at, true);
-                    return;
-                }
-                if let Some(player) = self.watcher(w, tpos, at) {
+                // the arrival waits for its replayed fight or for the replay end (§6.1, RP-23),
+                // up to the hold's slack. Past it no fight answered the hold, and it resolves
+                // unwatched, as the last session did (RP-48).
+                let watcher = if self.outbox.defer() {
+                    if at < arrival + REPLAY_HOLD_SLACK_TICKS {
+                        self.hold(p, arrival, at, true);
+                        return;
+                    }
+                    None
+                } else {
+                    self.watcher(w, tpos, at)
+                };
+                if let Some(player) = watcher {
                     self.start_fight(w, p, player, at);
                 } else {
                     if self.parties[p].embodied {
@@ -3283,9 +3297,11 @@ impl Conflict {
                         self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
                     }
                     self.resolve(w, infra, p, at);
+                    // A siege's next round runs from its arrival, as in the session that went on
+                    // (RP-48).
                     let alive = self.parties[p].alive();
-                    if kind == PartyKind::Siege && alive > 0 && at < self.parties[p].bored_at {
-                        let next = at + days_to_ticks(c.def.siege_interval_days);
+                    if kind == PartyKind::Siege && alive > 0 && arrival < self.parties[p].bored_at {
+                        let next = arrival + days_to_ticks(c.def.siege_interval_days);
                         self.wait(w, p, next, at);
                     } else {
                         self.go_home(w, p, boundary::RECALL_DONE, at);
@@ -3309,10 +3325,12 @@ impl Conflict {
     /// A war party's arrival (`arrived`) or a siege's next round, held while the session's
     /// replay runs (docs/replay-gate.md §6.1, RP-23): neither fought nor resolved. Its Ev::Party
     /// comes again every [`REPLAY_HOLD_TICKS`] with the same plan, answered in the wheel's arm
-    /// while held, so that pages saved mid-replay keep an event for it. An arrival's `seg` goes
-    /// back to the last segment, so that a poll that reaches `party_event` (after the replay
-    /// end, or after a restart that lost the map) arrives again; `bored_at` stays as `arrive`
-    /// set it. A siege's round touches neither.
+    /// while held, so that pages saved mid-replay keep an event for it, and once at `since` +
+    /// [`REPLAY_HOLD_SLACK_TICKS`], where the hold ends (RP-48): that poll reaches
+    /// `party_event` before any record at or past it, as the replay clock follows the records.
+    /// An arrival's `seg` goes back to the last segment, so that a poll that reaches
+    /// `party_event` (at the slack, after the replay end, or after a restart that lost the map)
+    /// arrives again; `bored_at` stays as `arrive` set it. A siege's round touches neither.
     fn hold(&mut self, p: Handle<Party>, since: Tick, at: Tick, arrived: bool) {
         let x = &mut self.parties[p];
         if arrived {
@@ -3320,25 +3338,33 @@ impl Conflict {
         }
         let plan = x.plan;
         self.held.insert(p, (since, plan));
-        self.schedule(at + REPLAY_HOLD_TICKS, Ev::Party { party: p, plan });
+        self.schedule(Self::held_poll(since, at), Ev::Party { party: p, plan });
+    }
+
+    /// A held party's next poll after `at` (§6.1): [`REPLAY_HOLD_TICKS`] on, or the hold's end
+    /// if that comes first (RP-48).
+    fn held_poll(since: Tick, at: Tick) -> Tick {
+        (at + REPLAY_HOLD_TICKS).min(since + REPLAY_HOLD_SLACK_TICKS)
     }
 
     /// When a party's held arrival (or siege round) came, while replaying (§6.1, RP-23): by the
     /// map, or, when a restart from pages saved mid-replay lost it and a record comes before
     /// the poll arrives again, by what the pages hold: a war party out on its last segment past
     /// its route's last time (the hold put `seg` back), or a siege waiting past its round. Its
-    /// patience runs from then, as `arrive` sets it.
+    /// patience runs from then, as `arrive` sets it. Only inside the hold's slack (RP-48): a
+    /// record at or past it is no fight of the hold's, which its poll there has resolved.
     fn held_since(&mut self, p: Handle<Party>, at: Tick) -> Option<Tick> {
         let x = &self.parties[p];
+        let inside = |since: Tick| at < since + REPLAY_HOLD_SLACK_TICKS;
         if let Some(&(since, plan)) = self.held.get(&p) {
-            return (plan == x.plan).then_some(since);
+            return (plan == x.plan && inside(since)).then_some(since);
         }
         if self.peaceful || !self.outbox.replaying() {
             return None;
         }
         let since = match x.phase {
             Phase::Out if x.kind.is_war() && x.seg as usize + 2 == x.route.len() => {
-                let arrival = x.times.last().copied().filter(|&t| t <= at)?;
+                let arrival = x.times.last().copied().filter(|&t| t <= at && inside(t))?;
                 let bored_at = arrival + self.patience(x.faction);
                 self.parties[p].bored_at = bored_at;
                 arrival
@@ -3346,6 +3372,7 @@ impl Conflict {
             Phase::Waiting
                 if x.kind == PartyKind::Siege
                     && x.until <= at
+                    && inside(x.until)
                     && at < x.bored_at
                     && x.alive() > 0 =>
             {
@@ -3396,21 +3423,27 @@ impl Conflict {
     ) {
         let x = &self.parties[p];
         let (kind, f) = (x.kind, x.faction);
-        if kind == PartyKind::Siege && at < x.bored_at && x.alive() > 0 && !self.peaceful {
-            // As `arrive`'s (§6.1, RP-23).
-            if self.outbox.defer() {
-                let round = self.parties[p].until.min(at);
-                self.hold(p, round, at, false);
-                return;
-            }
-            let tpos = self.target_pos(w, self.parties[p].target);
-            if let Some(player) = self.watcher(w, tpos, at) {
+        // The round's tick: `at` live; a held round's poll comes after it (§6.1, RP-48).
+        let round = x.until.min(at);
+        if kind == PartyKind::Siege && round < x.bored_at && x.alive() > 0 && !self.peaceful {
+            // As `arrive`'s (§6.1, RP-23, RP-48).
+            let watcher = if self.outbox.defer() {
+                if at < round + REPLAY_HOLD_SLACK_TICKS {
+                    self.hold(p, round, at, false);
+                    return;
+                }
+                None
+            } else {
+                let tpos = self.target_pos(w, self.parties[p].target);
+                self.watcher(w, tpos, at)
+            };
+            if let Some(player) = watcher {
                 self.start_fight(w, p, player, at);
                 return;
             }
             self.resolve(w, infra, p, at);
-            if self.parties[p].alive() > 0 && at < self.parties[p].bored_at {
-                let next = at + days_to_ticks(self.culture(f).def.siege_interval_days);
+            if self.parties[p].alive() > 0 && round < self.parties[p].bored_at {
+                let next = round + days_to_ticks(self.culture(f).def.siege_interval_days);
                 self.wait(w, p, next, at);
                 return;
             }
@@ -4696,10 +4729,12 @@ impl Conflict {
                     self.stats.stale += 1;
                     return;
                 }
-                // A held arrival's poll, while the replay runs (§6.1, RP-23).
-                if let Some(&(_, held)) = self.held.get(&party) {
-                    if held == plan {
-                        self.schedule(at + REPLAY_HOLD_TICKS, Ev::Party { party, plan });
+                // A held arrival's poll, while the replay runs (§6.1, RP-23). At the hold's slack
+                // it ends: `party_event` resolves it unwatched (RP-48).
+                if let Some(&(since, held)) = self.held.get(&party) {
+                    if held == plan && at < since + REPLAY_HOLD_SLACK_TICKS {
+                        let next = Self::held_poll(since, at);
+                        self.schedule(next, Ev::Party { party, plan });
                         return;
                     }
                     self.held.remove(&party);

@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
-use rtsim_conflict::engine::{Conflict, Demand, Party, Phase, Signal, Target, body_id, item_of};
+use rtsim_conflict::engine::{
+    Conflict, Demand, Party, Phase, REPLAY_HOLD_SLACK_TICKS, Signal, Target, body_id, item_of,
+};
 use rtsim_conflict::synth::{self, Answer, FakeConflict};
 use rtsim_conflict::{ConflictTunables, Cultures, Step};
 use rtsim_ecology::infra::NoInfrastructure;
@@ -2551,18 +2553,20 @@ fn a_raid_arriving_after_the_save(
         let _ = back.take_commands();
     }
     assert!(restarted_once);
-    let replay_end = back.now();
     back.resend_notices();
     assert!(!back.replaying());
     back.run_until(&mut w, &mut walls, end + 2 * TICKS_PER_DAY);
     let mut a = arrival_of(&back, &walls);
     if !watched {
+        // The journal goes on past the hold's slack: no fight answered it, and it resolves
+        // there, while replaying (RP-48).
+        let slack = arrival + REPLAY_HOLD_SLACK_TICKS;
         assert!(
-            a.raids.iter().all(|&t| t >= replay_end),
-            "after the replay end ({replay_end:?}): {a:?}"
+            a.raids.iter().all(|&t| t == slack),
+            "at the hold's slack ({slack:?}): {a:?}"
         );
-        // Resolved after the replay end, the band comes home later than in the session that
-        // went on: its pool is not compared.
+        // Resolved at the slack, the band comes home later than in the session that went on:
+        // its pool is not compared.
         a.pool = f64::NAN;
     }
     a
@@ -2661,10 +2665,10 @@ fn a_straggler_of_an_older_epoch_counts_as_live_when_replayed() {
     assert_eq!(a_raid_arriving_after_the_save(true, true, None, true), live);
 }
 
-/// RP-23's control: an unwatched arrival in the window resolves abstractly once, after the
-/// replay end (and once in the session that went on).
+/// RP-23's control: an unwatched arrival in the window resolves abstractly once (and once in the
+/// session that went on), at the hold's slack (RP-48): the journal goes on past it.
 #[test]
-fn an_unwatched_arrival_in_the_replayed_window_is_resolved_once_after_the_replay_end() {
+fn an_unwatched_arrival_in_the_replayed_window_is_resolved_once_at_the_holds_slack() {
     let live = a_raid_arriving_after_the_save(false, false, None, false);
     assert_eq!(live.raids.len(), 1, "{live:?}");
     assert_eq!((live.watched, live.casualties), (0, 0));
@@ -2675,10 +2679,12 @@ fn an_unwatched_arrival_in_the_replayed_window_is_resolved_once_after_the_replay
 
 /// RP-23 (§6.1): a siege's next round is held as an arrival is. A siege on the refinery, nobody
 /// near, waiting after its first round when the pages are saved; its next round comes in the
-/// replayed window. The session that went on raids at the round; the replay raids nothing, and
-/// the round comes once, after the replay end. Returns the raids after the save, and the replay
-/// end (the round's tick without a crash).
-fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
+/// replayed window, the journal's last record `past` ticks after it. The session that went on
+/// raids at the round. The replay holds it: with the last record inside the hold's slack it
+/// raids nothing while replaying, and the round comes once, after the replay end; past it, the
+/// round resolves once at the slack (RP-48). Returns the raids after the save, those while
+/// replaying, and the replay end (the round's tick without a crash).
+fn a_siege_round_after_the_save(crash: bool, past: u64) -> (Vec<Tick>, Vec<Tick>, Tick) {
     let mut r = Run::new(36, quiet_goblins());
     r.kill(2.0, Tick(10));
     let band =
@@ -2706,7 +2712,7 @@ fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
     assert!(round < x.bored_at, "a next round, not bored");
     let saved_at = r.c.now();
     let (pages, world) = (r.c.save(), r.w.save());
-    let end = round + 600;
+    let end = round + past;
     run_journaled(&mut r, &mut walls, end, &mut journal);
     let after = |walls: &Walls| -> Vec<Tick> {
         walls
@@ -2717,7 +2723,7 @@ fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
             .collect()
     };
     if !crash {
-        return (after(&walls), round);
+        return (after(&walls), Vec::new(), round);
     }
     journal.push((end, fillers_casualty()));
     let mut w = world_from(36, &world);
@@ -2728,21 +2734,36 @@ fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
         back.run_until(&mut w, &mut walls, *at);
         back.ingest(&mut w, &mut walls, o, *at);
     }
-    assert!(walls.raids.is_empty(), "nothing raided while replaying");
-    assert_eq!(back.parties[band].phase, Phase::Waiting, "held");
+    assert_eq!(back.parties[band].phase, Phase::Waiting, "held or waiting");
+    let replaying = after(&walls);
     let replay_end = back.now();
     back.resend_notices();
     back.run_until(&mut w, &mut walls, end + 600);
-    (after(&walls), replay_end)
+    (after(&walls), replaying, replay_end)
 }
 
 #[test]
 fn a_siege_round_in_the_replayed_window_waits_for_the_replay_end() {
-    let (live, round) = a_siege_round_after_the_save(false);
+    let past = REPLAY_HOLD_SLACK_TICKS / 2;
+    let (live, _, round) = a_siege_round_after_the_save(false, past);
     assert_eq!(live, vec![round], "the session that went on");
-    let (back, replay_end) = a_siege_round_after_the_save(true);
+    let (back, replaying, replay_end) = a_siege_round_after_the_save(true, past);
+    assert!(replaying.is_empty(), "nothing raided while replaying");
     assert_eq!(back.len(), 1, "once: {back:?}");
     assert!(back[0] >= replay_end, "after the replay end: {back:?}");
+}
+
+/// RP-48: the same with the journal going on past the hold's slack: no fight answered the hold,
+/// so the round resolves there, once, while replaying.
+#[test]
+fn a_siege_round_in_the_replayed_window_resolves_at_the_holds_slack() {
+    let past = REPLAY_HOLD_SLACK_TICKS + 600;
+    let (live, _, round) = a_siege_round_after_the_save(false, past);
+    assert_eq!(live, vec![round], "the session that went on");
+    let (back, replaying, _) = a_siege_round_after_the_save(true, past);
+    let slack = round + REPLAY_HOLD_SLACK_TICKS;
+    assert_eq!(replaying, vec![slack], "at the slack, while replaying");
+    assert_eq!(back, vec![slack], "once");
 }
 
 /// The world as `pages` (its `save`) left it, for a restart (`Run::new`'s world, seed `seed`).
@@ -2753,8 +2774,9 @@ fn world_from(seed: u64, pages: &[u8]) -> World {
 }
 
 /// RP-45 (the fix round's item 5): a siege on the refinery, nobody near, the pages saved while it
-/// marches there unseen. Its arrival comes in the replayed window and is held; its poll arrives
-/// again after the replay end. `crash`: the restart, the world and the engine from the pages.
+/// marches there unseen. Its arrival comes in the replayed window and is held, the journal's last
+/// record inside the hold's slack (RP-48); its poll arrives again after the replay end. `crash`:
+/// the restart, the world and the engine from the pages.
 /// Returns the siege's `bored_at` once it waits at its target, and the tick it turns for home.
 fn a_siege_arriving_after_the_save(crash: bool) -> (Tick, Tick) {
     let mut r = Run::new(36, quiet_goblins());
@@ -2777,7 +2799,7 @@ fn a_siege_arriving_after_the_save(crash: bool) -> (Tick, Tick) {
     assert_eq!(r.c.parties[band].phase, Phase::Out, "on its road");
     let (pages, world) = (r.c.save(), r.w.save());
     journal.clear();
-    let end = arrival + 600;
+    let end = arrival + REPLAY_HOLD_SLACK_TICKS / 2;
     run_journaled(&mut r, &mut walls, end, &mut journal);
     if !crash {
         return siege_patience(&mut r.c, &mut r.w, &mut walls, band);
@@ -2833,6 +2855,216 @@ fn siege_patience(
 fn a_held_siege_arrival_is_bored_when_the_session_that_went_on_was() {
     let live = a_siege_arriving_after_the_save(false);
     assert_eq!(a_siege_arriving_after_the_save(true), live);
+}
+
+/// [`quiet_goblins`] with five days' patience, so that a siege waits through two rounds after
+/// its arrival's.
+fn patient_goblins() -> Cultures {
+    let mut d: CultureDef = serde_json::from_str(GOBLIN_JSON).unwrap();
+    d.plunder_mean_days = None;
+    d.patience_days = 5.0;
+    Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
+}
+
+/// A siege as [`a_siege_held_then`] reads it: its phase, whether it is embodied and at which
+/// epoch, when its phase ends, the fights watched since the save, and the abstract raids since
+/// the save (by when).
+#[derive(Debug)]
+struct SiegeAt {
+    phase: Phase,
+    embodied: bool,
+    epoch: u32,
+    until: Tick,
+    watched: u64,
+    raids: Vec<Tick>,
+}
+
+impl SiegeAt {
+    fn of(c: &Conflict, band: Handle<Party>, walls: &Walls, watched: u64, saved_at: Tick) -> Self {
+        let x = &c.parties[band];
+        SiegeAt {
+            phase: x.phase,
+            embodied: x.embodied,
+            epoch: x.epoch,
+            until: x.until,
+            watched: c.stats.raids_watched - watched,
+            raids: walls
+                .raids
+                .iter()
+                .copied()
+                .filter(|&t| t > saved_at)
+                .collect(),
+        }
+    }
+
+    /// As the session that went on left it, its raids up to the hold's slack later
+    /// ([`REPLAY_HOLD_SLACK_TICKS`], RP-48): a replay resolves an unwatched decision there.
+    fn assert_as(&self, live: &SiegeAt) {
+        let late = |b: &Tick, l: &Tick| l <= b && b.0 <= l.0 + REPLAY_HOLD_SLACK_TICKS;
+        assert!(
+            self.raids.len() == live.raids.len()
+                && self.raids.iter().zip(&live.raids).all(|(b, l)| late(b, l)),
+            "replayed {self:?}, the session that went on {live:?}"
+        );
+        let state = |s: &SiegeAt| (s.phase, s.embodied, s.epoch, s.until, s.watched);
+        assert_eq!(
+            state(self),
+            state(live),
+            "replayed {self:?}, the session that went on {live:?}"
+        );
+    }
+}
+
+/// What follows a held, unwatched siege decision in [`a_siege_held_then`].
+#[derive(Clone, Copy, Debug)]
+enum Then {
+    /// A player comes into view of the waiting band 3,000 ticks after the decision, once (seen,
+    /// no fight), and goes stale.
+    Sighting,
+    /// A player stands at the refinery from 600 ticks before the band's next round on: seen
+    /// there, and the round fought.
+    Fight,
+}
+
+/// RP-48 (the re-review's P1, docs/replay-gate.md §6.1): a siege on the refinery, nobody near at
+/// a decision that asks for a watcher: its arrival (`round` false: the pages saved while it
+/// marches there unseen) or its next round after it (`round` true: saved while it waits). The
+/// decision resolves unwatched (the abstract raid) and the band waits for its next round; then
+/// `then`. `crash`: a restart from the pages, the world's and the engine's, replays the plugin's
+/// records, which hold the decision. The siege is read at the last record, the replay still
+/// running. Returns it, and the decision's tick.
+fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
+    let mut r = Run::new(36, patient_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let decision = if round {
+        let mut to = r.c.now();
+        while r.c.parties[band].phase != Phase::Waiting {
+            to += 600;
+            assert!(to < day(6.0), "the siege waits at its target");
+            run_journaled(&mut r, &mut walls, to, &mut journal);
+        }
+        r.c.parties[band].until
+    } else {
+        let arrival = *r.c.parties[band].times.last().unwrap();
+        run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+        arrival
+    };
+    let x = &r.c.parties[band];
+    assert!(!x.embodied && decision < x.bored_at, "unseen, not bored");
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let watched = r.c.stats.raids_watched;
+    journal.clear();
+    run_journaled(&mut r, &mut walls, decision + 600, &mut journal);
+    let x = &r.c.parties[band];
+    assert_eq!(
+        (x.phase, x.embodied),
+        (Phase::Waiting, false),
+        "resolved unwatched"
+    );
+    assert!(walls.raids.contains(&decision), "{:?}", walls.raids);
+    let next = x.until;
+    let end = match then {
+        Then::Sighting => {
+            let seen = decision + 3_000;
+            r.watch = true;
+            r.next_obs = seen;
+            run_journaled(&mut r, &mut walls, seen + 1, &mut journal);
+            r.watch = false;
+            run_journaled(&mut r, &mut walls, seen + 600, &mut journal);
+            let x = &r.c.parties[band];
+            assert_eq!(
+                (x.phase, x.embodied),
+                (Phase::Waiting, true),
+                "seen waiting"
+            );
+            seen + 2_000
+        }
+        Then::Fight => {
+            assert!(next + 6_000 < r.c.parties[band].bored_at, "a next round");
+            r.watch = true;
+            r.next_obs = Tick(next.0 - 600);
+            run_journaled(&mut r, &mut walls, next + 600, &mut journal);
+            assert_eq!(r.c.parties[band].phase, Phase::Fighting, "the round fought");
+            next + 3_000
+        }
+    };
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let live = SiegeAt::of(&r.c, band, &walls, watched, saved_at);
+    if !crash {
+        return (live, decision);
+    }
+    // Java journals other records all along: one at the end.
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let watched = back.stats.raids_watched;
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    (
+        SiegeAt::of(&back, band, &walls, watched, saved_at),
+        decision,
+    )
+}
+
+/// RP-48: an unwatched siege round, then a sighting of the band waiting for its next round, the
+/// pages from before the round. The replay used to read the sighting's BAND_MATERIALIZED as the
+/// held round's fight: Fighting, a fight watched, and the round's raid lost.
+#[test]
+fn a_sighting_of_a_siege_waiting_after_a_held_round_is_no_fight() {
+    let (live, round) = a_siege_held_then(true, Then::Sighting, false);
+    assert_eq!(live.raids, vec![round], "{live:?}");
+    assert_eq!(
+        (live.phase, live.embodied, live.watched),
+        (Phase::Waiting, true, 0)
+    );
+    a_siege_held_then(true, Then::Sighting, true)
+        .0
+        .assert_as(&live);
+}
+
+/// RP-48: an unwatched siege round, then the next round fought (the player seen there first),
+/// the pages from before the round. The replay used to read the next round's records against the
+/// first round's stale hold: the band out of its fight early, and the first round's raid lost.
+#[test]
+fn a_siege_round_fought_after_a_held_unwatched_round_is_fought_at_its_own_round() {
+    let (live, round) = a_siege_held_then(true, Then::Fight, false);
+    assert_eq!(live.raids, vec![round], "{live:?}");
+    assert_eq!((live.phase, live.watched), (Phase::Fighting, 1));
+    a_siege_held_then(true, Then::Fight, true)
+        .0
+        .assert_as(&live);
+}
+
+/// RP-48: a siege's unwatched arrival, held while replaying, then a sighting of the band waiting
+/// for its next round (and, second, that round fought), the pages from before the arrival.
+#[test]
+fn a_sighting_of_a_siege_waiting_after_a_held_arrival_is_no_fight() {
+    for then in [Then::Sighting, Then::Fight] {
+        let (live, arrival) = a_siege_held_then(false, then, false);
+        assert_eq!(live.raids, vec![arrival], "{then:?}: {live:?}");
+        a_siege_held_then(false, then, true).0.assert_as(&live);
+    }
 }
 
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight

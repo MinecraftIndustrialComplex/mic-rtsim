@@ -939,10 +939,12 @@ conservative option at its fork.
   of `arrive()` and `wait_over()` that ask `watcher()` hold the party (in memory, its arrival tick)
   and poll with its own Ev::Party every `REPLAY_HOLD_TICKS` (PLACEHOLDER 20), so pages saved
   mid-replay keep an event and no format changes. A replayed, honoured BAND_MATERIALIZED of a held
-  party takes `start_fight`'s state without commands; otherwise the first poll after the replay end
-  decides as today, normally abstractly. Loses rather than doubles: a crash before the fight's
-  BAND_MATERIALIZED was journaled, and a sighting on the way home read as a fight. Slices D and S
-  check dragon raids and pirate coast raids for the same pattern. Rejected: resolving at
+  party takes `start_fight`'s state without commands; otherwise the poll at the hold's slack
+  (RP-48), or the first after the replay end if that comes first, decides as today, normally
+  abstractly. Loses rather than doubles: a crash before the fight's BAND_MATERIALIZED was journaled,
+  and a sighting inside the slack read as a fight (amended by RP-48: a sighting on the way home or
+  while a siege waited was read as a fight however late it came). Slices D and S check dragon raids
+  and pirate coast raids for the same pattern. Rejected: resolving at
   `replay_done` directly (no event in pages saved mid-replay; a restart from them would strand the
   party).
 - **RP-24** (the clock follows the records; §3.6; the review's item 3): while replaying, with any of
@@ -1123,3 +1125,28 @@ conservative option at its fork.
   from the same records in each session, as in the one-crash tests. S2 replays S0's 4,000 records
   and S1's 20, not S1's JOURNAL_GEN (never dispatched). With the arrival's hold off, S1 resolves
   it while replaying (Home, want Out).
+- **RP-48** (a held decision's slack; §6.1; amends RP-23; the re-review's item 1): while
+  replaying, a held arrival or siege round waits for its fight's BAND_MATERIALIZED only
+  `REPLAY_HOLD_SLACK_TICKS` (PLACEHOLDER 600 world ticks, 30 s; a watched decision's record comes a
+  hand-over or two after it, and the shortest siege interval is a day). Its last poll is scheduled
+  at `since` + the slack; there the Ev::Party arm drops the hold and `party_event` runs `arrive()`
+  or `wait_over()`, which, still replaying and past the slack, take the unwatched branch at once.
+  The replay clock follows the records (§3.6), so that poll runs after every record before the
+  slack and before any at or past it. `held_since` answers only inside the slack, so a later
+  sighting finds no hold and embodies the band as `seen()` did live. The decision is taken as of
+  the hold's tick: `wait_over` reads the round as `until.min(at)`, and both it and `arrive()` check
+  patience at that tick and set a siege's next round from it, so a later round falls where the
+  session that went on had it (live the tick is the event's own). Residual: a sighting inside the
+  slack is still read as a fight. No rule without one exists here: the record carries the agent,
+  epoch, dimension, wave and units spawned, a fight's first wave and a sighting's are both wave 0
+  at the next epoch, and Java journals both as it applies the command; telling them apart needs a
+  field, a format change. Time: an unwatched decision while replaying resolves up to the slack
+  late. Three tests that resolved at the replay end with a journal past the slack now resolve at
+  the slack (an unwatched arrival, a siege round past the slack) or end the replay inside it
+  (RP-45's siege). Failing first, a siege of patient goblins on a refinery, its round at R1
+  unwatched, the pages from before R1, replayed against the session that went on as (phase,
+  embodied, epoch, `until`, `raids_watched`, raids): a sighting while it waits, (Fighting, true, 1,
+  85270, 1, []) against (Waiting, true, 1, 103270, 0, [79270]); a fight at R2, (Home, true, 2,
+  102673, 1, []) against (Fighting, true, 2, 109270, 1, [79270]); a held arrival then a sighting,
+  (Fighting, true, 1, 61270, 1, []) against (Waiting, true, 1, 79270, 0, [55270]). Rejected:
+  telling the records apart by position (a waiting siege is seen at its target).
