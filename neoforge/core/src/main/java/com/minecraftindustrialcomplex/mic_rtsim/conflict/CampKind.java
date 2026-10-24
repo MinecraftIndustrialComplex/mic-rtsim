@@ -41,7 +41,7 @@ public interface CampKind {
      */
     Mob make(ServerLevel level, Camps.Site site, String body, int lineFlags, double x, double y, double z, float yaw);
 
-    /** Where a SPAWN line's body appears (on the ground, in the footprint). */
+    /** Where a SPAWN line's body appears (on the ground, in the footprint); null when it finds no free place (the line is stale). */
     Vec3 spawnAt(ServerLevel level, Camps.Site site, String body, int lineFlags);
 
     /** Whether a SPAWN line waits now (a Frostmaw's while a player is near its den, MOWZIE.md §7 test 5). */
@@ -59,6 +59,20 @@ public interface CampKind {
      */
     default boolean chiefLines() {
         return true;
+    }
+
+    /** The most bodies this kind's camp keeps at home (a den's one Frostmaw); the census lists no more strays than are free. */
+    default int slots(Camps.Site site) {
+        return Integer.MAX_VALUE;
+    }
+
+    /**
+     * How far from the spot a loose body of this kind is its camp's stray, beyond the footprint (MZB-232): a
+     * late camp's first census lists the untagged bodies within it, and one that joins within it while the
+     * camp has a free slot asks for a new census. Zero for none.
+     */
+    default double strayRadius(Camps.Site site) {
+        return 0;
     }
 
     /** Which deaths in the camp's territory are its kin (the killing signal); null for none. */

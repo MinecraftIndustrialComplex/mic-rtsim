@@ -30,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
@@ -157,8 +158,14 @@ public final class ChunkWriteBarrier {
     private record EntityChunk(ServerLevel level, long pos) {
     }
 
+    /** A holder a camp record rides on, noted by its UUID (MZB-238). */
+    private record Holder(ServerLevel level, UUID id) {
+    }
+
     private final Map<LevelChunk, Note> notes = new IdentityHashMap<>();
     private final Map<EntityChunk, Note> entityNotes = new HashMap<>();
+    /** Holders noted since the last arm, with the chunk each stood in when its record was committed. */
+    private final Map<Holder, Long> holderNotes = new HashMap<>();
     private final Map<Object, LevelWrites> writers = new IdentityHashMap<>();
     private final ConcurrentLinkedQueue<Failed> failed = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<LevelChunk> offThreadUnloads = new ConcurrentLinkedQueue<>();
@@ -174,6 +181,9 @@ public final class ChunkWriteBarrier {
     private long forcedSaves;
     private long entityNoted;
     private long entityStores;
+    private long holdersResolved;
+    private long holdersMoved;
+    private long holdersUnresolved;
     private long rounds;
     // the IO chain's
     private final AtomicLong held = new AtomicLong();
@@ -211,6 +221,36 @@ public final class ChunkWriteBarrier {
         } else {
             n.round = nextRound;
         }
+    }
+
+    /**
+     * As {@link #dependsOnEntities}, for the entity a record rides on, noted by its UUID (MZB-238): the chunk is
+     * decided at the arm, where the holder stands then, since a body walks between a record and the save. A
+     * holder that cannot be found then (unloaded, hidden) is noted at the chunk it stood in when the record was
+     * committed. Server thread.
+     */
+    public void dependsOnHolder(ServerLevel level, net.minecraft.world.entity.Entity holder) {
+        holderNotes.put(new Holder(level, holder.getUUID()), holder.chunkPosition().toLong());
+    }
+
+    /** Holders found at the arm, in the chunk they stood in at the commit or in another (the GameTests). */
+    public long holdersResolved() {
+        return holdersResolved;
+    }
+
+    /** Holders found at the arm in a chunk other than the one they stood in at the commit. */
+    public long holdersMoved() {
+        return holdersMoved;
+    }
+
+    /** Holders not found at the arm: their commit-time chunk is written instead. */
+    public long holdersUnresolved() {
+        return holdersUnresolved;
+    }
+
+    /** Whether an entity chunk is noted and not yet confirmed written (the GameTests). */
+    public boolean entityChunkNoted(ServerLevel level, ChunkPos pos) {
+        return entityNotes.containsKey(new EntityChunk(level, pos.toLong()));
     }
 
     /** Entity chunks noted and not yet confirmed written. */
@@ -309,6 +349,22 @@ public final class ChunkWriteBarrier {
         long confirmed = confirmedRound;
         notes.values().removeIf(n -> n.round <= confirmed);
         entityNotes.values().removeIf(n -> n.round <= confirmed);
+        if (!holderNotes.isEmpty()) {
+            for (Map.Entry<Holder, Long> h : holderNotes.entrySet()) {
+                net.minecraft.world.entity.Entity e = h.getKey().level().getEntity(h.getKey().id());
+                long at = h.getValue();
+                if (e == null) {
+                    holdersUnresolved++;
+                } else {
+                    holdersResolved++;
+                    if (e.chunkPosition().toLong() != at)
+                        holdersMoved++;
+                    at = e.chunkPosition().toLong();
+                }
+                dependsOnEntities(h.getKey().level(), new ChunkPos(at));
+            }
+            holderNotes.clear();
+        }
         for (Failed f; (f = failed.poll()) != null; ) {
             // a write that failed: the chunk is saved again (vanilla cleared its unsaved flag before writing); one
             // that has left its level cannot be, and holds every round until the valve

@@ -269,7 +269,7 @@ public final class RtsimSession {
     public void carryOnCampHolder(Entity holder, java.util.List<byte[]> records, long lastSeq) {
         carry(holder, records, lastSeq);
         if (holder.level() instanceof ServerLevel level)
-            journalData.chunks().dependsOnEntities(level, holder.chunkPosition());
+            journalData.chunks().dependsOnHolder(level, holder);
     }
 
     public Engine engine() {
@@ -892,7 +892,9 @@ public final class RtsimSession {
     /**
      * Once {@code lastSeq} is acknowledged, drops the records the holder carries now (each journaled at or
      * before it), by identity: a record carried later, under a newer sequence, stays until its own
-     * acknowledgement (MZB-212). A record marker left with none is discarded.
+     * acknowledgement (MZB-212). A record marker left with none is discarded. It finds the holder among the
+     * visible entities only, so one that is hidden when the acknowledgement comes keeps its records until
+     * its next reassert, which drops them at the next acknowledgement; that is harmless (MZB-241).
      */
     private void dropPendingWhenAcked(Entity holder, long lastSeq) {
         ResourceKey<Level> dim = holder.level().dimension();

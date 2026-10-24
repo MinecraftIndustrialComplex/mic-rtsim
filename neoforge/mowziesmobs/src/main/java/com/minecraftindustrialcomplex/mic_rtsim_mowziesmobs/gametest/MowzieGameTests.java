@@ -262,22 +262,23 @@ public final class MowzieGameTests {
                     ChunkPos chunk = new ChunkPos(g.cx, g.cz);
                     BlockPos pivot = new BlockPos(chunk.getMiddleBlockX(), box.minY(), chunk.getMiddleBlockZ());
                     piece.postProcess(level, level.structureManager(), level.getChunkSource().getGenerator(), level.random, box, chunk, pivot);
-                    centre[0] = MowzieCamps.groveCentre(level, box);
+                    centre[0] = MowzieCamps.groveCentre(box);
                     List<EntityUmvuthanaMinion> made = level.getEntitiesOfClass(EntityUmvuthanaMinion.class, g.area());
                     record(test, "fire pit", rotation + ", box " + piece.getBoundingBox() + ", centre " + centre[0] + ", " + made.size() + " warriors made");
                     check("the fire pit made warriors (" + made.size() + ")", made.size() >= 3 && made.size() <= 9);
                     for (EntityUmvuthanaMinion m : made) {
-                        check("a warrior it made is restricted 25 round the grove's centre " + centre[0] + " (" + m.getRestrictCenter() + ", "
+                        // the jar restricts to the surface block there; the centre is from the piece's box (MZB-242)
+                        BlockPos rc = m.getRestrictCenter();
+                        check("a warrior it made is restricted 25 round the grove's centre " + centre[0] + " (" + rc + ", "
                                 + m.getRestrictRadius() + ")", m.hasRestriction() && m.getRestrictRadius() == GroveKind.RESTRICT
-                                && m.getRestrictCenter().equals(centre[0]));
+                                && rc.getX() == centre[0].getX() && rc.getZ() == centre[0].getZ() && Math.abs(rc.getY() - centre[0].getY()) <= 4);
                         m.setNoAi(true);
                     }
-                    Vec3 a = g.at(-8, 6), b = g.at(8, -6), c = g.at(27, 0), d = g.at(12, 0);
                     // the grove's spot is not declared yet: g.spot is null, so place from the centre block
-                    extra[0] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_MINION.get(), centre[0].getX() - 7.5, y + 1, centre[0].getZ() + 6.5, true);
-                    extra[1] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_RAPTOR.get(), centre[0].getX() + 8.5, y + 1, centre[0].getZ() - 5.5, true, false);
-                    extra[2] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_MINION.get(), centre[0].getX() + 27.5, y + 1, centre[0].getZ() + 0.5, true);
-                    EntityUmvuthi u = MowzieKit.stray(level, EntityHandler.UMVUTHI.get(), centre[0].getX() + 12.5, y + 1, centre[0].getZ() + 0.5, true, false);
+                    extra[0] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_MINION.get(), centre[0].getX() - 7.5, y, centre[0].getZ() + 6.5, true);
+                    extra[1] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_RAPTOR.get(), centre[0].getX() + 8.5, y, centre[0].getZ() - 5.5, true, false);
+                    extra[2] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_MINION.get(), centre[0].getX() + 27.5, y, centre[0].getZ() + 0.5, true);
+                    EntityUmvuthi u = MowzieKit.stray(level, EntityHandler.UMVUTHI.get(), centre[0].getX() + 12.5, y, centre[0].getZ() + 0.5, true, false);
                     u.setDirection(2);
                     extra[3] = u;
                     chiefHealth[0] = u.getHealth();

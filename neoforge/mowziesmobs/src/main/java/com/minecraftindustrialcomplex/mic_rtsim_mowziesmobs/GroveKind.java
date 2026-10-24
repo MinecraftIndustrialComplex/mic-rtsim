@@ -11,10 +11,12 @@ import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
@@ -89,9 +91,15 @@ public final class GroveKind implements CampKind {
         return m;
     }
 
+    /** The places tried for one spawn, as the jar's fire pit does (MZB-243). */
+    public static final int SPAWN_TRIES = 20;
+
     /**
      * At the grove's edge on the side away from the nearest player within {@link #SEEN_RANGE}, so it
-     * walks in (§4.9, "Coming home"); with none, where the fire pit places its own (2 to 11 blocks out).
+     * walks in (§4.9, "Coming home"); with none, where the fire pit places its own (2 to 11 blocks out). Up
+     * to {@link #SPAWN_TRIES} places are tried, as the jar does: each on loaded ground, free of collisions
+     * and of fluid for the warrior's box (the later tries jitter round the first). Null when none passes:
+     * the line is answered stale.
      */
     @Override
     public Vec3 spawnAt(ServerLevel level, Camps.Site site, String body, int lineFlags) {
@@ -107,17 +115,29 @@ public final class GroveKind implements CampKind {
                 near = p;
             }
         }
-        double angle, dist;
-        if (near != null && (near.getX() != c.x || near.getZ() != c.z)) {
-            angle = Math.atan2(c.z - near.getZ(), c.x - near.getX()); // away from the player
-            dist = EDGE;
-        } else {
-            angle = level.random.nextDouble() * Math.PI * 2;
-            dist = 2 + level.random.nextInt(10);
+        boolean away = near != null && (near.getX() != c.x || near.getZ() != c.z);
+        double base = away ? Math.atan2(c.z - near.getZ(), c.x - near.getX()) : 0; // away from the player
+        EntityType<?> type = EntityHandler.UMVUTHANA_MINION.get();
+        for (int i = 0; i < SPAWN_TRIES; i++) {
+            double angle, dist;
+            if (away) {
+                angle = i == 0 ? base : base + (level.random.nextDouble() - 0.5) * (Math.PI / 3);
+                dist = i == 0 ? EDGE : EDGE - level.random.nextDouble() * 4;
+            } else {
+                angle = level.random.nextDouble() * Math.PI * 2;
+                dist = 2 + level.random.nextInt(10);
+            }
+            int x = (int) Math.floor(c.x + Math.cos(angle) * dist), z = (int) Math.floor(c.z + Math.sin(angle) * dist);
+            if (!level.hasChunk(x >> 4, z >> 4))
+                continue;
+            int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+            if (y <= level.getMinBuildHeight())
+                continue;
+            AABB box = type.getDimensions().makeBoundingBox(x + 0.5, y, z + 0.5);
+            if (level.noCollision(box) && !level.containsAnyLiquid(box))
+                return new Vec3(x + 0.5, y, z + 0.5);
         }
-        int x = (int) Math.floor(c.x + Math.cos(angle) * dist), z = (int) Math.floor(c.z + Math.sin(angle) * dist);
-        int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
-        return new Vec3(x + 0.5, y, z + 0.5);
+        return null;
     }
 
     @Override

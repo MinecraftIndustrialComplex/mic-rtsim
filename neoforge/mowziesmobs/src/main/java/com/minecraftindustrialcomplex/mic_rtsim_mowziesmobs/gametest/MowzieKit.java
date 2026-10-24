@@ -113,11 +113,15 @@ public final class MowzieKit {
             RtsimTests.record(test, "released", released + " chunks an earlier run left forced; base chunk (" + k + ", " + z0 + ")");
             MinecraftServer server = level.getServer();
             Difficulty before = server.getWorldData().getDifficulty();
-            if (before == Difficulty.PEACEFUL) {
+            if (before == Difficulty.PEACEFUL)
                 server.setDifficulty(Difficulty.NORMAL, true);
-                ConflictKit.onEnd(helper, () -> server.setDifficulty(before, true));
-            }
+            ConflictKit.onEnd(helper, () -> server.setDifficulty(before, true));
             ConflictKit.onEnd(helper, this::releaseAll);
+        }
+
+        /** Sets the difficulty for the rest of the test (restored when it ends). */
+        public void difficulty(Difficulty d) {
+            level.getServer().setDifficulty(d, true);
         }
 
         public void force(int cx, int cz) {
@@ -225,8 +229,8 @@ public final class MowzieKit {
             int x = cx * 16 + 8, z = cz * 16 + 8;
             int y = level.hasChunk(cx, cz) ? level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) : level.getSeaLevel();
             Vec3 s = new Vec3(x + 0.5, y, z + 0.5);
-            faction = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), TEST_GROVE, GroveKind.INSTANCE, new BlockPos(x, y, z), s, null,
-                    MowzieCamps.GROVE_RADIUS, false);
+            faction = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), TEST_GROVE, GroveKind.INSTANCE, new BlockPos(x, y, z), s,
+                    MowzieCamps.GROVE_RADIUS, 0, false);
             check("the grove is declared (a live session)", faction != 0);
             spot = s;
             return this;
@@ -247,7 +251,11 @@ public final class MowzieKit {
         }
     }
 
-    /** A den: a one-chunk box (6 x 5 x 7, the template's size) in a chunk, declared with no piece. */
+    /**
+     * A den at the middle of a chunk, declared with no piece: the cylinder of {@link DenKind#FOOTPRINT_RADIUS}
+     * round its spot (MZB-230), which touches the chunk and its four neighbours (the corners are 11.3 blocks
+     * from the spot).
+     */
     public static final class Den {
         public final Far far;
         public final int cx, cz;
@@ -260,7 +268,7 @@ public final class MowzieKit {
             this.cz = cz;
         }
 
-        /** Forces the 3 x 3 chunks round the den (a real den's footprint can spill into a neighbour). */
+        /** Forces the 3 x 3 chunks round the den (the footprint is the chunk and its four neighbours). */
         public Den force() {
             far.forceRect(cx - 1, cz - 1, cx + 1, cz + 1);
             return this;
@@ -273,12 +281,16 @@ public final class MowzieKit {
         }
 
         public Den declare() {
+            return declare(false);
+        }
+
+        public Den declare(boolean late) {
             ServerLevel level = far.level;
-            int x0 = cx * 16 + 5, zz = cz * 16 + 4;
-            int y = level.hasChunk(cx, cz) ? level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x0 + 3, zz + 3) : level.getSeaLevel();
-            AABB box = new AABB(x0, y, zz, x0 + 6, y + 5, zz + 7);
-            Vec3 s = new Vec3(x0 + 3, y, zz + 3.5); // MowzieCamps.denSpot of the same box
-            faction = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), TEST_DEN, DenKind.INSTANCE, BlockPos.containing(s), s, box, 0, false);
+            int x = cx * 16 + 8, z = cz * 16 + 8;
+            int y = level.hasChunk(cx, cz) ? level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) : level.getSeaLevel();
+            Vec3 s = new Vec3(x, y, z);
+            faction = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), TEST_DEN, DenKind.INSTANCE, BlockPos.containing(s), s,
+                    DenKind.FOOTPRINT_RADIUS, DenKind.FOOTPRINT_RADIUS, late);
             check("the den is declared (a live session)", faction != 0);
             spot = s;
             return this;
@@ -286,6 +298,12 @@ public final class MowzieKit {
 
         public Camps.Site site() {
             return MowzieKit.site(faction);
+        }
+
+        /** A point {@code dx}, {@code dz} from the spot, at standing height. */
+        public Vec3 at(double dx, double dz) {
+            double x = spot.x + dx, z = spot.z + dz;
+            return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
         public AABB area() {

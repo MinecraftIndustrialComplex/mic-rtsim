@@ -211,15 +211,16 @@ public final class RtsimApi {
      * follows its footprint in and out, sends its census and plays the engine's reconciles on it.
      * {@code start} is the structure start's chunk, which keys the faction; {@code pos} the block
      * FACTION_FOUND names (clamped into that chunk); {@code spot} where its bodies are kept and spawned;
-     * the footprint is {@code box} if given, else the circle of {@code radius} round {@code spot}.
+     * the footprint is the circle of {@code radius} round {@code spot}, and with a {@code halfHeight} above
+     * zero only that far above and below it (a cylinder; zero is no height bound).
      * Returns the faction key, or 0 with no live session (ask again when the chunk next loads).
      */
     public static long declareCamp(net.minecraft.server.level.ServerLevel level, net.minecraft.world.level.ChunkPos start,
                                    String structure, com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind kind,
                                    net.minecraft.core.BlockPos pos, net.minecraft.world.phys.Vec3 spot,
-                                   net.minecraft.world.phys.AABB box, double radius, boolean late) {
+                                   double radius, double halfHeight, boolean late) {
         var c = com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().declare(level, start,
-                structure, kind, pos, spot, box, radius, late);
+                structure, kind, pos, spot, radius, halfHeight, late);
         return c == null ? 0L : c.faction;
     }
 
