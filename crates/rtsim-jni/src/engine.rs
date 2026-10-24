@@ -114,7 +114,7 @@ pub const KEY_META: PageKey = PageKey::new(1, 0);
 pub const KEY_WORLD: PageKey = PageKey::new(1, 1);
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTJM");
 const META_VERSION: u16 = 2;
-/// The journal's closed generations (docs/boundary.md §2.6), [`GEN_BLOCK`] a page from id 0:
+/// The journal's closed generations (docs/boundary.md §3.2), [`GEN_BLOCK`] a page from id 0:
 /// written once, when a block gains one.
 pub const GEN_TABLE: u16 = 2;
 /// The generation the engine judges a session's records in when its bridge sends no JOURNAL_GEN:
@@ -322,7 +322,7 @@ pub struct Stats {
     pub archive_pending_bytes: AtomicU64,
     /// The view tap's counters (`tap.rs`). Not in Java's array.
     pub tap: tap::Counters,
-    /// Copies of carried records (REASSERT, docs/boundary.md §2.6) applied, and dropped as already
+    /// Copies of carried records (REASSERT, docs/boundary.md §3.2) applied, and dropped as already
     /// in the engine's state. Not in Java's array.
     pub copies_applied: AtomicU64,
     pub copies_dropped: AtomicU64,
@@ -1562,7 +1562,7 @@ impl Engine {
         }
         if seq >= st.session_first && !st.session_gen_seen {
             // A bridge that names no generation: this session's records still must not extend
-            // the last one's, whose sequences a crash may hand out again (§2.6).
+            // the last one's, whose sequences a crash may hand out again (docs/boundary.md §3.2).
             st.session_gen_seen = true;
             let nonce = UNNAMED_GEN | st.session_first;
             log_warn(&format!(
@@ -1604,7 +1604,7 @@ impl Engine {
         admit(&mut st.replay)
     }
 
-    /// JOURNAL_GEN: a session's generation opens at its sequence (§2.6).
+    /// JOURNAL_GEN: a session's generation opens at its sequence (docs/boundary.md §3.2).
     fn journal_gen(&self, st: &mut State, h: u64, rec: &Rec<'_>, seq: u64) {
         if rec.size() < obs::journal_gen::SIZE {
             self.set_protocol_error(format!("a JOURNAL_GEN is only {} bytes", rec.size()));
@@ -1630,7 +1630,7 @@ impl Engine {
     }
 
     /// REASSERT: a copy of a record a chunk or entity carried, judged by the generation it was
-    /// first journaled in (§2.6). Applied as the record itself under the copy's sequence when it
+    /// first journaled in (docs/boundary.md §3.2). Applied as the record itself under the copy's sequence when it
     /// is new; otherwise answered as a record whose op id was already heard.
     fn reasserted(self: &Arc<Self>, st: &mut State, h: u64, rec: &Rec<'_>, seq: u64) {
         let b = rec.bytes;

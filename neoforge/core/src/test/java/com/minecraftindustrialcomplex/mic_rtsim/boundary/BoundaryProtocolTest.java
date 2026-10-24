@@ -432,7 +432,7 @@ class BoundaryProtocolTest {
         assertEquals(2, s.journal().size(), "and only what they include is trimmed");
     }
 
-    // ---- generations and copies (docs/boundary.md §2.6) -----------------------------------------
+    // ---- generations and copies (docs/boundary.md §3.2) -----------------------------------------
 
     /** A transfer journaled with no op id, as a holder keeps it: its bytes as journaled. */
     private static byte[] carried(BoundarySession s, long to, long amount) {

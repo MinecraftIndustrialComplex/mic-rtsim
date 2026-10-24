@@ -110,7 +110,7 @@ pub struct Java {
     pub dict: Vec<(u32, String)>,
     pub applied_cmd_ops: HashSet<u64>,
     // per session
-    /// This session's generation (docs/boundary.md §2.6): its JOURNAL_GEN's nonce, which the
+    /// This session's generation (docs/boundary.md §3.2): its JOURNAL_GEN's nonce, which the
     /// records a holder carries are stamped with.
     pub nonce: u64,
     pub pages_obs: u64,
@@ -415,7 +415,7 @@ impl Java {
         seq
     }
 
-    /// Journals a copy of a record a holder carried (REASSERT, docs/boundary.md §2.6): the
+    /// Journals a copy of a record a holder carried (REASSERT, docs/boundary.md §3.2): the
     /// record's bytes as first journaled, after `nonce`, the generation they were journaled in.
     /// Returns the copy's sequence.
     pub fn reassert(&mut self, nonce: u64, original: &[u8]) -> u64 {

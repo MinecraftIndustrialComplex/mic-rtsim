@@ -56,7 +56,7 @@ public final class IndustryAttachments {
     /**
      * One district's reconcile state in a chunk (I8): the last applied epoch and, until the engine
      * acknowledges it, the IND_RECONCILE_RESULT that applied it, with the generation it was journaled in
-     * (docs/boundary.md §2.6; 0 with no result).
+     * (docs/boundary.md §3.2; 0 with no result).
      */
     public record EpochEntry(long district, int epoch, Optional<byte[]> pendingResult, long gen) {
         /** No pending result. */

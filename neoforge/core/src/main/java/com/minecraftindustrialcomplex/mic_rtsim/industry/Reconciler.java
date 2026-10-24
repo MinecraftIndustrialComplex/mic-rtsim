@@ -126,7 +126,7 @@ public final class Reconciler {
         if (epochs != null) {
             for (IndustryAttachments.EpochEntry e : epochs.entries()) {
                 // A result saved with the chunk but maybe not with the journal (a crash): a copy of it
-                // journaled (REASSERT, docs/boundary.md §2.6), which the engine applies only if it lacks it.
+                // journaled (REASSERT, docs/boundary.md §3.2), which the engine applies only if it lacks it.
                 if (e.pendingResult().isPresent()) {
                     String key = level.dimension().location() + "/" + chunk.getPos().toLong() + "/" + e.district() + "/" + e.epoch();
                     if (recommitted.add(key)) {

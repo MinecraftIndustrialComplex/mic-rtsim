@@ -47,7 +47,7 @@ import java.util.function.Consumer;
  *   <li>reads observations: skips journaled records its pages or memory already include, applies
  *       TRANSFER op ids at most once into a ledger, and remembers op ids Java reports as applied;</li>
  *   <li>judges a copy of a carried record (REASSERT) by its generation as the Rust engine does
- *       (docs/boundary.md §2.6): applied only when no generation it knows admitted the record and no
+ *       (docs/boundary.md §3.2): applied only when no generation it knows admitted the record and no
  *       copy of it applied before;</li>
  *   <li>writes the commands a test (or {@code /rtsim stub}) scripts, assigning command sequences and
  *       its own dictionary ids, as many as fit, the rest next step;</li>
@@ -63,7 +63,7 @@ public final class StubEngine implements ScriptedEngine {
     /** Record bytes per buffer. PLACEHOLDER: the real engine sizes buffers from caps and quotas (PLAN.md §4.5). */
     public static final int DEFAULT_CAPACITY = 256 * 1024;
 
-    /** A record of a generation, by its sequence (docs/boundary.md §2.6). */
+    /** A record of a generation, by its sequence (docs/boundary.md §3.2). */
     public record GenSeq(long gen, long seq) {}
 
     /**

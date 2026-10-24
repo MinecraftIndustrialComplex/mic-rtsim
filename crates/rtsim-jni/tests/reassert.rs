@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Copies of carried records (REASSERT, docs/boundary.md §2.6) against the fake Java side, on the
+//! Copies of carried records (REASSERT, docs/boundary.md §3.2) against the fake Java side, on the
 //! real host: a chunk or entity keeps a record from the session that journaled it, and journals it
 //! again whenever it loads before the engine acknowledged the copy. The engine applies a copy only
 //! when its own state lacks the record: never twice, and never not at all after a crash lost it.

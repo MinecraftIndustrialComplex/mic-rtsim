@@ -178,7 +178,7 @@ public final class Journal {
 
     /**
      * Where a record holds the op id of an engine command Java applied: a COMMAND_RESULT APPLIED's, or
-     * the one inside a copy of one (REASSERT, docs/boundary.md §2.6). -1 for any other record.
+     * the one inside a copy of one (REASSERT, docs/boundary.md §3.2). -1 for any other record.
      */
     static int appliedOpAt(ByteBuffer b) {
         int base = 0;
