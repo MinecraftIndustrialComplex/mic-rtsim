@@ -2595,6 +2595,9 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - A watched raid adds nothing, since there the jar's raptors hunt for themselves.
   - The hunts are kept in `Faction.hunts: Vec<Hunt { district, count, op }>`, a small Vec, never a one-entry
     BTreeMap.
+  - Amended at the re-check, R3: `stats.hunts_owed` counted a replacement's whole sum again (5 owed, then
+    3 more, made 13). It counts what the raid adds to the held hunt after the cap: 8 for 5 and 3, and for 6
+    and 6 more the 6 and the 2 the cap leaves.
 - **MZB-425** (the hunt records; the ids are provisional):
   - OWED_HUNT (0x880C, engine to Java, latest-wins for each faction and district): faction, district,
     dimension, centre x and z, radius 48 (PLACEHOLDER), count and op id.
