@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
-use rtsim_conflict::culture::PartyKind;
+use rtsim_conflict::culture::{Cultures, PartyKind};
 use rtsim_conflict::engine::{
     CHIEF_SLOT, Conflict, HUNT_RADIUS, Party, Phase, SlotState, Target, body_id, item_of,
 };
@@ -329,6 +329,151 @@ fn an_heir_pair_answered_stale_is_ordered_again_while_the_grove_stays_in() {
     ok(&mut r);
 }
 
+/// A grove of nine whose plunder drive is off, so the only band that musters is the one a test orders.
+fn quiet_grove(seed: u64) -> CampRun {
+    let mut cultures = Cultures::builtin();
+    for k in &mut cultures.list {
+        k.def.plunder_mean_days = None;
+    }
+    CampRun::with_cultures(seed, cultures, "umvuthana", 9)
+}
+
+/// A raid ordered `before` ticks ahead of the heir's due tick: its muster is still going at the due
+/// tick. The band, and the camp's warriors it has drawn (Left, no line yet).
+fn raid_across_the_due_tick(r: &mut CampRun, before: u64) -> (Handle<Party>, usize) {
+    let due = heir_due(r);
+    r.run(Tick(due.0 - before));
+    let p = r.raid().expect("a raid");
+    assert_eq!(r.c.parties[p].phase, Phase::Mustering, "the band musters");
+    let drawn =
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .filter(|s| s.state == SlotState::Left && s.line.is_none() && s.party == p)
+            .count();
+    assert!(
+        drawn > 1,
+        "the band drew {drawn} warriors, left with no line"
+    );
+    (p, drawn)
+}
+
+/// MZB-612, review P2-5: an heir due while a band of the camp is mustering is not ordered. The
+/// band's warriors are left in the books but their bodies still stand at the camp with no line, so
+/// Java could mask one of them. The pair goes out at the muster's end, just after the band's
+/// set-out lines, and it is the same tick the band leaves.
+#[test]
+fn an_heir_due_during_a_muster_waits_for_its_end_and_is_then_ordered() {
+    let mut r = quiet_grove(8);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    let (p, drawn) = raid_across_the_due_tick(&mut r, days(0.5));
+    let until = r.c.parties[p].until;
+    assert!(until > due + 100, "the muster outlasts the due tick");
+    r.run(due + 100);
+    assert_eq!(r.c.parties[p].phase, Phase::Mustering, "still mustering");
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_SEAT_HEIR),
+        0,
+        "no pair is ordered while the band musters"
+    );
+    assert_eq!(lines_of(&r, boundary::ACTION_MASK), 0);
+    assert_eq!(chief(&r), None, "no chief yet");
+    // The muster ends: the set-out lines, and the pair after them in the same tick.
+    r.run(until + 200);
+    let sets: Vec<Tick> = orders(&r)
+        .iter()
+        .filter(|(_, x)| x.lines.iter().any(|l| l.action == boundary::ACTION_SET_OUT))
+        .map(|(t, _)| *t)
+        .collect();
+    let pair: Vec<usize> = orders(&r)
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, x))| {
+            x.lines
+                .iter()
+                .any(|l| l.action == boundary::ACTION_SEAT_HEIR)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        sets,
+        vec![until],
+        "the band is set out at the muster's end, and no other band is"
+    );
+    assert_eq!(pair.len(), 1, "one pair");
+    let (when, _) = orders(&r)[pair[0]].clone();
+    assert_eq!(
+        when, until,
+        "the pair goes out at the muster's end, not at the next census"
+    );
+    assert!(
+        orders(&r)[..pair[0]]
+            .iter()
+            .any(|(_, x)| x.lines.iter().any(|l| l.action == boundary::ACTION_SET_OUT)),
+        "after the band's set-out lines"
+    );
+    assert_eq!(
+        chief(&r).map(|c| c.0),
+        Some(SlotState::Body),
+        "the heir is seated"
+    );
+    assert_eq!(
+        units(&r, p),
+        drawn as u32,
+        "the band lost no warrior to the MASK"
+    );
+    ok(&mut r);
+}
+
+/// MZB-612, review P2-5: no warrior of a band that is mustering is masked, whenever in the muster
+/// the heir falls due. Over a sweep of seeds and offsets the band keeps every warrior it drew (a
+/// MASK that named one is the band's loss: a casualty), and the books hold.
+#[test]
+fn no_warrior_of_a_mustering_band_is_masked() {
+    for seed in 1..=6u64 {
+        for before in [0.05, 0.3, 0.6, 0.95] {
+            let mut r = quiet_grove(seed);
+            come_in(&mut r);
+            let (p, drawn) = raid_across_the_due_tick(&mut r, days(before));
+            // A player stands near every warrior left at home, so a MASK prefers the band's: the
+            // pair that goes out during the muster would mask one of them.
+            let band: Vec<u32> =
+                r.c.camp(r.f)
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .filter(|s| s.party == p && s.state == SlotState::Left)
+                    .map(|s| s.id)
+                    .collect();
+            for b in &mut r.plugin.camp_world(r.key).bodies {
+                b.near = !band.contains(&b.slot);
+            }
+            let casualties = r.c.stats.casualties;
+            let until = r.c.parties[p].until;
+            // Just after the muster: the band has not met anyone, so a unit lost is a MASK's.
+            r.run(until + 200);
+            assert_eq!(
+                r.c.stats.casualties, casualties,
+                "seed {seed}, offset {before}: a mustering warrior was masked"
+            );
+            assert_eq!(
+                units(&r, p),
+                drawn as u32,
+                "seed {seed}, offset {before}: the band lost a unit"
+            );
+            assert_eq!(
+                lines_of(&r, boundary::ACTION_SEAT_HEIR),
+                1,
+                "seed {seed}, offset {before}: one pair, after the muster"
+            );
+            assert!(chief(&r).is_some(), "seed {seed}, offset {before}: seated");
+            ok(&mut r);
+        }
+    }
+}
+
 /// Review P3-7: Java takes the warrior farthest from every player, so with a player near all but
 /// one it is that one, and with a player near every warrior it takes one all the same, never a
 /// STALE answer for the pair.
@@ -634,7 +779,8 @@ fn a_chief_killed_leading_a_band_is_the_slot_dying_away_and_the_band_comes_home_
             "the band comes home without the chief"
         );
         assert!(chief_bodies(&r).is_empty(), "and no chief body stands");
-        r.run(heir_due(&r) + 100);
+        // A band that musters at the due tick holds the pair to its muster's end (MZB-612): a day.
+        r.run(heir_due(&r) + days(1.5));
         let (state, second) = chief(&r).expect("the heir sits");
         assert_eq!(state, SlotState::Body);
         assert_ne!(second, a, "another generation");

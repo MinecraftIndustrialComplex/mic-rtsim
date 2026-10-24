@@ -3077,6 +3077,7 @@ fn heir_farmed(slice: &'static str) -> RunOut {
         // The kill comes a few ticks after the seat: the closed form's check is under a minute.
         let (_, gap) = rule.farmed(1, 0.0);
         let want = 96.0 / f64::from(gap);
+        let muster = at_day(r.c.cultures.get(ci).def.muster_days).0;
         come_in(&mut r);
         let mut model = Pressure::at_cap(&rule, 0);
         let (mut exact, mut books, mut ended) = (true, true, false);
@@ -3089,6 +3090,14 @@ fn heir_farmed(slice: &'static str) -> RunOut {
                 break;
             }
             r.run(due + 10);
+            // A band of the camp that is mustering holds the pair back to its muster's end (MZB-612):
+            // the seat comes within a muster of its due tick, and the next wait is the kernel's from
+            // the death all the same.
+            let mut waited = 0;
+            while chief_of(&r).map(|c| c.0) != Some(SlotState::Body) && waited < 96 {
+                waited += 1;
+                r.run(r.c.now() + muster / 24);
+            }
             if chief_of(&r).map(|c| c.0) != Some(SlotState::Body) {
                 exact = false;
                 break;
