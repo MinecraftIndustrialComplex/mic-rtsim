@@ -82,6 +82,22 @@ branch `feat/dh-real-models`. The boxes stay as the fallback wherever a model ca
 | DHT65 | **A dragon's far model is Ice and Fire's own renderer's output on a client-only stand-in, baked per species, colour and stage at 12 points of the flight loop and once at rest; the nearest two within 300 blocks are drawn live** (`DragonLook`, PLACEHOLDERS). A stand-in is an entity made with the species' type and never added to a level (it never ticks, no server knows it, nothing but the look holds it, and its id is negative, below every id a server gives; D3). NeoForge still tells listeners of its construction and its renders. A bake is one render a frame-slice: two warm-up renders, the 12 frames 5 ticks apart, two at rest, the rest pose. Each frame is a static buffer per render type the renderer asked for, in its order. A far dragon is drawn at the frame of the loop nearest its time (offset by its key, so a flock does not beat in step), turned to its heading with the level's lights turned back to the baked normals, scaled from its stage's middle age to its own age as Ice and Fire scales it (its render size), and stood on its feet below the feed's point (the hitbox's middle, `DragonFeedSource`). A live stand-in is started on the bakes' clock: it gets the two warm-ups a bake gives its probe, ending at the last start of the loop at or before its time (a whole number of loops after the probe's), and gets a render at each later start of the loop, so its wings and the baked frames' stay at the same point of the loop and a dragon going from one to the other keeps its beat; a new one starts when it lands or takes off, or when time runs back. In DH's vanilla fade, where both passes draw, both render a live one: one pose placed once a frame and rendered twice at the same time (GeckoLib skips the second as a re-render, or, when another dragon of the species drew between, runs the animation again at that same time, which gives the same pose, with the game paused too because Ice and Fire's dragons animate while paused), so the fade never mixes two poses and the wings beat on up to the body's hand-over, for a second live render a frame while it is there. A mover whose live placement or render threw is drawn from its baked frames until the level changes. A set nobody drew for 60 s is freed, at most 32 sets; past that, the set least recently drawn makes room if nobody drew it for 1 s, else the new look waits as a box. An ask forgotten after 10 s frees a half-baked set. A set that would not bake is a box until the level changes. Live stand-ins nobody drew for 5 s are dropped. Leaving the world, or a new level, frees everything. At the far view's first frame (DHT63) each species' probe is drawn once flying and once at rest into nothing, so no frame later pays the renderer's cold first draw. Translucent render types are baked unsorted, as the carriages' (DHT64). | The spike measured 20 live stand-ins at 12 ms of CPU a frame and the baked poses at 0.36 ms; two live ones keep the near wings smooth for little. Twelve frames of a 60-tick loop read as a wingbeat at the distances DH draws (Ice and Fire's flight is a 1.2 s animation played at 0.4, so 3 s; twelve frames are four poses a second, which the screenshot review read as stepped at 300 to 600 blocks under a zoom; 24 frames would halve the step for twice the memory, about 2.2 MiB a set more, and twice the bake). The fade first drew the baked frame in both passes, so a dragon's wings stepped there, just before its body took over; the review asked for the far model to keep moving up to the hand-over, and the body's copy (DHT47) had shown two live renders a frame of one pose mix cleanly. Baking at the stage's middle age and scaling keeps the sets to 60 at most. Ice and Fire's controllers (GeckoLib's) start their loop at the render that ends their transition, so the same warm-ups put a stand-in on the bakes' loop; GeckoLib starts each later loop at the first render past the last one's end and drops what it ran over, about a sixth of a tick a loop at 60 frames a second, and after a gap the whole gap, so a render at the end itself keeps the beat; a stand-in shares no id with a real dragon, which GeckoLib could otherwise take for a re-render of the stand-in and draw in its pose. This replaces the plan's impostor quads with baked real-model poses: the spike's impostors were flat at every angle where the poses were the model from every side, for the same cost. A dragon moving from an engine leg (stage only, so its stage's middle age) to its body (its own age) changes size once. A dragon model's hand-over reaches as far as its boxes (`FarDragonView.reach`), so the two views count the same dragons; the bench logs how far a model's radius passes that, and HandOverRule's 18 blocks of SLACK and PREPARE cover it. Cold, a species' first render was the bake's longest, 91.9 ms inside a frame, in the full build's first bench; after the prewarm, on a quiet machine, the first bake's first render took 15.8 ms (the renderer's code still warming) and each later new probe's first 0.8 to 6.2 ms, making the stand-in 0.3 to 3.0 ms of it, and a set 18.4 ms in all over about 9 frames. |
 | DHT66 | **The bench dresses its synthetic carriages as Create carriages of four designs** (`BenchCarriages`): a steam locomotive first, then wooden coaches, copper tank wagons and glass observation cars in turn, made as Create stores a carriage with no entity (`Carriage.setContraption`), nothing placed in the world. `-PfarBenchDress=false` leaves them bare. | The bench's carriages had no blocks, so they could only be boxes, and its numbers are wanted for the real models. |
 
+## Round two (DH-7)
+
+The second round on the real models (branch `fix/dh-round2`, 2026-10-23). Ben added the age to the engine's legs
+("Add the age field", DECISIONS.md DH-7); the arrival's hold was the coordinator's call under Ben's away rule;
+the band's cap is for weak PCs (D1). These supersede, where they say otherwise: DHT60's "A LEG still carries only
+the stage", DHT63's "In the band only the models keep to the count" and "Meshes cached by hash outlive a far feed
+RESET" (now freed after a grace), and DHT65's "A dragon moving from an engine leg (stage only, so its stage's middle age) to its body (its
+own age) changes size once".
+
+| # | Choice | Why |
+|---|---|---|
+| DHT67 | **FAR_LEG carries the dragon's age** (boundary.md §12.1: `u32 age_days` at offset 76, the record's last four bytes, which were reserved): whole days at the record's time, ticks over 24,000 as Ice and Fire's `getAgeInDays` counts them, 0 in a GONE record. The server's far feed sends it in the INTRO as it sends a body's age (DHT60), so a dragon the engine flies is drawn at its own age, as Ice and Fire sizes it, before, during and after its body. The age is the record's, so a dragon that sends nothing for days keeps the age of its last record. Pinned by a codec test on each side, the same bytes (`far.rs`, `FarLegsTest`). No compatibility with the old record. | Ben's answer (DH-7). The stage alone spans 25 days, so the far model jumped in size when the body took over; the body's INTRO gave the age only to a dragon this client had seen embodied. Whole days are what Ice and Fire's size reads. The record's spare bytes keep it 80 bytes. |
+| DHT68 | **A new dragon body is held back for 5 of its ticks while its animation settles, and the far model drawn instead** (`DragonArrivals` in mic_rtsim_iceandfire, `FarLook.holds`, `FarHide`). For a body that joins the client's level and that a far dragon of the feed names: from its first frame, vanilla's render of its model is cancelled through GeckoLib's cancelable `GeoRenderEvent.Entity.Pre` (posted on NeoForge's bus; Ice and Fire's renderer is GeckoLib's, not a LivingEntityRenderer, so NeoForge's own RenderLivingEvent never fires for a dragon; no mixin); its renderer runs once a frame into nothing, so its animation goes through its opening transition unseen; and `FarHide` counts the body as not there, so the far model goes on where it was (DH's pass or the band) and no copy of the body is drawn (DHT47). After 5 ticks of the body's own clock from its first such render, and at most 1 s of wall time from its arrival (a paused or frozen game), vanilla draws it. Only while the far view runs (the hold is decided in the looks' frame and forgotten at the frame's end), and never again once vanilla has drawn the body (a render that goes through ends its hold for good, so a body is never hidden after it was seen). Never held: a lightning dragon while it breathes (`DragonLook.copies`), a dragon with riders (Ice and Fire draws them inside the dragon's render and cancels their own, so they would vanish with it), and a body whose render throws. What the event does not cover is still drawn while held: a named dragon's name tag, a leash, and its shadow within 16 blocks, each where the far model is. Uninstall effect: none; client only, nothing saved, nothing sent; it hides a vanilla entity for 0.25 s on the client. | Ice and Fire's controllers start a body's animation with a 2-tick transition from the model's rest pose at their speed of 0.4, 5 ticks: a new body unfolded its wings and neck from that pose where the far model had been flying a frame before. The coordinator chose (a), holding the far model, over (b), priming GeckoLib with a made-up partial tick, and (c), leaving it, to be kept only if the stills showed no unfold and no double draw. They showed neither: in all 8 arrivals with the hold, at 114 and 149 blocks, zoomed and not, the far model flies up to the swap and the body flies from its first frame, one dragon in every frame, where every arrival without it showed the rest pose (the code review and a visual review, both Opus; "Round two" under Measured). What is left is the wings jumping to another point of their beat at the swap: the body's loop always starts wings up and the far model's is wherever its own clock has it. The warm render is the body's own, into nothing, never added anywhere (D3). |
+| DHT69 | **In the band the dragons, models and boxes together, keep to the tier's count** (8, 24 or 64), nearest first by horizontal distance, counted after the hand-over and before the frustum (`FarBandRenderer`, as `FarModelRenderer` counts the band's models with the dragons still drawn as boxes in their places). The carriages' boxes in the band are not counted. The bench logs the dragons counted and those the count left out. | Weak PCs (D1): the band's boxes had no count, so a flock over the loaded chunks drew every dragon on the lowest tier too. The same order as DH's pass and the band's models, so a dragon is drawn by one of them or by neither. Carriages are bounded by the feed's object budget already (DHT63). |
+| DHT70 | **A far feed RESET frees what no mover asks for again within 2 s (PLACEHOLDER)** (`FarLook.reset`, `FarLooks.resetAll`, called by `FarFeedReceiver` before it applies the RESET's records; `FarLookReset`): the carriages' meshes and the dragons' pose sets, live stand-ins and asks that no mover drew or asked for since the RESET go at the first frame 2 s after it; what the movers sent again asked for stays. What the prewarm loaded (Create's bogeys, the dragon probes and their render sizes), the headings last seen and the looks that would not bake stay too. A look with no reset of its own clears. Leaving the world still frees everything at once. | The server sends a RESET on every subscription: when the client's far radius, detail or kinds change, on a new dimension and on a resubscribe, as well as after a server or sim restart; every mover it still chooses comes again with it. Freeing at once blanked every far model and baked them all again, about 27 ms of bakes a dragon set, 2 ms a frame, so seconds of boxes after an options change (the code review); a mesh kept by hash past a RESET was right but held GPU memory for a minute after its movers were gone. Two seconds is the models' own grace for a mover whose model is not baked yet. |
+
 ## Measured
 
 Bench round 3 on 2026-10-22, 10:21 to 11:11 (neoforge/README.md, "The far view's dev client"), on this branch
@@ -357,6 +373,53 @@ sessions' jobs, load average 6 to 40. Logs: `/home/greencheetah/mic-media/dh-spi
   (`shots/v_ridge_ringA_*_before_after.png`).
 - Ice and Fire's lightning dragons in blue read navy at range: that is their own texture.
 
+### Round two (DHT67 to DHT70)
+
+Captured on 2026-10-23 in a private headless sway at 1920x1080 with the pack's Sodium 0.8.13, on a local verify
+branch: this branch plus the media stub, with two switches for before and after, `/micmedia legage` (the leg
+carries the age, or none, as before DHT67) and `/micmedia hold` (DHT68's hold on or off). Session 1, 15:00 to
+15:30, ran the first version (54d9e5d1); session 2, 15:51 to 16:05, the code review's fixes (5b424271). The
+world above, render distance 10, simulation distance 12, field of view 60 (15 zoomed), MEDIUM; the machine
+shared with other sessions' jobs. The takes are the hand-over's (`g_fly_m2`, `g_ring_m2`): a stage 4 fire dragon
+of 76 days flies an engine leg in and its body arrives 114 blocks from the camera (fly) or 149 (ring, inside DH's
+vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-round2-2026-10-23/` (`stills/`,
+`clips/`, `raw/`; the client's own media lines are in `raw/client-session*.log`).
+
+- **The size (DHT67).** Without the age the far model was drawn at stage 4's middle age, 87 days, render size
+  16.10, against the body's 12.80: 26% larger, and it shrank at the hand-over (`stills/s1_fly114_zoom_before.png`).
+  With the age, far model and body are both 12.80 in every frame logged, before, during and after the hold.
+- **The hold (DHT68).** Eight arrivals with the hold, four a session: each held 5.0 to 5.3 of the body's ticks,
+  246 to 257 ms, 11 to 15 frames, and the far model placed at every tick of it. With the hold off the body's first
+  frame is its rest pose, wings flat and legs down, and it unfolds over the next quarter second
+  (`stills/s1_fly114_before_hold-off_age-off.png`, `stills/s2_fly114_before_hold-off_age-off.png`, and the ring's).
+  With it, the frame sheets of every take, at 114 and 149 blocks, zoomed and not, show the far model flying up
+  to the swap and the body flying from its first frame, one dragon in every frame
+  (`stills/s{1,2}_*_after*.png`, `stills/s{1,2}_*_zoom_after.png`). Left: at the swap the wings jump to another
+  point of their beat, as the body's loop always starts with its wings up and the far model's is wherever its own
+  clock has it. In 4 of the 8 they went from fully down to fully up in one frame (the visual review; in the raw
+  takes' seconds, `a2_ring` 41.233 to 41.267, `a2_ringz` 41.367 to 41.400, `a_fly` 41.2 to 41.233, `a_ringz` 41.3
+  to 41.333), and one was seamless by luck. A fix would start the body's warm renders so that its loop begins
+  where the far model's beat is. As before, the motion also smooths at the swap: the body moves every frame, the
+  far model 20 times a second.
+- **A recording trap, not a render.** Session 1's clips (x264, 4:2:0 chroma) left a red tint under the body for
+  about 4 frames after the far model went, which read as a second dragon; it is in the red-difference plane only,
+  none of it in the luma (`stills/s1_encoder_chroma_ghost_luma-vs-red.png`). Session 2 recorded 4:4:4 at crf 14,
+  and even so `a2_ring` keeps a faint blocky trace of the far model's lowered wings for 2 to 5 frames after the
+  swap, lace along the encoder's blocks rather than a shaded dragon, which the visual review reads as the
+  recording; by the code nothing draws the far model once the hold ends. A lossless capture would settle it. Session
+  1's zoomed fly take also ran its clip's time faster than the wall's while the server lagged.
+- **The band's cap (DHT69).** 30 dragons in the band, MEDIUM: 24 counted, 6 left out, in both modes. Models on,
+  the first frame's view drew 10 in DH's pass and 13 in the band (the rest out of view); models off, 9 band boxes.
+  Looking down on them (`stills/s2_bandcap_30-in-band_24-drawn.png`): 24 models, none as boxes. Frames over 300 in
+  session 1, models on: mean 19.47 ms, p95 32.2; models off: 17.45, p95 23.5 (DH's pass 2.56 ms of CPU a frame
+  and the band 1.61 ms for the models), on a loaded machine.
+- **The RESET (DHT70).** 12 far dragons 300 to 800 blocks ahead, then DH's render distance from 160 to 150
+  chunks, which changes the far radius the client asks for, so it subscribes again and the server answers with a
+  RESET. Sampled every quarter second for 4 s and again at 5 s: 11 or 12 models drawn and none waiting throughout,
+  as before the change (`stills/s2_reset_before.png`, `s2_reset_0.5s_after.png`, `s2_reset_5s_after.png`; the
+  blocky terrain at 0.5 s is DH reloading its own LODs). No log line shows the RESET itself arriving; that it came
+  rests on the subscription's code and the tests (`FarFeedReceiverTest`, `FarLookResetTest`).
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
@@ -373,6 +436,11 @@ sessions' jobs, load average 6 to 40. Logs: `/home/greencheetah/mic-media/dh-spi
 - The real models with players' own trains (only DHT66's four designs ran: no carriage of block entities only,
   none mixing upright and upside-down bogeys) and a hand-over for each species (only a stage 4 fire dragon).
 - The real models under an Iris shader pack, or on a GPU other than the laptop's Radeon on Mesa.
+- The arrival's hold (DHT68) in a client for a named or leashed dragon, one with riders or a lightning dragon
+  breathing, and for any species but fire.
+- The far object that ran away from a dragon setting off from a hover (2 of 8 takes in "The body's copy (DHT47)",
+  a double image for up to 0.8 s): round two found no cause it could show, so DHT44's run on is not changed and
+  the case stays open.
 
 ### Traps the bench found
 
@@ -416,3 +484,10 @@ the pack plan on 2026-10-22 ("Approve, ship with rtsim"); the PLACEHOLDERs are s
 - **Another:** a leaving carriage's box appears 5 to 7 blocks ahead of where Create drew the carriage, which
   trails the server (see "The hand-over's second pass, before and after"); easing the far object from the
   body's last drawn position would close it.
+- **Round two (DH-7). DECIDED (Ben, 2026-10-23):** FAR_LEG carries the dragon's age, "Add the age field" (DHT67),
+  so the far model no longer shrinks by a fifth as the body takes over. The arrival's hold (DHT68) was the
+  coordinator's call under the away rule: it hides a new dragon body for 0.25 s on the client while the far model
+  stands in. What may still show: the wings jump to another point of their beat at the swap (a follow-up could line
+  the two up), and while held a named dragon's name tag, a leash and the body's shadow within 16 blocks show
+  without the body. In the band the dragons now keep the tier's count, 8, 24 or 64, nearest first (DHT69), so on
+  LOW a flock over the loaded chunks shows its 8 nearest. PLACEHOLDER to confirm: the RESET's grace of 2 s (DHT70).

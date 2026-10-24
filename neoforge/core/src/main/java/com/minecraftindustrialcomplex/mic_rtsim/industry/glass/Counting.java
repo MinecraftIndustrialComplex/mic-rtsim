@@ -53,6 +53,24 @@ public final class Counting {
         return active;
     }
 
+    /** The arm inserting through a funnel point now, else null (server thread; {@link #moverOf}). */
+    private static BlockPos armAtFunnel;
+
+    /**
+     * A mechanical arm's insert at a funnel point runs through the funnel's {@code InvManipulationBehaviour}
+     * while {@code arm} is set (null after): the compile names that move an ARM edge from the arm to the store
+     * behind the funnel, so it is counted under the arm, not the funnel (choice SC125).
+     */
+    public static void armThroughFunnel(BlockPos arm) {
+        armAtFunnel = arm;
+    }
+
+    /** The mover a behaviour at {@code behaviour} counts under: the arm inserting through it, else itself. */
+    public static BlockPos moverOf(BlockPos behaviour) {
+        BlockPos arm = armAtFunnel;
+        return arm != null ? arm : behaviour;
+    }
+
     /** One counted (mover block, store inventory) pair. */
     static final class Key {
         final long district;

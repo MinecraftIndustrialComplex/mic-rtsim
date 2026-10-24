@@ -16,7 +16,9 @@ import java.util.function.Predicate;
  * Count points for the movers that reach an inventory through Create's {@code InvManipulationBehaviour}
  * (SECTIONS.md §4.2, slice S3; PATCHES.md rows 64 and 65): the andesite and brass funnels (and the funnel
  * under a belt, a dropped item entity, a mechanical arm's funnel point), the mechanical crafter's output,
- * the smart observer's extraction. The mover is the behaviour's block entity; the inventory is the block the
+ * the smart observer's extraction. The mover is the behaviour's block entity, but for a mechanical arm's
+ * insert at a funnel point, which counts under the arm ({@link Counting#moverOf}, set by
+ * {@code ArmFunnelPointMixin}: the compile's edge is the arm's, choice SC125); the inventory is the block the
  * behaviour is aimed at ({@code getTarget().getConnectedPos()}). Counted once, at the one call that touches
  * the inventory, and only when it is not simulated ({@code simulateNext} is read into the call's flag, so a
  * {@code simulate().insert(...)} is a probe, not a move; a client-side call returns before it).
@@ -54,7 +56,7 @@ public abstract class InvManipulationBehaviourMixin {
         if (c != null && !simulate) {
             try {
                 InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
-                if (c.isMover(self.getWorld(), self.getPos()))
+                if (c.isMover(self.getWorld(), Counting.moverOf(self.getPos())))
                     seen = stack.copy();
             } catch (RuntimeException e) {
                 c.failed("a behaviour's insert", e); // never break the block's tick
@@ -65,7 +67,7 @@ public abstract class InvManipulationBehaviourMixin {
         if (seen != null) {
             try {
                 InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
-                c.moved(self.getWorld(), self.getPos(), self.getTarget().getConnectedPos(), seen, before - remainder.getCount(), true);
+                c.moved(self.getWorld(), Counting.moverOf(self.getPos()), self.getTarget().getConnectedPos(), seen, before - remainder.getCount(), true);
             } catch (RuntimeException e) {
                 c.failed("a behaviour's insert", e);
             }

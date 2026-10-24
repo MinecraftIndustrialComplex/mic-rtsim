@@ -45,6 +45,16 @@ public interface FarLook {
     void clear();
 
     /**
+     * The far feed started over (a RESET, docs/choices-dh-feed.md DHT70): what it baked and placed for movers the
+     * feed does not send again goes, {@link FarLookReset#GRACE_NANOS} later ({@link FarLookReset}); what the movers
+     * sent again ask for stays, and so does what {@link #prewarm} loaded, so the next bake pays no cold first draw.
+     * Everything ({@link #clear}) by default.
+     */
+    default void reset() {
+        clear();
+    }
+
+    /**
      * Loads, behind the loading screen as the client joins a world, what would make a first bake slow inside a
      * frame (Create's bogey renderer, about 180 ms cold). Nothing by default.
      */
@@ -59,6 +69,16 @@ public interface FarLook {
      */
     default boolean copies(Entity body) {
         return true;
+    }
+
+    /**
+     * Whether {@code body}, the real entity of a mover of this look's kind, is held back this frame
+     * (docs/choices-dh-feed.md DHT68): the look keeps vanilla from drawing it, so the far renderer draws the mover
+     * as if the body were not on the client yet and copies nothing of it. Ice and Fire's look holds a new dragon's
+     * body for the 5 ticks its animation takes to settle from the model's rest pose. False by default.
+     */
+    default boolean holds(Entity body) {
+        return false;
     }
 
     /** What it holds and has done, for the bench's log. */
