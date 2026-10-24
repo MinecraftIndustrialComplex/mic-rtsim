@@ -994,23 +994,61 @@ under its own heading.
   The Carry On test uses a stub camp kind (the Carry On module does not depend on the plugin) and posts
   Carry On's `EntityPickupEvent`, since its `PickupHandler` needs a real player's input; what Carry On does
   before posting it is not covered.
-- **MZB-248** (not tested): the grove spawn retry (MZB-243), for which the review's list names no test; the
-  reassert-before-record order of `Camps.answer` (MZB-239), which test 10 covers only through the census
-  order; the session restart (MZB-228); and the ticket event under C2ME (MZB-249), since the GameTest
-  server runs without C2ME.
-- **MZB-249** (C2ME never posts `ChunkTicketLevelUpdatedEvent`; found in the review round, no fix built):
-  C2ME's `rewrites-chunk-system` has `MixinThreadedAnvilChunkStorage` `@Overwrite` the `ChunkMap`'s
-  `updateChunkScheduling` with a call into its own `TheChunkSystem.vanillaIf$setLevel`, and NeoForge posts
-  the event from inside the vanilla method. Under the pack's C2ME the event never fires, so
-  `Camps.onTicket` is blind there: the levels read at `declare` are never updated, so after it a camp neither
-  goes out when its chunks unload nor comes in when they load. The GameTest server has no C2ME, so no test
-  sees it. Options, for the
-  lead to choose: (1) a slow poll, every 20 ticks, of each declared camp's footprint chunk levels through
-  `ChunkMapInvoker` (`getUpdatingChunkIfPresent` works under C2ME, which overrides it), with the
-  attention list as now; the cost is the footprint's chunk count per camp per second (5 to 21 lookups); (2)
-  follow `ChunkEvent.Load` and `Unload` of a footprint chunk instead (C2ME is expected to post them as
-  vanilla does; not verified), which gives load and unload but not the FULL threshold; (3) a mixin on C2ME's `vanillaIf$setLevel`, rejected: C2ME is an alpha and a mixin on it
-  fails the launch on any update (the reason JB3 reads it by reflection). Recommended: (1).
+- **MZB-248** (not tested): the reassert-before-record order of `Camps.answer` (MZB-239), which test 10
+  covers only through the census order; the session restart (MZB-228); and the poll on a real C2ME (MZB-249,
+  MZB-290): the GameTest server runs without C2ME unless `-Pc2me` (MZB-292), and the poll is tested alone
+  by silencing the event. (The grove spawn retry is tested, MZB-291.)
+- **MZB-249** (C2ME never posts `ChunkTicketLevelUpdatedEvent`; found in the review round, answered by
+  MZB-290): read in the pack's c2me-neoforge-mc1.21.1-0.4.0-alpha.0.122. Its `rewrites-chunk-system` module
+  has `com.ishland.c2me.rewrites.chunksystem.mixin.MixinThreadedAnvilChunkStorage`, which `@Overwrite`s
+  `ChunkMap.updateChunkScheduling(long, int, ChunkHolder, int)` with a call into
+  `TheChunkSystem.vanillaIf$setLevel(long, int)`, and NeoForge posts the event from inside the vanilla
+  method, so under C2ME it is never posted. `Camps.onTicket` was blind there: the levels read at `declare`
+  were never updated, so after it a camp neither went out when its chunks unloaded nor came in when they
+  loaded. The same class `@Overwrite`s `getUpdatingChunkIfPresent(long)` (the holder from C2ME's
+  `TheChunkSystem.getHolder`, its user data, null when the holder is not open), and the holder it returns is
+  C2ME's `NewChunkHolderVanillaInterface`, a `ChunkHolder` subclass whose `getTicketLevel()` is overridden to
+  `newHolder.getTargetStatus().toVanillaLevel()`. So reading a level through `ChunkMapInvoker` works on both
+  chunk systems (C2ME's value is its target status, which leads the loaded state; `areEntitiesLoaded` still
+  gates the census). Options were: (1) a poll of each camp's footprint levels; (2) follow `ChunkEvent.Load`
+  and `Unload` (C2ME is expected to post them; not verified; no FULL threshold); (3) a mixin on C2ME's
+  `vanillaIf$setLevel`, rejected: C2ME is an alpha and a mixin on it fails the launch on any update (the
+  reason JB3 reads it by reflection). The lead chose (1).
+- **MZB-290** (the level poll is the authority; the event is a hint): `Camps.tick` reads the footprint
+  levels of one twentieth of the camps each tick (`POLL_PERIOD` = 20; a camp's slot is its declaration order
+  mod 20, kept as 20 lists so a tick touches only its own slot) through `ChunkMapInvoker.getUpdatingChunkIfPresent`,
+  null being `NO_HOLDER`, and a camp whose levels moved is looked at at the end of that tick, which is the
+  same `look` the event feeds. A camp costs 5 to 21 lookups every 20 ticks. The event listener stays as an
+  early hint where it fires (vanilla, the GameTests); levels from both are clamped to `NO_HOLDER`, so the
+  event's value for an unloaded chunk and the poll's agree and the poll reports only real corrections. The
+  poll is correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
+  under C2ME, and a line is not played on a stale level: `playable` (MZB-233) reads the levels afresh from the
+  chunk map before it decides, since a line is played at once and cannot wait for the next poll (a camp it
+  finds moved is also looked at at the end of the tick). Counters `polls` (camps polled) and `pollChanges`
+  (footprint chunks whose level the poll or that check found moved) are public for the tests. The test hook
+  is `Camps.ticketEventsSilentUntil`, a game time before which `onTicket` returns at once; a time, not a
+  switch, so a failed test leaves the event off for a bounded while, and `Camps.clear` resets it. It is
+  production code a test needs, asked for by the lead. Test:
+  `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent` (batch `mowzie_poll`): the event silenced, a
+  den's chunks released, CAMP_OUT within `POLL_PERIOD + 3` ticks with `pollChanges` moved (it would not
+  move if the event had updated the levels first), the chunks unloaded and forced again, census 2 within
+  `POLL_PERIOD + 3` ticks of the chunks being ready, a new epoch, one CAMP_OUT in all.
+- **MZB-291** (the grove spawn retry is tested): `aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody`
+  (batch `mowzie_no_room`) puts a persistent leaf block at the standing height over every column within 24
+  blocks of the grove's centre: leaves are no part of `MOTION_BLOCKING_NO_LEAVES`, which `spawnAt` reads, so
+  each of the 20 places is a spot inside a leaf block and the collision check rejects it (a solid block would
+  raise the height map and leave the place free above it). The kind returns no place, and a SPAWN is STALE
+  with no spawn counted, no body in slot 1 and no warrior in the area, with no player near (the 2 to 11 ring)
+  and with one 60 blocks east (the edge away from it). With the leaves cleared the same line is DONE and the
+  warrior stands in the open. Replaces the "not tested" of the spawn retry in MZB-248.
+- **MZB-292** (C2ME in the GameTest servers): core's GameTest server has loaded the pack's C2ME jar under
+  `-Pc2me` since JB3; `mowziesmobs/build.gradle` now does the same (`runtimeOnly files("${packMods}/${c2me_jar}")`
+  under `-Pc2me`), so `./gametest.sh mowziesmobs -Pc2me` runs the Mowzie suite on C2ME's chunk system and
+  `./gametest.sh core -Pc2me` the journal barrier's (its `theEntityStorageGetsTheStrategyOfItsOwnWorker` pins
+  the C2ME entity-storage path). Not run: whether Mowzie's Mobs and C2ME start together on the GameTest
+  server, and whether every test of the suite holds under the poll's up to 20 ticks of delay (tests that
+  wait on a CAMP_OUT or a census do; a test that assumes the camp goes out in the tick after a release
+  does not), are for the first run to show. The other plugins' projects have no such line.
 
 ### M5 design for the implementer
 
