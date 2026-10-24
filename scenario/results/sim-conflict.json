@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 210.16339,
+      "wall_ms": 556.1306099999999,
       "checks": [
         {
           "name": "conservation",
@@ -335,7 +335,8 @@
         "lurks": 0,
         "lurks_ended": 0,
         "passes": 0,
-        "passes_watched": 0
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -722,7 +723,7 @@
       ],
       "wire_bytes": 3080,
       "state_hashes": [
-        "02221eb093329be2",
+        "66ed59d6d5ed954d",
         "d450929438383fb2"
       ],
       "archive": {
@@ -770,7 +771,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 204.617946,
+      "wall_ms": 548.5165010000001,
       "checks": [
         {
           "name": "conservation",
@@ -997,7 +998,8 @@
         "lurks": 0,
         "lurks_ended": 0,
         "passes": 0,
-        "passes_watched": 0
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -1299,7 +1301,7 @@
       ],
       "wire_bytes": 2480,
       "state_hashes": [
-        "499a8fb63d147de7",
+        "baa0db57b2567274",
         "a7cefff0accd3c46"
       ],
       "archive": {
@@ -1340,7 +1342,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 332.995789,
+      "wall_ms": 485.223867,
       "checks": [
         {
           "name": "conservation",
@@ -1545,7 +1547,8 @@
         "lurks": 0,
         "lurks_ended": 0,
         "passes": 0,
-        "passes_watched": 0
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -1752,7 +1755,7 @@
       ],
       "wire_bytes": 1344,
       "state_hashes": [
-        "778439139cefc88a",
+        "30f70364a3e8a805",
         "2c2221234256e7c3"
       ],
       "archive": {
@@ -1797,7 +1800,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 02221eb093329be2, world d450929438383fb2 (uninterrupted 02221eb093329be2, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict 66ed59d6d5ed954d, world d450929438383fb2 (uninterrupted 66ed59d6d5ed954d, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,

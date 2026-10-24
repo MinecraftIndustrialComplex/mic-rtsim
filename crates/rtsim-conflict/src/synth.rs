@@ -1803,6 +1803,10 @@ pub struct RailLine {
     pub owner: Uuid,
     /// Sorted by `from`: each entry runs until the next.
     pub service: Vec<Service>,
+    /// How many trains run the line, taking the legs in turn and each waiting for its own last
+    /// arrival before it sets out again (M8's industry, MZB-371). 0 is a fresh train for every leg,
+    /// as the meter's runs have it (MZB-330).
+    pub trains: u64,
 }
 
 impl RailLine {
@@ -1825,6 +1829,7 @@ impl RailLine {
                 per_day,
                 path: 0,
             }],
+            trains: 0,
         }
     }
 }
@@ -1858,7 +1863,10 @@ struct Crossing {
 
 /// A leg's geometry against the dens, from a departure at 0: its length in ticks, and where
 /// the sampler (every 20 ticks) sees it in each circle.
-fn leg_shape(path: &[(f64, f64)], dens: &[RailDen]) -> (f64, Vec<Crossing>) {
+type Shape = (f64, Vec<Crossing>);
+
+/// A leg's [`Shape`].
+fn leg_shape(path: &[(f64, f64)], dens: &[RailDen]) -> Shape {
     let len: f64 = path
         .windows(2)
         .map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1))
@@ -1930,6 +1938,104 @@ impl Jitter {
     }
 }
 
+/// A station dwell, in ticks: how long a train of a line with `trains` stands at its end before it
+/// sets out again (PLACEHOLDER, 30 seconds).
+pub const DWELL_TICKS: u64 = 600;
+
+/// One leg a synthetic train runs (M8, MZB-371): on which line and routing, which way, who runs it
+/// and when it sets out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RailLeg {
+    pub line: usize,
+    pub path: usize,
+    /// From the line's `b` to its `a`.
+    pub back: bool,
+    pub train: u64,
+    pub depart: Tick,
+    /// Ticks from the departure to the arrival, rounded up.
+    pub duration: u64,
+}
+
+impl RailLeg {
+    /// The leg's stations, in the order it runs them.
+    pub fn ends(&self, lines: &[RailLine]) -> (StationEnd, StationEnd) {
+        let l = &lines[self.line];
+        if self.back { (l.b, l.a) } else { (l.a, l.b) }
+    }
+
+    /// The leg's polyline in the order it runs it.
+    pub fn polyline(&self, lines: &[RailLine]) -> Vec<(f64, f64)> {
+        let p = &lines[self.line].paths[self.path];
+        if self.back {
+            p.iter().rev().copied().collect()
+        } else {
+            p.clone()
+        }
+    }
+}
+
+fn path_len(path: &[(f64, f64)]) -> f64 {
+    path.windows(2)
+        .map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1))
+        .sum()
+}
+
+/// Every leg the `lines` run before `to`, line by line in the order they are made (a line of
+/// `trains` can delay one past the next). Each leg's headway is jittered
+/// uniformly by up to `jitter` of itself, from `seed`. A line of `trains` trains gives its legs to
+/// them in turn, alternating each train's direction, and holds a train back until it has
+/// arrived and stood its [`DWELL_TICKS`]; a line of none gives every leg a train of its own.
+pub fn rail_legs(lines: &[RailLine], seed: u64, jitter: f64, to: Tick) -> Vec<RailLeg> {
+    let mut out: Vec<RailLeg> = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        let mut rng = Jitter(seed ^ (li as u64 + 1).wrapping_mul(0xD6E8_FEB8_6659_FD93));
+        let n = line.trains.max(1);
+        let mut free = vec![0u64; n as usize];
+        let mut leg = 0u64;
+        for (si, s) in line.service.iter().enumerate() {
+            let end = line.service.get(si + 1).map_or(to, |n| n.from.min(to));
+            if s.per_day <= 0.0 {
+                continue;
+            }
+            let h = TICKS_PER_DAY as f64 / s.per_day;
+            let mut t = s.from.0 as f64 + h * rng.next();
+            while t < end.0 as f64 {
+                let back = (leg / n) % 2 == 1;
+                let (k, train) = if line.trains == 0 {
+                    (0, ((li as u64 + 1) << 40) | (leg + 1))
+                } else {
+                    let k = leg % n;
+                    (k as usize, ((li as u64 + 1) << 40) | (k + 1))
+                };
+                leg += 1;
+                let mut depart = t.round() as u64;
+                if line.trains > 0 {
+                    depart = depart.max(free[k]);
+                }
+                let path = &line.paths[s.path];
+                let len = if back {
+                    let rev: Vec<(f64, f64)> = path.iter().rev().copied().collect();
+                    path_len(&rev)
+                } else {
+                    path_len(path)
+                };
+                let duration = (len / TRAIN_SPEED).ceil() as u64;
+                free[k] = depart + duration + DWELL_TICKS;
+                out.push(RailLeg {
+                    line: li,
+                    path: s.path,
+                    back,
+                    train,
+                    depart: Tick(depart),
+                    duration,
+                });
+                t += h * (1.0 + jitter * (2.0 * rng.next() - 1.0));
+            }
+        }
+    }
+    out
+}
+
 /// Every pass and arrival the `lines` make before `to`, in time order. Each train's headway is
 /// jittered uniformly by up to `jitter` of itself (MZB-330 uses 0.4), from `seed`; a pass is the
 /// sample nearest the den, reported when the train leaves the circle, for every den the sampler
@@ -1942,65 +2048,121 @@ pub fn rail_events(
     to: Tick,
 ) -> Vec<(Tick, RailEvent)> {
     let mut out: Vec<(Tick, RailEvent)> = Vec::new();
-    for (li, line) in lines.iter().enumerate() {
-        let mut rng = Jitter(seed ^ (li as u64 + 1).wrapping_mul(0xD6E8_FEB8_6659_FD93));
-        let shapes: Vec<[(f64, Vec<Crossing>); 2]> = line
-            .paths
-            .iter()
-            .map(|p| {
-                let back: Vec<(f64, f64)> = p.iter().rev().copied().collect();
-                [leg_shape(p, dens), leg_shape(&back, dens)]
-            })
-            .collect();
-        let mut leg = 0u64;
-        for (si, s) in line.service.iter().enumerate() {
-            let end = line.service.get(si + 1).map_or(to, |n| n.from.min(to));
-            if s.per_day <= 0.0 {
+    let shapes: Vec<Vec<[Shape; 2]>> = lines
+        .iter()
+        .map(|line| {
+            line.paths
+                .iter()
+                .map(|p| {
+                    let back: Vec<(f64, f64)> = p.iter().rev().copied().collect();
+                    [leg_shape(p, dens), leg_shape(&back, dens)]
+                })
+                .collect()
+        })
+        .collect();
+    for leg in rail_legs(lines, seed, jitter, to) {
+        let line = &lines[leg.line];
+        let depart = leg.depart.0;
+        let (duration, hits) = &shapes[leg.line][leg.path][usize::from(leg.back)];
+        for c in hits {
+            let den = dens[c.den];
+            let exit = depart + c.exit;
+            if exit < den.since.0 {
                 continue;
             }
-            let h = TICKS_PER_DAY as f64 / s.per_day;
-            let mut t = s.from.0 as f64 + h * rng.next();
-            while t < end.0 as f64 {
-                let back = (leg % 2) as usize;
-                leg += 1;
-                let depart = t.round() as u64;
-                let train = ((li as u64 + 1) << 40) | leg;
-                let (duration, hits) = &shapes[s.path][back];
-                for c in hits {
-                    let den = dens[c.den];
-                    let exit = depart + c.exit;
-                    if exit < den.since.0 {
-                        continue;
-                    }
-                    out.push((
-                        Tick(exit),
-                        RailEvent::Pass(boundary::RailPass {
-                            faction: den.key,
-                            train,
-                            owner: line.owner,
-                            dimension: 0,
-                            pos: (c.at.0, line.y, c.at.1),
-                            entry: (depart + c.entry) as i64,
-                            exit: exit as i64,
-                        }),
-                    ));
-                }
-                let (from, to_end) = if back == 0 {
-                    (line.a, line.b)
-                } else {
-                    (line.b, line.a)
-                };
-                out.push((
-                    Tick(depart + duration.ceil() as u64),
-                    RailEvent::Arrive(RailCall {
-                        train,
-                        line: Some((from, to_end)),
-                    }),
-                ));
-                t += h * (1.0 + jitter * (2.0 * rng.next() - 1.0));
-            }
+            out.push((
+                Tick(exit),
+                RailEvent::Pass(boundary::RailPass {
+                    faction: den.key,
+                    train: leg.train,
+                    owner: line.owner,
+                    dimension: 0,
+                    pos: (c.at.0, line.y, c.at.1),
+                    entry: (depart + c.entry) as i64,
+                    exit: exit as i64,
+                }),
+            ));
         }
+        let (from, to_end) = leg.ends(lines);
+        out.push((
+            Tick(depart + duration.ceil() as u64),
+            RailEvent::Arrive(RailCall {
+                train: leg.train,
+                line: Some((from, to_end)),
+            }),
+        ));
     }
     out.sort_by_key(|e| e.0);
     out
+}
+
+// ---- the lurk table (M8): what the Java side keeps of the engine's lurks ------------------------
+
+/// Java's lurk table (MZB-354, MZB-371): one entry for each lurking band, by agent, from the
+/// AMBUSH_SPOT that put it there to the one with the removed flag. It lives for one session.
+#[derive(Clone, Debug, Default)]
+pub struct LurkTable {
+    spots: BTreeMap<u64, boundary::AmbushSpot>,
+}
+
+impl LurkTable {
+    /// Hears one command. A spot adds its agent's lurk (or replaces it: the newest wins), the
+    /// removed flag drops it. Returns the spot of a lurk added, `None` for anything else.
+    pub fn hear(&mut self, cmd: &Cmd) -> Option<boundary::AmbushSpot> {
+        let Cmd::AmbushSpot(s) = cmd else {
+            return None;
+        };
+        if s.flags & boundary::AMBUSH_REMOVED != 0 {
+            self.spots.remove(&s.agent);
+            None
+        } else {
+            self.spots.insert(s.agent, *s);
+            Some(*s)
+        }
+    }
+
+    /// A new session: the table is empty.
+    pub fn clear(&mut self) {
+        self.spots.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.spots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.spots.is_empty()
+    }
+
+    pub fn get(&self, agent: u64) -> Option<&boundary::AmbushSpot> {
+        self.spots.get(&agent)
+    }
+}
+
+/// The tick the train of `leg` passes a lurk's track point, if it passes within the spot's reach
+/// (MZB-371): the first sampler tick at or after the leg's nearest approach to the point, as the
+/// timetable puts it there. The leg is a straight run along its polyline at [`TRAIN_SPEED`].
+pub fn pass_tick(lines: &[RailLine], leg: &RailLeg, spot: &boundary::AmbushSpot) -> Option<Tick> {
+    let path = leg.polyline(lines);
+    let (px, pz) = (spot.track.0, spot.track.2);
+    let mut best: Option<(f64, f64)> = None;
+    let mut before = 0.0;
+    for s in path.windows(2) {
+        let (dx, dz) = (s[1].0 - s[0].0, s[1].1 - s[0].1);
+        let l = dx.hypot(dz).max(1e-9);
+        let f = (((px - s[0].0) * dx + (pz - s[0].1) * dz) / (l * l)).clamp(0.0, 1.0);
+        let (qx, qz) = (s[0].0 + dx * f, s[0].1 + dz * f);
+        let d = (px - qx).hypot(pz - qz);
+        if best.is_none_or(|b| d < b.0) {
+            best = Some((d, before + l * f));
+        }
+        before += l;
+    }
+    let (d, arc) = best?;
+    if d > f64::from(spot.reach) {
+        return None;
+    }
+    let step = SAMPLE_TICKS as f64 * TRAIN_SPEED;
+    let ticks = ((arc / step).ceil() as u64 * SAMPLE_TICKS).min(leg.duration);
+    Some(Tick(leg.depart.0 + ticks))
 }

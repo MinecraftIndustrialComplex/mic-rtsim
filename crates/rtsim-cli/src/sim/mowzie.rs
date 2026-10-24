@@ -19,6 +19,7 @@
 //!
 //! Exit 1 if a check fails, 64 on bad arguments.
 
+mod lurk;
 mod rail;
 
 use std::path::PathBuf;
@@ -51,8 +52,8 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         1,
         "a line through a range: notice, raid, repeat, invasion; ambushes; a kill and the heir",
-        "M2, the ladder on kills: notice, raid, repeat, invasion; M7, the meter on 4, 12, 24 and 50 legs a day and a trunk of 14 lines",
-        "ambushes M8",
+        "M2, the ladder on kills: notice, raid, repeat, invasion; M7, the meter on 4, 12, 24 and 50 legs a day and a trunk of 14 lines; M8, the ambushes on a 12- and a 24-a-day line with two trains each",
+        "",
     ),
     (
         2,
@@ -93,8 +94,8 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         8,
         "save and restore mid-lurk and mid-reconcile",
-        "M4, a reconcile in flight: saved and loaded, voided by a restart and ordered again",
-        "the lurk, a cowed time and a meter's decay M8",
+        "M4, a reconcile in flight: saved and loaded, voided by a restart and ordered again; M8, a lurk, a cowed time and a meter's decay: saved and loaded, blob and paged, and a session restart",
+        "",
     ),
     (
         9,
@@ -212,6 +213,7 @@ fn main(o: Opts) -> i32 {
             1 => {
                 let mut out = den_ladder(o.seed, slice);
                 rail::meter(&mut out.checks);
+                lurk::ambushes(&mut out.checks);
                 out
             }
             2 => rail_run(2, slice, rail::cut),
@@ -221,7 +223,11 @@ fn main(o: Opts) -> i32 {
             5 => grove_ladder(o.seed, slice),
             6 => den_renewal(slice),
             7 => den_kills(slice),
-            8 => reconcile_in_flight(slice),
+            8 => {
+                let mut out = reconcile_in_flight(slice);
+                lurk::trips(&mut out.checks);
+                out
+            }
             10 => camp_reconciler(o.seed, slice),
             _ => RunOut {
                 run: *n,
