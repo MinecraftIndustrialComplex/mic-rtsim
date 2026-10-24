@@ -75,6 +75,8 @@ public final class StubEngine implements ScriptedEngine {
     public record Pages(long obsSeq, long nextCmdSeq, Map<Long, Long> appliedOps, Map<Long, Long> ledger,
                         long openGen, long openLast, Map<Long, Long> lastOf, Set<GenSeq> copied) {
         public static final Pages EMPTY = new Pages(0, 1, Map.of(), Map.of(), 0, 0, Map.of(), Set.of());
+        /** "RTS2": op ids with their sequences (pages from before, "RTSP", are refused). */
+        private static final int MAGIC = 0x52545332;
 
         public Pages {
             appliedOps = Map.copyOf(appliedOps);
@@ -99,7 +101,7 @@ public final class StubEngine implements ScriptedEngine {
             try {
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream();
                 DataOutputStream out = new DataOutputStream(bytes);
-                out.writeInt(0x52545350); // "RTSP"
+                out.writeInt(MAGIC);
                 out.writeLong(obsSeq);
                 out.writeLong(nextCmdSeq);
                 out.writeInt(appliedOps.size());
@@ -133,7 +135,7 @@ public final class StubEngine implements ScriptedEngine {
 
         public static Pages decode(byte[] data) throws IOException {
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
-            if (in.readInt() != 0x52545350)
+            if (in.readInt() != MAGIC)
                 throw new IOException("not stub pages");
             long obsSeq = in.readLong();
             long nextCmdSeq = in.readLong();

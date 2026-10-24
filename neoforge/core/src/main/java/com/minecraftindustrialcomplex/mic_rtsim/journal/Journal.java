@@ -23,8 +23,9 @@ import java.util.Map;
  *       disk; the journal is then trimmed up to it;</li>
  *   <li>the next observation sequence, so sequences are never reused in this world;</li>
  *   <li>the newest JOURNAL_GEN the engine acknowledged, kept past the trim ({@link #pinnedGen()}): the
- *       entries after it are that generation's, and an engine whose pages are older than the journal
- *       must hear which generation they are before it judges a copy of one (docs/boundary.md §3.2);</li>
+ *       entries after it (up to the next JOURNAL_GEN among them) are that generation's, and an engine whose
+ *       pages are older than the journal must hear which generation they are before it judges a copy of one
+ *       (docs/boundary.md §3.2);</li>
  *   <li>Java's dictionary (dimension, item and body-kind names behind the ids observations use),
  *       because a journaled record replayed in a later session must still mean the same thing.</li>
  * </ul>
@@ -181,11 +182,12 @@ public final class Journal {
     }
 
     /**
-     * The newest JOURNAL_GEN the engine acknowledged, or null: the generation of the entries after it.
+     * The newest JOURNAL_GEN the engine acknowledged, or null.
      * Sent first at each session start like an entry ({@link #drainInto}); an engine whose pages include it
      * skips it. Without it, an engine whose pages are older than the journal (restored, or lost after the
      * trim) would admit the entries under the wrong generation, and a copy of one of them (REASSERT)
-     * would apply a second time (docs/boundary.md §3.2). Not an entry: not in {@link #size}, {@link #bytes},
+     * would apply a second time (docs/boundary.md §3.2). The entries after it, up to the next JOURNAL_GEN
+     * among them, are its generation's. Not an entry: not in {@link #size}, {@link #bytes},
      * {@link #entries} or {@link #firstSeq}.
      */
     public Entry pinnedGen() {
@@ -333,8 +335,15 @@ public final class Journal {
                 j.appliedCmdOps.merge(b.getLong(opAt), 1, Integer::sum);
         }
         byte[] pinned = s.pinnedGen();
-        if (pinned != null)
+        if (pinned != null) {
+            if (pinned.length < Obs.JournalGen.SIZE || kindOf(pinned) != Obs.JOURNAL_GEN)
+                throw new IllegalStateException("mic_rtsim journal is corrupt: its kept generation is not a JOURNAL_GEN");
             j.pinnedGen = new Entry(ByteBuffer.wrap(pinned).order(Layout.ORDER).getLong(Obs.OBS_SEQ), pinned);
+            long first = j.entries.isEmpty() ? j.nextObsSeq : j.entries.peekFirst().seq();
+            if (j.pinnedGen.seq() <= 0 || j.pinnedGen.seq() >= first)
+                throw new IllegalStateException("mic_rtsim journal is corrupt: its kept generation " + j.pinnedGen.seq()
+                        + " is not below its first entry " + first);
+        }
         for (int d = 0; d < s.dictNames().length; d++) {
             DictEntry key = new DictEntry(s.dictKinds()[d], s.dictNames()[d]);
             j.dict.add(key);

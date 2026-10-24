@@ -311,12 +311,13 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
 disk. It holds:
 - `lastAppliedCmdSeq`;
 - every journaled observation the engine has not acknowledged, as the exact record bytes;
+- the newest JOURNAL_GEN the engine acknowledged, kept past the trim (`pinnedGen`, §3.2);
 - `nextObsSeq`;
 - Java's dictionary.
 
 **Replay is the normal path.** Journaled observations always reach the engine from the journal: at
 each hand-over Java copies the entries it has not sent yet this session. At a session start it has
-sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The engine acknowledges
+sent none, so everything unacknowledged goes out again, flagged `REPLAY`, after the kept JOURNAL_GEN. The engine acknowledges
 (`ackedObsSeq`) only what pages on disk include, and Java then trims.
 
 **Op ids, both ways:**
@@ -412,11 +413,11 @@ applied copy (copies apply only after a crash or a reset).
 **The journal keeps its newest acknowledged JOURNAL_GEN.** A trim drops the entries the engine
 acknowledged, except the newest JOURNAL_GEN among them (`Journal.pinnedGen`, saved with the journal
 as `pinnedGen`), which is sent first at each session start like an entry; pages that include it skip
-it. The entries after it are that generation's. Without it, pages older than the journal's first
-entry (restored from a backup, say) would admit those entries under the pages' own open generation,
-and a copy of one of them would find its generation unknown and apply a second time. It is not an
-entry: the journal's first sequence (`SESSION_START`'s `JOURNAL_FIRST_OBS_SEQ`) is the first entry
-after it.
+it. The entries after it, up to the next JOURNAL_GEN among them, are that generation's. Without it,
+pages older than the journal's first entry (restored from a backup, say) would admit those entries
+under the pages' own open generation, and a copy of one of them would find its generation unknown and
+apply a second time. It is not an entry: the journal's first sequence (`SESSION_START`'s
+`JOURNAL_FIRST_OBS_SEQ`) is the first entry after it.
 
 **Known limit.** When the pages are older than the journal's first entry (a journal trimmed past the
 pages, §3), the engine skips the gaps and admits the rest: the kept JOURNAL_GEN opens its generation,
@@ -426,7 +427,7 @@ again what it remembers (`BoundarySession.observationsLost`).
 
 **After a reset** (the reinstall guard's choice RG14): an engine that started over took its state
 from the world. The guard drops the old engine's records in Java before they are journaled; without
-it, a copy applies unless the generation the journal kept admitted a later sequence.
+it, a copy applies unless the generation the journal kept admitted that sequence or a later one.
 
 ## 4. Phase 1: caravans and markets (PLAN.md §8)
 
