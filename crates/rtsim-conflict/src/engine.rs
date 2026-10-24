@@ -5275,7 +5275,7 @@ impl Conflict {
             Obs::HuntApplied(h) => self.hunt_applied(h),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
             Obs::CampCensus(c) => self.camp_census(w, c, at),
-            Obs::CampBodies(b) => self.camp_bodies(b, at),
+            Obs::CampBodies(b) => self.camp_bodies(w, b, at),
             Obs::CampOut(o) => self.camp_out(o, at),
             Obs::FactionFound(ff) => {
                 let Some(name) = self.java_dict.get(&(4, ff.structure)).cloned() else {
