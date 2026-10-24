@@ -1047,7 +1047,10 @@ conservative option at its fork.
   that arrives again keeps the route's last time as its arrival and its patience from there.
   A siege's hold is from `until.min(at)` and changes neither `seg` nor `bored_at`. `fight_held`
   leaves `seg` at the route's end, as a live arrival does, ends no earlier than the next tick,
-  counts `raids_watched` and schedules no wave (`wave` is held anyway, RP-28).
+  counts `raids_watched` and schedules no wave (`wave` is held anyway, RP-28). Since RP-42 the
+  host takes no page while replaying, so the inference from the pages is reached only from
+  engine-level tests that save mid-replay (test (b)'s restarts); kept as a defence (the
+  re-review's item 4).
 - **RP-41** (the tests): (b) is engine-level, in rtsim-conflict's mowzie_records, where an
   Infrastructure that records every `raid` shows an abstract resolve; (c) lowers the camp's pool so
   that it shows the band coming home, and compares both the pool's closed form at a fixed time and

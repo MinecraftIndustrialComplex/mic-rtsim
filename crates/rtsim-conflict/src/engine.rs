@@ -3325,12 +3325,15 @@ impl Conflict {
     /// A war party's arrival (`arrived`) or a siege's next round, held while the session's
     /// replay runs (docs/replay-gate.md §6.1, RP-23): neither fought nor resolved. Its Ev::Party
     /// comes again every [`REPLAY_HOLD_TICKS`] with the same plan, answered in the wheel's arm
-    /// while held, so that pages saved mid-replay keep an event for it, and once at `since` +
+    /// while held, so that the hold always has an event, and once at `since` +
     /// [`REPLAY_HOLD_SLACK_TICKS`], where the hold ends (RP-48): that poll reaches
     /// `party_event` before any record at or past it, as the replay clock follows the records.
     /// An arrival's `seg` goes back to the last segment, so that a poll that reaches
     /// `party_event` (at the slack, after the replay end, or after a restart that lost the map)
     /// arrives again; `bored_at` stays as `arrive` set it. A siege's round touches neither.
+    /// The event also kept the hold in pages saved mid-replay, but since RP-42 the host takes
+    /// no page while replaying: only engine-level tests save the engine mid-replay and restart
+    /// from it, and the restart case stays as a defence.
     fn hold(&mut self, p: Handle<Party>, since: Tick, at: Tick, arrived: bool) {
         let x = &mut self.parties[p];
         if arrived {
@@ -3353,6 +3356,10 @@ impl Conflict {
     /// its route's last time (the hold put `seg` back), or a siege waiting past its round. Its
     /// patience runs from then, as `arrive` sets it. Only inside the hold's slack (RP-48): a
     /// record at or past it is no fight of the hold's, which its poll there has resolved.
+    /// Since RP-42 the host takes no page while replaying, so the inference from the pages is
+    /// reached only from engine-level tests that save the engine mid-replay (mowzie_records'
+    /// `a_held_arrival_survives_a_restart_from_pages_saved_mid_replay`); it stays as a defence,
+    /// should pages saved mid-replay ever reach a start again (the re-review's item 4).
     fn held_since(&mut self, p: Handle<Party>, at: Tick) -> Option<Tick> {
         let x = &self.parties[p];
         let inside = |since: Tick| at < since + REPLAY_HOLD_SLACK_TICKS;

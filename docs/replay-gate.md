@@ -826,8 +826,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   format change). Recommended: the held check in the Ev::Party arm answers a held party's poll
   before `party_event`, and the first hold puts `seg` back by one, so that a poll that does reach
   `party_event` (at the slack, after the replay end, or after a restart that lost the map) lands on
-  the last segment again and arrives. The slice checks `party_pos` and `book_leg` with `seg` one short and
-  tests the restart.
+  the last segment again and arrives. The slice checks `party_pos` and `book_leg` with `seg` one
+  short and tests the restart. Since RP-42 the host takes no page while replaying, so only
+  engine-level tests save mid-replay and restart from those pages; the restart case stays as a
+  defence (the re-review's item 4).
 - **Honoured.** A replayed, honoured BAND_MATERIALIZED of a held party (§5.2) is the last session's
   watched fight. The party takes the state `start_fight` leaves, without its commands: Fighting;
   `until` = `min(arrival + watched_fight_ticks, bored_at)` from the held arrival tick;
