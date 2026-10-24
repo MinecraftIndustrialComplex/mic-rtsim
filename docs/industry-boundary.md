@@ -494,7 +494,7 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
 | IND_GRAPH_NODE | node kind | 32 u32 model, 36 u32 domain (NONE), 40 u32 inventory (NONE), 44 u32 flags, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved, 64 u32 rule, 68 u32 n rates, 72 i64 capacity, 80 i64 param0, 88 i64 param1, 96 i64 param2, 104 i64 param3, 112 n × Rate24 | 112 + 24n |
 | IND_GRAPH_EDGE | edge kind | 32 u32 from, 36 u32 to, 40 u32 order, 44 u32 flags, 48 u32 capNum, 52 u32 capDen (0/0 unlimited; units per tick), 56 u32 latency, 60 u32 n filter, 64 i64 param, 72 n × u32 good | 72 + 4n, padded to 8 |
 | IND_GRAPH_RECIPE | inputs + outputs | 32 u32 recipeType, 36 u32 heat (at least), 40 u32 n inputs, 44 u32 n outputs, 48 u32 duration, 52 u32 name (NAME, 0 none), 56 n × Term24 (inputs first) | 56 + 24n |
-| IND_GRAPH_DOMAIN | n members | 32 u64 network, 40 u32 n levels, 44 u32 current level, 48 u32 driver node (NONE), 52 u32 flags (1 overstressed now, 2 stress disabled), 56 f64 live stress, 64 f64 live capacity, 72 L × Level24, then n × Member24 | 72 + 24L + 24n |
+| IND_GRAPH_DOMAIN | n members | 32 u64 network (Create's id, a hint only), 40 u32 n speed rows L, 44 u32 current speed row (NONE), 48 reserved, 52 u32 flags (1 overstressed now, 2 stress disabled, 4 shared), 56 f64 live stress, 64 f64 live capacity, 72 u32 n sources S, 76 u32 n source rows R, 80 u32 n foreign (the last members), 84 reserved, 88 L × Level24 (speed rows), S × Source32, R × Level24 (source rows), then n × Member24 | 88 + 24L + 32S + 24R + 24n |
 | IND_GRAPH_END | flags: 1 complete, 2 not compilable, 4 black box, 8 resend | 16 u64 district, 24 u32 compile, 28 u32 window (checksum window ticks; 0 the engine's `glass.checksumWindowMin`), 32 u32 records, 36 u32 nodes, 40 u32 edges, 44 u32 recipes, 48 u32 domains, 52 u32 reason, 56 u64 fingerprint, 64 u64 frame (0 the level; else a Sable sub-level id), 72 u32 revision, 76 u32 compileTicks | 80 |
 | IND_PROBE_SAMPLE | n entries | 16 u64 district, 24 u32 sweep, 28 u32 node, 32 u32 compile, 36 reserved, 40 n × Entry16 | 40 + 16n |
 | IND_CHUNK_TICKING | 1 ticking, 0 not | (journaled prefix) 24 u64 district, 32 u32 dim, 36 i32 chunkX, 40 i32 chunkZ, 44 reserved | 48 |
@@ -509,11 +509,22 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
   ticks. Java ran the machine's own countdown for these numbers (G-B5).
 - **Term24:** `0 u32 good, 4 u32 flags (1 catalyst, 2 chance), 8 i64 num, 16 i64 den`: `num/den` of
   the good per craft; chance outputs at their expectation (G-B11).
-- **Level24:** `0 u32 selector, 4 i32 speedNum, 8 u32 speedDen, 12 reserved, 16 f64 capacity`: the
-  root source's RPM as a rational and the domain's capacity in SU at that level; `selector` is the
-  driver's value that picks the level (a boiler's level, 0 to 18), 0 without a driver.
+- **Level24:** `0 u32 selector, 4 i32 speedNum, 8 u32 speedDen, 12 reserved, 16 f64 capacity`.
+  As a domain's **speed row**: one speed the reference (the frame of the members' ratios) can turn
+  at, as a rational; selector and capacity 0. The rows are distinct, nonzero, sorted by |speed|
+  (the negative first), at most 32; Rate24's `level` indexes them. As a **source row**: the
+  source's own generated speed and its capacity in SU at that speed; `selector` is the boiler level
+  (0 to 18) that picks the row for a driven source, 0 for a fixed one.
+- **Source32:** `0 u32 driver (the boiler node, NONE), 4 u32 first source row, 8 u32 row count,
+  12 u32 current row (NONE), 16 i32 ratioNum, 20 u32 ratioDen (0: unknown), 24 i64 position`: one
+  per Create source on the network, ascending by `BlockPos.asLong`, its rows contiguous in source
+  order. A driven source (an engine shaft on a tank the compile has a boiler node for) has 19 rows,
+  level 0 to 18; any other source, and every source of a domain Java cannot model, has one row,
+  its speed now. `ratio` is the source's speed over the reference's. The fastest source sets the
+  speed, every source adds its row's capacity, and sources that disagree in sign stop the network
+  (SECTIONS.md §2.6, §13 SC144 onward).
 - **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
-  `count` blocks at speed `ratio × root speed` and `impact` SU per RPM each.
+  `count` blocks at speed `ratio × reference speed` and `impact` SU per RPM each.
 - **Count40:** `0 u32 mover, 4 u32 store, 8 u32 good (NONE: the pair counted nothing yet),
   12 u32 entries, 16 i64 since, 24 i64 in, 32 i64 out`: what the mover put into the store and took
   from it since game time `since`, cumulative, in the sample's compile's node numbers. One entry

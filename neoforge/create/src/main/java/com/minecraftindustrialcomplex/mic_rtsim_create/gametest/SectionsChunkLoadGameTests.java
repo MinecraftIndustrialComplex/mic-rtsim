@@ -470,7 +470,9 @@ public final class SectionsChunkLoadGameTests {
      * apart reach from A over 13 chunks to B, where a creative motor turns them; both ends have a cog and a
      * millstone. With only A's radius-1 ticket left, B (13 chunks away) unloads and the conveyors between
      * are held below FULL. The recount (Create's {@code calculateCapacity}) keeps the motor as it last was,
-     * without loading B: the capacity is unchanged and the motor still listed. A millstone added in A
+     * without loading B: the capacity is unchanged and the motor still listed, and the loaded half keeps
+     * turning at the motor's speed, not overstressed, for 600 ticks and after the recount below (slice
+     * S5-1, SECTIONS.md §2.6). A millstone added in A
      * makes the network recount its stress, with the same answer for the capacity. B then loads FULL and
      * does not tick: its fresh motor exists and has not joined, and a recount still keeps the kept motor.
      * When B is forced, the fresh motor takes the kept one's place as it joins: one source, with no recount
@@ -485,7 +487,7 @@ public final class SectionsChunkLoadGameTests {
      * joined positions, the recount after the update forgot the position and Create took the motor's share
      * out a second time).
      */
-    @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 16000)
+    @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 17000)
     public static void aNetworkRecountKeepsAnUnloadedSource(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
@@ -566,6 +568,19 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "B away: capacity, sources, members, size", cap[1] + ", " + n.sources.size() + ", " + n.members.size() + ", " + n.getSize());
                     check("the recount keeps the away motor's capacity: " + cap[1] + " vs " + cap[0], cap[1] == cap[0]);
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
+                    loadedHalfTurns(level, millA, "with B away");
+                })
+                // the loaded half keeps its speed and the away motor's capacity for as long as B stays away (slice S5-1,
+                // SECTIONS.md §2.6)
+                .thenIdle(600)
+                .thenExecute(() -> {
+                    KineticNetwork n = net.get();
+                    float c = n.calculateCapacity();
+                    record(t, "B away 600 ticks: millstone A's speed, capacity, stress, overstressed",
+                            speedOf(level, millA) + ", " + c + ", " + n.calculateStress() + ", " + kinetic(level, millA).isOverStressed());
+                    loadedHalfTurns(level, millA, "600 ticks after B went away");
+                    check("the same capacity 600 ticks on: " + c + " vs " + cap[0], c == cap[0]);
+                    check("the away motor is still listed 600 ticks on", n.sources.containsKey(oldMotor[0]));
                     GlassCorpusKit.set(helper, added, AllBlocks.MILLSTONE.getDefaultState());
                 })
                 .thenWaitUntil(() -> check("the added millstone turns: " + speedOf(level, added), Math.abs(speedOf(level, added)) == 64))
@@ -578,6 +593,7 @@ public final class SectionsChunkLoadGameTests {
                     check("the capacity is unchanged: " + cap[2], cap[2] == cap[0]);
                     check("the stress grew by the added millstone: " + stress[0] + " to " + stress[1], stress[1] > stress[0]);
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
+                    loadedHalfTurns(level, millA, "after the recount");
                     watch.check("no chunk two or more from A loaded");
                     watch.on = false;
                     // B's chunk loads FULL and does not tick: its block entities exist and have not joined
@@ -703,6 +719,13 @@ public final class SectionsChunkLoadGameTests {
                     force(level, ax, bx, az, false);
                 })
                 .thenSucceed();
+    }
+
+    /** A member of the loaded half turns at the away motor's 64 RPM and is not overstressed. */
+    private static void loadedHalfTurns(ServerLevel level, BlockPos member, String when) {
+        KineticBlockEntity k = kinetic(level, member);
+        check("the loaded half turns " + when + ": " + speedOf(level, member), k != null && Math.abs(speedOf(level, member)) == 64);
+        check("the loaded half is not overstressed " + when, !k.isOverStressed());
     }
 
     /**
