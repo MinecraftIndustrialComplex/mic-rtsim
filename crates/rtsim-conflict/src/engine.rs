@@ -5197,7 +5197,7 @@ impl Conflict {
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
-                self.chief_killed_by(w, p, killer, ck.by, at);
+                self.chief_killed_by(w, p, killer, ck.by, Some(ck.epoch), at);
             }
             Obs::EnvoyAnswer(a) => {
                 let Some(p) = self.party_of(a.agent, a.epoch) else {
@@ -5419,7 +5419,7 @@ impl Conflict {
         } else {
             boundary::BY_NONE
         };
-        self.chief_killed_by(w, p, killer, by, at);
+        self.chief_killed_by(w, p, killer, by, None, at);
     }
 
     /// The war chief of a party away falls, killed by `by` (CHIEF_KILLED, MZB-263): the fall
@@ -5427,12 +5427,18 @@ impl Conflict {
     /// bumps it, before anything plans the wait), the feud the band served, or the killer's when
     /// it served none, drops rungs ([`Conflict::step_down`]), and the band routs: a fight ends, a
     /// band on the road walks home, and a rescue is reported when a player broke it (CL-D61).
+    ///
+    /// A boss's chief is the band's one unit, and Java reports its death as CHIEF_KILLED alone
+    /// (never BAND_CASUALTIES), so the unit leaves the band here, its slot with it
+    /// ([`Conflict::chief_unit_lost`], MZB-295). `epoch` is the record's, `None` for a kill the
+    /// engine is told of directly (the band's present one).
     pub fn chief_killed_by(
         &mut self,
         w: &mut World,
         p: Handle<Party>,
         killer: Option<ActorId>,
         by: u32,
+        epoch: Option<u32>,
         at: Tick,
     ) {
         let f = self.parties[p].faction;
@@ -5449,6 +5455,8 @@ impl Conflict {
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
         let cause = self.renewal_cause(f, by);
         self.renewal_bump(f, 1, cause, at);
+        // After the pressure, as `lose_units` has it: the wait `party_lost` plans reads it.
+        self.chief_unit_lost(p, epoch, at);
         if let Some(a) = self.parties[p].feud.or(killer) {
             self.step_down(f, a, at);
         }
@@ -5488,23 +5496,65 @@ impl Conflict {
         }
     }
 
+    /// A boss's band loses its chief, which is its one unit (the Frostmaw's; `renewal.boss`, as
+    /// `lose_units` has it): one unit leaves the band's first kind still alive, from the stack in
+    /// Minecraft (`spawned`, or the recalled stack of the record's epoch, as `casualties` counts
+    /// them off) and from the count, and the band's slot falls with it (`party_lost`), with no
+    /// second bump of the pressure (the fall bumped it). Java's survivors never hold the chief, so
+    /// the DEMATERIALIZED that follows finds the stack already one short and takes nothing off
+    /// again; and a crash between the two records, whose replay counts every body never reported
+    /// alive, no longer brings the dead chief home (MZB-295). Any other culture's chief is an extra
+    /// body outside its units (MZB-109), which count it apart.
+    fn chief_unit_lost(&mut self, p: Handle<Party>, epoch: Option<u32>, at: Tick) {
+        let f = self.parties[p].faction;
+        if !self.culture(f).renewal.is_some_and(|r| r.boss) {
+            return;
+        }
+        let epoch = epoch.unwrap_or(self.parties[p].epoch);
+        let x = &mut self.parties[p];
+        let Some(k) = x.units.iter().position(|e| e.1 > 0) else {
+            return;
+        };
+        x.units[k].1 -= 1;
+        let u = x.units[k].0;
+        let replayed = !x.embodied && x.recalled.iter().any(|e| e.0 == epoch);
+        let stacks = if replayed {
+            x.recalled
+                .iter_mut()
+                .find(|e| e.0 == epoch)
+                .map(|e| &mut e.1)
+        } else {
+            Some(&mut x.spawned)
+        };
+        if let Some(s) = stacks.and_then(|v| v.iter_mut().find(|s| s.0 == u)) {
+            s.1 = s.1.saturating_sub(1);
+        }
+        self.stats.casualties += 1;
+        self.party_lost(p, 1, at);
+    }
+
     /// The war chief's body dies at its camp (CAMP_DEATH with `DEATH_CHIEF`, MZB-264), `killer`
     /// being the player that did it, if one did: the fall ([`Conflict::chief_falls`]) and the heir,
     /// and only the killer's own feud steps down, since no band broke (a third player's kill at the
     /// camp steps no one else's, MOWZIE.md *Kills*). Each band the chief led rotates home routed:
     /// they are collected before the succession, which clears their flag (MZB-139), with no
-    /// breaker and no rescue news. The camp's pressure is the caller's (`camp_death`). A chief
-    /// the books already buried (dead of age) is not killed twice: the body is the old one's.
+    /// breaker and no rescue news. The camp's pressure is the caller's (`camp_death`). A body
+    /// whose notable is not the faction's chief any more (`body_of`, the notable its slot was made
+    /// for) is the old chief's, dead of age: it is not killed twice, and the chief that took over
+    /// stands, in whatever order the records come.
     pub fn chief_killed_at_camp(
         &mut self,
         w: &mut World,
         f: u32,
+        body_of: ActorId,
         killer: Option<ActorId>,
         at: Tick,
     ) {
-        let chief = self.factions[f as usize].chief;
+        // The body is the chief's only while the faction's chief is the notable its slot was made
+        // for, after the succession of a chief dead of age has run, by this record or by whatever
+        // asked for the chief first (MZB-296).
         self.ensure_chief(w, f, at);
-        if self.factions[f as usize].chief != chief {
+        if self.factions[f as usize].chief != body_of {
             return;
         }
         let led: Vec<Handle<Party>> = self
