@@ -722,6 +722,7 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::ProbeSet(_) => "IND_PROBE_SET",
         Cmd::CountSet(_) => "IND_COUNT_SET",
         Cmd::WriteChain(_) => "IND_WRITE_CHAIN",
+        Cmd::HeldDraw(_) => "IND_HELD_DRAW",
     }
 }
 
@@ -795,7 +796,7 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
             p.goods.goods().for_each(|g| goods(g, &mut names));
             None
         }
-        Cmd::ProbeSet(_) | Cmd::CountSet(_) => None,
+        Cmd::ProbeSet(_) | Cmd::CountSet(_) | Cmd::HeldDraw(_) => None,
         Cmd::WriteChain(p) => {
             p.goods.goods().for_each(|g| goods(g, &mut names));
             None
