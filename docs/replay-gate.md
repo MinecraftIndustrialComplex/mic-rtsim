@@ -278,6 +278,13 @@ tests/reassert.rs beside S4p's.
    and the refusal count rises by two. Control: the same copies with a named, unknown generation:
    the first counts once, the second is dropped. `copies_of_generation_0_casualties_are_refused`,
    `copies_of_casualties_of_an_unknown_generation_count_once`.
+6. **SEC-1's meeting-point review, item 7:** a second live copy after a replayed copy counts nothing
+   (`a_second_live_copy_after_a_replayed_copy_counts_nothing`); a save due at a REASSERT takes the
+   pages before the copy, which then counts once, live and in the next session's replay
+   (`a_save_due_at_a_reassert_takes_the_pages_before_the_copy`). On main a session's first live
+   record is its JOURNAL_GEN, so that REASSERT is the first record past the save Java asks for, not
+   the first live record (§2.4's no-gen bridge is the only other way). The third, a held arrival's
+   replayed fight, is §6.1's.
 
 ### 2.6 RG14
 
@@ -871,7 +878,8 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   says; `seen_by` None (`wave` returns early while replaying, and the replay end clears it). It
   leaves `held`. Only a record inside the hold's slack is honoured so (RP-48). Its replayed
   casualties count and rout as live ones, and the fight ends at `until` inside the window (§3.6) or
-  becomes Waiting at the replay end, as every Fighting party does.
+  becomes Waiting at the replay end, as every Fighting party does
+  (`a_held_arrivals_replayed_fight_counts_its_casualties_once`, rtsim-jni tests/protocol.rs).
 - **Not honoured: the slack** (RP-48). A held party with no such record keeps its poll until the
   hold's slack, `REPLAY_HOLD_SLACK_TICKS` (PLACEHOLDER 600 world ticks, 30 s) after its arrival or
   round. A watched decision's BAND_MATERIALIZED comes a hand-over or two after it (Java journals it
