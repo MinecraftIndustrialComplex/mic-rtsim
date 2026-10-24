@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.client;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.iafenvoy.uranus.animation.IAnimatedEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
@@ -151,10 +152,11 @@ final class DragonArrivals {
      * body's starts at that less the same gap. Its first warm renders that ({@link DragonLook#WARM} renders a step
      * apart, ending there, as a live stand-in's do): the 2-tick transition at 0.4 ends at the second, where the
      * loop starts. GeckoLib starts the next loop at the first render past a loop's end, dropping what it ran over,
-     * so a render at the end itself keeps the beat (the stand-ins do the same). Only a body flying for a far model
-     * that flies: one at rest plays no loop (Ice and Fire's ground pose has no length), and a ground body's actions
-     * would play out of sight. The flight animation has no sound, particle or instruction keyframes, so the renders
-     * at past ticks start nothing.
+     * so a render at the end itself keeps the beat (the stand-ins do the same). Only a body that plays the flight
+     * loop ({@link #inFlight}) for a far model that flies: one at rest plays no loop (Ice and Fire's ground pose has
+     * no length), and an action (a blast's charge, a roar) would play out of sight. The flight animation has no
+     * sound, particle or instruction keyframes, so the renders at past ticks start nothing. Not under {@code /tick
+     * freeze}: the far clock runs on while the body's ticks do not.
      */
     private boolean warm(Arrival a, FarMover m, float partial) {
         DragonBaseEntity d = a.body;
@@ -162,11 +164,16 @@ final class DragonArrivals {
         warming = true;
         try {
             EntityRenderer<DragonBaseEntity> r = DragonLook.renderer(d);
-            if (Double.isNaN(a.first) && m.state() != FarState.ROOST && (d.isFlying() || d.isHovering())) {
+            if (Double.isNaN(a.first) && m.state() != FarState.ROOST && inFlight(d)
+                    && !d.level().tickRateManager().isEntityFrozen(d)) {
                 long far = FarClock.ticks() + DragonLook.beatOffset(m);
                 long start = DragonLook.loopStart(far) - (far - real);
-                for (int s = 0; s < DragonLook.WARM; s++)
-                    renderAt(r, d, start + (s + 1 - DragonLook.WARM) * STEP);
+                for (int s = 0; s < DragonLook.WARM; s++) {
+                    long at = start + (s + 1 - DragonLook.WARM) * STEP;
+                    // A controller takes up its animation only at a time other than its -1 before any (GeckoLib's
+                    // lastPollTime); any first render at or before start - STEP still ends the transition at start
+                    renderAt(r, d, s == 0 && at == -1 ? at - 1 : at);
+                }
                 a.loop = start;
             }
             if (a.loop != NONE && real - a.loop >= LOOP) {
@@ -185,6 +192,16 @@ final class DragonArrivals {
             d.tickCount = real;
             warming = false;
         }
+    }
+
+    /**
+     * Whether Ice and Fire's controller plays the flight loop for {@code d} (DragonBaseEntity's animation pool: not
+     * dead, not swimming, airborne, and neither breathing fire nor in an action).
+     */
+    private static boolean inFlight(DragonBaseEntity d) {
+        return !d.isModelDead() && !(d.isSwimming || d.isInWater() && d.swimProgress > 0f)
+                && (d.isFlying() || d.isHovering() || d.flyProgress > 0f || d.hoverProgress > 0f)
+                && !d.isBreathingFire() && d.getAnimation() == IAnimatedEntity.NO_ANIMATION;
     }
 
     /** A render of {@code d} into nothing at its tick {@code tick}, partial 0. */
