@@ -258,6 +258,7 @@ fn sweep(
     let ports = GoodVec::new();
     let view = View {
         revision: 1,
+        sweep: 0,
         inventories: inv,
         ports: &ports,
     };
@@ -296,6 +297,7 @@ fn a_port_unit_replays_on_the_districts_pass_as_the_line_alone_does() {
         let inv = invs((t / 10) as i64, (t / 10) as i64);
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &inv,
             ports: &ports,
         };
@@ -338,6 +340,7 @@ fn a_port_unit_replays_on_the_districts_pass_as_the_line_alone_does() {
         inv.insert(1, inventory(1, &[(SHEET, (t / 10) as i64)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &inv,
             ports: &ports,
         };
