@@ -4,7 +4,7 @@
     {
       "run": 1,
       "built": false,
-      "slice": "the meter M7, ambushes M8, the kill and the body M6",
+      "slice": "the meter M7, ambushes M8",
       "checks": [
         {
           "name": "the den is a lair",
@@ -44,7 +44,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 44284ff8aea039cf"
+          "detail": "state hash d9b1396d01882873"
         }
       ],
       "rungs": [
@@ -130,7 +130,9 @@
         "camp_lines": 0,
         "camp_answers": 0,
         "camp_deaths": 0,
-        "camp_written_off": 0
+        "camp_written_off": 0,
+        "arrivals": 0,
+        "renewal_losses": 0
       },
       "log": [
         {
@@ -477,7 +479,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash ce8608809ccf7f9c"
+          "detail": "state hash f25211654e57badc"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -569,7 +571,9 @@
         "camp_lines": 0,
         "camp_answers": 0,
         "camp_deaths": 0,
-        "camp_written_off": 0
+        "camp_written_off": 0,
+        "arrivals": 0,
+        "renewal_losses": 0
       },
       "log": [
         {
@@ -738,17 +742,104 @@
     {
       "run": 6,
       "built": false,
-      "slice": "M6 (den), M9 (grove)",
-      "checks": [],
+      "slice": "the grove M9",
+      "checks": [
+        {
+          "name": "killed by a mob the next wait is 6.00 days, by a player the first time 12.00",
+          "ok": true,
+          "detail": "a mob's kill: Some(6.0) days; a player's: Some(12.0) days"
+        },
+        {
+          "name": "a body taken and a death no one claims bump the pressure, a mob's kill does not",
+          "ok": true,
+          "detail": "(by, wait, P, losses): [(2, Some(6.0), 0.0, 0), (1, Some(12.0), 1.0, 1), (4, Some(12.0), 1.0, 1), (0, Some(12.0), 1.0, 1), (3, Some(12.0), 1.0, 1)]"
+        },
+        {
+          "name": "a farmed den waits as the kernel's rule says, and near the closed form's 12.0, 22.45, 36.4, 47.2, 50.6",
+          "ok": true,
+          "detail": "waits [12.0, 22.45, 36.4, 47.24, 50.55, 51.89, 51.71, 51.59] days (8 arrivals); every one the kernel's wait on its day: true"
+        },
+        {
+          "name": "farmed for 60 game years the den's arrivals per 96 days are within 5% of the closed form's",
+          "ok": true,
+          "detail": "108 arrivals, 1.800 per 96 days against 1.786 (P settles at 3.109, a wait of 51.76 days and a kill every 53.76)"
+        },
+        {
+          "name": "a den found empty gets its migrant after 192.00 days, owed, then spawned with its crystal",
+          "ok": true,
+          "detail": "booked Some(192.0) days; none by day 191, 1 by 193, [0, 1, 0, 0, 0] (slots) while out; then [1, 0, 0, 0, 0]"
+        },
+        {
+          "name": "a stolen crystal starts no wait, and the next arrival's line has the crystal",
+          "ok": true,
+          "detail": "wait None, P 0, 0 losses, robbed true, the Frostmaw stands true; after its death 1 arrival, crystal back true"
+        },
+        {
+          "name": "a feud with a busy line wakes a handful of times over the wait, never once a tick",
+          "ok": true,
+          "detail": "3 feud wakes over the 12.0 days from the death to the arrival (the feud at Some(Notice)); 1 arrival"
+        },
+        {
+          "name": "a save and load mid-wait arrives on the same tick, to the same books",
+          "ok": true,
+          "detail": "state e0b1ba87de518de9 against e0b1ba87de518de9, then [1, 0, 0, 0, 0]"
+        }
+      ],
       "rungs": [],
       "stats": null,
       "log": []
     },
     {
       "run": 7,
-      "built": false,
-      "slice": "M6",
-      "checks": [],
+      "built": true,
+      "slice": "",
+      "checks": [
+        {
+          "name": "the feud's player kills the chief on a raid: Raid steps down to Notice, the band routs home",
+          "ok": true,
+          "detail": "1 fall, the feud at Some(Notice), the band home true, P 1"
+        },
+        {
+          "name": "a third player kills it on A's raid: A's feud steps to Notice, B is reported and the heir witnesses it, holding about 62 grievance, which the cowed faction does not act on yet",
+          "ok": true,
+          "detail": "A's feud at Some(Notice); the new chief feels against B: true; B's feud at Some(None) with grievance 62.5 (-125 at 0.5 a point; Notice at 15.6), cowed true"
+        },
+        {
+          "name": "once the cowed window ends B's feud reaches Notice and no higher, and decays away",
+          "ok": true,
+          "detail": "B's feud peaked at Notice, back to nothing Some(5.969708333333333) days after the window; rungs climbed meanwhile [0, 1, 0, 0, 0, 0, 0]"
+        },
+        {
+          "name": "a player with no feud kills it at the camp: A's feud stands, C is raised to nothing",
+          "ok": true,
+          "detail": "A's feud at Some(Raid), C's at Some(None)"
+        },
+        {
+          "name": "once the cowed window ends C's feud reaches Notice and no higher, and decays away",
+          "ok": true,
+          "detail": "C's feud peaked at Notice, back to nothing Some(9.0835) days after the window; rungs climbed meanwhile [0, 1, 0, 0, 0, 0, 0]"
+        },
+        {
+          "name": "the feud's player kills it at the camp: A's feud steps down to Notice",
+          "ok": true,
+          "detail": "A's feud at Some(Notice)"
+        },
+        {
+          "name": "a chief body left at home is killed there: its band routs and the heir succeeds",
+          "ok": true,
+          "detail": "the band led by the Frostmaw true, its slot [0, 0, 1, 0, 0]; then 1 fall, 1 succession, 0 bands about, P 1"
+        },
+        {
+          "name": "a band lost to a district's walls loses its chief with no killer: its feud steps down, the pressure is bumped",
+          "ok": true,
+          "detail": "1 raid met the walls, 1 fall, the feud at Some(Notice), P 1"
+        },
+        {
+          "name": "a first kill at the den: cowed, the heir chief, the body 12 days after, the feud wakes a handful of times",
+          "ok": true,
+          "detail": "cowed true, the heir chief true, the next Frostmaw booked Some(12.0) days after, 1 arrival; 1 feud wakes over the 14 days"
+        }
+      ],
       "rungs": [],
       "stats": null,
       "log": []
@@ -761,17 +852,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state c6f01aac6c3ce6fd against c6f01aac6c3ce6fd, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state 94d75cc395ee0897 against 94d75cc395ee0897, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state 1e4d9d6fbbf54834 against 1e4d9d6fbbf54834, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state d99953d42bccc971 against d99953d42bccc971, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state 7f07907dca776fad against 7f07907dca776fad, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state dd3b0008289825eb against dd3b0008289825eb, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
@@ -855,7 +946,7 @@
         {
           "name": "a feud waits for the lines in flight, books no wake for it, and goes when they land",
           "ok": true,
-          "detail": "blocked on 5 of 16 days, 1 parties after the answer, 4 feud wakes"
+          "detail": "blocked on 9 of 16 days, 1 parties after the answer, 5 feud wakes"
         },
         {
           "name": "a lost answer is repaired by the next census without a second body",
@@ -900,7 +991,7 @@
         {
           "name": "chaos holds I1 to I5 after every event (I6 is by construction), every member lost unseen is written off and no other, none at all where holders journal again, no draw passes its bound",
           "ok": true,
-          "detail": "64 camps of 220 events each; 874 camp in, 380 camp out, 1150 kill slot, 850 lose the next, 425 raid true, 882 replay answers, 919 restart, 816 save and load, 907 stray; 1215 censuses, 2286 lines, 1443 answers, 664 deaths, 4 written off, each a ghost"
+          "detail": "64 camps of 220 events each; 873 camp in, 380 camp out, 1148 kill slot, 851 lose the next, 422 raid true, 881 replay answers, 919 restart, 815 save and load, 907 stray; 1215 censuses, 2274 lines, 1435 answers, 662 deaths, 4 written off, each a ghost"
         }
       ],
       "rungs": [],

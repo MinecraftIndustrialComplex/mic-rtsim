@@ -9,6 +9,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.mixin.RegionFileStorageAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.SimpleRegionStorageAccessor;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.storage.ChunkScanAccess;
@@ -18,6 +19,7 @@ import net.minecraft.world.level.chunk.storage.RegionFileStorage;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -162,10 +164,18 @@ public final class ChunkWriteBarrier {
     private record Holder(ServerLevel level, UUID id) {
     }
 
+    /**
+     * What is kept of a holder until the arm: the chunk it stood in when its record was committed, and a weak
+     * reference to the entity itself (MZB-597), which still knows where it last stood once the level no longer
+     * finds it (hidden with its chunk, or removed by the unload).
+     */
+    private record HolderNote(long commitChunk, WeakReference<Entity> entity) {
+    }
+
     private final Map<LevelChunk, Note> notes = new IdentityHashMap<>();
     private final Map<EntityChunk, Note> entityNotes = new HashMap<>();
     /** Holders noted since the last arm, with the chunk each stood in when its record was committed. */
-    private final Map<Holder, Long> holderNotes = new HashMap<>();
+    private final Map<Holder, HolderNote> holderNotes = new HashMap<>();
     private final Map<Object, LevelWrites> writers = new IdentityHashMap<>();
     private final ConcurrentLinkedQueue<Failed> failed = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<LevelChunk> offThreadUnloads = new ConcurrentLinkedQueue<>();
@@ -183,6 +193,7 @@ public final class ChunkWriteBarrier {
     private long entityStores;
     private long holdersResolved;
     private long holdersMoved;
+    private long holdersRemembered;
     private long holdersUnresolved;
     private long rounds;
     // the IO chain's
@@ -226,11 +237,22 @@ public final class ChunkWriteBarrier {
     /**
      * As {@link #dependsOnEntities}, for the entity a record rides on, noted by its UUID (MZB-238): the chunk is
      * decided at the arm, where the holder stands then, since a body walks between a record and the save. A
-     * holder that cannot be found then (unloaded, hidden) is noted at the chunk it stood in when the record was
-     * committed. Server thread.
+     * holder the level cannot find then (hidden with its chunk, removed by the unload) is noted at the chunk
+     * the entity object itself last stood in, through a weak reference kept from the commit (MZB-597); only
+     * when that reference is gone is it noted at the chunk it stood in when the record was committed.
+     * Server thread.
      */
-    public void dependsOnHolder(ServerLevel level, net.minecraft.world.entity.Entity holder) {
-        holderNotes.put(new Holder(level, holder.getUUID()), holder.chunkPosition().toLong());
+    public void dependsOnHolder(ServerLevel level, Entity holder) {
+        holderNotes.put(new Holder(level, holder.getUUID()), new HolderNote(holder.chunkPosition().toLong(), new WeakReference<>(holder)));
+    }
+
+    /**
+     * Drops every weak reference to a holder (the GameTests): the state a collected entity leaves, which a test
+     * cannot reach by waiting for the collector.
+     */
+    public void forgetHolderReferences() {
+        for (HolderNote n : holderNotes.values())
+            n.entity().clear();
     }
 
     /** Holders found at the arm, in the chunk they stood in at the commit or in another (the GameTests). */
@@ -243,7 +265,15 @@ public final class ChunkWriteBarrier {
         return holdersMoved;
     }
 
-    /** Holders not found at the arm: their commit-time chunk is written instead. */
+    /**
+     * Holders the level did not find at the arm whose entity object was still reachable: the chunk it last
+     * stood in is noted (MZB-597).
+     */
+    public long holdersRemembered() {
+        return holdersRemembered;
+    }
+
+    /** Holders neither found nor remembered at the arm: their commit-time chunk is written instead. */
     public long holdersUnresolved() {
         return holdersUnresolved;
     }
@@ -350,13 +380,20 @@ public final class ChunkWriteBarrier {
         notes.values().removeIf(n -> n.round <= confirmed);
         entityNotes.values().removeIf(n -> n.round <= confirmed);
         if (!holderNotes.isEmpty()) {
-            for (Map.Entry<Holder, Long> h : holderNotes.entrySet()) {
-                net.minecraft.world.entity.Entity e = h.getKey().level().getEntity(h.getKey().id());
-                long at = h.getValue();
-                if (e == null) {
-                    holdersUnresolved++;
-                } else {
+            for (Map.Entry<Holder, HolderNote> h : holderNotes.entrySet()) {
+                Entity e = h.getKey().level().getEntity(h.getKey().id());
+                long at = h.getValue().commitChunk();
+                if (e != null) {
                     holdersResolved++;
+                } else {
+                    // hidden or removed: the level cannot find it, the object may still say where it stood
+                    e = h.getValue().entity().get();
+                    if (e == null)
+                        holdersUnresolved++;
+                    else
+                        holdersRemembered++;
+                }
+                if (e != null) {
                     if (e.chunkPosition().toLong() != at)
                         holdersMoved++;
                     at = e.chunkPosition().toLong();

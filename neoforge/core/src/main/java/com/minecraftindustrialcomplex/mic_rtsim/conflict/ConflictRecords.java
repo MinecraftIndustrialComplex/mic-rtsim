@@ -12,6 +12,8 @@ public final class ConflictRecords {
     // ---- kinds (docs/boundary.md §9.1) ----------------------------------------------------------
 
     public static final int BAND_STATE = 0x0090;
+    /** M6: a chief's health and crystal at home (latest-wins, aux = flags; the Frostmaw's steal, MZB-273). */
+    public static final int CHIEF_STATE = 0x0091;
     public static final int FACTION_FOUND = 0x0800;
     public static final int TERRITORY_SIGNAL = 0x0801;
     public static final int POLLUTION = 0x0802;
@@ -89,6 +91,12 @@ public final class ConflictRecords {
     public static final class BandState {
         public static final int AGENT = 8, EPOCH = 16, DIM = 20, PRESENT = 24, X = 32, Y = 40, Z = 48, SIZE = 56;
         public static final int FLAG_TICKING = 1, FLAG_FIGHTING = 2;
+    }
+
+    /** CHIEF_STATE (M6, latest-wins, aux = flags: {@link #CRYSTAL} when the chief holds its crystal). */
+    public static final class ChiefState {
+        public static final int FACTION = 8, HEALTH = 16, SIZE = 24;
+        public static final int CRYSTAL = 1;
     }
 
     /** FACTION_FOUND (aux = flags). */
