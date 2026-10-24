@@ -32,7 +32,7 @@ use serde::Serialize;
 use crate::cluster::{Cluster, ClusterEvent, ClusterView, PoolKey, Run, Stop};
 use crate::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, IndustryOps,
-    InvDelta, WritePackage,
+    InvDelta, WriteChain, WritePackage,
 };
 use crate::deposit::{self, Writeback};
 use crate::district::{
@@ -40,13 +40,13 @@ use crate::district::{
     ReconcileReport, SimSpan, SweepBuf,
 };
 use crate::ids::{
-    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, TrainId,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId, TrainId,
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
-    Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
-    UnwatchedStop,
+    BlockFlags, Carriage, CarriageResult, ChainDirection, ChainPackage, Conditions, Direction,
+    EditKind, LoadState, NotLearnable, Obs, PackageEvent, ReconcileResult, StationDecl, StoreDecl,
+    Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -72,6 +72,15 @@ const REPLAY: SystemId = SystemId::named("industry.replay");
 /// The tick of each game day natural attacks land on. TUNABLE, PLACEHOLDER 18,000 (`dayTime`
 /// midnight; gameTime and dayTime drift apart when players sleep, INDUSTRY.md §0).
 pub const NIGHT_ATTACK_TICK: u64 = 18_000;
+
+/// An IND_WRITE_CHAIN unanswered this many `chain_write_ticks` after the engine handed it on (a
+/// crash between the command and its result) no longer holds the frogport's next write (choice
+/// SC113).
+const WRITE_ANSWER_PERIODS: u64 = 10;
+
+/// An unanswered IND_WRITE_CHAIN is forgotten this many `chain_write_ticks` after it was handed on:
+/// a `CHAIN_IN` of it later is judged by the frogport's mark (choice SC113).
+const WRITE_FORGET_PERIODS: u64 = 100;
 
 /// The magnitudes of an archive "district changed" row: why the learned district went stale.
 const STALE_REVISION: i64 = 1;
@@ -131,6 +140,16 @@ pub struct LineEdge {
     pub last: Tick,
 }
 
+/// Where a written `CHAIN_IN` is taken (`IndustryEngine::written_where`, choice SC113).
+enum Written {
+    /// Taken already: a record journaled again.
+    Again,
+    /// At this store's frogport position.
+    At(StoreId, BlockPos),
+    /// No store holds the write, the record's store is gone and no one store lists the frogport.
+    Nowhere,
+}
+
 /// A timed wake of the engine's own ([`Engine::advance_to`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Wake {
@@ -139,6 +158,9 @@ enum Wake {
     /// Level-wide pollution a replay makes is pushed to the level (I14), unless the replay that
     /// booked it (by its start) has ended.
     Pollution(DistrictId, Tick),
+    /// What replays sent a package store's loaded frogports is written in (slice S4b), and again
+    /// while any is still owed.
+    StoreWrite(StoreId),
 }
 
 /// What a reconcile round covers ([`Engine::reconcile_round`]).
@@ -187,6 +209,29 @@ pub struct Stats {
     /// Arrivals at the station the train's leg began at, with no unwatched stop between: no edge
     /// (choice SG51). Not saved (choice SG58): a restore starts it at 0.
     pub self_edges_refused: u64,
+    /// Package store declarations (IND_PACKAGE_STORE, slice S4). Not saved, as SG58.
+    pub store_declarations: u64,
+    /// Chain package records naming a store the engine does not have. Not saved, as SG58.
+    pub store_records_unknown: u64,
+    /// Replays started without their chain links, past `cluster_districts_max` (slice S4b). Not
+    /// saved, as SG58.
+    pub chain_links_dropped: u64,
+    /// IND_WRITE_CHAIN commands sent (slice S4b). Not saved, as SG58.
+    pub chain_writes: u64,
+    /// IND_WRITE_CHAIN commands Java answered FAILED: nothing fitted, written again later. Not
+    /// saved, as SG58.
+    pub chain_writes_failed: u64,
+    /// Written `CHAIN_IN` records taken already, journaled again by a chunk saved before the
+    /// engine acknowledged them (choice SC113): dropped. Not saved, as SG58.
+    pub chain_writes_again: u64,
+    /// IND_WRITE_CHAIN commands forgotten unanswered (choice SC113). Not saved, as SG58.
+    pub chain_writes_unanswered: u64,
+    /// Goods replays sent toward the frogports of a store removed with no store to take them
+    /// (UR-1 allows it). Not saved, as SG58.
+    pub chain_owed_lost: u64,
+    /// Chain pools returned when no store has their frogport any more: what replays sent there is
+    /// lost (UR-1 allows it: production owed to an unloaded chunk). Not saved, as SG58.
+    pub chain_pools_lost: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -289,6 +334,8 @@ pub struct Engine {
     arrivals: BTreeMap<(TrainId, StationId), Vec<Carriage>>,
     legs: LegIndex,
     legs_swept: u64,
+    /// The package stores (SECTIONS.md §2.5, slice S4), one page each.
+    stores: Tracked<StoreId, crate::stores::PackageStore>,
     /// Power sinks of each source (IND_POWER_LINK).
     sinks_of: BTreeMap<DistrictId, BTreeSet<DistrictId>>,
     conditions: Option<Conditions>,
@@ -339,6 +386,9 @@ pub struct Engine {
     /// The page check (ID5): every page's hash as of the last save built, kept only in a debug
     /// build or with `RTSIM_VERIFY_PAGES` set. Not saved.
     page_check: Option<Box<PageCheck>>,
+    /// Stores whose chain links a replay dropped past `cluster_districts_max`, logged once each
+    /// (slice S4b). Not saved: a restore logs again.
+    chain_limit_logged: BTreeSet<StoreId>,
 }
 
 /// One save's industry pages ([`Engine::save_changed`], ID2): the globals page and every page
@@ -358,12 +408,17 @@ pub struct SaveTicket {
     glass: Vec<DistrictId>,
     clusters: Vec<(u64, RegionId<Cluster>)>,
     legs: Vec<u64>,
+    stores: Vec<StoreId>,
 }
 
 impl SaveTicket {
     /// Pages the save wrote or deleted, the globals page not counted.
     pub fn len(&self) -> usize {
-        self.districts.len() + self.glass.len() + self.clusters.len() + self.legs.len()
+        self.districts.len()
+            + self.glass.len()
+            + self.clusters.len()
+            + self.legs.len()
+            + self.stores.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -430,6 +485,7 @@ impl Engine {
             arrivals: BTreeMap::new(),
             legs: LegIndex::default(),
             legs_swept: 0,
+            stores: Tracked::default(),
             sinks_of: BTreeMap::new(),
             conditions: None,
             pressure: BTreeMap::new(),
@@ -454,7 +510,13 @@ impl Engine {
             undetected: BTreeSet::new(),
             districts_rev: next_districts_rev(),
             page_check: page_check_on().then(Box::default),
+            chain_limit_logged: BTreeSet::new(),
         }
+    }
+
+    /// The package stores (SECTIONS.md §2.5), by id.
+    pub fn stores(&self) -> &BTreeMap<StoreId, crate::stores::PackageStore> {
+        &self.stores
     }
 
     /// A value that changes whenever a district comes, goes or changes its chunks, and differs
@@ -641,7 +703,21 @@ impl Engine {
 
     /// Commands for the Java side, in order.
     pub fn drain_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.out)
+        let out = std::mem::take(&mut self.out);
+        // A write's answer may be taken as lost only once it has left the engine (choice SC113).
+        // The write is found by its op in whichever store holds it now: a redeclaration or a
+        // merge in the same batch may have moved it from the store it named.
+        for c in &out {
+            if let Cmd::WriteChain(w) = c {
+                let now = self.now;
+                for s in self.stores.values_mut() {
+                    if s.write_drained(w.op, now) {
+                        break;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the
@@ -696,6 +772,7 @@ impl Engine {
                         match wake {
                             Wake::Hold(d, stamp) => self.hold_wake(key.0, (d, stamp)),
                             Wake::Pollution(d, started) => self.pollution_wake(key.0, d, started),
+                            Wake::StoreWrite(st) => self.store_write_wake(key.0, st),
                         }
                     } else {
                         let (key, wake) = self.pressure.pop_first().expect("peeked");
@@ -971,6 +1048,7 @@ impl Engine {
                 applied_epoch,
             } => {
                 self.district_mut(*district).loaded_chunks.insert(*chunk);
+                self.chain_chunk_loaded(*district, Some(*chunk), at);
                 // It leaves the replay once the tick's records are in (I7).
                 self.mark(*district);
                 // The chunk's attachment says an epoch is applied whose result never came (a
@@ -1031,6 +1109,15 @@ impl Engine {
                 self.stations.insert(s.station, Station { decl: s.clone() });
             }
             Obs::Package(p) => self.package(at, p),
+            Obs::PackageStore(d) => self.package_store(at, d),
+            // A store orders its records against its census by their own game times, not the
+            // engine's (`chain`).
+            Obs::ChainPackage(p) => self.chain_package(at, t.at, p),
+            Obs::StoreCensus(c) => {
+                if let Some(s) = self.stores.get_mut(&c.store) {
+                    s.census(t.at, c);
+                }
+            }
             Obs::StationPorts(p) => {
                 let mut inventories = p.inventories.clone();
                 inventories.sort_unstable();
@@ -1070,6 +1157,11 @@ impl Engine {
                 dist.defence.survey_blocks(*chunk, *part, *partial, blocks);
                 dist.defence.keep_chunks(&dist.chunks);
             }
+        }
+        // A compile, a sweep's cut or a station's ports changed a district's units: Java counts
+        // the pairs at their counted stores (SECTIONS.md §4.2).
+        for set in self.glass.take_count_sets() {
+            self.out.push(Cmd::CountSet(set));
         }
     }
 
@@ -1152,6 +1244,7 @@ impl Engine {
             .get(&g.district())
             .map(|d| crate::glass::check::View {
                 revision: d.revision,
+                sweep: d.last_sweep,
                 inventories: &d.inventories,
                 ports: &d.ports,
             });
@@ -1216,6 +1309,7 @@ impl Engine {
         {
             let view = crate::glass::check::View {
                 revision: dist.revision,
+                sweep: e.sweep,
                 inventories: &dist.inventories,
                 ports: &dist.ports,
             };
@@ -1357,6 +1451,7 @@ impl Engine {
                     self.glass.back(at, d, &self.tun.glass);
                 }
                 self.reconcile_round(d, at, Round::Full);
+                self.chain_chunk_loaded(d, None, at);
             }
             Presence::Partial => {
                 if old == Presence::Unloaded {
@@ -1475,7 +1570,15 @@ impl Engine {
         }
         let model = dist.models[&season].clone();
         let base = dist.stock_of(&part);
-        let Some(mut spec) = dist.member_spec(&model, &base, &part, &self.goods, &self.tun) else {
+        let stores = &self.stores;
+        let tun_replay = &self.tun.replay;
+        let route = |inv: u32, to: BlockPos| {
+            stores
+                .values()
+                .find_map(|s| s.route(d, inv, to, tun_replay))
+        };
+        let Some(mut spec) = dist.member_spec(&model, &base, &part, &self.goods, &self.tun, &route)
+        else {
             return;
         };
         // A power source that is live is assumed running (F21); one that is unloaded and not
@@ -1510,6 +1613,80 @@ impl Engine {
             .iter()
             .filter_map(|o| self.cluster_of.get(o).copied())
             .collect();
+        // A package store's pool is shared by the districts whose links touch it: their clusters
+        // join (SECTIONS.md §2.5, slice S4b), up to `cluster_districts_max` districts.
+        let chain_keys: BTreeSet<PoolKey> = spec
+            .pools
+            .iter()
+            .map(|p| p.0)
+            .filter(|k| matches!(k, PoolKey::Chain(..)))
+            .collect();
+        let mut chain_stores: BTreeSet<StoreId> = BTreeSet::new();
+        if !chain_keys.is_empty() {
+            let holders: BTreeSet<RegionId<Cluster>> = chain_keys
+                .iter()
+                .filter_map(|&k| self.cluster_with_pool(k))
+                .filter(|h| !handles.contains(h))
+                .collect();
+            let members = |hs: &mut dyn Iterator<Item = &RegionId<Cluster>>| -> usize {
+                hs.filter_map(|h| self.clusters.get(*h))
+                    .map(|r| r.cell().model().members().len())
+                    .sum()
+            };
+            let mut seen = handles.clone();
+            seen.sort_by_key(|h| self.clusters.get(*h).map(|r| r.key()));
+            seen.dedup();
+            let total = 1 + members(&mut seen.iter()) + members(&mut holders.iter());
+            if total > self.tun.replay.cluster_districts_max {
+                Self::drop_chain_links(&mut spec);
+                self.stats.chain_links_dropped += 1;
+                let stores: BTreeSet<StoreId> = chain_keys
+                    .iter()
+                    .filter_map(|k| match k {
+                        PoolKey::Chain(s, _, _) => Some(*s),
+                        _ => None,
+                    })
+                    .collect();
+                for st in stores {
+                    if self.chain_limit_logged.insert(st) {
+                        self.note(
+                            d,
+                            at,
+                            format!(
+                                "package store {}: past {} districts in one replay cluster, its \
+                                 chain links do not replay while away",
+                                st.0, self.tun.replay.cluster_districts_max
+                            ),
+                        );
+                    }
+                }
+            } else {
+                handles.extend(holders);
+                chain_stores = chain_keys
+                    .iter()
+                    .filter_map(|k| match k {
+                        PoolKey::Chain(s, _, _) => Some(*s),
+                        _ => None,
+                    })
+                    .collect();
+                // A pool no cluster holds starts from what the store owes its frogport.
+                for &k in &chain_keys {
+                    let PoolKey::Chain(st, to, g) = k else {
+                        continue;
+                    };
+                    if self.cluster_with_pool(k).is_some() {
+                        continue;
+                    }
+                    let owed = self.stores.get_mut(&st).map_or(0, |s| s.take_owed(to, g));
+                    if let Some(p) = spec.pools.iter_mut().find(|p| p.0 == k) {
+                        p.1 = owed;
+                    }
+                }
+            }
+            if spec.procs.is_empty() {
+                return;
+            }
+        }
         handles.sort_by_key(|h| self.clusters.get(*h).map(|r| r.key()));
         handles.dedup();
         let groups = spec
@@ -1582,6 +1759,10 @@ impl Engine {
         };
         self.note(d, at, what);
         self.after_cluster(h, at);
+        // An export toward a loaded frogport is written into it as it goes.
+        for st in chain_stores {
+            self.schedule_store_write(st, at);
+        }
     }
 
     /// Takes a district out of its cluster at `at`; returns its pools' levels (stock and mail).
@@ -1607,6 +1788,12 @@ impl Engine {
         }
         self.books.minted.merge(&minted);
         self.books.burned.merge(&burned);
+        // A chain pool no process touches any more goes back to its store (slice S4b).
+        for p in &out.pools {
+            if let PoolKey::Chain(st, to, g) = p.key {
+                self.return_chain_pool(st, to, g, p.level, d, at);
+            }
+        }
         self.after_cluster(h, at);
         if self
             .clusters
@@ -1622,6 +1809,317 @@ impl Engine {
         dist.made_total.merge(&minted);
         dist.made_total.subtract(&burned);
         Some((span, out.pools))
+    }
+
+    // ---- package stores across replays (SECTIONS.md §2.5, slice S4b) ----------------------
+
+    /// The cluster that holds chain pool `k`: one at most, since a district whose links touch it
+    /// joins that cluster (choice SC112).
+    fn cluster_with_pool(&self, k: PoolKey) -> Option<RegionId<Cluster>> {
+        self.clusters
+            .iter()
+            .find(|(_, r)| r.cell().model().pool(k).is_some())
+            .map(|(h, _)| h)
+    }
+
+    /// The chain pools toward the frogport at `to` of store `st` that a cluster holds, by good.
+    fn chain_pools_toward(&self, st: StoreId, to: BlockPos) -> Vec<(Good, RegionId<Cluster>)> {
+        let mut out = Vec::new();
+        for (h, r) in self.clusters.iter() {
+            for p in r.cell().model().pools() {
+                if let PoolKey::Chain(s, pos, g) = p.key
+                    && s == st
+                    && pos == to
+                {
+                    out.push((g, h));
+                }
+            }
+        }
+        out
+    }
+
+    /// A replay's chain links and the pools only they touch, for a district whose cluster would
+    /// pass `cluster_districts_max` (choice SC112).
+    fn drop_chain_links(spec: &mut crate::cluster::MemberSpec) {
+        let chain = |k: &PoolKey| matches!(k, PoolKey::Chain(..));
+        spec.procs.retain(|p| match &p.body {
+            crate::cluster::ProcSpecBody::Link { from, to, .. } => !chain(from) && !chain(to),
+            _ => true,
+        });
+        spec.pools.retain(|p| !chain(&p.0));
+    }
+
+    /// A chain pool leaving its cluster with `level` goods: what the store owes the frogport at
+    /// `to` (choice SC109). A store that is gone hands it to the store that now has that
+    /// frogport; with none, it is lost, as production owed to an unloaded chunk may be (UR-1).
+    #[allow(clippy::too_many_arguments)]
+    fn return_chain_pool(
+        &mut self,
+        st: StoreId,
+        to: BlockPos,
+        g: Good,
+        level: i64,
+        d: DistrictId,
+        at: Tick,
+    ) {
+        if level <= 0 {
+            return;
+        }
+        // The store that lists the frogport now (it may have moved to another in a split), else
+        // the old store, which keeps it for a frogport that comes back (as its `left` pools).
+        let lists = |s: &crate::stores::PackageStore| s.index_of(to).is_some();
+        let into = if self.stores.get(&st).is_some_and(lists) {
+            Some(st)
+        } else {
+            self.stores
+                .iter()
+                .find(|(_, s)| lists(s))
+                .map(|(id, _)| *id)
+                .or_else(|| self.stores.contains_key(&st).then_some(st))
+        };
+        match into {
+            Some(id) => {
+                if let Some(s) = self.stores.get_mut(&id) {
+                    s.add_owed(to, g, level);
+                }
+                self.schedule_store_write(id, at);
+            }
+            None => {
+                self.stats.chain_pools_lost += 1;
+                if self.log_enabled {
+                    let name = self
+                        .goods
+                        .get(&g)
+                        .map_or("?", |i| i.name.as_str())
+                        .to_string();
+                    self.note(
+                        d,
+                        at,
+                        format!(
+                            "package store {}: gone, {level} {name} sent toward {to:?} are lost",
+                            st.0
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A chunk of district `d` loaded (None: all of it): what replays sent a frogport there is
+    /// written in.
+    fn chain_chunk_loaded(&mut self, d: DistrictId, chunk: Option<ChunkPos>, at: Tick) {
+        let Some(dist) = self.districts.get(&d) else {
+            return;
+        };
+        let here = |f: &crate::stores::Frogport| {
+            f.district == Some(d)
+                && f.inventory
+                    .and_then(|i| dist.inventories.get(&i))
+                    .is_some_and(|i| chunk.is_none_or(|c| i.chunk == c))
+        };
+        let stores: Vec<StoreId> = self
+            .stores
+            .iter()
+            .filter(|(_, s)| s.frogports.iter().any(&here))
+            .map(|(id, _)| *id)
+            .collect();
+        for st in stores {
+            self.schedule_store_write(st, at);
+        }
+    }
+
+    /// A write of what replays sent a store's loaded frogports, soon, unless one is due already.
+    fn schedule_store_write(&mut self, st: StoreId, at: Tick) {
+        if self.wakes.values().any(|w| *w == Wake::StoreWrite(st)) {
+            return;
+        }
+        self.wake_seq += 1;
+        self.wakes
+            .insert((at + 1, self.wake_seq), Wake::StoreWrite(st));
+    }
+
+    /// Writes into a store's loaded frogports what replays sent them (SECTIONS.md §2.5; choice
+    /// SC113): per frogport and good, the store's owed and the pool a cluster holds, in whole
+    /// packages of the destination's batch, at most an offline buffer's worth a write; a part
+    /// package once no cluster still feeds it. Wakes again while a loaded frogport is owed.
+    fn store_write_wake(&mut self, at: Tick, st: StoreId) {
+        let Some(s) = self.stores.get(&st) else {
+            return;
+        };
+        let ports: Vec<(u32, BlockPos, DistrictId, u32)> = s
+            .frogports
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| Some((i as u32, f.pos, f.district?, f.inventory?)))
+            .collect();
+        let period = self.tun.replay.chain_write_ticks.max(1);
+        let mut again = false;
+        for (index, pos, d, inv) in ports {
+            // A replay that covers the frogport draws the pool by its own import link.
+            if self
+                .districts
+                .get(&d)
+                .and_then(|x| x.sim.as_ref())
+                .is_some_and(|sim| sim.invs.contains(&inv))
+            {
+                continue;
+            }
+            let loaded = self.districts.get(&d).is_some_and(|x| {
+                x.inventories.get(&inv).is_some_and(|i| {
+                    !i.destroyed
+                        && (x.presence == Presence::Live || x.loaded_chunks.contains(&i.chunk))
+                })
+            });
+            if !loaded {
+                continue;
+            }
+            let pools = self.chain_pools_toward(st, pos);
+            let s = &self.stores[&st];
+            let owed = s.owed_to(pos);
+            if owed.is_empty() && pools.is_empty() {
+                continue;
+            }
+            again = true;
+            let forget = period * WRITE_FORGET_PERIODS;
+            if s.writes_to_forget(pos, at, forget)
+                && let Some(s) = self.stores.get_mut(&st)
+            {
+                self.stats.chain_writes_unanswered += s.forget_writes(pos, at, forget);
+            }
+            let s = &self.stores[&st];
+            if s.write_pending(pos, at, period * WRITE_ANSWER_PERIODS) {
+                continue;
+            }
+            let batch = s.batch.get(&pos).cloned().unwrap_or_default();
+            let mut goods: BTreeSet<Good> = owed.iter().map(|(g, _)| g).collect();
+            goods.extend(pools.iter().map(|p| p.0));
+            for g in goods {
+                let held = pools.iter().find(|p| p.0 == g).map(|p| p.1);
+                let in_pool = match held {
+                    Some(h) => {
+                        let key = PoolKey::Chain(st, pos, g);
+                        let l = self
+                            .clusters
+                            .apply(h, at, |c, _| c.level(key).unwrap_or(0))
+                            .unwrap_or(0);
+                        self.after_cluster(h, at);
+                        l
+                    }
+                    None => 0,
+                };
+                let total = owed.get(g).max(0) + in_pool.max(0);
+                let per = Some(batch.get(g))
+                    .filter(|&b| b > 0)
+                    .unwrap_or_else(|| self.goods.max_stack(g));
+                let (count, each) = match total / per {
+                    0 if held.is_none() && total > 0 => (1, total),
+                    0 => continue,
+                    n => (n.min(crate::district::OFFLINE_BUFFER_PACKAGES), per),
+                };
+                let mut c = Cmd::WriteChain(WriteChain {
+                    op: OpId(0),
+                    store: st,
+                    district: d,
+                    inventory: inv,
+                    frogport: index,
+                    pos,
+                    count: count as u32,
+                    goods: GoodVec::from_pairs([(g, each)]),
+                });
+                let op = self.ops.derive(self.world_seed, at, &c);
+                c.set_op(op);
+                self.out.push(c);
+                self.stats.chain_writes += 1;
+                if let Some(s) = self.stores.get_mut(&st) {
+                    self.stats.chain_writes_unanswered += s.sent_write(pos, op);
+                }
+            }
+        }
+        if again {
+            self.wake_seq += 1;
+            self.wakes
+                .insert((at + period, self.wake_seq), Wake::StoreWrite(st));
+        }
+    }
+
+    /// What a write put into frogport `pos` of store `st` (a `CHAIN_IN` of `op`): taken from the
+    /// pool a cluster holds toward it, then from what the store owes it, and marked (choice SC113).
+    fn chain_written(
+        &mut self,
+        at: Tick,
+        recorded: Tick,
+        st: StoreId,
+        pos: BlockPos,
+        p: &ChainPackage,
+        op: OpId,
+    ) {
+        for (g, n) in p.goods.iter() {
+            let key = PoolKey::Chain(st, pos, g);
+            let mut rest = n;
+            if let Some(h) = self.cluster_with_pool(key) {
+                let took = self
+                    .clusters
+                    .apply(h, at, |c, at| -c.add_to_pool(key, -n, false, at))
+                    .unwrap_or(0);
+                self.after_cluster(h, at);
+                rest -= took;
+            }
+            if rest > 0
+                && let Some(s) = self.stores.get_mut(&st)
+            {
+                s.add_owed(pos, g, -rest);
+            }
+        }
+        if let Some(s) = self.stores.get_mut(&st) {
+            s.counts.written += u64::from(p.packages);
+            s.take_written(pos, recorded, op);
+        }
+    }
+
+    /// Where a written `CHAIN_IN` of `op` is taken (choice SC113). The answer to a write the
+    /// engine waits for is taken at the frogport the write named, in whichever store holds that
+    /// write now. Any other (a record a chunk journaled again, or the answer to a write forgotten)
+    /// is judged by the marks at the frogport's position: the record's store's, and those of the
+    /// store of its dimension that lists the position now. A frogport rebuilt into a new store
+    /// leaves its old mark in the record's store, which still turns the record away.
+    fn written_where(&mut self, recorded: Tick, p: &ChainPackage, op: OpId) -> Written {
+        if let Some((id, pos)) = self
+            .stores
+            .iter()
+            .find_map(|(id, s)| s.writing_at(op).map(|pos| (*id, pos)))
+        {
+            return Written::At(id, pos);
+        }
+        let own = self.stores.get(&p.store);
+        if own.is_some_and(|s| s.written_again(p.pos, recorded, op)) {
+            self.stats.chain_writes_again += 1;
+            return Written::Again;
+        }
+        let lists = |s: &crate::stores::PackageStore| s.index_of(p.pos).is_some();
+        let st = match own {
+            Some(s) if lists(s) => p.store,
+            Some(s) => {
+                let dim = s.dim;
+                self.stores
+                    .iter()
+                    .find(|(_, x)| x.dim == dim && lists(x))
+                    .map_or(p.store, |(id, _)| *id)
+            }
+            None => {
+                // The record's store is gone and its dimension unknown: a position only one
+                // store lists.
+                let mut found = self.stores.iter().filter(|(_, x)| lists(x));
+                match (found.next(), found.next()) {
+                    (Some((id, _)), None) => *id,
+                    _ => return Written::Nowhere,
+                }
+            }
+        };
+        if st != p.store && self.stores[&st].written_again(p.pos, recorded, op) {
+            self.stats.chain_writes_again += 1;
+            return Written::Again;
+        }
+        Written::At(st, p.pos)
     }
 
     /// Events and pushes after anything touched cluster `h` at `at`.
@@ -2090,6 +2588,8 @@ impl Engine {
                         _ => dist.owed.add(g, change),
                     }
                 }
+                // Went back to its store in `stop_sim`, or stays with the cluster.
+                PoolKey::Chain(..) => {}
             }
         }
         // Deposits are read back from their pools, not carried as owed.
@@ -2182,6 +2682,8 @@ impl Engine {
                     }
                     // Goods packed but not yet a whole package go back to stock.
                     PoolKey::Mail(_, _, _, g) => net.add(g, p.level - p.pushed),
+                    // Went back to its store in `stop_sim`, or stays with the cluster.
+                    PoolKey::Chain(..) => {}
                 }
             }
         }
@@ -2885,6 +3387,20 @@ impl Engine {
     /// with nothing applied. Returns whether the engine was waiting on the op. Deposit and
     /// package commands have no correction yet.
     pub fn command_failed(&mut self, at: Tick, op: rtsim_kernel::journal::OpId) -> bool {
+        // An IND_WRITE_CHAIN that fitted nothing: the store still owes it, and the frogport may be
+        // written again (choice SC113).
+        if let Some(id) = self
+            .stores
+            .iter()
+            .find(|(_, s)| s.writing_at(op).is_some())
+            .map(|(id, _)| *id)
+        {
+            if let Some(s) = self.stores.get_mut(&id) {
+                s.write_answered(op);
+            }
+            self.stats.chain_writes_failed += 1;
+            return true;
+        }
         let Some(ex) = self.exchanges.get(&op) else {
             return false;
         };
@@ -3167,8 +3683,134 @@ impl Engine {
     }
 
     fn package(&mut self, at: Tick, p: &PackageEvent) {
+        self.package_port(at, p, true);
+    }
+
+    /// A package store's declaration (IND_PACKAGE_STORE, SECTIONS.md §2.5).
+    fn package_store(&mut self, at: Tick, d: &StoreDecl) {
+        // A store removed with no store to take what it held: what replays sent its frogports is lost.
+        if d.frogports.is_empty()
+            && d.into
+                .filter(|&i| i != d.store)
+                .is_none_or(|i| !self.stores.contains_key(&i))
+            && let Some(s) = self.stores.get(&d.store)
+        {
+            let lost: i64 = s
+                .owed
+                .values()
+                .flat_map(|o| o.iter())
+                .map(|(_, n)| n.max(0))
+                .sum();
+            self.stats.chain_owed_lost += lost as u64;
+        }
+        let what = crate::stores::declare(&mut self.stores, d);
+        self.stats.store_declarations += 1;
+        if self.log_enabled {
+            let line = format!(
+                "package store {}: {what:?}, {} frogports",
+                d.store.0,
+                d.frogports.len()
+            );
+            for district in d.frogports.iter().filter_map(|f| f.district) {
+                self.note(district, at, line.clone());
+            }
+        }
+    }
+
+    /// Packages across a package store's frogport (IND_CHAIN_PACKAGE, SECTIONS.md §2.5): booked
+    /// into the store, and a port of the frogport's district when it has one. While that district
+    /// is loaded, the chain's own packages are learned as its links (choice SC108): out toward the
+    /// frogport they resolve to, when a district has it, and in at its own frogport. What the
+    /// engine wrote (a `CHAIN_IN` with an op) is no link: it leaves the pool or debt it came from.
+    fn chain_package(&mut self, at: Tick, recorded: Tick, p: &ChainPackage) {
+        let written = match p.op {
+            Some(op) if p.direction == ChainDirection::In => {
+                match self.written_where(recorded, p, op) {
+                    // A write taken already, journaled again from a chunk saved before its
+                    // acknowledgement: nothing of it is new.
+                    Written::Again => return,
+                    Written::At(st, pos) => Some(((st, pos), op)),
+                    // No store to take it from or mark it in: the world's package, booked at its
+                    // port as written (no link), taken from nothing.
+                    Written::Nowhere => None,
+                }
+            }
+            _ => None,
+        };
+        let engine_wrote = p.op.is_some() && p.direction == ChainDirection::In;
+        let mut to = None;
+        match self.stores.get_mut(&p.store) {
+            Some(s) => {
+                s.chain(p, recorded);
+                let at_port = match p.direction {
+                    ChainDirection::Out => p.destination,
+                    ChainDirection::In => Some(p.frogport),
+                };
+                to = at_port
+                    .and_then(|j| s.frogports.get(j as usize))
+                    .filter(|f| f.district.is_some())
+                    .map(|f| f.pos);
+            }
+            None => self.stats.store_records_unknown += 1,
+        }
+        if let Some(((st, pos), op)) = written {
+            self.chain_written(at, recorded, st, pos, p, op);
+        }
+        let written = engine_wrote;
+        let (Some(district), Some(inventory)) = (p.district, p.inventory) else {
+            return;
+        };
+        if !written
+            && let Some(to) = to
+            && !self.cluster_of.contains_key(&district)
+        {
+            let sign = if p.direction == ChainDirection::In {
+                1
+            } else {
+                -1
+            };
+            let dist = self.district_mut(district);
+            for (g, n) in p.goods.iter() {
+                *dist
+                    .links
+                    .entry(LinkKey::Chain {
+                        inventory,
+                        to,
+                        good: g,
+                    })
+                    .or_default() += sign * n;
+            }
+        }
+        let e = PackageEvent {
+            district,
+            inventory,
+            direction: match p.direction {
+                ChainDirection::Out => Direction::Out,
+                ChainDirection::In => Direction::In,
+            },
+            address: p.address,
+            packages: p.packages,
+            op: p.op,
+            goods: p.goods.clone(),
+        };
+        self.package_port(at, &e, false);
+    }
+
+    /// Packages into or out of a district inventory: a port of its window when loaded, its
+    /// replay's stock when away. `mail`: train mail at a postbox (IND_PACKAGE), whose packages
+    /// out are the packager's learned rate and which draws the engine's own written mail first;
+    /// else a package store's frogport, which does neither.
+    fn package_port(&mut self, at: Tick, p: &PackageEvent, mail: bool) {
         let d = p.district;
-        let simulated = self.cluster_of.contains_key(&d);
+        // A frogport whose chunk is loaded in a district the black box replays in part is no part
+        // of the replay: its packages are the world's, an ordinary port.
+        let simulated = self.cluster_of.contains_key(&d)
+            && (mail
+                || self
+                    .districts
+                    .get(&d)
+                    .and_then(|x| x.sim.as_ref())
+                    .is_none_or(|s| s.glass || s.invs.contains(&p.inventory)));
         let sign = if p.direction == Direction::In { 1 } else { -1 };
         // Into or out of a judging unit's store: a port for its window, loaded or not (an away
         // unit's window is gone already).
@@ -3181,7 +3823,7 @@ impl Engine {
             // Loaded: an ordinary port. Packages leaving are the packager's learned rate.
             let goods: GoodVec = p.goods.iter().map(|(g, n)| (g, sign * n)).collect();
             dist.ports.merge(&goods);
-            if p.direction == Direction::Out {
+            if mail && p.direction == Direction::Out {
                 for (g, n) in p.goods.iter() {
                     *dist
                         .links
@@ -3243,11 +3885,16 @@ impl Engine {
             for (g, n) in goods.iter() {
                 if out {
                     // Engine-written packages first, then stock that was already there.
-                    let mail = PoolKey::Mail(d, inv, address, g);
-                    let from_mail = c.pool(mail).map_or(0, |m| m.pushed.min(m.level)).min(n);
-                    if from_mail > 0 {
-                        c.add_to_pool(mail, -from_mail, true, at);
-                    }
+                    let from_mail = if mail {
+                        let key = PoolKey::Mail(d, inv, address, g);
+                        let m = c.pool(key).map_or(0, |m| m.pushed.min(m.level)).min(n);
+                        if m > 0 {
+                            c.add_to_pool(key, -m, true, at);
+                        }
+                        m
+                    } else {
+                        0
+                    };
                     let rest = n - from_mail;
                     if rest > 0 {
                         let got = -c.add_to_pool(PoolKey::Stock(d, g), -rest, false, at);
@@ -4319,8 +4966,8 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, from_bytes,
-        persist_struct, to_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, STORE_TABLE,
+        from_bytes, persist_struct, to_bytes,
     };
 
     persist_struct!(LineEdge {
@@ -4379,6 +5026,15 @@ mod persist_impls {
                 exchanges_portless: Persist::get(r)?,
                 unwatched_stops: 0,
                 self_edges_refused: 0,
+                store_declarations: 0,
+                store_records_unknown: 0,
+                chain_links_dropped: 0,
+                chain_writes: 0,
+                chain_writes_failed: 0,
+                chain_writes_again: 0,
+                chain_writes_unanswered: 0,
+                chain_owed_lost: 0,
+                chain_pools_lost: 0,
             })
         }
     }
@@ -4405,12 +5061,17 @@ mod persist_impls {
                     d.put(w);
                     started.put(w);
                 }
+                Wake::StoreWrite(st) => {
+                    w.u8(2);
+                    st.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             Ok(match r.u8()? {
                 0 => Wake::Hold(Persist::get(r)?, Persist::get(r)?),
                 1 => Wake::Pollution(Persist::get(r)?, Persist::get(r)?),
+                2 => Wake::StoreWrite(Persist::get(r)?),
                 _ => return Err(CodecError::Invalid("industry wake".into())),
             })
         }
@@ -4484,6 +5145,10 @@ mod persist_impls {
         PageKey::new(LEG_TABLE, key48(page, "leg page"))
     }
 
+    fn store_key(id: StoreId) -> PageKey {
+        PageKey::new(STORE_TABLE, key48(id.0, "package store"))
+    }
+
     fn cluster_page(region: &rtsim_kernel::lazy::Region<Cluster>) -> (PageKey, Vec<u8>) {
         let mut w = Writer::new();
         region.cell().model().put(&mut w);
@@ -4505,7 +5170,8 @@ mod persist_impls {
                 1 + self.districts.len()
                     + self.clusters.len()
                     + self.glass.districts.len()
-                    + self.legs.len() / 128,
+                    + self.legs.len() / 128
+                    + self.stores.len(),
             );
             out.push(globals_page(self));
             for (id, d) in self.districts.iter() {
@@ -4519,6 +5185,9 @@ mod persist_impls {
             }
             for (page, bytes) in self.legs.pages() {
                 out.push((leg_key(page), bytes));
+            }
+            for (id, st) in self.stores.iter() {
+                out.push((store_key(*id), crate::stores::store_page(st)));
             }
             out
         }
@@ -4559,6 +5228,13 @@ mod persist_impls {
                     None => delete.push(leg_key(page)),
                 }
                 ticket.legs.push(page);
+            }
+            for id in self.stores.take_changed() {
+                match self.stores.get(&id) {
+                    Some(st) => put.push((store_key(id), crate::stores::store_page(st))),
+                    None => delete.push(store_key(id)),
+                }
+                ticket.stores.push(id);
             }
             if self.page_check.is_some() {
                 self.check_pages(&put, &delete);
@@ -4601,6 +5277,9 @@ mod persist_impls {
             for page in t.legs {
                 self.legs.mark(page);
             }
+            for id in t.stores {
+                self.stores.mark(id);
+            }
         }
 
         /// Pages changed since the last save, waiting for the next one (the globals page not
@@ -4610,6 +5289,7 @@ mod persist_impls {
                 + self.clusters.changed().len()
                 + self.glass.districts.changed().len()
                 + self.legs.changed().len()
+                + self.stores.changed().len()
         }
 
         /// What the page check found, if it is on (ID5).
@@ -4681,6 +5361,7 @@ mod persist_impls {
             let mut glass = BTreeMap::new();
             let mut glass_dropped = Vec::new();
             let mut leg_pages = Vec::new();
+            let mut stores = BTreeMap::new();
             // The page check's start (ID5): the pages as given, so a restored engine that would
             // save other bytes than it was restored from fails the check at its first save.
             let mut hashes = page_check_on().then(BTreeMap::new);
@@ -4688,7 +5369,12 @@ mod persist_impls {
                 if let Some(h) = hashes.as_mut()
                     && matches!(
                         k.table(),
-                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE | LEG_TABLE
+                        GLOBAL_TABLE
+                            | DISTRICT_TABLE
+                            | CLUSTER_TABLE
+                            | GLASS_TABLE
+                            | LEG_TABLE
+                            | STORE_TABLE
                     )
                 {
                     h.insert(k, page_hash(&bytes));
@@ -4720,6 +5406,7 @@ mod persist_impls {
                         match crate::glass::page::read_district_page(
                             &bytes,
                             tun.glass.sections_max,
+                            tun.glass.counted_stores_max,
                         )? {
                             crate::glass::page::PageRead::Kept(dg) => {
                                 glass.insert(DistrictId(k.id()), *dg);
@@ -4730,6 +5417,10 @@ mod persist_impls {
                         }
                     }
                     LEG_TABLE => leg_pages.push((k.id(), bytes)),
+                    STORE_TABLE => {
+                        let st = crate::stores::read_store_page(k.id(), &bytes)?;
+                        stores.insert(st.id, st);
+                    }
                     _ => {}
                 }
             }
@@ -4779,6 +5470,7 @@ mod persist_impls {
             }
             e.glass.dropped_on_restore = glass_dropped;
             e.districts = Tracked::restored(districts);
+            e.stores = Tracked::restored(stores);
             e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);
             clusters.sort_by_key(|c| c.0);
             for (key, model, anchor, wake) in clusters {

@@ -1446,3 +1446,98 @@ fn a_failed_industry_save_is_written_again_by_the_next() {
         "the store holds the engine that saved"
     );
 }
+
+/// A `CHAIN_IN` that an IND_WRITE_CHAIN wrote carries the engine's op (SECTIONS.md §2.5, SC113):
+/// the frogport's chunk carries it with the COMMAND_RESULT and a later session journals both
+/// again, so `Replay` takes it once by that op, and the COMMAND_RESULT after it is an answer heard
+/// again. A `CHAIN_IN` Create moved carries no op and is taken every time.
+#[test]
+fn a_written_chain_package_journaled_again_is_taken_once() {
+    use rtsim_industry::ids::StoreId;
+    use rtsim_industry::obs::{ChainDirection, ChainPackage, StoreDecl, StoreFrogport};
+    let (_dir, mut j) = mill_engine("ind-chain-once");
+    mills(&mut j, 0);
+    j.mc_run_until(Tick(100));
+    let store = StoreId(7);
+    let port = |x: i32| StoreFrogport {
+        district: None,
+        inventory: None,
+        star: false,
+        pos: BlockPos::new(x, 64, 0),
+        conveyor: BlockPos::new(x + 1, 64, 0),
+        from: None,
+    };
+    let at = j.mc().t;
+    j.industry_obs(&Timed {
+        at,
+        obs: Obs::PackageStore(StoreDecl {
+            store,
+            dim: 0,
+            into: None,
+            frogports: vec![port(9_000), port(9_020)],
+            hops: vec![1],
+        }),
+    });
+    let op = 0x49u64 << 56 | 0x5eed;
+    let chain_in = |op: Option<u64>| Timed {
+        at,
+        obs: Obs::ChainPackage(ChainPackage {
+            store,
+            district: None,
+            inventory: None,
+            direction: ChainDirection::In,
+            frogport: 1,
+            pos: BlockPos::new(9_020, 64, 0),
+            destination: Some(1),
+            packages: 2,
+            address: 0,
+            op: op.map(rtsim_kernel::journal::OpId),
+            goods: GoodVec::from_pairs([(Good(1), 128)]),
+        }),
+    };
+    // Written, its COMMAND_RESULT, then both again (a chunk's pending records at its load).
+    let written_and_answered = |j: &mut Java| {
+        j.industry_obs(&chain_in(Some(op)));
+        j.journal(
+            wire::obs::COMMAND_RESULT,
+            wire::obs::command_result::SIZE,
+            wire::obs::command_result::APPLIED,
+            |r| {
+                wire::put_u64(r, wire::obs::command_result::CMD_SEQ, 0);
+                wire::put_u64(r, wire::obs::command_result::OP_ID, op);
+            },
+        );
+    };
+    written_and_answered(&mut j);
+    written_and_answered(&mut j);
+    // Two that Create moved: no op, both taken.
+    j.industry_obs(&chain_in(None));
+    j.industry_obs(&chain_in(None));
+    j.mc_run_until(Tick(at.0 + 40));
+    // A durable world save lets the replay forget the op; a chunk that unloaded before the
+    // acknowledgement still carries both records and journals them again at its next load
+    // (review finding 1): the store's mark takes the record once all the same.
+    let durable = j.next_obs - 1;
+    {
+        let r = j
+            .reserve(wire::obs::WORLD_SAVED, wire::obs::world_saved::SIZE, 0)
+            .expect("room");
+        wire::put_u64(r, wire::obs::world_saved::DURABLE_OBS_SEQ, durable);
+    }
+    j.mc_run_until(Tick(at.0 + 80));
+    written_and_answered(&mut j);
+    j.mc_run_until(Tick(at.0 + 120));
+    let (written, moved, again) = industry(&j.e, |ie| {
+        let s = &ie.stores()[&store];
+        (
+            s.counts.written,
+            s.counts.packages_in,
+            ie.stats.chain_writes_again,
+        )
+    });
+    assert_eq!(written, 2, "the written packages are taken once");
+    assert_eq!(moved, 4, "packages Create moved are taken every time");
+    assert_eq!(again, 1, "the third copy came after the op was forgotten");
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}

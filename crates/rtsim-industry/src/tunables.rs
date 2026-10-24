@@ -114,6 +114,24 @@ pub struct ReplayTunables {
     /// per polluting unloaded district per period, the only replay cost that grows with time away,
     /// because "live" asks for it.
     pub live_pollution_ticks: u64,
+    /// The most districts one replay cluster couples through package stores (SECTIONS.md §2.5,
+    /// Q4, `industry.clusterDistrictsMax`): a district whose chain links would take its cluster
+    /// past this replays without them (its store moves nothing for it while it is away), logged
+    /// once per store. TUNABLE, PLACEHOLDER 16: a cluster's catch-up costs its breakpoints times
+    /// its diffusers.
+    pub cluster_districts_max: usize,
+    /// Packages a chain conveyor holds before Create's gates stop the one behind it
+    /// (`chainConveyorCapacity`, 20): the room toward one destination is this per conveyor on the
+    /// route (SECTIONS.md §2.5, room). TUNABLE, ESTIMATE 20: arrivals overshoot a gate by a few,
+    /// and routes that share conveyors share their room.
+    pub chain_room_per_conveyor: i64,
+    /// Ticks a package takes per hop between frogports' conveyors: an importer's replay restarts
+    /// no earlier than the hops to its farthest frogport times this. TUNABLE, ESTIMATE 60: a
+    /// chain's length per hop and its speed (`RPM / 360` blocks per tick) are not sent yet.
+    pub chain_ticks_per_hop: u64,
+    /// While a loaded frogport is owed what replays sent it, the engine writes it in this often
+    /// (as room appears). TUNABLE, PLACEHOLDER 200 ticks, the store census's period.
+    pub chain_write_ticks: u64,
 }
 
 impl Default for ReplayTunables {
@@ -124,6 +142,10 @@ impl Default for ReplayTunables {
             approach_distance_blocks: 256,
             approach_hold_ticks: 100,
             live_pollution_ticks: 1_200,
+            cluster_districts_max: 16,
+            chain_room_per_conveyor: 20,
+            chain_ticks_per_hop: 60,
+            chain_write_ticks: 200,
         }
     }
 }
@@ -262,6 +284,11 @@ pub struct GlassTunables {
     /// `glass.sectionRowsWorldMax`: extra window rows every district's units hold at most together;
     /// past it the district holding the most is cut down by the excess. TUNABLE, 16384.
     pub section_rows_world_max: usize,
+    /// `glass.countedStoresMax`: shared stores per district whose moves are counted at their
+    /// movers (SECTIONS.md §4.2, §7.3), the lowest positions first; the rest join their sections'
+    /// judging groups. Per district, not per dimension, so a district's cut never depends on
+    /// another's (choice SC78). TUNABLE, 256.
+    pub counted_stores_max: usize,
 }
 
 impl Default for GlassTunables {
@@ -285,6 +312,7 @@ impl Default for GlassTunables {
             sections_max: 64,
             section_rows_max: 1024,
             section_rows_world_max: 16_384,
+            counted_stores_max: 256,
         }
     }
 }
