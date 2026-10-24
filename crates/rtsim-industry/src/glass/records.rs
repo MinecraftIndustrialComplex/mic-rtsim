@@ -117,6 +117,10 @@ pub mod node_flags {
     /// depot or belt): goods no recipe of it matches pass through unchanged, sharing its capacity
     /// only as the line's own.
     pub const PASS_THROUGH: u32 = 64;
+    /// A package store's frogport (SECTIONS.md §2.5, slice S4): a store whose chain side is a
+    /// port. While its district is away no package crosses it, so the replay puts nothing into it
+    /// (it has no room) and its reconcile writes nothing into the frogport.
+    pub const CHAIN_PORT: u32 = 128;
 }
 
 /// Edge flags (IND_GRAPH_EDGE at 44).

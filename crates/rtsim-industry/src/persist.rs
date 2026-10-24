@@ -7,7 +7,8 @@
 //!   O18), **one per district's glass state** ([`GLASS_TABLE`], id = district id: the compile, its
 //!   passed window and the glass replay, `glass::page`, G2-9), **one per 256 booked train legs**
 //!   ([`LEG_TABLE`], id = the leg ids divided by 256, ID10: the legs grow with the lines, so they
-//!   are not in the globals), and **one page of globals** ([`GLOBAL_TABLE`], id 0).
+//!   are not in the globals), **one per package store** ([`STORE_TABLE`], id = the store id,
+//!   `stores`), and **one page of globals** ([`GLOBAL_TABLE`], id 0).
 //! - **A save writes the globals page and the pages changed since the save before**
 //!   (`Engine::save_changed`, docs/choices-industry-dirty-pages.md): the engine marks a district,
 //!   cluster, glass or leg page on every change, and a marked page whose entry is gone is deleted.
@@ -31,7 +32,8 @@ use rtsim_kernel::conserve::Diffuser;
 use rtsim_kernel::journal::OpId;
 
 use crate::ids::{
-    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, TrainId, VecMap,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId, TrainId,
+    VecMap,
 };
 
 /// Page tables of the industry engine (the kernel's `PageKey` top 16 bits). PLACEHOLDER numbers,
@@ -42,6 +44,9 @@ pub const CLUSTER_TABLE: u16 = 0x4902;
 pub const GLASS_TABLE: u16 = 0x4903;
 /// The booked train legs, [`crate::threat::LEGS_PER_PAGE`] ids to a page (id = the page's number, ID10).
 pub const LEG_TABLE: u16 = 0x4904;
+/// The package stores (SECTIONS.md §2.5, slice S4), one page each (id = the store id). 0x4905 is
+/// left free.
+pub const STORE_TABLE: u16 = 0x4906;
 
 /// A value that can go into an industry page.
 pub trait Persist: Sized {
@@ -289,7 +294,7 @@ macro_rules! persist_newtype {
     };
 }
 
-persist_newtype!(DistrictId, Good, StationId, TrainId, Tick);
+persist_newtype!(DistrictId, Good, StationId, StoreId, TrainId, Tick);
 
 impl Persist for OpId {
     fn put(&self, w: &mut Writer) {

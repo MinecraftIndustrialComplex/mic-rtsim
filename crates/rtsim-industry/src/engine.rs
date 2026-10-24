@@ -40,13 +40,14 @@ use crate::district::{
     ReconcileReport, SimSpan, SweepBuf,
 };
 use crate::ids::{
-    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, TrainId,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId,
+    TrainId,
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
-    Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
-    UnwatchedStop,
+    BlockFlags, Carriage, CarriageResult, ChainDirection, ChainPackage, Conditions, Direction,
+    EditKind, LoadState, NotLearnable, Obs, PackageEvent, ReconcileResult, StationDecl, StoreDecl,
+    Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -187,6 +188,10 @@ pub struct Stats {
     /// Arrivals at the station the train's leg began at, with no unwatched stop between: no edge
     /// (choice SG51). Not saved (choice SG58): a restore starts it at 0.
     pub self_edges_refused: u64,
+    /// Package store declarations (IND_PACKAGE_STORE, slice S4). Not saved, as SG58.
+    pub store_declarations: u64,
+    /// Chain package records naming a store the engine does not have. Not saved, as SG58.
+    pub store_records_unknown: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -289,6 +294,8 @@ pub struct Engine {
     arrivals: BTreeMap<(TrainId, StationId), Vec<Carriage>>,
     legs: LegIndex,
     legs_swept: u64,
+    /// The package stores (SECTIONS.md §2.5, slice S4), one page each.
+    stores: Tracked<StoreId, crate::stores::PackageStore>,
     /// Power sinks of each source (IND_POWER_LINK).
     sinks_of: BTreeMap<DistrictId, BTreeSet<DistrictId>>,
     conditions: Option<Conditions>,
@@ -358,12 +365,17 @@ pub struct SaveTicket {
     glass: Vec<DistrictId>,
     clusters: Vec<(u64, RegionId<Cluster>)>,
     legs: Vec<u64>,
+    stores: Vec<StoreId>,
 }
 
 impl SaveTicket {
     /// Pages the save wrote or deleted, the globals page not counted.
     pub fn len(&self) -> usize {
-        self.districts.len() + self.glass.len() + self.clusters.len() + self.legs.len()
+        self.districts.len()
+            + self.glass.len()
+            + self.clusters.len()
+            + self.legs.len()
+            + self.stores.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -430,6 +442,7 @@ impl Engine {
             arrivals: BTreeMap::new(),
             legs: LegIndex::default(),
             legs_swept: 0,
+            stores: Tracked::default(),
             sinks_of: BTreeMap::new(),
             conditions: None,
             pressure: BTreeMap::new(),
@@ -455,6 +468,11 @@ impl Engine {
             districts_rev: next_districts_rev(),
             page_check: page_check_on().then(Box::default),
         }
+    }
+
+    /// The package stores (SECTIONS.md §2.5), by id.
+    pub fn stores(&self) -> &BTreeMap<StoreId, crate::stores::PackageStore> {
+        &self.stores
     }
 
     /// A value that changes whenever a district comes, goes or changes its chunks, and differs
@@ -1031,6 +1049,13 @@ impl Engine {
                 self.stations.insert(s.station, Station { decl: s.clone() });
             }
             Obs::Package(p) => self.package(at, p),
+            Obs::PackageStore(d) => self.package_store(at, d),
+            Obs::ChainPackage(p) => self.chain_package(at, p),
+            Obs::StoreCensus(c) => {
+                if let Some(s) = self.stores.get_mut(&c.store) {
+                    s.census(at, c);
+                }
+            }
             Obs::StationPorts(p) => {
                 let mut inventories = p.inventories.clone();
                 inventories.sort_unstable();
@@ -3167,6 +3192,58 @@ impl Engine {
     }
 
     fn package(&mut self, at: Tick, p: &PackageEvent) {
+        self.package_port(at, p, true);
+    }
+
+    /// A package store's declaration (IND_PACKAGE_STORE, SECTIONS.md §2.5).
+    fn package_store(&mut self, at: Tick, d: &StoreDecl) {
+        let what = crate::stores::declare(&mut self.stores, d);
+        self.stats.store_declarations += 1;
+        if self.log_enabled {
+            let line = format!(
+                "package store {}: {what:?}, {} frogports",
+                d.store.0,
+                d.frogports.len()
+            );
+            for district in d.frogports.iter().filter_map(|f| f.district) {
+                self.note(district, at, line.clone());
+            }
+        }
+    }
+
+    /// Packages across a package store's frogport (IND_CHAIN_PACKAGE, SECTIONS.md §2.5): booked
+    /// into the store, and a port of the frogport's district when it has one. Never a link: the
+    /// mail path's `LinkKey::Mail` would send the district to the black box.
+    fn chain_package(&mut self, at: Tick, p: &ChainPackage) {
+        match self.stores.get_mut(&p.store) {
+            Some(s) => {
+                s.chain(p);
+            }
+            None => self.stats.store_records_unknown += 1,
+        }
+        let (Some(district), Some(inventory)) = (p.district, p.inventory) else {
+            return;
+        };
+        let e = PackageEvent {
+            district,
+            inventory,
+            direction: match p.direction {
+                ChainDirection::Out => Direction::Out,
+                ChainDirection::In => Direction::In,
+            },
+            address: p.address,
+            packages: p.packages,
+            op: p.op,
+            goods: p.goods.clone(),
+        };
+        self.package_port(at, &e, false);
+    }
+
+    /// Packages into or out of a district inventory: a port of its window when loaded, its
+    /// replay's stock when away. `mail`: train mail at a postbox (IND_PACKAGE), whose packages
+    /// out are the packager's learned rate and which draws the engine's own written mail first;
+    /// else a package store's frogport, which does neither.
+    fn package_port(&mut self, at: Tick, p: &PackageEvent, mail: bool) {
         let d = p.district;
         let simulated = self.cluster_of.contains_key(&d);
         let sign = if p.direction == Direction::In { 1 } else { -1 };
@@ -3181,7 +3258,7 @@ impl Engine {
             // Loaded: an ordinary port. Packages leaving are the packager's learned rate.
             let goods: GoodVec = p.goods.iter().map(|(g, n)| (g, sign * n)).collect();
             dist.ports.merge(&goods);
-            if p.direction == Direction::Out {
+            if mail && p.direction == Direction::Out {
                 for (g, n) in p.goods.iter() {
                     *dist
                         .links
@@ -3243,11 +3320,16 @@ impl Engine {
             for (g, n) in goods.iter() {
                 if out {
                     // Engine-written packages first, then stock that was already there.
-                    let mail = PoolKey::Mail(d, inv, address, g);
-                    let from_mail = c.pool(mail).map_or(0, |m| m.pushed.min(m.level)).min(n);
-                    if from_mail > 0 {
-                        c.add_to_pool(mail, -from_mail, true, at);
-                    }
+                    let from_mail = if mail {
+                        let key = PoolKey::Mail(d, inv, address, g);
+                        let m = c.pool(key).map_or(0, |m| m.pushed.min(m.level)).min(n);
+                        if m > 0 {
+                            c.add_to_pool(key, -m, true, at);
+                        }
+                        m
+                    } else {
+                        0
+                    };
                     let rest = n - from_mail;
                     if rest > 0 {
                         let got = -c.add_to_pool(PoolKey::Stock(d, g), -rest, false, at);
@@ -4319,8 +4401,8 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, from_bytes,
-        persist_struct, to_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, STORE_TABLE,
+        from_bytes, persist_struct, to_bytes,
     };
 
     persist_struct!(LineEdge {
@@ -4379,6 +4461,8 @@ mod persist_impls {
                 exchanges_portless: Persist::get(r)?,
                 unwatched_stops: 0,
                 self_edges_refused: 0,
+                store_declarations: 0,
+                store_records_unknown: 0,
             })
         }
     }
@@ -4484,6 +4568,10 @@ mod persist_impls {
         PageKey::new(LEG_TABLE, key48(page, "leg page"))
     }
 
+    fn store_key(id: StoreId) -> PageKey {
+        PageKey::new(STORE_TABLE, key48(id.0, "package store"))
+    }
+
     fn cluster_page(region: &rtsim_kernel::lazy::Region<Cluster>) -> (PageKey, Vec<u8>) {
         let mut w = Writer::new();
         region.cell().model().put(&mut w);
@@ -4505,7 +4593,8 @@ mod persist_impls {
                 1 + self.districts.len()
                     + self.clusters.len()
                     + self.glass.districts.len()
-                    + self.legs.len() / 128,
+                    + self.legs.len() / 128
+                    + self.stores.len(),
             );
             out.push(globals_page(self));
             for (id, d) in self.districts.iter() {
@@ -4519,6 +4608,9 @@ mod persist_impls {
             }
             for (page, bytes) in self.legs.pages() {
                 out.push((leg_key(page), bytes));
+            }
+            for (id, st) in self.stores.iter() {
+                out.push((store_key(*id), crate::stores::store_page(st)));
             }
             out
         }
@@ -4559,6 +4651,13 @@ mod persist_impls {
                     None => delete.push(leg_key(page)),
                 }
                 ticket.legs.push(page);
+            }
+            for id in self.stores.take_changed() {
+                match self.stores.get(&id) {
+                    Some(st) => put.push((store_key(id), crate::stores::store_page(st))),
+                    None => delete.push(store_key(id)),
+                }
+                ticket.stores.push(id);
             }
             if self.page_check.is_some() {
                 self.check_pages(&put, &delete);
@@ -4601,6 +4700,9 @@ mod persist_impls {
             for page in t.legs {
                 self.legs.mark(page);
             }
+            for id in t.stores {
+                self.stores.mark(id);
+            }
         }
 
         /// Pages changed since the last save, waiting for the next one (the globals page not
@@ -4610,6 +4712,7 @@ mod persist_impls {
                 + self.clusters.changed().len()
                 + self.glass.districts.changed().len()
                 + self.legs.changed().len()
+                + self.stores.changed().len()
         }
 
         /// What the page check found, if it is on (ID5).
@@ -4681,6 +4784,7 @@ mod persist_impls {
             let mut glass = BTreeMap::new();
             let mut glass_dropped = Vec::new();
             let mut leg_pages = Vec::new();
+            let mut stores = BTreeMap::new();
             // The page check's start (ID5): the pages as given, so a restored engine that would
             // save other bytes than it was restored from fails the check at its first save.
             let mut hashes = page_check_on().then(BTreeMap::new);
@@ -4688,7 +4792,12 @@ mod persist_impls {
                 if let Some(h) = hashes.as_mut()
                     && matches!(
                         k.table(),
-                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE | LEG_TABLE
+                        GLOBAL_TABLE
+                            | DISTRICT_TABLE
+                            | CLUSTER_TABLE
+                            | GLASS_TABLE
+                            | LEG_TABLE
+                            | STORE_TABLE
                     )
                 {
                     h.insert(k, page_hash(&bytes));
@@ -4730,6 +4839,10 @@ mod persist_impls {
                         }
                     }
                     LEG_TABLE => leg_pages.push((k.id(), bytes)),
+                    STORE_TABLE => {
+                        let st = crate::stores::read_store_page(k.id(), &bytes)?;
+                        stores.insert(st.id, st);
+                    }
                     _ => {}
                 }
             }
@@ -4779,6 +4892,7 @@ mod persist_impls {
             }
             e.glass.dropped_on_restore = glass_dropped;
             e.districts = Tracked::restored(districts);
+            e.stores = Tracked::restored(stores);
             e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);
             clusters.sort_by_key(|c| c.0);
             for (key, model, anchor, wake) in clusters {
