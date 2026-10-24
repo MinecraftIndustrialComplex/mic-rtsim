@@ -20,12 +20,15 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModList;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.AddPackFindersEvent;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.entity.living.LivingChangeTargetEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDropsEvent;
 import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 
 import java.nio.file.Path;
@@ -51,6 +54,10 @@ public final class ConflictEvents {
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.BreakEvent.class, ConflictEvents::onBreak);
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.EntityPlaceEvent.class, ConflictEvents::onPlace);
         bus.addListener(ServerStoppedEvent.class, e -> ConflictBridge.INSTANCE.serverStopped());
+        // The camp reconciler's (M5): kept whatever the module's state, so its index and levels stay true.
+        bus.addListener(EventPriority.LOWEST, false, ChunkTicketLevelUpdatedEvent.class, ConflictEvents::onTicket);
+        bus.addListener(EventPriority.LOWEST, false, EntityJoinLevelEvent.class, ConflictEvents::onJoin);
+        bus.addListener(EventPriority.LOWEST, false, EntityLeaveLevelEvent.class, ConflictEvents::onLeave);
         if (RtsimConfig.Test.ENABLED)
             modBus.addListener(ConflictEvents::onPackFinders);
     }
@@ -66,6 +73,20 @@ public final class ConflictEvents {
         if (event.getEntity().level().isClientSide() || (s = live()) == null)
             return;
         ConflictBridge.INSTANCE.onDeath(event.getEntity(), event.getSource(), s.gameTime());
+    }
+
+    private static void onTicket(ChunkTicketLevelUpdatedEvent event) {
+        ConflictBridge.INSTANCE.reconciler().onTicket(event.getLevel(), event.getChunkPos(), event.getNewTicketLevel());
+    }
+
+    private static void onJoin(EntityJoinLevelEvent event) {
+        if (!event.getLevel().isClientSide())
+            ConflictBridge.INSTANCE.reconciler().onJoin(event.getEntity(), event.loadedFromDisk());
+    }
+
+    private static void onLeave(EntityLeaveLevelEvent event) {
+        if (!event.getLevel().isClientSide())
+            ConflictBridge.INSTANCE.reconciler().onLeave(event.getEntity());
     }
 
     private static void onDrops(LivingDropsEvent event) {
