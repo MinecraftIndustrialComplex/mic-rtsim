@@ -684,6 +684,19 @@ under its own heading.
   written off by state, 17 by op, 0 with the fix): the scripted cases are what make `sim mowzie`
   fail for it. A fork (reported): none; this is the reviewer's plan.
 
+- **MZB-176** (the audit's I2 has its lower bound back): MZB-172 made `camp_audit` read-only, which
+  left I2 with only its upper bound (the slots at home are no more than the pool's whole warriors
+  now). The lower bound is the pool's stored value: it is what the pool held when it was last moved,
+  and every move of the pool follows a sync and moves the slots with it (`pool_return`, a draw's
+  `pool_shift`, a death), so at least `floor(pool)` slots are at home, the refill since being the
+  gain the next sync adds. A slot taken from home with the pool left as it was is now named (`I2:
+  ... the pool held N when it was last moved`). It holds over every camp test, the chaos runs and
+  `sim mowzie` (its chaos checks every event). Tests:
+  `the_audit_names_a_pool_the_slots_at_home_fall_short_of` (a home slot made Dead by hand; and a
+  pool that refilled for 30 days with the slots unadded, which is no shortfall). A fork (reported):
+  the review said "at the camp's last sync"; the pool's stamp (`pool_at`) is that moment, since a
+  sync comes before every move and the books hold no other mark of it.
+
 ## M5 Camp reconciler, Java
 
 (none yet)

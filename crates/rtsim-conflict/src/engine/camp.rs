@@ -1230,8 +1230,9 @@ impl Conflict {
 
     /// Every way a camp's ledger breaks the engine's side of §4.9's invariants at `at` (empty when
     /// it holds): I1 (each slot in one state, one line each, numbers and generations unique and
-    /// nonzero), I2 (the slots at home are no more than the pool's whole warriors, the rest being
-    /// owed slots the next sync adds; the slots away the war parties' units; the cap kept), and
+    /// nonzero), I2 (the slots at home are no more than the pool's whole warriors and no fewer
+    /// than it held when it was last moved, the difference being owed slots the next sync adds;
+    /// the slots away the war parties' units; the cap kept), and
     /// the books' own bookkeeping (`away`, the parties). A camp with no ledger has none to break.
     /// It changes nothing: a sync here would number the slots by when the audit ran, so an
     /// audited run would differ from an unaudited one.
@@ -1245,6 +1246,16 @@ impl Conflict {
         if c.home_count() > whole {
             bad.push(format!(
                 "I2: {} slots at home, the pool holds {whole}",
+                c.home_count()
+            ));
+        }
+        // The pool's stored value is what it held when it was last moved, and every move of it
+        // follows a sync and moves the slots with it: at least that many are at home, the refill
+        // since being the gain the next sync adds.
+        let held = x.pool.floor() as u32;
+        if c.home_count() < held {
+            bad.push(format!(
+                "I2: {} slots at home, the pool held {held} when it was last moved",
                 c.home_count()
             ));
         }

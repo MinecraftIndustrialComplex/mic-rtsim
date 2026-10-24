@@ -2022,6 +2022,35 @@ fn the_audit_names_a_broken_ledger() {
     assert!(bad.iter().any(|b| b.starts_with("I1")), "{bad:?}");
 }
 
+/// I2 has its lower bound: the pool's value when it was last moved is held by slots at home, the
+/// refill since being the gain the next sync adds. A slot taken from home with the pool left as
+/// it was is named, and the books as the audit now leaves them (a pool that gained) are not.
+#[test]
+fn the_audit_names_a_pool_the_slots_at_home_fall_short_of() {
+    let mut r = grove(66, 9);
+    come_in(&mut r);
+    assert!(r.check().is_empty());
+    let at = r.c.now();
+    let f = r.f as usize;
+    // A slot at home dies with no pool move: the pool still holds nine.
+    r.c.factions[f].camp.as_mut().unwrap().slots[0].state = SlotState::Dead;
+    let bad = r.c.camp_audit(r.f, at);
+    assert_eq!(bad.len(), 1, "{bad:?}");
+    assert!(
+        bad[0].starts_with("I2") && bad[0].contains("last moved"),
+        "{bad:?}"
+    );
+    // A pool that gained since it was last moved is no shortfall: the slots wait for the sync.
+    let mut r = grove(67, 9);
+    come_in(&mut r);
+    r.c.factions[f].cap = 12;
+    r.c.factions[f].pool = 9.0;
+    r.c.factions[f].pool_at = r.c.now();
+    let later = r.c.now() + days(30.0);
+    assert!(r.c.pool_at(r.f, later) > 9.0, "the pool refills");
+    assert!(r.c.camp_audit(r.f, later).is_empty());
+}
+
 /// The audit changes nothing (review of 408d4a07, item 11): it used to sync the ledger, which
 /// numbers a new slot by the lowest free number, so an audited run and an unaudited one could name
 /// their slots differently from then on. A chaos run checked after every event ends in the state
