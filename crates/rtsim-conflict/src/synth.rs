@@ -12,7 +12,7 @@
 //!   codec; a scripted player answers envoys (ignore, pay, refuse, attack) and fights bands that
 //!   materialize near it (a share killed per wave, the war chief or not).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
@@ -258,9 +258,21 @@ pub struct AppliedLine {
     pub at: Tick,
     pub faction: u64,
     pub op: u64,
+    /// The line's index in its reconcile: with `op`, what I4 counts.
+    pub index: u32,
     pub line: boundary::ReconcileLine,
     /// `LINE_DONE`, `LINE_NOTHING` or `LINE_STALE`.
     pub outcome: u8,
+}
+
+/// A record a body or a marker carries until the engine has it: one line's answer, with the
+/// reconcile it answers (MOWZIE.md §4.9, *Orders and answers*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Holder {
+    pub faction: u64,
+    pub epoch: u64,
+    pub op: u64,
+    pub line: boundary::LineAnswer,
 }
 
 /// The plugin's side, headless: commands through the codec in, observations through the codec
@@ -292,11 +304,20 @@ pub struct FakeConflict {
     /// Answers to CAMP_RECONCILEs that are applied but never reach the engine: a crash between the
     /// world's save and the journal's (§4.9's crash table). Counted down, one per answer.
     pub lose_answers: u32,
-    /// Bodies a take or a set-out removed whose answer never reached the engine (lost, or in the
-    /// journal's tail at a restart). The real plugin journals such an answer again from the
-    /// marker the body left (MOWZIE.md §4.9); this one does not, so a party that comes home
-    /// meanwhile leaves a ghost body that three censuses write off.
-    pub lost_removals: u32,
+    /// What the entities carry (MOWZIE.md §4.9): a line applied and done leaves its record on a
+    /// body or a marker until the engine has it, so that a record lost on its way to the engine
+    /// (`lose_answers`, a restart's dropped queue) is still on its holder.
+    pub holders: Vec<Holder>,
+    /// The deaths a marker carries where the body was, until the engine has them.
+    pub death_holders: Vec<boundary::CampDeath>,
+    /// Journals the holders' records again at a session start ([`FakeConflict::journal_holders`],
+    /// which [`CampRun::restart`] calls): the real plugin does. Off, a record lost is lost, and a
+    /// party that comes home before a census meanwhile leaves a ghost body (three censuses write
+    /// it off): the case the crash table says the holders prevent.
+    pub holders_again: bool,
+    /// The most lines a CAMP_BODIES record carries (0: all of a reconcile's): one reconcile has
+    /// several records, as holders in several chunks answer it (docs/boundary.md §9.6).
+    pub split_answers: usize,
     /// Sends every answer twice: a replay.
     pub replay_answers: bool,
     /// Ticks an answer takes to reach the engine.
@@ -326,7 +347,10 @@ impl FakeConflict {
             camps: BTreeMap::new(),
             applied: Vec::new(),
             lose_answers: 0,
-            lost_removals: 0,
+            holders: Vec::new(),
+            death_holders: Vec::new(),
+            holders_again: false,
+            split_answers: 0,
             replay_answers: false,
             answer_ticks: 1,
             uuids: 0,
@@ -376,6 +400,18 @@ impl FakeConflict {
                 boundary::encode_obs(self.obs_seq, at.0 as i64, &o, &mut buf);
                 self.wire_bytes += buf.len() as u64;
                 let (_, back, _) = boundary::decode_obs(&buf).expect("own encoding");
+                if let Obs::CampDeath(d) = &back {
+                    self.death_holders
+                        .retain(|h| !(h.faction == d.faction && h.op == d.op));
+                }
+                if let Obs::CampBodies(b) = &back {
+                    // The engine has the record: its holders drop it (the acknowledgement).
+                    self.holders.retain(|h| {
+                        !(h.faction == b.faction
+                            && h.op == b.op
+                            && b.lines.iter().any(|l| l.line == h.line.line))
+                    });
+                }
                 (at, back)
             })
             .collect()
@@ -712,27 +748,30 @@ impl FakeConflict {
         };
         let b = camp.bodies.remove(i);
         let op = self.op();
-        self.push(
-            at,
-            Obs::CampDeath(boundary::CampDeath {
-                faction,
-                by,
-                body: b.body,
-                flags: if b.generation == 0 {
-                    boundary::DEATH_STRAY
-                } else {
-                    0
-                },
-                slot: b.slot,
-                generation: b.generation,
-                killer: if by == boundary::BY_PLAYER {
-                    self.player
-                } else {
-                    (0, 0)
-                },
-                op,
-            }),
-        );
+        let death = boundary::CampDeath {
+            faction,
+            by,
+            body: b.body,
+            flags: if b.generation == 0 {
+                boundary::DEATH_STRAY
+            } else {
+                0
+            },
+            slot: b.slot,
+            generation: b.generation,
+            killer: if by == boundary::BY_PLAYER {
+                self.player
+            } else {
+                (0, 0)
+            },
+            op,
+        };
+        if b.generation != 0 {
+            // A member's body leaves a marker with its death (a stray's leaves none: nothing is
+            // booked for it).
+            self.death_holders.push(death);
+        }
+        self.push(at, Obs::CampDeath(death));
         true
     }
 
@@ -789,47 +828,86 @@ impl FakeConflict {
                 at,
                 faction: r.faction,
                 op: r.op,
+                index: i as u32,
                 line: *l,
                 outcome,
             });
-            lines.push(boundary::LineAnswer {
+            let answer = boundary::LineAnswer {
                 line: i as u32,
                 slot: l.slot,
                 generation: l.generation,
                 action: l.action,
                 outcome,
-            });
+            };
+            if outcome == boundary::LINE_DONE {
+                // A change leaves its record where it was made; one that changed nothing does not.
+                self.holders.push(Holder {
+                    faction: r.faction,
+                    epoch: r.epoch,
+                    op: r.op,
+                    line: answer,
+                });
+            }
+            lines.push(answer);
         }
         if self.lose_answers > 0 {
             self.lose_answers -= 1;
-            self.lost_removals += self.removals_of(r.op);
             return;
         }
-        let answer = Obs::CampBodies(boundary::CampBodies {
-            faction: r.faction,
-            epoch: r.epoch,
-            op: r.op,
-            lines,
-        });
-        if self.replay_answers {
-            self.push(at + self.answer_ticks, answer.clone());
+        for answer in self.records(r.faction, r.epoch, r.op, lines) {
+            if self.replay_answers {
+                self.push(at + self.answer_ticks, answer.clone());
+            }
+            self.push(at + self.answer_ticks, answer);
         }
-        self.push(at + self.answer_ticks, answer);
     }
 
-    /// Bodies the order `op` took or handed off (a take or a set-out that was done).
-    pub fn removals_of(&self, op: u64) -> u32 {
-        self.applied
-            .iter()
-            .filter(|a| {
-                a.op == op
-                    && a.outcome == boundary::LINE_DONE
-                    && matches!(
-                        a.line.action,
-                        boundary::ACTION_TAKE | boundary::ACTION_SET_OUT
-                    )
+    /// The lines as CAMP_BODIES records of at most `split_answers` lines each.
+    fn records(
+        &self,
+        faction: u64,
+        epoch: u64,
+        op: u64,
+        lines: Vec<boundary::LineAnswer>,
+    ) -> Vec<Obs> {
+        let n = if self.split_answers == 0 {
+            lines.len().max(1)
+        } else {
+            self.split_answers
+        };
+        lines
+            .chunks(n)
+            .map(|c| {
+                Obs::CampBodies(boundary::CampBodies {
+                    faction,
+                    epoch,
+                    op,
+                    lines: c.to_vec(),
+                })
             })
-            .count() as u32
+            .collect()
+    }
+
+    /// A session's start, as the holders' records load: each record a holder still has, journaled
+    /// again at `at` with its reconcile's op id, grouped by op and split as answers are
+    /// (MOWZIE.md §4.9: the engine skips what it has, and books the rest by the action it carries).
+    pub fn journal_holders(&mut self, at: Tick) {
+        let mut groups: Vec<((u64, u64, u64), Vec<boundary::LineAnswer>)> = Vec::new();
+        for h in &self.holders {
+            let k = (h.faction, h.epoch, h.op);
+            match groups.iter_mut().find(|g| g.0 == k) {
+                Some(g) => g.1.push(h.line),
+                None => groups.push((k, vec![h.line])),
+            }
+        }
+        for ((faction, epoch, op), lines) in groups {
+            for o in self.records(faction, epoch, op, lines) {
+                self.push(at + self.answer_ticks, o);
+            }
+        }
+        for d in self.death_holders.clone() {
+            self.push(at + self.answer_ticks, Obs::CampDeath(d));
+        }
     }
 
     /// One line, applied to the camp's world: its target state, so that applying it twice changes
@@ -975,9 +1053,16 @@ pub struct CampRun {
     pub cmds: Vec<(Tick, Cmd)>,
     /// The engine's body id of the camp's pool members.
     pub body: u32,
-    /// CAMP_DEATH records the plugin sent that never reached the engine (a shutdown before the
-    /// journal's write): the members they name died, and the books may write them off.
-    pub unrecorded_deaths: u32,
+    /// The ghosts now: members the books hold as bodies at home that the world has no body for,
+    /// with nothing on its way to tell the books (a record queued or on a holder). Three censuses
+    /// write one off; one drawn first is rescued (its set-out finds nothing to do and books the
+    /// body gone). See [`CampRun::track`].
+    pub ghosts: BTreeSet<(u32, u32)>,
+    /// Ghosts that left the books: each was written off, and a body-less member leaves the books
+    /// no other way. The engine's write-offs must be exactly these.
+    pub ghosts_gone: u32,
+    applied_keys: BTreeSet<(u64, u32)>,
+    applied_checked: usize,
     /// Everything a check found wrong, with when.
     pub failures: Vec<String>,
     /// The player stands at the refinery (observed every 1,200 ticks) while this is set: a band
@@ -1043,7 +1128,10 @@ impl CampRun {
             f,
             cmds: Vec::new(),
             body,
-            unrecorded_deaths: 0,
+            ghosts: BTreeSet::new(),
+            ghosts_gone: 0,
+            applied_keys: BTreeSet::new(),
+            applied_checked: 0,
             failures: Vec::new(),
             watch: false,
             round_trips: true,
@@ -1055,11 +1143,79 @@ impl CampRun {
         r
     }
 
-    /// Members whose bodies the world may have lost without the books knowing: deaths that were
-    /// never recorded, and bodies a take or a set-out removed whose answer never came. A write-off
-    /// of a living member needs one of them (MOWZIE.md §4.9, the crash table).
-    pub fn lost_members(&self) -> u32 {
-        self.unrecorded_deaths + self.plugin.lost_removals
+    /// Looks at the books against the world for the ghosts (`ghosts`, `ghosts_gone`): a member
+    /// whose slot is a body at home with no body in the world, and no record queued for the camp
+    /// that could tell the books. A record only a holder has does not count: it reaches the engine
+    /// at the next session start at the earliest, and only if no census has superseded its epoch
+    /// by then. It is a ghost until three censuses write it off, or a record or a draw changes the
+    /// slot first. The set is looked at after every step of [`CampRun::run`] while `audits` is on,
+    /// so a ghost, which lives two days at least, is seen.
+    pub fn track(&mut self) {
+        let Some(camp) = self.c.camp(self.f) else {
+            return;
+        };
+        let held: BTreeSet<(u32, u32)> = self
+            .plugin
+            .camps
+            .get(&self.key)
+            .map(|c| {
+                c.bodies
+                    .iter()
+                    .filter(|b| b.generation != 0)
+                    .map(|b| (b.slot, b.generation))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let quiet = !self.plugin.camp_pending(self.key);
+        let mut now = BTreeSet::new();
+        for &(id, generation) in &self.ghosts {
+            match camp.index(id, generation) {
+                None => self.ghosts_gone += 1,
+                Some(i)
+                    if camp.slots[i].state == crate::engine::SlotState::Body
+                        && !held.contains(&(id, generation)) =>
+                {
+                    now.insert((id, generation));
+                }
+                // Drawn, or its body is back.
+                Some(_) => {}
+            }
+        }
+        if quiet {
+            for s in &camp.slots {
+                let pair = (s.id, s.generation);
+                if s.state == crate::engine::SlotState::Body && !held.contains(&pair) {
+                    now.insert(pair);
+                }
+            }
+        }
+        self.ghosts = now;
+    }
+
+    /// Ends a chaos run: answers stop being lost or replayed, the watching player leaves, every
+    /// war party gets home, and the camp is censused six times, 0.8 days apart, so that every
+    /// ghost has had its three misses over more than two days: afterwards `ghosts` is empty and
+    /// the engine's write-offs are `ghosts_gone` exactly.
+    pub fn settle(&mut self) {
+        self.plugin.lose_answers = 0;
+        self.plugin.replay_answers = false;
+        self.watch = false;
+        for _ in 0..60 {
+            if !self.c.parties.iter().any(|(_, p)| p.kind.is_war()) {
+                break;
+            }
+            let to = self.c.now() + TICKS_PER_DAY;
+            self.run(to);
+        }
+        for _ in 0..6 {
+            self.camp_out();
+            let to = self.c.now() + 3;
+            self.run(to);
+            self.camp_in();
+            let to = self.c.now() + TICKS_PER_DAY * 4 / 5;
+            self.run(to);
+            self.audit();
+        }
     }
 
     /// The engine, the plugin and the player to `to`.
@@ -1095,6 +1251,9 @@ impl CampRun {
                 self.next_obs = next + 1_200;
             }
             self.flush(next);
+            if self.audits {
+                self.track();
+            }
             t = next;
         }
     }
@@ -1184,27 +1343,21 @@ impl CampRun {
         self.flush(at);
     }
 
-    /// A session restart: the plugin's observations not yet journaled are lost (a death among
-    /// them is an unrecorded one), every camp is out, and the engine starts a session.
+    /// A session restart: the plugin's observations not yet journaled are lost (the holders'
+    /// records are journaled again if [`FakeConflict::holders_again`]), every camp is out, and the
+    /// engine starts a session.
     pub fn restart(&mut self) {
         let at = self.c.now();
-        let lost = self.plugin.drop_queued();
-        self.unrecorded_deaths += lost
-            .iter()
-            .filter(|o| matches!(o, Obs::CampDeath(d) if d.faction == self.key && d.flags & boundary::DEATH_STRAY == 0))
-            .count() as u32;
-        for o in &lost {
-            if let Obs::CampBodies(b) = o
-                && b.faction == self.key
-            {
-                self.plugin.lost_removals += self.plugin.removals_of(b.op);
-            }
-        }
+        // The journal's tail is lost; what the holders carry is not.
+        self.plugin.drop_queued();
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }
         self.c.session_start();
         self.flush(at);
+        if self.plugin.holders_again {
+            self.plugin.journal_holders(at);
+        }
     }
 
     /// Saves the engine and loads it again in its place; the books must be what they were.
@@ -1225,13 +1378,25 @@ impl CampRun {
     }
 
     /// Every way the books and the camp's world break §4.9's invariants now (empty when they
-    /// hold): the engine's own audit (I1, I2, the cap), and against the world: I5 always (no
-    /// two bodies with one slot and generation), and, with the camp in and nothing in flight,
-    /// I3 (the tagged bodies are exactly the slots with a body) and that a body is left behind
-    /// only while its party musters.
+    /// hold): the engine's own audit (I1, I2, the cap), I4 (no line of an order is applied
+    /// twice), and against the world: I5 always (no two bodies with one slot and generation),
+    /// and, with the camp in and nothing in flight, I3 (the tagged bodies are exactly the slots
+    /// with a body) and that a body is left behind only while its party musters. I6 (the engine
+    /// books only what Java reports) is by construction: the engine never sees the world.
     pub fn check(&mut self) -> Vec<String> {
         let now = self.c.now();
         let mut bad = self.c.camp_audit(self.f, now);
+        // I4: no order is applied twice, counted by each line of each reconcile (the op and the
+        // line's index) the plugin applied.
+        for a in &self.plugin.applied[self.applied_checked..] {
+            if !self.applied_keys.insert((a.op, a.index)) {
+                bad.push(format!(
+                    "I4: line {} of order {:#x} applied twice",
+                    a.index, a.op
+                ));
+            }
+        }
+        self.applied_checked = self.plugin.applied.len();
         let Some(camp) = self.c.camp(self.f) else {
             return bad;
         };
@@ -1306,6 +1471,10 @@ impl CampRun {
     /// coming in and out, raids sent, bodies killed, strays put down, answers lost, late, replayed
     /// and stale, session restarts and saves. The books are checked after each (§7 run 10).
     pub fn chaos(&mut self, seed: u64, events: u32) {
+        // The plugin's variants follow the seed: a record lost is lost (the ghosts of the crash
+        // table's gaps), or holders journal it again, whole or one line to a record.
+        self.plugin.holders_again = !seed.is_multiple_of(3);
+        self.plugin.split_answers = [0, 0, 1][(seed % 3) as usize];
         let mut rng = StreamKey::new(seed, SYS_CHAOS, self.key).slot(0);
         for _ in 0..events {
             self.chaos_step(&mut rng);

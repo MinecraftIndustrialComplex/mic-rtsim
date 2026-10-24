@@ -761,17 +761,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 776958c6d4e5a3e5 against 776958c6d4e5a3e5, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state bb712916279d2368 against bb712916279d2368, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state 81efab52ba889744 against 81efab52ba889744, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state 6a6a0f237a25ba0d against 6a6a0f237a25ba0d, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state 43ca3e2d0a68b396 against 43ca3e2d0a68b396, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state bff38ffdb12017c6 against bff38ffdb12017c6, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
@@ -830,12 +830,12 @@
         {
           "name": "a member drawn owed is spawned once at home and never taken or booked dead while away",
           "ok": true,
-          "detail": "owed [0, 1, 0, 0, 0], drawn [0, 0, 0, 1, 0], two censuses while away ([0, 0, 0, 1, 0], 0, 0) (slots, orders, bodies), home [1, 0, 0, 0, 0] with 1 Frostmaw"
+          "detail": "pool 1, drawn [0, 0, 0, 1, 0], two censuses while away ([0, 0, 0, 1, 0], 0, 0) (slots, orders, bodies), home [1, 0, 0, 0, 0] with 1 Frostmaw"
         },
         {
           "name": "a grove's refill is spawned at its next census, none ordered while it is out",
           "ok": true,
-          "detail": "four died, [5, 0, 0, 0, 0]; none ordered over the day: true; 2 owed after it; then [7, 0, 0, 0, 0] with 2 spawns"
+          "detail": "four died, [5, 0, 0, 0, 0]; none ordered over the day: true; 2 slots the books have not added; then [7, 0, 0, 0, 0] with 2 spawns"
         },
         {
           "name": "a death at home costs the pool a member, one CAMP_DEATH booked",
@@ -883,9 +883,9 @@
           "detail": "9 adopts in flight, then void and the camp out ((0, false)), nothing resent (true); the next census: [9, 0, 0, 0, 0], 9 adopts"
         },
         {
-          "name": "chaos holds I1 to I6 after every event, no member has two bodies, no living one is booked dead unless its body was lost, no draw passes its bound",
+          "name": "chaos holds I1 to I5 after every event (I6 is by construction), every member lost unseen is written off and no other, no draw passes its bound",
           "ok": true,
-          "detail": "64 camps of 220 events each; 874 camp in, 381 camp out, 1142 kill slot, 849 lose the next, 429 raid true, 884 replay answers, 917 restart, 816 save and load, 905 stray; 830 censuses, 1978 lines, 643 answers, 633 deaths, 1 written off"
+          "detail": "64 camps of 220 events each; 874 camp in, 381 camp out, 1149 kill slot, 850 lose the next, 425 raid true, 881 replay answers, 918 restart, 817 save and load, 909 stray; 1215 censuses, 2276 lines, 1311 answers, 661 deaths, 4 written off, each a ghost"
         }
       ],
       "rungs": [],

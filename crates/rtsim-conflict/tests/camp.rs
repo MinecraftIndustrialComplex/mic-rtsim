@@ -2196,10 +2196,14 @@ fn an_answer_names_a_gone_slot_whose_party_is_gone() {
 }
 
 /// Test 22 and run 10: random camps in and out, musters, homecomings, deaths, answers lost, late and
-/// replayed, session restarts and saves, with the invariants checked after every event; at the end
-/// no member has two bodies (I5) and no member is booked dead unless its body was lost.
+/// replayed, session restarts and saves, with the invariants checked after every event (I1 to I5);
+/// then the run is settled and the books are exact: every member the world lost without the books
+/// knowing (a ghost: a body at home the world has none for) is written off, and nothing else is.
+/// The plugin's variants follow the seed: a record lost is lost, or holders journal it again,
+/// whole or one line to a record.
 #[test]
 fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
+    let mut ghosts = 0;
     for culture in ["umvuthana", "frostmaw"] {
         for seed in 0..24u64 {
             let found = if culture == "frostmaw" { 1 } else { 9 };
@@ -2212,6 +2216,7 @@ fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
             });
             r.watch = seed % 2 == 0;
             r.chaos(seed, 220);
+            r.settle();
             assert!(
                 r.failures.is_empty(),
                 "{culture} seed {seed}: {:#?}",
@@ -2220,13 +2225,119 @@ fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
             let bad = r.check();
             assert!(bad.is_empty(), "{culture} seed {seed}: {bad:#?}");
             assert!(
-                u32::try_from(r.c.stats.camp_written_off).unwrap() <= r.lost_members(),
-                "{culture} seed {seed}: {} written off, {} bodies lost to a crash",
-                r.c.stats.camp_written_off,
-                r.lost_members()
+                r.ghosts.is_empty(),
+                "{culture} seed {seed}: ghosts left after the settle: {:?}",
+                r.ghosts
             );
+            assert_eq!(
+                r.c.stats.camp_written_off,
+                u64::from(r.ghosts_gone),
+                "{culture} seed {seed}: members written off against ghosts"
+            );
+            ghosts += r.ghosts_gone;
         }
     }
+    assert!(ghosts > 0, "the chaos makes ghosts, or it checks nothing");
+}
+
+/// The crash table's gap, counted exactly: a raid sets four bodies out, the answer is in the
+/// journal's tail when the session ends, and the party gets home before the next census. With no
+/// holder to journal the record again the four slots turn body with no body in the world: four
+/// ghosts, and four members written off, none other. With the holders' records journaled again at
+/// the restart (the real plugin's), the answer is booked by the set-out it carries: the slots are
+/// owed, spawned at the next census, and no member is lost.
+#[test]
+fn a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none() {
+    for holders_again in [false, true] {
+        let mut r = grove(70, 9);
+        r.plugin.holders_again = holders_again;
+        come_in(&mut r);
+        r.plugin.answer_ticks = days(30.0);
+        let p = r.raid().unwrap();
+        let end = r.c.parties[p].until;
+        r.run(end + 10);
+        assert_eq!(applied(&r, boundary::ACTION_SET_OUT), 4);
+        assert_eq!(
+            r.plugin.holders.len(),
+            4,
+            "four records, on the bodies' markers"
+        );
+        r.plugin.answer_ticks = 1;
+        r.restart();
+        r.run(day(8.0));
+        assert!(war_parties(&r).is_empty(), "the party is home");
+        r.settle();
+        ok(&mut r);
+        assert!(r.ghosts.is_empty());
+        let (lost, ghosts) = (r.c.stats.camp_written_off, r.ghosts_gone);
+        assert_eq!(lost, u64::from(ghosts), "holders again: {holders_again}");
+        assert_eq!(
+            lost,
+            if holders_again { 0 } else { 4 },
+            "holders again: {holders_again}"
+        );
+        // The four lost members are refilled over the days since: a loss costs time, not the cap.
+        assert_eq!(counts(&r).iter().sum::<u32>(), 9);
+        assert_eq!(world_bodies(&r), counts(&r).iter().sum::<u32>() as usize);
+        // Journaled again, the records reached the engine and their holders dropped them; not, they
+        // sit on their markers unread.
+        assert_eq!(
+            r.plugin.holders.len(),
+            if holders_again { 0 } else { 4 },
+            "holders again: {holders_again}"
+        );
+    }
+}
+
+/// An answer split over several records, one line each, as holders in several chunks answer it:
+/// every line is booked once, and the run ends as the run whose answers came whole.
+#[test]
+fn answers_split_into_records_leave_the_books_as_whole_ones_do() {
+    let end = |split: usize| {
+        let mut r = grove(71, 9);
+        r.plugin.split_answers = split;
+        come_in(&mut r);
+        let p = r.raid().unwrap();
+        let end = r.c.parties[p].until;
+        r.run(end + 10);
+        assert_eq!(counts(&r), [5, 0, 0, 4, 0], "left, body gone: gone");
+        r.run(day(8.0));
+        ok(&mut r);
+        (counts(&r), r.c.stats.camp_answers, r.c.state_hash() != 0)
+    };
+    assert_eq!(end(0), end(1));
+}
+
+/// A body killed at home is no ghost while its death is on its way to the engine: the books are
+/// behind the world's until it lands, and a death freeing the slot is not a write-off.
+#[test]
+fn a_body_whose_death_is_on_its_way_is_no_ghost() {
+    let mut r = grove(73, 9);
+    come_in(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    let at = r.c.now() + 5;
+    assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at));
+    assert!(r.plugin.camp_pending(r.key), "the death is queued");
+    r.track();
+    assert!(r.ghosts.is_empty(), "{:?}", r.ghosts);
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert_eq!(r.c.stats.camp_deaths, 1);
+    assert!(r.ghosts.is_empty() && r.ghosts_gone == 0);
+    assert_eq!(r.c.stats.camp_written_off, 0);
+    ok(&mut r);
+}
+
+/// I4 counts each line of each order the plugin applied: an order applied twice is named.
+#[test]
+fn the_check_names_an_order_applied_twice() {
+    let mut r = grove(72, 9);
+    come_in(&mut r);
+    assert!(r.check().is_empty());
+    let again = r.plugin.applied[0];
+    r.plugin.applied.push(again);
+    let bad = r.check();
+    assert!(bad.iter().any(|b| b.starts_with("I4")), "{bad:?}");
 }
 
 /// A save at random points of a chaos run changes nothing: the run with its round trips ends in the

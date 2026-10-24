@@ -1273,6 +1273,9 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
             });
             r.watch = k % 2 == 0;
             r.chaos(seed * 1000 + k, 220);
+            // The answers stop being lost and the parties get home: every ghost has had its
+            // three censuses.
+            r.settle();
             runs += 1;
             for f in std::mem::take(&mut r.failures) {
                 bad.push(format!("{culture} seed {k}: {f}"));
@@ -1280,11 +1283,14 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
             for f in r.check() {
                 bad.push(format!("{culture} seed {k}, at the end: {f}"));
             }
-            if r.c.stats.camp_written_off > u64::from(r.lost_members()) {
+            // The write-offs are exactly the ghosts: members the world lost with nothing left to
+            // tell the books.
+            if !r.ghosts.is_empty() || r.c.stats.camp_written_off != u64::from(r.ghosts_gone) {
                 bad.push(format!(
-                    "{culture} seed {k}: {} members written off, {} bodies lost to a crash",
+                    "{culture} seed {k}: {} members written off, {} ghosts gone, {} left",
                     r.c.stats.camp_written_off,
-                    r.lost_members()
+                    r.ghosts_gone,
+                    r.ghosts.len()
                 ));
             }
             for (_, e) in &r.events {
@@ -1315,13 +1321,13 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     }
     check(
         &mut out,
-        "chaos holds I1 to I6 after every event, no member has two bodies, no living one is \
-         booked dead unless its body was lost, no draw passes its bound",
+        "chaos holds I1 to I5 after every event (I6 is by construction), every member lost \
+         unseen is written off and no other, no draw passes its bound",
         bad.is_empty(),
         if bad.is_empty() {
             format!(
                 "{runs} camps of 220 events each; {}; {} censuses, {} lines, {} answers, {} \
-                 deaths, {} written off",
+                 deaths, {} written off, each a ghost",
                 tally
                     .iter()
                     .map(|(k, n)| format!("{n} {k}"))
