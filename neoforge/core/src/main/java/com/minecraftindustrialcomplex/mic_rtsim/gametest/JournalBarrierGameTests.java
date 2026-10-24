@@ -384,8 +384,9 @@ public final class JournalBarrierGameTests {
      * A camp record's holder is noted by its UUID and the chunk is decided at the arm (MZB-238): a holder that
      * walks into the next chunk between its record and the journal's save is noted where it stands then, not
      * where it stood. Four forced chunks in a row; holder A stands in the first when its record is committed and
-     * walks to the second; holder B in the third is discarded (it cannot be found at the arm: counted, and its
-     * commit-time chunk noted instead, since an unload's store may not be on disk); holder C in the fourth
+     * walks to the second; holder B in the third is discarded and its weak reference cleared, the state a
+     * collected entity leaves (it cannot be found at the arm: counted, and its commit-time chunk noted instead,
+     * since an unload's store may not be on disk; MZB-597); holder C in the fourth
      * stays. After the save: the second, third and fourth chunks are noted and the first is not (nothing but A
      * spoke for it), the counters read 2 holders found, 1 of them moved and 1 not found, and the barrier stored
      * the three chunks itself (their entities were loaded).
@@ -427,19 +428,86 @@ public final class JournalBarrierGameTests {
                     a.moveTo((k + 1) * 16 + 8, 64, z0 * 16 + 8);
                     check("A walked into the second chunk", a.chunkPosition().equals(new ChunkPos(k + 1, z0)));
                     bb.discard();
+                    b.forgetHolderReferences();
                     data.setDirty();
                     data.save(file[0].toFile(), level.registryAccess());
-                    record(test, "counters", "resolved " + b.holdersResolved() + ", moved " + b.holdersMoved() + ", not found " + b.holdersUnresolved()
-                            + ", stored " + b.entityStores());
+                    record(test, "counters", "resolved " + b.holdersResolved() + ", moved " + b.holdersMoved() + ", remembered " + b.holdersRemembered()
+                            + ", not found " + b.holdersUnresolved() + ", stored " + b.entityStores());
                     check("A's new chunk is noted", b.entityChunkNoted(level, new ChunkPos(k + 1, z0)));
                     check("A's old chunk is not (nothing else spoke for it)", !b.entityChunkNoted(level, new ChunkPos(k, z0)));
                     check("the discarded holder's commit-time chunk is noted", b.entityChunkNoted(level, new ChunkPos(k + 2, z0)));
                     check("the holder that stayed is noted where it is", b.entityChunkNoted(level, new ChunkPos(k + 3, z0)));
-                    check("two holders found, one of them moved, one not found (" + b.holdersResolved() + ", " + b.holdersMoved() + ", " + b.holdersUnresolved() + ")",
-                            b.holdersResolved() == 2 && b.holdersMoved() == 1 && b.holdersUnresolved() == 1);
+                    check("two holders found, one of them moved, none remembered, one not found (" + b.holdersResolved() + ", " + b.holdersMoved() + ", "
+                                    + b.holdersRemembered() + ", " + b.holdersUnresolved() + ")",
+                            b.holdersResolved() == 2 && b.holdersMoved() == 1 && b.holdersRemembered() == 0 && b.holdersUnresolved() == 1);
                     check("the barrier stored the three entity chunks itself (" + b.entityStores() + ")", b.entityStores() == 3);
                 })
                 .thenWaitUntil(io(() -> check("the journal was written once the entity chunks landed", data.writes() == 1)))
+                .thenExecute(() -> {
+                    try {
+                        Files.deleteIfExists(file[0]);
+                    } catch (IOException ignored) {
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A holder the level cannot find at the arm is noted where the entity object last stood, not where it stood at
+     * its commit (MZB-597): holder H stands in the first of two forced chunks when its record is committed, walks
+     * into the second and is removed (what the unload of its chunk does, and a hidden chunk's entity is the same
+     * object not found by the level). The barrier keeps a weak reference from the commit, so the second chunk is
+     * noted and the first is not (nothing else spoke for it), and the counters read 0 found, 1 remembered (and
+     * moved), 0 not found. The first wording noted the commit-time chunk, which H had already left.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_remembered", timeoutTicks = 6000)
+    public static void aHolderRemovedAfterWalkingIsNotedWhereItWasLastSeen(GameTestHelper helper) {
+        String test = "aHolderRemovedAfterWalkingIsNotedWhereItWasLastSeen";
+        ServerLevel level = helper.getLevel();
+        JournalSavedData data = JournalSavedData.fresh();
+        ChunkWriteBarrier b = data.chunks();
+        int[] base = ConflictKit.farBase();
+        int k = base[0] >> 4, z0 = base[1] >> 4;
+        ConflictKit.releaseFarChunks(level);
+        ConflictKit.onEnd(helper, () -> {
+            for (int i = 0; i < 2; i++)
+                ConflictKit.force(level, k + i, z0, false);
+        });
+        Path[] file = {null};
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++)
+                        ConflictKit.force(level, k + i, z0, true);
+                })
+                .thenWaitUntil(io(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("chunk " + (k + i) + " is loaded with its entities", level.hasChunk(k + i, z0) && level.areEntitiesLoaded(ChunkPos.asLong(k + i, z0)));
+                }))
+                .thenExecute(() -> {
+                    try {
+                        file[0] = testFile(level);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    Marker h = holder(level, k, z0);
+                    b.dependsOnHolder(level, h);
+                    h.moveTo((k + 1) * 16 + 8, 64, z0 * 16 + 8);
+                    h.discard();
+                    check("the level no longer finds it", level.getEntity(h.getUUID()) == null);
+                    check("it last stood in the second chunk", h.chunkPosition().equals(new ChunkPos(k + 1, z0)));
+                    data.setDirty();
+                    data.save(file[0].toFile(), level.registryAccess());
+                    record(test, "counters", "resolved " + b.holdersResolved() + ", moved " + b.holdersMoved() + ", remembered " + b.holdersRemembered()
+                            + ", not found " + b.holdersUnresolved());
+                    check("the chunk it was last seen in is noted", b.entityChunkNoted(level, new ChunkPos(k + 1, z0)));
+                    check("the chunk it stood in at the commit is not", !b.entityChunkNoted(level, new ChunkPos(k, z0)));
+                    check("none found, one remembered and moved, none lost (" + b.holdersResolved() + ", " + b.holdersMoved() + ", "
+                                    + b.holdersRemembered() + ", " + b.holdersUnresolved() + ")",
+                            b.holdersResolved() == 0 && b.holdersMoved() == 1 && b.holdersRemembered() == 1 && b.holdersUnresolved() == 0);
+                    java.lang.ref.Reference.reachabilityFence(h);
+                })
+                .thenWaitUntil(io(() -> check("the journal was written once the entity chunk landed", data.writes() == 1)))
                 .thenExecute(() -> {
                     try {
                         Files.deleteIfExists(file[0]);

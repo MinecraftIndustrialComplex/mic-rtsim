@@ -26,7 +26,7 @@ class TalkLinesTest {
     private static final String ROOT = "mic_rtsim.talk.";
     private static final Pattern ARG = Pattern.compile("%(\\d+)\\$s");
     private static final Pattern NEWS_KEY = Pattern.compile(
-            "mic_rtsim\\.talk\\.([a-z_.]+?)\\.news\\.([a-z_]+)\\.(you|to_you|us|by_us|other)(\\.seen)?\\.(\\d+)");
+            "mic_rtsim\\.talk\\.([a-z_.]+?)\\.news\\.([a-z_]+)\\.(you|to_you|us|by_us|other)(\\.seen|\\.held|\\.beaten)?\\.(\\d+)");
     private static final Set<String> KINDS = Set.of("assault", "killing", "robbery", "theft", "trade", "rescue",
             "resident_assault", "resident_killing", "encroachment", "feud", "pact_sworn", "pact_broken", "raid", "fell",
             "port_raided", "blockade", "port_closed", "port_reopened", "haven_fell");
@@ -96,6 +96,9 @@ class TalkLinesTest {
             news++;
             if (!KINDS.contains(m.group(2)))
                 bad.add("unknown kind: " + e.getKey());
+            // The outcome topics are a raid's alone (TK83), and a held or beaten raid has no seen variant.
+            if ((".held".equals(m.group(4)) || ".beaten".equals(m.group(4))) && !m.group(2).equals("raid"))
+                bad.add("an outcome topic on a kind with no outcomes: " + e.getKey());
             String text = e.getValue();
             Matcher a = ARG.matcher(text);
             while (a.find()) {
@@ -108,6 +111,22 @@ class TalkLinesTest {
         }
         assertTrue(news > 100, "the news lines are there: " + news);
         assertEquals(List.of(), bad);
+    }
+
+    @Test
+    void aHeldOrBeatenRaidHasLinesInEveryPerspectiveItCanBeToldFromAndNeverFallsToAPlunder() throws Exception {
+        Map<String, String> lang = lang();
+        // The any voice tells it from every side (TK83); a raid told from `you` falls to `other`.
+        for (String outcome : new String[]{"held", "beaten"})
+            for (String p : new String[]{"us", "by_us", "to_you", "other"})
+                assertTrue(lang.containsKey(ROOT + "any.news.raid." + p + "." + outcome + ".0"), p + " " + outcome);
+        // The clans tell their own side (a camp's raid that failed) in their own voices.
+        for (String voice : new String[]{"goblin", "raider", "bandit"})
+            for (String outcome : new String[]{"held", "beaten"})
+                assertTrue(lang.containsKey(ROOT + voice + ".news.raid.by_us." + outcome + ".0"), voice + " " + outcome);
+        // And the code's topics for them are exactly those keys' topics.
+        assertEquals("news.raid.by_us.held", TalkTuning.topics("raid", 13, 1, "by_us", false).get(0));
+        assertEquals("news.raid.to_you.beaten", TalkTuning.topics("raid", 13, 2, "to_you", true).get(0));
     }
 
     @Test
