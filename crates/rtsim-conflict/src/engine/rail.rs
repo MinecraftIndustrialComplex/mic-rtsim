@@ -459,6 +459,7 @@ impl Conflict {
             .is_none_or(|m| m.stamp != stamp)
         {
             self.stats.stale += 1;
+            self.stats.rail_stale += 1;
             return;
         }
         self.stats.rail_wakes += 1;
