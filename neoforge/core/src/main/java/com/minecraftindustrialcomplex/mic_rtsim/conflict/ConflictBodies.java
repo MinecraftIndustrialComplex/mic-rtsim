@@ -62,6 +62,37 @@ public final class ConflictBodies {
         return mob;
     }
 
+    /**
+     * A body kind that is more than one entity, made by its plugin (MZB-428): the Umvuthana's raptor and
+     * the pack the jar gives it. The maker builds the leader and the entities that go with it, none of them
+     * added to the level and none of them given a tag or persistence: the bridge does that, and it adds the
+     * extras after the leader.
+     */
+    @FunctionalInterface
+    public interface Maker {
+        /**
+         * The body at (x, y, z) facing {@code yaw}, with the entities that go with it added to
+         * {@code extras} (they book nothing: a death among them is no casualty, and they despawn with the
+         * body's slot or stack). Null when the body cannot be made now; the stack waits and is tried again.
+         */
+        Mob make(ServerLevel level, double x, double y, double z, float yaw, List<Mob> extras);
+    }
+
+    private static final Map<String, Maker> MAKERS = new HashMap<>();
+
+    /**
+     * Gives a body kind (the full name a party's command carries, {@code mic_rtsim:conflict/<culture>/<unit>})
+     * a maker in place of {@link #create}. A later call replaces an earlier one. Call during mod construction.
+     */
+    public static synchronized void registerMaker(String body, Maker maker) {
+        MAKERS.put(body, maker);
+    }
+
+    /** The maker of a body kind, or null when it is made as an ordinary stand-in. */
+    static synchronized Maker maker(String body) {
+        return body == null ? null : MAKERS.get(body);
+    }
+
     /** True when a body of this type is a monster that Peaceful removes (not a friendly category). */
     public static boolean hostile(EntityType<?> t) {
         return !t.getCategory().isFriendly();

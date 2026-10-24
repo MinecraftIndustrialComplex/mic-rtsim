@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBodies;
 import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -42,14 +43,14 @@ public final class MicRtsimMowziesMobs {
 
     public MicRtsimMowziesMobs(IEventBus modBus, ModContainer container) {
         // Each culture body is the jar's own entity (MZB-216): the grove's warrior and envoy are its
-        // grove warrior (mowziesmobs:umvuthana, EntityUmvuthanaMinion). The raptor is the same warrior until M9
-        // (MZB-594): the jar's raptor adds 4 or 5 untagged followers in its finalizeSpawn, which a party's bodies
-        // may not bring.
+        // grove warrior (mowziesmobs:umvuthana, EntityUmvuthanaMinion), the raptor its raptor. A raptor is made by
+        // RaptorMaker (MZB-428), not through finalizeSpawn, which adds 4 or 5 followers no party tags.
         BodyKinds.registerStandIn(FROSTMAW, "mowziesmobs:frostmaw");
         BodyKinds.registerStandIn(WARRIOR, "mowziesmobs:umvuthana");
-        BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana");
+        BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana_raptor");
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(UMVUTHI, "mowziesmobs:umvuthi");
+        ConflictBodies.registerMaker(RAPTOR, new RaptorMaker());
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
         IEventBus bus = NeoForge.EVENT_BUS;
