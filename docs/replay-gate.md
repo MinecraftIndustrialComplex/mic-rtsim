@@ -901,8 +901,11 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   embodied the party), once.
 - **From the arrival or round.** Either way the decision is taken as of the hold's tick: an arrival
   keeps its arrival tick, its route's last time, and its patience runs from there (RP-45); a siege's
-  next round is that tick plus its interval, and its patience is checked at that tick (RP-48). So a
-  later round, and a fight at it, falls where the session that went on had it. Live the hold's tick
+  next round is that tick plus its interval, and its patience is checked at that tick (RP-48): by
+  the walk home's label when the round ends the band (RP-52), and by `held_since`'s inference from
+  the pages after a restart, which takes a fight record past the boredom but inside the slack as
+  the map does (RP-53). So a later round, and a fight at it, falls where the session that went on
+  had it. Live the hold's tick
   is the event's own, and nothing changes.
 
 **Losses accepted** (lose, never double):

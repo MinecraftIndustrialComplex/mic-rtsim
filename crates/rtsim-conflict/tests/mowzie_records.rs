@@ -3256,6 +3256,86 @@ fn a_held_round_that_kills_the_band_before_its_boredom_sends_it_home_done() {
     assert_eq!((phase, alive, bored), (live.0, live.1, live.2), "as live");
 }
 
+/// fixes4 item 4 (RP-53): a siege's round, nobody near, held while replaying from pages saved
+/// while the band waits for it; its boredom 110 ticks after the round, and its fight's
+/// BAND_MATERIALIZED 115 ticks after it, past the boredom but inside the hold's slack.
+/// `restart`: pages saved 105 ticks after the round (the hold's map lost) and a restart from
+/// them before the record. Returns the band's phase, whether embodied, epoch, phase end, fights
+/// watched since the save, and abstract raids since the save, at the replay's last record.
+fn a_round_fought_past_its_boredom_replayed(
+    restart: bool,
+) -> (Phase, bool, u32, Tick, u64, Vec<Tick>) {
+    let mut r = Run::new(36, patient_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let mut to = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        to += 600;
+        assert!(to < day(6.0), "the siege waits at its target");
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    let round = r.c.parties[band].until;
+    r.c.parties[band].bored_at = round + 110;
+    let (epoch, watched, saved_at) = (r.c.parties[band].epoch, r.c.stats.raids_watched, r.c.now());
+    let (tun, cultures) = (r.c.tun.clone(), r.c.cultures.clone());
+    let mut w = world_from(36, &r.w.save());
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(tun.clone(), cultures.clone(), &r.c.save()).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    back.run_until(&mut w, &mut walls, round + 105);
+    let x = &back.parties[band];
+    assert_eq!((x.phase, x.embodied), (Phase::Waiting, false), "held");
+    if restart {
+        back = Conflict::load(tun, cultures, &back.save()).unwrap();
+        w = world_from(36, &w.save());
+        back.begin_replay(true);
+    }
+    let records = [
+        (round + 115, materialized(band, epoch + 1, 0, 4)),
+        (round + 1_000, fillers_casualty()),
+    ];
+    for (at, o) in &records {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    let x = &back.parties[band];
+    let raids = walls.raids.range(saved_at + 1..).copied().collect();
+    (
+        x.phase,
+        x.embodied,
+        x.epoch,
+        x.until,
+        back.stats.raids_watched - watched,
+        raids,
+    )
+}
+
+/// fixes4 item 4 (RP-53): the hold's map honours a held round's fight record past the band's
+/// boredom, inside the slack; so does `held_since`'s inference after a restart that lost the
+/// map. The inference used to gate on the record's tick against the boredom, not the round's,
+/// so it refused the record: the round resolved unwatched at the slack.
+#[test]
+fn a_held_rounds_fight_past_its_boredom_is_honoured_after_a_restart() {
+    let map = a_round_fought_past_its_boredom_replayed(false);
+    assert_eq!((map.4, map.5.len()), (1, 0), "fought, not raided: {map:?}");
+    assert_eq!(a_round_fought_past_its_boredom_replayed(true), map);
+}
+
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
 /// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
 /// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
