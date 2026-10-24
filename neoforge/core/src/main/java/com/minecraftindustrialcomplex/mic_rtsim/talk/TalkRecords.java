@@ -14,8 +14,10 @@ import java.util.List;
  * <ul>
  *   <li><b>TALK_ASK</b> (0x00C0, Java to the engine, latest wins, aux = n): Java's open questions,
  *       {@code n} asks of {@link Ask#SIZE} bytes from offset 8.</li>
- *   <li><b>TALK_FACTS</b> (0x8A00, engine to Java, aux = news n): one answer, 48 bytes of facts and then
- *       {@code n} news items of {@link News#SIZE} bytes, each with three refs of {@link Ref#SIZE} bytes.</li>
+ *   <li><b>TALK_FACTS</b> (0x8A00, engine to Java, aux = news n): one answer, 48 bytes of facts, then
+ *       {@code n} news items of {@link News#SIZE} bytes, each with three refs of {@link Ref#SIZE} bytes, then,
+ *       when the facts' flag {@link #F_FACTION} is set, a camp's {@link Faction} block of
+ *       {@link Faction#SIZE} bytes (slice 4).</li>
  *   <li><b>TALKED</b> (0x0A00, Java to the engine, <i>journaled</i>): one credited talk with a ribbit,
  *       {@link Talked#SIZE} bytes. Sent by the Ribbits plugin; the engine applies it once by its op id.</li>
  * </ul>
@@ -55,6 +57,11 @@ public final class TalkRecords {
         public static final int SIZE = 56;
         public static final int ID = 0, PLAYER_MOST = 8, PLAYER_LEAST = 16, HOLDER_KIND = 24, DIMENSION = 28,
                 HOLDER = 32, X = 40, Z = 44, FLAGS = 48, RESERVED = 52;
+    }
+
+    /** The flags an ask for a holder of this kind carries: news always, and a camp's faction block for a camp (slice 4). */
+    public static int askFlagsFor(int holderKind) {
+        return ASK_NEWS | (holderKind == HOLDER_FACTION ? ASK_FACTION : 0);
     }
 
     /** The size of a whole TALK_ASK record of n asks. */
@@ -115,9 +122,14 @@ public final class TalkRecords {
     /** News items in one answer, at most (TK20). */
     public static final int MAX_NEWS = 4;
 
-    /** The size of a whole TALK_FACTS record of n news items. */
+    /** The size of a whole TALK_FACTS record of n news items and no faction block. */
     public static int factsRecordSize(int n) {
         return Facts.NEWS + n * News.SIZE;
+    }
+
+    /** The size of a whole TALK_FACTS record of n news items, with the faction block or not. */
+    public static int factsRecordSize(int n, boolean faction) {
+        return factsRecordSize(n) + (faction ? Faction.SIZE : 0);
     }
 
     /** A ref's classes. */
@@ -199,14 +211,64 @@ public final class TalkRecords {
         }
     }
 
+    /** The faction block's mood flags: what a camp looks like to the player who asked (TALK.md §9.2). */
+    public static final int MOOD_COWED = 1, MOOD_CHIEF_OUT = 2, MOOD_NEW_CHIEF = 4, MOOD_LEAN = 8, MOOD_STRONG = 16,
+            MOOD_YOU_KILLED_CHIEF = 32;
+    /** The block's signal code when no kind holds any grievance (0 is smog). */
+    public static final int NO_SIGNAL = 0xFFFF;
+
+    /**
+     * A camp's faction block (slice 4), after the news. {@code rung} is the camp's feud against the player
+     * as its step on the ladder (0 none, 1 notice, 2 envoy, 3 scouts, 4 raid, 5 invasion, 6 siege);
+     * {@code moodFlags} are the {@code MOOD_} flags; {@code signal} is the strongest grievance kind in
+     * FACTION_NOTICE's codes (0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building) or
+     * {@link #NO_SIGNAL}; {@code grievance} is the sum over every kind; {@code cowedTicks} is how long the
+     * camp stays cowed (0 when it is not); {@code chief} is the chief's ref, reserved for M9's name line
+     * ({@link Ref#NONE} for now).
+     */
+    public record Faction(int rung, int moodFlags, int signal, float grievance, long cowedTicks, long plunders,
+                          Ref chief) {
+        public static final int SIZE = 48;
+        public static final int RUNG = 0, MOOD = 1, SIGNAL = 2, GRIEVANCE = 4, COWED_TICKS = 8, PLUNDERS = 12,
+                CHIEF = 16;
+
+        public boolean has(int moodFlag) {
+            return (moodFlags & moodFlag) != 0;
+        }
+
+        static Faction read(ByteBuffer b, int at) {
+            return new Faction(b.get(at + RUNG) & 0xFF, b.get(at + MOOD) & 0xFF,
+                    Short.toUnsignedInt(b.getShort(at + SIGNAL)), b.getFloat(at + GRIEVANCE),
+                    Integer.toUnsignedLong(b.getInt(at + COWED_TICKS)), Integer.toUnsignedLong(b.getInt(at + PLUNDERS)),
+                    Ref.read(b, at + CHIEF));
+        }
+
+        void write(ByteBuffer b, int at) {
+            b.put(at + RUNG, (byte) rung);
+            b.put(at + MOOD, (byte) moodFlags);
+            b.putShort(at + SIGNAL, (short) signal);
+            b.putFloat(at + GRIEVANCE, grievance);
+            b.putInt(at + COWED_TICKS, (int) cowedTicks);
+            b.putInt(at + PLUNDERS, (int) plunders);
+            chief.write(b, at + CHIEF);
+        }
+    }
+
     /**
      * An answer. The good ids and every ref's {@code what} are the engine's dictionary ids of this session;
-     * decode them through the {@code EngineNames} a plugin's {@code accept} is given.
+     * decode them through the {@code EngineNames} a plugin's {@code accept} is given. {@code faction} is the
+     * camp's block, null without one (it is present exactly when {@link #F_FACTION} is set in a decoded answer).
      */
     public record Facts(long askId, int flags, int sentiment, int scarcest, int scarcestRatio, int glutted,
-                        int gluttedRatio, List<News> news) {
+                        int gluttedRatio, List<News> news, Faction faction) {
         public static final int CMD_SEQ = 8, ASK_ID = 16, FLAGS = 24, SENTIMENT = 28, SCARCEST = 32,
                 SCARCEST_RATIO = 36, GLUTTED = 40, GLUTTED_RATIO = 44, NEWS = 48;
+
+        /** An answer with no faction block (a village's, a caravan's). */
+        public Facts(long askId, int flags, int sentiment, int scarcest, int scarcestRatio, int glutted,
+                     int gluttedRatio, List<News> news) {
+            this(askId, flags, sentiment, scarcest, scarcestRatio, glutted, gluttedRatio, news, null);
+        }
 
         public boolean holder() {
             return (flags & F_HOLDER) != 0;
@@ -224,7 +286,8 @@ public final class TalkRecords {
     /**
      * Decodes the TALK_FACTS record at {@code at} of {@code b}: {@code size} and {@code aux} are its header's.
      * Null (refused, never thrown) when it is shorter than the header, names more than {@link #MAX_NEWS} news
-     * items, or is shorter than its n items need, or does not fit the buffer.
+     * items, or is shorter than its n items need (and the faction block, when {@link #F_FACTION} is set), or
+     * does not fit the buffer.
      */
     public static Facts decodeFacts(ByteBuffer b, int at, int size, int aux) {
         if (b == null || at < 0 || size < Facts.NEWS || at > b.limit() - size)
@@ -232,12 +295,17 @@ public final class TalkRecords {
         long n = Integer.toUnsignedLong(aux);
         if (n > MAX_NEWS || size < factsRecordSize((int) n))
             return null;
+        int flags = b.getInt(at + Facts.FLAGS);
+        boolean block = (flags & F_FACTION) != 0;
+        if (block && size < factsRecordSize((int) n, true))
+            return null;
         List<News> news = new ArrayList<>((int) n);
         for (int i = 0; i < n; i++)
             news.add(News.read(b, at + Facts.NEWS + i * News.SIZE));
-        return new Facts(b.getLong(at + Facts.ASK_ID), b.getInt(at + Facts.FLAGS), b.getInt(at + Facts.SENTIMENT),
+        Faction faction = block ? Faction.read(b, at + factsRecordSize((int) n)) : null;
+        return new Facts(b.getLong(at + Facts.ASK_ID), flags, b.getInt(at + Facts.SENTIMENT),
                 b.getInt(at + Facts.SCARCEST), b.getInt(at + Facts.SCARCEST_RATIO), b.getInt(at + Facts.GLUTTED),
-                b.getInt(at + Facts.GLUTTED_RATIO), List.copyOf(news));
+                b.getInt(at + Facts.GLUTTED_RATIO), List.copyOf(news), faction);
     }
 
     /** Decodes a whole TALK_FACTS record (header included); null when it is not one or is refused as above. */
@@ -250,17 +318,21 @@ public final class TalkRecords {
         return decodeFacts(b, 0, rec.length, b.getInt(R_AUX));
     }
 
-    /** A whole TALK_FACTS record with command sequence {@code seq} (what the engine writes; for tests). At most {@link #MAX_NEWS} news items are written. */
+    /**
+     * A whole TALK_FACTS record with command sequence {@code seq} (what the engine writes; for tests). At most
+     * {@link #MAX_NEWS} news items are written, and the faction block when {@code f.faction()} is not null, with
+     * {@link #F_FACTION} set for it (and cleared without it), as the engine's encoder does.
+     */
     public static byte[] encodeFacts(Facts f, long seq) {
         int n = Math.min(f.news.size(), MAX_NEWS);
-        byte[] rec = new byte[factsRecordSize(n)];
+        byte[] rec = new byte[factsRecordSize(n, f.faction != null)];
         ByteBuffer b = ByteBuffer.wrap(rec).order(ByteOrder.LITTLE_ENDIAN);
         b.putShort(R_KIND, (short) TALK_FACTS);
         b.putShort(R_SIZE, (short) rec.length);
         b.putInt(R_AUX, n);
         b.putLong(Facts.CMD_SEQ, seq);
         b.putLong(Facts.ASK_ID, f.askId);
-        b.putInt(Facts.FLAGS, f.flags);
+        b.putInt(Facts.FLAGS, f.faction != null ? f.flags | F_FACTION : f.flags & ~F_FACTION);
         b.putInt(Facts.SENTIMENT, f.sentiment);
         b.putInt(Facts.SCARCEST, f.scarcest);
         b.putInt(Facts.SCARCEST_RATIO, f.scarcestRatio);
@@ -268,6 +340,8 @@ public final class TalkRecords {
         b.putInt(Facts.GLUTTED_RATIO, f.gluttedRatio);
         for (int i = 0; i < n; i++)
             f.news.get(i).write(b, Facts.NEWS + i * News.SIZE);
+        if (f.faction != null)
+            f.faction.write(b, factsRecordSize(n));
         return rec;
     }
 

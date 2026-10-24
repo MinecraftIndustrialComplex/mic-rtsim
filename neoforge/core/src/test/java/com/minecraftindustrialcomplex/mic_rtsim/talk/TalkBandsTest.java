@@ -108,8 +108,48 @@ class TalkBandsTest {
         assertEquals(true, TalkTuning.tellable(TalkRecords.BY_US, "by_us"));
         assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US, "other"), "\"Word is us attacked Oakford\" is dropped");
         assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "other"));
+        assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "to_you"),
+                "\"Heard Mudhollow nearly killed you\" names the holder in the third person (TK81)");
+        assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US, "to_you"));
+        assertEquals(true, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "by_us"));
+        assertEquals(true, TalkTuning.tellable(TalkRecords.TO_YOU, "to_you"), "done to the listener by a stranger");
+        assertEquals(true, TalkTuning.tellable(TalkRecords.TO_US | TalkRecords.BY_US, "us"));
         assertEquals(true, TalkTuning.tellable(TalkRecords.TO_US, "other"));
         assertEquals(true, TalkTuning.tellable(0, "other"));
+    }
+
+    @Test
+    void aRaidsOutcomeIsItsSeverityAndOnlyARaids() {
+        assertEquals(13, TalkTuning.KIND_RAID);
+        assertEquals("held", TalkTuning.outcome(13, 1));
+        assertEquals("beaten", TalkTuning.outcome(13, 2));
+        assertEquals("plundered", TalkTuning.outcome(13, 3));
+        // A raid with any other severity (an older one, a test's, a unit severity) has none.
+        for (int severity : new int[]{0, 4, 100, 255})
+            assertEquals(null, TalkTuning.outcome(13, severity), "severity " + severity);
+        // No other kind has one, whatever its severity.
+        for (int kind = 0; kind < 64; kind++)
+            if (kind != 13)
+                for (int severity = 0; severity <= 3; severity++)
+                    assertEquals(null, TalkTuning.outcome(kind, severity), "kind " + kind + " severity " + severity);
+    }
+
+    @Test
+    void aHeldOrBeatenRaidIsToldFromItsOutcomeTopicAloneAndEverythingElseAsBefore() {
+        // Held and beaten: the one topic, no seen variant and never the plain lines (which tell a plunder).
+        for (String p : new String[]{"us", "by_us", "to_you", "other"}) {
+            assertEquals(List.of("news.raid." + p + ".held"), TalkTuning.topics("raid", 13, 1, p, false));
+            assertEquals(List.of("news.raid." + p + ".held"), TalkTuning.topics("raid", 13, 1, p, true));
+            assertEquals(List.of("news.raid." + p + ".beaten"), TalkTuning.topics("raid", 13, 2, p, false));
+            assertEquals(List.of("news.raid." + p + ".beaten"), TalkTuning.topics("raid", 13, 2, p, true));
+        }
+        // Plundered, an unknown severity and every other kind: the seen topic and then the plain one when seen.
+        assertEquals(List.of("news.raid.us"), TalkTuning.topics("raid", 13, 3, "us", false));
+        assertEquals(List.of("news.raid.other.seen", "news.raid.other"), TalkTuning.topics("raid", 13, 3, "other", true));
+        assertEquals(List.of("news.raid.us"), TalkTuning.topics("raid", 13, 100, "us", false));
+        assertEquals(List.of("news.raid.us"), TalkTuning.topics("raid", 13, 0, "us", false));
+        assertEquals(List.of("news.robbery.to_you.seen", "news.robbery.to_you"), TalkTuning.topics("robbery", 3, 1, "to_you", true));
+        assertEquals(List.of("news.fell.by_us"), TalkTuning.topics("fell", 14, 2, "by_us", false));
     }
 
     @Test
