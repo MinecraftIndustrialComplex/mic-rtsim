@@ -39,6 +39,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Marker;
@@ -805,6 +806,149 @@ public final class MowzieGameTests {
                     check("the first den's late flag is the one it was found with", e != null && !e.late());
                     check("no more drops (" + (MowzieCamps.dropped - dropped[0]) + ")", MowzieCamps.dropped - dropped[0] == 7);
                     check("nothing played for them: no census", !d.in() && !e.in());
+                })
+                .thenSucceed();
+    }
+
+    // ---- review fixes: hand-back and Peaceful -----------------------------------------------------
+
+    /** A band of {@code n} warriors of the grove's faction at its centre, holding still (the party's agent). */
+    private static long bandAt(Grove g, GameTestHelper helper, int n) {
+        long agent = ConflictKit.newAgent();
+        ConflictKit.Band b = ConflictKit.band(agent, g.faction, RtsimTests.dimension(helper));
+        b.arcX = g.spot.x;
+        b.arcZ = g.spot.z;
+        b.targetX = g.spot.x + 1000;
+        b.targetY = g.spot.y;
+        b.targetZ = g.spot.z;
+        b.speed = 0f;
+        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.WARRIOR, n, false)));
+        return agent;
+    }
+
+    /** Inside {@code thenWaitUntil}: the band's one stack is placed and every member is embodied; the puppets. */
+    private static Mob[] bandStands(long agent, int n) {
+        ConflictBridge.Party p = ConflictKit.party(agent);
+        check("one stack", p.stacks().size() == 1);
+        ConflictBridge.Stack st = p.stacks().get(0);
+        check("placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+        Mob[] out = new Mob[n];
+        int stand = 0;
+        for (ConflictBridge.Slot s : st.slots())
+            if (s.entity() != null && !s.entity().isRemoved() && stand < n)
+                out[stand++] = s.entity();
+        check(n + " puppets stand (" + stand + ")", stand == n);
+        return out;
+    }
+
+    /**
+     * A HAND_BACK whose body another mod's join handler cancels (In Control and the like) loses nothing
+     * (MZB-236): the body is added before the puppet goes, so the line is STALE and the puppet stands, still
+     * the band's, with nothing taken off the party and no recall. With the handler gone, the same line
+     * again is DONE: the body is the camp's, the puppet is gone, the other puppet still stands.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_handback_cancelled", skyAccess = true)
+    public static void aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale(GameTestHelper helper) {
+        String test = "aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale";
+        Far far = new Far(helper, test);
+        Grove grove = new Grove(far, far.k, far.z0);
+        long[] agent = new long[1], op = new long[2], handed = new long[1];
+        Mob[][] puppet = new Mob[1][];
+
+        helper.startSequence()
+                .thenExecute(() -> grove.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    agent[0] = bandAt(grove, helper, 2);
+                })
+                .thenWaitUntil(() -> {
+                    check("census 1", MowzieKit.censusCount(grove.faction) >= 1);
+                    bandStands(agent[0], 2);
+                })
+                .thenExecute(() -> {
+                    puppet[0] = bandStands(agent[0], 2);
+                    check("the puppets are puppets and unsaved", RtsimApi.isPuppet(puppet[0][0]) && !puppet[0][0].shouldBeSaved());
+                    handed[0] = MowzieKit.camps().handedBack;
+                    MowzieKit.cancelCampJoins(helper, true);
+                    op[0] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
+                            CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("HAND_BACK with the join cancelled", ConflictKit.outcomes(grove.faction, op[0]), STALE);
+                    check("the puppet still stands", puppet[0][0].isAlive() && !puppet[0][0].isRemoved() && RtsimApi.isPuppet(puppet[0][0]));
+                    check("and is still the band's slot (" + ConflictKit.party(agent[0]).stacks().get(0).slots().get(0).entity() + ")",
+                            ConflictKit.party(agent[0]).stacks().get(0).slots().get(0).entity() == puppet[0][0]);
+                    check("nothing handed back", MowzieKit.camps().handedBack == handed[0]);
+                    check("the camp holds no body", MowzieKit.held(grove.faction).isEmpty());
+                    check("the party is not sent home", !ConflictKit.party(agent[0]).recalling());
+                    MowzieKit.cancelCampJoins = false;
+                    op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
+                            CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("HAND_BACK again", ConflictKit.outcomes(grove.faction, op[1]), DONE);
+                    List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
+                    check("one body is the camp's (" + held.size() + ")", held.size() == 1 && MowzieKit.held(grove.faction).size() == 1);
+                    check("the first puppet is gone", puppet[0][0].isRemoved());
+                    check("the second still stands", puppet[0][1].isAlive() && !puppet[0][1].isRemoved());
+                    check("one handed back (" + (MowzieKit.camps().handedBack - handed[0]) + ")", MowzieKit.camps().handedBack == handed[0] + 1);
+                    record(test, "cancelled join", "STALE and the puppet stayed; the same line without the handler was DONE");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * On Peaceful no new body appears and a returning one still comes home (MZB-215): the jar keeps its own
+     * mobs on Peaceful, since Mowzie's entities do not despawn in it, so a SPAWN there is STALE (the pool
+     * is refilled when the difficulty is raised) and a HAND_BACK, which brings a body that exists, is DONE.
+     * Both lines in one CAMP_RECONCILE at Peaceful: the SPAWN of slot 1 STALE with no body made, the
+     * HAND_BACK of slot 0 DONE; the body it made is still there 40 ticks later.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_peaceful", skyAccess = true)
+    public static void onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome(GameTestHelper helper) {
+        String test = "onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome";
+        Far far = new Far(helper, test);
+        Grove grove = new Grove(far, far.k, far.z0);
+        long[] agent = new long[1], op = new long[1], spawned = new long[1];
+        Mob[][] puppet = new Mob[1][];
+
+        helper.startSequence()
+                .thenExecute(() -> grove.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    agent[0] = bandAt(grove, helper, 2);
+                })
+                .thenWaitUntil(() -> {
+                    check("census 1", MowzieKit.censusCount(grove.faction) >= 1);
+                    bandStands(agent[0], 2);
+                })
+                .thenExecute(() -> {
+                    puppet[0] = bandStands(agent[0], 2);
+                    far.difficulty(Difficulty.PEACEFUL);
+                    spawned[0] = MowzieKit.camps().spawned;
+                    op[0] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
+                            CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0),
+                            CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 2))
+                .thenExecute(() -> {
+                    Map<Integer, Integer> o = ConflictKit.outcomes(grove.faction, op[0]);
+                    check("the SPAWN is STALE on Peaceful, not " + MowzieKit.outcomeName(o.get(0)), o.get(0) == STALE);
+                    check("the HAND_BACK is DONE on Peaceful, not " + MowzieKit.outcomeName(o.get(1)), o.get(1) == DONE);
+                    check("no body was spawned", MowzieKit.camps().spawned == spawned[0]);
+                    check("slot 1 has no body", MowzieKit.held(grove.faction, 1, 1).isEmpty());
+                    List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
+                    check("slot 0 is the camp's body (" + held.size() + ")", held.size() == 1 && puppet[0][0].isRemoved());
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("the returned body is still there on Peaceful", MowzieKit.held(grove.faction, 0, 1).size() == 1);
+                    check("so is the band's other puppet", puppet[0][1].isAlive() && !puppet[0][1].isRemoved());
+                    record(test, "peaceful", "SPAWN STALE, HAND_BACK DONE, the returned body survived 40 ticks");
                 })
                 .thenSucceed();
     }
