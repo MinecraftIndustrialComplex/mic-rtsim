@@ -13,6 +13,11 @@ import com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock;
 import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlock;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlockEntity;
+import com.simibubi.create.content.kinetics.belt.BeltBlockEntity;
+import com.simibubi.create.content.kinetics.belt.transport.TransportedItemStack;
+import com.simibubi.create.content.logistics.depot.DepotBlockEntity;
+import com.simibubi.create.foundation.blockEntity.behaviour.filtering.FilteringBehaviour;
+import com.minecraftindustrialcomplex.mic_rtsim_create.glass.Cycles;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -38,8 +43,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
 /**
  * SEC-1 fixture (SECTIONS.md §9.2): one boiler network driving a crushing line and a press line that share
  * nothing else. Three sections: the boiler's, and the two lines on one kinetic domain (Q1 a: domains do not
- * join sections). An edit to the press line (its input smart chute broken and a plain chute placed there, which
- * changes the press section's fingerprint) makes the press line's unit new and leaves the others as they were.
+ * join sections). An edit to the press line (its input smart chute, which takes 16 at a time, broken and a plain
+ * chute placed there, which takes 16 too and changes the press section's fingerprint) makes the press line's unit
+ * new and leaves the others as they were. The relearn tops the burners up before either runs low.
  * Adding presses until the stress passes the least capacity the crushing line's window ran at stales the
  * crushing line too ({@code check_domains}, SECTIONS.md §3.6).
  *
@@ -95,6 +101,10 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
     static final BlockPos EXTRA_FIRST = new BlockPos(15, 5, 17);
     /** The press line's input smart chute, which the edit replaces with a plain chute. */
     static final BlockPos PRESS_CHUTE = new BlockPos(13, 4, 16);
+    /** What the press line's input chute takes at a time, smart (its filter count) and plain (Create's 16). */
+    static final int IN_STACK = 16;
+    /** Burn ticks left below which the relearn tops the burners up: more than a window, so none runs out in one. */
+    static final int FUEL_LOW = 4000;
     /** The yard is 34 deep: z 17 to 33. */
     static final int MAX_EXTRA = 17;
 
@@ -174,6 +184,13 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
         chest(h, pressIn);
         fill(h, pressIn, Items.IRON_INGOT, INGOTS);
         set(h, at(h, PRESS_CHUTE.getX(), PRESS_CHUTE.getY(), PRESS_CHUTE.getZ()), AllBlocks.SMART_CHUTE.getDefaultState());
+        // it takes 16 at a time, as the plain chute the edit puts in its place does: the stacks on the belt and
+        // the depot keep their size across the edit, so the line holds as much as it did (with 64 the press
+        // worked the big stacks off for thousands of ticks after the edit, drawing less from the chest)
+        FilteringBehaviour in = filtering(h, at(h, PRESS_CHUTE.getX(), PRESS_CHUTE.getY(), PRESS_CHUTE.getZ()));
+        in.setFilter(new ItemStack(Items.IRON_INGOT));
+        in.count = IN_STACK;
+        in.upTo = true;
         belt(h, at(h, BELT_START.getX(), BELT_START.getY(), BELT_START.getZ()), at(h, BELT_END.getX(), BELT_END.getY(), BELT_END.getZ()));
         motor(h, at(h, 13, 3, 15), Direction.SOUTH, -BELT_RPM);
         set(h, at(h, DEPOT.getX(), DEPOT.getY(), DEPOT.getZ()), AllBlocks.DEPOT.getDefaultState());
@@ -347,8 +364,9 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
             boilerLearned = SectionsFx.learned(u.boiler);
             structure(run, fr, u);
             // the first edit: the press line's input smart chute broken and a plain chute placed there, which pulls
-            // the same iron from the chest above. The node's model (a smart chute's extraction of 64, a chute's of 16)
-            // changes the press section's fingerprint (an edit the recompile finds as it was would only clear the
+            // the same iron from the chest above, 16 at a time as the smart chute did. The node's model (a smart
+            // chute's, its filter count, and a chute's are models of their own) changes the press section's
+            // fingerprint (an edit the recompile finds as it was would only clear the
             // stale mark, choice SC62; a filter on the iron alone denies nothing, so no edge test is materialized),
             // at the same revision: a chute is no district inventory
             acceptedBefore = fr.checksum().acceptedAt();
@@ -358,7 +376,10 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
             boilerDone = u.boiler == null ? -1 : u.boiler.windowsCompleted();
             BlockPos chute = run.far.absolutePos(PRESS_CHUTE);
             SectionsFx.info(run, "edit at the press line's input smart chute " + SectionsFx.pos(chute), "compile accepted at " + acceptedBefore
-                    + "; press unit " + u.press.summary());
+                    + "; press unit " + u.press.summary() + "; " + inFlight(run));
+            FilteringBehaviour in = filtering(run.helper, chute);
+            int take = Cycles.smartChuteExtraction(in.isCountVisible(), in.anyAmount(), in.getAmount());
+            SectionsFx.check(run, "the input smart chute takes " + IN_STACK + " at a time, as the plain chute will", take == IN_STACK, take);
             for (BlockPos abs : List.of(run.helper.absolutePos(PRESS_CHUTE), run.far.absolutePos(PRESS_CHUTE))) {
                 var level = run.level();
                 NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, abs, level.getBlockState(abs), FakePlayers.editor(level)));
@@ -566,9 +587,12 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
         }
 
         private void relearn(GlassReplayGameTests.Run run, GlassReport fr, Units u, long now) {
+            if (burnLeft(run) < FUEL_LOW)
+                SectionsFx.info(run, "fuel while learning again", fuel(run));
             if (now - lastLog >= 1200) {
                 lastLog = now;
-                SectionsFx.info(run, "learning again", SectionsFx.describe(fr) + "; stress " + text(stress(run.helper, run.far.absolutePos(PRESS))));
+                SectionsFx.info(run, "learning again", SectionsFx.describe(fr) + "; stress " + text(stress(run.helper, run.far.absolutePos(PRESS)))
+                        + "; " + inFlight(run));
             }
             boolean lines = SectionsFx.learned(u.crush) && SectionsFx.learned(u.press);
             boolean all = lines && (!boilerLearned || SectionsFx.learned(u.boiler));
@@ -581,6 +605,36 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
                 SectionsFx.check(run, "every unit learns again before the deadline", false, SectionsFx.describe(fr));
                 go(Phase.DONE, now);
             }
+        }
+
+        /** The fewest burn ticks either copy's burner has left. */
+        private static int burnLeft(GlassReplayGameTests.Run run) {
+            int least = Integer.MAX_VALUE;
+            for (BlockPos abs : List.of(run.helper.absolutePos(BURNER), run.far.absolutePos(BURNER)))
+                least = Math.min(least, run.level().getBlockEntity(abs) instanceof BlazeBurnerBlockEntity b ? b.getRemainingBurnTime() : 0);
+            return least;
+        }
+
+        /** The ingots between each copy's chest and its press (chute, belt, depot), for the log. */
+        private static String inFlight(GlassReplayGameTests.Run run) {
+            StringBuilder sb = new StringBuilder("ingots in flight (chute, belt, depot)");
+            Level level = run.level();
+            for (boolean far : new boolean[] {false, true}) {
+                java.util.function.Function<BlockPos, BlockPos> abs = far ? run.far::absolutePos : run.helper::absolutePos;
+                int chute = level.getBlockEntity(abs.apply(PRESS_CHUTE)) instanceof ChuteBlockEntity c ? ingots(c.getItem()) : -1;
+                int belt = 0;
+                if (level.getBlockEntity(abs.apply(BELT_START)) instanceof BeltBlockEntity b && b.getControllerBE() != null
+                        && b.getControllerBE().getInventory() != null)
+                    for (TransportedItemStack t : b.getControllerBE().getInventory().getTransportedItems())
+                        belt += ingots(t.stack);
+                int depot = level.getBlockEntity(abs.apply(DEPOT)) instanceof DepotBlockEntity d ? ingots(d.getHeldItem()) : -1;
+                sb.append(far ? "; far " : " control ").append(chute).append(", ").append(belt).append(", ").append(depot);
+            }
+            return sb.toString();
+        }
+
+        private static int ingots(ItemStack s) {
+            return s != null && s.is(Items.IRON_INGOT) ? s.getCount() : 0;
         }
 
         /** Both copies' burners topped up with coal (a player's hand, the same tick for both), for the rest of the run. */
