@@ -30,10 +30,10 @@ use rtsim_industry::ids::{
 use rtsim_industry::obs::{
     BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
     ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
-    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind, InventoryDecl,
-    LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer, ReconcileResult,
-    ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl, StoreFrogport,
-    SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind,
+    InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer,
+    ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl,
+    StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
@@ -443,26 +443,30 @@ fn code_tables(out: &mut String) {
     table(out, "package_direction", &rows);
 
     // IND_CHAIN_PACKAGE direction, at 44.
-    let rows: Vec<_> = [ChainDirection::Out, ChainDirection::In, ChainDirection::Held]
-        .into_iter()
-        .map(|direction| {
-            let b = obs_bytes(Obs::ChainPackage(ChainPackage {
-                store: StoreId(1),
-                district: Some(d),
-                inventory: Some(1),
-                direction,
-                frogport: 2,
-                pos: BlockPos::new(0, 0, 0),
-                destination: None,
-                packages: 3,
-                address: 4,
-                op: None,
-                key: None,
-                goods: GoodVec::new(),
-            }));
-            (format!("{direction:?}"), u32_at(&b, 44))
-        })
-        .collect();
+    let rows: Vec<_> = [
+        ChainDirection::Out,
+        ChainDirection::In,
+        ChainDirection::Held,
+    ]
+    .into_iter()
+    .map(|direction| {
+        let b = obs_bytes(Obs::ChainPackage(ChainPackage {
+            store: StoreId(1),
+            district: Some(d),
+            inventory: Some(1),
+            direction,
+            frogport: 2,
+            pos: BlockPos::new(0, 0, 0),
+            destination: None,
+            packages: 3,
+            address: 4,
+            op: None,
+            key: None,
+            goods: GoodVec::new(),
+        }));
+        (format!("{direction:?}"), u32_at(&b, 44))
+    })
+    .collect();
     table(out, "chain_direction", &rows);
 
     // IND_DISTRICT aux.
