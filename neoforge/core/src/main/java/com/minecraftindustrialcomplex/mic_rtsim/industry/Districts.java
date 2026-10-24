@@ -130,6 +130,8 @@ public final class Districts {
     long lastRescanChunkLoads, lastRescanClassLoads;
     /** The block entity type whose look loaded the last detection's first chunk, or "". */
     String lastRescanLoadedBy = "";
+    /** R2-11: the stack of the first chunk load inside a detection step is logged once per session. */
+    boolean loadStackLogged;
     long declared;
 
     Districts(Industry ind) {
@@ -1058,6 +1060,8 @@ public final class Districts {
         boolean step(int budget) {
             long t0 = System.nanoTime();
             long loads0 = IndustryEvents.chunkLoads(), classes0 = CLASSES.getTotalLoadedClassCount();
+            IndustryEvents.loadInDetection = null;
+            IndustryEvents.watchLoads = true;
             int micros = IndustryConfig.get(IndustryConfig.RESCAN_SLICE_MICROS);
             long limit = micros <= 0 ? Long.MAX_VALUE : micros * 1000L;
             long spent = 0, tickItemNanos = 0;
@@ -1100,6 +1104,12 @@ public final class Districts {
                     break;
                 }
                 progressed = true;
+            }
+            IndustryEvents.watchLoads = false;
+            Throwable load = IndustryEvents.loadInDetection;
+            if (load != null && !loadStackLogged) {
+                loadStackLogged = true;
+                MicRtsim.LOGGER.info("[industry] a chunk loaded inside a detection step; the stack of the first (once per session):", load);
             }
             long dt = System.nanoTime() - t0;
             nanos += dt;
