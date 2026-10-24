@@ -104,6 +104,7 @@ public final class IndustryTestKit {
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null); // a budget test sets its own
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, null); // and a time-limit test its own
     }
 
     /** Forgets every district of the level (each test has its own batch, so none runs beside it). */

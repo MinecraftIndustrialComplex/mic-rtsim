@@ -4,6 +4,11 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.ChestType;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.energy.IEnergyStorage;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -26,6 +31,45 @@ public interface StockAccess {
      * to what fits. Returns the amount applied, with the sign of {@code delta}.
      */
     long apply(Goods.Name good, long delta);
+
+    /**
+     * Whether the inventory at {@code pos} reads only loaded (FULL) chunks: its own chunk is loaded, and its
+     * parts are ({@link #partsLoaded}). Loads nothing. The capability reads below go through
+     * {@code Level.getBlockEntity}, which waits for a chunk still loading (R2-11): ask this first where a tick's
+     * cost must stay bounded.
+     */
+    static boolean loaded(ServerLevel level, BlockPos pos) {
+        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        if (chunk == null)
+            return false;
+        BlockEntity be = chunk.getBlockEntities().get(pos);
+        return be == null || partsLoaded(level, be);
+    }
+
+    /**
+     * Whether reading {@code be}'s capabilities reads only loaded (FULL) chunks, {@code be}'s own chunk being
+     * loaded (R2-11): a double chest's other half is (NeoForge's chest item handler is the pair's, and
+     * {@code ChestBlock.getContainer} reads the other half through {@code Level.getBlockState}, which loads its
+     * chunk, or waits for it while it loads), and no plugin says a part is not
+     * ({@link IndustryPlugin#partsLoaded}). Loads nothing.
+     */
+    static boolean partsLoaded(ServerLevel level, BlockEntity be) {
+        BlockPos other = chestPair(be);
+        if (other != null && level.getChunkSource().getChunkNow(other.getX() >> 4, other.getZ() >> 4) == null)
+            return false;
+        for (IndustryPlugin plugin : IndustryApi.PLUGINS)
+            if (!plugin.partsLoaded(level, be))
+                return false;
+        return true;
+    }
+
+    /** A double chest's other half (vanilla's {@code ChestBlock}, and a mod's that extends it), else null. */
+    static BlockPos chestPair(BlockEntity be) {
+        BlockState s = be.getBlockState();
+        if (!(s.getBlock() instanceof ChestBlock) || !s.hasProperty(ChestBlock.TYPE) || s.getValue(ChestBlock.TYPE) == ChestType.SINGLE)
+            return null;
+        return be.getBlockPos().relative(ChestBlock.getConnectedDirection(s));
+    }
 
     /** The item handler at a position, the unsided one first, else the first side that has one. */
     static IItemHandler items(ServerLevel level, BlockPos pos) {

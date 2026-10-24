@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -59,6 +60,13 @@ final class FarTrainView {
     static final String GROUP_NAME = MicRtsimDh.MODID + ":carriage";
     /** A carriage far away: 3 wide, 3 tall, 1 block past each bogey point (research note §4.1). */
     static final double WIDTH = 3.0, HEIGHT = 3.0, OVERHANG = 1.0;
+    /**
+     * The longest run between a carriage's bogey points that is drawn (DHT73). Create assembles no carriage
+     * longer than its maxAssemblyLength (128 blocks by default); a longer run is a bad sample or a bad
+     * extrapolation, and drawn it would be a box hundreds of blocks long. Such a mover is skipped, counted and
+     * logged instead.
+     */
+    static final double MAX_RUN = 160.0;
     /** How long a carriage nobody sees keeps its group before it is released. */
     private static final long FORGET_NANOS = 10_000_000_000L;
 
@@ -77,6 +85,9 @@ final class FarTrainView {
     // What the last frame did, for the log and the bench
     static int lastActive, lastBoxes, lastRegistered, lastHidden, lastCandidates;
     static long recuts, confirms, creations, releases;
+    /** Carriage samples skipped for a run longer than {@link #MAX_RUN} (DHT73), and how many were logged. */
+    static long oddRuns;
+    private static int oddLogged;
     static long controllerNanos, controllerFrames;
 
     private FarTrainView() {}
@@ -115,6 +126,34 @@ final class FarTrainView {
     /** The farthest a carriage's boxes reach from its run's midpoint, for a run (rx, ry, rz) between bogeys. */
     static double reach(double rx, double ry, double rz) {
         return Math.sqrt(rx * rx + ry * ry + rz * rz) / 2.0 + OVERHANG + WIDTH;
+    }
+
+    /** True when the run in {@code seg} is not finite or is longer than {@link #MAX_RUN}; logs nothing. */
+    static boolean tooLong(double[] seg) {
+        double rx = seg[0] - seg[3], ry = seg[1] - seg[4], rz = seg[2] - seg[5];
+        return !(rx * rx + ry * ry + rz * rz <= MAX_RUN * MAX_RUN);
+    }
+
+    /**
+     * True when carriage {@code m}'s run at {@code clock} ({@code seg}, as {@link FarMover#segmentAt} wrote it)
+     * is not a finite vector or is longer than {@link #MAX_RUN}: it is not drawn, by the boxes or the models
+     * (DHT73). Counted, and the first few logged with the samples it came from.
+     */
+    static boolean oddRun(FarMover m, double[] seg, double clock) {
+        if (!tooLong(seg))
+            return false;
+        double rx = seg[0] - seg[3], ry = seg[1] - seg[4], rz = seg[2] - seg[5];
+        double run2 = rx * rx + ry * ry + rz * rz;
+        oddRuns++;
+        if (oddLogged < 10 || oddRuns % 1000 == 0) {
+            oddLogged++;
+            MicRtsimDh.LOGGER.warn("mic_rtsim_dh: carriage {} has a run of {} blocks between its bogey points (over {});"
+                    + " not drawn ({} so far). Drawn at {} {} {} to {} {} {}, from {} to {} between far clock {} and"
+                    + " {}, now {}", m.key(), String.format(Locale.ROOT, "%.1f", Math.sqrt(run2)), MAX_RUN, oddRuns,
+                    seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], java.util.Arrays.toString(m.prev()),
+                    java.util.Arrays.toString(m.cur()), m.sampleTick(), m.sampleTick() + m.intervalTicks(), clock);
+        }
+        return true;
     }
 
     /**
@@ -233,7 +272,7 @@ final class FarTrainView {
             double mx = (SEG[0] + SEG[3]) / 2.0, my = (SEG[1] + SEG[4]) / 2.0, mz = (SEG[2] + SEG[5]) / 2.0;
             double dx = mx - cam.x, dz = mz - cam.z;
             double d2 = dx * dx + dz * dz;
-            if (!(d2 <= radiusSq))
+            if (!(d2 <= radiusSq) || oddRun(m, SEG, clock))
                 continue;
             // The real carriage's look, where it has one (FarModelRenderer); its group, if any, goes dark
             if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
