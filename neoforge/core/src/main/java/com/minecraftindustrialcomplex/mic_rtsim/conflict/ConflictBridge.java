@@ -494,6 +494,8 @@ public final class ConflictBridge implements SessionPlugin {
     private boolean held;
     /** The camp reconciler (M5): the camps plugins declare, their censuses and reconciles. */
     private final Camps reconciler = new Camps(this);
+    /** The animals raids on unwatched districts owe (M9c): held until their district loads. */
+    private final OwedHunts owedHunts = new OwedHunts();
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, placed, requeued, pendingTests, watchFlips, placeMoves, casualties, chiefsKilled,
@@ -510,6 +512,11 @@ public final class ConflictBridge implements SessionPlugin {
     /** The camp reconciler (GameTests and the core's hooks). */
     public Camps reconciler() {
         return reconciler;
+    }
+
+    /** The owed hunts (GameTests). */
+    public OwedHunts owedHunts() {
+        return owedHunts;
     }
 
     // ---- SessionPlugin: lifecycle ---------------------------------------------------------------
@@ -537,6 +544,7 @@ public final class ConflictBridge implements SessionPlugin {
         noticesPlayed = territoryCommands = settledCommands = campsReported = looted = malformed = unknownCommands = 0;
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = 0;
         lastSettled = 0;
+        owedHunts.clear();
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
         reconciler.sessionStarted();
@@ -566,6 +574,7 @@ public final class ConflictBridge implements SessionPlugin {
         watches.clear();
         signals.clear();
         notices.clear();
+        owedHunts.clear();
         reconciler.sessionFailed();
     }
 
@@ -576,6 +585,7 @@ public final class ConflictBridge implements SessionPlugin {
     void serverStopped() {
         camps.clear();
         reconciler.clear();
+        owedHunts.clear();
         byAgent.clear();
         byUuid.clear();
         extraOf.clear();
@@ -690,6 +700,10 @@ public final class ConflictBridge implements SessionPlugin {
             case ConflictRecords.CHIEF_BODY -> {
                 if (RtsimConfig.on(Module.CONFLICT))
                     reconciler.chiefBody(b, at, size, aux);
+            }
+            case ConflictRecords.OWED_HUNT -> {
+                if (RtsimConfig.on(Module.CONFLICT))
+                    owedHunts.owed(b, at, names);
             }
             default -> unknownCommands++; // a later slice's command (MOWZIE.md §9): nothing here plays it
         }
@@ -1400,6 +1414,7 @@ public final class ConflictBridge implements SessionPlugin {
             if (held)
                 switchedOff(now);
             reconciler.switchedOff(now);
+            owedHunts.clear();
             return;
         }
         Difficulty d = s.server().getWorldData().getDifficulty();
@@ -1411,6 +1426,7 @@ public final class ConflictBridge implements SessionPlugin {
                     if (st.state == StackState.PENDING)
                         st.dirty = true;
         }
+        owedHunts.tick(s, now);
         held = !byAgent.isEmpty() || !territories.isEmpty() || !notices.isEmpty() || !signals.isEmpty();
         if (!held) {
             reconciler.tick(now); // nothing without a camp declared (D1)

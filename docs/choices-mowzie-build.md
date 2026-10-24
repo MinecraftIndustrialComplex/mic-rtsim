@@ -3720,6 +3720,34 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
 - GameTest `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (MZB-594) is rewritten for the maker: two
   raptor units are two jar raptors with packs of 4, the area holds 8 followers all carrying the band's tag and
   none untagged, each slot holds 4 extras, and a recall that times out leaves no raptor and no follower.
+- **MZB-627** (when a hunt applies; fills in MZB-426): `OwedHunts` keeps the latest OWED_HUNT of each faction and
+  district in memory and looks at the held ones every 20 ticks, and in the tick after one arrives, only while it holds
+  any (`ConflictBridge.endOfTick`, before the `held` early return: a hunt needs no party). A hunt applies when every
+  chunk the circle touches (the chunks whose square lies within the radius of the centre, at most 7 by 7 for 48) has
+  its entities loaded and ticking (`entitiesTickAt`, which also needs a player or a forced chunk in the level);
+  until then it waits, and a district nobody loads keeps its debt, as the engine's books say it should. Answered at
+  once, without waiting for any chunk, with `killed` 0: an amount of 0 (a count of 0, or a `rest` of 0 when the last
+  op applied is `replaced`), a dimension the server has not got, and a radius under 0 or over 128 (the engine's is 48,
+  so a wider one is a malformed record; nothing is killed). An exception while applying drops the hunt for the session
+  (logged); the engine sends it again at the next. A command whose op is the last one applied is ignored and counted
+  (`ignored`); `received`, `appliedHunts` and `killed` are the session's counters. A session start, a session failure,
+  a server stop and the conflict module going off clear the held hunts and the last ops; a command that arrives while
+  the module is off is dropped, as the camp reconcile's are.
+- **MZB-628** (what a hunt spares; fills in MZB-426 and MZB-442): the jar's raptor test as MZB-426 has it (no
+  ATTACK_DAMAGE or under 3, 0.1 < width² × height < 6, an `Animal`), and nobody's animal: not tamed (`TamableAnimal`,
+  tamed `AbstractHorse`), not owned (`OwnableEntity` with an owner), not named, not leashed, not ridden and not
+  riding. The last two and the owner test are beyond MZB-442's list, taken as the conservative reading of "marked as
+  somebody's". A herd puppet (tagged, vanilla animal) is not spared: `kill()` runs the death event, and the herd
+  plugin books its own death (a herd that a raid left dead is a herd the engine should know lost animals). The
+  animals nearest the centre die first, ties by UUID, so a repeat on the same stock picks the same ones; `kill()` is
+  checked afterwards (`isAlive`), so a mod that cancels the death is no kill and does not count.
+- **MZB-629** (the answer and its barrier; fills in MZB-426 and MZB-449): HUNT_APPLIED (0x0816, 56 bytes, journaled)
+  carries faction, district, the engine's op, and `killed`, even when that is 0; the hunt is spent and the last op
+  applied for the faction and district is set to its op in the same step. The commit comes after the kills, and the
+  circle's entity chunks are then noted in the barrier (`dependsOnEntities`, after the commit, as the camp records
+  do), so the journal's next file waits for the entity chunks to be written and a restart cannot see the answer
+  without the deaths. An answer given without applying (the cases above) notes no chunk. The record carries no Java
+  op id: the engine books it by the hunt's own op, not by a journal op set (MZB-449).
 
 ## M10 March
 

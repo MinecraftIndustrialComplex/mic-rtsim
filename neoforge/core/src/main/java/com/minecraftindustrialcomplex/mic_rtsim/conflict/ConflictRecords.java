@@ -43,12 +43,15 @@ public final class ConflictRecords {
 
     /**
      * M9: the Umvuthana's records. TRADED and CHIEF_PAID carry Java op ids and are journaled; HAVEN_CHEST is
-     * journaled too (0x0092 is retired: it was latest-wins there before MZB-446). HAVEN_CHEST's sender is M9c's, so
-     * only its layout is here; the hunt records (OWED_HUNT, HUNT_APPLIED) are M9c's whole.
+     * journaled too (0x0092 is retired: it was latest-wins there before MZB-446). HUNT_APPLIED answers the
+     * engine's OWED_HUNT command ({@link OwedHunts}, MZB-425, MZB-426) and is journaled.
      */
     public static final int TRADED = 0x0810;
     public static final int CHIEF_PAID = 0x0814;
+    public static final int HUNT_APPLIED = 0x0816;
     public static final int HAVEN_CHEST = 0x0817;
+    /** M9: the hunt a raid on an unwatched district owes (a command, aux 0). */
+    public static final int OWED_HUNT = 0x880C;
     /** M9: the chief's trade memory at home (a command, aux = traded players t). */
     public static final int CHIEF_BODY = 0x880A;
 
@@ -377,6 +380,22 @@ public final class ConflictRecords {
         }
     }
 
+    /**
+     * OWED_HUNT (command, aux 0; docs/boundary.md §9.4): the animals a raid on an unwatched district owes
+     * (MZB-424, MZB-425). {@code REPLACED} is the op of the hunt this one replaced in flight (0: none) and
+     * {@code REST} the animals to kill instead of {@code COUNT} when that op is the last one applied for the
+     * faction and district (MZB-449).
+     */
+    public static final class OwedHunt {
+        public static final int FACTION = 16, DISTRICT = 24, OP_ID = 32, REPLACED = 40, DIM = 48, COUNT = 52, CENTRE_X = 56,
+                CENTRE_Z = 60, RADIUS = 64, REST = 68, SIZE = 72;
+    }
+
+    /** HUNT_APPLIED (journaled, aux 0): an OWED_HUNT was applied, with the animals it killed (MZB-426). */
+    public static final class HuntApplied {
+        public static final int FACTION = 24, DISTRICT = 32, OP_ID = 40, KILLED = 48, SIZE = 56;
+    }
+
     /** HAVEN_CHEST (journaled; M9c sends it): the chest a grove's tribute goes into, and its free slots (MZB-422). */
     public static final class HavenChest {
         public static final int FACTION = 24, DIM = 32, X = 36, Y = 40, Z = 44, FREE = 48, SIZE = 56;
@@ -407,6 +426,7 @@ public final class ConflictRecords {
             case BAND_STEER -> Steer.SIZE;
             case BAND_RECALL -> Recall.SIZE;
             case DEMAND_SETTLED -> Settled.SIZE;
+            case OWED_HUNT -> OwedHunt.SIZE;
             default -> 16;
         };
     }
