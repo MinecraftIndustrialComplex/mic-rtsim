@@ -5163,7 +5163,7 @@ impl Conflict {
                     }
                 }
             }
-            Obs::Casualties(cs) => self.casualties(w, cs, at),
+            Obs::Casualties(cs) => self.casualties(w, cs, at, false),
             Obs::ChiefKilled(ck) => {
                 let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
                 else {
@@ -5311,6 +5311,37 @@ impl Conflict {
         self.parties[p].wave = u16::try_from(m.wave).unwrap_or(u16::MAX).saturating_add(1);
     }
 
+    /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
+    /// RP-8, RP-9), called by the host instead of [`Conflict::ingest`] while it applies one. Its
+    /// body is gone, so a copy embodies nothing and is applied by identity: a BAND_CASUALTIES
+    /// against the party's alive units of that body kind, at any epoch, from no stack, with the
+    /// killer's signal and the rout as for a live one, and the party's epoch floor raised to the
+    /// record's; a BAND_MATERIALIZED raises the floor only. Every other kind (CHIEF_KILLED by
+    /// party and op id among them) as [`Conflict::ingest`]. The host refuses a BAND_CASUALTIES
+    /// copy of generation 0 before it gets here (RP-21).
+    pub fn ingest_copy(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        o: &Obs,
+        at: Tick,
+    ) {
+        match o {
+            Obs::Casualties(cs) => {
+                let at = at.max(self.now);
+                self.run_until(w, infra, at);
+                self.casualties(w, cs, at, true);
+                self.raise_floor(cs.agent, cs.epoch);
+            }
+            Obs::Materialized(m) => {
+                let at = at.max(self.now);
+                self.run_until(w, infra, at);
+                self.raise_floor(m.agent, m.epoch);
+            }
+            _ => self.ingest(w, infra, o, at),
+        }
+    }
+
     /// The player refused the demand or attacked the envoy: unmet now (DEMAND_SETTLED refused),
     /// unless it was paid in full already.
     fn refuse(&mut self, w: &mut World, f: u32, a: ActorId, at: Tick, _insult: f64) {
@@ -5328,20 +5359,22 @@ impl Conflict {
         }
     }
 
-    fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick) {
+    /// A BAND_CASUALTIES. `copy`: a copy of an ended session's record (§5.7, RP-9), whose body
+    /// is gone: it needs no stack.
+    fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick, copy: bool) {
         // The party by agent alone, as the despawn finds it, then the stack by the record's epoch
         // (docs/replay-gate.md §5.9, RP-27): `spawned` when it is embodied at that epoch, else the
         // recalled stack of that epoch, the walk-off's deaths of a band the player left (counted
         // the same whether replaying or live, MZB-142), also while the band is embodied again at
         // a newer epoch (MZB-131). The despawn removes the stack, so a straggler after it is no
-        // death.
+        // death. A copy takes from no stack, whatever its epoch.
         let Some(p) = Party::of_agent(cs.agent).filter(|&p| self.parties.get(p).is_some()) else {
             return;
         };
         let x = &self.parties[p];
-        let in_view = x.embodied && x.epoch == cs.epoch;
-        let walk_off = !in_view && x.recalled.iter().any(|e| e.0 == cs.epoch);
-        if !in_view && !walk_off {
+        let in_view = !copy && x.embodied && x.epoch == cs.epoch;
+        let walk_off = !copy && !in_view && x.recalled.iter().any(|e| e.0 == cs.epoch);
+        if !copy && !in_view && !walk_off {
             // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
             return;
         }
@@ -5364,7 +5397,9 @@ impl Conflict {
             *self.fill_deaths.entry(p).or_insert(0) += t;
         }
         let x = &mut self.parties[p];
-        let stacks = if walk_off {
+        let stacks = if copy {
+            None
+        } else if walk_off {
             x.recalled
                 .iter_mut()
                 .find(|e| e.0 == cs.epoch)

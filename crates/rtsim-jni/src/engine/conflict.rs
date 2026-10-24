@@ -162,6 +162,9 @@ pub(super) struct Link {
     /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
     /// §4.3). Not saved.
     never_logged: u64,
+    /// Copies of a BAND_CASUALTIES of generation 0 refused (docs/replay-gate.md §2.3, RP-21):
+    /// nothing tells one from its repeat, and it has no op id. Not saved.
+    pub(super) copies_refused: u64,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
 }
@@ -268,6 +271,7 @@ impl Link {
             from_pages: false,
             replay_end_due: false,
             never_logged: 0,
+            copies_refused: 0,
             fed: 0,
         }
     }
@@ -566,6 +570,13 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
+    if st.applying_copy == Some(0) && matches!(o, Obs::Casualties(_)) {
+        // A copy of generation 0 is new each time it comes (S4p's `copy_is_new`), and a
+        // casualty has no op id to stop a repeat: refused, so that no member dies twice; one may
+        // live on (docs/replay-gate.md §2.3, RP-21).
+        st.conflict.copies_refused += 1;
+        return;
+    }
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
         // conflict at its present (the clock not run for it), which spends its op id and drops
@@ -597,7 +608,16 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.conflict.records += 1;
     let was_running = running(st);
     let at = at.max(st.conflict.engine.now()).max(st.phase1.world.now());
-    with_infra(st, |c, w, infra| c.ingest(w, infra, o, at));
+    // A copy (REASSERT) of an ended session's record is applied by identity, never against a
+    // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
+    let copy = st.applying_copy.is_some();
+    with_infra(st, |c, w, infra| {
+        if copy {
+            c.ingest_copy(w, infra, o, at)
+        } else {
+            c.ingest(w, infra, o, at)
+        }
+    });
     st.phase1.taint();
     reset_if_due(st);
     take_commands(st);
@@ -1110,6 +1130,8 @@ pub struct ConflictLinkStats {
     pub replay_dropped: u64,
     pub replay_never: u64,
     pub replay_deferred: u64,
+    /// Copies of a BAND_CASUALTIES of generation 0 refused (RP-21).
+    pub copies_refused: u64,
 }
 
 impl super::Engine {
@@ -1168,6 +1190,7 @@ impl super::Engine {
                 replay_dropped: g.dropped,
                 replay_never: g.never,
                 replay_deferred: g.deferred,
+                copies_refused: l.copies_refused,
             },
         )
     }
