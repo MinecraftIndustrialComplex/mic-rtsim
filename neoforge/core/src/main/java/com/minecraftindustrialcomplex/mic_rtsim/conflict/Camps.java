@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.WeakHashMap;
 
 /**
  * The camp reconciler's Java half (MOWZIE.md §4.9, ledgers 16 and 22; slice M5), mod-agnostic (D4): a
@@ -126,6 +127,11 @@ public final class Camps {
         ChiefMemory memory;
         /** A body of the kind joined beyond the footprint: the next census looks wide for strays (MZB-232). */
         boolean strayWatch;
+        /**
+         * The generation of the chief body this session's lines made, adopted or seated last (memory only; 0 while
+         * none has been this session): a chief-slot body of another generation is a second body (MZB-611).
+         */
+        int chiefGeneration;
         final boolean late;
         public int censuses, outs;
 
@@ -274,6 +280,13 @@ public final class Camps {
     private int declared;
     /** The camps whose kind looks for strays (a stray radius above zero), by dimension (MZB-595). */
     private final Map<ResourceKey<Level>, List<Site>> strayers = new HashMap<>();
+    /**
+     * The chief bodies the engine has booked dead already, the second bodies (MZB-431, MZB-611). Memory only, never
+     * saved: a weak set that keeps no entity alive. A body is marked when a chief REMOVE naming it arrives (held or
+     * not) or a SEAT_HEIR pair names its generation in L_A, and leaves the set when it leaves the level. Held lines
+     * come and go (a census, CAMP_OUT or a session start clears them), the marks do not.
+     */
+    private final Set<Entity> second = Collections.newSetFromMap(new WeakHashMap<>());
     private final List<Held> held = new ArrayList<>();
     /** The held lines {@link #playHeld} has still to look at this tick (a seat in place answers the old body's lines stale). */
     private final ArrayDeque<Held> draining = new ArrayDeque<>();
@@ -317,6 +330,7 @@ public final class Camps {
             c.recount = false;
             c.throne = null;
             c.memory = null;
+            c.chiefGeneration = 0; // nothing is known of the chief's generation until a line makes or adopts it (MZB-611)
             attention.add(c);
         }
         held.clear();
@@ -357,6 +371,7 @@ public final class Camps {
         byChunk.clear();
         index.clear();
         attention.clear();
+        second.clear();
         held.clear();
         draining.clear();
         setOuts.clear();
@@ -543,19 +558,21 @@ public final class Camps {
      * tag off first) is gone from its camp: CAMP_DEATH, killer kind none (§4.9).
      */
     void onLeave(Entity e) {
-        CampMember m = RtsimAttachments.campMember(e);
-        if (m == null)
-            return;
         if (e.getRemovalReason() == null)
             return;
-        Set<Entity> s = index.get(m.faction());
-        if (s != null) {
-            s.remove(e);
-            if (s.isEmpty())
-                index.remove(m.faction());
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m != null) {
+            Set<Entity> s = index.get(m.faction());
+            if (s != null) {
+                s.remove(e);
+                if (s.isEmpty())
+                    index.remove(m.faction());
+            }
+            // A second body discarded by anything else is no death either: death() looks at the mark first.
+            if (e.getRemovalReason() == Entity.RemovalReason.DISCARDED && live() && !RtsimAttachments.isTagged(e))
+                death(e, ConflictRecords.BY_NONE, null, bridge.session().gameTime());
         }
-        if (e.getRemovalReason() == Entity.RemovalReason.DISCARDED && live() && !RtsimAttachments.isTagged(e))
-            death(e, ConflictRecords.BY_NONE, null, bridge.session().gameTime());
+        second.remove(e); // a second body's mark goes when it leaves the level (MZB-611)
     }
 
     private boolean live() {
@@ -1070,6 +1087,8 @@ public final class Camps {
             return null;
         m.setData(RtsimAttachments.CAMP_MEMBER, new CampMember(c.faction, ln.slot(), ln.generation()));
         m.setPersistenceRequired();
+        if (ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+            c.chiefGeneration = ln.generation(); // the engine's chief now: any other generation standing is a second body (MZB-611)
         // A chief's SPAWN (not a SEAT_HEIR: an heir's memory is empty) carries the memory CHIEF_BODY sent for this epoch (MZB-421).
         ChiefMemory memory = c.memory;
         boolean writes = ln.action() == ConflictRecords.CampReconcile.SPAWN && (ln.flags() & ConflictRecords.CampReconcile.LINE_CHIEF) != 0
@@ -1103,6 +1122,8 @@ public final class Camps {
             untag(e);
         // Its persistence stays the jar's (MZB-210).
         e.setData(RtsimAttachments.CAMP_MEMBER, new CampMember(c.faction, ln.slot(), ln.generation()));
+        if (ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+            c.chiefGeneration = ln.generation();
         indexAdd(e, c.faction);
         c.kind.joined(c, mob);
         adopted++;
@@ -1139,6 +1160,8 @@ public final class Camps {
         Entity e = lineTarget(level, c, ln);
         if (e == null)
             return ConflictRecords.CampBodies.NOTHING;
+        if (ln.action() == ConflictRecords.CampReconcile.REMOVE)
+            markSecond(e); // the engine has no use for this chief body: held or not, its death is nobody's (MZB-611)
         if (mayHold && e instanceof Mob mob && c.kind.holdRemoval(level, c, mob)) {
             held.add(new Held(c, epoch, op, ln, now, null, HELD_REMOVAL));
             heldRemovals++;
@@ -1393,6 +1416,11 @@ public final class Camps {
      */
     private void heirPair(ServerLevel level, Site c, long epoch, long op, Line mask, Line seat, List<Line> quiet, List<Integer> outcomes,
                            long now) {
+        if (seat.a() != 0) {
+            Mob retired = chiefOfGeneration(c, (int) seat.a(), false);
+            if (retired != null)
+                markSecond(retired); // the pair names it dead away: from now on it is a second body, whether the pair waits or not (MZB-611)
+        }
         if (pairNow(level, c, epoch, op, mask, seat, now, now, true) == PAIR_STALE) {
             quiet.add(mask);
             outcomes.add(ConflictRecords.CampBodies.STALE);
@@ -1468,25 +1496,29 @@ public final class Camps {
 
     /**
      * The body of the chief's slot the heir is to sit over (MZB-410): the one of the generation the SEAT_HEIR line
-     * names in L_A (the old chief's, dead away), else any other live chief body of the camp (the heir is the
-     * only chief a grove keeps). Null for a plain seat at the throne.
+     * names in L_A (the old chief's, dead away), standing in the footprint. Null for a plain seat at the throne:
+     * no L_A, or no such body here. Any other chief body of the camp is not sat over; it is a second body or the
+     * engine's own chief, and the engine's lines deal with it (P2-3).
      */
     private Mob oldChief(Site c, Line seat) {
+        if (seat.a() == 0)
+            return null;
+        return chiefOfGeneration(c, (int) seat.a(), true);
+    }
+
+    /** The camp's live chief-slot body of a generation, in the footprint when {@code inside}; null with none. */
+    private Mob chiefOfGeneration(Site c, int generation, boolean inside) {
         Set<Entity> s = live(c.faction);
         if (s == null)
             return null;
-        Mob other = null;
         for (Entity e : s) {
             CampMember m = RtsimAttachments.campMember(e);
-            if (!(e instanceof Mob mob) || m == null || m.slot() != ConflictRecords.CampReconcile.CHIEF_SLOT || !e.isAlive()
-                    || m.generation() == seat.generation() || RtsimAttachments.isTagged(e) || !e.level().dimension().equals(c.dimension))
-                continue;
-            if (seat.a() != 0 && m.generation() == (int) seat.a())
+            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && m.generation() == generation
+                    && e.isAlive() && !RtsimAttachments.isTagged(e) && e.level().dimension().equals(c.dimension)
+                    && (!inside || c.contains(e.position())))
                 return mob;
-            if (other == null)
-                other = mob;
         }
-        return other;
+        return null;
     }
 
     /**
@@ -1565,28 +1597,31 @@ public final class Camps {
     }
 
     /**
-     * Whether a chief body is a second one (MZB-431): its REMOVE line is held, or a held pair's SEAT_HEIR names its
-     * generation (L_A). The engine has booked its slot dead away already, so nothing it does journals: its death
-     * is not a death (no CAMP_DEATH), its drops are cancelled and its {@code die} takes no warriors with it. A
-     * held TAKE is no second body: that body is still the chief.
+     * Whether a chief body is a second one (MZB-431, MZB-611): the engine has booked its slot dead away already, so
+     * nothing it does journals: its death is not a death (no CAMP_DEATH), its drops are cancelled and its
+     * {@code die} takes no warriors with it. It is one when it was marked (a chief REMOVE named it, or a SEAT_HEIR
+     * pair names its generation in L_A: {@link #second}, which no census, CAMP_OUT or session start clears), or when
+     * the camp's chief generation this session is another one than its tag's. A held TAKE is no second body: that
+     * body is still the chief.
      */
     public boolean secondBody(Entity e) {
+        if (!second.isEmpty() && second.contains(e))
+            return true;
         CampMember m = RtsimAttachments.campMember(e);
-        if (m == null || m.slot() != ConflictRecords.CampReconcile.CHIEF_SLOT || (held.isEmpty() && draining.isEmpty()))
+        if (m == null || m.slot() != ConflictRecords.CampReconcile.CHIEF_SLOT)
             return false;
-        return secondIn(held, m, e) || secondIn(draining, m, e);
+        Site c = sites.get(m.faction());
+        if (c == null || c.chiefGeneration == 0 || m.generation() == c.chiefGeneration)
+            return false;
+        second.add(e); // the engine's chief is another generation: this one was retired (MZB-611)
+        return true;
     }
 
-    private boolean secondIn(Iterable<Held> hs, CampMember m, Entity e) {
-        for (Held h : hs) {
-            if (h.site().faction != m.faction())
-                continue;
-            if (h.type() == HELD_REMOVAL && h.line().action() == ConflictRecords.CampReconcile.REMOVE && names(h.line(), m, e))
-                return true;
-            if (h.type() == HELD_PAIR && h.line().a() != 0 && (int) h.line().a() == m.generation())
-                return true;
-        }
-        return false;
+    /** Marks a camp's chief-slot body as second (a tagged chief body only: a stray's death journals nothing anyway). */
+    private void markSecond(Entity e) {
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+            second.add(e);
     }
 
     // ---- answers --------------------------------------------------------------------------------
