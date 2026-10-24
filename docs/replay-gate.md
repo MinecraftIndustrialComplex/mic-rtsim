@@ -50,18 +50,19 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
 - **Function:** the SESSION_START arm of the observation reader (rtsim-jni engine.rs, the arm that
   calls every module's `session_start`, then `Replay::reconcile`, then sets `session_first`).
 - **S4p** adds `st.session_gen_seen = false;` right after `st.session_first = ...`.
-- **RP** adds three things to the same arm:
+- **RP** adds two things to the same arm:
   1. `st.replaying = true;` first, before any module's `session_start`, so that a module reset inside
      the arm never sees the last session's `false` and ends a replay that has not started.
-  2. Right after the `session_first` line: `st.replaying = applied_through + 1 < session_first;`.
-  3. At the arm's end: `shared::replay_end_if_due(st)`. With nothing to replay, the replay ends here.
-- **Overlap:** adjacent added lines after `session_first`; no shared state. Keep both.
+  2. At the arm's end, after the `session_first` line: `shared::replay_end_if_due(st)`, which reads
+     the predicate with the new `session_first`. With nothing to replay, the replay ends here.
+- **Overlap:** RP's last line and S4p's come after the same `session_first` line; no shared state.
+  Keep both.
 - **SEC-1 fact 4 (pinnedGen):** S4p keeps the newest acknowledged JOURNAL_GEN outside the trimmed
   entries (SC130: `Journal.pinnedGen` in Java, `pinned_gen` in rtsim-host) and sends it first at each
   session start. Pages that include it skip it (`stale_skipped` + 1 a session) and `applied_through`
   does not move. Pages older than it admit it as a gap (`skip_to`, then `admit_gen`), which moves
   `applied_through`; its sequence is below `session_first` either way, so the replay stays on. With
-  the engine ahead of the journal (S4p's EngineAhead), `replaying` is false at the arm's end and the
+  the engine ahead of the journal (S4p's EngineAhead), the predicate is false at the arm's end and the
   replay ends there, which is right. Nothing in RP reads the first replayed record's content or
   assumes it carries data.
 
@@ -219,9 +220,11 @@ Written by whichever lands second (§2.7), in rtsim-jni tests/reassert.rs, each 
 ### 3.1 Where it is set and cleared (rtsim-jni)
 
 - `State.replaying: bool`, not saved.
-- **Set** true at the top of the SESSION_START arm, then to `applied_through + 1 < session_first`
-  once `session_first` is known (§2.1).
-- **Cleared** only by the replay end, `shared::replay_end` (§3.2), which runs once a session.
+- **Set** true at the top of the SESSION_START arm (§2.1). Before the first SESSION_START (`start`
+  to the first hand-over) it is false: no module has reset yet, and the first SESSION_START sets it.
+- **Cleared** only by the replay end, `shared::replay_end` (§3.2), which runs once a session: at the
+  arm's own end when there is nothing to replay, else at the first trigger that finds
+  `applied_through + 1 >= session_first`.
 - A module switched on in the middle of a session (MODULES, U10) resets as today
   (`reset_due`, `reset_if_due`); its replay end runs at once when `st.replaying` is false, else at the
   session's replay end.
