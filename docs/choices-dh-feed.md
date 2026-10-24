@@ -108,7 +108,7 @@ while held (DHT72).
 
 | # | Choice | Why |
 |---|---|---|
-| DHT71 | **A body that arrives flying starts its flight loop on its far model's beat** (`DragonArrivals.warm`). At the body's first held frame (DHT68), when the far dragon is not roosting, the game is not frozen, and Ice and Fire's controller would play the flight loop for the body (its `selectGeckoAnimation`: not dead, not swimming, flying or hovering or part way into either, and neither charging a blast nor breathing fire), the hidden renders run at ticks of the body's own clock chosen for the far model's loop: the far model's time is the far clock plus its key's offset (DHT65), and the body's tick that is the last start of that loop at or before it gets the two warm renders a stand-in gets, so the transition ends there and the loop starts there; during the hold the body gets a render at each later start of the loop, as the stand-ins do. Each render sets the body's `tickCount`, renders into nothing and puts it back, inside the frame; nothing ticks between. A body that arrives on the ground, swimming, charging a blast or breathing fire plays its own opening, unseen for the hold as before. The stats line counts how many bodies were held and how many started on the beat. Uninstall effect: none; client only, nothing saved, nothing sent. | The coordinator's call: the wings jumped at the swap in every take of round two, in 4 of 8 from fully down to fully up in one frame, because the body's loop starts wings up at its first render and the far model's is wherever its clock has it. Within 300 blocks the two nearest far dragons are drawn live, on the same loop and the same clock (DHT65), so there the far model's pose and the body's are the same at the swap; farther out the far model draws the baked frame nearest its time, 12 to the loop, and the two agree to within half a frame step, 2.5 ticks. The jump was up to half the loop. The stand-ins already start a loop at a chosen tick this way (DHT65); a body's `tickCount` is what GeckoLib's clock reads (TICK). GeckoLib takes up an animation only when its clock is not -1, its "never polled" value, so a first warm render that would land on -1 goes one tick earlier, which still ends the transition at the loop's start. Under `/tick freeze` the far clock runs on and the body's does not, so the beat would not hold; a blast's charge or a breath plays another animation, and the body's own clock then decides. A body new to the client has no action at all (Ice and Fire's `getAnimation` is null then, not `NO_ANIMATION`), and the flight loop plays for any action but the charge, so the check names the charge and nothing else. |
+| DHT71 | **A body that arrives flying starts its flight loop on its far model's beat** (`DragonArrivals.warm`). At the body's first held frame (DHT68), when the far dragon is not roosting, the game is not frozen, and Ice and Fire's controller would play the flight loop for the body (its `selectGeckoAnimation`: not dead, not swimming, flying or hovering or part way into either, and neither charging a blast nor breathing fire), the hidden renders run at ticks of the body's own clock chosen for the far model's loop: the far model's time is the far clock plus its key's offset (DHT65), and the body's tick that is the last start of that loop at or before it gets the two warm renders a stand-in gets, so the transition ends there and the loop starts there; during the hold the body gets a render at each later start of the loop, as the stand-ins do. Each render sets the body's `tickCount`, renders into nothing and puts it back, inside the frame; nothing ticks between. A body that arrives on the ground, swimming, charging a blast or breathing fire plays its own opening, unseen for the hold as before. The stats line counts how many bodies were held and how many started on the beat. Uninstall effect: none; client only, nothing saved, nothing sent. | The coordinator's call: the wings jumped at the swap in every take of round two, in 4 of 8 from fully down to fully up in one frame, because the body's loop starts wings up at its first render and the far model's is wherever its clock has it. Within 300 blocks the two nearest far dragons are drawn live, on the same loop and the same clock (DHT65), so there the far model's pose and the body's are the same at the swap; farther out the far model draws the baked frame nearest its time, 12 to the loop, and the two agree to within half a frame step, 2.5 ticks. The jump was up to half the loop. The stand-ins already start a loop at a chosen tick this way (DHT65); a body's `tickCount` is what GeckoLib's clock reads (TICK). GeckoLib takes up an animation only when its clock is not -1, its "never polled" value, so a first warm render that would land on -1 goes one tick earlier, which still ends the transition at the loop's start. Under `/tick freeze` the far clock runs on and the body's does not, so the beat would not hold; a blast's charge or a breath plays another animation, and the body's own clock then decides. A body new to the client has no action at all (Ice and Fire's `getAnimation` is null then, not `NO_ANIMATION`), and the flight loop plays for any action but the charge, so the check names the charge and nothing else. In eight takes on the beat no wing flipped at the swap, where all four before did; a smaller change of pose is left, from the body's turn while held, which the far model does not follow ("Round three" under Measured). |
 | DHT72 | **While held, a named body's name tag is held too; its leash and its shadow are not** (`MicRtsimIceAndFireClient`). The name tag goes through NeoForge's `RenderNameTagEvent`, at the lowest priority, set to not render for a held body (GeckoLib still runs vanilla's render, which posts it, after its own Pre event is cancelled). A leash and a shadow have no event: the leash is drawn twice for a GeckoLib mob, by vanilla's `EntityRenderer.render` (its private `renderLeash`) and by GeckoLib's `GeoEntityRenderer.renderFinal` (`Mob.getLeashHolder`, then its own `renderLeash`), so hiding it needs a mixin at both, a head cancel on `EntityRenderer#renderLeash` and on `GeoEntityRenderer#renderLeash` for a held body; the shadow is drawn by `EntityRenderDispatcher.render` after the renderer returns, so it needs a mixin there (around its `renderShadow` call). Neither is done. | The coordinator's call: hide what an event covers, leave and name what needs a mixin. The lowest priority, so a mod that forces name tags on does not bring a held one back. A shadow is drawn only within 16 blocks of the camera, onto blocks a short way below the body, so a dragon arriving in flight at the tracking range's edge has none to show; a leashed dragon arriving from the far view needs its holder there too. Ice and Fire sets the renderer's `shadowRadius` in its `preRender`, before GeckoLib's Pre event, so a Pre listener could zero it by reflection for that frame without a mixin; that is not an event's cover and is not done either. |
 
 ## Measured
@@ -433,6 +433,61 @@ vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-ro
   blocky terrain at 0.5 s is DH reloading its own LODs). No log line shows the RESET itself arriving; that it came
   rests on the subscription's code and the tests (`FarFeedReceiverTest`, `FarLookResetTest`).
 
+### Round three (DHT70 to DHT72)
+
+Captured on 2026-10-23 and 24 in a private headless sway at 1920x1080 with the pack's Sodium 0.8.13, on a local
+verify branch (`verify/dh-round3`: this branch plus the media stub, a white square in a corner on the frames a
+body is held in, and `MEDIAPHASE`, `MEDIAHOLD` and `MEDIARESET` lines on the client's stdout). The before takes
+and the RESET ran on 2026-10-23, 21:48 to 22:48 (`/micmedia beat 0`: the hold as round two landed it); the after
+takes on the beat gate's fix (ca1f7ed6) in session A, 00:17 to 00:29 (its client stopped in its fifth take on a
+media tool bug), and session B, 08:51 to 09:10 (the tools at 8466a760, which also log the yaw at the swap). Round
+two's world and flights: render distance 10, simulation distance 12, field of view 60 (15 zoomed), a stage 4
+fire dragon of 76 days whose body arrives 114 blocks from the camera (fly) or 149 (ring); the machine shared
+with other sessions' jobs. Every take recorded lossless (`libx264rgb`, crf 0), so no chroma ghost (round two's
+recording trap). Stills, recordings, frame crops and logs in `/home/greencheetah/mic-media/dh-round3-2026-10-23/`
+(`stills/`, `raw/rec/`, `raw/frames/<take>/`, `raw/phase.log`, `raw/reset_r3.log`). The swap is found by the
+corner square; `swap.py` compares the dragon's silhouette at the swap with the frame before (IoU), against the
+median of the same comparison over its neighbours, which is the dragon's own motion from frame to frame.
+
+- **The wings at the swap (DHT71).** Before: in all four takes the far model's wings were down and the body's
+  first frame had them fully up (`stills/before_b3_*_swap_pair.png`, `*_sheet.png`); the body's loop started
+  4 to 24 ticks off the far model's 60-tick beat. After, eight takes, the four flights twice: every body started
+  its loop on the beat to the tick (`MEDIAPHASE clock=0.000 standin=0.000`, the controller `RUNNING`, where
+  before it was still `TRANSITIONING` at the release), held 5 of its ticks, 240 to 263 ms. A visual review
+  (Opus) of each take frame by frame, swap less 4 to swap plus 3, found the stroke going on in the same direction
+  through the swap in all eight, and no flip like the before takes'
+  (`stills/before-after_wing_swap_fly_114-blocks.png`, `stills/after_a3*_swap_pair.png`).
+
+  | Take | IoU at the swap, before | after (session A) | after (session B) | neighbours' median, after |
+  |---|---|---|---|---|
+  | fly, 114 blocks | 0.39 | 0.64 | 0.66 | 0.79 to 0.86 |
+  | ring, 149 blocks | 0.44 | 0.79 | 0.78 | 0.84 |
+  | fly, zoomed | 0.35 | 0.70 | 0.71 | 0.78 to 0.79 |
+  | ring, zoomed | 0.46 | 0.73 | 0.70 | 0.76 to 0.83 |
+
+  Left: a smaller change of pose at the swap, not of phase. In `a3_fly` the far wing, seen past the body, goes
+  in one frame and the dragon reads about a fifth longer head to tail; in `a3b_fly`, `a3b_flyz` and `a3t_flyz`
+  the far wing opens from edge-on in one frame; in 7 of the 10 takes on the beat the tail's tip ends 20 to 28
+  pixels further back at the swap. The body turns while it is held and the far model does not: at the release
+  the body's yaw is 1.8 to 4.7 degrees past the stand-in's (1.2 at the hold's start; session B's six takes on
+  the beat) and its pitch about 1 degree off, and Ice and Fire swings a turning body's tail and rolls it, which a
+  stand-in following the feed's heading does not. `a3b_ring` (1.8 degrees) is clean, and `a3t_fly` (3.0, TAA
+  off) the cleanest swap of all. Turning the stand-in onto the body's yaw and pitch through the hold should
+  close it; not done.
+- **The smear under the body is DH's TAA.** With DH's temporal anti-aliasing on, the far model's lowered wings
+  stay as a red smear over the ground for a frame or two after the swap (strong before, where the wings jumped,
+  faint after); with it off (`/micmedia dh taa 0`) none, beat or not (`b3t_*`, `a3t_*`; beat off, the wings still
+  jump, IoU 0.24 and 0.34). Round two's "faint blocky trace" after the swap was most likely this, not the
+  recording.
+- **The name tag (DHT72).** A named dragon ("Ember"), HUD shown (vanilla draws name tags only then), 50 blocks
+  off, zoomed. With the tag's hold off (`n3g_tag0`) the name floats over the far model for all 8 held frames,
+  with no body under it; with it on (`n3g_tag1`) none until the release frame, then the tag as before. Both
+  takes on the beat. Session R's name takes ran with the HUD hidden and showed no tag either way.
+- **The RESET's grace (DHT70).** 12 far dragons 300 to 500 blocks ahead (none within the stand-ins' 300), DH's
+  radius from 160 chunks to 150 and back, so two RESETs: each of the 12 pose sets was asked for again 0.8 to
+  1.2 ms after the RESET was applied, in the same frame, and at the grace's end, 1.99 s, none was freed. So the
+  grace decides only what becomes of a set nothing asks for at once; why 2 s stays is in DHT70's row.
+
 ### The black slabs in the sky (DHT73)
 
 Ben's client showed black shapes in the sky on 2026-10-24, of two kinds: a long straight slab with parallel edges,
@@ -515,8 +570,9 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
 - The real models with players' own trains (only DHT66's four designs ran: no carriage of block entities only,
   none mixing upright and upside-down bogeys) and a hand-over for each species (only a stage 4 fire dragon).
 - The real models under an Iris shader pack, or on a GPU other than the laptop's Radeon on Mesa.
-- The arrival's hold (DHT68) in a client for a named or leashed dragon, one with riders or a lightning dragon
-  breathing, and for any species but fire.
+- The arrival's hold (DHT68) in a client for a leashed dragon, one with riders or a lightning dragon breathing,
+  and for any species but fire (a named one ran in round three), and the beat (DHT71) for a body arriving
+  anything but flying straight.
 - The far object that ran away from a dragon setting off from a hover (2 of 8 takes in "The body's copy (DHT47)",
   a double image for up to 0.8 s): round two found no cause it could show, so DHT44's run on is not changed and
   the case stays open.
