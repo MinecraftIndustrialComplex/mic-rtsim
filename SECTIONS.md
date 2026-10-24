@@ -195,7 +195,8 @@ here first.
   persisted id given at first sight, its frogports (district, inventory, address filter, the position of
   the conveyor it serves) and the hop counts between those conveyors along the walk. The chunks of no
   district the chain passes through (§3.6) wait for a later slice; S4a keeps none. It is sent to Rust as
-  a new `IND_PACKAGE_STORE` record when it changes, and again at each session's start. A store is found
+  a new `IND_PACKAGE_STORE` record when it changes, at its first walk after a restart, and all at once
+  when the engine forgot what it was told (the plugin's `announce`, as for districts). A store is found
   where its frogports are: a district's compile walks each chain network its frogports serve, once per
   compile, and a package at a frogport on no known store walks its chain, at most once in 1200 ticks per
   frogport. A frogport in a chunk of no district counts as an owner of its own, so a chain from a
@@ -240,7 +241,10 @@ here first.
   by the destination their address resolves to from the conveyor they are on) and in its frogports'
   arrival animations, every 200 ticks (choice SC99), and sends the count as a latest-wins
   `IND_STORE_CENSUS`; Rust sets the pools to it, and the difference is the store's residue, shown by `/rtsim district
-  sections`. A `CHAIN_IN` beyond its pool takes the pool to zero, never below.
+  sections`. The census runs after its tick's block entities, so it already counts that tick's crossings,
+  whose journaled records reach the engine after it: Rust orders them by the records' own game times and
+  books into the pools only the crossings of later ticks. A `CHAIN_IN` beyond its pool takes the pool to
+  zero, never below.
 - **An end that does not replay.** A district on the store that runs the black box or is frozen neither
   books into the store nor draws from it while away; the store keeps what it holds, and the other ends
   see it as it is.
@@ -1206,7 +1210,7 @@ The options below stay as the record of what was offered.
 | SC103 | A frogport in a chunk of no district counts as an owner of its own, so a chain from a district to frogports outside every district is a store | packages the district sends there leave it, and as edges they would lead to no node |
 | SC104 | A walk that leaves frogports behind (they now serve another network) walks their network at once, at most 4 deep; a later census or compile carries on past that | each piece of a split gets its store at once, at a bounded cost per call |
 | SC105 | The chunks of no district a store's chain passes through (§2.5, §3.6) wait for a later slice; S4a keeps none | nothing in S4a reads them; §3.6's staleness is their first user |
-| SC106 | Every store is declared again at each session's start (`PackageStores.announce`) | Java keeps no copy of the last declaration across a restart; the engine keeps its stores in pages, so a repeat changes nothing there |
+| SC106 | A store is declared again at its first walk after a restart, and every store at once when the engine forgot what it was told (`PackageStores.announce`, run with the districts' announce) | Java keeps no copy of the last declaration across a restart; the engine keeps its stores in pages, rolled back with them (P29), so a repeat changes nothing there. A store whose saved hops do not fit its frogports keeps its id with unknown hops until the next walk |
 
 ---
 

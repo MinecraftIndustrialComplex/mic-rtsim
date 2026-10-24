@@ -63,8 +63,10 @@ public final class IndustryData extends SavedData {
     /** Each plugin's own saved state, by a key the plugin chose ({@link #plugin}). */
     final Map<String, CompoundTag> plugins = new TreeMap<>();
     /**
-     * Districts an older format's save held and this load dropped (format 3): the engine may still hold
-     * them, so the session's start removes each (IND_DISTRICT_REMOVED) and clears the list. Not saved.
+     * Districts an older format's save held and a load dropped (format 3): the engine may still hold them,
+     * so the session's start removes each (IND_DISTRICT_REMOVED) and clears the list. Saved until then
+     * ({@code droppedDistricts}), so a save made before a session starts (the industry switched off) keeps
+     * them to remove.
      */
     final List<Long> droppedOnLoad = new ArrayList<>();
 
@@ -200,6 +202,8 @@ public final class IndustryData extends SavedData {
         for (Map.Entry<String, CompoundTag> e : plugins.entrySet())
             pluginTag.put(e.getKey(), e.getValue());
         tag.put("plugins", pluginTag);
+        if (!droppedOnLoad.isEmpty())
+            tag.putLongArray("droppedDistricts", droppedOnLoad.stream().mapToLong(Long::longValue).toArray());
         return tag;
     }
 
@@ -207,6 +211,8 @@ public final class IndustryData extends SavedData {
         IndustryData data = new IndustryData();
         data.nextId = Math.max(1, tag.getLong("nextId"));
         boolean reset = tag.getInt("format") < FORMAT && !tag.getList("districts", Tag.TAG_COMPOUND).isEmpty();
+        for (long id : tag.getLongArray("droppedDistricts"))
+            data.droppedOnLoad.add(id);
         if (reset) {
             for (Tag raw : tag.getList("districts", Tag.TAG_COMPOUND)) {
                 long id = ((CompoundTag) raw).getLong("id");
@@ -214,7 +220,7 @@ public final class IndustryData extends SavedData {
                 data.nextId = Math.max(data.nextId, id + 1);
             }
             com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.warn("{} (industry data format {}, now {}: {} districts dropped)",
-                    FORMAT_RESET_LINE, tag.getInt("format"), FORMAT, data.droppedOnLoad.size());
+                    FORMAT_RESET_LINE, tag.getInt("format"), FORMAT, tag.getList("districts", Tag.TAG_COMPOUND).size());
             data.setDirty();
         }
         for (Tag raw : reset ? new ListTag() : tag.getList("districts", Tag.TAG_COMPOUND)) {

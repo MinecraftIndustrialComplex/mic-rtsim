@@ -96,6 +96,9 @@ pub struct StoreCounts {
     pub declarations: u64,
     /// Records that named a frogport index the store's last declaration does not have.
     pub stale_records: u64,
+    /// Packages of records no later than the last census: the census, taken at the end of its
+    /// tick, already counted them (only their counts above move).
+    pub in_census: u64,
 }
 
 /// A package store (SECTIONS.md §2.5).
@@ -190,10 +193,35 @@ impl PackageStore {
     }
 
     /// Books an IND_CHAIN_PACKAGE into the pools. False when it names a frogport index the
-    /// store's last declaration does not have (counted).
-    pub fn chain(&mut self, p: &ChainPackage) -> bool {
+    /// store's last declaration does not have (counted). `recorded`: the record's own game time.
+    /// A census runs after the block entities of its tick, so it counts that tick's crossings,
+    /// whose records reach the engine after it: a record no later than the last census moves the
+    /// counts only.
+    pub fn chain(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
         let n = self.frogports.len();
         let packages = u64::from(p.packages);
+        let counted = self.census_at.is_some_and(|c| recorded <= c);
+        if counted {
+            let known = match p.direction {
+                ChainDirection::Out => (p.frogport as usize) < n,
+                ChainDirection::In => (p.frogport as usize) < self.pools.len(),
+            };
+            if !known {
+                self.counts.stale_records += 1;
+                return false;
+            }
+            match p.direction {
+                ChainDirection::Out => {
+                    self.counts.packages_out += packages;
+                    if p.destination.is_none() {
+                        self.counts.unrouted += packages;
+                    }
+                }
+                ChainDirection::In => self.counts.packages_in += packages,
+            }
+            self.counts.in_census += packages;
+            return true;
+        }
         match p.direction {
             ChainDirection::Out => {
                 if p.frogport as usize >= n {
@@ -229,6 +257,7 @@ impl PackageStore {
     }
 
     /// Sets the pools to a census (IND_STORE_CENSUS), keeping the difference as the residue.
+    /// `at`: the census's own game time (see [`PackageStore::chain`]).
     pub fn census(&mut self, at: Tick, c: &StoreCensus) {
         let before = self.held();
         let n = self.frogports.len();
@@ -249,7 +278,8 @@ impl PackageStore {
             let pool = if i < n { &mut pools[i] } else { &mut no_route };
             pool.packages += u64::from(packages);
         }
-        for &(dst, g, amount) in &c.goods {
+        // A count is never negative; one that is would take from the pools.
+        for &(dst, g, amount) in c.goods.iter().filter(|e| e.2 > 0) {
             let i = slot(dst);
             let pool = if i < n { &mut pools[i] } else { &mut no_route };
             pool.goods.add(g, amount);
@@ -289,7 +319,11 @@ pub fn declare(
         let Some(gone) = stores.remove(&d.store) else {
             return Declared::Unknown;
         };
-        let Some(into) = d.into.filter(|&i| i != d.store).and_then(|i| stores.get_mut(&i)) else {
+        let Some(into) = d
+            .into
+            .filter(|&i| i != d.store)
+            .and_then(|i| stores.get_mut(&i))
+        else {
             return Declared::Removed(false);
         };
         for (f, pool) in gone.frogports.iter().zip(&gone.pools) {
@@ -332,7 +366,11 @@ pub fn declare(
             None => s.left.entry(pos).or_default().merge(&pool),
         }
     }
-    if new { Declared::New } else { Declared::Changed }
+    if new {
+        Declared::New
+    } else {
+        Declared::Changed
+    }
 }
 
 persist_struct!(Pool { packages, goods });
@@ -350,7 +388,8 @@ persist_struct!(StoreCounts {
     in_beyond,
     censuses,
     declarations,
-    stale_records
+    stale_records,
+    in_census
 });
 persist_struct!(PackageStore {
     id,

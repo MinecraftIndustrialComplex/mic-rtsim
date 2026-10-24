@@ -40,8 +40,7 @@ use crate::district::{
     ReconcileReport, SimSpan, SweepBuf,
 };
 use crate::ids::{
-    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId,
-    TrainId,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId, TrainId,
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
@@ -1050,10 +1049,12 @@ impl Engine {
             }
             Obs::Package(p) => self.package(at, p),
             Obs::PackageStore(d) => self.package_store(at, d),
-            Obs::ChainPackage(p) => self.chain_package(at, p),
+            // A store orders its records against its census by their own game times, not the
+            // engine's (`chain`).
+            Obs::ChainPackage(p) => self.chain_package(at, t.at, p),
             Obs::StoreCensus(c) => {
                 if let Some(s) = self.stores.get_mut(&c.store) {
-                    s.census(at, c);
+                    s.census(t.at, c);
                 }
             }
             Obs::StationPorts(p) => {
@@ -3214,10 +3215,10 @@ impl Engine {
     /// Packages across a package store's frogport (IND_CHAIN_PACKAGE, SECTIONS.md §2.5): booked
     /// into the store, and a port of the frogport's district when it has one. Never a link: the
     /// mail path's `LinkKey::Mail` would send the district to the black box.
-    fn chain_package(&mut self, at: Tick, p: &ChainPackage) {
+    fn chain_package(&mut self, at: Tick, recorded: Tick, p: &ChainPackage) {
         match self.stores.get_mut(&p.store) {
             Some(s) => {
-                s.chain(p);
+                s.chain(p, recorded);
             }
             None => self.stats.store_records_unknown += 1,
         }

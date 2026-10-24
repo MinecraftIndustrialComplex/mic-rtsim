@@ -22,12 +22,12 @@ use crate::cmd::{
 use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId};
 use crate::obs::{
-    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
-    DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
-    EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
-    PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
-    StationPorts, StoreCensus, StoreDecl, StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture,
-    UnwatchedStop, ChainDirection, ChainPackage,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
+    ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl,
+    LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer, ReconcileResult,
+    ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl, StoreFrogport,
+    SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use crate::threat::ThreatClass;
 
@@ -491,12 +491,13 @@ impl R<'_> {
     }
 }
 
-/// `fixed + n * each`, saturating, so a hostile count never wraps to a matching size.
-/// Entries in the upper triangle of `n` points (IND_PACKAGE_STORE's hops).
+/// Entries in the upper triangle of `n` points (IND_PACKAGE_STORE's hops), saturating like
+/// [`sized`].
 pub(crate) fn triangle(n: usize) -> usize {
-    n * n.saturating_sub(1) / 2
+    n.saturating_mul(n.saturating_sub(1)) / 2
 }
 
+/// `fixed + n * each`, saturating, so a hostile count never wraps to a matching size.
 pub(crate) fn sized(fixed: usize, n: usize, each: usize) -> usize {
     fixed.saturating_add(n.saturating_mul(each))
 }
@@ -1220,7 +1221,9 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             })
         }
         IND_PACKAGE_STORE => {
-            let want = (sized(48, n, 48) + 2 * triangle(n)).div_ceil(8) * 8;
+            let want = sized(sized(48, n, 48), triangle(n), 2)
+                .div_ceil(8)
+                .saturating_mul(8);
             check(kind, size, want)?;
             let hops_at = 48 + 48 * n;
             let into = r.get_u64(40);
