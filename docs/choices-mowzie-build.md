@@ -930,8 +930,9 @@ conservative option at its fork.
   per wave from the party's `wave` to the record's: the units in order, each up to its alive members
   not placed, within `spawn_quota` less the bodies placed and less the epoch's deaths since the
   party's previous honoured record. Never above what Java was commanded; a count below it loses
-  nothing journaled. An envoy fills nothing, as `materialize_envoy` records nothing live (the review
-  asked for every unit; that would part the replay from the live path). Rejected: every alive unit
+  nothing journaled. An honoured envoy record fills nothing, as `materialize_envoy` records nothing
+  live (decided by the coordinator, 2026-10-24; the review asked for every unit, which would part the
+  replay from the live path). Rejected: every alive unit
   (RP-6 as first written: an invasion of 26 with 16 placed despawns to 16); the record's `spawned`
   (it omits the pending members Java reports at the despawn).
 - **RP-23** (a war party's arrival waits; §6.1; the review's item 2): while replaying, the branches
@@ -952,7 +953,7 @@ conservative option at its fork.
   the world never steps back; the clamps to `phase1.world.now()` stay (the review suggested dropping
   them; with the world held they carry nothing forward, and they still guard the world's past).
   Industry is not held (its own clock and replay rules); a held module's train lookups and raids
-  then meet industry's later state, recorded as a known limit (the lead's call, recommended). A
+  then meet industry's later state, a known limit (decided by the coordinator, 2026-10-24). A
   phase 1 world alone is not held. Rejected: holding the four alone (the world's run and the next
   clamp carry them forward).
 - **RP-25** (the copy cap; §5.7; amends RP-9; the review's item 4): after a copied BAND_CASUALTIES,
@@ -987,3 +988,53 @@ conservative option at its fork.
   nothing. Loses: a fresh engine's own records journaled before its first save are not honoured
   after a crash before that save (today's behaviour). RG13's engine life could later tell the two
   apart.
+
+- **RP-32** (the hand-over count; §2.2): the hand-over that carries SESSION_START enters the step
+  with the last session's `false`, so the arm sets the count to 1 when the replay is still on at
+  its end; each later hand-over counts at the step's entry. A replay that ends at the arm counts 0,
+  one that ends inside the session start's hand-over 1. The counts are JNI `Stats` atomics
+  (`replays_ended`, `replay_handovers`, `replay_records`), not Java's stats array.
+- **RP-33** (the clock's reads; §3.6, RP-24): one function, `shared::hand_over_target` (the
+  hand-over's world tick through `clock_target`), at every read that runs the clock: the four
+  modules' `simulate`, dragons' and herds' `reset_if_due` (conflict's and ships' read no time),
+  phase 1's `simulate` and `input_now` (its latest-state inputs), the STATE kinds applied at the
+  hand-over's time (dragons', ships'), the rejects (conflict's, ships', herds', dragons'
+  `write_queue`), worldmodel's founding. Ships' journaled path raises the replay clock too
+  (`catch_up_to`). Worldmodel's guard is `st.replaying` itself: nothing is founded while replaying,
+  the regions stay pending. Not held: test and console orders (TRIBUTE_START, HERD_FOUND, the
+  works grants and raids), which tests give after the replay end, and industry (RP-24).
+- **RP-34** (the arm's leave; §2.1, RP-26): `shared::session_start` leaves each player's area
+  through `with_viewers_of(st, false, ..)`, every viewer but the conflict; the conflict's
+  `replay_done` ends every presence span at once (`Presence::every_player_left`).
+- **RP-35** (where a replay's state lives; §3.3, §4.3): the Outbox holds `replaying`
+  (`Conflict::replaying()` reads it) and the gate's counts, cumulative since the engine was built or
+  loaded, so `ConflictStats` (saved) gains no field; `defer()` is the early return and counts it;
+  `last_never` keeps the kind and name for the log. Only conflict's Link has `replay_end_due`;
+  dragons', herds' and ships' `replay_end` are empty until their slices.
+- **RP-36** (`resend_notices` ends the replay; §5.6): it calls `replay_done` first (a no-op unless
+  replaying), so a caller that only resends cannot leave the gate on. Its retain of queued notices
+  stays; rtsim-jni's replay end asserts instead that none is queued (the gate drops them).
+- **RP-37** (the floors' bookkeeping; §5.3, RP-30): keyed by agent; raised only when the party does
+  not hold that epoch; spent (removed) by `next_epoch`.
+- **RP-38** (the honour's edges; §5.2): the epoch's deaths since the last honoured record are taken
+  once per record; a record of the same epoch when the party is not embodied changes nothing (its
+  body is gone); a held arrival takes the fight's state only on a newer epoch (`start_fight`
+  always takes a new one).
+- **RP-39** (copies; §2.3, §5.7, RP-21, RP-25): the generation-0 refusal sits after `translate`
+  and before the `Conflict::later` check and the catch-up, so a refused copy moves no clock; the
+  cap applies to copies only (a live casualty takes from its stack). The rtsim-jni test of a
+  generation-0 copy waits for S4p: nothing on this base sets `applying_copy`.
+- **RP-40** (the held arrivals' details; §6.1, RP-23): `held` maps a party to (since, plan); a
+  poll is answered only while its plan matches, else the entry goes. After a restart from pages
+  saved mid-replay the map is empty, so `held_since` infers the hold from the pages (out, a war
+  party, on its last segment, its arrival due; or a waiting siege whose round is due), and a poll
+  that arrives again keeps the route's last time as its arrival and its patience from there.
+  A siege's hold is from `until.min(at)` and changes neither `seg` nor `bored_at`. `fight_held`
+  leaves `seg` at the route's end, as a live arrival does, ends no earlier than the next tick,
+  counts `raids_watched` and schedules no wave (`wave` is held anyway, RP-28).
+- **RP-41** (the tests): (b) is engine-level, in rtsim-conflict's mowzie_records, where an
+  Infrastructure that records every `raid` shows an abstract resolve; (c) lowers the camp's pool so
+  that it shows the band coming home, and compares both the pool's closed form at a fixed time and
+  its raw value and time (the closed form alone does not show when the band came home). The crate
+  tests that called `session_start` call `begin_replay(true)`, and `replay_done` where they wanted
+  the old reset's effects; `boundary::tests::cmds` is `pub(crate)` for the gate's table test.
