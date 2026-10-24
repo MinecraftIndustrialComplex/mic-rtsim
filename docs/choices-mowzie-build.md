@@ -3531,6 +3531,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - The table is cleared at session end.
   - The create plugin reads it through `RtsimApi.lurks()` (an unmodifiable view) and
     `RtsimApi.lurkBody(long agent)` (the live puppet, or null).
+  - Amendment (built, step 5): the table is a `LinkedHashMap<Long, Lurk>` by agent (iteration in begin
+    order), read through an unmodifiable view. It is dropped by agent, never by epoch (a `seen` lurk's passes
+    carry E against the party's E+1, MZB-371's list). It is cleared by `sessionStarted`, `sessionStopping`,
+    `sessionFailed`, `serverStopped` and `switchedOff`, and `idle()` counts it and the pending roars, so
+    the bridge does not sleep with either. The lurk's dimension is read from the names dictionary without
+    the level, so a spot for a level not loaded yet is kept. `lurkBody` answers a live puppet of a party that
+    is not recalling.
 - **MZB-360** (placement): a stack of a lurking agent's BAND_MATERIALIZE is placed at the spot, not on the
   arc.
   - Its y comes from a scan from track y + 4 down to track y - 8 for a block with a sturdy top face
@@ -3539,6 +3546,10 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     z)`.
   - Then `restrictTo(spot, 2)` and the hold (MZB-361). A puppet already live when AMBUSH_SPOT comes is held
     at once and walks to the spot.
+  - Amendment (built, step 5): a lurking agent's stacks are anchored at the spot in `materialize` (the
+    anchor on the spot, offsets zeroed, the heading toward the track), not walked there. BAND_STEER is
+    ignored while the agent has a lurk. A new AMBUSH_SPOT for a live party re-anchors its stacks, and
+    releases and re-holds its puppets only if the spot moved.
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
@@ -3567,14 +3578,35 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     plays its own roar sound in that animation.
   - Calling the jar's own animation is what MOWZIE.md §4.4 asks; the hold is new because the restriction
     does not hold an awake Frostmaw with a target (see the jar facts).
+  - Amendment (built, steps 5 and 7): the hold runs in `ConflictBridge.endOfTick` after the placings. A
+    slot's hold spot (`Slot.holdAt`) is set at its first hold from the placed x and z and the floor scan
+    (MZB-360). The core's `Lurkers.DEFAULT` restricts to the spot once (radius 2) and walks back beyond 4
+    blocks, strikes nothing and roars nothing. `FrostmawLurker` also sets `yBodyRotO` with the bearing and
+    keeps the strike's bearing in a `WeakHashMap`; it stops its navigation in any animation, so a swipe or a
+    roar is not walked out of. Registered in the plugin's constructor as
+    `RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker())`.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
+  - Amendment (built, step 5): before taking the nearest player, the rule drops a target that is dead, in
+    another level, or beyond `OUT_OF_VIEW` (64 blocks), so a held puppet is not left on a player who left.
 - **MZB-363** (TRAIN_PASSED from the sampler): at each sample, for each lurk in the train's dimension, the
   segment's distance to the track point at or within `reach` sends TRAIN_PASSED.
   - It is sent once per approach, and armed again when the train is beyond 64 blocks of the point.
   - `RtsimApi.trainPassed(long agent, int epoch, boolean watched, int carriage, long train)` writes it with
     `beginJournaled`, carrying the table's epoch.
+  - Amendment (built, step 6): the distance is three-dimensional, from the track point to the sample's
+    segment (the rig's `LurkTable` is horizontal), so a rail above or below a lurk is not beside it. A
+    train's approach to a lurk is `Approach{lurk, armed, struck}` in a map by agent, made when a pass or a
+    strike first needs one. It is valid only while its `lurk` is the table's instance (identity), so a lurk
+    begun again by its agent (a replay resend, a moved spot) starts armed; entries of lurks that are gone or
+    replaced are pruned at each 20-tick rebucket, and an entry is dropped when the train is beyond 64
+    blocks. The sampler now runs when a lurk waits even if no territory minds the rail
+    (`anyMinding(SIGNAL) || !lurks().isEmpty()`), and clears its near set with its states. The sampler sends a
+    pass the moment a sample meets the lurk and keeps no pending pass, so REMOVED (the table entry gone) stops
+    the next sample's pass at once, and the approach left over is pruned within a second (MZB-371's list: the
+    rig's drop of a pending pass). `RtsimApi.trainPassed` needs the
+    session up and returns whether it wrote.
 - **MZB-364** (watched): `PASSED_WATCHED` when `lurkBody(agent)` is live. `carriage` is the index of the
   carriage whose leading point is nearest the track point, computed only when sending.
 - **MZB-365** (near a puppet): a train whose last sample is within 64 blocks of a live lurk puppet joins a
@@ -3583,6 +3615,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     puppet calls `RtsimApi.strike(agent, point)` once per carriage per approach.
   - The swipe moves no cargo: the cargo comes from the TRAIN_PASSED roll. It is real for riders, since the
     jar's area attack strikes living entities in its arc.
+  - Amendment (built, step 6): the near set holds a train when the segment of its sample is within 64
+    blocks of the lurk's track point and the lurk has a live puppet (the puppet stands within the restriction
+    of the spot, a few blocks from the track point); the design's wording was "of the puppet". A
+    refused strike (a busy puppet) does not mark the carriage struck: it is tried again each tick while the
+    point stays in reach, so a carriage is struck at most once and a refusal loses nothing (the design
+    marked it on the call). `RtsimApi.strike` picks the nearest held puppet of the agent. The near set drops a
+    train that is invalid, derailed or without a graph.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -3596,9 +3635,16 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     `play` is split so both use one `playToward(faction, dimension, x, z, player)`.
   - The entry is dropped only once a player heard it, so an arrival with nobody near keeps it for the next.
   - No chat, action-bar or title line.
+  - Amendment (built, steps 5 and 6): `trainCalled` is public on `RtsimApi` and plays to non-spectator
+    players that are not `FakePlayer`s within 64 blocks (three-dimensional) of the station. The level comes
+    from `ServerLifecycleHooks.getCurrentServer()` and the station's dimension. A camp with no sound still
+    gets the raid horn (`playToward`'s fallback), so the roar needs a declared camp with a sound
+    (MZB-367).
 - **MZB-367** (the den's sound): `DenKind.sound()` returns `MMSounds.ENTITY_FROSTMAW_ROAR`. So a den's
   notices roar too, instead of the raid horn: both are in-world sounds.
 - **MZB-368** (the puppet roars): on TRAIN_ROBBED, a live lurk puppet of that faction is told `roar`.
+  - Amendment (built, step 5): only held puppets (a live slot with a hold spot) of lurks of that faction
+    are told; a puppet not yet placed hears nothing, and the pending entry stays for the station.
 - **MZB-369** (UR-1 and D1): puppets are never saved (M3), and the lurk table and the pending roars are per
   session, so nothing stays in the world. The sampler's lurk work is a list scan per sample over the lurks
   (at most one per lurking party). The every-tick reads are for trains within 64 blocks of a live puppet
@@ -3614,6 +3660,9 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - `FakePlayers.Hearer` gains `sounds` (each `ClientboundSoundPacket`) and `titles` (title, subtitle and
     action-bar packets). `hearing` builds its `ServerGamePacketListenerImpl` as a subclass whose
     `send(Packet<?>)` records them.
+  - Amendment (built, step 5): `ConflictKit.trainsPassed(agent)` reads the TRAIN_PASSED records the
+    scripted engine received (the bridge keeps no per-agent counter), and `lurkStrikes()` the bridge's
+    strike counter.
 - **MZB-371** (run 1's ambush half):
   - The synth's rail lines also run as booked legs in a FakeWorld industry through `IndustryLink`, so
     `raid_train` finds the leg and its cargo.
