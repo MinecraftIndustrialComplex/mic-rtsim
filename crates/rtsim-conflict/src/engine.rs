@@ -5410,6 +5410,16 @@ impl Conflict {
         if let Some(s) = stacks.and_then(|v| v.iter_mut().find(|s| s.0 == u)) {
             s.1 = s.1.saturating_sub(t);
         }
+        if copy {
+            // No stack is taken from, so every stack of that unit is capped at the units left
+            // alive, as the recalled-entry despawn caps `spawned`: else the next despawn counts
+            // Java's survivors above them and the death is undone (§5.7, RP-25).
+            let alive = x.units[k].1;
+            let recalled = x.recalled.iter_mut().flat_map(|e| e.1.iter_mut());
+            for s in x.spawned.iter_mut().chain(recalled).filter(|s| s.0 == u) {
+                s.1 = s.1.min(alive);
+            }
+        }
         self.stats.casualties += u64::from(t);
         let killer = (cs.by == boundary::BY_PLAYER).then(|| self.player(w, cs.killer));
         if let Some(k) = killer {
