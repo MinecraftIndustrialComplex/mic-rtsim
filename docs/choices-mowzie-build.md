@@ -1813,6 +1813,15 @@ under its own heading.
     tick later did not. So the step it stalled on was a far wait, and the test missed by one tick.
   - The death test's reload leg guards a different mutation than its saved-data check (see the comment in the
     test), so no extra revert run was made for it.
+  - The round at 37a34e40 (`./gametest.sh core create mowziesmobs`, one invocation, the three projects' worlds
+    deleted first, load average 40 to 60): mowziesmobs passed 27 of 27, the two tests that ran out of ticks
+    and the two generation tests of MZB-655 among them. core passed
+    116 of 117, and its llama crash test passed. create passed 207 of 208. The two failures are load flakes of
+    main's tests, accepted and not rerun: core `aBigDetectionsLongestTickIsBelowTheOneCallTime` ("spread over
+    several ticks, got 2"; its one call took 4.0 to 5.8 ms where docs/stress-worlds-results.md gives 1.3 to 1.5
+    on a quiet machine) and create `aSweepReportsBoundaryStockAndTheLiveFlag` (timeoutTicks 600, its last wait
+    "a sweep with an unloaded chunk is not live" ran out; neither the test nor the sweep was touched by S4c1, and
+    it passed in the chain's round at a7e315d1).
 
 ### M5 design for the implementer
 
