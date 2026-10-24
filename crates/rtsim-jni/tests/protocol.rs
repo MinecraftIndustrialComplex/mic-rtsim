@@ -6678,6 +6678,356 @@ mod conflict {
         assert_eq!(refused, 0);
         assert_eq!(copies, (k, k), "the second dropped");
     }
+
+    // ---- The fix round: no save while replaying (docs/replay-gate.md §3.2, RP-42) -----------
+
+    /// The camp's observed fights (`end_fight` pushes one; `wait_over` none).
+    fn observed(e: &Engine) -> Vec<(f64, f64)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp") as usize;
+            c.factions[f].observed.clone()
+        })
+    }
+
+    /// Opens the next session over `saved`, `players` in the world, with Java asking before its
+    /// first hand-over for a save through `session_first - 1`, the last replayed record: the
+    /// save is due at the session's first record, its JOURNAL_GEN. Hands the journal over and
+    /// waits for that save to land. Returns the session and its `session_first`.
+    fn reopen_saving_at_the_first_live_record(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        players: Vec<((u64, u64), u32, [f64; 3])>,
+    ) -> (std::sync::Arc<Engine>, Java, u64) {
+        const SAVES_DONE: usize = 9;
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.players = players;
+        let first = j.next_obs - 1;
+        let back = j
+            .journal
+            .back()
+            .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND)));
+        assert_eq!(
+            back,
+            Some((first, obs::JOURNAL_GEN)),
+            "the session's first record"
+        );
+        assert!(e.durable_obs_seq() < first - 1, "a tail to replay");
+        let saves = e.stats_array()[SAVES_DONE];
+        e.request_save(first - 1);
+        hand_over_all(&mut j);
+        let deadline = Instant::now() + DURABLE_WAIT;
+        while e.durable_obs_seq() < first - 1 {
+            assert!(Instant::now() < deadline, "the save never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            e.durable_obs_seq(),
+            first - 1,
+            "the pages end at the last replayed record"
+        );
+        assert_eq!(e.stats_array()[SAVES_DONE], saves + 1, "one save");
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        (e, j, first)
+    }
+
+    /// A restart from the pages taken at the last session's first record (`first`): their state
+    /// before the first hand-over, then the session with the journal handed over.
+    fn reopen_from_the_first_live_records_pages(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        first: u64,
+        p: Handle<Party>,
+    ) -> (Option<(Phase, bool)>, std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.durable_obs_seq(), first - 1, "the pages of that save");
+        let paged = party(&e, p);
+        hand_over_all(&mut j);
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        (paged, e, j)
+    }
+
+    /// RP-42: the budget's own save waits for the replay end too. A conflict under a small row
+    /// budget, 200 camps found after its last save and 4,000 fillers behind them, then a crash;
+    /// the next session replays them over several hand-overs. The camps' rows are new, so every
+    /// resident row page is dirty and over the budget from the first hand-over on: no save is
+    /// taken until the replay end, and the resident peak passes the budget by the replay's rows
+    /// until then; after it, a budget save comes and the rows go back under their budget.
+    #[test]
+    fn a_long_replay_takes_no_budget_save_before_its_end() {
+        use std::sync::atomic::Ordering::Acquire;
+        let budget = 4 * 1024;
+        let dir = tmpdir("conflict-rp42-budget");
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.idle();
+        save(&e, &mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let structure = j.dict_id(wire::DICT_STRUCTURE, "goblinstyranny:goblin_camp");
+        for i in 0..200 {
+            j.conflict_obs(&O::FactionFound(cb::FactionFound {
+                faction: CAMP + 1 + i,
+                flags: 0,
+                dimension: dim,
+                structure,
+                pos: (CAMP_AT.0 + 400 * i as i32, 64, CAMP_AT.1),
+                home_bodies: 0,
+                census: 0,
+            }));
+        }
+        fillers(&mut j, 4_000);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let (pressure, saves) = (
+            e.stats.pressure_saves.load(Acquire),
+            e.stats.saves_done.load(Acquire),
+        );
+        let total = e.with_conflict(|c, _| c.budget());
+        let (mut peak, mut hand_overs) = (0, 0);
+        while replay_counts(&e).0 == 0 {
+            assert!(hand_overs < 64, "the replay never ended");
+            j.flush();
+            hand_overs += 1;
+            peak = peak.max(e.with_conflict(|c, _| c.resident_bytes()));
+            if replay_counts(&e).0 == 0 {
+                assert_eq!(
+                    e.stats.pressure_saves.load(Acquire),
+                    pressure,
+                    "no budget save while replaying (hand-over {hand_overs})"
+                );
+            }
+        }
+        assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        assert_eq!(
+            e.stats.saves_done.load(Acquire),
+            saves,
+            "no save while replaying"
+        );
+        assert!(
+            peak > total,
+            "over the budget while replaying: {peak} B of {total} B"
+        );
+        for _ in 0..8 {
+            j.idle();
+        }
+        let resident = e.with_conflict(|c, _| c.resident_bytes());
+        let after = e.stats.pressure_saves.load(Acquire);
+        eprintln!(
+            "a replay of {hand_overs} hand-overs under {total} B: rows {peak} B at peak while \
+             replaying, {resident} B after; {} budget saves after the replay end",
+            after - pressure
+        );
+        assert!(after > pressure, "the budget saved after the replay end");
+        assert!(
+            resident <= total,
+            "the rows back under their budget: {resident} B of {total} B"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-42: a clean close while the replay runs takes no page either: the pages stay as they
+    /// were, and the next start replays the whole tail again.
+    #[test]
+    fn a_close_while_replaying_keeps_the_pages() {
+        let (dir, e, mut j) = camp("conflict-rp42-close");
+        save(&e, &mut j);
+        let pages = e.durable_obs_seq();
+        fillers(&mut j, 4_000);
+        j.idle();
+        let gt = j.game_time;
+        let tail = j.journal.iter().filter(|(s, _)| *s > pages).count() as u64;
+        let saved = j.crash();
+
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved.clone());
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.flush();
+        assert_eq!(replay_counts(&e).0, 0, "still replaying");
+        assert!(e.stats_array()[4] > pages, "some of the tail replayed");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.durable_obs_seq(), pages, "the pages as they were");
+        hand_over_all(&mut j);
+        assert_eq!(
+            replay_counts(&e),
+            (1, 1, tail),
+            "the whole tail replayed again"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-42 (the fix round's item 1): a fight kept in the pages (Fighting at the save), a crash,
+    /// and a next session whose Java asks for a save through its last replayed record, taken at
+    /// its first record. The pages must hold the state after the replay end: the fight Waiting,
+    /// abstract. The session goes on (no player: the band waits out its fight, `wait_over`, and
+    /// walks home), journals past that and crashes. The restart from those pages must end where
+    /// the session that went on did. With the save before the replay end the pages kept the
+    /// fight Fighting and embodied, and the restart ended it with `end_fight`, an observed fight
+    /// the session that went on never had.
+    #[test]
+    fn a_save_at_the_first_live_record_keeps_a_kept_fight_waiting() {
+        let (dir, e, mut j) = camp("conflict-rp42-fight");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        save(&e, &mut j);
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Fighting, true)),
+            "fighting at the crash"
+        );
+        let observed_before = observed(&e);
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        // The next session: the player has gone.
+        let (e, mut j, first) = reopen_saving_at_the_first_live_record(&dir, saved, gt, vec![]);
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Waiting, false)),
+            "abstract after the replay"
+        );
+        advance_until(&mut j, 100, 2 * DAY, "the band home", |j| {
+            party(&j.e, p).is_none()
+        });
+        fillers(&mut j, 20);
+        j.game_time += 600;
+        j.idle();
+        let live = (observed(&e), pool(&e));
+        assert_eq!(
+            live.0, observed_before,
+            "a Waiting fight ends as no observed fight"
+        );
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (paged, e, j) = reopen_from_the_first_live_records_pages(&dir, saved, gt, first, p);
+        assert_eq!(
+            paged,
+            Some((Phase::Waiting, false)),
+            "the pages hold the fight as the replay end left it"
+        );
+        assert!(party(&e, p).is_none(), "the band is home");
+        assert_eq!(
+            (observed(&e), pool(&e)),
+            live,
+            "the restart ends where the session that went on did"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-42: a raid that reaches its target, unwatched, inside the replayed window is held until
+    /// the replay end (§6.1), and Java asks for a save through the last replayed record, taken
+    /// at the session's first record. The session goes on: the held arrival runs as live (no one
+    /// watches: resolved, and the band walks home) while the player stands at the target, then
+    /// a crash. The restart from those pages holds the arrival again while it replays (the
+    /// pages kept its poll) and runs it after its replay end: the band is never read as
+    /// fighting at its target, and its books end as in the session that went on. A band going
+    /// home is never seen (`seen`), so no record of a sighting can follow a held raid's
+    /// arrival to be read as its fight.
+    #[test]
+    fn a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight() {
+        let (dir, e, mut j) = camp("conflict-rp42-held");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        // The player leaves, and its last report goes stale: no one sees the band leave.
+        j.players.clear();
+        j.game_time += 2_500;
+        j.idle();
+        let target = (CAMP_AT.0 + 600, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, target);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid on its way", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Out, false)),
+            "abstract on its way"
+        );
+        save(&e, &mut j);
+        advance_until(
+            &mut j,
+            100,
+            3 * DAY,
+            "the raid arrived and going home",
+            |j| party(&j.e, p).is_some_and(|x| x.0 == Phase::Home),
+        );
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let at_target = [f64::from(target.0) + 0.5, 64.0, f64::from(target.1) + 0.5];
+        let players = vec![(PLAYER, dim, at_target)];
+        let (e, mut j, first) = reopen_saving_at_the_first_live_record(&dir, saved, gt, players);
+        let live_arrival = e.conflict_stats().0.raids_watched;
+        advance_until(&mut j, 20, DAY, "the held arrival run as live", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        let watched = e.conflict_stats().0.raids_watched;
+        assert_eq!(
+            watched, live_arrival,
+            "the held arrival resolved, unwatched"
+        );
+        let live = books(&e, p).0;
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (paged, e, mut j) = reopen_from_the_first_live_records_pages(&dir, saved, gt, first, p);
+        assert!(
+            paged.is_some_and(|x| x.0 == Phase::Out),
+            "the pages hold the held arrival on its last segment: {paged:?}"
+        );
+        advance_until(&mut j, 20, DAY, "the arrival run after the replay", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        assert_eq!(e.conflict_stats().0.raids_watched, watched, "no fight read");
+        assert_eq!(
+            books(&e, p).0,
+            live,
+            "the band's books as in the session that went on"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
 }
 
 /// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine

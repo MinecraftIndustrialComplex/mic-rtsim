@@ -1038,6 +1038,21 @@ conservative option at its fork.
   its raw value and time (the closed form alone does not show when the band came home). The crate
   tests that called `session_start` call `begin_replay(true)`, and `replay_done` where they wanted
   the old reset's effects; `boundary::tests::cmds` is `pub(crate)` for the gate's table test.
+- **RP-42** (no save while replaying; §2.2, §3.2; the fix round's item 1): `journaled()` ends the
+  replay before its `save_through` block, so a save due at the first live record is taken after
+  `replay_done`. Beyond the brief's two paths, every path that takes pages waits while replaying:
+  the step end's `SaveAtNextStep`, a `save_through` already due, and `close(save = true)`, which
+  keeps the pages as they were (they were taken mid-replay before: durable 1025, want 2). A request
+  made while replaying is taken at the first journaled record or step end after the replay end. The
+  budget save waits too, so the resident rows may pass the budget by what the replay's hand-overs
+  change: 56,792 B at the peak against 4,096 B over 5 hand-overs, 2,680 B after the end's budget save.
+  Real Java asks for a save through `nextObsSeq - 1`, which is at or past its session's JOURNAL_GEN,
+  so a bridge that names its generation never asks below `session_first`; the ordering case needs a
+  bridge that names none (a level save before the session's first record) or a direct request, which
+  the tests use. A held raid is not read as a fight on either code: a band at home is never seen, and
+  the pages' held state (out, `seg` one short, the poll pending; `held` is not saved) is the same
+  whether they were taken before or after the replay end, since `replay_done` leaves `seg` and the
+  poll as they are; the test is kept as the control.
 - **RP-43** (§2.5's tests, written by the merger at 96ca2219): tests 1, 2, 3 and 5 sit in rtsim-jni
   tests/protocol.rs's `conflict` module, not tests/reassert.rs, because the camp, raid and band
   helpers they need live there; test 4 (pinnedGen, no conflict state) sits in tests/reassert.rs
