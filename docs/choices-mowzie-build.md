@@ -1192,8 +1192,28 @@ conservative option at its fork.
   `a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save` (20 camps a hand-over
   under 4,096 B, no save asked for): the live peak 5,776 B both times; the replay 28,528 B after
   100 camps and 56,792 B after 200, against the 28,616 B and 56,880 B the same sessions touched
-  with a budget they never reached. The test asserts the bound and the growth. Reported to the
-  build lead as a finding (an excess that is no constant); no fix built.
+  with a budget they never reached. The test asserts the bound and the growth. Reported to the build
+  lead as a finding (an excess that is no constant); no fix built. Amended by the RP-48/RP-49 check
+  (fixes4 items 6 and 7): the window is normally empty or one vanilla autosave interval (Java asks
+  for a save on every overworld `LevelEvent.Save`, BridgeEvents.java:175-186, every 6,000 ticks,
+  scaled by `/tick sprint`; save-off stops the journal write as well); the worst case is every paged
+  row of every module, the old unpaged footprint, and for the camps above only with item 6's bug or
+  the causes RP-55 logs. Item 6's bug: `request_save` replaced a pending request, so an engine that
+  lagged the journal by more than one save interval had its target pushed past it at every world
+  save and took no save at all; fixed in 63d1b4fa, which keeps the oldest pending request. Whose
+  code: 0c66e75c (2026-10-20, "rtsim-jni: the native link crate", an agent session co-authored by
+  Claude Opus 5.5 (1M context)), on main through the overnight/jni merges 3e5a7e0c and 3d47d4e6;
+  d1edb812 only reflowed it. The herds, the largest paged module, do not fit "normally small",
+  measured in `a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save` (128 herds, a 4
+  KiB row budget, 50 transfers a step of 1,200 ticks, no save asked for, a crash): the replay held
+  177,178 B after 2 steps (2,400 ticks, less than one autosave) against 186,606 B unpaged, and
+  191,730 B against 203,970 B after 80 steps; the live peak under the budget was 1,232 B or 95,540 B
+  (2 steps) and 1,400 B or 103,406 B (80), by when the IO lane's saves came back, so it is printed,
+  not asserted. A herd page holds 32 herds and the herds move every step, so any window touches
+  nearly every page: the herd replay is near the unpaged footprint in a normal window, not only in
+  the bad cases. Also seen, cause not traced: every start loads every herd page before its first
+  step (163,314 B in 4 loads here), clean, evicted at the first step, a full-footprint peak at each
+  start, crash or not. Both reported to the build lead; no fix built.
 - **RP-50** (a copy whose op id was heard; §2.3; SEC-1's meeting-point review, item 2): in
   `reasserted()` the copy bit is set and `copies_applied` counted only on `admit_copy`'s Apply. A
   new copy whose op id the engine already heard (generation 0 is new each time) is dispatched as
@@ -1248,3 +1268,19 @@ conservative option at its fork.
   echoed flag could go there as well. A replayed refusal of a newer epoch for a party not held
   raises no epoch floor, so the next decision after the replay can take the refused epoch again
   (reported, not changed). The sims are unchanged.
+- **RP-55** (the replay window's growth, logged; §3.2; RP-49; fixes4 item 7): the engine logs a
+  warning, and counts it in `Stats::window_grew` (a test hook, not in Java's array), each time the
+  next start's replay window grows past one save interval: a save Java asked for that is not made
+  (the IO lane refuses it, the poisoned store does not reopen, a stale save built before a failed
+  one, the page index unread, the commit fails); an engine that stops simulating (a step's error or
+  panic: no save until the next start); and a replayed JOURNAL_GEN from before this session's first
+  observation that admits as new (an earlier session started past the pages and ended with no save:
+  a crash, or a close, before its replay end or its first save, §6.1's "More than one crash"). The
+  line names the cause and the last durable observation. A budget's save that fails is not logged:
+  it is a pending generation, which a crash rolls back anyway. A close while replaying (RP-42) logs
+  nothing itself; the next start's JOURNAL_GEN line covers it. The tests read the counter, since
+  `log_warn` goes to the host's ring, which drops lines when full. Failing first, the counter's
+  increment cut: `an_engine_failure_publishes_empty_buffers_flagged_failed` 0 against 1,
+  `a_save_failing_partway_costs_that_save_not_the_engine` (TornLog) 0 against 1 (one failure and no
+  stale refusal that run), both `a_held_arrival_across_a_second_*` tests 0 against 1 in S2 (S1
+  asserts 0).

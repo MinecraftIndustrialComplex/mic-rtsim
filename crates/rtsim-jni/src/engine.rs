@@ -122,6 +122,11 @@ pub const GEN_TABLE: u16 = 2;
 /// this bit with the session's first sequence.
 const UNNAMED_GEN: u64 = 1 << 63;
 
+/// [`Engine::window_grows`]'s reasons: a save Java asked for that failed, and an engine failure.
+const NOT_MADE: &str = "a save Java asked for was not made";
+const STOPPED: &str =
+    "the engine stopped simulating and takes no save for the rest of this session";
+
 fn gen_key(k: usize) -> PageKey {
     PageKey::new(GEN_TABLE, k as u64)
 }
@@ -333,6 +338,11 @@ pub struct Stats {
     /// in the engine's state (not new, or new with an op id it heard: RP-50). Not in Java's array.
     pub copies_applied: AtomicU64,
     pub copies_dropped: AtomicU64,
+    /// Lines logged that the replay window grows past one save interval
+    /// ([`Engine::window_grows`], RP-49): a save Java asked for that was not made, a replayed
+    /// session that ended with no such save, an engine that stopped simulating. Not in Java's
+    /// array.
+    pub window_grew: AtomicU64,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -944,6 +954,18 @@ impl Engine {
         self.protocol_error.publish(Some(msg));
     }
 
+    /// Logs that the replay window grows (docs/replay-gate.md §3.2, RP-49): the journal past
+    /// the last durable save, which the next start replays taking no page, holding every row it
+    /// touches. Normally it is one vanilla autosave interval at most; `why` says what made it
+    /// longer.
+    fn window_grows(&self, why: &str) {
+        self.stats.window_grew.fetch_add(1, Ordering::AcqRel);
+        log_warn(&format!(
+            "the replay window grows: {why}; a start now replays the journal past observation {}, every row it touches resident until its end",
+            self.durable.load(Ordering::Acquire)
+        ));
+    }
+
     // ---- start ----------------------------------------------------------------------------------
 
     /// Loads the pages and zeroes the buffers. Returns `(pagesObsSeq, nextCmdSeq)`.
@@ -1246,15 +1268,21 @@ impl Engine {
         }
     }
 
-    fn spawn_io(&self, f: impl FnOnce() + Send + 'static) {
+    /// Runs `f` on the IO lane. False if the lane refused it (a save failure).
+    fn spawn_io(&self, f: impl FnOnce() + Send + 'static) -> bool {
         match self.cfg.exec {
             Exec::Host => {
                 if let Err(e) = rt::io(f) {
                     self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
                     log_error(&format!("the IO lane refused a save: {e}"));
+                    return false;
                 }
+                true
             }
-            Exec::Inline => f(),
+            Exec::Inline => {
+                f();
+                true
+            }
         }
     }
 
@@ -1274,6 +1302,7 @@ impl Engine {
                     self.set_protocol_error(format!(
                         "step {h}: {e}; the engine stops simulating for this session"
                     ));
+                    self.window_grows(STOPPED);
                     self.publish_empty(h);
                 }
                 Err(p) => {
@@ -1286,6 +1315,7 @@ impl Engine {
                     self.set_protocol_error(format!(
                         "step {h} panicked: {msg}; the engine stops simulating for this session"
                     ));
+                    self.window_grows(STOPPED);
                     self.publish_empty(h);
                 }
             }
@@ -1745,6 +1775,14 @@ impl Engine {
         let nonce = wire::u64_at(rec.bytes, obs::journal_gen::GEN);
         let verdict = self.admitted(st, seq, |r| r.admit_gen(ObsSeq(seq), nonce));
         Self::log_received(st, h, rec, seq, verdict == Verdict::AlreadyApplied);
+        if seq < st.session_first && verdict == Verdict::Apply {
+            // An earlier session's start past the pages: it ended with no save the pages took
+            // (a crash, or a close, before its replay end or its first save), so this replay
+            // holds its records too (§6.1's "More than one crash").
+            self.window_grows(&format!(
+                "the replayed journal holds the start of a session that ended with no save (generation {nonce:#x}, observation {seq})"
+            ));
+        }
         match verdict {
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1889,7 +1927,9 @@ impl Engine {
     fn save_now(self: &Arc<Self>, st: &mut State, pending: bool) {
         let save = self.take_save(st, pending);
         let this = Arc::clone(self);
-        self.spawn_io(move || this.commit(save));
+        if !self.spawn_io(move || this.commit(save)) && !pending {
+            self.window_grows(NOT_MADE);
+        }
     }
 
     /// One save's pages, taken at this step boundary on the step thread.
@@ -1986,10 +2026,18 @@ impl Engine {
             self.dead.store(true, Ordering::Release);
             return;
         }
+        // A save Java asked for that is not made: the window grows (RP-49). A budget's save
+        // is a pending generation, which a crash rolls back anyway.
+        let lost = || {
+            if !pending {
+                self.window_grows(NOT_MADE);
+            }
+        };
         // A store poisoned by a failed write reopens from its files before this save writes to it
         // (LP10); the events above went first either way.
         if !recover_store(store) {
             self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
+            lost();
             return;
         }
         if stale {
@@ -1999,6 +2047,7 @@ impl Engine {
             log_warn(
                 "a save taken before an earlier one failed is not made; the next save writes the pages again",
             );
+            lost();
             return;
         }
         batch.put(KEY_META, &meta);
@@ -2023,6 +2072,7 @@ impl Engine {
                 log_error(&format!(
                     "saving the engine pages failed: the page index: {e}"
                 ));
+                lost();
                 return;
             }
         };
@@ -2061,6 +2111,7 @@ impl Engine {
                 self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
                 log_error(&format!("saving the engine pages failed: {e}"));
                 recover_store(store);
+                lost();
             }
         }
     }

@@ -664,6 +664,7 @@ fn a_new_transfer_after_a_crash_never_reuses_an_op_id() {
 
 #[test]
 fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
+    use std::sync::atomic::Ordering::Acquire;
     let dir = tmpdir("fail");
     let e = engine(&dir, wire::MIN_CAPACITY);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -671,6 +672,11 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
     e.order(vec![Order::Fail]).unwrap();
     j.run_until("the FAILED flag", |j| j.failed_seen);
     assert!(e.protocol_error().is_some_and(|m| m.contains("panicked")));
+    assert_eq!(
+        e.stats.window_grew.load(Acquire),
+        1,
+        "the failure logs that the replay window grows (RP-49)"
+    );
     // The bridge is never left waiting: steps keep publishing.
     let before = j.submitted;
     j.idle();
@@ -685,6 +691,7 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
 #[test]
 fn a_save_failing_partway_costs_that_save_not_the_engine() {
     use rtsim_kernel::page::Fault;
+    use std::sync::atomic::Ordering::Acquire;
     for fault in [Fault::TornLog, Fault::BeforeCleanup] {
         let dir = tmpdir(&format!("poisoned-{fault:?}"));
         let e = engine(&dir, wire::MIN_CAPACITY);
@@ -744,6 +751,11 @@ fn a_save_failing_partway_costs_that_save_not_the_engine() {
             e.stats_array()[15],
             1 + refused,
             "{fault:?}: one failure, and {refused} stale save(s) refused after it"
+        );
+        assert_eq!(
+            e.stats.window_grew.load(Acquire),
+            1 + refused,
+            "{fault:?}: each save asked for and not made logs that the replay window grows (RP-49)"
         );
         assert!(
             e.protocol_error().is_none(),
@@ -3240,6 +3252,87 @@ mod herds {
             store.confirmed(),
             "the start rolled the pending generations back"
         );
+    }
+
+    /// RP-49 for the herds (fixes4 item 7), the largest paged module: 128 herds under a 4 KiB
+    /// row budget, a save, then `steps` steps of 1,200 ticks with the herds moving on, 50
+    /// transfers journaled a step, no save asked for, and a crash. Returns the live session's
+    /// resident row peak, the same session's with a budget it never reaches (every herd row
+    /// resident: the unpaged footprint), and the replay's peak after the crash, under the budget.
+    fn the_replays_herd_peak_against_the_live_sessions(name: &str, steps: u64) -> [usize; 3] {
+        use std::sync::atomic::Ordering::Acquire;
+        const BUDGET: usize = 4 * 1024;
+        let live = |dir: &std::path::PathBuf, budget: usize| {
+            let e = engine_with(dir, 256 * 1024, |c| c.row_budget = budget);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            found_many(&e, &mut j, 128);
+            save(&e, &mut j);
+            let durable = e.durable_obs_seq();
+            let mut peak = 0;
+            for i in 0..steps * 50 {
+                j.transfer(wire::JAVA_OP_BIT | (i + 1), 1, 2, 1);
+                if (i + 1) % 50 == 0 {
+                    j.game_time += 1_200;
+                    j.idle();
+                    peak = peak.max(e.with_herds(|h, _| h.rows_resident_bytes()));
+                }
+            }
+            assert_eq!(e.durable_obs_seq(), durable, "no save asked for");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let pressure = e.stats.pressure_saves.load(Acquire);
+            let gt = j.game_time;
+            (peak, pressure, gt, j.crash())
+        };
+        let (unpaged, pressure, _, _) = live(&tmpdir(&format!("{name}-unpaged")), 1 << 30);
+        assert_eq!(pressure, 0, "a budget the session never reaches");
+        let dir = tmpdir(name);
+        let (peak, pressure, gt, saved) = live(&dir, BUDGET);
+        assert!(
+            pressure > 0,
+            "the live session's budget took saves of its own"
+        );
+
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| c.row_budget = BUDGET);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let mut replay = 0;
+        for hand_overs in 0.. {
+            assert!(hand_overs < 256, "the replay never ended");
+            if e.stats.replays_ended.load(Acquire) > 0 {
+                break;
+            }
+            j.flush();
+            replay = replay.max(e.with_herds(|h, _| h.rows_resident_bytes()));
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        [peak, unpaged, replay]
+    }
+
+    /// RP-49 for the herds (fixes4 item 7): the replay's resident herd rows are the pages the
+    /// crashed session touched since its last durable save, bounded by the unpaged footprint.
+    /// A herd page holds 32 herds and one herd's event dirties it, so a window of two steps
+    /// (2,400 ticks, less than one vanilla autosave interval) already touches nearly every page
+    /// here: the replay holds most of the unpaged footprint, whatever the window's length. The
+    /// live peaks are printed, not asserted: they ride on when the IO lane's saves come back.
+    #[test]
+    fn a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save() {
+        let short = the_replays_herd_peak_against_the_live_sessions("herds-rp49-short", 2);
+        let long = the_replays_herd_peak_against_the_live_sessions("herds-rp49-long", 80);
+        eprintln!("herd row bytes [live, unpaged, replay], 2 steps: {short:?}; 80 steps: {long:?}");
+        for [live, unpaged, replay] in [short, long] {
+            assert!(
+                replay <= unpaged,
+                "the replay holds no more than the unpaged footprint: {live} {unpaged} {replay}"
+            );
+        }
+        assert!(
+            short[2] * 2 > short[1],
+            "two steps touch most of the herd pages: {short:?}"
+        );
+        assert!(long[2] >= short[2], "{short:?} {long:?}");
     }
 
     /// The herds through the native engine and a fake vanilla herd adapter (rtsim-ecology's
@@ -7611,6 +7704,7 @@ mod conflict {
     /// the hold's slack, RP-48), its books as in S0. What is lost is time: the arrival resolves
     /// after S2's replay end, not at its tick in S0.
     fn a_held_arrival_across_a_second_session(name: &str, clean: bool) {
+        use std::sync::atomic::Ordering::Acquire;
         let resolved = |e: &Engine| {
             e.conflict_log(true)
                 .iter()
@@ -7660,6 +7754,11 @@ mod conflict {
         assert_eq!(party(&e, p), Some((Phase::Out, false)), "held in S1");
         assert_eq!(resolved(&e), 0, "S1 resolves nothing");
         fillers(&mut j, 20);
+        assert_eq!(
+            e.stats.window_grew.load(Acquire),
+            0,
+            "S0 saved, so S1's window is S0's tail alone (RP-49)"
+        );
         let gt = j.game_time;
         let saved = if clean {
             let saved = j.world_save();
@@ -7681,6 +7780,11 @@ mod conflict {
         hand_over_all(&mut j);
         // All but S1's JOURNAL_GEN, which is never dispatched.
         assert_eq!(replay_counts(&e), (1, 1, tail - 1), "S0's and S1's records");
+        assert_eq!(
+            e.stats.window_grew.load(Acquire),
+            1,
+            "S1 ended with no save, so S2's window holds its records too: logged (RP-49)"
+        );
         advance_until(&mut j, 20, DAY, "the arrival run after S2's replay", |j| {
             party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
         });

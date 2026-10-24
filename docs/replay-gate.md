@@ -413,7 +413,17 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
   by the window's rows less the budget, which grows with the window: not a constant. Measured in
   `a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save` (20 camps found a
   hand-over under a 4,096 B budget, no save asked for): live 5,776 B at the peak in both; replayed
-  28,528 B after 100 camps (the session touched 28,616 B), 56,792 B after 200 (56,880 B).
+  28,528 B after 100 camps (the session touched 28,616 B), 56,792 B after 200 (56,880 B). Normally
+  the window is empty or one vanilla autosave interval: Java asks for a save on every overworld
+  `LevelEvent.Save` (BridgeEvents.java:175-186; 6,000 ticks, scaled by `/tick sprint`), and save-off
+  stops the journal write too. The worst case is every paged row of every module, the old unpaged
+  footprint: for most modules only after a lost save request (fixed in 63d1b4fa: the oldest pending
+  request is kept) or one of the causes the engine logs (RP-55): a save Java asked for that is not
+  made, an engine that stops simulating, an earlier session past the pages that ended with no save.
+  The herds are the exception: 32 herds a page, every herd moving, so two steps touch nearly every
+  page and their replay holds near their unpaged footprint in any window
+  (`a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save`: 177,178 B against 186,606
+  B after 2,400 ticks).
 
 ### 3.3 How engines see it
 
