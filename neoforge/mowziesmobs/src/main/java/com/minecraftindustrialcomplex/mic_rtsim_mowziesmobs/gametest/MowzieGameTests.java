@@ -795,14 +795,14 @@ public final class MowzieGameTests {
                     chunk[1] = denChunk(level, fx, z);
                     chunk[2] = denChunk(level, dx, z);
                     check("none of the three is declared yet", denAt(ex, z) == null && denAt(fx, z) == null && denAt(dx, z) == null);
-                    dropped[0] = MowzieCamps.dropped;
+                    dropped[0] = MowzieCamps.dropped.get();
                     MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[0], true));
                     for (int i = 0; i < MowzieCamps.QUEUE_CAP + 5; i++)
                         MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[1], true));
                     MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[2], true));
-                    record(test, "flood", "queued " + MowzieCamps.queued() + ", dropped " + (MowzieCamps.dropped - dropped[0]));
+                    record(test, "flood", "queued " + MowzieCamps.queued() + ", dropped " + (MowzieCamps.dropped.get() - dropped[0]));
                     check("the queue stands at its bound (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == MowzieCamps.QUEUE_CAP);
-                    check("the loads past it are counted (" + (MowzieCamps.dropped - dropped[0]) + ")", MowzieCamps.dropped - dropped[0] == 7);
+                    check("the loads past it are counted (" + (MowzieCamps.dropped.get() - dropped[0]) + ")", MowzieCamps.dropped.get() - dropped[0] == 7);
                 })
                 .thenWaitUntil(() -> check("drained (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == 0))
                 .thenExecute(() -> {
@@ -818,7 +818,7 @@ public final class MowzieGameTests {
                     Camps.Site d = denAt(dx, z), e = denAt(ex, z);
                     check("the dropped den is found at its next load, and late: its chunk had loaded before", d != null && d.late());
                     check("the first den's late flag is the one it was found with", e != null && !e.late());
-                    check("no more drops (" + (MowzieCamps.dropped - dropped[0]) + ")", MowzieCamps.dropped - dropped[0] == 7);
+                    check("no more drops (" + (MowzieCamps.dropped.get() - dropped[0]) + ")", MowzieCamps.dropped.get() - dropped[0] == 7);
                     check("nothing played for them: no census", !d.in() && !e.in());
                 })
                 .thenSucceed();

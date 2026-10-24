@@ -57,7 +57,9 @@ public final class MowzieCamps {
     private static final AtomicInteger QUEUED = new AtomicInteger();
 
     /** Counters (GameTests, logs). */
-    public static long dens, groves, dropped, noFirepit;
+    public static long dens, groves, noFirepit;
+    /** Records dropped past the queue's bound; atomic, since chunk loads can post from another thread (MZB-599). */
+    public static final AtomicInteger dropped = new AtomicInteger();
 
     /** The records waiting for the end of the tick (GameTests). */
     public static int queued() {
@@ -93,7 +95,7 @@ public final class MowzieCamps {
             return;
         if (QUEUED.incrementAndGet() > QUEUE_CAP) {
             QUEUED.decrementAndGet();
-            dropped++;
+            dropped.incrementAndGet();
             return;
         }
         QUEUE.add(new Loaded(new WeakReference<>(level.getServer()), level.dimension(), !e.isNewChunk(), found));
@@ -125,7 +127,8 @@ public final class MowzieCamps {
     static void clear() {
         QUEUE.clear();
         QUEUED.set(0);
-        dens = groves = dropped = noFirepit = 0;
+        dens = groves = noFirepit = 0;
+        dropped.set(0);
     }
 
     /** A den start's box: its template piece's, else the start's. */

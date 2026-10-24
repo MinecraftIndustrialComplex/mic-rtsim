@@ -1177,6 +1177,11 @@ public final class Camps {
                 answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
                 continue;
             }
+            if (level.getDifficulty() == Difficulty.PEACEFUL) {
+                // no new body appears on Peaceful (MZB-234); decided before the budget is spent (MZB-599)
+                answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
+                continue;
+            }
             boolean wait = now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
             if (wait || !bridge.session().spendSpawnBudget(1)) {
                 held.add(h);
