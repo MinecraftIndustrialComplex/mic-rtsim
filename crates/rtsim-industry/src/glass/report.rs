@@ -4,6 +4,8 @@
 //! number is docs/industry-boundary.md §9.3). Operators read it through `/rtsim district` and the
 //! server log, GameTests through the JNI inspection call; nothing in the world shows it (I18).
 
+use crate::ids::BlockPos;
+
 /// How a good's prediction is judged (docs/industry-boundary.md §9.3).
 pub mod class {
     /// Every rule on its paths is exact: judged against `in_l - out_l`.
@@ -74,8 +76,11 @@ pub mod discard {
     pub const RECOMPILE: u32 = 6;
     /// A session start.
     pub const SESSION: u32 = 7;
+    /// A station's call that moved cargo no one measured (IND_DISCARD `Other` from a train,
+    /// SECTIONS.md §3.6): the units its last ports named, and the district's window.
+    pub const STATION: u32 = 8;
     /// Reasons, for array sizes.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
 }
 
 /// A window's verdict for one good or for the whole district.
@@ -174,6 +179,55 @@ pub struct Report {
     /// The district's replay while unloaded (G2).
     pub replay: ReplayReport,
     pub goods: Vec<GoodReport>,
+    /// The judging units, by index; empty with one unit or none (SECTIONS.md §3.4, choice SC74).
+    pub units: Vec<UnitReport>,
+}
+
+/// One judging unit in a [`Report`] (choice SC74).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct UnitReport {
+    /// Its sections.
+    pub sections: u32,
+    /// Its nodes (stores it holds included).
+    pub nodes: u32,
+    /// The box its sections' node boxes span (each grown by one block); None when none has one.
+    pub bbox: Option<(BlockPos, BlockPos)>,
+    /// Its open window's ticks so far (0: none open).
+    pub window_ticks: u64,
+    pub windows_completed: u32,
+    /// Its last concluded window's verdict ([`verdict`]).
+    pub verdict: u32,
+    /// Failed windows in a row.
+    pub strikes: u32,
+    /// A window of it passed on this compile.
+    pub passed: bool,
+    /// An edit inside its box came after that pass (§3.6).
+    pub stale: bool,
+    /// It may replay now (`Compiled::unit_may_replay`).
+    pub may_replay: bool,
+    /// A fallback froze it in the current replay.
+    pub frozen: bool,
+    /// Its goods start unbounded (a black box or a port among its nodes).
+    pub unbounded: bool,
+    /// Its window may open from this tick.
+    pub ready_at: u64,
+}
+
+impl UnitReport {
+    /// The flag bits in slot 13 of [`Report::to_f64s`]'s unit tail.
+    pub const PASSED: u32 = 1;
+    pub const STALE: u32 = 2;
+    pub const MAY_REPLAY: u32 = 4;
+    pub const FROZEN: u32 = 8;
+    pub const UNBOUNDED: u32 = 16;
+
+    fn flags(&self) -> u32 {
+        (if self.passed { Self::PASSED } else { 0 })
+            | (if self.stale { Self::STALE } else { 0 })
+            | (if self.may_replay { Self::MAY_REPLAY } else { 0 })
+            | (if self.frozen { Self::FROZEN } else { 0 })
+            | (if self.unbounded { Self::UNBOUNDED } else { 0 })
+    }
 }
 
 /// Which model replays a district while it is unloaded (`ReplayReport::model`).
@@ -210,7 +264,9 @@ pub struct ReplayReport {
 /// Values per good in [`Report::to_f64s`].
 pub const GOOD_STRIDE: usize = 16;
 /// Values before the first good in [`Report::to_f64s`].
-pub const HEADER: usize = 41;
+pub const HEADER: usize = 42;
+/// Values per unit in [`Report::to_f64s`]'s tail.
+pub const UNIT_STRIDE: usize = 15;
 
 fn opt(x: Option<u64>) -> f64 {
     x.map_or(-1.0, |v| v as f64)
@@ -223,7 +279,7 @@ fn idx(x: u32) -> f64 {
 impl Report {
     /// The flat form the JNI inspection call returns (`NativeEngine.glassReport`); -1 is "none":
     ///
-    /// - header (41): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
+    /// - header (42): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
     ///   6 window start tick, 7 window ticks done, 8 window ticks target, 9 windows completed,
     ///   10 verdict, 11 strikes, 12 goods, 13 solves, 14 demoted kinds, 15 latency ticks,
     ///   16 accepted at (tick), 17 ready at (tick), 18 sweeps taken, 19 sweeps sampled,
@@ -232,10 +288,15 @@ impl Report {
     ///   26 to 32 discards and skips by reason 1 to 7 (no sweep, dropped records, not live, edit,
     ///   revision, recompile, session start), 33 replay model ([`replay_model`]), 34 replay since
     ///   (tick), 35 regimes entered, 36 breakpoints handled, 37 oscillation fallbacks, 38 cut
-    ///   edges, 39 eligible (0 or 1), 40 learned sources;
+    ///   edges, 39 eligible (0 or 1), 40 learned sources, 41 discards for a station's cargo
+    ///   ([`discard::STATION`]);
     /// - then per good (16): 0 good, 1 class, 2 in L, 3 in U, 4 out L, 5 out U, 6 predicted,
     ///   7 measured, 8 sigma, 9 q, 10 verdict, 11 samples, 12 lo, 13 hi, 14 why ([`why`]),
-    ///   15 why at (a node, or an edge for the edge reasons).
+    ///   15 why at (a node, or an edge for the edge reasons);
+    /// - then the units' count, and per unit ([`UNIT_STRIDE`], choice SC74): 0 sections, 1 nodes,
+    ///   2 has a box (0 or 1), 3 to 5 the box's low corner, 6 to 8 its high corner, 9 open window
+    ///   ticks, 10 windows completed, 11 last verdict, 12 strikes, 13 flags ([`UnitReport`]'s bits:
+    ///   passed, stale, may replay, frozen, unbounded), 14 ready at (tick).
     pub fn to_f64s(&self) -> Vec<f64> {
         let mut v = Vec::with_capacity(HEADER + GOOD_STRIDE * self.goods.len());
         v.extend_from_slice(&[
@@ -266,7 +327,11 @@ impl Report {
             opt(self.last_discard.map(|d| d.0)),
             self.last_discard.map_or(0.0, |d| f64::from(d.1)),
         ]);
-        v.extend(self.discards[1..].iter().map(|&c| c as f64));
+        v.extend(
+            self.discards[1..discard::STATION as usize]
+                .iter()
+                .map(|&c| c as f64),
+        );
         let r = &self.replay;
         v.extend_from_slice(&[
             f64::from(r.model),
@@ -277,6 +342,7 @@ impl Report {
             f64::from(r.cut_edges),
             if r.eligible { 1.0 } else { 0.0 },
             f64::from(r.learned_sources),
+            self.discards[discard::STATION as usize] as f64,
         ]);
         debug_assert_eq!(v.len(), HEADER);
         for g in &self.goods {
@@ -297,6 +363,27 @@ impl Report {
                 g.hi,
                 f64::from(g.why),
                 idx(g.why_at),
+            ]);
+        }
+        v.push(self.units.len() as f64);
+        for u in &self.units {
+            let (lo, hi) = u.bbox.unwrap_or_default();
+            v.extend_from_slice(&[
+                f64::from(u.sections),
+                f64::from(u.nodes),
+                if u.bbox.is_some() { 1.0 } else { 0.0 },
+                f64::from(lo.x),
+                f64::from(lo.y),
+                f64::from(lo.z),
+                f64::from(hi.x),
+                f64::from(hi.y),
+                f64::from(hi.z),
+                u.window_ticks as f64,
+                f64::from(u.windows_completed),
+                f64::from(u.verdict),
+                f64::from(u.strikes),
+                f64::from(u.flags()),
+                u.ready_at as f64,
             ]);
         }
         v
@@ -343,7 +430,7 @@ mod tests {
             revision: 4,
             district_revision: None,
             last_discard: Some((900, discard::DROPPED)),
-            discards: [0, 1, 2, 3, 4, 5, 6, 7],
+            discards: [0, 1, 2, 3, 4, 5, 6, 7, 8],
             replay: ReplayReport {
                 model: replay_model::GLASS,
                 since: Some(5000),
@@ -354,10 +441,25 @@ mod tests {
                 eligible: true,
                 learned_sources: 4,
             },
+            units: vec![UnitReport {
+                sections: 2,
+                nodes: 9,
+                bbox: Some((BlockPos { x: -3, y: 60, z: 4 }, BlockPos { x: 5, y: 64, z: 9 })),
+                window_ticks: 300,
+                windows_completed: 1,
+                verdict: verdict::PASS,
+                strikes: 0,
+                passed: true,
+                stale: false,
+                may_replay: true,
+                frozen: false,
+                unbounded: true,
+                ready_at: 700,
+            }],
             ..Report::default()
         };
         let v = r.to_f64s();
-        assert_eq!(v.len(), HEADER + GOOD_STRIDE);
+        assert_eq!(v.len(), HEADER + GOOD_STRIDE + 1 + UNIT_STRIDE);
         assert_eq!(v[0], 3.0);
         assert_eq!(v[2], 1.0);
         assert_eq!(v[12], 1.0);
@@ -367,12 +469,21 @@ mod tests {
             &[100.0, 1300.0, 9.0, 7.0, 2.0, 2000.0, 4.0, -1.0, 900.0, 2.0]
         );
         assert_eq!(&v[26..33], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert_eq!(&v[33..41], &[2.0, 5000.0, 3.0, 9.0, 1.0, 2.0, 1.0, 4.0]);
+        assert_eq!(&v[33..42], &[2.0, 5000.0, 3.0, 9.0, 1.0, 2.0, 1.0, 4.0, 8.0]);
         assert_eq!(Report::default().to_f64s()[34], -1.0);
         assert_eq!(v[HEADER], 7.0);
         assert_eq!(v[HEADER + 1], 1.0);
         assert_eq!(v[HEADER + 3], 0.1175);
         assert_eq!(v[HEADER + 11], 120.0);
         assert_eq!(&v[HEADER + 12..HEADER + 16], &[0.0625, 0.1175, 2.0, 5.0]);
+        let t = HEADER + GOOD_STRIDE;
+        assert_eq!(v[t], 1.0);
+        assert_eq!(
+            &v[t + 1..],
+            &[
+                2.0, 9.0, 1.0, -3.0, 60.0, 4.0, 5.0, 64.0, 9.0, 300.0, 1.0, 1.0, 0.0, 21.0, 700.0
+            ]
+        );
+        assert_eq!(Report::default().to_f64s().len(), HEADER + 1);
     }
 }

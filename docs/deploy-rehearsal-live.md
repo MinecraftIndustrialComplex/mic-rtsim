@@ -708,6 +708,8 @@ the service is `minecraft-server`, runs as `mcserver` in `/var/lib/mc/server`, h
 with `RestartSec=10`, and the world's `level.dat`, `playerdata/` and `data/*.dat` are readable by
 `mcserver` only. The disk had 347 GB free on 2026-10-21. Never stop the server with `/stop` in
 its console for maintenance: systemd starts it again 10 seconds later. Use `systemctl`.
+The SSH account is in `wheel`, but its sudo needs a password (2026-10-23, DR-0b): run `sudo -n true`
+first, and stop if it asks for one.
 
 ### 8.1 Build on the laptop
 
