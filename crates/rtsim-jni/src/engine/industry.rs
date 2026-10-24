@@ -17,8 +17,8 @@
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
-//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA and
-//! IND_WRITE_PACKAGE stay in the link's outbox from the moment they are written until Java's
+//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA,
+//! IND_WRITE_PACKAGE and IND_WRITE_CHAIN stay in the link's outbox from the moment they are written until Java's
 //! answer is admitted through `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate
 //! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
 //! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
@@ -174,7 +174,7 @@ fn new_seed() -> u64 {
 fn kept(c: &Cmd) -> bool {
     matches!(
         c,
-        Cmd::CarriageDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_)
+        Cmd::CarriageDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_) | Cmd::WriteChain(_)
     )
 }
 
@@ -713,6 +713,7 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
         Cmd::ProbeSet(_) => "IND_PROBE_SET",
+        Cmd::WriteChain(_) => "IND_WRITE_CHAIN",
     }
 }
 
@@ -787,6 +788,10 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
             None
         }
         Cmd::ProbeSet(_) => None,
+        Cmd::WriteChain(p) => {
+            p.goods.goods().for_each(|g| goods(g, &mut names));
+            None
+        }
     };
     names.sort_unstable();
     names.dedup();

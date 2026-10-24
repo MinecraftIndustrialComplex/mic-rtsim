@@ -27,7 +27,6 @@ use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
-use rtsim_kernel::journal::OpId;
 
 use crate::ids::{BlockPos, DistrictId, GoodVec, StoreId};
 use crate::obs::{ChainDirection, ChainPackage, StoreCensus, StoreDecl};
@@ -151,9 +150,10 @@ pub struct PackageStore {
     /// One package's contents toward each frogport (by position), from the last `CHAIN_OUT` routed
     /// there: the replay's room and the engine's writes count packages of it.
     pub batch: BTreeMap<BlockPos, GoodVec>,
-    /// The write in flight toward each frogport (by position): no other is sent until a
-    /// `CHAIN_IN` with its op answers it.
-    pub writing: BTreeMap<BlockPos, OpId>,
+    /// When the engine last wrote toward each frogport (by position): no other write is sent
+    /// there until a `CHAIN_IN` with an op answers it or `chain_write_ticks` pass (Java answers a
+    /// write that fitted nothing with no record).
+    pub writing: BTreeMap<BlockPos, Tick>,
 }
 
 impl PackageStore {
@@ -183,7 +183,9 @@ impl PackageStore {
     }
 
     /// District `d`'s chain link from its frogport (inventory `inventory`) toward the frogport at
-    /// `to` (its own for an import), when both are this store's.
+    /// `to` (its own for an import), when both are this store's and a district has the one at
+    /// `to`: nothing replays a frogport of no district, so nothing would ever draw what an export
+    /// sent there (it waits for the player, as the world's packages do).
     pub fn route(
         &self,
         d: DistrictId,
@@ -193,6 +195,7 @@ impl PackageStore {
     ) -> Option<ChainRoute> {
         let i = self.port_of(d, inventory)?;
         let j = self.index_of(to)?;
+        self.frogports[j].district?;
         let hops = i64::from(self.hops_between(i, j)?);
         let held = self.pools.get(j).map_or(0, |p| p.packages as i64);
         let farthest = (0..self.frogports.len())

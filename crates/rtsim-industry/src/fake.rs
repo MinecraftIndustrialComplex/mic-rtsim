@@ -1417,6 +1417,15 @@ impl FakeWorld {
                 };
                 self.answer(c.op, status);
             }
+            // The fake world has no package stores: a test answers with the `CHAIN_IN` itself.
+            Cmd::WriteChain(c) => {
+                let status = if self.applied.insert(c.op) {
+                    RESULT_APPLIED
+                } else {
+                    RESULT_DUPLICATE
+                };
+                self.answer(c.op, status);
+            }
             Cmd::ProbeSet(p) => self.probes.push(p),
         }
     }

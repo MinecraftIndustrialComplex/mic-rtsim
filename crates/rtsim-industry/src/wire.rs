@@ -17,7 +17,7 @@ use rtsim_kernel::journal::OpId;
 
 use crate::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    WritePackage,
+    WriteChain, WritePackage,
 };
 use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId};
@@ -91,6 +91,8 @@ pub const IND_CARRIAGE_DELTA: u16 = 0x8401;
 pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
+// 0x8406 is IND_PROBE_SET (glass::codec), 0x8408 slice S3's IND_COUNT_SET; 0x8407 is left free.
+pub const IND_WRITE_CHAIN: u16 = 0x8409;
 
 const OBS_KINDS: [u16; 32] = [
     IND_STOCK_SAMPLE,
@@ -127,11 +129,12 @@ const OBS_KINDS: [u16; 32] = [
     IND_SURVEY_BLOCKS,
 ];
 
-const CMD_KINDS: [u16; 4] = [
+const CMD_KINDS: [u16; 5] = [
     IND_CHUNK_RECONCILE,
     IND_CARRIAGE_DELTA,
     IND_DEPOSIT_DELTA,
     IND_WRITE_PACKAGE,
+    IND_WRITE_CHAIN,
 ];
 
 /// `Option<u32>` inventory index: none.
@@ -1492,6 +1495,18 @@ pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), Wire
             w.goods(&p.goods);
             w.finish()
         }
+        Cmd::WriteChain(p) => {
+            let mut w = W::cmd(out, IND_WRITE_CHAIN, n32(p.goods.len()), cmd_seq);
+            w.put_u64(p.op.0);
+            w.put_u64(p.store.0);
+            w.put_u64(p.district.0);
+            w.put_u32(p.inventory);
+            w.put_u32(p.frogport);
+            w.pos3(p.pos);
+            w.put_u32(p.count);
+            w.goods(&p.goods);
+            w.finish()
+        }
     }
 }
 
@@ -1590,6 +1605,19 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
                 address: r.get_u32(48),
                 count: r.get_u32(52),
                 goods: r.goods(56, n),
+            })
+        }
+        IND_WRITE_CHAIN => {
+            check(kind, size, sized(64, n, 16))?;
+            Cmd::WriteChain(WriteChain {
+                op: OpId(r.get_u64(16)),
+                store: StoreId(r.get_u64(24)),
+                district: r.district(32),
+                inventory: r.get_u32(40),
+                frogport: r.get_u32(44),
+                pos: r.pos3(48),
+                count: r.get_u32(60),
+                goods: r.goods(64, n),
             })
         }
         _ => return Ok(None),
@@ -2267,6 +2295,16 @@ mod tests {
                 count: 4,
                 goods: goods3(),
             }),
+            Cmd::WriteChain(WriteChain {
+                op: ENGINE_OP,
+                store: StoreId(0x0102_0304_0506_0708),
+                district: d,
+                inventory: 7,
+                frogport: 3,
+                pos: BlockPos::new(-11, 70, 12),
+                count: 18,
+                goods: goods3(),
+            }),
         ];
         for reason in [CarriageReason::Exchange, CarriageReason::Loot] {
             v.push(Cmd::CarriageDelta(CarriageDelta {
@@ -2413,6 +2451,7 @@ mod tests {
             Cmd::DepositDelta(_) => 48,
             Cmd::WritePackage(c) => 56 + 16 * c.goods.len(),
             Cmd::ProbeSet(p) => (32 + 4 * p.nodes.len()).div_ceil(8) * 8,
+            Cmd::WriteChain(c) => 64 + 16 * c.goods.len(),
         }
     }
 
@@ -2423,6 +2462,7 @@ mod tests {
             Cmd::DepositDelta(_) => 0x8403,
             Cmd::WritePackage(_) => 0x8404,
             Cmd::ProbeSet(_) => 0x8406,
+            Cmd::WriteChain(_) => 0x8409,
         }
     }
 
