@@ -2,12 +2,17 @@ package com.minecraftindustrialcomplex.mic_rtsim_carryon.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_carryon.MicRtsimCarryOn;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
@@ -15,8 +20,14 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -137,5 +148,166 @@ public final class CarryOnConflictGameTests {
                 })
                 .thenWaitUntil(() -> check("the territory removed", ConflictKit.bridge().territories().get(camp[0]) == null))
                 .thenSucceed();
+    }
+
+    // ---- a camp's body picked up (MOWZIE.md §4.9, M5; the review's missing test) -------------------
+
+    private static final String CAMP_STRUCTURE = "mic_rtsim_carryon:test_camp";
+
+    /**
+     * A stub camp kind: a vindicator is its body (the pickup path is the core's, so any kind will do). It makes
+     * no bodies and holds nothing; the test adopts its one stray by hand.
+     */
+    private static final CampKind STUB_KIND = new CampKind() {
+        @Override
+        public boolean isBody(Entity e) {
+            return e.getType() == EntityType.VINDICATOR;
+        }
+
+        @Override
+        public String bodyName(Entity e) {
+            return ConflictKit.WARRIOR;
+        }
+
+        @Override
+        public boolean isChief(Entity e) {
+            return false;
+        }
+
+        @Override
+        public Chief chief(ServerLevel level, Camps.Site site, List<Entity> footprint) {
+            return Chief.NONE;
+        }
+
+        @Override
+        public Mob make(ServerLevel level, Camps.Site site, String body, int lineFlags, double x, double y, double z, float yaw) {
+            Mob m = EntityType.VINDICATOR.create(level);
+            if (m != null)
+                m.moveTo(x, y, z, yaw, 0f);
+            return m;
+        }
+
+        @Override
+        public Vec3 spawnAt(ServerLevel level, Camps.Site site, String body, int lineFlags) {
+            return null;
+        }
+
+        @Override
+        public boolean holdSpawn(ServerLevel level, Camps.Site site, String body, int lineFlags) {
+            return false;
+        }
+
+        @Override
+        public void joined(Camps.Site site, Mob body) {}
+
+        @Override
+        public void copy(Mob from, Mob to) {}
+    };
+
+    /**
+     * A real Carry On pickup (the event Carry On posts before it saves the entity, the path of the test
+     * above) of a body a camp holds: CAMP_DEATH with killer kind taken (aux {@code BY_TAKEN}), the player's
+     * UUID, the body's slot and generation and a Java op id; a record marker where it stood; its camp tag
+     * gone before Carry On saves it, so the saved copy is an ordinary stray (a copy loaded from that
+     * NBT is no camp body); and the discard Carry On does next books no second death. Carry On's own
+     * {@code PickupHandler} cannot run on a GameTest player (its payload send fails on the fake
+     * connection), so the event is the hook, as in the test above.
+     */
+    @GameTest(template = "arena", timeoutTicks = 1200, batch = "carryon_camp", skyAccess = true)
+    public static void aCarryOnPickupOfACampBodyIsItsTakeAndLeavesAStray(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Vec3 c = RtsimTests.centre(helper);
+        int[] base = ConflictKit.farBase();
+        int cx = base[0] >> 4, cz = base[1] >> 4;
+        ServerPlayer player = FakePlayers.add(level, c.add(-3, 0, 0), "carryon-camp");
+        player.setGameMode(GameType.CREATIVE);
+        long[] faction = {0};
+        long[] op = {0};
+        Mob[] body = new Mob[1];
+        Vec3[] spot = new Vec3[1];
+        CompoundTag[] saved = {new CompoundTag()};
+
+        ConflictKit.onEnd(helper, () -> {
+            FakePlayers.remove(player);
+            if (body[0] != null && !body[0].isRemoved())
+                body[0].discard();
+            level.setChunkForced(cx, cz, false);
+        });
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    ConflictKit.releaseFarChunks(level);
+                    level.setChunkForced(cx, cz, true);
+                })
+                .thenWaitUntil(() -> check("the camp's chunk", level.getChunkSource().getChunkNow(cx, cz) != null))
+                .thenExecute(() -> {
+                    double x = cx * 16 + 8.5, z = cz * 16 + 8.5;
+                    spot[0] = new Vec3(x, level.getHeight(Heightmap.Types.MOTION_BLOCKING, (int) x, (int) z), z);
+                    Mob v = EntityType.VINDICATOR.create(level);
+                    v.moveTo(spot[0].x, spot[0].y, spot[0].z, 0f, 0f);
+                    v.setNoAi(true);
+                    check("added", level.addFreshEntity(v));
+                    body[0] = v;
+                    faction[0] = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), CAMP_STRUCTURE, STUB_KIND, BlockPos.containing(spot[0]),
+                            spot[0], 4.0, 0.0, false);
+                    check("the camp is declared", faction[0] != 0);
+                })
+                .thenWaitUntil(() -> check("the first census", !ConflictKit.censuses(faction[0]).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received census = ConflictKit.censuses(faction[0]).get(0);
+                    List<ConflictKit.CensusBody> bodies = ConflictKit.censusBodies(census);
+                    check("the census lists the one stray (" + bodies.size() + ")", bodies.size() == 1
+                            && bodies.get(0).uuid().equals(body[0].getUUID())
+                            && (bodies.get(0).flags() & ConflictRecords.CampCensus.BODY_STRAY) != 0);
+                    op[0] = ConflictKit.newOp();
+                    ConflictKit.reconcile(faction[0], census.view().getLong(ConflictRecords.CampCensus.EPOCH), op[0],
+                            List.of(ConflictKit.CampLine.of(0, 1, ConflictKit.WARRIOR, ConflictRecords.CampReconcile.ADOPT, 0, body[0].getUUID())));
+                })
+                .thenWaitUntil(() -> check("the answer", !ConflictKit.campBodies(faction[0], op[0]).isEmpty()))
+                .thenExecute(() -> {
+                    Map<Integer, Integer> out = ConflictKit.outcomes(faction[0], op[0]);
+                    check("ADOPT is DONE (" + out + ")", out.equals(Map.of(0, ConflictRecords.CampBodies.DONE)));
+                    Mob v = body[0];
+                    CampMember m = RtsimAttachments.campMember(v);
+                    check("tagged (faction, 0, 1)", m != null && m.faction() == faction[0] && m.slot() == 0 && m.generation() == 1);
+                    check("a body a camp holds, no puppet", RtsimApi.isCampBody(v) && !RtsimApi.isPuppet(v));
+                    check("no death yet", ConflictKit.campDeaths(faction[0]).isEmpty());
+
+                    EntityPickupEvent event = NeoForge.EVENT_BUS.post(new EntityPickupEvent(player, v));
+                    check("nobody cancelled the pickup", !event.isCanceled());
+                    check("no longer a camp body", !RtsimApi.isCampBody(v));
+                    CampMember after = RtsimAttachments.campMember(v);
+                    check("its tag is gone", after == null || after.isNone());
+                    check("Carry On's save of it works", v.save(saved[0]) && saved[0].contains("id"));
+                    Entity copy = EntityType.create(saved[0], level).orElse(null);
+                    check("a copy loaded from the saved NBT is no camp body", copy != null && !RtsimApi.isCampBody(copy));
+                    check("still in the world, alive", !v.isRemoved() && v.isAlive());
+                    check("a record marker where it stood", !markers(level, v.position()).isEmpty());
+                    CompoundTag mk = new CompoundTag();
+                    markers(level, v.position()).get(0).saveWithoutId(mk);
+                    check("carrying the records", mk.getCompound("neoforge:attachments").contains("mic_rtsim:pending"));
+                })
+                .thenWaitUntil(() -> check("CAMP_DEATH", ConflictKit.campDeaths(faction[0]).size() == 1))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received d = ConflictKit.campDeaths(faction[0]).get(0);
+                    check("by taken (" + d.aux() + ")", d.aux() == ConflictRecords.BY_TAKEN);
+                    check("by the player", player.getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.KILLER_MOST)));
+                    check("a warrior", d.view().getInt(ConflictRecords.CampDeath.BODY) == ConflictKit.bodyId(ConflictKit.WARRIOR));
+                    check("slot 0, generation 1", d.view().getInt(ConflictRecords.CampDeath.SLOT) == 0
+                            && d.view().getInt(ConflictRecords.CampDeath.GENERATION) == 1);
+                    check("not the chief", (d.view().getInt(ConflictRecords.CampDeath.FLAGS) & ConflictRecords.CampDeath.FLAG_CHIEF) == 0);
+                    check("with a Java op id", (d.view().getLong(ConflictRecords.CampDeath.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    RtsimTests.record("carryon_camp", "pickup", "CAMP_DEATH aux BY_TAKEN by " + player.getUUID()
+                            + ", slot 0 generation 1, a Java op id; the tag gone before the save; a marker carries the records");
+                    body[0].discard(); // Carry On removes what it picked up
+                })
+                .thenIdle(20)
+                .thenExecute(() -> check("the discard booked no second death (" + ConflictKit.campDeaths(faction[0]).size() + ")",
+                        ConflictKit.campDeaths(faction[0]).size() == 1))
+                .thenSucceed();
+    }
+
+    private static List<Marker> markers(ServerLevel level, Vec3 at) {
+        return level.getEntities(EntityType.MARKER, AABB.ofSize(at, 6, 6, 6), e -> e.getTags().contains(RtsimSession.RECORD_MARKER_TAG));
     }
 }
