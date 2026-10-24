@@ -6944,6 +6944,119 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The conflict's resident row bytes in [`the_replays_peak_against_the_live_sessions`]: the
+    /// live session's peak under the budget, the same session's with a budget it never reaches
+    /// (every row it touched since its last durable save resident), and the replay's after a
+    /// crash, under the budget.
+    #[derive(Debug)]
+    struct Peaks {
+        live: usize,
+        touched: usize,
+        replay: usize,
+    }
+
+    /// RP-49 (the re-review's item 2): a conflict under a 4 KiB row budget, a save, then `rounds`
+    /// hand-overs of 20 camps found and 400 fillers each, no save asked for, and a crash. The
+    /// live session's budget takes saves of its own, pending generations that the crash rolls
+    /// back (PF15), so the replay starts from the save before the first round and, taking no
+    /// page until its end (RP-42), holds every row the replayed records touch.
+    fn the_replays_peak_against_the_live_sessions(name: &str, rounds: u64) -> Peaks {
+        use std::sync::atomic::Ordering::Acquire;
+        const BUDGET: usize = 4 * 1024;
+        const PER: u64 = 20;
+        let live = |dir: &std::path::PathBuf, budget: usize| {
+            let e = engine_with(dir, 256 * 1024, |c| c.row_budget = budget);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            j.idle();
+            save(&e, &mut j);
+            let durable = e.durable_obs_seq();
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let structure = j.dict_id(wire::DICT_STRUCTURE, "goblinstyranny:goblin_camp");
+            let mut peak = 0;
+            for i in 0..rounds * PER {
+                j.conflict_obs(&O::FactionFound(cb::FactionFound {
+                    faction: CAMP + 1 + i,
+                    flags: 0,
+                    dimension: dim,
+                    structure,
+                    pos: (CAMP_AT.0 + 400 * i as i32, 64, CAMP_AT.1),
+                    home_bodies: 0,
+                    census: 0,
+                }));
+                if (i + 1) % PER == 0 {
+                    fillers(&mut j, 400);
+                    j.game_time += 100;
+                    j.idle();
+                    peak = peak.max(e.with_conflict(|c, _| c.resident_bytes()));
+                }
+            }
+            assert_eq!(e.durable_obs_seq(), durable, "no save asked for");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let pressure = e.stats.pressure_saves.load(Acquire);
+            let gt = j.game_time;
+            (peak, pressure, gt, j.crash())
+        };
+        let (touched, pressure, _, _) = live(&tmpdir(&format!("{name}-touched")), 1 << 30);
+        assert_eq!(pressure, 0, "a budget the session never reaches");
+        let dir = tmpdir(name);
+        let (peak, pressure, gt, saved) = live(&dir, BUDGET);
+        assert!(
+            pressure > 0,
+            "the live session's budget took saves of its own"
+        );
+
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| c.row_budget = BUDGET);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let mut replay = 0;
+        for hand_overs in 0.. {
+            assert!(hand_overs < 256, "the replay never ended");
+            let replaying = replay_counts(&e).0 == 0;
+            if !replaying {
+                break;
+            }
+            j.flush();
+            replay = replay.max(e.with_conflict(|c, _| c.resident_bytes()));
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Peaks {
+            live: peak,
+            touched,
+            replay,
+        }
+    }
+
+    /// RP-49: the replay's resident peak is bounded by the rows the crashed session touched
+    /// since its last durable save, not by its live peak. Under the budget the live session
+    /// stays near its budget and a step, while the replay holds the whole window, so the replay
+    /// passes the live peak by the window's rows less the budget: twice the window, twice the
+    /// excess and more, not a constant (reported to the build lead as a finding; the window is
+    /// Java's save cadence).
+    #[test]
+    fn a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save() {
+        let short = the_replays_peak_against_the_live_sessions("conflict-rp49-short", 5);
+        let long = the_replays_peak_against_the_live_sessions("conflict-rp49-long", 10);
+        eprintln!("resident row bytes, 100 camps: {short:?}; 200 camps: {long:?}");
+        for p in [&short, &long] {
+            assert!(
+                p.replay <= p.touched,
+                "the replay holds no more than the window's rows: {p:?}"
+            );
+            assert!(
+                p.live < p.touched,
+                "the live session under its budget: {p:?}"
+            );
+        }
+        let (a, b) = (short.replay - short.live, long.replay - long.live);
+        assert!(
+            b > a + (long.touched - short.touched) / 2,
+            "the replay's excess over the live peak grows with the window: {a} B, then {b} B"
+        );
+    }
+
     /// RP-42: a clean close while the replay runs takes no page either: the pages stay as they
     /// were, and the next start replays the whole tail again.
     #[test]
