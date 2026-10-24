@@ -689,6 +689,10 @@ pub struct Conflict {
     /// Not the epoch itself: a party embodied at an older epoch keeps it, so that its records
     /// still find it. Folded into the epochs at the replay end; in memory only.
     pub(crate) floors: BTreeMap<u64, u32>,
+    /// The fill's deaths (docs/replay-gate.md §5.2, RP-22): per party, the bodies of its
+    /// embodied epoch that died in view while replaying, since its previous honoured record.
+    /// The next honoured record of that epoch counts them as placed. In memory only.
+    pub(crate) fill_deaths: BTreeMap<Handle<Party>, u32>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -773,6 +777,7 @@ impl Conflict {
             notice_serial: 0,
             replay_from_pages: false,
             floors: BTreeMap::new(),
+            fill_deaths: BTreeMap::new(),
         }
     }
 
@@ -3934,31 +3939,24 @@ impl Conflict {
         }
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
-        let x = &self.parties[p];
-        let in_mc: u32 = x.spawned.iter().map(|e| e.1).sum();
-        let mut room = self.tun.spawn_quota.saturating_sub(in_mc);
-        let mut stacks = Vec::new();
-        let mut add_spawned = Vec::new();
-        for &(u, n) in &x.units {
-            let already = x.spawned.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
-            let t = n.saturating_sub(already).min(room);
-            if t > 0 {
-                room -= t;
-                stacks.push(boundary::Stack {
-                    body: body_id(&self.cultures, &c.unit(u).body),
-                    count: t,
-                    flags: if x.chief && stacks.is_empty() && x.wave == 0 {
-                        boundary::MEMBER_CHIEF
-                    } else {
-                        0
-                    },
-                });
-                add_spawned.push((u, t));
-            }
-        }
-        if stacks.is_empty() {
+        let fill = self.wave_fill(p, 0);
+        if fill.is_empty() {
             return;
         }
+        let x = &self.parties[p];
+        let stacks: Vec<boundary::Stack> = fill
+            .iter()
+            .enumerate()
+            .map(|(i, &(u, t))| boundary::Stack {
+                body: body_id(&self.cultures, &c.unit(u).body),
+                count: t,
+                flags: if x.chief && i == 0 && x.wave == 0 {
+                    boundary::MEMBER_CHIEF
+                } else {
+                    0
+                },
+            })
+            .collect();
         let here = self.party_pos(p, at);
         // Seen on the march: at the image on the player's side (TP11).
         let here = match w.players.get(&player).and_then(|s| s.pos) {
@@ -4005,16 +4003,45 @@ impl Conflict {
             members: stacks,
         });
         self.outbox.push(cmd);
+        self.place(p, &fill);
+        self.parties[p].wave += 1;
+        self.stats.waves += 1;
+        self.stats.materialized += 1;
+    }
+
+    /// A wave's members (`spawn_wave`'s, and the honour's, docs/replay-gate.md §5.2): the units
+    /// in order, each up to its alive members not placed yet, within the room the quota leaves
+    /// after the bodies in Minecraft by the books (`spawned`) and `dead`, bodies counted as
+    /// placed besides them (the honour's, RP-22; 0 for a live wave).
+    fn wave_fill(&self, p: Handle<Party>, dead: u32) -> Vec<(u8, u32)> {
+        let x = &self.parties[p];
+        let in_mc: u32 = x.spawned.iter().map(|e| e.1).sum();
+        let mut room = self
+            .tun
+            .spawn_quota
+            .saturating_sub(in_mc)
+            .saturating_sub(dead);
+        let mut fill = Vec::new();
+        for &(u, n) in &x.units {
+            let already = x.spawned.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
+            let t = n.saturating_sub(already).min(room);
+            if t > 0 {
+                room -= t;
+                fill.push((u, t));
+            }
+        }
+        fill
+    }
+
+    /// A wave's members are in Minecraft by the books.
+    fn place(&mut self, p: Handle<Party>, fill: &[(u8, u32)]) {
         let x = &mut self.parties[p];
-        for (u, t) in add_spawned {
+        for &(u, t) in fill {
             match x.spawned.iter_mut().find(|e| e.0 == u) {
                 Some(e) => e.1 += t,
                 None => x.spawned.push((u, t)),
             }
         }
-        x.wave += 1;
-        self.stats.waves += 1;
-        self.stats.materialized += 1;
     }
 
     fn wave(&mut self, w: &World, p: Handle<Party>, at: Tick) {
@@ -4662,6 +4689,7 @@ impl Conflict {
                 x.phase = Phase::Waiting;
             }
         }
+        self.fill_deaths.clear();
         // Every party is abstract now: the floors become the epochs, for the pages (§5.3).
         for (agent, floor) in std::mem::take(&mut self.floors) {
             if let Some(p) = Party::of_agent(agent).filter(|p| self.parties.contains(*p)) {
@@ -5234,31 +5262,53 @@ impl Conflict {
         }
     }
 
-    /// A replayed BAND_MATERIALIZED on an engine from its pages (docs/replay-gate.md §5.2, RP-6):
-    /// the party is embodied as the last session had it, without the command, so that the
-    /// records of that body that follow count against it. An epoch at or below the party's
-    /// changes nothing: the pages hold it.
+    /// A replayed BAND_MATERIALIZED on an engine from its pages (docs/replay-gate.md §5.2, RP-6,
+    /// RP-22): the party is embodied as the last session had it, without the command, so that
+    /// the records of that body that follow count against it.
+    ///
+    /// - A newer epoch: the bodies of an older embodied one walk off as its recalled stack
+    ///   (MZB-131; that epoch's records may still come); then the record's epoch, embodied,
+    ///   nothing placed, wave 0, and the record's waves are filled.
+    /// - The same epoch, embodied, at or above the party's `wave`: the waves from the party's
+    ///   to the record's are filled. Below it, or not embodied: nothing (the pages hold that
+    ///   fill, or the body is gone).
+    /// - An older epoch: nothing.
+    ///
+    /// The fill is `spawn_wave`'s ([`Conflict::wave_fill`]), with the deaths in view since the
+    /// party's previous honoured record counted as placed, so that it never places more than
+    /// Java was commanded: the live engine decided the wave before it read those deaths. One
+    /// fill places what the waves from the party's to the record's would: each takes the room
+    /// or the members left, so a second finds neither. Not every alive member: Java's despawn
+    /// counts only the members it was commanded. Then `wave` = the record's + 1.
     fn honour(&mut self, p: Handle<Party>, m: &boundary::BandMaterialized) {
-        let x = &mut self.parties[p];
-        if m.epoch <= x.epoch {
+        let x = &self.parties[p];
+        let newer = m.epoch > x.epoch;
+        let same = m.epoch == x.epoch && x.embodied && u32::from(x.wave) <= m.wave;
+        if !newer && !same {
             return;
         }
-        // The bodies of an older epoch walk off as its recalled stack (MZB-131): that epoch's
-        // records may still come.
-        if x.embodied {
-            x.fold_spawned_into_recalled();
+        let envoy = x.kind == PartyKind::Envoy;
+        // This epoch's deaths since its previous honoured record (none yet for a newer one).
+        let dead = self.fill_deaths.remove(&p).unwrap_or(0);
+        let dead = if newer { 0 } else { dead };
+        if newer {
+            let x = &mut self.parties[p];
+            if x.embodied {
+                x.fold_spawned_into_recalled();
+            }
+            x.epoch = m.epoch;
+            x.embodied = true;
+            x.seen_by = None;
+            x.spawned.clear();
+            x.wave = 0;
         }
-        x.epoch = m.epoch;
-        x.embodied = true;
-        x.seen_by = None;
-        x.spawned.clear();
-        x.wave = 0;
         // An envoy places nothing by the books, as `materialize_envoy` (decided by the
         // coordinator, 2026-10-24).
-        if x.kind != PartyKind::Envoy {
-            x.spawned = x.units.iter().copied().filter(|e| e.1 > 0).collect();
+        if !envoy {
+            let fill = self.wave_fill(p, dead);
+            self.place(p, &fill);
         }
-        x.wave = u16::try_from(m.wave).unwrap_or(u16::MAX).saturating_add(1);
+        self.parties[p].wave = u16::try_from(m.wave).unwrap_or(u16::MAX).saturating_add(1);
     }
 
     /// The player refused the demand or attacked the envoy: unmet now (DEMAND_SETTLED refused),
@@ -5309,6 +5359,11 @@ impl Conflict {
         let t = x.units[k].1.min(cs.count);
         x.units[k].1 -= t;
         let u = x.units[k].0;
+        if in_view && self.outbox.replaying() {
+            // Room the next honoured record of this epoch counts as placed (§5.2, RP-22).
+            *self.fill_deaths.entry(p).or_insert(0) += t;
+        }
+        let x = &mut self.parties[p];
         let stacks = if walk_off {
             x.recalled
                 .iter_mut()
