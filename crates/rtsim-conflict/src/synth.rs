@@ -37,6 +37,9 @@ pub const CAMP_POS: Pos = Pos::new(0, 900, 1000);
 /// The player's refinery district and place.
 pub const REFINERY: DistrictId = DistrictId(1);
 pub const REFINERY_POS: Pos = Pos::new(0, 700, 780);
+/// The key of the player base the scenario's dwell counter marks at the refinery once it is
+/// built (P30: a place a player spends much time is a base, a market node caravans visit).
+pub const REFINERY_BASE: u64 = 0xBA5E_0001;
 /// Where the player logs the Thornwood.
 pub const FOREST_POS: Pos = Pos::new(0, 880, 900);
 /// The scenario player.
@@ -252,6 +255,9 @@ pub struct FakeConflict {
     pub play_notices: bool,
     /// The world's difficulty, sent as DIFFICULTY at each [`FakeConflict::session_start`].
     pub difficulty: u32,
+    /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
+    /// counts, at the recall, first stacks first (0: none; MZB-131).
+    pub walk_off_deaths: u32,
 }
 
 const SYS_FAKE: SystemId = SystemId::named("conflict.fake_plugin");
@@ -273,6 +279,7 @@ impl FakeConflict {
             leave_ticks: 300,
             play_notices: true,
             difficulty: boundary::DIFFICULTY_NORMAL,
+            walk_off_deaths: 0,
         }
     }
 
@@ -506,13 +513,24 @@ impl FakeConflict {
                 if let Some(b) = self.bodies.remove(&r.agent)
                     && b.epoch == r.epoch
                 {
+                    // Some die on the way out: the first stacks lose them first.
+                    let mut dead = self.walk_off_deaths;
+                    let survivors = b
+                        .members
+                        .iter()
+                        .map(|(&k, &v)| {
+                            let lost = v.min(dead);
+                            dead -= lost;
+                            (k, v - lost)
+                        })
+                        .collect();
                     self.push(
                         at + self.leave_ticks,
                         Obs::Dematerialized(boundary::BandDematerialized {
                             agent: r.agent,
                             epoch: r.epoch,
                             reason: 1,
-                            survivors: b.members.iter().map(|(&k, &v)| (k, v)).collect(),
+                            survivors,
                         }),
                     );
                 }
