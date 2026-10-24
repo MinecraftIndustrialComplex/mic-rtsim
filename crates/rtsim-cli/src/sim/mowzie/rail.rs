@@ -183,6 +183,8 @@ struct Trace {
     first_pass: Vec<Option<(f64, f64)>>,
     /// `stats.rail_pushes` at the first hour of day 20.
     pushes_20: u64,
+    /// The most rail events (every `Ev::Rail` pop, live and stale) popped in one whole day.
+    busiest_day: u64,
     c: Conflict,
 }
 
@@ -238,6 +240,7 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
     let mut first_feud = BTreeMap::new();
     let mut first_pass: Vec<Option<(f64, f64)>> = vec![None; spec.dens.len()];
     let mut pushes_20 = None;
+    let (mut pops_before, mut busiest_day) = (0, 0);
     let infra = &mut NoInfrastructure;
     for (t, what) in timeline {
         c.run_until(&mut w, infra, t);
@@ -269,6 +272,11 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
             },
             At::Hour => {
                 let day = t.0 as f64 / DAY;
+                if t.0 % TICKS_PER_DAY == 0 {
+                    let pops = c.stats.rail_wakes + c.stats.rail_stale;
+                    busiest_day = busiest_day.max(pops - pops_before);
+                    pops_before = pops;
+                }
                 for (i, f) in fid.iter().enumerate() {
                     let Some(f) = f else { continue };
                     for (j, a) in actors.iter().enumerate() {
@@ -314,6 +322,7 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
         first_feud,
         first_pass,
         pushes_20: pushes_20.unwrap_or(c.stats.rail_pushes),
+        busiest_day,
         c,
     }
 }
@@ -401,6 +410,8 @@ struct Sweep {
     pushes: u64,
     /// Every rail event popped, live and stale, a day.
     wakes_per_day: f64,
+    /// The most any seed popped in one whole day (not a median: a slow burst is one seed's one day).
+    busiest_day: u64,
     first: Trace,
 }
 
@@ -409,6 +420,7 @@ fn sweep(spec: &Spec, den: usize, owner: usize, settle: (f64, f64)) -> Sweep {
     let mut all = Vec::new();
     let mut pushes = Vec::new();
     let mut wakes = Vec::new();
+    let mut busiest_day = 0;
     let mut first = None;
     let mut inv_rule = true;
     for k in 0..SEEDS {
@@ -419,6 +431,7 @@ fn sweep(spec: &Spec, den: usize, owner: usize, settle: (f64, f64)) -> Sweep {
         all.push(m);
         pushes.push(tr.pushes_20 as f64);
         wakes.push((tr.c.stats.rail_wakes + tr.c.stats.rail_stale) as f64 / spec.days as f64);
+        busiest_day = busiest_day.max(tr.busiest_day);
         if first.is_none() {
             first = Some(tr);
         }
@@ -438,6 +451,7 @@ fn sweep(spec: &Spec, den: usize, owner: usize, settle: (f64, f64)) -> Sweep {
         inv_rule,
         pushes: median(pushes) as u64,
         wakes_per_day: median(wakes),
+        busiest_day,
         first: first.expect("a seed"),
     }
 }
@@ -596,6 +610,12 @@ pub fn meter(out: &mut Vec<Check>) {
                 row.legs, s.wakes_per_day
             ),
         );
+        check(
+            out,
+            WAKES_DAY_CHECK,
+            s.busiest_day <= WAKES_DAY_MAX,
+            format!("{}: busiest day {} pops", row.legs, s.busiest_day),
+        );
         pops.push(s.wakes_per_day);
     }
     // The pops do not grow with the rate: the busiest line's figure against the next busiest's.
@@ -622,6 +642,12 @@ pub fn meter(out: &mut Vec<Check>) {
         s.wakes_per_day <= WAKES_MAX,
         format!("{}: {:.2} pops a day", TRUNK.legs, s.wakes_per_day),
     );
+    check(
+        out,
+        WAKES_DAY_CHECK,
+        s.busiest_day <= WAKES_DAY_MAX,
+        format!("{}: busiest day {} pops", TRUNK.legs, s.busiest_day),
+    );
 }
 
 /// The most rail events (every `Ev::Rail` pop, live and stale) a meter takes a day, at every rate
@@ -632,6 +658,11 @@ const WAKES_MAX: f64 = 6.5;
 /// The busiest line's pops against the next busiest's: no growth with the rate (MZB-385).
 const WAKES_GROWTH: f64 = 1.1;
 const WAKES_CHECK: &str = "a meter takes at most 6.5 rail pops a day, stale pops counted";
+/// The most rail events a meter takes in one whole day, of any of the 8 seeds, in a run (MZB-385):
+/// a mean over a run hides a slow burst. Measured on run 1's four rates (4, 10, 7 and 9), its
+/// trunk (14) and run 2's cut and stopped services (8 and 8); 20 is 1.4 times the highest.
+const WAKES_DAY_MAX: u64 = 20;
+const WAKES_DAY_CHECK: &str = "a meter takes at most 20 rail pops on its busiest day";
 
 /// The first day at or after `from` the feud's grievance is under `g`.
 fn under(s: &[Pt], from: f64, g: f64) -> Option<f64> {
@@ -681,6 +712,8 @@ pub fn cut(out: &mut Vec<Check>) {
         let mut peaks = Vec::new();
         let mut peak_days = Vec::new();
         let mut repeat = Vec::new();
+        let mut pops = Vec::new();
+        let mut busiest_day = 0;
         let mut late_raids = 0;
         let mut hash = 0;
         for k in 0..SEEDS {
@@ -688,6 +721,8 @@ pub fn cut(out: &mut Vec<Check>) {
             if k == 0 {
                 hash = tr.c.state_hash();
             }
+            pops.push((tr.c.stats.rail_wakes + tr.c.stats.rail_stale) as f64 / spec.days as f64);
+            busiest_day = busiest_day.max(tr.busiest_day);
             let s = &tr.feuds[&(0, 0)];
             let m = metrics(
                 s,
@@ -745,6 +780,19 @@ pub fn cut(out: &mut Vec<Check>) {
                 median(peaks.clone()),
                 median(peak_days.clone())
             ),
+        );
+        let pops = median(pops);
+        check(
+            out,
+            WAKES_CHECK,
+            pops <= WAKES_MAX,
+            format!("{name}: {pops:.2} pops a day"),
+        );
+        check(
+            out,
+            WAKES_DAY_CHECK,
+            busiest_day <= WAKES_DAY_MAX,
+            format!("{name}: busiest day {busiest_day} pops"),
         );
         check(
             out,
