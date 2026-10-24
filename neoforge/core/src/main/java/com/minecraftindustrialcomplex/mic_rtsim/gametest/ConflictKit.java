@@ -348,6 +348,72 @@ public final class ConflictKit {
         });
     }
 
+    // ---- lying in wait (M8; MZB-370) -------------------------------------------------------------
+
+    /** AMBUSH_SPOT: the agent's lurk (the track point a train must pass within {@code reach} of, and the spot beside it). */
+    public static void ambushSpot(long agent, int epoch, long faction, String dimension, double[] track, double[] spot, float reach) {
+        writeAmbush(agent, epoch, faction, dimension, track, spot, reach, 0);
+    }
+
+    /** AMBUSH_SPOT with the removed flag: the lurk of {@code agent} ended. */
+    public static void ambushRemoved(long agent, int epoch, long faction, String dimension) {
+        double[] none = {0, 0, 0};
+        writeAmbush(agent, epoch, faction, dimension, none, none, 1f, ConflictRecords.AmbushSpot.REMOVED);
+    }
+
+    private static void writeAmbush(long agent, int epoch, long faction, String dimension, double[] track, double[] spot, float reach,
+                                    int flags) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(ConflictRecords.AMBUSH_SPOT, ConflictRecords.AmbushSpot.SIZE, flags);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.AmbushSpot.AGENT, agent);
+            b.putInt(at + ConflictRecords.AmbushSpot.EPOCH, epoch);
+            b.putInt(at + ConflictRecords.AmbushSpot.DIM, dim);
+            b.putLong(at + ConflictRecords.AmbushSpot.FACTION, faction);
+            b.putDouble(at + ConflictRecords.AmbushSpot.TRACK_X, track[0]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.TRACK_Y, track[1]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.TRACK_Z, track[2]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.SPOT_X, spot[0]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.SPOT_Y, spot[1]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.SPOT_Z, spot[2]);
+            b.putFloat(at + ConflictRecords.AmbushSpot.REACH, reach);
+        });
+    }
+
+    /** TRAIN_ROBBED: a lurk of {@code faction} robbed {@code train} (the plugin's id for it). */
+    public static void trainRobbed(long faction, long train) {
+        script(out -> {
+            int at = out.reserve(ConflictRecords.TRAIN_ROBBED, ConflictRecords.TrainRobbed.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.TrainRobbed.FACTION, faction);
+            b.putLong(at + ConflictRecords.TrainRobbed.TRAIN, train);
+        });
+    }
+
+    /** TRAIN_PASSED records of one agent (the agent at offset 24), in the order received. */
+    public static List<ScriptedEngine.Received> trainsPassed(long agent) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.TRAIN_PASSED, ConflictRecords.TrainPassed.AGENT, agent);
+    }
+
+    /** A TRAIN_PASSED decoded: whether a puppet stood in the world (watched), the table's epoch, the carriage and the train. */
+    public record TrainPassedRecord(boolean watched, int epoch, int carriage, long train) {}
+
+    public static TrainPassedRecord trainPassed(ScriptedEngine.Received r) {
+        ByteBuffer b = r.view();
+        return new TrainPassedRecord((r.aux() & ConflictRecords.TrainPassed.WATCHED) != 0, b.getInt(ConflictRecords.TrainPassed.EPOCH),
+                b.getInt(ConflictRecords.TrainPassed.CARRIAGE), b.getLong(ConflictRecords.TrainPassed.TRAIN));
+    }
+
+    /** Strikes the lurk puppets started this session (a carriage point in reach and the puppet free to swing). */
+    public static long lurkStrikes() {
+        return bridge().lurkStrikes;
+    }
+
     // ---- the camp reconciler (MOWZIE.md §4.9, M5) ------------------------------------------------
 
     /**

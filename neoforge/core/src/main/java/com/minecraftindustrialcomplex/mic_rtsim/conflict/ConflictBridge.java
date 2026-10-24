@@ -14,6 +14,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -35,6 +36,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
+import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
@@ -48,6 +50,7 @@ import net.neoforged.neoforge.common.util.FakePlayer;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -116,6 +119,14 @@ public final class ConflictBridge implements SessionPlugin {
      * PLACEHOLDER).
      */
     public static final int REQUEUE_COOLDOWN = 200;
+    /** M8: a lurk puppet with no target looks for a player this often (ticks, MZB-362). */
+    public static final int LURK_TARGET_CHECK = 20;
+    /** M8: the range of that look, and of a puppet's follow range (blocks, MZB-362). */
+    public static final double LURK_TARGET_RANGE = 50.0;
+    /** M8: a roar at a station is heard by players within this many blocks of it (PLACEHOLDER, MZB-366). */
+    public static final double ROAR_RANGE = 64.0;
+    /** M8: robbed trains waiting for their station's roar; the oldest is dropped past this (MZB-366). */
+    public static final int PENDING_ROARS = 256;
     /** A slot's chunk before it is watched. */
     static final long NO_CHUNK = Long.MIN_VALUE;
     /** M1's records (DIFFICULTY, NOTICE_SHOWN): on since M1's engine half is on main. */
@@ -357,6 +368,8 @@ public final class ConflictBridge implements SessionPlugin {
         boolean removing;
         ConflictFollowGoal goal;
         List<WrappedGoal> stripped;
+        /** M8: where the lurk holds this body (its place at the spot, on the floor); null while it is not held. */
+        Vec3 holdAt;
 
         Slot(Stack stack, boolean chief, boolean envoy, String body, int javaBody, EntityType<?> type, double lat, double back) {
             this.stack = stack;
@@ -475,12 +488,24 @@ public final class ConflictBridge implements SessionPlugin {
     private boolean held;
     /** The camp reconciler (M5): the camps plugins declare, their censuses and reconciles. */
     private final Camps reconciler = new Camps(this);
+    /**
+     * M8 (MZB-359): the lurk table, by agent (never by epoch), in the order the engine said them. Per session: it
+     * is empty at a session's start and end, and the engine says each lurk once more after a start (MZB-353).
+     */
+    private final Map<Long, Lurk> lurks = new LinkedHashMap<>();
+    private final Map<Long, Lurk> lurksView = Collections.unmodifiableMap(lurks);
+    /** The floor found for a lurk's spot (MZB-360), by agent: dropped with the lurk. */
+    private final Map<Long, Double> floors = new HashMap<>();
+    /** M8 (MZB-366): trains a lurk robbed whose station has not roared yet, train to faction, oldest first. */
+    private final Map<Long, Long> pendingRoars = new LinkedHashMap<>();
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, placed, requeued, pendingTests, watchFlips, placeMoves, casualties, chiefsKilled,
             taken, recalled, dematerialized, steered, tributes, answers, signalsCounted, signalsJournaled, noticesPlayed,
             territoryCommands, settledCommands, campsReported, looted, malformed, unknownCommands, blockedHits, blockedTargets,
             strays, refills, demandsShown, paymentsRefused, noticeHearers, railPasses;
+    /** M8's (this session): AMBUSH_SPOTs kept and removed, TRAIN_PASSEDs written, strikes started, roars told and heard. */
+    public long lurksKept, lurksRemoved, trainPasses, lurkStrikes, roarsTold, roarsPlayed, roarHearers;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -516,7 +541,9 @@ public final class ConflictBridge implements SessionPlugin {
         taken = recalled = dematerialized = steered = tributes = answers = signalsCounted = signalsJournaled = 0;
         noticesPlayed = territoryCommands = settledCommands = campsReported = looted = malformed = unknownCommands = 0;
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
+        lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = 0;
         lastSettled = 0;
+        clearLurks();
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
         reconciler.sessionStarted();
@@ -532,6 +559,7 @@ public final class ConflictBridge implements SessionPlugin {
         flushSignals(now, true);
         for (Party p : List.copyOf(byAgent.values()))
             capture(p, ConflictRecords.Dematerialized.SESSION_END, now);
+        clearLurks();
     }
 
     @Override
@@ -545,6 +573,7 @@ public final class ConflictBridge implements SessionPlugin {
         watches.clear();
         signals.clear();
         notices.clear();
+        clearLurks();
         reconciler.sessionFailed();
     }
 
@@ -561,9 +590,17 @@ public final class ConflictBridge implements SessionPlugin {
         notices.clear();
         signals.clear();
         watches.clear();
+        clearLurks();
         held = false;
         difficulty = null;
         session = null;
+    }
+
+    /** The lurk table and the pending roars are per session: empty them (the puppets were despawned or are going). */
+    private void clearLurks() {
+        lurks.clear();
+        floors.clear();
+        pendingRoars.clear();
     }
 
     /** Removes a party's bodies and forgets it, journaling nothing (the session failed). */
@@ -656,6 +693,8 @@ public final class ConflictBridge implements SessionPlugin {
             case ConflictRecords.BAND_STEER -> steer(b, at, aux, now);
             case ConflictRecords.BAND_RECALL -> recall(b, at, aux, now);
             case ConflictRecords.DEMAND_SETTLED -> settled(b, at, aux);
+            case ConflictRecords.AMBUSH_SPOT -> ambushSpot(b, at, aux, names, now);
+            case ConflictRecords.TRAIN_ROBBED -> trainRobbed(b, at);
             case ConflictRecords.CAMP_RECONCILE -> {
                 if (RtsimConfig.on(Module.CONFLICT))
                     reconciler.reconcile(b, at, size, aux, names, now);
@@ -912,6 +951,7 @@ public final class ConflictBridge implements SessionPlugin {
         double hx = hd > 1e-6 ? (tx - mx) / hd : 1.0, hz = hd > 1e-6 ? (tz - mz) / hd : 0.0;
         double rx = -hz, rz = hx;
         int first = p.stacks.size();
+        Lurk lurk = lurks.get(agent);
         boolean chiefFlag = (pflags & ConflictRecords.Materialize.FLAG_CHIEF) != 0;
         for (int i = 0; i < m; i++) {
             boolean chief = chiefFlag && (sflags[i] & ConflictRecords.Materialize.STACK_CHIEF) != 0;
@@ -940,6 +980,8 @@ public final class ConflictBridge implements SessionPlugin {
                 st.slots.add(new Slot(st, true, false, k.body(), k.javaBody(), k.type(), 0.0, ROW * ((counts[i] + 1) / 2)));
             }
             st.walk(tx + st.offX, tz + st.offZ, p.speed, 0L, now);
+            if (lurk != null)
+                anchorAtSpot(st, lurk, now); // a lurking agent's stack stands at the spot, not on the arc (MZB-360)
             p.stacks.add(st);
         }
         int n = 0;
@@ -977,6 +1019,8 @@ public final class ConflictBridge implements SessionPlugin {
         Party p = byAgent.get(b.getLong(at + ConflictRecords.Steer.AGENT));
         if (p == null || p.epoch != b.getInt(at + ConflictRecords.Steer.EPOCH) || p.recalling)
             return;
+        if (lurks.containsKey(p.agent))
+            return; // a lurking band stands at its spot; the engine steers it again once the lurk is removed (MZB-352)
         float speed = b.getFloat(at + ConflictRecords.Steer.SPEED);
         if (!Float.isFinite(speed) || speed < 0)
             speed = 0;
@@ -1018,6 +1062,7 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     private void startRecall(Party p, int reason, long timeout, double x, double z, long now) {
+        releaseLurk(p); // a recalled puppet is let go; the lurk itself stays (ledger 8: a recall alone does not end it)
         p.recalling = true;
         p.recallReason = reason;
         p.recallDeadline = now + (timeout > 0 ? timeout : RECALL_TIMEOUT);
@@ -1138,7 +1183,9 @@ public final class ConflictBridge implements SessionPlugin {
                 double[] q = sl.placeXZ(now);
                 x = q[0];
                 z = q[1];
-                y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
+                Lurk lk = lurks.get(p.agent);
+                y = lk != null ? floorAt(level, lk, x, z, sl.type)
+                        : level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
             }
             Mob m;
             try {
@@ -1212,6 +1259,7 @@ public final class ConflictBridge implements SessionPlugin {
         sl.stripped = null;
         sl.entity = null;
         sl.uuid = null;
+        sl.holdAt = null;
     }
 
     // ---- the pending stacks' chunks -------------------------------------------------------------
@@ -1365,6 +1413,7 @@ public final class ConflictBridge implements SessionPlugin {
                     tryPlace(st, level, now);
         }
         passing.clear();
+        holdLurks(now); // after every level ticked and the placings: a puppet placed this tick is held at once
         // After the placings: a materialize of this tick has claimed the set-out bodies it hands off.
         reconciler.tick(now);
         flushSignals(now, false);
@@ -1382,6 +1431,7 @@ public final class ConflictBridge implements SessionPlugin {
         notices.clear();
         signals.clear();
         watches.clear();
+        clearLurks();
         held = false;
     }
 
@@ -1796,6 +1846,7 @@ public final class ConflictBridge implements SessionPlugin {
         if (sl.goal != null && sl.entity != null)
             sl.entity.goalSelector.removeGoal(sl.goal);
         sl.goal = null;
+        sl.holdAt = null;
         if (sl.uuid != null)
             byUuid.remove(sl.uuid, sl);
     }
@@ -2190,18 +2241,27 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** The camp's sound (a raid horn when it gave none), {@value #NOTICE_DISTANCE} blocks from the player toward the camp, to that player only. */
     private void play(Notice n, ServerPlayer to) {
-        Camp c = camps.get(n.faction());
-        Territories.Territory t = territories.get(n.faction());
+        playToward(n.faction(), n.dimension(), n.x() + 0.5, n.z() + 0.5, to);
+    }
+
+    /**
+     * The camp's sound ({@code faction}'s, a raid horn when it gave none) {@value #NOTICE_DISTANCE} blocks from
+     * {@code to} toward the camp, at {@value #NOTICE_VOLUME}: a notice's, and a train's roar (MZB-366). The camp
+     * is the faction's declared one in {@code dimension}, else its territory's centre, else (fx, fz).
+     */
+    private void playToward(long faction, ResourceKey<Level> dimension, double fx, double fz, ServerPlayer to) {
+        Camp c = camps.get(faction);
+        Territories.Territory t = territories.get(faction);
         double cx, cz;
-        if (c != null && c.dimension().equals(n.dimension())) {
+        if (c != null && c.dimension().equals(dimension)) {
             cx = c.pos().getX() + 0.5;
             cz = c.pos().getZ() + 0.5;
         } else if (t != null) {
             cx = t.x() + 0.5;
             cz = t.z() + 0.5;
         } else {
-            cx = n.x() + 0.5;
-            cz = n.z() + 0.5;
+            cx = fx;
+            cz = fz;
         }
         double dx = cx - to.getX(), dz = cz - to.getZ();
         double d = Math.hypot(dx, dz);
@@ -2233,6 +2293,305 @@ public final class ConflictBridge implements SessionPlugin {
         ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.DIFFICULTY, ConflictRecords.DifficultyRecord.SIZE, 0, now);
         r.putInt(ConflictRecords.DifficultyRecord.DIFFICULTY, difficulty.getId());
         session.boundary().commit(r);
+    }
+
+    // ---- lying in wait (M8; MOWZIE.md §4.4, MZB-359 to 368) --------------------------------------
+
+    /**
+     * AMBUSH_SPOT. REMOVED drops the agent's lurk and lets its puppets go; otherwise the lurk replaces any the
+     * agent had (latest wins: a session start's resend, a watch's new epoch), and a party already embodied
+     * stands at the spot at once. Keyed by agent, never by epoch: a lurk the engine saw has its passes carry
+     * this epoch against the party's next, and its REMOVED goes out at the party's.
+     */
+    private void ambushSpot(ByteBuffer b, int at, int flags, EngineNames names, long now) {
+        long agent = b.getLong(at + ConflictRecords.AmbushSpot.AGENT);
+        if (!ConflictRecords.isConflictAgent(agent)) {
+            malformed++;
+            return;
+        }
+        if ((flags & ConflictRecords.AmbushSpot.REMOVED) != 0) {
+            endLurk(agent);
+            return;
+        }
+        String dimName = names.name(Obs.DICT_DIMENSION, b.getInt(at + ConflictRecords.AmbushSpot.DIM));
+        ResourceLocation loc = dimName == null ? null : ResourceLocation.tryParse(dimName);
+        Vec3 track = new Vec3(b.getDouble(at + ConflictRecords.AmbushSpot.TRACK_X), b.getDouble(at + ConflictRecords.AmbushSpot.TRACK_Y),
+                b.getDouble(at + ConflictRecords.AmbushSpot.TRACK_Z));
+        Vec3 spot = new Vec3(b.getDouble(at + ConflictRecords.AmbushSpot.SPOT_X), b.getDouble(at + ConflictRecords.AmbushSpot.SPOT_Y),
+                b.getDouble(at + ConflictRecords.AmbushSpot.SPOT_Z));
+        float reach = b.getFloat(at + ConflictRecords.AmbushSpot.REACH);
+        if (loc == null || !finite(track) || !finite(spot) || !Float.isFinite(reach) || reach <= 0) {
+            malformed++;
+            return;
+        }
+        Lurk l = new Lurk(agent, b.getInt(at + ConflictRecords.AmbushSpot.EPOCH), b.getLong(at + ConflictRecords.AmbushSpot.FACTION),
+                ResourceKey.create(Registries.DIMENSION, loc), track, spot, reach);
+        Lurk old = lurks.put(agent, l);
+        floors.remove(agent);
+        lurksKept++;
+        Party p = byAgent.get(agent);
+        if (p == null || p.recalling)
+            return;
+        boolean moved = old == null || !old.spot().equals(l.spot());
+        for (Stack st : p.stacks) {
+            if (st.state == StackState.GONE)
+                continue;
+            anchorAtSpot(st, l, now);
+            if (moved)
+                for (Slot sl : st.slots)
+                    releaseLurk(sl); // the next hold restricts it to the new spot and finds its floor
+        }
+    }
+
+    private static boolean finite(Vec3 v) {
+        return Double.isFinite(v.x) && Double.isFinite(v.y) && Double.isFinite(v.z);
+    }
+
+    /** A lurk ended: dropped by agent, and its puppets let go (the engine sends the steer or the recall after this). */
+    private void endLurk(long agent) {
+        floors.remove(agent);
+        if (lurks.remove(agent) != null)
+            lurksRemoved++;
+        Party p = byAgent.get(agent);
+        if (p != null)
+            releaseLurk(p);
+    }
+
+    /** A stack of a lurking party stands at the spot, its heading toward the rail, in place (the puppets walk there). */
+    private static void anchorAtSpot(Stack st, Lurk l, long now) {
+        st.ax = st.ex = l.spot().x;
+        st.az = st.ez = l.spot().z;
+        st.t0 = st.t1 = now;
+        st.offX = st.offZ = 0.0;
+        double dx = l.track().x - l.spot().x, dz = l.track().z - l.spot().z;
+        double d = Math.hypot(dx, dz);
+        if (d > 1e-6) {
+            st.hx = dx / d;
+            st.hz = dz / d;
+        }
+    }
+
+    /**
+     * The y a body of {@code type} stands at at (x, z) beside a lurk's track point (MZB-360): the highest block from
+     * the track's y + 4 down to its y - 8 with a sturdy top face and the body's box free above it, else the
+     * motion-blocking height. The spot's own y is the track's, which may be in the air or a cut.
+     */
+    private double floorAt(ServerLevel level, Lurk l, double x, double z, EntityType<?> type) {
+        int bx = Mth.floor(x), bz = Mth.floor(z);
+        if (!level.hasChunk(bx >> 4, bz >> 4))
+            return l.spot().y;
+        int top = Mth.floor(l.track().y) + 4, bottom = Mth.floor(l.track().y) - 8;
+        BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
+        for (int by = top; by >= bottom; by--) {
+            at.set(bx, by, bz);
+            if (!level.getBlockState(at).isFaceSturdy(level, at, Direction.UP))
+                continue;
+            double sy = by + 1;
+            if (level.noCollision(type.getSpawnAABB(x, sy, z)))
+                return sy;
+        }
+        return level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
+    }
+
+    /**
+     * The hold tick, on {@code ServerTickEvent.Post} (after every level ticked, so a path set here is the one an
+     * awake mob follows next tick, MZB-361): each live puppet of a lurking party that stands in the world is held
+     * by its {@link Lurker}, and every {@value #LURK_TARGET_CHECK} ticks given a target (MZB-362).
+     */
+    private void holdLurks(long now) {
+        if (lurks.isEmpty())
+            return;
+        boolean look = now % LURK_TARGET_CHECK == 0;
+        for (Lurk l : lurks.values()) {
+            Party p = byAgent.get(l.agent());
+            if (p == null || p.recalling)
+                continue;
+            ServerLevel level = level(p.dimension);
+            if (level == null)
+                continue;
+            for (Stack st : p.stacks) {
+                if (st.state != StackState.PLACED)
+                    continue;
+                for (Slot sl : st.slots) {
+                    Mob m = sl.entity;
+                    if (!sl.alive || sl.pendingDeath != null || m == null || m.isRemoved() || m.level() != level)
+                        continue;
+                    if (sl.holdAt == null) {
+                        double x = sl.placeX(1.0), z = sl.placeZ(1.0);
+                        sl.holdAt = new Vec3(x, floorAt(level, l, x, z, sl.type), z);
+                    }
+                    Lurkers.of(m).hold(m, sl.holdAt);
+                    if (look)
+                        aim(m, level);
+                }
+            }
+        }
+    }
+
+    /**
+     * The restriction gates a mob's own targeting (M6, MZB-279), so a held puppet never picks a player up by
+     * itself: with no target it takes the nearest player in {@value #LURK_TARGET_RANGE} blocks, and it drops one
+     * that died, left the level or went out of view.
+     */
+    private void aim(Mob m, ServerLevel level) {
+        LivingEntity t = m.getTarget();
+        if (t != null && (!t.isAlive() || t.level() != level || m.distanceToSqr(t) > OUT_OF_VIEW * OUT_OF_VIEW)) {
+            m.setTarget(null);
+            t = null;
+        }
+        if (t != null)
+            return;
+        Player pl = level.getNearestPlayer(TargetingConditions.forCombat().range(LURK_TARGET_RANGE), m);
+        if (pl != null)
+            m.setTarget(pl);
+    }
+
+    /** A puppet let go: its {@link Lurker} undoes the hold. A body not held, or already out of the world, is not asked. */
+    private void releaseLurk(Slot sl) {
+        if (sl.holdAt == null)
+            return;
+        sl.holdAt = null;
+        Mob m = sl.entity;
+        if (m != null && !m.isRemoved())
+            Lurkers.of(m).release(m);
+    }
+
+    private void releaseLurk(Party p) {
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots)
+                releaseLurk(sl);
+    }
+
+    /** TRAIN_ROBBED: the train waits for its next station's roar, and a lurk puppet of the faction roars now (MZB-366, 368). */
+    private void trainRobbed(ByteBuffer b, int at) {
+        long faction = b.getLong(at + ConflictRecords.TrainRobbed.FACTION);
+        long train = b.getLong(at + ConflictRecords.TrainRobbed.TRAIN);
+        pendingRoars.remove(train); // a train robbed again waits as the newest
+        pendingRoars.put(train, faction);
+        while (pendingRoars.size() > PENDING_ROARS) {
+            Iterator<Long> oldest = pendingRoars.keySet().iterator();
+            oldest.next();
+            oldest.remove();
+        }
+        for (Lurk l : lurks.values()) {
+            if (l.faction() != faction)
+                continue;
+            Party p = byAgent.get(l.agent());
+            if (p == null || p.recalling)
+                continue;
+            for (Stack st : p.stacks)
+                for (Slot sl : st.slots) {
+                    Mob m = sl.entity;
+                    if (sl.alive && sl.holdAt != null && sl.pendingDeath == null && m != null && !m.isRemoved()) {
+                        Lurkers.of(m).roar(m);
+                        roarsTold++;
+                    }
+                }
+        }
+    }
+
+    /**
+     * A train called at a station (the create plugin's arrival): when a lurk robbed it, every player within
+     * {@value #ROAR_RANGE} blocks hears the camp's sound toward the den (MZB-366, as a notice's). The entry goes only
+     * once a player heard it, so an arrival with nobody near keeps it for the next. A train not pending returns at once.
+     */
+    public void trainCalled(long train, ServerLevel level, BlockPos station) {
+        if (pendingRoars.isEmpty())
+            return;
+        Long faction = pendingRoars.get(train);
+        if (faction == null)
+            return;
+        double cx = station.getX() + 0.5, cz = station.getZ() + 0.5, r2 = ROAR_RANGE * ROAR_RANGE;
+        boolean heard = false;
+        for (ServerPlayer p : level.players()) {
+            if (p.isSpectator() || p instanceof FakePlayer)
+                continue;
+            double dx = p.getX() - cx, dy = p.getY() - (station.getY() + 0.5), dz = p.getZ() - cz;
+            if (dx * dx + dy * dy + dz * dz > r2)
+                continue;
+            playToward(faction, level.dimension(), cx, cz, p);
+            roarHearers++;
+            heard = true;
+        }
+        if (heard) {
+            pendingRoars.remove(train);
+            roarsPlayed++;
+        }
+    }
+
+    /**
+     * TRAIN_PASSED (M8, MZB-363), journaled at once: the lurk of {@code agent} (the table's {@code epoch}) had
+     * {@code train} pass within its reach, {@code carriage} the index of the carriage nearest the track point;
+     * {@code watched} when a puppet of the lurk stands in the world. False when the engine side is not up.
+     */
+    public boolean trainPassed(long agent, int epoch, boolean watched, int carriage, long train) {
+        if (!up())
+            return false;
+        RtsimSession s = session;
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.TRAIN_PASSED, ConflictRecords.TrainPassed.SIZE,
+                watched ? ConflictRecords.TrainPassed.WATCHED : 0, s.gameTime());
+        r.putLong(ConflictRecords.TrainPassed.AGENT, agent);
+        r.putInt(ConflictRecords.TrainPassed.EPOCH, epoch);
+        r.putInt(ConflictRecords.TrainPassed.CARRIAGE, carriage);
+        r.putLong(ConflictRecords.TrainPassed.TRAIN, train);
+        s.boundary().commit(r);
+        trainPasses++;
+        return true;
+    }
+
+    /** The lurk table, by agent: an unmodifiable view, read by the create plugin's sampler (MZB-359). */
+    public Map<Long, Lurk> lurks() {
+        return lurksView;
+    }
+
+    /** The live puppet of a lurking agent that stands in the world and is not recalled, or null (MZB-359, 364). */
+    public Mob lurkBody(long agent) {
+        Party p = byAgent.get(agent);
+        if (p == null || p.recalling)
+            return null;
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots) {
+                Mob m = sl.entity;
+                if (sl.alive && sl.pendingDeath == null && m != null && !m.isRemoved() && m.isAlive())
+                    return m;
+            }
+        return null;
+    }
+
+    /**
+     * A train's carriage point is in reach of the lurk puppet: the held puppet of the agent nearest to {@code at}
+     * starts its strike through its {@link Lurker}. True when one started (counted in {@link #lurkStrikes}).
+     */
+    public boolean strike(long agent, Vec3 at) {
+        Party p = byAgent.get(agent);
+        if (p == null || p.recalling)
+            return false;
+        Mob best = null;
+        double bd = Double.MAX_VALUE;
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots) {
+                Mob m = sl.entity;
+                if (!sl.alive || sl.holdAt == null || sl.pendingDeath != null || m == null || m.isRemoved() || !m.isAlive())
+                    continue;
+                double d = m.distanceToSqr(at);
+                if (d < bd) {
+                    bd = d;
+                    best = m;
+                }
+            }
+        if (best == null || !Lurkers.of(best).strike(best, at))
+            return false;
+        lurkStrikes++;
+        return true;
+    }
+
+    /** Trains waiting for their station's roar (GameTests). */
+    public int pendingRoars() {
+        return pendingRoars.size();
+    }
+
+    public boolean roarPending(long train) {
+        return pendingRoars.containsKey(train);
     }
 
     // ---- camps and loot (plugins) ---------------------------------------------------------------
@@ -2384,6 +2743,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** Whether the bridge holds anything (D1: nothing without a faction). */
     public boolean idle() {
-        return byAgent.isEmpty() && territories.isEmpty() && notices.isEmpty() && signals.isEmpty();
+        return byAgent.isEmpty() && territories.isEmpty() && notices.isEmpty() && signals.isEmpty() && lurks.isEmpty()
+                && pendingRoars.isEmpty();
     }
 }
