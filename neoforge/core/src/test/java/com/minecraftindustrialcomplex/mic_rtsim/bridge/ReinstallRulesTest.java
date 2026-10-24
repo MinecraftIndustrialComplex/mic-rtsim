@@ -198,7 +198,7 @@ final class ReinstallRulesTest {
         assertEquals(first, ReinstallRules.engineLife(pages, false, random), "a restart on the same pages keeps it");
         assertEquals(first, ReinstallRules.engineLife(pages, false, random));
         long second = ReinstallRules.engineLife(pages, true, random);
-        assertEquals(0x5678, second, "pages that include nothing (a crash before their first save) start a new life");
+        assertEquals(0x5678, second, "an engine that starts over again starts a new life");
         assertEquals(second, ReinstallRules.engineLife(pages, false, random));
         // the reinstall reset moves the directory, 8.6's deletes it: the next pages are new, and so is the life
         ReinstallRules.moveAside(world, Instant.parse("2026-10-23T12:00:00Z"));
@@ -209,6 +209,25 @@ final class ReinstallRulesTest {
         Files.createDirectories(old);
         assertEquals(0, ReinstallRules.engineLife(old, false, random));
         assertEquals(0, ReinstallRules.engineLife(old, false, random));
-        assertEquals(4, next[0], "only new pages draw");
+        assertEquals(4, next[0], "only an engine that starts over draws");
+    }
+
+    /**
+     * When the engine starts over (RG13): new pages whose observations the journal no longer holds. The cases
+     * go through BoundarySession's own rule, as the session does.
+     */
+    @Test
+    void theEngineStartsOverOnlyWhenItsHistoryIsGone() {
+        // a first install: no pages, an empty journal, nothing lost
+        assertFalse(ReinstallRules.startsOver(0, com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession.observationsLost(0, 0, 1)));
+        // a crash before the first page save: the journal still holds everything from 1, the engine replays it
+        assertFalse(ReinstallRules.startsOver(0, com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession.observationsLost(0, 1, 40)));
+        // 8.6's sim reset or the reinstall reset: new pages, the journal trimmed past what the old ones included
+        assertTrue(ReinstallRules.startsOver(0, com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession.observationsLost(0, 31, 40)));
+        assertTrue(ReinstallRules.startsOver(0, com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession.observationsLost(0, 0, 40)),
+                "an empty journal after the old pages saved everything");
+        // a normal restart, and pages restored from an older backup (lost, but the pages keep their epochs)
+        assertFalse(ReinstallRules.startsOver(30, com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession.observationsLost(30, 31, 40)));
+        assertFalse(ReinstallRules.startsOver(10, com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession.observationsLost(10, 31, 40)));
     }
 }
