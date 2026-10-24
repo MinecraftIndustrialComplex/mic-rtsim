@@ -901,6 +901,46 @@ fn a_quiet_meter_retires_and_pushes_zero() {
     assert!(c.feud(f, player).is_none(), "it never made a feud");
 }
 
+/// A culture that tolerates no rail at all: every rate counts, so no meter is ever quiet. The
+/// meter still retires once its rate has fallen to nothing, with the source pushed to 0 and no
+/// wake left to run, not one a day for ever (MZB-379).
+#[test]
+fn a_meter_retires_at_tolerance_zero() {
+    use rtsim_conflict::culture::{Culture, Cultures};
+    let mut cultures = Cultures::builtin();
+    let i = cultures.index_of("frostmaw").expect("the Frostmaw") as usize;
+    let mut def = cultures.list[i].def.clone();
+    def.signals
+        .get_mut("rail")
+        .expect("a rail signal")
+        .tolerance_per_day = 0.0;
+    cultures.list[i] = Culture::resolve(def).expect("a Frostmaw");
+    let (mut w, _) = synth::world(47);
+    let mut c = synth::conflict_with(47, &w, cultures);
+    let f = c
+        .add_faction(&mut w, CAMP, "frostmaw", CAMP_POS, Tick::ZERO)
+        .unwrap();
+    let player = c.player(&mut w, PLAYER);
+    let mut probe = Probe::default();
+    for _ in 0..4 {
+        c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 10_000), Tick(10_000));
+    }
+    assert!(
+        rail_source(&c, f, player).is_some(),
+        "the first pass is pushed: nothing is quiet"
+    );
+    let retire = meter_of(&c, f, player).falls_to(0.01);
+    c.run_until(&mut w, &mut probe, Tick(retire.0 - 1));
+    assert!(c.factions.row(f).rail_meter(player).is_some());
+    assert!(rail_source(&c, f, player).is_some());
+    c.run_until(&mut w, &mut probe, retire);
+    assert!(c.factions.row(f).rail_meter(player).is_none(), "retired");
+    assert!(rail_source(&c, f, player).is_none(), "pushed to 0");
+    // Nothing is left to wake: the wheel holds no rail event after a stale one has run.
+    c.run_until(&mut w, &mut probe, Tick(retire.0 + 5 * TICKS_PER_DAY));
+    assert_eq!(c.pending_by_kind().get("rail"), None);
+}
+
 #[test]
 fn a_stale_rail_wake_is_counted() {
     // A gate books a wake only for a tick earlier than the one booked: a leg alone only moves
