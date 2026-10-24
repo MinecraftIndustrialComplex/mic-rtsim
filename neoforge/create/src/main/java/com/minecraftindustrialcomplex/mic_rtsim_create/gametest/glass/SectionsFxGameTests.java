@@ -24,9 +24,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * SEC-1's section fixtures (SECTIONS.md §9.2, slice S2). Each is a {@link CorpusFactory} and a
  * {@link GlassReplayGameTests.Scenario}, run through the replay harness: the corpus cycle (loaded for a window,
  * away for a replay, back for a reconcile that matches) with the fixture's own checks on the report's judging
- * units. Their namespace is {@code mic_rtsim_create_sec1fx}, apart from the module's, so
- * {@code ./gametest.sh create -PgametestNamespaces=mic_rtsim_create_sec1fx} runs only these; the default
- * (the module's namespace and this one) runs them with the rest.
+ * units. Their namespace is {@code mic_rtsim_create_sec1fx}, apart from the module's, and they are opt-in
+ * (choice SC96): {@code ./gametest.sh create -Psec1fx} runs them with the rest, and
+ * {@code ./gametest.sh create -PgametestNamespaces=mic_rtsim_create_sec1fx} runs only these.
  *
  * <p>{@code MIC_SEC1FX_ONLY=belt_into_press,hopper_vault} runs only the named fixtures.
  */

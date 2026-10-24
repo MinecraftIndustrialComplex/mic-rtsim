@@ -31,7 +31,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * output chest. The belt moves +X at speed -64 (motor south at its start, the way {@code PressSheetsFactory}
  * and the calibration have it), the saw moves items +X at speed +96 with its axis along z
  * ({@code SawBlockEntity.getItemMovementVec}: x = sign(speed) when {@code AXIS_ALONG_FIRST_COORDINATE} is
- * false), its motor south of it at (10, 3, 7). The line's own rate is the press's (belt cycle 19 ticks).
+ * false), its motor south of it at (10, 3, 7). The line's rate is the press's, 19 ticks per ingot at 128 RPM
+ * (nominal, as {@code PressSheetsFactory} has it), not the belt's.
  *
  * <p>The bystander ({@link SectionsFx#bystander}) makes the report carry its units.
  */
@@ -86,12 +87,10 @@ public final class BeltIntoPressFactory implements CorpusFactory {
     /** The checks of §9.2's row: one unit for the whole run, the bystander's apart, both learn, the line replays. */
     static final class Check implements GlassReplayGameTests.Scenario {
         private boolean structure;
-        private GlassReport.Unit awayFirst;
 
         @Override
         public void built(GlassReplayGameTests.Run run) {
             structure = false;
-            awayFirst = null;
         }
 
         @Override
@@ -101,6 +100,10 @@ public final class BeltIntoPressFactory implements CorpusFactory {
             for (GlassReport.Unit u : far.units())
                 if (!SectionsFx.learned(u))
                     return "a unit has not learned: " + SectionsFx.describe(far);
+            // the line and the bystander replay while away: every unit
+            String gate = SectionsFx.replayGate(far, far.units().toArray(new GlassReport.Unit[0]));
+            if (gate != null)
+                return gate;
             if (!structure) {
                 structure = true;
                 structure(run, "far", far, run.far::absolutePos);
@@ -142,8 +145,6 @@ public final class BeltIntoPressFactory implements CorpusFactory {
         @Override
         public void away(GlassReplayGameTests.Run run, GlassReport far, boolean last) {
             GlassReport.Unit line = SectionsFx.unitAt(far, run.far.absolutePos(PRESS));
-            if (awayFirst == null && line != null)
-                awayFirst = line;
             if (!last)
                 return;
             SectionsFx.info(run, "units while away", SectionsFx.describe(far));
