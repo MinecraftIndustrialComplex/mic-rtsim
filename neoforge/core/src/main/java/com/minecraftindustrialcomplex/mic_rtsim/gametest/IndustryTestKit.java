@@ -315,4 +315,33 @@ public final class IndustryTestKit {
             }
         });
     }
+
+    /** Scripts an IND_WRITE_CHAIN: {@code count} packages of one content each, to a package store's frogport. */
+    public static void writeChain(long opId, long store, long district, int inventory, int frogport, BlockPos pos, int count,
+            Map<String, Long> contents) {
+        List<Map.Entry<String, Long>> list = new ArrayList<>(contents.entrySet());
+        script(out -> {
+            int[] ids = new int[list.size()];
+            for (int i = 0; i < list.size(); i++)
+                ids[i] = out.dict(IndRecords.DICT_GOOD, list.get(i).getKey());
+            int at = out.reserve(IndRecords.IND_WRITE_CHAIN, IndRecords.WriteChain.size(list.size()), list.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + IndRecords.WriteChain.OP_ID, opId);
+            b.putLong(at + IndRecords.WriteChain.STORE, store);
+            b.putLong(at + IndRecords.WriteChain.DISTRICT, district);
+            b.putInt(at + IndRecords.WriteChain.INVENTORY, inventory);
+            b.putInt(at + IndRecords.WriteChain.FROGPORT, frogport);
+            b.putInt(at + IndRecords.WriteChain.X, pos.getX());
+            b.putInt(at + IndRecords.WriteChain.Y, pos.getY());
+            b.putInt(at + IndRecords.WriteChain.Z, pos.getZ());
+            b.putInt(at + IndRecords.WriteChain.COUNT, count);
+            for (int i = 0; i < list.size(); i++) {
+                int e = at + IndRecords.WriteChain.ENTRIES + i * IndRecords.ENTRY16;
+                b.putInt(e, ids[i]);
+                b.putLong(e + 8, list.get(i).getValue());
+            }
+        });
+    }
 }
