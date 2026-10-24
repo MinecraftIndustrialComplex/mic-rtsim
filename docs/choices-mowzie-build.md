@@ -1594,6 +1594,10 @@ under its own heading.
     the tick its footprint went down read the entity after the chunks had unloaded; it now checks that the
     Frostmaw was not taken (not discarded) and is still tagged. (7) `Den.at` and `Grove.at` read `spot` before
     the camp was declared; they use the chunk's middle until then.
+  - The third round (`target/m5-gt2-mowzie.log`): 24 of 27 passed. Two failures were `Far.ready()` timing out on a
+    chunk's load with its entities (the load flake of the other projects' rounds; the message now says which of
+    chunk, entities and ticking was missing), and the hold-max test, whose 7,000 ticks left 1,000 for the
+    setup around a 6,000 tick hold (`Camps.HOLD_MAX`): its timeout is 9,000.
   - A body hidden and tracked again (read from NeoForge 21.1.249's patched `ServerLevel.EntityCallbacks`:
     `onTrackingEnd` posts `EntityLeaveLevelEvent` with no removal reason, `onTrackingStart` posts no
     `EntityJoinLevelEvent`; only `addEntity` does, on a load or a spawn) stays in the books: `Camps.onLeave`
