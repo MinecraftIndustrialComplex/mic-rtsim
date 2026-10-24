@@ -6346,6 +6346,338 @@ mod conflict {
         assert_eq!((ended, hand_overs), (1, 1));
         assert!(records >= 10, "the fillers replayed: {records}");
     }
+
+    // ---- §2.5: the tests that need both S4p and RP (docs/replay-gate.md §2.5, RP-43) ---------
+
+    /// What a holder keeps of a band's casualties: the generation that journaled them and the
+    /// records as journaled.
+    struct Kept {
+        nonce: u64,
+        records: Vec<Vec<u8>>,
+    }
+
+    /// The BAND_CASUALTIES Java journaled for `p` from sequence `first` on.
+    fn casualties_kept(j: &Java, first: u64, p: Handle<Party>) -> Kept {
+        let records = j
+            .journal
+            .iter()
+            .filter(|(s, r)| *s >= first && wire::u16_at(r, wire::R_KIND) == cb::BAND_CASUALTIES)
+            .filter(|(_, r)| {
+                matches!(cb::decode_obs(r), Ok((_, O::Casualties(c), _))
+                    if c.agent == Party::agent(p))
+            })
+            .map(|(_, r)| r.clone())
+            .collect();
+        Kept {
+            nonce: j.nonce,
+            records,
+        }
+    }
+
+    /// A holder's copies (REASSERT) of each kept record, under generation `nonce`, handed over.
+    fn reassert_all(j: &mut Java, k: &Kept, nonce: u64) {
+        for r in &k.records {
+            j.reassert(nonce, r);
+        }
+        j.idle();
+        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    }
+
+    /// Copies applied and dropped (S4p's counts).
+    fn copies(e: &Engine) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        (
+            e.stats.copies_applied.load(Acquire),
+            e.stats.copies_dropped.load(Acquire),
+        )
+    }
+
+    struct Fought {
+        dir: std::path::PathBuf,
+        e: std::sync::Arc<Engine>,
+        j: Java,
+        p: Handle<Party>,
+        n: u32,
+        lost: u32,
+        kept: Kept,
+    }
+
+    /// A raid in view at a save (the pages, and a world save beside them), its fight's casualties
+    /// journaled after it, then a crash. `lost_tail`: the next session starts from the world save
+    /// taken with the pages, so the crash lost the casualties with the journal's tail and only a
+    /// holder's copy is left of them; else from the world save at the crash, whose replay counts
+    /// them. Returns the next session, its replay over.
+    fn a_fight_and_a_crash(name: &str, lost_tail: bool) -> Fought {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let before = j.world_save();
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        let kept = casualties_kept(&j, before.next_obs, p);
+        assert!(!kept.records.is_empty(), "its casualties journaled");
+        let gt = j.game_time;
+        let crashed = j.crash();
+        let (e, j) = reopen(&dir, if lost_tail { before } else { crashed }, gt);
+        let (alive, _, embodied, recalled, _) = books(&e, p);
+        let want = if lost_tail { n } else { n - lost };
+        assert_eq!(
+            alive, want,
+            "lost with the tail ({lost_tail}), else replayed"
+        );
+        assert!(!embodied && !recalled, "abstract after the replay");
+        Fought {
+            dir,
+            e,
+            j,
+            p,
+            n,
+            lost,
+            kept,
+        }
+    }
+
+    /// §2.5 test 1 (SEC-1 fact 3, case 1; RP-9): a live copy of casualties a crash lost with the
+    /// journal's tail counts once, against the band by identity (its bodies are gone); a second
+    /// copy of the same records is dropped and counts nothing.
+    #[test]
+    fn a_live_copy_of_casualties_a_crash_lost_counts_once() {
+        let Fought {
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+            ..
+        } = a_fight_and_a_crash("conflict-copy-live", true);
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "the copy counts the deaths");
+        assert_eq!(copies(&e), (k, 0));
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "the second copy counts nothing");
+        assert_eq!(copies(&e), (k, k));
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Control: the casualties in the replayed tail and a copy of them after it: counted once, by
+    /// the original; the copy is not new.
+    #[test]
+    fn a_copy_of_casualties_the_replay_counted_counts_nothing() {
+        let Fought {
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+            ..
+        } = a_fight_and_a_crash("conflict-copy-replayed-original", false);
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "counted once, by the original");
+        assert_eq!(copies(&e), (0, k));
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// §2.5 test 2 (fact 3, case 2): test 1's live copy journaled after a save of the session
+    /// that applied it, then a crash. The next session replays the copy: it is dispatched while
+    /// replaying (counted among the replay's records, every record after the pages), and the
+    /// band's units fall once.
+    #[test]
+    fn a_copy_journaled_after_the_pages_is_counted_by_the_replay() {
+        let Fought {
+            dir,
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+        } = a_fight_and_a_crash("conflict-copy-in-the-replay", true);
+        save(&e, &mut j);
+        let pages = e.durable_obs_seq();
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "counted live");
+        let gt = j.game_time;
+        let saved = j.crash();
+        let tail = saved
+            .journal
+            .iter()
+            .filter(|(s, r)| *s > pages && wire::u16_at(r, wire::R_KIND) != obs::JOURNAL_GEN)
+            .count() as u64;
+        let copies_in_tail = saved
+            .journal
+            .iter()
+            .filter(|(s, r)| *s > pages && wire::u16_at(r, wire::R_KIND) == obs::REASSERT)
+            .count() as u64;
+        assert_eq!(copies_in_tail, k, "the copies are after the pages");
+        let (e, j) = reopen(&dir, saved, gt);
+        assert_eq!(books(&e, p).0, n - lost, "the replay counts the copy once");
+        assert_eq!(copies(&e), (k, 0), "applied from the replay");
+        let (ended, _, records) = replay_counts(&e);
+        assert_eq!(
+            (ended, records),
+            (1, tail),
+            "every record after the pages replayed, the copies among them"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// §2.5 test 3 (RP-8, RP-7): a raid not in view at a save (epoch E), seen after it (its
+    /// BAND_MATERIALIZED at E + 1 journaled), then a crash that loses the journal's tail with it,
+    /// so the next session decided nothing past E. A holder's copy of the BAND_MATERIALIZED,
+    /// `replayed`: applied in that session, then a crash, and replayed in the one after; else
+    /// applied live. It embodies nothing, and the band's next sighting is above it. Returns the
+    /// epochs Java was commanded after the copy, as offsets from E.
+    fn a_copy_of_a_band_materialized(name: &str, replayed: bool) -> Vec<u32> {
+        let (dir, e, mut j) = camp(name);
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        assert_eq!(party(&e, p).map(|x| x.1), Some(false), "not in view yet");
+        save(&e, &mut j);
+        let before = j.world_save();
+        let at_save = books(&e, p).1;
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let seen_at = j.game_time;
+        advance_until(&mut j, 100, 1_000, "its BAND_MATERIALIZED journaled", |j| {
+            j.game_time >= seen_at + 200
+        });
+        let rec = j
+            .journal
+            .iter()
+            .filter(|(s, r)| {
+                *s >= before.next_obs && wire::u16_at(r, wire::R_KIND) == cb::BAND_MATERIALIZED
+            })
+            .map(|(_, r)| r.clone())
+            .next()
+            .expect("its BAND_MATERIALIZED");
+        assert_eq!(materialized_epochs(&j, 0, p), vec![at_save + 1]);
+        let nonce = j.nonce;
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (mut e, mut j) = reopen(&dir, before, gt);
+        assert_eq!(
+            books(&e, p).1,
+            at_save,
+            "the crash lost E + 1 with the tail"
+        );
+        j.reassert(nonce, &rec);
+        j.idle();
+        if replayed {
+            let gt = j.game_time;
+            let saved = j.crash();
+            (e, j) = reopen(&dir, saved, gt);
+        }
+        assert_eq!(copies(&e), (1, 0), "the copy applied");
+        let b = books(&e, p);
+        assert!(!b.2 && b.4 == 0, "the copy embodies nothing: {b:?}");
+        assert!(
+            materialized_epochs(&j, 0, p).is_empty(),
+            "nothing commanded"
+        );
+        // The player comes to where the band is now.
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        let band = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(band.0) + 0.5, 64.0, f64::from(band.1) + 0.5];
+        j.players = vec![(PLAYER, dim, pos)];
+        advance_until(&mut j, 20, 2_000, "seen again", |j| {
+            !materialized_epochs(j, 0, p).is_empty()
+        });
+        let epochs = materialized_epochs(&j, 0, p);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epochs.iter().map(|x| x - at_save).collect()
+    }
+
+    #[test]
+    fn a_live_copy_of_a_band_materialized_embodies_nothing_and_raises_the_epoch() {
+        assert_eq!(
+            a_copy_of_a_band_materialized("conflict-copy-materialized-live", false),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn a_replayed_copy_of_a_band_materialized_embodies_nothing_and_raises_the_epoch() {
+        assert_eq!(
+            a_copy_of_a_band_materialized("conflict-copy-materialized-replayed", true),
+            vec![2]
+        );
+    }
+
+    /// §2.5 test 5 (RP-21): two live copies of the lost casualties under generation `nonce`.
+    /// Returns the members the copies took and the fight's dead, the conflict's refusals, S4p's
+    /// copy counts, and the records in one copy.
+    fn two_copies_of_lost_casualties(name: &str, nonce: u64) -> ((u32, u32), u64, (u64, u64), u64) {
+        let Fought {
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+            ..
+        } = a_fight_and_a_crash(name, true);
+        reassert_all(&mut j, &kept, nonce);
+        reassert_all(&mut j, &kept, nonce);
+        let took = n - books(&e, p).0;
+        let (_, link) = e.conflict_stats();
+        let k = kept.records.len() as u64;
+        let out = ((took, lost), link.copies_refused, copies(&e), k);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        out
+    }
+
+    /// Generation 0: neither copy counts (a death really lost: a member lives on), each refused.
+    #[test]
+    fn copies_of_generation_0_casualties_are_refused() {
+        let ((took, _), refused, copies, k) =
+            two_copies_of_lost_casualties("conflict-copy-gen0", 0);
+        assert_eq!(took, 0, "neither copy counts");
+        assert_eq!(refused, 2 * k, "both refused");
+        assert_eq!(copies, (2 * k, 0), "S4p finds each new");
+    }
+
+    /// Control: a named generation no page holds: the first copy counts once, the second is
+    /// dropped.
+    #[test]
+    fn copies_of_casualties_of_an_unknown_generation_count_once() {
+        let ((took, lost), refused, copies, k) =
+            two_copies_of_lost_casualties("conflict-copy-unknown-gen", 0x7E57_0000_0000_0001);
+        assert_eq!(took, lost, "the first copy counts the deaths once");
+        assert_eq!(refused, 0);
+        assert_eq!(copies, (k, k), "the second dropped");
+    }
 }
 
 /// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine
