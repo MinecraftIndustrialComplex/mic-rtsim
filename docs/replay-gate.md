@@ -45,11 +45,16 @@ admitted (§3.2). So an engine can read "this record is replayed" from its own `
 
 ## 2. Where this meets S4p and RG14
 
-S4p: feat/sec1-s4p (its code at 3bff09e5 and a003bfe6, the head; 1c1b674f merges S3, S4b and main
-3391a5d9). SEC-1 reviewed this section (its reply is folded in below).
-RG: feat/reinstall-guard (RG13, RG14). Neither S4p nor RP must land first; whichever lands second does
-the merge in §2.7 (RP-17). They meet in four places: the session start, the replay end, the copies
+S4p: feat/sec1-s4p (its code at 3bff09e5 and a003bfe6; 1c1b674f merges S3, S4b and main 3391a5d9).
+SEC-1 reviewed this section (its reply is folded in below).
+RG: feat/reinstall-guard (RG13, RG14). Neither S4p nor RP had to land first; whichever landed second
+did the merge in §2.7 (RP-17). They meet in four places: the session start, the replay end, the copies
 (REASSERT) and the epochs. RG14 meets RP nowhere in code.
+
+**What landed.** RG and S4p are both on main (S4p's merged head f361a6f1), so RP lands second. This
+branch merged main at 9b942f61 and wrote §2.5's tests at 96ca2219. §2.1 to §2.3, §2.5 to §2.7 are
+checked against what landed and amended where main differs from what they assumed; the amendments say
+"on main".
 
 ### 2.1 Session start
 
@@ -66,17 +71,24 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
      and calls no module's `player_left` (RP-26). Today it calls `leave`, whose `player_left`s recall
      conflict's watched bands and despawn herds' groups: bodies that RP-5 keeps until the replay end.
      Each module's `replay_done` does that work instead (§5.6).
-  3. At the arm's end, after the `session_first` line: `shared::replay_end_if_due(st)`, which reads
-     the predicate with the new `session_first`. With nothing to replay, the replay ends here. At the
-     arm only, "nothing to replay" also counts Java's journal: the replay ends when
+  3. At the arm's end, after the `session_first` line: `shared::replay_end_at_session_start(st, jf)`,
+     which reads the predicate with the new `session_first`. With nothing to replay, the replay ends
+     here. At the arm only, "nothing to replay" also counts Java's journal: the replay ends when
      `max(applied_through + 1, jf) >= session_first`, where `jf` is the arm's `journal_first` (0
-     read as `world_next`, as the arm already does) (RP-29). On main a journal trimmed to start at or
-     past `session_first` sends nothing below it, and the replay would otherwise stay on until the
-     first live record, however long that takes. On S4p the session's JOURNAL_GEN ends it at once
+     read as `world_next`, as the arm already does) (RP-29). Before S4p a journal trimmed to start at
+     or past `session_first` sent nothing below it, and the replay would otherwise stay on until the
+     first live record, however long that takes. With S4p the session's JOURNAL_GEN ends it at once
      anyway; the pinned generation (fact 4 below) can sit below `jf` and come after this end, which is
-     harmless, since a JOURNAL_GEN is never dispatched to a module. The S4p merger checks that.
+     harmless, since a JOURNAL_GEN is never dispatched to a module.
 - **Overlap:** RP's last line and S4p's come after the same `session_first` line; no shared state.
   Keep both.
+- **On main (checked at the merge):** the arm sets `session_first`, then S4p's
+  `session_gen_seen = false`, then RP's session-start end, then (still replaying) the hand-over
+  count's 1 (§2.2). The pinned JOURNAL_GEN sits below `session_first`, so it is never the session's
+  own: pages that include it skip it (`stale_skipped` + 1), older pages admit it through a gap, and
+  neither dispatches it or touches `replaying`. RP-29's end at the arm, before it comes, is harmless:
+  `the_replay_ends_right_before_each_sessions_journal_gen` (tests/reassert.rs) runs three sessions
+  and counts one end, one stale skip and exactly the replayed tail in each.
 - **SEC-1 fact 4 (pinnedGen):** S4p keeps the newest acknowledged JOURNAL_GEN outside the trimmed
   entries (SC130: `Journal.pinnedGen` in Java, `pinned_gen` in rtsim-host) and sends it first at each
   session start. Pages that include it skip it (`stale_skipped` + 1 a session) and `applied_through`
@@ -93,8 +105,9 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
   `applied_through + 1 >= session_first` (about L641). S4p does not touch that file. On S4p alone both
   still work: JOURNAL_GEN is never dispatched to conflict, so the first trigger fires on the first
   live conflict record, and the second at the step.
-- **RP** moves both into one transition for every module, `shared::replay_end_if_due(st)`, called at
-  three points (RP-2):
+- **RP** moves both into one transition for every module, `shared::replay_end(st)`, reached at
+  three points (RP-2), each through its own guard of the one predicate (`replay_end_before`,
+  `replay_end_if_due`, `replay_end_at_session_start`):
   1. **`journaled()`** (engine.rs), first thing after its `save_through` block, for a record whose
      OBS_SEQ is at or past `session_first`. That is before S4p's JOURNAL_GEN branch, its unnamed
      generation branch, its REASSERT branch and `admitted()`. On S4p the first live record is the
@@ -117,6 +130,22 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
 - **A gap** (a journal trimmed past the pages, `Verdict::Gap` and `skip_to` on both branches): the
   records below `session_first` that never come cannot hold the replay open. The first record that
   does come, at or past `session_first`, ends it; one that comes below it is replayed as usual.
+- **On main: one record, three switches.** S4p's own session test, `seq >= session_first` (in
+  `journal_gen()` and in the unnamed generation branch), is the predicate `replay_end_before` reads.
+  So the replay end, S4p's session switch and the generation switch all happen at one record, in
+  that order: the session's JOURNAL_GEN (its sequence is `session_first`) ends the replay, then
+  `admit_gen` closes the replayed generation at its last sequence and opens the session's. With a
+  bridge that names no generation, the first live record of any kind ends the replay, then opens
+  `UNNAMED_GEN | session_first`, then is admitted. Every record dispatched while replaying therefore
+  belongs to a generation of an earlier session (the pages' open one or one a replayed JOURNAL_GEN
+  opened), and every record dispatched after the end to this session's.
+- **On main: the replay clock agrees.** While replaying the clock runs no further than the replay
+  clock (§3.6), which each replayed record raises to its GAME_TIME. A copy is dispatched as its inner
+  record, whose GAME_TIME is the original's (Java journals a REASSERT with the inner record's time),
+  so a replayed copy raises the clock no further than its original, never past it: the clock can
+  only lag, which holds an event back and never fires one early. The JOURNAL_GEN is never dispatched
+  to a module, so it raises nothing; the end it triggers lets the next run of the clock reach the
+  hand-over's time, after every replayed record and at or before the first live one's.
 
 ### 2.3 Copies (REASSERT)
 
@@ -125,10 +154,22 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
   the copy's sequence.
 - **SEC-1 fact 3's two cases, under RP:**
   1. A REASSERT admitted at or past `session_first` (a chunk or entity loaded in this session) is not
-     a replay record. The replay end has run before it (§2.2 trigger 1 fires on the REASSERT itself
-     when it is the session's first live record).
+     a replay record. The replay end has run before it: on main at the session's JOURNAL_GEN, which
+     comes first; with a bridge that names no generation, on the REASSERT itself when it is the
+     session's first live record (§2.2 trigger 1).
   2. A REASSERT journaled in an earlier session after its pages, and replayed now (below
      `session_first`), is a replay record, dispatched while replaying.
+- **Told apart by generation (on main).** A replayed REASSERT is admitted while an earlier
+  session's generation is open; its original is of that generation or an older one, judged against
+  `open.last` or the closed generation's `last_of`. A live REASSERT is admitted after this session's
+  generation opened (§2.2, one record, three switches), so the open generation is this session's
+  and the copy's original, carried from disk, is of a closed or unknown generation, or of this
+  session's own (a holder unloaded and loaded again), which is dropped. The one `copy_is_new` judges
+  both; `st.replaying` already says which case it is, and the generation says only whether the copy
+  is new. A copy of the open generation's own record is dropped in both cases.
+  A copy journaled after the pages and replayed counts once, in the replay
+  (`a_copy_journaled_after_the_pages_is_counted_by_the_replay`); a live copy of an original the
+  replay applied counts nothing (`a_copy_of_casualties_the_replay_counted_counts_nothing`).
 - **Copies never match a body (RP-8).** In both cases the content is an earlier session's (S4p drops
   copies of the open generation), so its body is gone. A copied *_MATERIALIZED is never honoured: it
   only raises the agent's epoch floor (§5.3). A copied loss is applied by identity (the party and the
@@ -140,8 +181,8 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
   signatures (RP-8). It holds the copy's generation nonce, `Option<u64>`, `Some` only on the apply
   path: a copy judged not new goes to `answered_again` and is never dispatched. A copy of the open
   generation's own record is always dropped while replaying (`reasserted()` admits the REASSERT's own
-  sequence first, which moves `open.last` past the copy's `of`). Before S4p lands nothing sets it;
-  RP's slices add the field and the engine side.
+  sequence first, which moves `open.last` past the copy's `of`). On main the merge (9b942f61) sets
+  it around `reasserted()`'s dispatch; without it five of §2.5's tests fail (RP-43).
 - **Carried records the rule meets:** conflict BAND_CASUALTIES and CHIEF_KILLED (ConflictBridge
   `settleDeaths`, a dying member's drops; `gone`, a taken body); herds HERD_KILLED and HERD_TAKEN
   (HerdBridge); phase 1 TAKEN, DIED and MEMBER_STATE (RtsimSession; not an RP module); COMMAND_RESULT
@@ -191,21 +232,31 @@ the merge in §2.7 (RP-17). They meet in four places: the session start, the rep
 
 ### 2.5 Tests that need both
 
-Written by whichever lands second (§2.7), in rtsim-jni tests/reassert.rs, each with its control:
+Written by whichever lands second (§2.7), each with its control. On main (96ca2219, RP-43): 1, 2, 3
+and 5 in rtsim-jni tests/protocol.rs's `conflict` module, where the camp and band helpers live; 4 in
+tests/reassert.rs beside S4p's.
 
 1. **Fact 3, case 1:** a live REASSERT of a BAND_CASUALTIES after the replay end (its original lost
    with the journal tail) counts once; a second copy of the same original is dropped
    (`copies_dropped` + 1) and counts nothing. Control: the original in the replayed tail and its copy
    later: counted once, by the original (the copy is not new).
+   `a_live_copy_of_casualties_a_crash_lost_counts_once`,
+   `a_copy_of_casualties_the_replay_counted_counts_nothing`.
 2. **Fact 3, case 2:** a REASSERT journaled in session 1 after the pages and replayed in session 2 is
    counted while replaying, before the replay end; the party's units fall once.
+   `a_copy_journaled_after_the_pages_is_counted_by_the_replay`.
 3. A REASSERT holding a BAND_MATERIALIZED, live and replayed: it embodies nothing, and the party's
-   next epoch is above it.
+   next epoch is above it. `a_live_copy_of_a_band_materialized_embodies_nothing_and_raises_the_epoch`
+   and its replayed twin.
 4. **pinnedGen:** two restarts in a row; `stale_skipped` rises by one a session, and the replay end
    comes right before each session's JOURNAL_GEN.
+   `the_replay_ends_right_before_each_sessions_journal_gen`. It shows the end at that record or the
+   step's top's end, not which side of the JOURNAL_GEN: a JOURNAL_GEN is never dispatched, so an end
+   just after it reads the same (RP-43).
 5. **Generation 0 (RP-21):** two REASSERTs of one BAND_CASUALTIES with nonce 0, live: neither counts,
    and the refusal count rises by two. Control: the same copies with a named, unknown generation:
-   the first counts once, the second is dropped.
+   the first counts once, the second is dropped. `copies_of_generation_0_casualties_are_refused`,
+   `copies_of_casualties_of_an_unknown_generation_count_once`.
 
 ### 2.6 RG14
 
@@ -227,8 +278,19 @@ Written by whichever lands second (§2.7), in rtsim-jni tests/reassert.rs, each 
 - **Slice N meets RG13's engine life:** NEST_RENEW's renewal serial (RP-14) starts again with a fresh
   engine, so Java keeps the engine life beside each nest's last serial and starts a nest's serial
   afresh under a new life (RP-19).
+- **On main (checked at the merge):** RG13's engine life is Java's alone (`ReinstallRules.engineLife`,
+  kept by RtsimSession beside the page directory) and never reaches the engine, so
+  `begin_replay(from_pages)` stays the engine's own answer and RP-31 stands as written. RG14 drops a
+  holder's pending records of another life unjournaled (RtsimSession, `stalePending`), as assumed
+  above: the engine sees neither them nor a copy of them.
 
 ### 2.7 The merge, whichever lands second
+
+Done by this branch at 9b942f61 (RP landed second). The one textual conflict was engine.rs (items 1
+and 2, and both sides' fields in Stats, State and `State::new`); the rest merged clean. Item 3 went in
+with the merge; RP's replayed-record count moved into `dispatch()`, so a copy applied while replaying
+counts as a replayed record. Item 5 is 96ca2219. Item 8: main's fixtures were taken at the merge;
+this branch regenerates them, and deletes the worktree's run-gametest worlds, before it lands.
 
 1. **engine.rs, SESSION_START arm:** keep S4p's `session_gen_seen = false` and RP's lines (§2.1).
 2. **engine.rs, `journaled()`:** S4p restructured its body (JOURNAL_GEN, unnamed generation and
