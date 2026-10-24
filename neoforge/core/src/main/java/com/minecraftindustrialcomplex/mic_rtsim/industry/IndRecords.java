@@ -89,6 +89,9 @@ public final class IndRecords {
     public static final int IND_PACKAGE_STORE = 0x0418;
     /** Packages onto or off a package store's chain at a frogport (choice SC97). */
     public static final int IND_CHAIN_PACKAGE = 0x0419;
+    // 0x041A is left free.
+    /** The keys the frontier holds, once a session: the engine strikes any other of the epoch (choice SC140). */
+    public static final int IND_HELD_LIST = 0x041B;
     public static final int IND_RECONCILE_RESULT = 0x0420;
     public static final int IND_CARRIAGE_RESULT = 0x0421;
     public static final int IND_SPAWN_SAMPLE = 0x0430;
@@ -396,7 +399,7 @@ public final class IndRecords {
     public static final class PackageStore {
         public static final int STORE = 24;      // u64
         public static final int DIM = 32;        // u32 dimension id
-        // 36: u32 zero
+        public static final int EPOCH = 36;      // u32: the frontier's epoch, which keys held packages (SECTIONS.md §2.5)
         public static final int INTO = 40;       // u64, 0 none
         public static final int FROGPORTS = 48;  // n x FROGPORT
         public static final int FROGPORT = 48;
@@ -426,15 +429,20 @@ public final class IndRecords {
 
     /**
      * IND_CHAIN_PACKAGE, aux = n entries (choice SC97): packages leaving a package store's frogport onto its
-     * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents. The frogport is an
+     * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents, or a package the
+     * frontier holds on a boundary conveyor ({@code CHAIN_HELD}, SECTIONS.md §2.5) or no longer holds
+     * ({@code CHAIN_RELEASED}: no frogport, no destination, no packages, only the key). The frogport is an
      * index into the store's last IND_PACKAGE_STORE, and its position too; the destination is an index
-     * ({@code CHAIN_OUT} only).
+     * ({@code CHAIN_OUT}, and {@code CHAIN_HELD}, whose frogport is its destination and whose position is
+     * the boundary conveyor's). A held package's key (the frontier's epoch and a serial, choice SC136) is in
+     * {@code CHAIN_HELD}, in {@code CHAIN_RELEASED} and in a {@code CHAIN_IN} of a package Java still holds
+     * keyed; epoch 0 is no key.
      */
     public static final class ChainPackage {
         public static final int STORE = 24;       // u64
         public static final int DISTRICT = 32;    // u64, 0 none
         public static final int INVENTORY = 40;   // u32, NO_INVENTORY none
-        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN
+        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN, CHAIN_HELD, CHAIN_RELEASED
         public static final int FROGPORT = 48;    // u32
         public static final int DESTINATION = 52; // u32, NO_INVENTORY none (no route)
         public static final int PACKAGES = 56;    // u32
@@ -443,16 +451,38 @@ public final class IndRecords {
         public static final int X = 72;           // i32, the frogport's position (choice SC113)
         public static final int Y = 76;           // i32
         public static final int Z = 80;           // i32
-        // 84: u32 zero
-        public static final int ENTRIES = 88;
+        public static final int EPOCH = 84;       // u32, 0 no key
+        public static final int SERIAL = 88;      // u64
+        public static final int ENTRIES = 96;
 
         public static int size(int n) {
             return ENTRIES + n * ENTRY16;
         }
 
-        /** After IND_PACKAGE's 1 and 2; 5 is kept for the frontier's {@code CHAIN_HELD} (§2.5). */
+        /** After IND_PACKAGE's 1 and 2. */
         public static final int CHAIN_OUT = 3;
         public static final int CHAIN_IN = 4;
+        /** The frontier holds the package on a boundary conveyor, refused at its hand-off (§2.5). */
+        public static final int CHAIN_HELD = 5;
+        /** The key left the world or Java no longer holds it: struck wherever the engine holds it (choice SC137). */
+        public static final int CHAIN_RELEASED = 6;
+    }
+
+    /**
+     * IND_HELD_LIST, aux = n serials (choice SC140): the frontier's held keys of one epoch, sent once a session
+     * before its other records of that session reach the engine. The engine strikes every key of the epoch it
+     * does not list. At most {@link #MAX_SERIALS}: a longer list is not sent.
+     */
+    public static final class HeldList {
+        public static final int EPOCH = 24;   // u32
+        // 28: u32 zero
+        public static final int SERIALS = 32; // n x u64
+
+        public static int size(int n) {
+            return SERIALS + 8 * n;
+        }
+
+        public static final int MAX_SERIALS = (com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.MAX_RECORD - SERIALS) / 8;
     }
 
     /**
