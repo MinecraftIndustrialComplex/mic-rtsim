@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Rat;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import com.simibubi.create.content.contraptions.actors.psi.PortableStorageInterfaceBlockEntity;
 import com.simibubi.create.content.fluids.FluidTransportBehaviour;
 import com.simibubi.create.content.fluids.drain.ItemDrainBlockEntity;
 import com.simibubi.create.content.fluids.pump.PumpBlock;
@@ -130,7 +131,9 @@ final class CreateCompile implements GlassExtractor.Compile {
     enum K {
         MILLSTONE, CRUSHER, PRESS, MIXER, SAW, DEPLOYER, FAN, CRAFTER, SPOUT, DRAIN, BASIN, BELT, FUNNEL, TUNNEL,
         ARM, DEPOT, CHUTE, PUMP, BOILER, ENGINE, BURNER, SWITCH, PACKAGER, FROGPORT, CHAIN, HOPPER, FURNACE,
-        CRATE, CREATIVE_TANK, PIPE, KINETIC
+        CRATE, CREATIVE_TANK, PIPE, KINETIC,
+        /** A portable storage interface: claimed with no node (SECTIONS.md §4.4, choice SC95). */
+        INTERFACE
     }
 
     /** How a node's goods change on the way through it (the reach propagation, step 5). */
@@ -331,6 +334,15 @@ final class CreateCompile implements GlassExtractor.Compile {
             return K.HOPPER;
         if (be instanceof AbstractFurnaceBlockEntity)
             return K.FURNACE;
+        // A station's interface exposes a docked train's storage, whose change is the station's cargo, booked
+        // on the inventories IND_STATION_PORTS names (SECTIONS.md §4.4). Claimed with no node when its conveying
+        // walk reaches a district inventory, so the movers beside it have no supply in the graph; left to the
+        // residual, it was a black box that left every station-fed unit unbounded (choice SC95). One that reaches
+        // none (an interface onto a belt into a machine) stays residual: its cargo is booked nowhere, and a
+        // black box keeps what it feeds from failing every window
+        if (be instanceof PortableStorageInterfaceBlockEntity)
+            return com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch.reachesAnInventory(level, g.district, be.getBlockPos())
+                    ? K.INTERFACE : null;
         if (be instanceof KineticBlockEntity)
             return K.KINETIC;
         if (BlockEntityBehaviour.get(be, FluidTransportBehaviour.TYPE) != null)
@@ -499,14 +511,15 @@ final class CreateCompile implements GlassExtractor.Compile {
             // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
             // every other district on it (choice SC11), the boiler's district included. Members whose chunk
             // has not loaded this session are not listed, so the test is structural (choice SC44): a listed
-            // member outside, or a link out of the district from a listed member inside (reachesOut)
+            // member outside, or a link out of the district from a listed member inside (reachesOut). The
+            // chunks outside it reaches are kept for edits there (choice SC77).
             boolean crossing = false;
             float capacity = 0, stress = 0;
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
                 if (listed(net, s)) {
                     capacity += e.getValue() * Math.abs(s.getGeneratedSpeed());
-                    crossing |= outside(s);
+                    crossing |= reached(s.getBlockPos());
                 }
             }
             for (var e : net.members.entrySet()) {
@@ -514,11 +527,10 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (listed(net, m)) {
                     stress += e.getValue() * Math.abs(m.getTheoreticalSpeed());
                     overstressed |= m.isOverStressed();
-                    crossing |= outside(m);
+                    crossing |= reached(m.getBlockPos());
                 }
             }
-            if (!crossing)
-                crossing = reachesOut(id, net);
+            crossing |= reachesOut(id, net);
             d.liveCapacity = capacity;
             d.liveStress = stress;
             if (overstressed)
@@ -619,24 +631,50 @@ final class CreateCompile implements GlassExtractor.Compile {
      * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
      * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
      * may hold members that never loaded this session) or to a kinetic block entity of the same network.
-     * Reads only loaded chunks.
+     * Each chunk it links into is kept (choice SC77), and so is each loaded chunk outside the district across
+     * a face that any listed member, inside or out, may turn, though nothing is there yet: a part a player
+     * places there joins the network (review M3). Reads only loaded chunks.
      */
     private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
+        boolean out = false;
         for (KineticBlockEntity m : net.members.keySet()) {
-            if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+            if (!listed(net, m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
+            boolean in = !outside(m);
+            int lx = p.getX() & 15, lz = p.getZ() & 15;
+            if (!in && lx != 0 && lx != 15 && lz != 0 && lz != 15)
+                continue; // outside and off its chunk's border: no face leaves its chunk
             BlockState state = m.getBlockState();
             IRotate block = state.getBlock() instanceof IRotate r ? r : null;
-            for (Direction f : Direction.values())
-                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f), block != null && connects(block, p, state, f)))
-                    return true;
-            if (block != null)
+            for (Direction f : Direction.values()) {
+                if (f.getAxis() == Direction.Axis.Y)
+                    continue;
+                BlockPos n = p.relative(f);
+                boolean may = block != null && connects(block, p, state, f);
+                if (in && linksOutTo(id, n, may))
+                    out |= reached(n);
+                else if (may && ((n.getX() >> 4) != (p.getX() >> 4) || (n.getZ() >> 4) != (p.getZ() >> 4)) && Loaded.at(level, n))
+                    reached(n);
+            }
+            if (in && block != null)
                 for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
                     if (linksOutTo(id, n, true))
-                        return true;
+                        out |= reached(n);
         }
-        return false;
+        return out;
+    }
+
+    /**
+     * Whether {@code p} lies outside the district's chunks; if so its chunk is kept as one a network of the
+     * compile reaches (choice SC77: a player's edit there, in no district, is this district's too).
+     */
+    private boolean reached(BlockPos p) {
+        long c = net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4);
+        if (g.district.chunks.contains(c))
+            return false;
+        g.reachedChunks.add(c);
+        return true;
     }
 
     /**

@@ -56,9 +56,20 @@ public final class GlassKit {
                         int received) {
         /** The END says COMPLETE and exactly its count of records arrived, each index once. */
         public boolean complete() {
-            return (end.flags & GlassRecords.End.COMPLETE) != 0 && received == end.records
-                    && nodes.size() == end.nodes && edges.size() == end.edges && recipes.size() == end.recipes
-                    && domains.size() == end.domains;
+            return (end.flags & GlassRecords.End.COMPLETE) != 0 && arrived();
+        }
+
+        /**
+         * The END is a compile's, COMPLETE or BLACK_BOX (a graph with residual groups, which is never COMPLETE),
+         * and exactly its count of records arrived, each index once.
+         */
+        public boolean whole() {
+            return (end.flags & (GlassRecords.End.COMPLETE | GlassRecords.End.BLACK_BOX)) != 0 && arrived();
+        }
+
+        private boolean arrived() {
+            return received == end.records && nodes.size() == end.nodes && edges.size() == end.edges
+                    && recipes.size() == end.recipes && domains.size() == end.domains;
         }
 
         public List<Node> nodes(int kind, int model) {
