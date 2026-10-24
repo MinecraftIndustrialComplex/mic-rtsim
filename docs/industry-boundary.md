@@ -159,6 +159,9 @@ revision replaces the old lists. Detection (I2) is the Java side's.
 **Edits and staleness.** IND_EDIT (a `BlockEvent` with a player inside the district) makes a learned
 district Stale (I5: stale freezes) and discards the open window. IND_DISCARD discards the open window
 only; a station's `other` discard also the glass windows of what its ports reach (SECTIONS.md §3.6).
+A network part (a kinetic block entity, a chain conveyor among them) a player places or breaks in a
+chunk of no district is an IND_EDIT of every district whose last compile's networks reach that chunk
+(SECTIONS.md SC77): it stales no unit, but drops their open windows and makes them stale as any edit.
 Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
 district keeps the players of its last edits (placed, broken, configured; not commands): the last 8
 distinct players with the tick of each one's latest edit, saved with it, so the dragons can name a
@@ -207,7 +210,9 @@ port.
 - **Station ports** (IND_STATION_PORTS, choice SG32): at a loaded call's departure the bridge walks
   from each interface that docked, through chutes, funnels, hoppers, pipes, pumps and valves (up to
   8 blocks, loaded chunks only, no belts), and sends the district inventories it reaches when the
-  set changed. The engine keeps them per station until the district's next revision.
+  set changed, journaled before the departure's TRAIN_CARGO. The engine keeps them per station until
+  the district's next revision, and a set of two inventories or more joins the glass units holding
+  them into one (SECTIONS.md SC75); a loaded call's cargo is then booked as that unit's port.
 - At a **simulated** station (`simulated` set: the district is unloaded and the carriage has no entity
   in that dimension), the engine decides the exchange from the learned station pattern (I15) and
   answers with IND_CARRIAGE_DELTA. It books the exchange on the station's ports only, never on the

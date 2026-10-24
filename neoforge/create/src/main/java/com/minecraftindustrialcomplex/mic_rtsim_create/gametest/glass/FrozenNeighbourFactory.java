@@ -59,6 +59,9 @@ public final class FrozenNeighbourFactory implements CorpusFactory {
             for (GlassReport.Unit u : far.units())
                 if (!SectionsFx.learned(u))
                     return "a unit has not learned: " + SectionsFx.describe(far);
+            String gate = SectionsFx.replayGate(far, SectionsFx.unitAt(far, run.far.absolutePos(HopperAtASharedVaultFactory.MIXER)));
+            if (gate != null)
+                return gate;
             if (!structure) {
                 structure = true;
                 BlockPos mixer = run.far.absolutePos(HopperAtASharedVaultFactory.MIXER), press = run.far.absolutePos(HopperAtASharedVaultFactory.PRESS);

@@ -2399,9 +2399,10 @@ impl Compiled {
             return false;
         }
         // A window of unbounded goods alone (a black box, a port, a model demoted here), or of none
-        // (a unit with no store: a boiler its pumps fill from a source, which only drives a
-        // network), judged nothing: such a unit leans on the district's pass, as a district alone
-        // does (G-B4, choice SC66). Gated, it would stop every unit on the network it drives.
+        // (a unit with no store, as a boiler its pumps fill from a source, which only drives a
+        // network; or one whose goods none of its stores measured in the window, as an idle line),
+        // judged nothing: such a unit leans on the district's pass, as a district alone does (G-B4,
+        // choice SC66). Gated, a unit with no store would stop every unit on the network it drives.
         let judged = own.goods.iter().any(|g| g.verdict == report::verdict::PASS);
         let leans = own
             .goods
