@@ -940,9 +940,9 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     // A member drawn owed carries its debt: a den out for a week.
     let mut r = den_run(25, 0);
     r.run(at_day(6.5));
-    // The pool adds its slots when it is read: the audit reads it.
-    let _ = r.check();
-    let owed = slot_counts(&r);
+    // The books add the pool's slots when they are read (a census, a draw, a death), not at an
+    // audit: the member recruited while the den was out is the pool's, an owed slot once read.
+    let owed = r.c.pool_at(r.f, r.c.now()).floor() as u32;
     let p = r.raid().expect("one Frostmaw makes the raid");
     let drawn = slot_counts(&r);
     r.run(r.c.parties[p].until + 100);
@@ -960,7 +960,7 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     check(
         &mut out,
         "a member drawn owed is spawned once at home and never taken or booked dead while away",
-        owed == [0, 1, 0, 0, 0]
+        owed == 1
             && drawn == [0, 0, 0, 1, 0]
             && while_away == ([0, 0, 0, 1, 0], 0, 0)
             && r.c.stats.camp_written_off == 0
@@ -969,7 +969,7 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
             && world_bodies(&r) == 1
             && holds(&mut r),
         format!(
-            "owed {owed:?}, drawn {drawn:?}, two censuses while away {while_away:?} (slots, \
+            "pool {owed}, drawn {drawn:?}, two censuses while away {while_away:?} (slots, \
              orders, bodies), home {:?} with {} Frostmaw",
             slot_counts(&r),
             world_bodies(&r)
@@ -993,7 +993,9 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     r.run(at_day(1.0) + 100);
     let quiet = reconciles(&r) == sent;
     let r_ok = holds(&mut r);
-    let owed = slot_counts(&r)[1];
+    // Two a day: the pool is back at 7, its two new members slots the books add when next read.
+    let whole = r.c.pool_at(r.f, r.c.now()).floor() as u32;
+    let owed = whole.saturating_sub(r.c.camp(r.f).map_or(0, |c| c.home_count()));
     come_in(&mut r);
     check(
         &mut out,
@@ -1006,7 +1008,7 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
             && slot_counts(&r) == [7, 0, 0, 0, 0]
             && holds(&mut r),
         format!(
-            "four died, {dead:?}; none ordered over the day: {quiet}; {owed} owed after it; \
+            "four died, {dead:?}; none ordered over the day: {quiet}; {owed} slots the books have not added; \
              then {:?} with {} spawns",
             slot_counts(&r),
             applied(&r, ACTION_SPAWN)

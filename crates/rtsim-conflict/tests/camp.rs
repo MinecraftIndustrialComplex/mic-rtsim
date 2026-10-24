@@ -209,10 +209,13 @@ fn a_refill_while_the_camp_is_out_is_spawned_at_the_next_census() {
         sent,
         "a camp that is out is never ordered"
     );
-    // Two a day: the pool is back, as owed slots (the audit reads the pool, which adds them).
+    // Two a day: the pool is back. Its members are owed slots the books add when next they are
+    // read (a census, a draw, a death), not before: the audit adds none.
     ok(&mut r);
     let c = r.c.camp(r.f).unwrap();
-    assert!(c.slots.iter().any(|s| s.state == SlotState::Owed));
+    let whole = r.c.pool_at(r.f, r.c.now()).floor() as u32;
+    assert_eq!(whole, 7, "five and two a day");
+    assert!(whole > c.home_count(), "slots the books have not added yet");
     r.camp_in();
     let to = r.c.now() + 10;
     r.run(to);
@@ -269,6 +272,33 @@ fn an_owed_slot_with_no_stray_is_spawned() {
     assert_eq!(applied(&r, boundary::ACTION_SPAWN), 2);
     assert_eq!(counts(&r), [4, 0, 0, 0, 0]);
     assert_eq!(world_bodies(&r), 4);
+    ok(&mut r);
+}
+
+/// An adoption whose stray died before the order was applied has nothing to adopt: Java answers
+/// "nothing to do", no body is there, and the slot is still owed its body. A camp that is in
+/// spawns it then (ledger 7), as it does for a body found gone; it used to stay owed, with no line,
+/// until the next census.
+#[test]
+fn an_adoption_with_nothing_to_adopt_is_followed_by_a_spawn() {
+    let mut r = grove(64, 9);
+    let held = r.census_held();
+    assert_eq!(lines_in(&held, boundary::ACTION_ADOPT), 9);
+    let at = r.c.now();
+    let stray = r.plugin.camps[&r.key].bodies[0].uuid;
+    assert!(r.plugin.camp_kill(r.key, stray, boundary::BY_PLAYER, at));
+    r.plugin.apply(held, at);
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert_eq!(applied(&r, boundary::ACTION_ADOPT), 9);
+    assert_eq!(answered(&r, boundary::LINE_NOTHING), 1, "the dead stray");
+    assert_eq!(
+        applied(&r, boundary::ACTION_SPAWN),
+        1,
+        "its slot is spawned"
+    );
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0], "no slot left owed");
+    assert_eq!(world_bodies(&r), 9);
     ok(&mut r);
 }
 
@@ -831,9 +861,9 @@ fn a_member_drawn_owed_carries_its_debt_and_is_spawned_once_at_home() {
     r.run(day(6.5));
     ok(&mut r);
     assert_eq!(
-        counts(&r),
-        [0, 1, 0, 0, 0],
-        "recruited while the den was out: owed"
+        r.c.pool_at(r.f, r.c.now()).floor() as u32,
+        1,
+        "recruited while the den was out: its slot is owed once the books are read"
     );
     let p = r.raid().expect("one Frostmaw makes the raid");
     assert_eq!(counts(&r), [0, 0, 0, 1, 0], "drawn owed: away, gone");
@@ -1212,7 +1242,7 @@ fn a_set_out_answer_that_arrives_after_its_party_is_home_books_the_four_bodies_g
     // The party's raid ends with the camp out: its members come home as bodies.
     let mut t = r.c.now();
     while counts(&r)[SlotState::Left as usize] > 0 {
-        t = t + 600;
+        t += 600;
         assert!(t < end + days(20.0), "the party never got home");
         r.run(t);
     }
@@ -1309,7 +1339,7 @@ fn an_answer_delivered_twice_is_booked_once_even_after_the_slot_moved_on() {
     // The raid ends; the party comes home and its members are handed back: nine bodies again.
     let mut t = r.c.now();
     while counts(&r)[SlotState::Body as usize] < 9 {
-        t = t + 600;
+        t += 600;
         assert!(
             t < end + days(20.0),
             "the party never got home: {:?}",
@@ -1990,6 +2020,179 @@ fn the_audit_names_a_broken_ledger() {
     let bad = r.c.camp_audit(r.f, at);
     assert!(bad.iter().any(|b| b.starts_with("I2")), "{bad:?}");
     assert!(bad.iter().any(|b| b.starts_with("I1")), "{bad:?}");
+}
+
+/// The audit changes nothing (review of 408d4a07, item 11): it used to sync the ledger, which
+/// numbers a new slot by the lowest free number, so an audited run and an unaudited one could name
+/// their slots differently from then on. A chaos run checked after every event ends in the state
+/// of the run that is not checked until its end.
+#[test]
+fn auditing_after_every_event_changes_nothing() {
+    for seed in 0..32u64 {
+        let end = |audits: bool| {
+            let mut r = grove(seed + 300, 9);
+            r.audits = audits;
+            r.round_trips = false;
+            r.watch = seed % 2 == 0;
+            r.chaos(seed, 220);
+            assert!(r.failures.is_empty(), "seed {seed}: {:#?}", r.failures);
+            let bad = r.check();
+            assert!(bad.is_empty(), "seed {seed}: {bad:#?}");
+            (
+                r.c.state_hash(),
+                r.plugin.camps[&r.key].bodies.len(),
+                r.c.stats.camp_lines,
+            )
+        };
+        assert_eq!(end(true), end(false), "seed {seed}");
+    }
+}
+
+/// The audit asks no sync of the ledger: a pool that gained members the books have not added yet
+/// is the books as they should be, and the audit leaves it so.
+#[test]
+fn the_audit_leaves_the_slots_the_pool_gained_unadded() {
+    let mut r = grove(65, 9);
+    come_in(&mut r);
+    r.camp_out();
+    let now = r.c.now() + 2;
+    r.run(now);
+    let f = r.f;
+    {
+        let x = &mut r.c.factions[f as usize];
+        x.pool = 8.0;
+        x.pool_at = now;
+        let camp = x.camp.as_mut().unwrap();
+        camp.slots.pop();
+    }
+    let before = r.c.camp(f).unwrap().slots.clone();
+    assert!(r.c.camp_audit(f, now + days(1.0)).is_empty());
+    assert_eq!(r.c.camp(f).unwrap().slots, before, "nothing added");
+}
+
+/// Every change of a ledger's slots follows a sync (review of 408d4a07, item 11): an answer that
+/// frees a dead slot arrives after the pool gained a member, and the slot the pool is owed is
+/// added before the dead one goes, so the numbers are the same whenever something reads the books.
+#[test]
+fn an_answer_syncs_the_books_before_it_frees_a_slot() {
+    let mut r = grove(66, 9);
+    come_in(&mut r);
+    r.camp_out();
+    let now = r.c.now() + 2;
+    r.run(now);
+    let f = r.f;
+    let (epoch, slot, generation) = {
+        let x = &mut r.c.factions[f as usize];
+        // One member short, nothing in flight: the camp's one dead slot is on its way out.
+        x.pool = 8.0;
+        x.pool_at = now;
+        let camp = x.camp.as_mut().unwrap();
+        camp.slots[0].state = SlotState::Dead;
+        let (slot, generation) = (camp.slots[0].id, camp.slots[0].generation);
+        (camp.seen, slot, generation)
+    };
+    let later = now + days(1.0);
+    let answer = Obs::CampBodies(boundary::CampBodies {
+        faction: r.key,
+        epoch,
+        op: 0xC0FFEE,
+        lines: vec![boundary::LineAnswer {
+            line: 0,
+            slot,
+            generation,
+            action: boundary::ACTION_REMOVE,
+            outcome: boundary::LINE_DONE,
+        }],
+    });
+    r.c.ingest(
+        &mut r.w,
+        &mut rtsim_ecology::infra::NoInfrastructure,
+        &answer,
+        later,
+    );
+    let camp = r.c.camp(f).unwrap();
+    assert_eq!(counts(&r)[4], 0, "the dead slot is freed");
+    assert_eq!(
+        camp.home_count(),
+        r.c.pool_at(f, later).floor() as u32,
+        "the member the pool gained has its slot"
+    );
+    assert!(
+        camp.slots.iter().all(|s| s.id != slot),
+        "the new slot took a number while the dead one still held its own"
+    );
+    let bad = r.c.camp_audit(f, later);
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+/// A war party's units never outnumber the slots or the pool it is drawn from (review of 408d4a07,
+/// item 16): every unit kind keeps at least one, so a raid of two kinds from a camp with one
+/// warrior at home used to be two units against one slot. The last kinds give theirs up.
+#[test]
+fn a_party_is_never_drawn_larger_than_the_slots_at_home() {
+    let mut r = grove(67, 1);
+    let ci = r.c.factions[r.f as usize].culture;
+    let raid = rtsim_conflict::culture::PartyKind::Raid.index();
+    r.c.cultures.list[ci as usize].parties[raid] = vec![(0, 1), (1, 1)];
+    come_in(&mut r);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    let p = r.raid().expect("one warrior is half of two: it goes");
+    assert_eq!(r.c.parties[p].alive(), 1, "one unit for one slot");
+    assert_eq!(r.c.factions[r.f as usize].away, 1);
+    assert_eq!(counts(&r), [0, 0, 1, 0, 0]);
+    ok(&mut r);
+}
+
+/// A slot booked away whose party the books no longer hold is a state no flow reaches (a party
+/// leaves the books through `home`, which settles its slots): the debug build says so at the
+/// census instead of booking the member home as the release build does.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "is in a party that is gone")]
+fn a_census_names_a_slot_whose_party_is_gone() {
+    let mut r = grove(68, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    r.c.parties.remove(p);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+}
+
+/// The same for an answer: a gone slot answered "there" with its party gone from the books.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "party that is gone")]
+fn an_answer_names_a_gone_slot_whose_party_is_gone() {
+    let mut r = grove(69, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    let f = r.f;
+    let (epoch, slot, generation) = {
+        let camp = r.c.factions[f as usize].camp.as_mut().unwrap();
+        let s = camp
+            .slots
+            .iter_mut()
+            .find(|s| s.party == p)
+            .expect("a member away");
+        s.state = SlotState::Gone;
+        s.line = None;
+        (camp.seen, s.id, s.generation)
+    };
+    r.c.parties.remove(p);
+    let answer = Obs::CampBodies(boundary::CampBodies {
+        faction: r.key,
+        epoch,
+        op: 0xC0FFEF,
+        lines: vec![boundary::LineAnswer {
+            line: 0,
+            slot,
+            generation,
+            action: boundary::ACTION_SPAWN,
+            outcome: boundary::LINE_DONE,
+        }],
+    });
+    ingest(&mut r, &answer);
 }
 
 /// Test 22 and run 10: random camps in and out, musters, homecomings, deaths, answers lost, late and
