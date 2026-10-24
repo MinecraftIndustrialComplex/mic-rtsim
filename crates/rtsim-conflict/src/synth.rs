@@ -1127,6 +1127,47 @@ pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
     (w, c)
 }
 
+/// The key of the first den of [`many_dens`]; den `k` is `DEN_KEY + k`.
+pub const DEN_KEY: u64 = 0xDE50_0000;
+
+/// A grid world of `villages` villages with `dens` Frostmaw dens between them, found at the
+/// start and spaced as [`many`]'s camps are (544 blocks or more apart), with their positions.
+/// No source, no player and no feud: the rail bench's trains make them. Nobody watches.
+pub fn many_dens(villages: usize, dens: usize, seed: u64) -> (World, Conflict, Vec<(u64, Pos)>) {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    let mut data = rtsim_world::synth::grid(villages, seed);
+    let side = (villages as f64).sqrt().ceil() as i32;
+    let span = side * 544;
+    let fside = (dens as f64).sqrt().ceil() as i32;
+    let at = |k: usize| {
+        let (gx, gz) = ((k as i32) % fside, (k as i32) / fside);
+        let step = span / fside.max(1);
+        Pos::new(0, step / 2 + gx * step, step / 2 + gz * step)
+    };
+    for k in 0..dens {
+        data.push(rtsim_world::NodeData {
+            key: DEN_KEY + k as u64,
+            kind: rtsim_settle::NodeKind::Haven(rtsim_settle::Culture::Human),
+            pos: at(k),
+            pop: 10,
+            resources: BTreeMap::new(),
+        });
+    }
+    let mut w = World::build(world_config(seed), goods, book, data);
+    let mut c = conflict(seed, &w);
+    let mut out = Vec::with_capacity(dens);
+    for k in 0..dens {
+        let key = DEN_KEY + k as u64;
+        if c.add_faction(&mut w, key, "frostmaw", at(k), Tick::ZERO)
+            .is_some()
+        {
+            out.push((key, at(k)));
+        }
+    }
+    (w, c, out)
+}
+
 // ---- a camp against the emulated plugin (MOWZIE.md §4.9) --------------------------------------
 
 /// Dictionary kind 4's id the camp runs name their structure by.

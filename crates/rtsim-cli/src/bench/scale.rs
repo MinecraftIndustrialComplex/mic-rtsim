@@ -50,6 +50,8 @@ pub enum Spec {
     Herds(super::herds::HerdsConfig),
     /// Conflict factions, one village per camp, nobody watching (`bench::conflict`).
     Factions(super::conflict::FactionConfig),
+    /// Frostmaw dens with a line each, trains passing (`bench::conflict::run_rail`).
+    Rail(super::conflict::RailConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -137,6 +139,20 @@ pub struct Measured {
     pub works: Option<u64>,
     #[serde(default)]
     pub works_events: Option<u64>,
+    /// Rail runs: the meter's figures per sim day (M7 review P3-4).
+    #[serde(default)]
+    pub rail: Option<RailFigures>,
+}
+
+/// What a rail run counts per sim day: legs called, passes counted, wake pops that ran (live)
+/// and that found their meter changed (stale), and pushes to the sources.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RailFigures {
+    pub legs_per_day: f64,
+    pub passes_per_day: f64,
+    pub wakes_per_day: f64,
+    pub stale_per_day: f64,
+    pub pushes_per_day: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +180,8 @@ pub enum Vary {
     Members,
     /// Conflict factions, one village per camp (PLAN.md §10.3).
     Factions,
+    /// Frostmaw dens with one line each at 50 legs a day (M7 review P3-4).
+    RailDens,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +303,19 @@ impl Baseline {
     }
 
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
+        if sweep.vary == Vary::RailDens {
+            return Spec::Rail(super::conflict::RailConfig {
+                dens: value,
+                legs_per_day: RAIL_LEGS_PER_DAY,
+                warmup_days: 2,
+                days: self.days,
+                seed: self.seed,
+                paged: sweep.paged.then_some(super::conflict::FactionPaging {
+                    budget_bytes: FACTION_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
+            });
+        }
         if sweep.vary == Vary::Factions {
             return Spec::Factions(super::conflict::FactionConfig {
                 factions: value,
@@ -412,7 +443,8 @@ impl Baseline {
             | Vary::ShipPorts
             | Vary::Herds
             | Vary::Members
-            | Vary::Factions => {
+            | Vary::Factions
+            | Vary::RailDens => {
                 unreachable!()
             }
         }
@@ -1057,8 +1089,35 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 ),
             ],
         },
+        // Frostmaw dens with a line each at 50 legs a day, the rail meter's wakes and pushes on
+        // the paged row tables (M7 review P3-4). D1 evidence for the stale wheel entries.
+        Sweep {
+            name: "rail-paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::RailDens,
+            regions: None,
+            paged: true,
+            values: pick(&[256, 512, 1_024], &[256, 512]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    0.1,
+                    0.0,
+                    "the row tables stay under the budget whatever the dens: the rail meters are rows of their factions' pages (M7 review P3-4)",
+                ),
+                contract(
+                    Metric::EventsPerUnit,
+                    flat,
+                    0.0,
+                    "a den's events are its feud's and its meter's wakes: flat per den at a fixed legs a day",
+                ),
+            ],
+        },
     ]
 }
+
+/// Legs a day on each line of the rail sweep.
+const RAIL_LEGS_PER_DAY: u64 = 50;
 
 /// The paged faction sweep's budget for the conflict's row tables. PLACEHOLDER 256 KiB: a tenth
 /// of the resident rows at 1,024 factions, so every point pages.
@@ -1184,6 +1243,7 @@ pub fn run_one(spec: &Spec) -> Measured {
         Spec::Ships(c) => super::ships::run(c),
         Spec::Herds(c) => super::herds::run(c),
         Spec::Factions(c) => super::conflict::run(c),
+        Spec::Rail(c) => super::conflict::run_rail(c),
         Spec::Paged(p) => match p.world.model {
             ModelKind::Herd => run_paged::<SynthRegion>(p),
             ModelKind::Closed => run_paged::<Stock>(p),
@@ -1795,6 +1855,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
             Spec::Ships(c) => c.days as f64,
             Spec::Herds(c) => c.days as f64,
             Spec::Factions(c) => c.days as f64,
+            Spec::Rail(c) => c.days as f64,
             Spec::CatchUp(_) => f64::NAN,
         };
         println!(
@@ -1817,6 +1878,40 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
             },
             m.conservation
         );
+    }
+    let rail: Vec<&Run> = runs.iter().filter(|r| r.measured.rail.is_some()).collect();
+    if !rail.is_empty() {
+        println!();
+        println!(
+            "{:<10} {:>6} | {:>9} {:>9} {:>9} {:>9} {:>9} | {:>10} {:>9} {:>14}",
+            "rail",
+            "dens",
+            "legs/day",
+            "pass/day",
+            "wake/day",
+            "stale/day",
+            "push/day",
+            "step ms/d",
+            "loads/day",
+            "state hash"
+        );
+        for r in rail {
+            let m = &r.measured;
+            let f = m.rail.unwrap_or_default();
+            println!(
+                "{:<10} {:>6} | {:>9.0} {:>9.0} {:>9.0} {:>9.0} {:>9.1} | {:>10} {:>9} {:>14}",
+                r.sweep,
+                fmt_si(r.value as f64),
+                f.legs_per_day,
+                f.passes_per_day,
+                f.wakes_per_day,
+                f.stale_per_day,
+                f.pushes_per_day,
+                opt(m.cpu_ns_per_day, 1e6, 2),
+                opt(m.loads_per_day, 1.0, 0),
+                m.state_hash.map_or("-".into(), |h| format!("{h:08x}")),
+            );
+        }
     }
     let paged: Vec<&Run> = runs
         .iter()
