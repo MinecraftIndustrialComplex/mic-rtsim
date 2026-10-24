@@ -77,7 +77,5 @@ public final class MicRtsimDh {
         });
         if (FarBench.ENABLED)
             FarBench.register();
-        if (BlackProbe.ENABLED)
-            NeoForge.EVENT_BUS.addListener((RenderFrameEvent.Post e) -> BlackProbe.endFrame());
     }
 }
