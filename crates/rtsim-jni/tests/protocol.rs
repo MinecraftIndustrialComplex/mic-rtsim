@@ -643,10 +643,35 @@ fn a_save_failing_partway_costs_that_save_not_the_engine() {
         );
         let world = j.world_save();
         let through = j.next_obs - 1;
-        e.request_save(through);
-        j.run_until("the next save", |j| j.e.durable_obs_seq() >= through);
+        // The failed commit counts its failure (what the wait above saw) a moment before it
+        // reopens the store and hands its tickets back, and a save the step builds in that
+        // moment is stale (PF14, `paging::Job::stale`): refused, counted as a failure too, and
+        // the save after it writes the pages. The test cannot tell which side of that moment its
+        // next save falls on, so a refused save is asked for again, at most twice more (as
+        // industry.rs's `industry_save_tries`).
+        let mut refused = 0;
+        loop {
+            let failed = e.stats_array()[15];
+            e.request_save(through);
+            j.run_until("the next save, made or refused", |j| {
+                j.e.durable_obs_seq() >= through || j.e.stats_array()[15] != failed
+            });
+            if e.durable_obs_seq() >= through {
+                break;
+            }
+            refused += 1;
+            assert!(
+                refused < 3,
+                "{fault:?}: {refused} saves after the failed one refused too (failed saves {})",
+                e.stats_array()[15]
+            );
+        }
         j.run_until("its acknowledgement", |j| j.acks.contains(&through));
-        assert_eq!(e.stats_array()[15], 1, "{fault:?}: one failure");
+        assert_eq!(
+            e.stats_array()[15],
+            1 + refused,
+            "{fault:?}: one failure, and {refused} stale save(s) refused after it"
+        );
         assert!(
             e.protocol_error().is_none(),
             "{fault:?}: {:?}",
