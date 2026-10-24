@@ -3609,12 +3609,57 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     `raid_train` finds the leg and its cargo.
   - Its Java emulation keeps the lurk table from AMBUSH_SPOT. It sends TRAIN_PASSED when a train of a line
     passes within 8 blocks of a lurk's track point, at the tick its timetable puts it there.
+  - Amended at step 4 (the build, `rtsim-cli/src/sim/mowzie/lurk.rs` and `rtsim-conflict/src/synth.rs`):
+    - **The legs.** `synth::rail_legs(lines, seed, jitter, to)` is the list `rail_events` is now written
+      over (the events are byte-identical for a line with `trains: 0`). `RailLine.trains` (0 = a fresh train
+      id per leg, as in M7; n = n trains that take the legs in turn, train `k` going again `DWELL_TICKS`
+      (600) after it arrives, so a train never overlaps its own leg). A leg runs out on the line's path and
+      back on the next lap of its train, and carries its `RailLeg { train, depart, duration }`.
+    - **The table's lag.** Java hears each command `LAG` (100) ticks after the engine says it (one command
+      drain, a placeholder). A pass in the few ticks between a lurk's end and Java hearing of it is the one
+      stale TRAIN_PASSED the engine may count, so "no pass is stale except after a lurk ended" is checked
+      against the lurk's end, not against the table.
+    - **`synth::pass_tick(lines, leg, spot)`** is the first sampler tick (every 20 ticks, at the trains'
+      1.4 blocks a tick) at or after the polyline's nearest approach to the spot's track point, when that
+      is within the spot's reach.
+    - **The cargo.** Each line's two trains carry 640 and 320 of one good a leg, so the Frostmaw's 64-item
+      carry (a tenth of 640) and a tenth of 320 (32) both bind somewhere; two trains over a 2-day wait
+      lose at most 64 + 32 each time they are robbed, well under §4.4's 256.
+    - **The share.** `ambush_milli` rolls on every pass, but the industry's per-train cooldown
+      (`cooldown_ticks` 24,000) turns a hit into `attacks_skipped` when the train was robbed in the last
+      day. So the share is judged on the first pass of a train in each day of a wait that the cooldown
+      leaves open (no robbery of that train by a lurk in the day before, and not skipped), pooled over the
+      two trains and both lines and 8 seeds; the roll's own rate over every counted pass is checked against
+      the same band as a second figure, and reported per line. The rig sees a robbery by a lurk only (a
+      band robbing a train on its march, 16 of the 112 ambushes of the 24-a-day line, books the
+      cooldown too), so such a train's next pass can look open to it and bias the share a little down.
 - **MZB-372** (run 8): save and restore, blob and paged, at four points: mid-lurk, in a cowed time, in a
   meter's decay (a booked `Ev::Rail` and held passes), and with a reconcile in flight.
   - Each is compared with an uninterrupted control: the outbox (by bytes, in order), the stats, and each
     feud's grievance by `to_bits` must be identical.
   - A session restart at each point sends exactly one more AMBUSH_SPOT per lurking party, and the next
     census orders the reconcile's lines again (M4).
+  - Amended at step 4 (the three lurk points are `lurk::trips`; the reconcile point is M4's
+    `reconcile_in_flight`, unchanged), each run on seeds 0 and 1 of the 12-a-day line:
+    - **Mid-lurk**: two dens' bands (the second den at (1200, 1000)) lie in wait at once, each with a
+      pass behind it; if the second never lurks while the first does, one band with two passes will do.
+    - **Cowed**: two dens lurk on the line; once the first den's band has a pass behind it, its chief is
+      killed (`chief_killed`, as run 7 does). The save or restart is a day later, inside the 6-day cowed time,
+      right after a Killing signal of twice the Raid rung's threshold provokes the first den's feud again.
+      The control must be cowed at the trip, and the second den must begin a lurk after it (the tail that is
+      compared). The first den stays empty for the rest of the run: a Frostmaw den has no recruits
+      (`recruits_per_day` 0) and its next body is the renewal wait's (6 days a first kill, 12 for a
+      player's), which runs on the camp plugin's ledger that this rig has no plugin for (run 6 has it). So
+      the first den's feud climbs, waits out the cowed time and then blocks on the empty pool. That is a
+      limit of the rig, not of the engine. (Without the provocation the first den's feud sits at Notice for
+      the 56 days after, flat at its grievance: the meter's pressure alone does not climb back to Raid.)
+    - **Decay**: the line is cut from 12 to 4 legs a day on day 10; the point is the first tick from day 11
+      with a held pass and a booked rail event.
+    - **The tapes.** Each arm leaves the same tape: the commands in wire order, the stats, the hourly
+      grievance by bits, the lurk table's own commands (`lurk_wire`) and the state hash. Blob and Paged
+      must equal the control's tape whole. The restart arm is compared by its lurk stream, its grievances and
+      the lurk and pass stats (the command stream differs only by the one resent spot per lurking party,
+      which is checked as `resent == lurking`).
 - **MZB-373** (what M8 needs):
   - From M7: `Target::Track` and the arrival's Track arm, the sampler with its per-train state, and
     RAIL_PASS live.
@@ -3843,19 +3888,20 @@ each at its own far base, scripted engine):
   itself, so mutating the catch-up out changes neither test.
 
 **Sim runs** (`rtsim-cli sim mowzie`, MZB-330's seeds and tolerances):
-- **Run 1, the ambushes** (RUNS row 1's "ambushes M8"; MZB-371): the 12- and 24-a-day lines, each with two
-  trains.
+- **Run 1, the ambushes** (built at step 4; MZB-371): the 12- and 24-a-day lines, each with two trains,
+  over 8 seeds and 45 days.
   - Every Raid on a track sends AMBUSH_SPOT at its arrival and REMOVED when it ends.
   - At most 64 items are robbed per train per day, and at most 256 over a middling 2-day wait with two
     trains.
-  - The share of each train's first daily pass that robs is between 35% and 65% over the 8 seeds
-    (`ambush_milli` 500).
-  - The robbed goods are in the ledger's destroyed share (ledger 10). `stats.lurk_robberies` equals the
-    TRAIN_ROBBED count (review A, P3: `stats.ambushes` also counts the on-the-way ambushes, which send no
-    roar, so it is the larger).
+  - The share of each train's first open pass of a day of the wait (the cooldown clear) that robs is
+    between 35% and 65% (`ambush_milli` 500), pooled over the trains and seeds; the roll's rate over every
+    counted pass is held to the same band.
+  - The robbed goods are in the ledger's destroyed share (ledger 10), and the industry's `books.stolen`
+    equals them. `stats.lurk_robberies` equals the TRAIN_ROBBED count (review A, P3: `stats.ambushes` also
+    counts the on-the-way ambushes, which send no roar, so it is the larger).
   - No TRAIN_PASSED is stale except after a lurk ended.
-- **Run 8, save and restore** (MZB-372): the four points, each blob and paged, against the control; then
-  the session restarts at each.
+- **Run 8, save and restore** (built at step 4; MZB-372): the three lurk points, each blob and paged,
+  against the control; then the session restarts at each. The fourth, a reconcile in flight, is M4's.
 
 **Work split** (in order; each step's tests green and committed before the next):
 0. Branch (MZB-350).

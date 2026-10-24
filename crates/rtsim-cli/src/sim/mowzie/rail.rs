@@ -34,17 +34,17 @@ use rtsim_settle::Pos;
 use super::{Check, HOUR, check};
 
 /// Runs a figure is the median of (MZB-330).
-const SEEDS: u64 = 8;
+pub(super) const SEEDS: u64 = 8;
 /// A train's headway is jittered by up to this share of itself (MZB-330).
-const JITTER: f64 = 0.4;
+pub(super) const JITTER: f64 = 0.4;
 /// Crossing and settling tolerances (MZB-330).
 const DAYS_TOL: f64 = 0.6;
 const SETTLE_TOL: f64 = 0.02;
 const PUSHES_TOL: u64 = 4;
-const DAY: f64 = TICKS_PER_DAY as f64;
+pub(super) const DAY: f64 = TICKS_PER_DAY as f64;
 
 /// The track's x: 150 blocks east of the den.
-const TRUNK_X: f64 = 1050.0;
+pub(super) const TRUNK_X: f64 = 1050.0;
 const SECOND: Uuid = (0x5EED, 0xB0C);
 
 /// One of 4.3's rows.
@@ -120,7 +120,7 @@ fn straight(x: f64) -> Vec<(f64, f64)> {
 }
 
 /// A line along `x` between stations `id` (north) and `id + 1` (south), owned by `owner`.
-fn line_at(id: u64, x: f64, owner: Uuid, service: Vec<Service>) -> RailLine {
+pub(super) fn line_at(id: u64, x: f64, owner: Uuid, service: Vec<Service>) -> RailLine {
     let mut l = RailLine::steady(
         end(id, x, -200.0),
         end(id + 1, x, 2400.0),
@@ -132,7 +132,7 @@ fn line_at(id: u64, x: f64, owner: Uuid, service: Vec<Service>) -> RailLine {
     l
 }
 
-fn steady(per_day: f64) -> Vec<Service> {
+pub(super) fn steady(per_day: f64) -> Vec<Service> {
     vec![Service {
         from: Tick::ZERO,
         per_day,
@@ -147,7 +147,7 @@ struct Spec {
     days: u64,
 }
 
-fn den_at(i: u64, x: i32, z: i32, found: Tick) -> (u64, Pos, Tick) {
+pub(super) fn den_at(i: u64, x: i32, z: i32, found: Tick) -> (u64, Pos, Tick) {
     (synth::CAMP + i, Pos::new(0, x, z), found)
 }
 

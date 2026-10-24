@@ -4,7 +4,7 @@
     {
       "run": 1,
       "built": false,
-      "slice": "ambushes M8",
+      "slice": "",
       "checks": [
         {
           "name": "the den is a lair",
@@ -44,12 +44,12 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 29e6d787bf900050"
+          "detail": "state hash 5cf5c628177e4cdf"
         },
         {
           "name": "4 legs a day",
           "ok": true,
-          "detail": "4 legs a day: settles 17.2, Notice 11.6, Raid never, 140 never, Invasion never, pushes 19; wakes 2.09 a day; first seed state 30d0d1fc596b08dc"
+          "detail": "4 legs a day: settles 17.2, Notice 11.6, Raid never, 140 never, Invasion never, pushes 19; wakes 2.09 a day; first seed state 452a46f97154fa6b"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -69,7 +69,7 @@
         {
           "name": "12 legs a day",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 7f22e5348f32944b"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state cf638deb62fbe3a6"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -89,7 +89,7 @@
         {
           "name": "24 legs a day",
           "ok": true,
-          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state 0381adc0d5f3b65a"
+          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state 9f27db66c6f59e01"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -109,7 +109,7 @@
         {
           "name": "50 legs a day",
           "ok": true,
-          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state 57bdaca713e2c699"
+          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state 37674df71146a19c"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -134,7 +134,7 @@
         {
           "name": "14 lines at 1.7 legs a day on one trunk (23.8)",
           "ok": true,
-          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state ac04ca00bfb24848"
+          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state c303bfca8ea72bdf"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -145,6 +145,71 @@
           "name": "a meter takes at most 20 rail pops on its busiest day",
           "ok": true,
           "detail": "14 lines at 1.7 legs a day on one trunk (23.8): busiest day 14 pops"
+        },
+        {
+          "name": "every Raid on a track sends its AMBUSH_SPOT when it arrives and the removal when it ends",
+          "ok": true,
+          "detail": "12 legs a day: 32 lurks over 8 seeds, 32 started and 30 ended in the engine, 30 removals heard, 2 still waiting at the end; 32 lurking bands seen by the hour, 0 of them with no spot"
+        },
+        {
+          "name": "a train loses at most 64 items a day, in one robbery",
+          "ok": true,
+          "detail": "12 legs a day: 119 train-days robbed, most items 64 (limit 64), most robberies in one day 1"
+        },
+        {
+          "name": "two trains lose at most 256 items over a middling 2-day wait",
+          "ok": true,
+          "detail": "12 legs a day: the most one wait took 192 items (limit 256); the longest wait 2.00 days"
+        },
+        {
+          "name": "the robbed goods are in the ledger's destroyed share and none is carried home",
+          "ok": true,
+          "detail": "12 legs a day: 5696 items destroyed of 5696 taken from players, 0 carried by bands, the industry booked 5696 stolen, the engine counted 5696"
+        },
+        {
+          "name": "stats.lurk_robberies equals the TRAIN_ROBBED count",
+          "ok": true,
+          "detail": "12 legs a day: 119 robberies, 119 TRAIN_ROBBED sent (119 ambushes in all, the rest on a march)"
+        },
+        {
+          "name": "no TRAIN_PASSED is stale except after a lurk ended",
+          "ok": true,
+          "detail": "12 legs a day: 752 passes sent, 752 counted, 0 stale, every one after its lurk's end: true"
+        },
+        {
+          "name": "every Raid on a track sends its AMBUSH_SPOT when it arrives and the removal when it ends",
+          "ok": true,
+          "detail": "24 legs a day: 24 lurks over 8 seeds, 24 started and 24 ended in the engine, 24 removals heard, 0 still waiting at the end; 24 lurking bands seen by the hour, 0 of them with no spot"
+        },
+        {
+          "name": "a train loses at most 64 items a day, in one robbery",
+          "ok": true,
+          "detail": "24 legs a day: 96 train-days robbed, most items 64 (limit 64), most robberies in one day 1"
+        },
+        {
+          "name": "two trains lose at most 256 items over a middling 2-day wait",
+          "ok": true,
+          "detail": "24 legs a day: the most one wait took 192 items (limit 256); the longest wait 2.00 days"
+        },
+        {
+          "name": "the robbed goods are in the ledger's destroyed share and none is carried home",
+          "ok": true,
+          "detail": "24 legs a day: 5408 items destroyed of 5408 taken from players, 0 carried by bands, the industry booked 5408 stolen, the engine counted 5408"
+        },
+        {
+          "name": "stats.lurk_robberies equals the TRAIN_ROBBED count",
+          "ok": true,
+          "detail": "24 legs a day: 96 robberies, 96 TRAIN_ROBBED sent (112 ambushes in all, the rest on a march)"
+        },
+        {
+          "name": "no TRAIN_PASSED is stale except after a lurk ended",
+          "ok": true,
+          "detail": "24 legs a day: 939 passes sent, 935 counted, 4 stale, every one after its lurk's end: true"
+        },
+        {
+          "name": "the share of each train's first open pass of a day of the wait that robs is about half",
+          "ok": true,
+          "detail": "118 of 224 robbed (53%, limits 35% to 65%); 12 legs a day: 69 of 128 (54%), the roll hit on 52% of its passes; 24 legs a day: 49 of 96 (51%), the roll hit on 51% of its passes"
         }
       ],
       "rungs": [
@@ -243,7 +308,8 @@
         "lurks": 0,
         "lurks_ended": 0,
         "passes": 0,
-        "passes_watched": 0
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -543,7 +609,7 @@
         {
           "name": "cut service: under 70, under 42, settles",
           "ok": true,
-          "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state 34fbbc9330cb0683"
+          "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state c34c912fe5317ae8"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -573,7 +639,7 @@
         {
           "name": "stopped service: under 70, under 42, settles",
           "ok": true,
-          "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state 4191ec712f4df785"
+          "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state 44bcffa831a3b7dc"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -618,12 +684,12 @@
         {
           "name": "the track moved off the circle: the grievance follows the stopped row",
           "ok": true,
-          "detail": "under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0; first seed state cf1105b373a1dbdd"
+          "detail": "under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0; first seed state 511e32902e2b0b3e"
         },
         {
           "name": "the track moved within the circle: the next Raid aims at the new point",
           "ok": true,
-          "detail": "raids on the track at x [(7.583333333333333, 1050), (15.166666666666666, 1000)] (days, x); the line's point at x Some(1000) (was 1050); first seed state c9e5ad858f828356"
+          "detail": "raids on the track at x [(7.583333333333333, 1050), (15.166666666666666, 1000)] (days, x); the line's point at x Some(1000) (was 1050); first seed state 81bf50c1141963f5"
         }
       ],
       "rungs": [],
@@ -638,12 +704,12 @@
         {
           "name": "den A (west of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 2918efdf6e4e90d6"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 7efd3aab267f5ae3"
         },
         {
           "name": "den B (east of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 2918efdf6e4e90d6"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 7efd3aab267f5ae3"
         },
         {
           "name": "a den found on day 10 gets its first pass from the next train and its own meter",
@@ -683,7 +749,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 46e1cae384a26327"
+          "detail": "state hash 08cb6b734005f9fe"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -788,7 +854,8 @@
         "lurks": 0,
         "lurks_ended": 0,
         "passes": 0,
-        "passes_watched": 0
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -997,7 +1064,7 @@
         {
           "name": "a save and load mid-wait arrives on the same tick, to the same books",
           "ok": true,
-          "detail": "state 2b64e815141a4e58 against 2b64e815141a4e58, then [1, 0, 0, 0, 0]"
+          "detail": "state bd8ec006bade5b4d against bd8ec006bade5b4d, then [1, 0, 0, 0, 0]"
         }
       ],
       "rungs": [],
@@ -1062,22 +1129,22 @@
     {
       "run": 8,
       "built": false,
-      "slice": "the lurk, a cowed time and a meter's decay M8",
+      "slice": "",
       "checks": [
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 30646bfb37146530 against 30646bfb37146530, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state 0cea13a82c64133d against 0cea13a82c64133d, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state 7cad1800cb058846 against 7cad1800cb058846, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state af722d24b88c9baf against af722d24b88c9baf, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state a5c43011ed51a8b6 against a5c43011ed51a8b6, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state 4e5d8e90ae0f2537 against 4e5d8e90ae0f2537, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
@@ -1093,6 +1160,36 @@
           "name": "a restart with a muster's set-outs in flight voids them, and the next census takes the bodies left behind",
           "ok": true,
           "detail": "4 set-outs held, nine bodies stood: true; then 4 takes, [5, 0, 0, 4, 0], 5 bodies"
+        },
+        {
+          "name": "a save in the middle of a lurk, blob and paged, goes on as the run that kept going",
+          "ok": true,
+          "detail": "seed 0: at tick 436751 (2 lurking, 0 held, cowed false), 2240 command bytes, 2160 grievances by bits, 6 lurks begun after, blob same, paged same; seed 1: at tick 434052 (2 lurking, 0 held, cowed false), 2272 command bytes, 2160 grievances by bits, 6 lurks begun after, blob same, paged same"
+        },
+        {
+          "name": "a restart in the middle of a lurk says each lurking band's spot once more, and the lurk goes on",
+          "ok": true,
+          "detail": "seed 0: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1: 2 lurking, 2 spots said again, the lurk stream the same as and the grievances match the run that kept going"
+        },
+        {
+          "name": "a save in a cowed time, with the other den lurking, blob and paged, goes on as the run that kept going",
+          "ok": true,
+          "detail": "seed 0: at tick 460797 (1 lurking, 2 held, cowed true), 2240 command bytes, 2880 grievances by bits, 5 lurks begun after, blob same, paged same; seed 1: at tick 458307 (1 lurking, 2 held, cowed true), 2336 command bytes, 2880 grievances by bits, 5 lurks begun after, blob same, paged same"
+        },
+        {
+          "name": "a restart in a cowed time says the lurking den's spot once more, and the lurks come as they would have",
+          "ok": true,
+          "detail": "seed 0: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1: 1 lurking, 1 spots said again, the lurk stream the same as and the grievances match the run that kept going"
+        },
+        {
+          "name": "a save in a meter's decay, with passes held and a wake booked, goes on as the run that kept going",
+          "ok": true,
+          "detail": "seed 0: at tick 267207 (0 lurking, 1 held, cowed false), 112 command bytes, 720 grievances by bits, 0 lurks begun after, blob same, paged same; seed 1: at tick 267000 (0 lurking, 1 held, cowed false), 112 command bytes, 720 grievances by bits, 0 lurks begun after, blob same, paged same"
+        },
+        {
+          "name": "a restart in a meter's decay changes no lurk, no grievance and no count",
+          "ok": true,
+          "detail": "seed 0: 0 lurking, 0 spots said again, the lurk stream the same as and the grievances match the run that kept going; seed 1: 0 lurking, 0 spots said again, the lurk stream the same as and the grievances match the run that kept going"
         }
       ],
       "rungs": [],
