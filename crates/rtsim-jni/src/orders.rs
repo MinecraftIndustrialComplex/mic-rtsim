@@ -36,7 +36,7 @@
 //! | 28 | TEST: found a herd (nothing in the game founds one yet: no habitat provider), applied when the engine takes the unit | str name, str species (`minecraft:sheep` and the rest), u32 dimension (Java's id: the herds' frame), i32 x, i32 z, u64 count, u64 seed (0: the herds' own) |
 //! | 29 | TEST: a conflict command (docs/boundary.md §9.4), as if the conflict had decided it: a future conflict plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_conflict::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries), its dimension Java's id (the conflict's frame) and its ticks game time |
 //! | 30 to 39 | 30, 31, 32 and 34 are the works, tribute and nest test orders (see `Order`); the rest are free | |
-//! | 40 | TEST: post a report to a phase 1 village's noticeboard (TALK, docs/boundary.md §13), as if the village had witnessed it: slice 2b's GameTest `talk_tells_the_village_news` puts news on a board with it; refused if the village is unknown or an actor does not resolve | u64 village, u16 kind (rtsim-knowledge's `ReportKind` id), u8 severity, u8 flags, then who and whom each as u8 class, u64 a, u64 b (the TALK_FACTS ref classes: 0 none, 1 player a b the UUID halves, 2 village and 3 base a Java's id, 4 caravan a its seed, 5 camp a its faction key, 6 and 7 a notable's seed, 8 lair a its key, 9 haven a its node key), then i32 x, i32 z (in the village's frame), u32 ticks ago |
+//! | 40 | TEST: post a report to a phase 1 village's noticeboard (TALK, docs/boundary.md §13), as if the village had witnessed it (a key that is no adopted village but is a conflict camp's faction key posts to the camp's chief's board, else its heir's, slice 4): slice 2b's GameTest `talk_tells_the_village_news` puts news on a board with it; refused if the village is unknown or an actor does not resolve | u64 village, u16 kind (rtsim-knowledge's `ReportKind` id), u8 severity, u8 flags, then who and whom each as u8 class, u64 a, u64 b (the TALK_FACTS ref classes: 0 none, 1 player a b the UUID halves, 2 village and 3 base a Java's id, 4 caravan a its seed, 5 camp a its faction key, 6 and 7 a notable's seed, 8 lair a its key, 9 haven a its node key), then i32 x, i32 z (in the village's frame), u32 ticks ago |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
@@ -206,7 +206,8 @@ pub struct TalkActor {
 /// TEST: a report put on a village's noticeboard (opcode 40).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TalkReportCmd {
-    /// The village (Java's id) whose board it goes on.
+    /// The village (Java's id) whose board it goes on; else a camp's faction key (its chief's
+    /// board, slice 4).
     pub village: u64,
     /// rtsim-knowledge's `ReportKind` id.
     pub kind: u16,

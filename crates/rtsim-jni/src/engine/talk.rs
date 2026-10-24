@@ -14,16 +14,21 @@
 //!   the module that owns it (phase 1: villages, bases, caravans and players; ecology: lairs and
 //!   dragons; conflict: camps and chiefs). It changes nothing in the world; the only writer is the
 //!   TEST order [`post`].
+//! - **A camp** (holder kind 3, slice 4, TK71 to TK84): the camp's knowledge is its chief's board,
+//!   else its heir's (a haven is not a holder), and the conflict is read through
+//!   `rtsim_conflict::view::faction_facts` and nothing else. An ask with the FACTION flag also gets
+//!   the 48-byte faction block after the news: the camp's feud against the asker, and its moods.
 //!
 //! The ranking, the refs and the port state are pure functions of the board and the world, so they
 //! are tested apart from the protocol.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rtsim_conflict::engine::SETTLERS_KEY;
-use rtsim_kernel::clock::Tick;
+use rtsim_conflict::view::{FactionFacts, faction_facts};
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
-use rtsim_knowledge::report::{COORD_LIMIT, FLAG_PLAYER, rung_weight};
+use rtsim_knowledge::report::{COORD_LIMIT, FLAG_PLAYER, ReportId, rung_weight};
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind};
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_space::topology::Topologies;
@@ -32,7 +37,7 @@ use rtsim_world::interest::uuid_hash;
 use super::{State, log_warn};
 use crate::orders::{TalkActor, TalkReportCmd};
 use crate::talk_wire::{
-    Ask, Facts, News, Ref, TALK_ASK, ask, decode_asks, facts, news,
+    Ask, Faction, Facts, News, Ref, TALK_ASK, ask, decode_asks, facts, news,
     reference::{self, class},
 };
 use crate::wire::{self, Rec, RecordWriter};
@@ -48,6 +53,9 @@ pub const SEEN_BLOCKS: i64 = 96;
 pub const NEAR_BLOCKS: i64 = 768;
 /// News items in one answer (TK20).
 pub const MAX_NEWS: usize = facts::MAX_NEWS;
+/// How long after a succession a camp's chief counts as new, ticks: ten game days (TK75).
+/// TUNABLE (PLACEHOLDER).
+pub const NEW_CHIEF_TICKS: u64 = 10 * TICKS_PER_DAY;
 
 /// The tag rtsim-ecology puts on a lair's key to register its knowledge actor (`LAIR_TAG` in its
 /// `engine.rs`, private there). A test registers a real lair and checks the actor's key against
@@ -77,6 +85,8 @@ pub struct Stats {
     pub answered: u64,
     /// Of those, answers that carried HOLDER.
     pub with_holder: u64,
+    /// Of those, answers that carried a faction block (a camp, with the FACTION ask flag).
+    pub with_faction: u64,
     /// Asks and records refused: undecodable, an askId of 0, a dimension no frame can be.
     pub refused: u64,
     /// Asks dropped because [`MAX_PENDING`] were waiting.
@@ -229,6 +239,9 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         if ans.facts.flags & facts::HOLDER != 0 {
             st.talk.stats.with_holder += 1;
         }
+        if ans.facts.flags & facts::FACTION != 0 {
+            st.talk.stats.with_faction += 1;
+        }
     }
     (highest, false)
 }
@@ -269,13 +282,18 @@ impl Answer {
 
 /// The holder an ask names, as phase 1 knows it.
 struct Holder {
-    actor: ActorId,
-    /// A caravan's home village: reports about it are about the caravan too (TK36).
-    home: Option<ActorId>,
+    /// Whose board, feelings and port state answer. A camp has none when its chief and its heir
+    /// are both gone: the camp is known and has nothing to tell (TK71).
+    actor: Option<ActorId>,
+    /// Actors news about which is about the holder too: a caravan's home village (TK36); a camp's
+    /// own actor, chief, heir and haven (TK73). No nulls, none twice, never `actor`.
+    also: Vec<ActorId>,
     /// Its market node, for a village.
     node: Option<usize>,
     /// Where it is now, when it is in the ask's frame.
     pos: Option<(i64, i64)>,
+    /// The camp, when the holder is one: what the conflict says of it, with no player.
+    camp: Option<FactionFacts>,
 }
 
 /// Whose answer: the holder the ask names, or none (TK32, TK38).
@@ -290,10 +308,11 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
             let node = l.node_of(a.holder)?;
             let n = l.world.nodes.get(node)?;
             Some(Holder {
-                actor: n.actor,
-                home: None,
+                actor: Some(n.actor),
+                also: Vec::new(),
                 node: Some(node),
                 pos: (n.pos.frame == frame).then_some((i64::from(n.pos.x), i64::from(n.pos.z))),
+                camp: None,
             })
         }
         ask::holder::CARAVAN => {
@@ -301,16 +320,100 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
             let car = l.world.caravans.get(Handle::from_bits(bits))?;
             let p = l.world.caravan_place(car, l.world.now());
             Some(Holder {
-                actor: car.holder,
-                home: l.world.nodes.get(car.home).map(|n| n.actor),
+                actor: Some(car.holder),
+                also: l
+                    .world
+                    .nodes
+                    .get(car.home)
+                    .map(|n| n.actor)
+                    .into_iter()
+                    .collect(),
                 node: None,
                 pos: (p.frame == frame).then_some((i64::from(p.x), i64::from(p.z))),
+                camp: None,
             })
         }
-        // TODO(slice 4): a faction's camp (kind 3) and a ship (kind 4) answer from the conflict's
-        // and the ships' tables; until then they answer without HOLDER, like any holder this
-        // build does not know (TK38).
+        ask::holder::FACTION => camp_holder(st, a),
+        // A ship (kind 4) answers from the ships' table, a later slice; until then it answers
+        // without HOLDER, like any holder this build does not know (TK38).
         _ => None,
+    }
+}
+
+/// A camp as a holder (TK71, TK73, TK74): known when the conflict runs and has a faction of this key.
+/// Its knowledge is the chief's board, else the heir's; a haven is not a holder in phase 1's
+/// knowledge, so the camp has no board of its own. `us` for its news is the chief, the heir, the
+/// faction's own actor and the haven's.
+fn camp_holder(st: &State, a: &Ask) -> Option<Holder> {
+    if !st.conflict.enabled {
+        return None;
+    }
+    let ff = faction_facts(&st.conflict.engine, a.holder, None)?;
+    let w = &st.phase1.world;
+    let k = &w.knowledge;
+    let actor = [ff.chief, ff.heir]
+        .into_iter()
+        .find(|c| !c.is_null() && k.is_holder(*c));
+    let mut also = Vec::new();
+    let haven = w.nodes.get(ff.node).map(|n| n.actor);
+    for x in [Some(ff.actor), Some(ff.chief), Some(ff.heir), haven]
+        .into_iter()
+        .flatten()
+    {
+        if !x.is_null() && Some(x) != actor && !also.contains(&x) {
+            also.push(x);
+        }
+    }
+    let pos =
+        (ff.pos.frame == a.dimension as u16).then_some((i64::from(ff.pos.x), i64::from(ff.pos.z)));
+    Some(Holder {
+        actor,
+        also,
+        node: None,
+        pos,
+        camp: Some(ff),
+    })
+}
+
+/// The faction block of an answer (TK72, TK75 to TK77): the camp's feud against the asker, and its moods
+/// at the view's own time (`ff.now`, so the block and the feud's projection share one). `heir_born` is
+/// when the heir came to be: a succession names a new heir, so it is when the chief last changed.
+/// `chief_gone` is a chief who has died and an heir who answers in its place: the conflict only
+/// succeeds lazily (a feud wake or a plunder), so until then `chiefs` and `heir_born` trail the death
+/// and the camp's chief is new all the same (TK75).
+fn faction_block(ff: &FactionFacts, heir_born: Option<Tick>, chief_gone: bool) -> Faction {
+    use facts::faction::{NO_SIGNAL, mood};
+    let now = ff.now;
+    let left = ff.cowed_until.0.saturating_sub(now.0);
+    let mut flags = 0;
+    if left > 0 {
+        flags |= mood::COWED;
+    }
+    if ff.chief_out {
+        flags |= mood::CHIEF_OUT;
+    }
+    if chief_gone
+        || (ff.chiefs > 2 && heir_born.is_some_and(|b| now.0.saturating_sub(b.0) < NEW_CHIEF_TICKS))
+    {
+        flags |= mood::NEW_CHIEF;
+    }
+    // Never both: with a cap under a warrior and a half the two ranges meet, and lean wins (TK76).
+    if ff.pool_cap > 0.0 {
+        if ff.pool < ff.pool_cap / 3.0 {
+            flags |= mood::LEAN;
+        } else if ff.pool >= ff.pool_cap - 0.5 {
+            flags |= mood::STRONG;
+        }
+    }
+    Faction {
+        rung: ff.step as u8,
+        mood: flags,
+        signal: ff.signal.map_or(NO_SIGNAL, |s| u16::from(s as u8)),
+        grievance: ff.grievance as f32,
+        cowed_ticks: u32::try_from(left).unwrap_or(u32::MAX),
+        plunders: ff.plunders,
+        // Reserved for the Mowzie plugin's name line (M9): the chief's ref, nothing yet.
+        chief: Ref::default(),
     }
 }
 
@@ -332,7 +435,10 @@ fn answer(st: &State, a: &Ask) -> Answer {
     let player = k
         .actors()
         .find(ActorKind::Player, uuid_hash(a.player.0, a.player.1));
-    ans.facts.sentiment = player.map_or(0, |p| i32::from(k.sentiment(holder.actor, p, now)));
+    ans.facts.sentiment = match (holder.actor, player) {
+        (Some(h), Some(p)) => i32::from(k.sentiment(h, p, now)),
+        _ => 0,
+    };
     if let Some(ex) = holder.node.and_then(|n| st.phase1.market_extremes(n)) {
         if let Some((item, ratio)) = ex.scarcest {
             ans.facts.scarcest_ratio = ratio;
@@ -343,10 +449,27 @@ fn answer(st: &State, a: &Ask) -> Answer {
             ans.whats.push((Slot::Glutted, wire::DICT_ITEM, item));
         }
     }
-    let reports: Vec<Report> = k.board(holder.actor).map_or_else(Vec::new, |b| {
-        b.iter().filter_map(|id| k.report(id)).collect()
-    });
-    ans.facts.flags |= port_flags(&reports, holder.actor);
+    let board: Vec<(ReportId, Report)> =
+        holder
+            .actor
+            .and_then(|h| k.board(h))
+            .map_or_else(Vec::new, |b| {
+                b.iter()
+                    .filter_map(|id| k.report(id).map(|r| (id, r)))
+                    .collect()
+            });
+    // The port's state reads the whole board; only the news is thinned (TK84).
+    let all: Vec<Report> = board.iter().map(|(_, r)| *r).collect();
+    ans.facts.flags |= holder.actor.map_or(0, |h| port_flags(&all, h));
+    if a.flags & ask::FACTION != 0 && holder.camp.is_some() {
+        // Again with the asker, for the feud: the camp itself cannot have gone since.
+        if let Some(ff) = faction_facts(&st.conflict.engine, a.holder, player) {
+            let heir_born = k.notable(ff.heir).map(|n| n.born);
+            let chief_gone = k.notable(ff.chief).is_none() && k.notable(ff.heir).is_some();
+            ans.facts.faction = Some(faction_block(&ff, heir_born, chief_gone));
+            ans.facts.flags |= facts::FACTION;
+        }
+    }
     if a.flags & ask::NEWS == 0 {
         return ans;
     }
@@ -357,9 +480,9 @@ fn answer(st: &State, a: &Ask) -> Answer {
         topo: &st.topology.shared,
         now,
     };
-    let us: Vec<ActorId> = std::iter::once(holder.actor).chain(holder.home).collect();
+    let us: Vec<ActorId> = holder.actor.into_iter().chain(holder.also).collect();
     let tun = k.tunables();
-    let mut cands: Vec<Candidate> = reports
+    let mut cands: Vec<Candidate> = newest_per_pair(board)
         .into_iter()
         .map(|r| {
             let flags = talk_flags(&r, player, &us)
@@ -399,6 +522,25 @@ fn answer(st: &State, a: &Ask) -> Answer {
 }
 
 // ---- ranking (TK33) -----------------------------------------------------------------------------
+
+/// The board's reports with only the newest of each (kind, who, whom) kept (TK84): a siege records a
+/// Raid per wave and a feud a Feud per rung, and without this the four news slots fill with
+/// repeats of one story. The newest is the latest `at`; a tie goes to the higher report id, so the
+/// choice never depends on the order the board is read in. Every holder, every kind. In
+/// (kind, who, whom) order, which the ranking does not depend on.
+fn newest_per_pair(board: Vec<(ReportId, Report)>) -> Vec<Report> {
+    let mut newest: BTreeMap<(u16, ActorId, ActorId), (Tick, ReportId, Report)> = BTreeMap::new();
+    for (id, r) in board {
+        let key = (r.kind as u16, r.who, r.whom);
+        match newest.get(&key) {
+            Some(&(at, held, _)) if (at, held) >= (r.at, id) => {}
+            _ => {
+                newest.insert(key, (r.at, id, r));
+            }
+        }
+    }
+    newest.into_values().map(|(_, _, r)| r).collect()
+}
 
 /// One report on the board, scored.
 #[derive(Clone, Copy, Debug)]
@@ -839,12 +981,15 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
     }
     let kind =
         ReportKind::from_u16(c.kind).ok_or_else(|| format!("{} is not a report kind", c.kind))?;
-    let node = st
-        .phase1
-        .node_of(c.village)
-        .ok_or_else(|| format!("village {} is not adopted", c.village))?;
-    let frame = st.phase1.world.nodes[node].pos.frame;
-    let holder = st.phase1.world.nodes[node].actor;
+    let (frame, holder) = match st.phase1.node_of(c.village) {
+        Some(node) => {
+            let n = &st.phase1.world.nodes[node];
+            (n.pos.frame, n.actor)
+        }
+        // A key that is no adopted village but is a camp's: the camp's board, its chief's (TK79).
+        None => camp_board(st, c.village)
+            .ok_or_else(|| format!("village {} is not adopted", c.village))?,
+    };
     for (name, v) in [("x", c.x), ("z", c.z)] {
         if !(-COORD_LIMIT - 1..=COORD_LIMIT).contains(&v) {
             return Err(format!("{name} {v} is past what a report can hold"));
@@ -896,6 +1041,21 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
     // writes go; another module's queued gossip stays (TK40).
     w.knowledge.drop_vanilla_gossip_of(id);
     Ok(())
+}
+
+/// The board of the camp with this faction key, and its frame: the chief's, else the heir's (the
+/// same holder an ask for the camp answers from). `None` while the conflict is off, or for a key
+/// that is no camp, or when neither is alive.
+fn camp_board(st: &State, key: u64) -> Option<(u16, ActorId)> {
+    if !st.conflict.enabled {
+        return None;
+    }
+    let ff = faction_facts(&st.conflict.engine, key, None)?;
+    let k = &st.phase1.world.knowledge;
+    let holder = [ff.chief, ff.heir]
+        .into_iter()
+        .find(|c| !c.is_null() && k.is_holder(*c))?;
+    Some((ff.pos.frame, holder))
 }
 
 /// The actor a test order names, as the engine's own tables know it (a player is registered).
@@ -1084,6 +1244,113 @@ mod tests {
             at: Tick(at),
             place: Place::new(0, 0, 64, 0),
         }
+    }
+
+    fn id(n: u32) -> ReportId {
+        ReportId::from_parts(n, 1)
+    }
+
+    #[test]
+    fn only_the_newest_report_of_a_kind_between_two_actors_is_kept() {
+        let [p, s, t, g] = handles();
+        let kept = |board: Vec<(ReportId, Report)>| {
+            let mut v: Vec<(u64, ReportKind, ActorId, ActorId)> = newest_per_pair(board)
+                .into_iter()
+                .map(|r| (r.at.0, r.kind, r.who, r.whom))
+                .collect();
+            v.sort_by_key(|e| (e.0, e.1 as u16));
+            v
+        };
+        // Two raids by the same camp on the same village: only the newer is told.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, s, ReportKind::Raid, 2, 900)),
+            ]),
+            vec![(900, ReportKind::Raid, g, s)]
+        );
+        // And the newer wins whichever way the board is read.
+        assert_eq!(
+            kept(vec![
+                (id(2), rep(g, s, ReportKind::Raid, 2, 900)),
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+            ]),
+            vec![(900, ReportKind::Raid, g, s)]
+        );
+        // The same raider on another village is another story: both are kept.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, t, ReportKind::Raid, 3, 900)),
+            ]),
+            vec![(100, ReportKind::Raid, g, s), (900, ReportKind::Raid, g, t)]
+        );
+        // The same pair under another kind is kept too, and so is the pair the other way round.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, s, ReportKind::Feud, 2, 200)),
+                (id(3), rep(s, g, ReportKind::Raid, 3, 300)),
+            ]),
+            vec![
+                (100, ReportKind::Raid, g, s),
+                (200, ReportKind::Feud, g, s),
+                (300, ReportKind::Raid, s, g),
+            ]
+        );
+        // Three waves, the middle one learned last: the latest time still wins.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, s, ReportKind::Raid, 3, 300)),
+                (id(3), rep(g, s, ReportKind::Raid, 1, 200)),
+            ]),
+            vec![(300, ReportKind::Raid, g, s)]
+        );
+        // The same time: the higher id, in either reading order.
+        for board in [
+            vec![
+                (id(4), rep(g, s, ReportKind::Raid, 1, 500)),
+                (id(9), rep(g, s, ReportKind::Raid, 2, 500)),
+            ],
+            vec![
+                (id(9), rep(g, s, ReportKind::Raid, 2, 500)),
+                (id(4), rep(g, s, ReportKind::Raid, 1, 500)),
+            ],
+        ] {
+            let got = newest_per_pair(board);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].severity, 2, "the higher id breaks the tie");
+        }
+        assert!(newest_per_pair(Vec::new()).is_empty());
+        // A player on either side is a pair like any other.
+        assert_eq!(
+            newest_per_pair(vec![
+                (id(1), rep(p, s, ReportKind::Assault, 100, 10)),
+                (id(2), rep(p, s, ReportKind::Assault, 100, 20)),
+            ])
+            .len(),
+            1
+        );
+    }
+
+    /// Through the real answer: a village's board with two raids by one village on it tells the
+    /// newer only, and a raid by another stays.
+    #[test]
+    fn an_answer_tells_the_newest_of_a_repeated_story_only() {
+        let mut st = world();
+        st.phase1.join_for_test(9, false, 0, 1_200, 1_000);
+        // Two waves by village 8 on village 7, the older first, and one by village 9.
+        for (ago, severity, by) in [(3_000, 3, 8), (1_000, 2, 8), (2_000, 3, 9)] {
+            post(
+                &mut st,
+                &cmd(ReportKind::Raid, severity, village(by), village(7), ago),
+            );
+        }
+        let a = answer_one(&mut st, ask_of(1, ask::holder::VILLAGE, 7, 5, ask::NEWS));
+        let mut told: Vec<(u8, u32)> = a.news.iter().map(|n| (n.severity, n.ago)).collect();
+        told.sort();
+        assert_eq!(told, vec![(2, 1_000), (3, 2_000)], "{told:?}");
     }
 
     fn cand(r: Report, now: u64, flags: u32) -> Candidate {
@@ -1447,7 +1714,7 @@ mod tests {
                 ask_of(2, ask::holder::VILLAGE, 7, 5, 0),
             ],
         );
-        let one = facts::record_size(0) + 2 * wire::align8(wire::cmd::dict::size(16));
+        let one = facts::record_size(0, false) + 2 * wire::align8(wire::cmd::dict::size(16));
         let (got, more) = write(&mut st, one);
         assert!(more, "the second does not fit");
         assert_eq!(got.len(), 1);
@@ -2360,5 +2627,406 @@ mod tests {
         assert_eq!(st.talk.stats.talked_refused, 0, "skipped, not refused");
         let a = ask_of(1, ask::holder::VILLAGE, 8, 5, 0);
         assert_eq!(answer_one(&mut st, a).sentiment, 0);
+    }
+    // ---- a camp (slice 4, TK71 to TK84) ------------------------------------------------------
+
+    /// A state with the two villages and the goblin camp 55 at (1300, 1000), found at [`NOW`];
+    /// the camp's index.
+    fn camp_world() -> (State, u32) {
+        let mut st = world();
+        let f = st
+            .conflict
+            .engine
+            .add_faction(
+                &mut st.phase1.world,
+                55,
+                "goblin",
+                Pos::new(0, 1_300, 1_000),
+                Tick(NOW),
+            )
+            .expect("goblins are a culture");
+        (st, f)
+    }
+
+    fn camp_actor(key: u64) -> TalkActor {
+        TalkActor {
+            class: class::CAMP,
+            a: key,
+            b: 0,
+        }
+    }
+
+    /// An order posting onto the board of the holder `key` names (a village or a camp).
+    fn cmd_on(key: u64, c: TalkReportCmd) -> TalkReportCmd {
+        TalkReportCmd { village: key, ..c }
+    }
+
+    const CAMP_ASK: u32 = ask::NEWS | ask::FACTION;
+
+    /// A camp's answer reads its chief's board: news from the camp's side is by us, news of the
+    /// camp's own losses to us, the player's own acts toward it are told as theirs, and the block
+    /// follows the news.
+    #[test]
+    fn a_camp_answers_with_its_chiefs_news_and_the_faction_block() {
+        let (mut st, f) = camp_world();
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Raid, 3, camp_actor(55), village(7), DAY),
+            ),
+        );
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Assault, 100, player(5), camp_actor(55), DAY),
+            ),
+        );
+        assert_eq!(st.talk.stats.posted, 2, "a camp's board takes TEST posts");
+        assert_eq!(st.talk.stats.post_refused, 0);
+
+        let f_ = answer_one(&mut st, ask_of(41, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(f_.ask_id, 41);
+        assert_eq!(f_.flags, facts::HOLDER | facts::FACTION);
+        assert!(
+            f_.sentiment < 0,
+            "the chief saw the player assault the camp: {}",
+            f_.sentiment
+        );
+        assert_eq!((f_.scarcest, f_.glutted), (0, 0), "a camp talks no prices");
+        assert_eq!(f_.news.len(), 2);
+        let by_us = f_
+            .news
+            .iter()
+            .find(|n| n.kind == ReportKind::Raid as u16)
+            .unwrap();
+        assert_eq!(by_us.talk_flags & (news::BY_US | news::TO_US), news::BY_US);
+        assert_eq!((by_us.who.class, by_us.who.a), (class::CAMP, 55));
+        assert_eq!((by_us.whom.class, by_us.whom.a), (class::VILLAGE, 7));
+        let to_us = f_
+            .news
+            .iter()
+            .find(|n| n.kind == ReportKind::Assault as u16)
+            .unwrap();
+        assert_eq!(
+            to_us.talk_flags & (news::YOU_DID | news::TO_US | news::BY_US),
+            news::YOU_DID | news::TO_US,
+            "the camp itself is us, whatever the chief or the heir"
+        );
+
+        let b = f_.faction.expect("the ask wanted the block");
+        let x = &st.conflict.engine.factions[f as usize];
+        assert_eq!((b.rung, b.signal), (0, facts::faction::NO_SIGNAL));
+        assert_eq!(b.grievance, 0.0);
+        assert_eq!((b.cowed_ticks, b.plunders), (0, x.plunders));
+        assert_eq!(b.chief, Ref::default(), "M9's, never set yet");
+        assert_eq!(
+            b.mood,
+            facts::faction::mood::STRONG,
+            "a new camp has all its warriors and nothing else to say"
+        );
+        assert_eq!(st.talk.stats.with_faction, 1);
+        assert_eq!(st.talk.stats.with_holder, 1);
+        // The record carries the block after the news, and nothing else changed.
+        assert_eq!(f_.size(), facts::record_size(2, true), "48 + 2 x 120 + 48");
+    }
+
+    #[test]
+    fn the_faction_block_comes_only_when_asked_for_and_only_for_a_camp() {
+        let (mut st, _) = camp_world();
+        let plain = answer_one(&mut st, ask_of(1, ask::holder::FACTION, 55, 5, ask::NEWS));
+        assert_eq!(
+            plain.flags,
+            facts::HOLDER,
+            "no FACTION without the ask flag"
+        );
+        assert_eq!(plain.faction, None);
+        assert_eq!(plain.size(), facts::record_size(0, false));
+        // The block alone, without news.
+        let only = answer_one(
+            &mut st,
+            ask_of(2, ask::holder::FACTION, 55, 5, ask::FACTION),
+        );
+        assert_eq!(only.flags, facts::HOLDER | facts::FACTION);
+        assert!(only.news.is_empty());
+        assert!(only.faction.is_some());
+        assert_eq!(only.size(), 96);
+        // A village asked with the flag gets none: the flag is meant for camps.
+        let v = answer_one(&mut st, ask_of(3, ask::holder::VILLAGE, 7, 5, CAMP_ASK));
+        assert_eq!(v.flags, facts::HOLDER);
+        assert_eq!(v.faction, None);
+        // Nor does a caravan or a camp that is no camp.
+        let nobody = answer_one(&mut st, ask_of(4, ask::holder::FACTION, 56, 5, CAMP_ASK));
+        assert_eq!((nobody.flags, nobody.faction), (0, None));
+        assert_eq!(st.talk.stats.with_faction, 1);
+    }
+
+    #[test]
+    fn a_camp_is_unknown_while_the_conflict_is_off() {
+        let (mut st, _) = camp_world();
+        st.conflict.enabled = false;
+        let f = answer_one(&mut st, ask_of(1, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(f.flags, 0);
+        assert_eq!(f.faction, None);
+        assert!(f.news.is_empty());
+        // And the TEST order has no camp's board to post on.
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Raid, 3, camp_actor(55), village(7), DAY),
+            ),
+        );
+        assert_eq!(st.talk.stats.post_refused, 1);
+        st.conflict.enabled = true;
+        let f = answer_one(&mut st, ask_of(2, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(f.flags, facts::HOLDER | facts::FACTION);
+    }
+
+    #[test]
+    fn a_camp_with_no_chief_answers_from_its_heir_and_with_neither_from_nobody() {
+        let (mut st, f) = camp_world();
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Raid, 3, camp_actor(55), village(7), DAY),
+            ),
+        );
+        let (chief, heir) = {
+            let x = &st.conflict.engine.factions[f as usize];
+            (x.chief, x.heir)
+        };
+        // The chief falls, and what it held (the raid it told of) passes to the heir.
+        st.phase1.world.knowledge.die(chief, Tick(NOW));
+        let a = answer_one(&mut st, ask_of(1, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(a.flags, facts::HOLDER | facts::FACTION);
+        assert_eq!(a.news.len(), 1, "the heir inherited the chief's board");
+        assert_eq!(a.news[0].talk_flags & news::BY_US, news::BY_US);
+        // The heir too: the camp is still known, with nothing to tell.
+        st.phase1.world.knowledge.die(heir, Tick(NOW));
+        let n = answer_one(&mut st, ask_of(2, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(n.flags, facts::HOLDER | facts::FACTION);
+        assert_eq!(n.sentiment, 0);
+        assert!(n.news.is_empty());
+        assert!(n.faction.is_some());
+    }
+
+    /// A feud against the asker shows in the block; another player is a stranger to it.
+    #[test]
+    fn the_block_carries_the_feud_against_the_asker_and_not_against_another() {
+        use rtsim_conflict::SignalKind;
+        use rtsim_conflict::engine::Signal;
+        let (mut st, _) = camp_world();
+        // The player is known to phase 1 once something names them.
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Assault, 100, player(5), camp_actor(55), DAY),
+            ),
+        );
+        let uuid = (5, 6);
+        let p = st.phase1.world.player_uuid(uuid.0, uuid.1);
+        let w = &mut st.phase1.world;
+        st.conflict.engine.player(w, uuid);
+        st.conflict.engine.signal(
+            w,
+            Signal {
+                faction: Some(55),
+                kind: SignalKind::Killing,
+                amount: 3.0,
+                actor: p,
+                pos: Pos::new(0, 1_300, 1_000),
+                district: None,
+            },
+            Tick(NOW),
+        );
+        let b = answer_one(
+            &mut st,
+            ask_of(1, ask::holder::FACTION, 55, 5, ask::FACTION),
+        )
+        .faction
+        .unwrap();
+        let view = st.conflict.engine.feud_view(55, p).unwrap();
+        assert_eq!(b.rung, view.step as u8);
+        assert_eq!(b.signal, SignalKind::Killing as u16);
+        assert!(b.grievance > 0.0);
+        assert!((f64::from(b.grievance) - view.grievance).abs() < 1e-3 * view.grievance);
+        // A player the camp has no feud with.
+        let q = answer_one(
+            &mut st,
+            ask_of(2, ask::holder::FACTION, 55, 9, ask::FACTION),
+        )
+        .faction
+        .unwrap();
+        assert_eq!((q.rung, q.signal, q.grievance), (0, 0xFFFF, 0.0));
+    }
+
+    /// The moods of a camp, read at the engine's time, through the real tables.
+    #[test]
+    fn the_block_gives_a_camps_moods_through_the_real_engine() {
+        use facts::faction::mood;
+        let (mut st, f) = camp_world();
+        let ask = |id| ask_of(id, ask::holder::FACTION, 55, 5, ask::FACTION);
+        let moods = |st: &mut State, id| answer_one(st, ask(id)).faction.unwrap();
+        // Cowed for 5,000 more ticks, with the war chief out, the pool a quarter of its cap.
+        {
+            let x = &mut st.conflict.engine.factions[f as usize];
+            x.cowed_until = Tick(NOW + 5_000);
+            x.chief_out = true;
+            x.pool = 10.0;
+            x.pool_at = Tick(NOW);
+        }
+        let b = moods(&mut st, 1);
+        assert_eq!(b.mood, mood::COWED | mood::CHIEF_OUT | mood::LEAN);
+        assert_eq!(b.cowed_ticks, 5_000);
+        // A succession in the last ten days: a new chief.
+        st.conflict.engine.factions[f as usize].chiefs = 3;
+        let b = moods(&mut st, 2);
+        assert_eq!(
+            b.mood,
+            mood::COWED | mood::CHIEF_OUT | mood::LEAN | mood::NEW_CHIEF
+        );
+        // The cowing is over, the war chief is back and the pool has recruited back to its cap; the
+        // ten days' edge of a new chief is `a_chief_is_new_for_ten_days...`'s (the block reads the
+        // conflict's own time, which only the conflict's events move).
+        {
+            let x = &mut st.conflict.engine.factions[f as usize];
+            x.cowed_until = Tick(NOW);
+            x.chief_out = false;
+            x.chiefs = 2;
+            x.pool = 60.0;
+            x.pool_at = Tick(NOW);
+        }
+        let b = moods(&mut st, 3);
+        assert_eq!(b.mood, mood::STRONG);
+        assert_eq!(b.cowed_ticks, 0);
+    }
+
+    // The moods themselves, at their edges.
+
+    fn facts_of(chiefs: u32, pool: f64, cap: f64) -> FactionFacts {
+        let (st, _) = camp_world();
+        let mut ff = faction_facts(&st.conflict.engine, 55, None).unwrap();
+        ff.chiefs = chiefs;
+        ff.pool = pool;
+        ff.pool_cap = cap;
+        ff.now = Tick(NOW);
+        ff
+    }
+
+    #[test]
+    fn lean_is_under_a_third_of_the_cap_and_strong_is_the_cap_within_half_a_warrior() {
+        use facts::faction::mood::{LEAN, STRONG};
+        let m = |pool, cap| faction_block(&facts_of(2, pool, cap), None, false).mood;
+        assert_eq!(m(19.9, 60.0), LEAN);
+        assert_eq!(m(20.0, 60.0), 0, "exactly a third is not lean");
+        assert_eq!(m(0.0, 60.0), LEAN);
+        assert_eq!(m(59.5, 60.0), STRONG);
+        assert_eq!(m(59.4, 60.0), 0);
+        assert_eq!(m(60.0, 60.0), STRONG);
+        // A cap under a warrior and a half: the ranges meet, and lean wins; never both.
+        assert_eq!(m(0.0, 1.0), LEAN);
+        assert_eq!(m(0.2, 1.0), LEAN);
+        assert_eq!(m(0.5, 1.0), STRONG);
+        // A culture with no cap has neither.
+        assert_eq!(m(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_chief_is_new_for_ten_days_after_a_succession_and_never_before_one() {
+        use facts::faction::mood::NEW_CHIEF;
+        let m = |chiefs, born: Option<u64>| {
+            faction_block(&facts_of(chiefs, 30.0, 60.0), born.map(Tick), false).mood & NEW_CHIEF
+        };
+        assert_eq!(m(3, Some(NOW)), NEW_CHIEF);
+        assert_eq!(
+            m(3, Some(NOW + 1)),
+            NEW_CHIEF,
+            "a heir born in the future: not past"
+        );
+        assert_eq!(m(3, Some(NOW - NEW_CHIEF_TICKS + 1)), NEW_CHIEF);
+        assert_eq!(m(3, Some(NOW - NEW_CHIEF_TICKS)), 0);
+        assert_eq!(
+            m(2, Some(NOW)),
+            0,
+            "the founding chief was never succeeded to"
+        );
+        assert_eq!(m(3, None), 0, "a heir that is gone says nothing");
+        assert_eq!(NEW_CHIEF_TICKS, 10 * DAY);
+        // A chief who has died with the heir answering: new, whatever `chiefs` and the heir's birth
+        // still say (the succession is lazy).
+        let gone = |chiefs, born: Option<u64>| {
+            faction_block(&facts_of(chiefs, 30.0, 60.0), born.map(Tick), true).mood & NEW_CHIEF
+        };
+        assert_eq!(gone(2, Some(0)), NEW_CHIEF, "born ages ago");
+        assert_eq!(gone(2, None), NEW_CHIEF);
+    }
+
+    /// An old-age death is not a succession until the conflict next wakes: the heir answers and the
+    /// block already says the chief is new; with the chief alive it does not.
+    #[test]
+    fn a_dead_chief_with_the_heir_answering_is_a_new_chief_before_the_succession_runs() {
+        use facts::faction::mood::NEW_CHIEF;
+        let (mut st, f) = camp_world();
+        let block = |st: &mut State, id| {
+            answer_one(st, ask_of(id, ask::holder::FACTION, 55, 5, CAMP_ASK))
+                .faction
+                .expect("a camp's block")
+        };
+        assert_eq!(
+            block(&mut st, 1).mood & NEW_CHIEF,
+            0,
+            "the founding chief lives"
+        );
+        let (chief, heir) = {
+            let x = &st.conflict.engine.factions[f as usize];
+            (x.chief, x.heir)
+        };
+        st.phase1.world.knowledge.die(chief, Tick(NOW));
+        let x = &st.conflict.engine.factions[f as usize];
+        assert_eq!(
+            (x.chief, x.heir, x.chiefs),
+            (chief, heir, 2),
+            "no succession yet"
+        );
+        assert_eq!(block(&mut st, 2).mood & NEW_CHIEF, NEW_CHIEF);
+        // With the heir gone too nobody answers, and a camp with no chief and no heir is not "new".
+        st.phase1.world.knowledge.die(heir, Tick(NOW));
+        assert_eq!(block(&mut st, 3).mood & NEW_CHIEF, 0);
+    }
+
+    #[test]
+    fn the_block_codes_the_rung_the_signal_and_the_cowing_and_never_says_you_killed_the_chief() {
+        use rtsim_conflict::{SignalKind, Step};
+        let mut ff = facts_of(2, 30.0, 60.0);
+        ff.step = Step::Siege;
+        ff.signal = Some(SignalKind::Building);
+        ff.grievance = 12.5;
+        ff.plunders = 7;
+        ff.cowed_until = Tick(u64::MAX);
+        let b = faction_block(&ff, None, false);
+        assert_eq!(b.rung, 6);
+        assert_eq!(b.signal, 5);
+        assert_eq!(b.grievance, 12.5);
+        assert_eq!(b.plunders, 7);
+        assert_eq!(b.cowed_ticks, u32::MAX, "saturates");
+        assert_eq!(b.mood & facts::faction::mood::YOU_KILLED_CHIEF, 0);
+        assert_eq!(
+            b.mood & facts::faction::mood::COWED,
+            facts::faction::mood::COWED
+        );
+        for (kind, code) in SignalKind::ALL.iter().zip(0u16..) {
+            ff.signal = Some(*kind);
+            assert_eq!(faction_block(&ff, None, false).signal, code);
+        }
+        ff.signal = None;
+        ff.cowed_until = Tick(NOW);
+        let b = faction_block(&ff, None, false);
+        assert_eq!(b.signal, 0xFFFF);
+        assert_eq!(b.cowed_ticks, 0, "cowed until now is not cowed");
+        assert_eq!(b.mood & facts::faction::mood::COWED, 0);
     }
 }
