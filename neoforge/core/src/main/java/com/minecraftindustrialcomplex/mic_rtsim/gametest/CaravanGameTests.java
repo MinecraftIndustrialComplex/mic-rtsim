@@ -65,10 +65,11 @@ public final class CaravanGameTests {
         return n;
     }
 
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT)
     public static void traderAndLlamasCaptureAsOneGroupAndNoLlamaDespawns(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         ServerLevel level = helper.getLevel();
+        ChunkWait waits = ChunkWait.of(helper, 600);
         spawnCaravan(helper, agent, 1);
         ChunkPos forced = farChunk(helper, 0);
         BlockPos frozenAt = new BlockPos(forced.getMinBlockX() + 16 + 8, (int) RtsimTests.centre(helper).y, forced.getMinBlockZ() + 8);
@@ -76,7 +77,7 @@ public final class CaravanGameTests {
         long[] trapTick = new long[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenWaitUntil(waits.logic(() -> RtsimTests.embodied(agent)))
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
                     for (int i = 0; i < 3; i++)
@@ -110,8 +111,10 @@ public final class CaravanGameTests {
                     check("no member left the group (a despawn would show as removed by another)",
                             RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 3);
                 })
-                .thenWaitUntil(RtsimTests.io(() -> check("the far chunk is entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64)))))
-                .thenWaitUntil(RtsimTests.io(() -> check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z))))
+                .thenWaitUntil(waits.chunks(() -> {
+                    check("the far chunk is entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64)));
+                    check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z));
+                }))
                 .thenExecute(() -> {
                     check("the neighbour is loaded but not entity-ticking", !level.isPositionEntityTicking(frozenAt));
                     // One llama wanders into a chunk that is loaded but frozen: the whole caravan goes.
@@ -129,8 +132,8 @@ public final class CaravanGameTests {
                     check("no lead dropped at the frozen llama", leads(level, new AABB(frozenAt).inflate(16)) == 0);
                     level.setChunkForced(forced.x, forced.z, false);
                 })
-                .thenWaitUntil(() -> check("the engine received the capture",
-                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("the engine received the capture",
+                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty())))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> recs = RtsimTests.allFor(RtsimTests.engine(), agent);
                     List<Integer> kinds = new ArrayList<>();
