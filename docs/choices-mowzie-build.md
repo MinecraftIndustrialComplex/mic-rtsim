@@ -2749,6 +2749,31 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - A MASK answered for a warrior the books have `Left` is booked as a take: the slot goes `Gone` and keeps
     its place in the party.
   - An unanswered pair is void at CAMP_OUT and at a session start with the other lines.
+  - The heir killed before its seat is answered (found by run 10's grove chaos): a CAMP_DEATH on
+    `CHIEF_SLOT` whose generation is the heir's, while the SEAT_HEIR line is in flight and the books hold no
+    chief slot of that generation, seats the heir first (`seat_before_death`) and then books its death as any
+    chief's: the pressure steps for a player's kill, the heir is due again, the memory is cleared. The answer
+    that comes late, from a holder's record at the next camp-in, finds the generation retired at a death and
+    seats no one (`seated`). Without it the death booked nothing and the late answer seated a chief with no
+    body, written off after three misses with its fall never booked. A generation retired by a write-off is
+    untouched.
+  - The emulator plays the pair whole (`synth`, a gap): `FakeConflict` does both lines of a reconcile that
+    carries a MASK, or neither (`pair_possible`): a warrior that is tagged, not the chief, not elsewhere and
+    not near a player, and no body of the seat's slot and generation standing already. If either cannot be
+    done both are answered STALE, as MZB-408 has Java do. Before this the emulator could take a warrior and
+    not seat the heir, which the engine's invariant (every MASK done with its SEAT_HEIR done) rightly called
+    a bug of the emulator.
+  - The sim's grove checks, where the design leaves the detail open. Run 5 (`grove_rest`): plunder (livestock
+    only, eaten, no village defence; 8 raids ate 240 items), an Invasion led by the chief (fights of strength
+    3.8 and 12.6), the grove in and out (6 rounds, its own plunder drive quiet), hunts owed to the cap (2, 4,
+    6, 8, 8, 8, 8, 8) and the relief of a gift in nuggets equal to the same value in emeralds and to a trade
+    at the tenth. Run 6 (`grove_renewal`): the grove's wait, pressure and farmed rate from the culture's own
+    rule. Run 10 (`chief_chaos`): 32 groves of 220 events beside M4's 64-camp chaos, an Invasion ordered one
+    time in eight, the pair, the pool counts, the one live chief body and the write-offs checked after every
+    event; where holders journal again no member is written off. Run 12 (`heir_farmed`): the Umvuthi killed a
+    few ticks after its seat for 60 game years (96 days each): base 6 gives 1.822 a year against the closed
+    form's 1.810 and the doc's 1.8, base 24 gives 1.003 against 1.000, every wait the kernel's own
+    `min(192, base x 2^P)` on its day.
 - **MZB-446** (the tribute stack, M9a; settles MZB-423's open edges):
   - One op is one stack: at most 64 items, the least of what is owed, the stock and 64. Core's
     TRANSFER_TO_CONTAINER fails above an item's own stack size, so only the tribute good is owed (the gold
@@ -2777,6 +2802,8 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     nothing.
   - Nothing is owed on Peaceful, by a culture with no `hunt_cap`, or by a raid the infrastructure skipped.
     A hunt already owed when Peaceful begins stays owed.
+  - A replacement's op folds in the op it replaces (`owe_hunt` hashes district, tick and the held op), so
+    a replacement in the very tick of the first gets a new op all the same.
   - The hunts go again with the notices, after the replay has caught up (`resend_notices`), and not in
     `session_start`: a HUNT_APPLIED journaled last session must clear its hunt before the plugin hears of it,
     or the animals die twice.

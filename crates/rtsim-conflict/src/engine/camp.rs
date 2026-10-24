@@ -2086,6 +2086,14 @@ impl Conflict {
         if a.slot != CHIEF_SLOT || a.generation == 0 {
             return false;
         }
+        // A heir whose death the books have: the late answer of its seat seats no one.
+        if camp
+            .retired
+            .iter()
+            .any(|r| r.slot == CHIEF_SLOT && r.died && r.generation == a.generation)
+        {
+            return false;
+        }
         match camp.chief_index() {
             Some(i) if camp.slots[i].state != SlotState::Dead => {
                 if camp.slots[i].generation == a.generation {
@@ -2108,6 +2116,33 @@ impl Conflict {
 
     // ---- CAMP_DEATH ------------------------------------------------------------------------
 
+    /// The heir's body died before the answer to its SEAT_HEIR reached the books (the answer lost
+    /// and held for the next camp-in, or a death first): the books seat it now, so its death is
+    /// booked as any chief's, and the answer that comes late finds a generation retired at a death
+    /// (`seated`). Otherwise the death would book nothing and the answer would seat a chief with
+    /// no body, to be written off after three misses with its fall never booked.
+    fn seat_before_death(&mut self, f: u32, generation: u32) {
+        let key = self.factions[f as usize].key;
+        let Some(mut camp) = self.factions[f as usize].camp.take() else {
+            return;
+        };
+        if generation != 0
+            && camp.seat.is_some()
+            && camp.index(CHIEF_SLOT, generation).is_none()
+            && camp.heir_generation(key) == Some(generation)
+        {
+            let a = boundary::LineAnswer {
+                line: 0,
+                slot: CHIEF_SLOT,
+                generation,
+                action: ACTION_SEAT_HEIR,
+                outcome: LINE_DONE,
+            };
+            self.seated(&mut camp, f, &a);
+        }
+        self.factions[f as usize].camp = Some(camp);
+    }
+
     /// A camp body died or was carried off (MOWZIE.md §4.9): the death of a body whose slot and
     /// generation the books hold kills that member wherever the books have it. At home the pool
     /// loses one; away its party loses that unit in any phase (a party left with no units ends
@@ -2120,6 +2155,9 @@ impl Conflict {
             return;
         }
         self.camp_sync(f, at);
+        if d.slot == CHIEF_SLOT {
+            self.seat_before_death(f, d.generation);
+        }
         let Some(i) = self.camp(f).and_then(|c| c.index(d.slot, d.generation)) else {
             return;
         };
