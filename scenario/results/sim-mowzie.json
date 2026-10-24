@@ -44,12 +44,12 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 265631f0d60804e4"
+          "detail": "state hash 29e6d787bf900050"
         },
         {
           "name": "4 legs a day",
           "ok": true,
-          "detail": "4 legs a day: settles 17.2, Notice 11.6, Raid never, 140 never, Invasion never, pushes 19; wakes 2.09 a day; first seed state 6680a34a114a9688"
+          "detail": "4 legs a day: settles 17.2, Notice 11.6, Raid never, 140 never, Invasion never, pushes 19; wakes 2.09 a day; first seed state 30d0d1fc596b08dc"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -69,7 +69,7 @@
         {
           "name": "12 legs a day",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 77d7229e29fa37c9"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 7f22e5348f32944b"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -89,7 +89,7 @@
         {
           "name": "24 legs a day",
           "ok": true,
-          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state fb4eb382133c503a"
+          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state 0381adc0d5f3b65a"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -109,7 +109,7 @@
         {
           "name": "50 legs a day",
           "ok": true,
-          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state c3b72e3e6348396f"
+          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state 57bdaca713e2c699"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -134,7 +134,7 @@
         {
           "name": "14 lines at 1.7 legs a day on one trunk (23.8)",
           "ok": true,
-          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state 81d68e44f763963c"
+          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state ac04ca00bfb24848"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -239,7 +239,11 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0
+        "rail_stale": 0,
+        "lurks": 0,
+        "lurks_ended": 0,
+        "passes": 0,
+        "passes_watched": 0
       },
       "log": [
         {
@@ -539,7 +543,7 @@
         {
           "name": "cut service: under 70, under 42, settles",
           "ok": true,
-          "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state dffd4a7d543abd7f"
+          "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state 34fbbc9330cb0683"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -569,7 +573,7 @@
         {
           "name": "stopped service: under 70, under 42, settles",
           "ok": true,
-          "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state c63fc381c90bb2bd"
+          "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state 4191ec712f4df785"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -614,12 +618,12 @@
         {
           "name": "the track moved off the circle: the grievance follows the stopped row",
           "ok": true,
-          "detail": "under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0; first seed state 88228ff0038d66a9"
+          "detail": "under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0; first seed state cf1105b373a1dbdd"
         },
         {
           "name": "the track moved within the circle: the next Raid aims at the new point",
           "ok": true,
-          "detail": "raids on the track at x [(7.583333333333333, 1050), (15.166666666666666, 1000)] (days, x); the line's point at x Some(1000) (was 1050); first seed state 8399a4472973dbb2"
+          "detail": "raids on the track at x [(7.583333333333333, 1050), (15.166666666666666, 1000)] (days, x); the line's point at x Some(1000) (was 1050); first seed state c9e5ad858f828356"
         }
       ],
       "rungs": [],
@@ -634,12 +638,12 @@
         {
           "name": "den A (west of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 4111cb9b9e9f40b6"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 2918efdf6e4e90d6"
         },
         {
           "name": "den B (east of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 4111cb9b9e9f40b6"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 2918efdf6e4e90d6"
         },
         {
           "name": "a den found on day 10 gets its first pass from the next train and its own meter",
@@ -679,7 +683,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash debe2d8bd0ff780b"
+          "detail": "state hash 46e1cae384a26327"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -780,7 +784,11 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0
+        "rail_stale": 0,
+        "lurks": 0,
+        "lurks_ended": 0,
+        "passes": 0,
+        "passes_watched": 0
       },
       "log": [
         {
@@ -989,7 +997,7 @@
         {
           "name": "a save and load mid-wait arrives on the same tick, to the same books",
           "ok": true,
-          "detail": "state 972f8928f7b83c24 against 972f8928f7b83c24, then [1, 0, 0, 0, 0]"
+          "detail": "state 2b64e815141a4e58 against 2b64e815141a4e58, then [1, 0, 0, 0, 0]"
         }
       ],
       "rungs": [],
@@ -1059,17 +1067,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 6f8bada25cfd4624 against 6f8bada25cfd4624, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state 30646bfb37146530 against 30646bfb37146530, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state 8f9a56afc5665c52 against 8f9a56afc5665c52, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state 7cad1800cb058846 against 7cad1800cb058846, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state f8a504d9f2e6473a against f8a504d9f2e6473a, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state a5c43011ed51a8b6 against a5c43011ed51a8b6, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
