@@ -482,6 +482,9 @@ pub enum Obs {
     Discard {
         district: DistrictId,
         reason: DiscardReason,
+        /// The station whose call made it, for `Other` from a train (SECTIONS.md §3.6): its last
+        /// `IND_STATION_PORTS` names the units it discards. None for every other discard.
+        station: Option<StationId>,
     },
     LoadState {
         district: DistrictId,

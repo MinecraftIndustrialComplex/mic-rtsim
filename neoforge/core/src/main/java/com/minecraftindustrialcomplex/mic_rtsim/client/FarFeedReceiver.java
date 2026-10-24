@@ -89,6 +89,16 @@ final class FarFeedReceiver {
     /** Far clock minus game time, as the legs are timed; NaN until known. */
     private double offset = Double.NaN;
     long retimes;
+    /** Run when a message starts the view over (a RESET), before its records are applied. */
+    private final Runnable onReset;
+
+    FarFeedReceiver() {
+        this(() -> {});
+    }
+
+    FarFeedReceiver(Runnable onReset) {
+        this.onReset = onReset;
+    }
 
     /** One object of the feed, by its handle. */
     private static final class Obj {
@@ -160,8 +170,10 @@ final class FarFeedReceiver {
             FarObjects.clear(FarFeedClient.SOURCE);
             throw e;
         }
-        if ((m.flags() & FarWire.RESET) != 0)
+        if ((m.flags() & FarWire.RESET) != 0) {
             objs.clear();
+            onReset.run();
+        }
         double now = FarClock.ticks();
         if (Double.isNaN(offset))
             offset = now - m.gameTime();
@@ -211,9 +223,10 @@ final class FarFeedReceiver {
                     o = new Obj();
                     objs.put(i.handle(), o);
                 }
-                // A body says its age, the engine's leg does not: a dragon handed back to its leg keeps the age
-                // its body had, so it is not drawn a size smaller or bigger, while it stays at that stage
-                // (docs/choices-dh-feed.md DHT60); a leg of another stage has outgrown it
+                // A source that does not say its age (-1): a dragon handed back to it keeps the age it had, so it
+                // is not drawn a size smaller or bigger, while it stays at that stage (docs/choices-dh-feed.md
+                // DHT60); one of another stage has outgrown it. The engine's legs say it since DHT67
+                // (DECISIONS.md DH-7)
                 boolean keepAge = same && i.age() < 0 && o.size == i.size();
                 o.id = i.id();
                 o.kind = FarKind.ofWire(i.kind());

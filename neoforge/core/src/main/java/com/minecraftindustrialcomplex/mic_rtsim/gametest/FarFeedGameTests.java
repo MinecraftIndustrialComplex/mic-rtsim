@@ -54,6 +54,8 @@ public final class FarFeedGameTests {
 
     private static final String BODY = "mic_rtsim:gametest_far_dragon";
     private static final int STYLE = 2, VARIANT = 1, STAGE = 3, RGB = 0x445566;
+    /** The legs' age in days (DH-7): stage 3's, past its middle. */
+    private static final int AGE_DAYS = 63;
 
     /** The test's body source: what an embodied dragon's plugin would give, while {@link #item} is set. */
     private static final class BodySource implements FarSource {
@@ -102,6 +104,7 @@ public final class FarFeedGameTests {
         b.putLong(FarLegs.T0, t0);
         b.putLong(FarLegs.T1, t1);
         b.putInt(FarLegs.RADIUS, radius);
+        b.putInt(FarLegs.AGE, AGE_DAYS);
         SessionPlugin.EngineNames names = (kind, id) -> kind == Obs.DICT_DIMENSION && id == 3 ? dim
                 : kind == Obs.DICT_BODY && id == 7 ? BODY : null;
         session.farLegs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, state.wire, names);
@@ -190,16 +193,19 @@ public final class FarFeedGameTests {
             List<FarWire.Rec> r1 = of(m1, handle);
             FarWire.Intro intro = (FarWire.Intro) r1.get(0);
             check("its intro carries its looks: " + intro, intro.kind() == FarKind.DRAGON.wire && intro.style() == STYLE
-                    && intro.variant() == VARIANT && intro.size() == STAGE && intro.rgb() == RGB);
+                    && intro.variant() == VARIANT && intro.size() == STAGE && intro.rgb() == RGB
+                    && intro.age() == AGE_DAYS);
             check("it flies a leg", has(r1, FarWire.Leg.class) && !has(r1, FarWire.Sample.class)
                     && !has(r1, FarWire.Real.class));
             record("far feed hand-over", "first message", m1.recs().size() + " records, " + sent.get(0).length + " bytes");
 
             // 2. Embodied: the engine says BODY, a stale FLY would lose too, and the body's samples win on the same handle
             leg(session, dim, agent, FarState.BODY, py + 2, px + 2, pz + 2, px + 2, pz + 2, now, now, 0);
+            // The body's own age, as DragonFeedSource sends it: the leg's (DH-7), so its looks do not change
             Vec3 b0 = body.position();
             src.item = new FarItem(agent, FarKind.DRAGON, STYLE, VARIANT, STAGE, RGB, FarState.FLY,
-                    new double[]{b0.x + 0.5, b0.y + 1, b0.z, b0.x - 0.5, b0.y + 1, b0.z}, null, body.getId(), 10);
+                    new double[]{b0.x + 0.5, b0.y + 1, b0.z, b0.x - 0.5, b0.y + 1, b0.z}, null, body.getId(), 10, null,
+                    AGE_DAYS);
             FarWire.Message m2 = sweep(helper, sent);
             List<FarWire.Rec> r2 = of(m2, handle);
             check("embodied, it is sampled on the same handle with its entity id, and no new intro: " + r2,
@@ -210,7 +216,8 @@ public final class FarFeedGameTests {
 
             // 3. The body moves: only its sample goes out
             src.item = new FarItem(agent, FarKind.DRAGON, STYLE, VARIANT, STAGE, RGB, FarState.FLY,
-                    new double[]{b0.x + 2.5, b0.y + 1, b0.z, b0.x + 1.5, b0.y + 1, b0.z}, null, body.getId(), 10);
+                    new double[]{b0.x + 2.5, b0.y + 1, b0.z, b0.x + 1.5, b0.y + 1, b0.z}, null, body.getId(), 10, null,
+                    AGE_DAYS);
             List<FarWire.Rec> r3 = of(sweep(helper, sent), handle);
             check("a moving body sends only its sample: " + r3, r3.size() == 1 && r3.get(0) instanceof FarWire.Sample);
 

@@ -58,6 +58,16 @@ public interface IndustryPlugin {
     default void links(BlockEntity be, Consumer<BlockPos> out) {}
 
     /**
+     * Whether this block entity is a part of a network that a district's compile follows out of its chunks
+     * (SECTIONS.md §3.6, choice SC77: a kinetic part, a chain conveyor). A player placing or breaking one in a
+     * chunk of no district edits each district whose network reaches that chunk; any other block entity there
+     * (a chest, a sign) edits none. The default: no.
+     */
+    default boolean networkPart(BlockEntity be) {
+        return false;
+    }
+
+    /**
      * For a multiblock inventory, the position whose capability is the whole inventory (a vault's or a
      * tank's controller), so it is counted once; null when this plugin does not know the block.
      */
