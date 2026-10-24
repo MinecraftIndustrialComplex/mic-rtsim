@@ -4125,7 +4125,8 @@ impl Engine {
         // A package the frontier held landed: struck from the held ones, wherever a declaration
         // moved its key (choice SC137). A drawn one the far replay drew already: back into the
         // pool of the frogport it landed at first, so the landing takes it there (a duplicate at
-        // worst, choice SC143).
+        // worst, choice SC143); a landing a census counted already takes nothing, and the census
+        // (which counts no drawn package) has it right, so it goes into no pool.
         if p.direction == ChainDirection::In
             && let Some(key) = p.key
         {
@@ -4137,17 +4138,22 @@ impl Engine {
             } else if let Some(id) = self.store_drawing(key, Some(p.store))
                 && let Some((pos, h)) = self.stores.get_mut(&id).and_then(|s| s.strike_drawn(key))
             {
-                let landing = self
-                    .stores
-                    .get(&p.store)
-                    .and_then(|s| s.frogports.get(p.frogport as usize))
-                    .map(|f| f.pos);
-                let (into, pos) = match landing {
-                    Some(l) => (p.store, l),
-                    None => (id, pos),
+                let landing = self.stores.get(&p.store).and_then(|s| {
+                    let counted = s.census_at.is_some_and(|c| recorded <= c);
+                    s.frogports
+                        .get(p.frogport as usize)
+                        .map(|f| (f.pos, counted))
+                });
+                let (into, pos, counted) = match landing {
+                    Some((l, counted)) => (p.store, l, counted),
+                    None => (id, pos, false),
                 };
                 if let Some(s) = self.stores.get_mut(&into) {
-                    s.drawn_back(pos, &h);
+                    if counted {
+                        s.counts.drawn_back += h.packages;
+                    } else {
+                        s.drawn_back(pos, &h);
+                    }
                     s.counts.held_landed += u64::from(p.packages);
                 }
                 self.removes_asked.remove(&key);
