@@ -396,7 +396,10 @@ fn reset_if_due(st: &mut State) {
 /// The kept notices to the plugin, once the session's replay has caught up (MZB-31): a
 /// NOTICE_SHOWN journaled last session after the pages' save has cleared its notice by now. A
 /// notice a replayed record made again is dropped from the queue first: what is kept is what
-/// goes.
+/// goes. So is an AMBUSH_SPOT (a lurk a replayed record began or ended, MZB-353): Java's lurk table
+/// lives for one session, and `resend_lurks` says each lurk once. The `take_commands` before the
+/// drop is what moves them here from the engine's outbox, where `resend_lurks`'s own drop would
+/// have found them.
 fn resend_notices_if_due(st: &mut State) {
     if !st.conflict.notices_due || !running(st) {
         return;
@@ -405,7 +408,7 @@ fn resend_notices_if_due(st: &mut State) {
     take_commands(st);
     st.conflict
         .queue
-        .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_)));
+        .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_) | Cmd::AmbushSpot(_)));
     st.conflict.engine.resend_notices();
     take_commands(st);
 }

@@ -3449,6 +3449,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - Amendment (built, step 1): `resend_lurks` first drops any AMBUSH_SPOT still queued (one a replayed
     record made again), as `resend_notices` drops queued notices, so what is kept is what goes and a lurk
     is never sent twice in a session. `lurk_start` and `lurk_end` are the only other pushers.
+  - Amendment (review A, P3): the host never reached that drop. `resend_notices_if_due` calls
+    `take_commands` first (rtsim-jni `conflict.rs`), which moves a replay-made AMBUSH_SPOT from the
+    engine's outbox into the link's queue, and the `retain` that followed dropped only Notices, so the
+    spot went out twice (harmless: same epoch, the later wins). The `retain` drops a queued
+    `Cmd::AmbushSpot` too (one that carries test names is a test's order and stays). The protocol test
+    is step 3's. `fix/replay-push`'s gate will also cover this (it holds the engine's commands until the
+    replay has caught up), but its `Outbox` has no `extend`, so when that branch merges `resend_lurks`
+    needs a push loop where it now calls `self.outbox.extend(lurks)`.
 - **MZB-354** (home): `home()`'s kept-row branch (about 3842) rewrites a Track target to `Pos(track)`, so a
   row kept after its party is home never reads as a lurk.
   - Amendment (built, step 1): the removal went at `go_home`, so the kept row says nothing more. It keeps
