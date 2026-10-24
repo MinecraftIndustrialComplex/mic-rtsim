@@ -256,6 +256,75 @@ fn an_heir_killed_before_its_seat_is_answered_is_booked_dead_and_its_late_record
     ok(&mut r);
 }
 
+fn home_warriors(r: &CampRun) -> usize {
+    r.c.camp(r.f)
+        .unwrap()
+        .slots
+        .iter()
+        .filter(|s| s.id != CHIEF_SLOT && s.state == SlotState::Body && s.line.is_none())
+        .count()
+}
+
+/// MOWZIE.md 4.10: a grove whose warriors are all dead at the due tick, and that then stays in,
+/// gets its heir once one is home, not only at its next census (review P2-1).
+#[test]
+fn an_heir_due_while_no_warrior_is_home_comes_once_one_is() {
+    let mut r = grove(5, 9);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    r.run(Tick(due.0 - 50));
+    let uuids: Vec<_> = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| b.generation != 0 && !b.chief)
+        .map(|b| b.uuid)
+        .collect();
+    let at = r.c.now() + 1;
+    for u in uuids {
+        assert!(r.plugin.camp_kill(r.key, u, boundary::BY_MOB, at));
+    }
+    r.run(due + 100);
+    assert_eq!(chief(&r), None, "no warrior home at the due tick: no pair");
+    assert_eq!(home_warriors(&r), 0);
+    r.run(due + days(60.0));
+    assert!(home_warriors(&r) > 0, "warriors came home");
+    assert!(
+        chief(&r).is_some(),
+        "the heir comes once a warrior is home: no SEAT_HEIR sent"
+    );
+    assert_eq!(lines_of(&r, boundary::ACTION_SEAT_HEIR), 1, "one pair");
+    ok(&mut r);
+}
+
+/// The same stall from a pair answered stale while the grove stays in (review P2-1).
+#[test]
+fn an_heir_pair_answered_stale_is_ordered_again_while_the_grove_stays_in() {
+    let mut r = grove(6, 9);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    r.run(Tick(due.0 - 50));
+    for b in &mut r.plugin.camp_world(r.key).bodies {
+        b.near = true;
+    }
+    r.run(due + 100);
+    assert_eq!(chief(&r), None, "the pair went out and was answered stale");
+    // One pair, not one for each answer: the next is an hour on.
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_SEAT_HEIR),
+        1,
+        "the pair went out"
+    );
+    for b in &mut r.plugin.camp_world(r.key).bodies {
+        b.near = false;
+    }
+    r.run(due + days(30.0));
+    assert!(
+        chief(&r).is_some(),
+        "the heir is ordered again while the grove stays in"
+    );
+    ok(&mut r);
+}
+
 /// MZB-406, MZB-407: a player's kill of the chief steps the camp's pressure by one, so its heir
 /// is due after twice the wait of a death no player caused; the players the chief had traded with
 /// are forgotten; the heir that comes has another generation. (The pressure is what is left of the
