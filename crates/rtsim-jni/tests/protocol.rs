@@ -7132,6 +7132,119 @@ mod conflict {
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
+
+    // ---- The fix round: phase 1 shows nothing while replaying (RP-44) ------------------------
+
+    /// The villages of [`phase1_across_a_replay`]: a player stands in A, on its roads to B and C.
+    const VILLAGES: [(u64, &str, i32, i32); 3] = [
+        (0x0001_0000_0000_00B1, "minecraft:village_plains", 0, 0),
+        (0x0001_0000_0000_00B2, "minecraft:village_taiga", 400, 0),
+        (0x0001_0000_0000_00B3, "minecraft:village_desert", 0, 400),
+    ];
+
+    /// What phase 1 sent around a replay ([`phase1_across_a_replay`]): (MARKET, SPAWN_GROUP)
+    /// commands while the replay ran and in the hand-overs after its end, and its hand-overs.
+    struct Phase1Replay {
+        during: (usize, usize),
+        after: (usize, usize),
+        hand_overs: u64,
+    }
+
+    /// RP-44 (the fix round's item 4): three villages, a goblin camp far off (so the conflict runs
+    /// and the world is held while replaying, docs/replay-gate.md §3.6), and a player standing in
+    /// village A, on its roads; days on until a caravan is materialized near it, then a save,
+    /// 4,000 fillers and a crash. The next session hands the journal over at `capacity`, one
+    /// hand-over at a time, the player where it was.
+    fn phase1_across_a_replay(name: &str, capacity: usize) -> Phase1Replay {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        for (key, structure, x, z) in VILLAGES {
+            j.adopt(key, structure, "human", 90, x, z);
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = [10.0, 64.0, 0.0];
+        j.players = vec![(PLAYER, dim, at)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        j.idle();
+        found(&mut j, (6_000, 6_000));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let counts = |j: &Java| (j.p1_of(cmd::MARKET).len(), j.p1_of(cmd::SPAWN_GROUP).len());
+        assert!(counts(&j).0 > 0, "the player in A has its market");
+        let mut quanta = 0;
+        while counts(&j).1 == 0 {
+            assert!(
+                quanta < 240,
+                "no caravan near the player: {:?}",
+                e.phase1_stats()
+            );
+            e.order(vec![Order::Phase1Advance(3_000)]).unwrap();
+            // Game time on too: phase 1 looks for what players see every 20 ticks of it.
+            j.game_time += 100;
+            j.idle();
+            quanta += 1;
+        }
+        save(&e, &mut j);
+        fillers(&mut j, 4_000);
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let e = engine(&dir, capacity);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.players = vec![(PLAYER, dim, at)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        let mut during = (0, 0);
+        for _ in 0..64 {
+            j.flush();
+            if replay_counts(&e).0 > 0 {
+                break;
+            }
+            during = counts(&j);
+        }
+        let (ended, hand_overs, _) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        j.idle();
+        let now = counts(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Phase1Replay {
+            during,
+            after: (now.0 - during.0, now.1 - during.1),
+            hand_overs,
+        }
+    }
+
+    /// A replay of several hand-overs: no market and no caravan while it runs, both once it has
+    /// ended.
+    #[test]
+    fn phase1_shows_nothing_while_replaying() {
+        let r = phase1_across_a_replay("phase1-replay-long", wire::MIN_CAPACITY);
+        assert!(r.hand_overs >= 3, "a replay of {} hand-overs", r.hand_overs);
+        assert_eq!(r.during, (0, 0), "(markets, caravans) sent while replaying");
+        assert!(
+            r.after.0 > 0 && r.after.1 > 0,
+            "the market and the caravan after the replay end: {:?}",
+            r.after
+        );
+    }
+
+    /// Control: the same replay in one hand-over, which ends before phase 1 runs.
+    #[test]
+    fn phase1_shows_its_market_and_caravan_after_a_one_hand_over_replay() {
+        let r = phase1_across_a_replay("phase1-replay-one", ONE_HAND_OVER);
+        assert_eq!(r.hand_overs, 1, "a replay of one hand-over");
+        assert_eq!(r.during, (0, 0));
+        assert!(
+            r.after.0 > 0 && r.after.1 > 0,
+            "the market and the caravan in its first hand-over: {:?}",
+            r.after
+        );
+    }
 }
 
 /// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine

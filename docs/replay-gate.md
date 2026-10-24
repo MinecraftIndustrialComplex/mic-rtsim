@@ -776,6 +776,15 @@ count again.
   interest area (only the modules are routed one). So the early return changes nothing for a phase 1
   world, and phase 1's session start (every agent abstract, docs/boundary.md §2.3) is unchanged.
   Slice C still reruns the phase 1 jni tests, since the step's order is touched.
+- **Phase 1 shows nothing while replaying** (RP-44, the fix round's item 4). `phase1::simulate`
+  reads its own player positions (PLAYER records), not the shared areas, so the early return above
+  did not stop it: in a replay of several hand-overs it materialized caravans and sent MARKET
+  snapshots from a world in the replayed past, held at the replay clock (§3.6), before the records
+  still to come had changed it. While `st.replaying` it now runs neither `interest()` (materialize,
+  steer, capture) nor `markets()`, nor a test's P1_SPAWN_NEAR; their cadences are not touched, so
+  the first step after the replay end runs them all. The world still runs and its own commands
+  (`take_world_commands`) still go. A replay of one hand-over ends before phase 1 runs (§2.2), so
+  it sees no change.
 
 ### 6.1 A war party's arrival waits (RP-23)
 

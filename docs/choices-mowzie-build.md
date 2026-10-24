@@ -1078,3 +1078,15 @@ conservative option at its fork.
   JOURNAL_GEN is never dispatched, so nothing reads the difference); it does fail with no end at the
   record, when the step's top ends it after the session's live transfer, counted as replayed
   ((1, 1, 4), want (1, 1, 3)).
+- **RP-44** (phase 1 shows nothing while replaying; §6; the fix round's item 4): `phase1::simulate`
+  skips `interest()`, `markets()` and the queued P1_SPAWN_NEARs while `st.replaying`, whether or not
+  a module holds the world: the replayed records still to come change what a player would see
+  either way, and the brief names `st.replaying`. The whole of `interest()` waits, not only its
+  materializing half: phase 1's session start leaves no puppet embodied, so nothing is there to
+  steer or capture while nothing is materialized. `last_interest` and `last_market` are left as
+  they were, so both run in the first step after the replay end. The world's own commands
+  (`take_world_commands`: gossip, works) still go as before, outside this item. Failing first, three
+  villages and a goblin camp far off, a player in village A with a caravan near it at the save,
+  4,000 fillers, and a replay at MIN_CAPACITY: (markets, caravans) sent while replaying (1, 2),
+  want (0, 0). The control, the same replay in one hand-over, sends both in its first hand-over
+  on either code.
