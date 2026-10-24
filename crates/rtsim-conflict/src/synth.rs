@@ -37,6 +37,9 @@ pub const CAMP_POS: Pos = Pos::new(0, 900, 1000);
 /// The player's refinery district and place.
 pub const REFINERY: DistrictId = DistrictId(1);
 pub const REFINERY_POS: Pos = Pos::new(0, 700, 780);
+/// The key of the player base the scenario's dwell counter marks at the refinery once it is
+/// built (P30: a place a player spends much time is a base, a market node caravans visit).
+pub const REFINERY_BASE: u64 = 0xBA5E_0001;
 /// Where the player logs the Thornwood.
 pub const FOREST_POS: Pos = Pos::new(0, 880, 900);
 /// The scenario player.
