@@ -758,6 +758,13 @@ pub fn body_names(c: &Cultures) -> Vec<String> {
                 v.push(u.body.clone());
             }
         }
+        // A chief's body kind follows its culture's units, so the units' ids stay as they were
+        // (MZB-401).
+        if let Some(b) = &cu.def.chief_body
+            && !v.contains(b)
+        {
+            v.push(b.clone());
+        }
     }
     v
 }

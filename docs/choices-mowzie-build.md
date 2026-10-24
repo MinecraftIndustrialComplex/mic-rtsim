@@ -2724,6 +2724,19 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     (its stack and puppet, MEMBER_CHIEF), the chief's HAND_BACK, the summons (a mixin at
     `EntityUmvuthi.java:1050` adding to MZB-428's extras), the chief's death away through BAND_CASUALTIES
     (MZB-412's engine half) and test 29's other clauses.
+- **MZB-444** (the culture fields' checks, M9a; fills a gap in "Validation" of the design): `Culture::resolve`
+  refuses each of these on its own.
+  - `chief_body` empty, or equal to a unit's body: a chief's body kind must be one no unit has, so a census
+    never reads one as the other. It needs `camp_bodies`.
+  - `chief_renewal`, `chief_leads` or a non-zero `chief_strength` with no `chief_body`.
+  - `chief_strength` not finite or below 0.
+  - `chief_leads` naming an unknown party, a kind other than raid, invasion and siege (scouts, envoy and
+    plunder have no chief), or one twice. An empty list is allowed: the chief leads nothing.
+  - `plunder_goods` with an empty name or a name twice; a unit with `hunts` and a `hunt_cap` of 0.
+  - Whether each `plunder_goods` name is in the catalogue cannot be known at resolve time. A test checks the
+    built-in cultures against the default catalogue, and the engine skips a name the catalogue lacks.
+  - `body_names` appends a culture's `chief_body` after its units, so every existing body id keeps its
+    number (the Umvuthi's is the last).
 
 ### M9 design for the implementer
 
