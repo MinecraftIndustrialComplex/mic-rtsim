@@ -10,7 +10,8 @@ use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVe
 use rtsim_industry::learn::{Learned, LinkKey};
 use rtsim_industry::obs::{
     ChainDirection, ChainPackage, DistrictDecl, HeldKey, HeldList, InvKind, InventoryDecl,
-    LoadState, Obs, ReconcileResult, ResultEntry, StoreDecl, StoreFrogport, SweepEnd, Timed,
+    LoadState, Obs, ReconcileResult, ResultEntry, StoreCensus, StoreDecl, StoreFrogport, SweepEnd,
+    Timed,
 };
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
@@ -1159,6 +1160,48 @@ fn a_drawn_package_that_lands_elsewhere_goes_back_where_it_landed() {
         "the landing took it where it landed"
     );
     assert_eq!(chain_packages(&e), 2, "the mill's pool is not given it");
+    e.check_books().expect("books");
+}
+
+/// A drawn package's landing that a census counted already (recorded before it, taken after it)
+/// takes nothing, and the census, which counts no drawn package, has the pools right: the package
+/// goes into none.
+#[test]
+fn a_drawn_landing_a_census_counted_goes_into_no_pool() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    send(
+        &mut e,
+        400,
+        Obs::StoreCensus(StoreCensus {
+            store: S,
+            packages: vec![(Some(1), 2)],
+            goods: vec![(Some(1), IRON, 2 * BATCH)],
+        }),
+    );
+    assert_eq!(chain_packages(&e), 2);
+    let mut landed = chain(MINE, ChainDirection::In, 1, None);
+    if let Obs::ChainPackage(p) = &mut landed {
+        p.key = Some(K7);
+    }
+    send(&mut e, 310, landed);
+    let s = &e.stores()[&S];
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(
+        (
+            s.counts.held_landed,
+            s.counts.drawn_back,
+            s.counts.in_beyond
+        ),
+        (1, 1, 0),
+        "{:?}",
+        s.counts
+    );
+    assert_eq!(s.pools[0].packages, 0, "no pool is given it");
+    assert_eq!(chain_packages(&e), 2);
     e.check_books().expect("books");
 }
 
