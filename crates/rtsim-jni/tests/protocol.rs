@@ -29,6 +29,82 @@ fn transfer_order(op: u64, count: i32) -> Order {
     }
 }
 
+/// How long a test waits for its save to become durable before it gives up. A wall clock, wide
+/// on purpose: the step pool and the IO lane share the machine with every other test and agent.
+const DURABLE_WAIT: Duration = Duration::from_secs(60);
+
+/// Saves at the next step and waits until the pages on disk hold every observation the engine has
+/// applied (`durable_obs_seq` has caught up with `stats_array()[4]`), driving the fake Java side
+/// while it waits. Panics after `DURABLE_WAIT` instead of hanging, saying what it waited for.
+///
+/// One order, one `idle` and a poll are not enough to wait on. The step that takes the save holds
+/// the observations applied up to it; a later step can apply more (Java's answer to a command the
+/// save step wrote), and then no save is coming to cover them. So each round orders a save,
+/// idles, waits for that save's commit (it lands on the IO lane by itself), and goes again while
+/// the pages still trail the engine. In a quiet world that is one round, as it always was.
+fn save_durable(e: &Engine, j: &mut Java) {
+    const APPLIED: usize = 4;
+    const DURABLE: usize = 5;
+    const SAVES_DONE: usize = 9;
+    const SAVE_FAILURES: usize = 15;
+    let deadline = Instant::now() + DURABLE_WAIT;
+    let give_up = |e: &Engine, rounds: u32| -> ! {
+        let s = e.stats_array();
+        panic!(
+            "the pages never became durable: waited {DURABLE_WAIT:?} for durable_obs_seq to reach \
+             the observations the engine applied; durable_obs_seq {}, applied through {} \
+             ({rounds} save rounds, {} saves done, {} failed)",
+            s[DURABLE], s[APPLIED], s[SAVES_DONE], s[SAVE_FAILURES]
+        );
+    };
+    let mut rounds = 0;
+    loop {
+        let before = e.stats_array();
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        rounds += 1;
+        // The commit runs on the IO lane and lands (or fails) without Java.
+        loop {
+            let s = e.stats_array();
+            if s[SAVES_DONE] != before[SAVES_DONE] || s[SAVE_FAILURES] != before[SAVE_FAILURES] {
+                break;
+            }
+            if Instant::now() >= deadline {
+                give_up(e, rounds);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let s = e.stats_array();
+        if s[DURABLE] >= s[APPLIED] {
+            return;
+        }
+        if Instant::now() >= deadline {
+            give_up(e, rounds);
+        }
+    }
+}
+
+/// `save_durable` covers what the save step's own commands bring back: an engine transfer is
+/// written in the step that takes the save, Java's answer is applied one step after it, and the
+/// pages must hold that answer too. (One order and one wait on `durable_obs_seq` never ends here.)
+#[test]
+fn a_durable_wait_covers_a_reply_applied_after_the_save_step() {
+    let dir = tmpdir("durable-reply");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.idle();
+    e.order(vec![transfer_order(4242, 3)]).unwrap();
+    save_durable(&e, &mut j);
+    let s = e.stats_array();
+    assert!(
+        s[4] >= 1,
+        "Java's answer to the transfer was applied: {s:?}"
+    );
+    assert!(s[5] >= s[4], "and the pages hold it: {s:?}");
+    assert!(e.inspect().op_applied(4242), "the transfer was applied");
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn hand_overs_alternate_buffers_and_never_overlap() {
     let dir = tmpdir("alternate");
@@ -822,11 +898,7 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     assert!(p1_stat(&e, 7) >= 1, "gossip sent");
 
     // A save, then a crash: the pages' input log rebuilds the same world.
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
-    while e.durable_obs_seq() < e.stats_array()[4] {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    save_durable(&e, &mut j);
     let (hash, _, _) = e.phase1_state();
     assert_ne!(hash, before.0, "the world moved on");
     let saved = j.world_save();
@@ -1134,11 +1206,7 @@ fn phase1_works_are_bought_placed_refused_and_replayed_across_a_crash() {
     assert_eq!(p1_stat(&e, P1_WORKS_BOUGHT), 17);
 
     // A save, then a crash: the same world, works and all.
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
-    while e.durable_obs_seq() < e.stats_array()[4] {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    save_durable(&e, &mut j);
     let saved = j.world_save();
     let _ = j.crash();
     let e = engine(&dir, 256 * 1024);
@@ -1229,11 +1297,7 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     let cargo = phase1_caravan(&e, &mut j, agent);
     assert!(!cargo.is_empty());
     // Pages with the caravan in them.
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
-    while e.durable_obs_seq() < e.stats_array()[4] {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    save_durable(&e, &mut j);
     // A robbery after that save, booked live.
     let (member, item, n) = cargo
         .iter()
@@ -1310,14 +1374,6 @@ mod talk {
             .map(|e| wire::i32_at(&rec, e + 16))
     }
 
-    fn wait_durable(e: &Engine) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            assert!(Instant::now() < deadline, "the pages never became durable");
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    }
-
     /// A talk credits its village once: a TALKED reported twice under one op id (a double report)
     /// is applied once, one the pages include is skipped on replay, one they lack is applied once on
     /// replay, and the sentiment Java's ribbits read (the SENTIMENT command) and the answer to a
@@ -1345,9 +1401,7 @@ mod talk {
         );
 
         // Pages that include the first talk.
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        wait_durable(&e);
+        save_durable(&e, &mut j);
 
         // After that save: a talk with another ribbit (a new op id), reported twice.
         let op2 = wire::JAVA_OP_BIT | 0x7a2;
@@ -1653,11 +1707,7 @@ mod dragons {
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(&e, &mut j);
 
         // After the save: a hoard robbery and a spawn-egg dragon, journaled; the world saves,
         // then the server dies.
@@ -1845,11 +1895,7 @@ mod dragons {
             "a failed stack goes again as a new op"
         );
         assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(&e, &mut j);
         let saved = j.world_save();
         let _ = j.crash();
 
@@ -1988,11 +2034,7 @@ mod dragons {
         );
 
         // A save, then 20 more breaths journaled after it, and a crash.
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(&e, &mut j);
         j.dragon_obs(&O::Breaths(db::Breaths {
             agent: m.agent,
             epoch: m.epoch,
@@ -2312,11 +2354,7 @@ mod ships {
     }
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// The ships through the native engine and a fake ships plugin: ports and a haven reported,
@@ -2972,11 +3010,7 @@ mod herds {
     }
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// Founds `n` herds of 20 sheep, 64 blocks apart along a line, in one order unit.
@@ -3544,11 +3578,7 @@ mod conflict {
     }
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// A goblin camp reported (FACTION_FOUND) joins the world as a haven and its territory goes
@@ -5336,11 +5366,7 @@ mod worldmodel {
     const MODULES: u32 = 0b1111 | MODULE_HERDS;
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// Region (0, 0): sea west of x = `shore`, plains east of it.
