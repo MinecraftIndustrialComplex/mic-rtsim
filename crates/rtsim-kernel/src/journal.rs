@@ -22,7 +22,7 @@
 //! What to do when a crash leaves the engine's pages *ahead* of the world save is Proposal P29,
 //! still open. [`Replay::reconcile`] only detects it.
 //!
-//! # Generations and copies (SEC-1 S4p, docs/boundary.md §2.6)
+//! # Generations and copies (SEC-1 S4p, docs/boundary.md §3.2)
 //!
 //! Each session of the bridge is a generation: a random nonce its first record (JOURNAL_GEN)
 //! names, at the session's first sequence. A crash hands the lost stretch's sequences out again,
@@ -104,7 +104,7 @@ pub enum Reconcile {
     },
 }
 
-/// One generation of the bridge's journal (a session, docs/boundary.md §2.6): its nonce, the last
+/// One generation of the bridge's journal (a session, docs/boundary.md §3.2): its nonce, the last
 /// sequence admitted in it, and the copies applied while it was open, each the (nonce, sequence)
 /// of the record it copied.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -134,7 +134,7 @@ public final class RtsimTests {
     }
 
     /**
-     * The records of one kind for one agent that copies carried (REASSERT, docs/boundary.md §2.6), applied
+     * The records of one kind for one agent that copies carried (REASSERT, docs/boundary.md §3.2), applied
      * or dropped ({@link ScriptedEngine.Received#skipped}), oldest first.
      */
     public static List<ScriptedEngine.Received> copiesFor(ScriptedEngine engine, int kind, long agent) {

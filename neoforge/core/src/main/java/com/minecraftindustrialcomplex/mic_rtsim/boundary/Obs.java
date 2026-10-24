@@ -47,7 +47,7 @@ public final class Obs {
     public static final int BASE = 0x0125;
     public static final int HOUSE_PLACED = 0x0126;
 
-    // Generations and copies (docs/boundary.md §2.6). Journaled.
+    // Generations and copies (docs/boundary.md §3.2). Journaled.
     /** A session's generation: the first record each session journals. */
     public static final int JOURNAL_GEN = 0x0130;
     /** A copy of a record a chunk or entity carried, journaled again when its holder loads. */

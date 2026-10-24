@@ -878,7 +878,7 @@ public final class RtsimSession {
 
     /**
      * An entity that carries pending records came back from disk: journal a copy of each (REASSERT,
-     * docs/boundary.md §2.6; the engine has maybe never seen them, if the journal on disk was older than
+     * docs/boundary.md §3.2; the engine has maybe never seen them, if the journal on disk was older than
      * the entity's chunk, and applies a copy only then) and drop them once the copies are acknowledged.
      */
     public void reassert(Entity holder) {

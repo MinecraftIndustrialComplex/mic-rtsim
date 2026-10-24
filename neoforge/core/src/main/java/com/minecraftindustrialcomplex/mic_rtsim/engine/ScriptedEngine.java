@@ -28,7 +28,7 @@ public interface ScriptedEngine extends Engine {
         }
 
         /**
-         * A copy's record (REASSERT, docs/boundary.md §2.6) as received under the copy's sequence: its kind,
+         * A copy's record (REASSERT, docs/boundary.md §3.2) as received under the copy's sequence: its kind,
          * aux and bytes as first journaled (its own sequence at {@code Obs.OBS_SEQ}), skipped when the engine
          * judged it one it had and dropped it. Null for any other record.
          */

@@ -90,9 +90,9 @@ pub mod obs {
     pub const DIED: u16 = 0x0105;
     pub const TRANSFER: u16 = 0x0110;
     pub const COMMAND_RESULT: u16 = 0x0111;
-    /// A session's generation (docs/boundary.md §2.6): the first record a session journals.
+    /// A session's generation (docs/boundary.md §3.2): the first record a session journals.
     pub const JOURNAL_GEN: u16 = 0x0130;
-    /// A copy of a record a chunk or entity carried (docs/boundary.md §2.6): the record whole,
+    /// A copy of a record a chunk or entity carried (docs/boundary.md §3.2): the record whole,
     /// after the generation it was first journaled in.
     pub const REASSERT: u16 = 0x0131;
 

@@ -24,7 +24,7 @@ import java.util.function.Predicate;
  *       carries its MEMBER_STATE and DIED.</li>
  * </ul>
  * When the holder loads in a later session, the bridge journals a copy of each record (REASSERT,
- * docs/boundary.md §2.6), and drops them from the holder once the engine acknowledges the copies. So
+ * docs/boundary.md §3.2), and drops them from the holder once the engine acknowledges the copies. So
  * each record is kept with the generation it was journaled in (the session's JOURNAL_GEN nonce): the
  * engine applies a copy only when its state lacks the record, judged by that generation, never by
  * an op id it may have forgotten.

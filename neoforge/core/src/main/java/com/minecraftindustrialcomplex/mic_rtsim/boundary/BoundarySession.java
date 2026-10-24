@@ -26,7 +26,7 @@ public final class BoundarySession {
     private final SessionStart start;
     /** The last journal sequence before this session; entries up to it are a replay. */
     private final long replayUpTo;
-    /** This session's generation (docs/boundary.md §2.6): its JOURNAL_GEN's nonce, random and never 0. */
+    /** This session's generation (docs/boundary.md §3.2): its JOURNAL_GEN's nonce, random and never 0. */
     private final long gen;
     /** Copies too large to wrap, journaled again plainly ({@link #reassert}). */
     private long plainRecommits;
@@ -144,7 +144,7 @@ public final class BoundarySession {
     }
 
     /**
-     * Journals a copy of a record a chunk or entity carried (REASSERT, docs/boundary.md §2.6): {@code original}
+     * Journals a copy of a record a chunk or entity carried (REASSERT, docs/boundary.md §3.2): {@code original}
      * as first journaled, in generation {@code gen}. The engine applies it only when its state lacks the
      * record, so a holder that loads again before the acknowledgement, or after the engine forgot the op
      * id, applies nothing twice, and a record a crash lost applies once. A record too large to wrap is
