@@ -712,16 +712,21 @@ and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
 
 ## 10. Questions for Ben
 
-Gameplay trade-offs at the forks, recommendation first. None blocks building: the recommendation is
-what the slices build.
+Gameplay trade-offs at the forks, recommendation first. The coordinator decided all three on
+2026-10-24, as recommended (crash-only, small and reversible), and lists them for Ben, who can
+overrule.
 
 1. **After a crash, lose rather than repeat.** Things the last session decided after its last save
    (a "demand settled" message, a robbed-train roar, a worm sortie at a watched base) are not shown
    again, since Java may have shown them already. *Recommended: lose them.* The other way shows some
-   twice.
+   twice. **Decided: lose them.**
 2. **Nothing appears near players until the replay ends.** At a restart the journal's replay takes
    the first hand-overs (a few more for a long journal); bands, dragons, herds and ships near a player
-   appear right after it. *Recommended: accept.* Players normally join after it.
+   appear right after it. *Recommended: accept.* Players normally join after it. **Decided: accept**, with a
+   counter: `shared::replay_end` records how many hand-overs the replay took (a stat, and an info log line
+   at the end naming the count and the records replayed), so a slow replay shows up in GameTests and
+   soaks (RP-2).
 3. **A copied band death after a crash** (a dying member's drops carried its record) shrinks the band
    by one even when it is in view again; its bodies in the world may then be one more than its count
-   until the next despawn. *Recommended: accept.* The other way leaves a dead member alive for good.
+   until the next despawn. *Recommended: accept.* The other way leaves a dead member alive for good. **Decided:
+   accept**; the extra body clears at the next despawn.
