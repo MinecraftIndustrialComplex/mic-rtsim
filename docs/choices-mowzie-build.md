@@ -801,6 +801,20 @@ under its own heading.
 
 (none yet)
 
+## Backlog: conflict news gaps from TALK
+
+TALK left these five gaps in conflict news; they are the conflict owner's (the coordinator,
+2026-10-23), low priority, after M4 and M5 unless one is trivial while that code is open. TALK.md §9's
+Feud, Raid and Fell paragraphs describe them.
+1. `fell.you` is never told: a Fell's Who is the camp, so the killer hears only through the chief's
+   Killing.
+2. A fight that ends early (the watching player leaves, the session restarts) and then goes home bored or
+   done records nothing.
+3. After a restart, a fight broken at the rout share records nothing; only a full wipe-out is recorded.
+4. A Fell names the fallen chief as a dead notable ("someone important"), not as the chief: its actor is
+   gone when the lines are told.
+5. A siege routed after a round tells two reports, the round's and the rout's.
+
 ## Hand-off
 
 (none yet)
