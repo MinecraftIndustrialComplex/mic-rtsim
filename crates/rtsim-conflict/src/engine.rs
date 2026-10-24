@@ -517,6 +517,10 @@ pub struct ConflictStats {
     pub rail_calls: u64,
     /// Rail wakes that found no meter or another stamp, popped and dropped (also in `stale`).
     pub rail_stale: u64,
+    /// The lurk (MOWZIE.md §4.4, M8): lurks begun at a track (an AMBUSH_SPOT sent) and ended
+    /// (its REMOVED sent).
+    pub lurks: u64,
+    pub lurks_ended: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -3462,21 +3466,11 @@ impl Conflict {
                 self.go_home(w, p, boundary::RECALL_DONE, at);
             }
             _ if matches!(target, Target::Track { .. }) => {
-                // A band at a track waits for its patience to run out: nobody to fight and
-                // nothing to raid (M7; M8 makes it lie in wait there).
+                // A band at a track lies in wait there until its patience runs out: nobody to
+                // fight and nothing to raid, but a train that passes may be robbed (M8, MZB-351).
                 let bored = self.parties[p].bored_at;
+                self.lurk_start(p, at);
                 self.wait(w, p, bored, at);
-                self.note(
-                    at,
-                    Some(f),
-                    "track",
-                    format!(
-                        "the {} waits at the track by ({}, {})",
-                        kind.name(),
-                        tpos.x,
-                        tpos.z
-                    ),
-                );
             }
             _ => {
                 if let Some(player) = self.watcher(w, tpos, at) {
@@ -3900,6 +3894,11 @@ impl Conflict {
 
     /// Back to the camp along the road, from where it is now.
     fn go_home(&mut self, w: &mut World, p: Handle<Party>, reason: u32, at: Tick) {
+        // Every end of a lurk passes through here, before the phase or the target changes
+        // (MZB-352).
+        if self.lurking(p) {
+            self.lurk_end(p);
+        }
         let here = self.party_pos(p, at);
         let f = self.parties[p].faction;
         if self.parties[p].embodied {
@@ -4032,8 +4031,12 @@ impl Conflict {
             self.parties.remove(p);
         } else {
             // A haven with no storehouse (never, by construction): keep the row so the goods
-            // stay accounted for.
-            self.parties[p].phase = Phase::Waiting;
+            // stay accounted for. A kept row never reads as a lurk (MZB-354).
+            let x = &mut self.parties[p];
+            if let Target::Track { track, .. } = x.target {
+                x.target = Target::Pos(track);
+            }
+            x.phase = Phase::Waiting;
         }
         self.note(
             at,
@@ -4914,6 +4917,8 @@ impl Conflict {
                 self.enforce_budget();
             }
         }
+        // The lurks go the same way: Java's lurk table lives for one session (MZB-353).
+        self.resend_lurks();
         self.enforce_budget();
     }
 
