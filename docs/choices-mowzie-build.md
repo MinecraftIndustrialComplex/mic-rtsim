@@ -818,3 +818,83 @@ Feud, Raid and Fell paragraphs describe them.
 ## Hand-off
 
 (none yet)
+
+## Replay pushes (fix/replay-push)
+
+The design is docs/replay-gate.md; each choice names its section there. Every choice is the
+conservative option at its fork.
+
+- **RP-1** (one flag; §1.1, §3.1): rtsim-jni's `State.replaying` holds SEC-1's predicate,
+  `applied_through + 1 < session_first`, set at SESSION_START and cleared once a session by the replay
+  end. Each engine holds its own copy in its outbox, set by `begin_replay` and cleared by
+  `replay_done`. Not a second definition: the same predicate, latched so that every module reads one
+  answer and the end runs once. Not saved. Rejected: a parameter on every engine call (dozens of
+  signatures, and a test can pass the wrong value).
+- **RP-2** (one replay end for all four modules; §2.2, §3.2): `shared::replay_end` runs at the top of
+  `journaled()` for the first record at or past `session_first`, at the step's top when the replay's
+  last record was the hand-over's last, and at the SESSION_START arm's end when there is nothing to
+  replay. It replaces conflict's two MZB-141 triggers and `notices_due`. Rejected: one end per module
+  (four places that can disagree on when a session's live part starts).
+- **RP-3** (the gate at each engine's push; §4.1): an `Outbox` type per engine with a private `Vec`,
+  whose only entry is a gated `push`, and one exhaustive `gate` match with no `_` arm giving each kind
+  a queued verdict (keep or drop at the session start) and a replaying verdict (send, drop or never).
+  At the engine, not at rtsim-jni's `take_commands`: rtsim-host, rtsim-cli and crate tests use engines
+  without rtsim-jni, and the crate's privacy stops a push around it. The queued column also stops the
+  restored outboxes of dragons, herds and ships reaching a new session unfiltered, as they do today.
+- **RP-4** (a "never" kind; §4.1): the decisions that embody return early while replaying, so a
+  "never" kind cannot be pushed; if one is, release skips it, counts it and logs it loudly, and tests
+  `debug_assert`. No release panic. The skip heals at the replay end, which makes every body abstract.
+- **RP-5** (the session start keeps the bodies; §5.1): `begin_replay` changes no body; what the pages
+  hold embodied stays so, at its epoch, until the replay end, where today's session start runs
+  (moved, §5.6). Rejected: abstracting at the start and patching each replayed record kind to find its
+  body (the audit's five LEAKs are that patching, failing).
+- **RP-6** (a replayed *_MATERIALIZED is honoured; §5.2): one dispatched while replaying, and not a
+  copy, at an epoch above the agent's, embodies the agent as the last session had it. A live one is
+  handled as today. Conflict counts its casualties by body kind against all alive units, since the
+  record names how many were placed, not which.
+- **RP-7** (epochs never reused; §5.3): an agent's next epoch is above every epoch seen for it, in the
+  pages, a replayed *_MATERIALIZED and a copy. Each module with epochs (conflict, dragons, herds, ships)
+  gets its own test.
+- **RP-8** (copies never match a body; §2.3, §5.7): a REASSERT's content is an earlier session's, so a
+  copied loss applies by identity (party and body kind, member key) and a copied *_MATERIALIZED only
+  raises the epoch floor. rtsim-jni's `st.applying_copy`, set around S4p's `reasserted()` dispatch,
+  tells the modules; a field, so S4p's signatures stay.
+- **RP-9** (a copied BAND_CASUALTIES; §2.3, §5.7): `Conflict::ingest_copy` counts it against the
+  party's alive units of that body kind, by party alone, touching no stack. Today, on main and on S4p,
+  such a death is dropped by `party_of`'s exact epoch and the member lives on. Slice C also tests
+  MZB-131's live walk-off death of an old epoch while the band is embodied at a new one, first, and
+  fixes it the same way if it fails.
+- **RP-10** (MZB-138's fold goes; §5.4): the fold of embodied bodies into recalled stacks at the
+  session start existed so replayed records found them; RP-5 keeps them embodied instead. The replay
+  end drops every recalled stack, as `replay_done` does today.
+- **RP-11** (sightings wait; §6): `shared::simulate` returns at its top while replaying, keeping the
+  latest position per player, and every decision that embodies returns early. The kept positions are
+  routed in the step the replay ends in, or the first one after. Costs a bool test per step; loses
+  dragons' home counts and conflict presence for the replay's hand-overs. Phase 1 is untouched (the
+  function serves the four modules only).
+- **RP-12** (conflict re-derived news; §7.3): NOTICE, DEMAND_SETTLED and TRAIN_ROBBED are dropped while
+  replaying. Kept notices go at the replay end (MZB-31, unchanged); a settled demand's news and a
+  roar decided after the last save are lost, never shown twice (Questions for Ben 1).
+- **RP-13** (dragons ADOPT and DISCARD; §4.5): dropped while replaying. DragonBridge reports an untagged
+  dragon once per entity per session at join and never saves the tag, so the live report after the
+  replay end decides again (adopt_again at a new epoch).
+- **RP-14** (NEST_RENEW; §7.1): a renewal serial per nest, carried by the command, applied by Java
+  only above the last it applied. Not an absolute owed count, which races Java's own placing and can
+  double; not a plain drop, which loses a renewal. An old Nests file loads owed 0 and serial 0: never
+  doubled. Slice D drops NEST_RENEW while replaying until slice N adds the serial.
+- **RP-15** (NEST_SORTIE; §7.2): dropped while replaying. Loses the visible worms of a raid on a
+  watched district decided again; the raid's effect on the district stands.
+- **RP-16** (the DEPART trap; §5.8): a DRAGON_DEMATERIALIZED of reason NOT_EMBODIED carries only the
+  agent and the epoch, and the engine took its zeros (health 0, hunger 0, a rest at (0, 0, 0)). It
+  takes no position, health or hunger and resumes the dragon where the engine had it, as
+  SPAWN_REJECTED does. Slice D, with a test.
+- **RP-17** (landing order; §2): neither fix/replay-push nor feat/sec1-s4p must land first; whichever
+  lands second does §2.7's merge and writes §2.5's four tests.
+- **RP-18** (the API; §3.4): each engine's `session_start` is removed and replaced by `begin_replay`
+  and `replay_done`, so that every caller fails to compile and chooses. Rejected: keeping
+  `session_start` as both in one (callers would silently get the old behaviour).
+- **RP-19** (a new engine life; §2.6, §7.1): Java keeps the RG13 engine life beside each nest's last
+  serial and starts a nest's serial afresh under a new life; the owed count stays.
+- **RP-20** (where the end is checked; §2.2): at the top of `journaled()`, after its `save_through`
+  block, before S4p's branches and `admitted()`: it sees every kind and reads only the sequence, on
+  both branches.

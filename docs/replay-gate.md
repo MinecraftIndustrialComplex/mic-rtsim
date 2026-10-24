@@ -223,12 +223,13 @@ Not saved: a session sets it.
   flag as the game does. Nothing to add.
 - **rtsim-cli** (`sim conflict`, `sim mowzie`, benches) drives engines directly and has no sessions:
   an engine is built with `replaying` false and never gates.
-- **Each engine's `session_start` goes**, replaced by `begin_replay` and `replay_done`, so that every
-  caller fails to compile and chooses: a test that restarts an engine calls `begin_replay()`, feeds
-  whatever replayed records it wants, then `replay_done()`. The callers today: rtsim-conflict
-  tests/mowzie_records.rs; rtsim-ecology tests/herds.rs, persist.rs and tribute.rs; rtsim-ships
-  tests/blockade.rs, lifecycle.rs, paged.rs and port_raids.rs; rtsim-jni's module resets. (The
-  conflict synth plugin's `session_start` in scenario.rs is the emulated Java, not the engine.)
+- **Each engine's `session_start` goes** (RP-18), replaced by `begin_replay` and `replay_done`, so
+  that every caller fails to compile and chooses: a test that restarts an engine calls
+  `begin_replay()`, feeds whatever replayed records it wants, then `replay_done()`. The callers
+  today: rtsim-conflict tests/mowzie_records.rs; rtsim-ecology tests/herds.rs, persist.rs and
+  tribute.rs; rtsim-ships tests/blockade.rs, lifecycle.rs, paged.rs and port_raids.rs; rtsim-jni's
+  module resets. (`FakeConflict::session_start` in rtsim-conflict synth.rs is the emulated Java, not
+  the engine.)
 
 ### 3.5 Cost (D1)
 
@@ -292,7 +293,7 @@ The counts live in the module's JNI stats, not saved.
 | Recall | drop | drop | the same |
 | Settled | keep | drop | news only; the envoy that would name it is gone (RP-12) |
 | AmbushSpot | drop | drop | a body's lurk |
-| Reconcile | drop | never | void per session (MOWZIE.md §4.9); spawns bodies; M9 gates it on `is_in`, false all through a replay |
+| Reconcile | drop | never | answers a CAMP_CENSUS of this session with spawn, adopt and take lines (MOWZIE.md §4.9); M9 gates it on `is_in`, false all through a replay |
 | TrainRobbed | keep | drop | a roar (RP-12) |
 | ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
 | March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
@@ -421,8 +422,8 @@ Today's `session_start`, moved, plus conflict's `replay_done`:
 
 DragonBridge answers a DRAGON_DEPART for a dragon it does not hold with a DRAGON_DEMATERIALIZED of
 reason NOT_EMBODIED that carries only the agent and the epoch. The engine's Dematerialized arm
-(rtsim-ecology engine.rs about L3274) reads no reason and takes the zeros: the dragon rests at
-(0, 0, 0) with health 0. Fix in slice D: reason NOT_EMBODIED takes no position and no health; the
+(rtsim-ecology engine.rs about L3274) reads no reason and takes the zeros: health 0, hunger 0, a rest at
+(0, 0, 0) in dimension 0. Fix in slice D: reason NOT_EMBODIED takes no position, health or hunger; the
 dragon resumes where the engine had it, as a SPAWN_REJECTED does.
 
 ## 6. Sightings wait for the replay end (RP-11)
@@ -446,8 +447,11 @@ dragon resumes where the engine had it, as a SPAWN_REJECTED does.
   So yes: the first hand-over after the replay end.
 - **Cost (D1):** a bool test per step when not replaying. Nothing is queued for later: the kept
   positions are the map that exists today.
-- **Phase 1** is routed through the same `shared::simulate`, so its sightings wait too. That is the
-  same rule for caravans; slice C reruns the phase 1 jni tests.
+- **Phase 1 keeps its own rule.** `shared::simulate` serves the four modules only: with none
+  running (`any_viewer`) it returns before reading a position, and phase 1's caravans read no
+  interest area (only the modules are routed one). So the early return changes nothing for a phase 1
+  world, and phase 1's session start (every agent abstract, docs/boundary.md §2.3) is unchanged.
+  Slice C still reruns the phase 1 jni tests, since the step's order is touched.
 
 ## 7. Re-derived events in (S, W]
 
@@ -456,7 +460,7 @@ are decided again. Java may already have applied them before the crash.
 
 ### 7.1 NEST_RENEW (RP-14)
 
-- Today Java adds: `n.owed += count` (Nests.java about L416), so a renewal decided again is owed twice
+- Today Java adds: `n.owed += count` (Nests.java about L428), so a renewal decided again is owed twice
   (the audit's nest test: engine 1 worm, world 2).
 - **Options:** (a) drop NEST_RENEW while replaying, which loses a renewal Java's save lost; (b) an
   absolute owed count, which races Java's own placing (a worm placed between the engine's last census
