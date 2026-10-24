@@ -164,9 +164,9 @@ public final class RtsimSession {
     final JournalSavedData journalData;
     final BoundarySession boundary;
     /**
-     * The engine life (ReinstallRules.engineLife, RG13): new whenever the engine starts over (new pages
-     * and observations lost), which is when its reconcile epochs start again from 1 without the old
-     * results. The industry module stamps applied epochs with it.
+     * The engine life (ReinstallRules.engineLife, RG13): the page directory's, new when a new directory's
+     * engine starts over (new pages and observations lost), which is when its reconcile epochs start again
+     * from 1 without the old results. The industry module stamps applied epochs with it.
      */
     final long engineLife;
     final PuppetRegistry registry = new PuppetRegistry();
@@ -231,11 +231,11 @@ public final class RtsimSession {
             this.engineLife = ReinstallRules.engineLife(server.getWorldPath(LevelResource.ROOT).resolve("rtsim"), startsOver,
                     new java.security.SecureRandom()::nextLong);
         } catch (java.io.IOException e) {
-            throw new java.io.UncheckedIOException("writing the engine life (world/rtsim/" + ReinstallRules.LIFE_FILE + ")", e);
+            throw new java.io.UncheckedIOException("the engine life (world/rtsim/" + ReinstallRules.LIFE_FILE + "): " + e.getMessage(), e);
         }
         if (startsOver)
             MicRtsim.LOGGER.info("[mic_rtsim] the engine starts over (new pages, observations lost): engine life {}; reconcile"
-                    + " epochs that chunks hold from earlier pages are void as the chunks load", Long.toHexString(engineLife));
+                    + " epochs that chunks hold of another life are void as the chunks load", Long.toHexString(engineLife));
         this.commands = new CommandDispatcher(this);
         this.boundary.onAck(this::onAcked);
         for (int i = 0; i < 2; i++) {
