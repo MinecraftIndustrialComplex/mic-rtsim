@@ -220,7 +220,9 @@ public final class IndRecords {
     /** IND_DISCARD, aux = reason. */
     public static final class Discard {
         public static final int DISTRICT = 24; // u64
-        public static final int SIZE = 32;
+        /** The station whose call made an {@link #OTHER} discard (SECTIONS.md §3.6); 0 for none. */
+        public static final int STATION = 32;  // u64
+        public static final int SIZE = 40;
 
         public static final int UNATTRIBUTED_SESSION = 1;
         public static final int CREATIVE_BLOCK = 2;

@@ -14,21 +14,21 @@ import java.util.Locale;
 public record GlassReport(int compile, int rounds, boolean converged, int nodes, int edges, double solveMicros,
                           long windowStart, long windowTicksDone, long windowTicksTarget, int windowsCompleted,
                           int verdict, int strikes, int solves, int demoted, long latency, Checksum checksum,
-                          Replay replay, List<Good> goods) {
+                          Replay replay, List<Good> goods, List<Unit> units) {
 
     /** How a good is judged. */
     public static final int EXACT = 0, BOUNDED = 1, UNBOUNDED = 2;
     /** A window's verdict. */
     public static final int NONE = 0, PASS = 1, FAIL = 2;
 
-    public static final int HEADER = 41, GOOD_STRIDE = 16;
+    public static final int HEADER = 42, GOOD_STRIDE = 16, UNIT_STRIDE = 15;
 
     /** What replays the district ({@code glass::report::replay_model}). */
     public static final int REPLAY_NONE = 0, REPLAY_BLACK_BOX = 1, REPLAY_GLASS = 2;
 
     /** Why a window was thrown away or a sweep not counted ({@code glass::report::discard}); index = reason. */
     public static final String[] DISCARDS = {"none", "no sweep", "dropped records", "not live", "edit", "revision",
-            "recompile", "session start"};
+            "recompile", "session start", "station cargo"};
 
     /** Why a good's class is what it is ({@code glass::report::why}); index = reason. */
     public static final String[] WHY = {"none", "node flag", "rule", "cycle", "black box", "port", "unread store",
@@ -38,7 +38,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
     private static final int WHY_EDGE_FLAG = 7, WHY_LINE = 8, WHY_DROP = 9, WHY_UNCONVERGED = 10;
 
     /**
-     * The checksum's bookkeeping for this compile (header slots 16 to 32): when the compile was accepted
+     * The checksum's bookkeeping for this compile (header slots 16 to 32, and 41): when the compile was accepted
      * and the next window may open, sweeps taken and sampled, heaters still lit on their compile-time burn
      * and the tick the next of them changes, the compile's and the district's inventory revisions, and
      * the window discards and sweep skips by reason ({@link #DISCARDS}). -1 is "none".
@@ -47,7 +47,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
                            long nextBreakpoint, int revision, long districtRevision, long lastDiscardTick,
                            int lastDiscardReason, long[] discards) {
 
-        /** Discards and skips for one reason (1 to 7). */
+        /** Discards and skips for one reason (1 to 8). */
         public long discards(int reason) {
             return reason >= 1 && reason <= discards.length ? discards[reason - 1] : 0;
         }
@@ -139,14 +139,40 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
         }
     }
 
+    /**
+     * One judging unit (SECTIONS.md §3.4, choice SC74): its sections and nodes, the box its sections' node
+     * boxes span ({@code hasBox} false: none has one), its open window's ticks, windows completed, last
+     * verdict and strikes in a row, whether a window of it passed, an edit staled it since, it may replay
+     * now, a fallback froze it, its goods start unbounded, and the tick its window may open from.
+     */
+    public record Unit(int sections, int nodes, boolean hasBox, int loX, int loY, int loZ, int hiX, int hiY, int hiZ,
+                       long windowTicks, int windowsCompleted, int verdict, int strikes, boolean passed, boolean stale,
+                       boolean mayReplay, boolean frozen, boolean unbounded, long readyAt) {
+
+        /** Whether its box holds the position. */
+        public boolean holds(int x, int y, int z) {
+            return hasBox && loX <= x && x <= hiX && loY <= y && y <= hiY && loZ <= z && z <= hiZ;
+        }
+
+        public String summary() {
+            return String.format(Locale.ROOT, "%d sections, %d nodes, box %s, window %d ticks, %d done, verdict %s, strikes %d%s%s%s%s%s",
+                    sections, nodes, hasBox ? "(" + loX + " " + loY + " " + loZ + ")..(" + hiX + " " + hiY + " " + hiZ + ")" : "none",
+                    windowTicks, windowsCompleted, verdict == PASS ? "pass" : verdict == FAIL ? "FAIL" : "none", strikes,
+                    passed ? ", passed" : "", stale ? ", stale" : "", mayReplay ? ", may replay" : "", frozen ? ", frozen" : "",
+                    unbounded ? ", unbounded" : "");
+        }
+    }
+
     /** Null for a null array (no complete compile). */
     public static GlassReport decode(double[] v) {
         if (v == null)
             return null;
-        if (v.length < HEADER)
+        if (v.length < HEADER + 1)
             throw new IllegalArgumentException("a glass report of " + v.length + " values");
         int n = (int) v[12];
-        if (v.length != HEADER + n * GOOD_STRIDE)
+        int tail = HEADER + n * GOOD_STRIDE;
+        int u = tail < v.length ? (int) v[tail] : -1;
+        if (u < 0 || v.length != tail + 1 + u * UNIT_STRIDE)
             throw new IllegalArgumentException("a glass report of " + v.length + " values for " + n + " goods");
         List<Good> goods = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
@@ -155,16 +181,39 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
                     v[b + 8], v[b + 9], (int) v[b + 10], (int) v[b + 11], v[b + 12], v[b + 13], (int) v[b + 14],
                     (int) v[b + 15]));
         }
-        long[] discards = new long[7];
-        for (int i = 0; i < discards.length; i++)
+        long[] discards = new long[8];
+        for (int i = 0; i < 7; i++)
             discards[i] = (long) v[26 + i];
+        discards[7] = (long) v[41];
         Checksum c = new Checksum((long) v[16], (long) v[17], (int) v[18], (int) v[19], (int) v[20], (long) v[21],
                 (int) v[22], (long) v[23], (long) v[24], (int) v[25], discards);
         Replay rp = new Replay((int) v[33], (long) v[34], (int) v[35], (int) v[36], (int) v[37], (int) v[38], v[39] != 0,
                 (int) v[40]);
         return new GlassReport((int) v[0], (int) v[1], v[2] != 0, (int) v[3], (int) v[4], v[5], (long) v[6], (long) v[7],
                 (long) v[8], (int) v[9], (int) v[10], (int) v[11], (int) v[13], (int) v[14], (long) v[15], c, rp,
-                List.copyOf(goods));
+                List.copyOf(goods), units(v, tail + 1, u));
+    }
+
+    private static List<Unit> units(double[] v, int at, int n) {
+        List<Unit> out = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int b = at + i * UNIT_STRIDE;
+            int flags = (int) v[b + 13];
+            out.add(new Unit((int) v[b], (int) v[b + 1], v[b + 2] != 0, (int) v[b + 3], (int) v[b + 4], (int) v[b + 5],
+                    (int) v[b + 6], (int) v[b + 7], (int) v[b + 8], (long) v[b + 9], (int) v[b + 10], (int) v[b + 11],
+                    (int) v[b + 12], (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, (flags & 8) != 0,
+                    (flags & 16) != 0, (long) v[b + 14]));
+        }
+        return List.copyOf(out);
+    }
+
+    /** The units whose box holds the position (an edit there stales them, §3.6). */
+    public List<Unit> unitsAt(int x, int y, int z) {
+        List<Unit> out = new ArrayList<>();
+        for (Unit un : units)
+            if (un.holds(x, y, z))
+                out.add(un);
+        return out;
     }
 
     public Good good(int id) {
