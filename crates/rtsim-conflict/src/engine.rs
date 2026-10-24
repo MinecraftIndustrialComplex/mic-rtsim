@@ -5384,9 +5384,10 @@ impl Conflict {
     /// RP-22): the party is embodied as the last session had it, without the command, so that
     /// the records of that body that follow count against it.
     ///
-    /// - A newer epoch: the bodies of an older embodied one walk off as its recalled stack
-    ///   (MZB-131; that epoch's records may still come); then the record's epoch, embodied,
-    ///   nothing placed, wave 0, and the record's waves are filled.
+    /// - A newer epoch: the record's epoch, embodied, nothing placed, wave 0, and the record's
+    ///   waves are filled. An older embodied epoch's bodies leave the books as `start_fight`'s
+    ///   and `seen`'s new epoch drops them live, not folded into a recalled stack (RP-46): that
+    ///   epoch's later records count against nothing, as they did live.
     /// - The same epoch, embodied, at or above the party's `wave`: the waves from the party's
     ///   to the record's are filled. Below it, or not embodied: nothing (the pages hold that
     ///   fill, or the body is gone).
@@ -5417,9 +5418,6 @@ impl Conflict {
         let dead = if newer { 0 } else { dead };
         if newer {
             let x = &mut self.parties[p];
-            if x.embodied {
-                x.fold_spawned_into_recalled();
-            }
             x.epoch = m.epoch;
             x.embodied = true;
             x.seen_by = None;

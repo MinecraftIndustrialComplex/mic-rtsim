@@ -611,10 +611,14 @@ last session. When the engine started from pages (RP-31, §2.6) and the epoch is
 the agent is embodied as the last session had it:
 
 - **Conflict** (BAND_MATERIALIZED: agent, epoch, dimension, wave, spawned), as RP-22 amends RP-6:
-  - **A newer epoch:** if the party is embodied with bodies at an older epoch, those fold into a
-    recalled stack of that epoch (MZB-131's walk-off, which the older epoch's records may still
-    need). Then `epoch` = the record's, `embodied` = true, `spawned` cleared, `wave` 0, and the
-    record's waves are filled.
+  - **A newer epoch:** `epoch` = the record's, `embodied` = true, `spawned` cleared, `wave` 0, and
+    the record's waves are filled. An older embodied epoch's bodies leave the books unfolded, as
+    live `start_fight` drops them (RP-46). The bridge journals the older epoch's
+    BAND_DEMATERIALIZED before the newer one's BAND_MATERIALIZED (`ConflictBridge.materialize`
+    ends the old party first), so a replay normally finds the party no longer embodied at the older
+    epoch; when it still is, a later record of that epoch counts against nothing, as it did live.
+    (As first written those bodies folded into a recalled stack of that epoch, MZB-131's walk-off,
+    which counted such a record where live did not. A live recall folds as before.)
   - **The same epoch, at or above the party's `wave`:** the waves from the party's `wave` to the
     record's are filled (normally one). Below it: nothing; the pages already hold that wave's fill.
   - **The fill** is `spawn_wave`'s own, without the command, from one function both call so that they
