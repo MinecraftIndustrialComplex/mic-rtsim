@@ -3667,22 +3667,34 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - **Mid-lurk**: two dens' bands (the second den at (1200, 1000)) lie in wait at once, each with a
       pass behind it; if the second never lurks while the first does, one band with two passes will do.
     - **Cowed**: two dens lurk on the line; once the first den's band has a pass behind it, its chief is
-      killed (`chief_killed`, as run 7 does). The save or restart is a day later, inside the 6-day cowed time,
-      right after a Killing signal of twice the Raid rung's threshold provokes the first den's feud again.
-      The control must be cowed at the trip, and the second den must begin a lurk after it (the tail that is
-      compared). The first den stays empty for the rest of the run: a Frostmaw den has no recruits
-      (`recruits_per_day` 0) and its next body is the renewal wait's (6 days a first kill, 12 for a
-      player's), which runs on the camp plugin's ledger that this rig has no plugin for (run 6 has it). So
-      the first den's feud climbs, waits out the cowed time and then blocks on the empty pool. That is a
-      limit of the rig, not of the engine. (Without the provocation the first den's feud sits at Notice for
-      the 56 days after, flat at its grievance: the meter's pressure alone does not climb back to Raid.)
-    - **Decay**: the line is cut from 12 to 4 legs a day on day 10; the point is the first tick from day 11
-      with a held pass and a booked rail event.
+      killed (`chief_killed`, as run 7 does). A day later, inside the 6-day cowed time, a Killing signal of
+      twice the Raid rung's threshold provokes the first den's feud again, and the save or restart comes
+      right after it (in that order, the signal and then the trip). The control must be cowed at the trip,
+      and the second den must begin a lurk after it (the tail that is compared). The first den stays empty
+      for the rest of the run, and that is the rig's limit, not the engine's: the rig founds its dens with
+      `add_faction`, which makes no camp ledger (FACTION_FOUND is what makes it in the pack, `camp_found`),
+      and `plan_arrival` (a renewal culture's next member: the Frostmaw has no recruits,
+      `recruits_per_day` 0, so its next body is the renewal wait's, 6 days a first kill, 12 for a player's)
+      returns early for a faction with no ledger, so no arrival is ever booked and the feud climbs, waits
+      out the cowed time and blocks on the empty pool. Founding the dens by FACTION_FOUND would give them
+      ledgers, but a ledger camp draws its bodies from the camp world (`bodies_ready` is BLOCKED while
+      `drawable()` is short), so the rig would need the plugin's answers (run 6's `CampRun` has them);
+      that is not a small change to this rig. (Without the provocation the first den's feud sits at Notice
+      for the 56 days after, flat at its grievance: the meter's pressure alone does not climb back to
+      Raid.)
+    - **Decay**: the line runs 24 legs a day and is cut to 4 on day 7; the point is the first tick from
+      then with a band lurking, a held pass and a booked rail event (about day 9.3 in seeds 0 and 1, with
+      one lurk). So the meter is decaying and a lurk is in wait, its table and its passes among what is
+      saved. No lurk begins after the trip (the meter no longer climbs), which is why the lurk is compared
+      by the restart arms (one spot said again) and not by a new start. (The 12-a-day line cut on day 10
+      had no lurk at its point: the claim then covered the meter and the held passes only.)
     - **The tapes.** Each arm leaves the same tape: the commands in wire order, the stats, the hourly
       grievance by bits, the lurk table's own commands (`lurk_wire`) and the state hash. Blob and Paged
       must equal the control's tape whole. The restart arm is compared by its lurk stream, its grievances and
       the lurk and pass stats (the command stream differs only by the one resent spot per lurking party,
-      which is checked as `resent == lurking`).
+      which is checked as `resent == lurking`). A second restart arm, `Trip::PagedRestart`, opens the engine
+      from its pages and then starts the session, as the host does after a crash or a clean shutdown (a
+      few lines on the same `restart` step); it is held to the same comparison and to no load drift.
 - **MZB-373** (what M8 needs):
   - From M7: `Target::Track` and the arrival's Track arm, the sampler with its per-train state, and
     RAIL_PASS live.
@@ -3926,8 +3938,9 @@ each at its own far base, scripted engine):
     books per pass agree (review A, P3: `stats.ambushes` also counts the on-the-way ambushes, which send
     no roar, so it is the larger).
   - No TRAIN_PASSED is stale except in the `LAG` ticks after a lurk ended.
-- **Run 8, save and restore** (built at step 4; MZB-372): the three lurk points, each blob and paged,
-  against the control; then the session restarts at each. The fourth, a reconcile in flight, is M4's.
+- **Run 8, save and restore** (built at step 4; MZB-372): the three lurk points (the Decay point with a
+  band lurking), each blob and paged, against the control; then the session restarts at each, plain and
+  after a load from pages. The fourth, a reconcile in flight, is M4's.
 
 **Work split** (in order; each step's tests green and committed before the next):
 0. Branch (MZB-350).
