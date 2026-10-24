@@ -1501,7 +1501,16 @@ impl Engine {
         }
         let model = dist.models[&season].clone();
         let base = dist.stock_of(&part);
-        let Some(mut spec) = dist.member_spec(&model, &base, &part, &self.goods, &self.tun) else {
+        let stores = &self.stores;
+        let tun_replay = &self.tun.replay;
+        let route = |inv: u32, to: BlockPos| {
+            stores
+                .values()
+                .find_map(|s| s.route(d, inv, to, tun_replay))
+        };
+        let Some(mut spec) =
+            dist.member_spec(&model, &base, &part, &self.goods, &self.tun, &route)
+        else {
             return;
         };
         // A power source that is live is assumed running (F21); one that is unloaded and not
@@ -1536,6 +1545,78 @@ impl Engine {
             .iter()
             .filter_map(|o| self.cluster_of.get(o).copied())
             .collect();
+        // A package store's pool is shared by the districts whose links touch it: their clusters
+        // join (SECTIONS.md §2.5, slice S4b), up to `cluster_districts_max` districts.
+        let chain_keys: BTreeSet<PoolKey> = spec
+            .pools
+            .iter()
+            .map(|p| p.0)
+            .filter(|k| matches!(k, PoolKey::Chain(..)))
+            .collect();
+        if !chain_keys.is_empty() {
+            let holders: BTreeSet<RegionId<Cluster>> = chain_keys
+                .iter()
+                .filter_map(|&k| self.cluster_with_pool(k))
+                .filter(|h| !handles.contains(h))
+                .collect();
+            let members = |hs: &mut dyn Iterator<Item = &RegionId<Cluster>>| -> usize {
+                hs.filter_map(|h| self.clusters.get(*h))
+                    .map(|r| r.cell().model().members().len())
+                    .sum()
+            };
+            let mut seen = handles.clone();
+            seen.sort_by_key(|h| self.clusters.get(*h).map(|r| r.key()));
+            seen.dedup();
+            let total = 1 + members(&mut seen.iter()) + members(&mut holders.iter());
+            if total > self.tun.replay.cluster_districts_max {
+                Self::drop_chain_links(&mut spec);
+                self.stats.chain_links_dropped += 1;
+                let stores: BTreeSet<StoreId> = chain_keys
+                    .iter()
+                    .filter_map(|k| match k {
+                        PoolKey::Chain(s, _, _) => Some(*s),
+                        _ => None,
+                    })
+                    .collect();
+                for st in stores {
+                    if self.chain_limit_logged.insert(st) {
+                        self.note(
+                            d,
+                            at,
+                            format!(
+                                "package store {}: past {} districts in one replay cluster, its \
+                                 chain links do not replay while away",
+                                st.0, self.tun.replay.cluster_districts_max
+                            ),
+                        );
+                    }
+                }
+            } else {
+                handles.extend(holders);
+                // A pool no cluster holds starts from what the store owes its frogport.
+                for &k in &chain_keys {
+                    let PoolKey::Chain(st, to, g) = k else {
+                        continue;
+                    };
+                    if self.cluster_with_pool(k).is_some() {
+                        continue;
+                    }
+                    let owed = self
+                        .stores
+                        .get_mut(&st)
+                        .map_or(0, |s| s.take_owed(to, g));
+                    if let Some(p) = spec.pools.iter_mut().find(|p| p.0 == k) {
+                        p.1 = owed;
+                    }
+                }
+                if spec.procs.is_empty() {
+                    return;
+                }
+            }
+            if spec.procs.is_empty() {
+                return;
+            }
+        }
         handles.sort_by_key(|h| self.clusters.get(*h).map(|r| r.key()));
         handles.dedup();
         let groups = spec

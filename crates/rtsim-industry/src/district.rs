@@ -20,7 +20,7 @@ use serde::Serialize;
 
 use crate::cluster::{MemberSpec, PoolKey, ProcSpec, ProcSpecBody};
 use crate::cmd::{BlockDestroy, ChunkReconcile};
-use crate::ids::{ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap};
 use crate::learn::{Learned, LearnedTarget, Learner, LinkKey};
 use crate::model::{BlackBox, DistrictModel, ModelProcess};
 use crate::obs::{DepositSample, InvKind, InventoryDecl, NotLearnable};
@@ -569,6 +569,7 @@ impl District {
         part: &BTreeSet<u32>,
         goods: &impl GoodLookup,
         tun: &Tunables,
+        chain: &dyn Fn(u32, BlockPos) -> Option<crate::stores::ChainRoute>,
     ) -> Option<MemberSpec> {
         let d = self.id;
         let whole = self.is_whole(part);
@@ -698,6 +699,53 @@ impl District {
                     next_id += 1;
                 }
                 LinkKey::Mail { .. } => {}
+                // A package store's frogport (SECTIONS.md §2.5, slice S4b): an export fills the
+                // store's pool toward its destination while the route has room; an import draws
+                // its own frogport's pool, restarting no earlier than the travel time.
+                LinkKey::Chain {
+                    inventory,
+                    to,
+                    good,
+                } if part.contains(&inventory) => {
+                    let Some(r) = chain(inventory, to) else {
+                        continue;
+                    };
+                    let key = PoolKey::Chain(r.store, to, good);
+                    let (from, into, targets, latency) = if rate < 0 && to != r.own {
+                        let batch = Some(r.batch.get(good))
+                            .filter(|&b| b > 0)
+                            .unwrap_or_else(|| goods.max_stack(good));
+                        let stop = r.room_packages.max(0) * batch;
+                        (
+                            PoolKey::Stock(d, good),
+                            key,
+                            vec![(key, stop, (stop - batch).max(0))],
+                            0,
+                        )
+                    } else if rate > 0 && to == r.own {
+                        (key, PoolKey::Stock(d, good), vec![], r.travel)
+                    } else {
+                        continue;
+                    };
+                    pools.push((key, 0, None));
+                    procs.push(ProcSpec {
+                        id: next_id,
+                        body: ProcSpecBody::Link {
+                            from,
+                            to: into,
+                            flow: unit,
+                            batch: None,
+                        },
+                        targets,
+                        requires: None,
+                        latency,
+                        enabled: true,
+                        deadline: None,
+                        min_run: 0,
+                    });
+                    next_id += 1;
+                }
+                LinkKey::Chain { .. } => {}
             }
         }
         if procs.is_empty() {

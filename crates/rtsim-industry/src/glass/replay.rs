@@ -412,7 +412,7 @@ fn level(lv: &Levels, k: PoolKey) -> i64 {
 pub fn levels_of(c: &Cluster, d: DistrictId) -> BTreeMap<PoolKey, i64> {
     c.pools()
         .iter()
-        .filter(|p| p.key.district() == d)
+        .filter(|p| p.key.district() == Some(d))
         .map(|p| (p.key, p.level))
         .collect()
 }
