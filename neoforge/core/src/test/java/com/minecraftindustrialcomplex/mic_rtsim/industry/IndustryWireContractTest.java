@@ -92,7 +92,9 @@ class IndustryWireContractTest {
             // SEC-1 S4a: package stores
             "IND_PACKAGE_STORE", "IND_CHAIN_PACKAGE", "IND_STORE_CENSUS",
             // SEC-1 S4b: writes into a loaded frogport
-            "IND_WRITE_CHAIN");
+            "IND_WRITE_CHAIN",
+            // SEC-1 S4c: the frontier's held list
+            "IND_HELD_LIST");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -126,7 +128,8 @@ class IndustryWireContractTest {
                 "PlayerPickup", IndRecords.Port.PLAYER_PICKUP, "StockBroken", IndRecords.Port.STOCK_BROKEN,
                 "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
-        group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN);
+        group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN,
+                "Held", IndRecords.ChainPackage.CHAIN_HELD, "Released", IndRecords.ChainPackage.CHAIN_RELEASED);
         group("cargo_from", "Arrival", 0, "Approach", IndRecords.Train.FLAG_APPROACH,
                 "Departure", IndRecords.Train.FLAG_DEPARTURE);
         group("not_learnable",
@@ -702,6 +705,7 @@ class IndustryWireContractTest {
                 Rec r = journaled(n, IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(c), c, f)
                         .put64("store", IndRecords.PackageStore.STORE, f.u64("store"))
                         .put32("dim", IndRecords.PackageStore.DIM, f.u32("dim"))
+                        .put32("epoch", IndRecords.PackageStore.EPOCH, f.u32("epoch"))
                         .put64("into", IndRecords.PackageStore.INTO, f.u64("into"));
                 for (int i = 0; i < c; i++) {
                     String p = "frogport" + i + ".";
@@ -739,7 +743,17 @@ class IndustryWireContractTest {
                         .put32("packages", IndRecords.ChainPackage.PACKAGES, f.u32("packages"))
                         .put32("address", IndRecords.ChainPackage.ADDRESS, f.u32("address"))
                         .put64("op", IndRecords.ChainPackage.OP_ID, f.u64("op"))
+                        .put32("epoch", IndRecords.ChainPackage.EPOCH, f.u32("epoch"))
+                        .put64("serial", IndRecords.ChainPackage.SERIAL, f.u64("serial"))
                         .entries(IndRecords.ChainPackage.ENTRIES, f, "entry", c);
+            }
+            case "IND_HELD_LIST": {
+                int c = f.count("n_serials");
+                Rec r = journaled(n, IndRecords.IND_HELD_LIST, IndRecords.HeldList.size(c), c, f)
+                        .put32("epoch", IndRecords.HeldList.EPOCH, f.u32("epoch"));
+                for (int i = 0; i < c; i++)
+                    r.put64("serial" + i, IndRecords.HeldList.SERIALS + 8 * i, f.u64("serial" + i));
+                return r;
             }
             case "IND_STORE_CENSUS": {
                 int m = f.count("m"), c = f.count("n_entries");
