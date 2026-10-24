@@ -48,6 +48,8 @@ public final class MicRtsimMowziesMobs {
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
+        // A Frostmaw party lies in wait by a rail awake, swipes a carriage's riders and roars at a robbed train's call (M8, MZB-361)
+        RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker());
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(ChunkEvent.Load.class, MowzieCamps::onChunkLoad);
         bus.addListener(ServerTickEvent.Post.class, e -> MowzieCamps.drain());

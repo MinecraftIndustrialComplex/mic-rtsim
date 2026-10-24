@@ -2,13 +2,16 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.bobmowzie.mowziesmobs.server.sound.MMSounds;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
@@ -127,6 +130,12 @@ public final class DenKind implements CampKind {
     @Override
     public void joined(Camps.Site site, Mob body) {
         body.restrictTo(BlockPos.containing(site.spot), RESTRICT);
+    }
+
+    /** The den's notices (a raid's warning, a robbed train's roar, MZB-367) are the Frostmaw's own roar. */
+    @Override
+    public Holder<SoundEvent> sound() {
+        return MMSounds.ENTITY_FROSTMAW_ROAR;
     }
 
     @Override
