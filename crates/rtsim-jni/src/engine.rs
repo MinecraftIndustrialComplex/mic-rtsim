@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use mic_native_rt::snapshot::SnapshotCell;
 use mic_native_rt::{self as rt, Pool};
+use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
 use rtsim_kernel::journal::{ObsSeq, OpId, Outbox, Reconcile, Replay, Verdict};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
@@ -332,6 +333,20 @@ struct State {
     dict_sent: HashSet<(u32, u32)>,
     /// The first observation sequence of this session; anything below is a replay.
     session_first: u64,
+    /// The session's journal replay is running (docs/replay-gate.md §1.1, RP-1): the latched
+    /// answer of `applied_through + 1 < session_first`, set at SESSION_START and cleared once a
+    /// session by `shared::replay_end`. Not saved.
+    replaying: bool,
+    /// The generation nonce of the copy (REASSERT) being dispatched, `None` otherwise (RP-8).
+    /// fix/replay-push: S4p's reasserted() sets this
+    applying_copy: Option<u64>,
+    /// How far the shared clock may run while replaying (§3.6, RP-24): the world's present at
+    /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
+    replay_clock: Tick,
+    /// The replay's hand-overs (counted at each step's entry while replaying) and its records
+    /// applied, for the replay end's log line and the stats. Not saved.
+    replay_handovers: u64,
+    replay_records: u64,
     pages_obs_seq: u64,
     last_applied_cmd: u64,
     /// A test's rewound command sequence (`REWIND_CMD_SEQ`): the next commands take sequences
@@ -388,6 +403,11 @@ impl State {
             cmd_dict_next: HashMap::new(),
             dict_sent: HashSet::new(),
             session_first: 1,
+            replaying: false,
+            applying_copy: None,
+            replay_clock: Tick::ZERO,
+            replay_handovers: 0,
+            replay_records: 0,
             pages_obs_seq: 0,
             last_applied_cmd: 0,
             rewind: None,
