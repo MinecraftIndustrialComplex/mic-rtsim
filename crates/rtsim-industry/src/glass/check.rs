@@ -764,13 +764,23 @@ fn over_capacity(g: &Graph, c: &DomCap) -> bool {
     let Some(dom) = g.domains.get(c.domain as usize) else {
         return true;
     };
+    // A part of a shared network carries the other parts' stress too, which only the network
+    // registry knows: its check runs after the registry's rebuild ([`Compiled::shared_stale`]).
+    if dom.shared() {
+        return false;
+    }
+    over_capacity_with(dom, c, None)
+}
+
+/// Whether `c`'s capacity falls short of `dom`'s stress at its speed under `net`.
+fn over_capacity_with(dom: &GraphDomain, c: &DomCap, net: Option<&super::solve::NetInput>) -> bool {
     if dom.flags & super::records::domain_flags::STRESS_DISABLED != 0 {
         return false;
     }
     let Some(speed) = speed_from_key(dom, c.source, c.speed) else {
         return true;
     };
-    c.capacity < super::solve::domain_stress(dom, speed)
+    c.capacity < super::solve::part_stress(dom, speed, net)
 }
 
 /// The span of `unit`'s rows.
@@ -1131,6 +1141,49 @@ impl Compiled {
                 None => stale = true,
             }
             if stale {
+                st.edited = true;
+                st.passed_caps.clear();
+                self.discard_unit(u, at, tun);
+            }
+        }
+    }
+
+    /// The domain check across districts (SECTIONS.md §3.6, SEC-1 S5-2): the units whose passed
+    /// window ran a part of a shared network at a capacity below the network's stress there now,
+    /// with `stress` per domain as the registry has it (the other parts' stress per RPM of the
+    /// part's reference speed, and whether the part counts its tail).
+    pub fn shared_stale(&self, stress: &BTreeMap<u32, (f64, bool)>) -> Vec<u16> {
+        let mut out = Vec::new();
+        for (u, st) in self.unit_state.iter().enumerate() {
+            if st.passed.is_none() {
+                continue;
+            }
+            let over = st.passed_caps.iter().any(|c| {
+                let Some(&(k, tail)) = stress.get(&c.domain) else {
+                    return false;
+                };
+                let Some(dom) = self.graph.domains.get(c.domain as usize) else {
+                    return true;
+                };
+                let net = super::solve::NetInput {
+                    stress: k,
+                    tail,
+                    ..Default::default()
+                };
+                over_capacity_with(dom, c, Some(&net))
+            });
+            if over {
+                out.push(u as u16);
+            }
+        }
+        out
+    }
+
+    /// Units `units` go stale, as an edit in their boxes makes them: they stop replaying and learn
+    /// again.
+    pub fn make_stale(&mut self, units: &[u16], at: Tick, tun: &GlassTunables) {
+        for &u in units {
+            if let Some(st) = self.unit_state.get_mut(u as usize) {
                 st.edited = true;
                 st.passed_caps.clear();
                 self.discard_unit(u, at, tun);
@@ -2161,7 +2214,7 @@ impl Compiled {
         tun: &GlassTunables,
     ) -> (Option<Vec<u32>>, Option<u32>) {
         let live = vec![true; self.unit_state.len()];
-        self.sweep_with(at, view, goods, tun, true, &live)
+        self.sweep_with(at, view, goods, tun, true, &live, None)
     }
 
     /// One sweep: `district_live` when every chunk ran throughout it (the district's window then
@@ -2176,6 +2229,7 @@ impl Compiled {
         tun: &GlassTunables,
         district_live: bool,
         unit_live: &[bool],
+        net: Option<&BTreeMap<u32, super::solve::NetInput>>,
     ) -> (Option<Vec<u32>>, Option<u32>) {
         let mut out = (None, None);
         if district_live {
@@ -2236,6 +2290,11 @@ impl Compiled {
                 });
                 restarted = true;
             }
+        }
+        // What the rest of each shared network gives the district now holds from here, as the
+        // stores read here do (SEC-1 S5-2).
+        if let Some(n) = net {
+            self.regime.net.clone_from(n);
         }
         self.read_state(view, goods, tun);
         self.resolve(tun, false);
