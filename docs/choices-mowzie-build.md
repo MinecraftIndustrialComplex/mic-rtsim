@@ -3425,6 +3425,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   Handle<Party>) -> bool` is true for a war party (`kind.is_war()`) with a Track target in `Phase::Waiting`
   or `Phase::Fighting`. A player who comes on the lurk starts a watched fight there (`start_fight`, 3928,
   sets Fighting), and the lurk goes on through it: a train may pass mid-fight.
+  - Amendment (built, step 1): no engine path reaches Fighting with a Track target. `arrive`'s Track arm
+    comes before the arm that calls `start_fight`, and `wait_over` fights only a Siege. A player who comes on
+    a lurk is `seen` (the band is embodied and Waiting, its epoch bumped), not in a fight. `lurking` still
+    covers Fighting, as the design says, because it costs nothing and a later path to a fight there would
+    otherwise end no lurk; `tests/lurk.rs` forces the phase to test it. The conservative choice, taken
+    without asking.
+  - Amendment (built): the old arrive note "waits at the track by ..." is `lurk_start`'s note, "the raid
+    lies in wait by the track at (x, z)" (the party kind's name), so a Track arrival notes once.
 - **MZB-352** (ending a lurk): the same record with `AMBUSH_REMOVED`, sent first in `go_home` (3710) when
   `lurking(p)`, before it changes the phase or the target. Every end of a lurk passes through `go_home`, so
   that is the one place:
@@ -3438,8 +3446,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
 - **MZB-353** (resend): `resend_lurks()`, called from `resend_notices` (4625) after `replay_done`. It sends
   one AMBUSH_SPOT (flags 0) for each lurking party, in handle order. `session_start` drops agent commands,
   and Java's lurk table lives for one session, so a restart sends each lurk exactly once more.
+  - Amendment (built, step 1): `resend_lurks` first drops any AMBUSH_SPOT still queued (one a replayed
+    record made again), as `resend_notices` drops queued notices, so what is kept is what goes and a lurk
+    is never sent twice in a session. `lurk_start` and `lurk_end` are the only other pushers.
 - **MZB-354** (home): `home()`'s kept-row branch (about 3842) rewrites a Track target to `Pos(track)`, so a
   row kept after its party is home never reads as a lurk.
+  - Amendment (built, step 1): the removal went at `go_home`, so the kept row says nothing more. It keeps
+    phase Waiting with a bare-position target, and `lurking` is false for it.
 - **MZB-355** (TRAIN_PASSED): TrainPassed leaves `Conflict::later` for `train_passed(w, infra, tp, at)`.
   - The party is `Party::of_agent(tp.agent)`. It must exist, be `lurking`, and have `tp.epoch <=
     party.epoch`; otherwise `stats.stale`.
