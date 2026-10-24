@@ -950,9 +950,11 @@ public final class PackageStoreGameTests {
                     check("the drawn three are not counted", r.getInt(IndRecords.StoreCensus.M) == 0 && aux(r) == 0);
                 })
                 .thenExecute(() -> {
-                    // A restart, as in aRouteToAnAwayFrogportIsKept.
+                    // A restart, as in aRouteToAnAwayFrogportIsKept: CA's packages through Create's write and read.
                     ChainConveyorBlockEntity ca = conveyor(level, y.ca);
-                    ca.loadWithComponents(ca.saveWithoutMetadata(level.registryAccess()), level.registryAccess());
+                    roundTrip(ca.getLoopingPackages(), level);
+                    for (List<ChainConveyorPackage> moving : ca.getTravellingPackages().values())
+                        roundTrip(moving, level);
                     PackageStores.forgetForTest(ind());
                     Frontier.firstTickForTest(ca);
                 })
