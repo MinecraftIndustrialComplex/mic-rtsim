@@ -330,7 +330,7 @@ pub struct Stats {
     pub replay_handovers: AtomicU64,
     pub replay_records: AtomicU64,
     /// Copies of carried records (REASSERT, docs/boundary.md §3.2) applied, and dropped as already
-    /// in the engine's state. Not in Java's array.
+    /// in the engine's state (not new, or new with an op id it heard: RP-50). Not in Java's array.
     pub copies_applied: AtomicU64,
     pub copies_dropped: AtomicU64,
 }
@@ -1789,11 +1789,17 @@ impl Engine {
             Self::answered_again(st, &r);
             return;
         }
-        self.stats.copies_applied.fetch_add(1, Ordering::AcqRel);
         let op = op_of(&r);
         let verdict = st.replay.admit_copy(nonce, of, ObsSeq(seq), op);
-        // The copy bit (docs/replay-gate.md §2.3, RP-8): the modules' `journaled` read it.
-        st.applying_copy = Some(nonce);
+        if verdict == Verdict::Apply {
+            self.stats.copies_applied.fetch_add(1, Ordering::AcqRel);
+            // The copy bit (docs/replay-gate.md §2.3, RP-8): the modules' `journaled` read it,
+            // on the apply path only.
+            st.applying_copy = Some(nonce);
+        } else {
+            // Its op id was heard: answered again, applying nothing (RP-50).
+            self.stats.copies_dropped.fetch_add(1, Ordering::AcqRel);
+        }
         self.dispatch(st, &r, seq, verdict);
         st.applying_copy = None;
     }
@@ -1801,6 +1807,10 @@ impl Engine {
     /// A journaled record admitted by sequence, to the module that claims it.
     fn dispatch(&self, st: &mut State, rec: &Rec<'_>, seq: u64, verdict: Verdict) {
         let b = rec.bytes;
+        debug_assert!(
+            st.applying_copy.is_none() || verdict == Verdict::Apply,
+            "observation {seq}: the copy bit on a {verdict:?} (docs/replay-gate.md §2.3)"
+        );
         // The records applied while replaying (docs/replay-gate.md §3.2): not the JOURNAL_GENs
         // (never dispatched), the stale records the pages hold, the copies dropped as not new or
         // the op-id duplicates. A copy of generation 0 that conflict refuses counts: it is
