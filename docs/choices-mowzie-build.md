@@ -2934,6 +2934,23 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - The hunts go again with the notices, after the replay has caught up (`resend_notices`), and not in
     `session_start`: a HUNT_APPLIED journaled last session must clear its hunt before the plugin hears of it,
     or the animals die twice.
+  - Amended at the re-check, R1: a crash replay re-sent a spent hunt. `owe_hunt` and `hunt_applied`'s send
+    of the rest pushed an OWED_HUNT while `replaying`; rtsim-jni moves every command out of the engine's
+    outbox after each ingest and writes its queue at each hand-over, so the engine's own filters of the
+    outbox (`session_start`, `resend_notices`) never saw it, and the plugin of the next session, whose
+    applied-op memory is unsaved, killed the animals again. Now neither pushes while `replaying`: the books
+    change as before, and `resend_notices` sends every hunt still held once the replay has caught up. The
+    two guards are TEMPORARY and marked in the code: fix/replay-push adds one choke point for every
+    conflict outbox push, with each `Cmd` kind declared in an exhaustive match, and when feat/mowzie-m9
+    merges main after it lands OWED_HUNT is declared not-while-replaying there and the guards go. The
+    audit found no other M9 path that leaks: every camp RECONCILE, CHIEF_BODY and tribute TRANSFER is gated
+    on `is_in`, which is false all through a replay. The two `outbox.retain` filters for OwedHunt
+    (`session_start`, `resend_notices`) were dead under rtsim-jni, because `take_commands` has emptied the
+    outbox, and no host test needed them, so they went. Leaks on main (`seen()` re-sighting a band,
+    NOTICE) are not M9's and are not touched. The tests cover a replay of one hand-over and one over
+    several (1,500 filler records on a minimum-size buffer, the answer in a later hand-over than the
+    session start), with the second hunt's answer journaled (spent, nothing sent) and lost (the rest goes
+    once).
   - The hunt's centre is the party's target position (the district's centre) and its radius 48
     (PLACEHOLDER).
   - Plunder with `plunder_goods` takes those goods and no others, and what the survivors take is the whole of

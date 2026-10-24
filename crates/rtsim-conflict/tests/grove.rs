@@ -1731,6 +1731,118 @@ fn an_owed_hunt_is_saved_and_written_again_with_its_op_at_a_session_start() {
     ok(&mut r);
 }
 
+/// The crash: the engine as the pages `saved` hold it, the next session started with its replay
+/// open (the plugin forgets what it held, `restart_to_replay`).
+fn crash_to(r: &mut CampRun, saved: &[u8]) {
+    r.c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), saved).expect("loads");
+    r.restart_to_replay();
+}
+
+/// The hunts the plugin was sent so far, as (op, count).
+fn hunts_sent(r: &CampRun) -> Vec<(u64, u32)> {
+    r.plugin
+        .hunts_sent
+        .iter()
+        .map(|h| (h.op, h.count))
+        .collect()
+}
+
+/// MZB-449 (the re-check, R1): a late answer replayed after a crash changes the books and sends
+/// nothing. The host moves every command out of the engine's outbox after each ingest and writes
+/// its queue at each hand-over, so a hunt pushed while replaying reached the next session's
+/// plugin, which had forgotten that it killed for it: the animals died twice. Here the first
+/// hunt's late answer and the second's are both journaled after the save; the replay books both,
+/// the hunt is spent, and the plugin of the next session hears of none.
+#[test]
+fn a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session() {
+    let mut r = grove(41, 9);
+    owe(&mut r, 5, 5);
+    let op1 = hunts(&r)[0].2;
+    owe(&mut r, 5, 3);
+    let [(_, 8, op2)] = hunts(&r)[..] else {
+        panic!("{:?}", hunts(&r));
+    };
+    let saved = r.c.save();
+    // The session goes on: the plugin killed 5, then 3.
+    applied(&mut r, 5, op1, 5);
+    applied(&mut r, 5, op2, 3);
+    assert!(hunts(&r).is_empty());
+    crash_to(&mut r, &saved);
+    let before = hunts_sent(&r);
+    assert_eq!(hunts(&r), [(5, 8, op2)], "the pages");
+    // The replay: each ingest is followed by the host's take.
+    applied(&mut r, 5, 0x1234, 0);
+    applied(&mut r, 5, op1, 5);
+    assert_eq!(hunts(&r), [(5, 3, op2)], "8 less the 5 killed");
+    assert_eq!(hunts_sent(&r), before, "nothing is sent while replaying");
+    applied(&mut r, 5, op2, 3);
+    assert!(hunts(&r).is_empty(), "spent");
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    assert_eq!(hunts_sent(&r), before, "a spent hunt goes to no plugin");
+    assert!(r.plugin.hunts.is_empty());
+    assert_eq!(r.c.stats.hunts_killed, 8);
+    ok(&mut r);
+}
+
+/// The same crash with the second hunt's own answer lost: the replay books the late answer of the
+/// first, which leaves 3 owed, and `resend_notices` sends what is held, once.
+#[test]
+fn a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over() {
+    let mut r = grove(42, 9);
+    owe(&mut r, 5, 5);
+    let op1 = hunts(&r)[0].2;
+    owe(&mut r, 5, 3);
+    let [(_, 8, op2)] = hunts(&r)[..] else {
+        panic!("{:?}", hunts(&r));
+    };
+    let saved = r.c.save();
+    applied(&mut r, 5, op1, 5);
+    crash_to(&mut r, &saved);
+    let before = hunts_sent(&r).len();
+    applied(&mut r, 5, op1, 5);
+    assert_eq!(hunts_sent(&r).len(), before, "nothing while replaying");
+    assert_eq!(hunts(&r), [(5, 3, op2)]);
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    let sent: Vec<_> = r.plugin.hunts_sent.split_off(before);
+    assert_eq!(
+        sent.iter().map(|h| (h.op, h.count)).collect::<Vec<_>>(),
+        [(op2, 3)],
+        "the hunt held, once"
+    );
+    // The new plugin kills them and answers; the hunt is spent.
+    r.plugin.apply_hunts(99, at + 1);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    assert_eq!(r.c.stats.hunts_killed, 8, "5 and the 3");
+    ok(&mut r);
+}
+
+/// A raid re-derived by the replay owes its hunt in the books and sends nothing; the hunt goes
+/// once, with the others held, when the replay is over.
+#[test]
+fn a_hunt_owed_while_replaying_goes_once_when_the_replay_is_over() {
+    let mut r = grove(43, 9);
+    let saved = r.c.save();
+    crash_to(&mut r, &saved);
+    let before = hunts_sent(&r).len();
+    owe(&mut r, 5, 4);
+    owe(&mut r, 6, 2);
+    assert_eq!(hunts(&r).len(), 2);
+    assert_eq!(r.plugin.hunts_sent.len(), before, "nothing while replaying");
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    let sent: Vec<_> = r.plugin.hunts_sent.split_off(before);
+    let mut got: Vec<_> = sent.iter().map(|h| (h.district, h.count)).collect();
+    got.sort_unstable();
+    assert_eq!(got, [(5, 4), (6, 2)], "each, once");
+    ok(&mut r);
+}
+
 // ---- plunder ------------------------------------------------------------------------------------
 
 fn taken(c: &Conflict, g: GoodId) -> i128 {
