@@ -64,7 +64,7 @@ public final class IndustryConfig {
                         "A chunk is looked at whole, so one tick can overshoot by the block entities of one chunk. The district set changes only when the whole detection is done.")
                 .defineInRange(RESCAN_BLOCK_ENTITIES_PER_TICK, DEFAULTS.get(RESCAN_BLOCK_ENTITIES_PER_TICK), 1, 10_000_000));
         INTS.put(RESCAN_SLICE_MICROS, b.comment("Microseconds of wall time a district detection may spend in one tick: past it, the tick's share stops at the next chunk (R2-11).",
-                        "Bounds a tick that the block entity budget does not, such as the first detection after a start, when every look is cold. 0: no time limit.")
+                        "Bounds a tick that the block entity budget does not, when looks cost far more than usual (cold classes, a slow plugin). One look at one chunk is never cut. 0: no time limit.")
                 .defineInRange(RESCAN_SLICE_MICROS, DEFAULTS.get(RESCAN_SLICE_MICROS), 0, 1_000_000));
         INTS.put(LOAD_CHECK_INTERVAL, b.comment("Ticks between load-state and watched checks of a district with loaded chunks.")
                 .defineInRange(LOAD_CHECK_INTERVAL, DEFAULTS.get(LOAD_CHECK_INTERVAL), 1, 1200));
