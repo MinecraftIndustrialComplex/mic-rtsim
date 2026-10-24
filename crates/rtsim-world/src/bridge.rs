@@ -20,6 +20,11 @@ use crate::caravans::Attack;
 use crate::observe::Side;
 use crate::world::{CaravanId, Cause, World};
 
+/// What one talk with a village's ribbit adds to the village's sentiment toward the player (TK2): a
+/// first talk of the day per village and player, the cap kept on the player (TK60). TUNABLE (PLACEHOLDER), in this one place. Weak feelings fade
+/// in hours, so a talk lifts a player a little for the day and never makes a friend alone.
+pub const TALK_CREDIT: i16 = 3;
+
 /// What an exact trade booked, against what the bridge reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Booked {
@@ -286,6 +291,33 @@ impl World {
         // A village that saw it tells the next travellers.
         self.emit(i, at, false);
         id
+    }
+
+    /// Node `i` saw `report` first-hand and tells the next travellers (CL-D61): the report goes on
+    /// its board at the full delta, a ribbit village's feelings go out with the next commands and
+    /// the vanilla gossip is flushed (the steps of [`World::village_report`]), and the board goes
+    /// in a packet with the next messenger on each of its roads. A village would send with its
+    /// next market event; a player base has none of its own (it keeps no stock and no curves), so
+    /// a witnessing base must be told to send, and a village that saw the rout is told too, so it
+    /// does not wait for one. The node is the news' source: everyone else learns it from a
+    /// packet, at hearsay weight. False if the node already knew the report.
+    pub fn node_witnesses(&mut self, i: usize, report: ReportId, at: Tick) -> bool {
+        self.run_until(at);
+        let actor = self.nodes[i].actor;
+        let new = self.knowledge.witness(actor, report, at);
+        self.touch_sentiment(i);
+        self.flush_gossip();
+        self.emit(i, at, false);
+        new
+    }
+
+    /// A player talked with one of the village's ribbits (TALKED): the village's sentiment toward
+    /// them rises by [`TALK_CREDIT`]. Not a report: nothing happened that news could carry.
+    pub fn village_talked(&mut self, i: usize, player: ActorId, at: Tick) {
+        self.run_until(at);
+        let actor = self.nodes[i].actor;
+        self.knowledge.adjust(actor, player, TALK_CREDIT, at);
+        self.touch_sentiment(i);
     }
 
     /// A member left the caravan with nobody to blame (a mob killed it, another mod removed it, a

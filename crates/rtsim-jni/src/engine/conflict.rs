@@ -542,9 +542,6 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
-    // A record of an earlier session is a replay: a camp's census in it only marks its camp out
-    // (MOWZIE.md §4.9), its bodies not being the world as it is now.
-    let replaying = wire::u64_at(rec.bytes, obs::OBS_SEQ) < st.session_first;
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
         // conflict at its present (the clock not run for it), which spends its op id and drops
@@ -566,10 +563,11 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
-    st.conflict.engine.replaying = replaying;
+    // The records of an earlier session are the ones before the session's `replay_done`: the
+    // engine's own `replaying` window covers them (a camp's census among them only marks its camp
+    // out, MOWZIE.md §4.9).
     st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
     ingest(st, &o, at);
-    st.conflict.engine.replaying = false;
 }
 
 /// Applies one record at `at` (the modules were run to its time by the caller: the shared clock).
@@ -639,7 +637,14 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    resend_notices_if_due(st);
+    // The notices (and with them the end of the replay, `replay_done`) wait for the replay to
+    // catch up: Java drains its journal while it fits, so a long one spreads over several
+    // hand-overs, and the bodies the session start kept for the replay are still needed by the
+    // records of the later ones (MZB-141). The first live record is the other trigger
+    // (`journaled`).
+    if st.replay.applied_through().0 + 1 >= st.session_first {
+        resend_notices_if_due(st);
+    }
     let at = Tick(phase1::world_tick(st, st.game_time));
     shared::run_to(st, at);
     feed_districts(st, at);

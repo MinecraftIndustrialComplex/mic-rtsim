@@ -1427,7 +1427,7 @@ body mod is verified: it is the contract a plugin would have to meet.
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
 plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
-CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-177); that of the
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178); that of the
 rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
 deferred and drops them, and sends none of their commands.
 
@@ -1544,9 +1544,25 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   culture's tolerated rate applies). While a district is unloaded, the composition sets the same
   source's rate from the industry engine's learned rate of the pollution good (choice K2-9).
 - **BAND_DEMATERIALIZED** after the engine's BAND_RECALL can only lower the counts: those that died
-  on the way out go; a despawn the plugin decided (chunks unloaded) sets them.
+  on the way out go; a despawn the plugin decided (chunks unloaded) sets them. It names its band by
+  agent and epoch, and the engine keeps the bodies of every epoch it recalled until that epoch's
+  despawn comes, so one that arrives while the band is in view again at a newer epoch still counts
+  its dead (MZB-131). Across a restart the bodies the pages held in Minecraft are kept the same way
+  until the journal's replay has caught up, so a BAND_CASUALTIES or a BAND_DEMATERIALIZED journaled
+  after the last page save is counted as the session that wrote it counted it; what the replay
+  did not count is dropped then, its members alive as before (MZB-138). The replay has caught up
+  when the engine's `Replay` has applied every record before the session's first live one, however
+  many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
+  counts off the bodies kept for its epoch live and replayed alike (MZB-142).
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
-  that player (P14). CHIEF_KILLED routs the band (§9.5). Casualties that leave an envoy party with
+  that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
+  flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
+  the heir taking over at home, so the band carries on without a chief body, a chief body already in
+  Minecraft stays there until the band despawns, and a CHIEF_KILLED for it is dropped (MZB-139,
+  MZB-146); the plugin still journals it when that body dies (nothing else comes of it on the Java
+  side: the death and its drops are the mob's own, and the in-world news is a no-op until it lands:
+  MZB-147).
+  Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
 - **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes. It is
@@ -1628,14 +1644,23 @@ the player's next entry. A plugin that plays
 nothing answers NOTICE_SHOWN at once.
 
 **Difficulty.** The plugin journals DIFFICULTY at every session start and on every change of the
-world's difficulty. On Peaceful the engine sends no war band and recalls the ones in the world
-(BAND_RECALL 6): the plugin needs no rule of its own.
+world's difficulty. On Peaceful the engine sends no war band and no envoy, and recalls the ones in
+the world: a war band with BAND_RECALL 6, an envoy in view with BAND_RECALL 4 (passing; it walks off
+and stays abstract, MZB-132): the plugin needs no rule of its own.
 
 **An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
 of the item before `deadlineTick`. Paying is a TRIBUTE_PAID with the envoy's agent (the items leave
 the player's inventory; an op id); refusing or attacking is an ENVOY_ANSWER. An envoy that is
-killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3).
+killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3). Any player's blow
+on the envoy or a guard lifts the guard. A blow from the player the demand is to (or from any
+player, for a demand to none) closes it on the plugin's side (the envoy takes nothing more) and is
+answered once with an ENVOY_ANSWER 3: the engine books the insult against that player's district
+and refuses the demand (DEMAND_SETTLED 4). A blow from another player is answered once per player
+with an ENVOY_ANSWER 3 naming them: the engine books it as their own insult, at the envoy's place
+and against no district, and refuses nothing; the demand stays open to its player and the plugin
+goes on taking that player's tribute (MZB-145). ENVOY_ANSWER is an envoy party's: the engine
+ignores it for any other party (MZB-144).
 
 **The raid director.** A war band that arrives where a player watches materializes in **waves**:
 each BAND_MATERIALIZE with an `arcRadius` spawns its members on the arc of that radius around
@@ -1690,18 +1715,32 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   on its return: conservation exact). A district raid's threats carry the band's own loads (its
   units' carry and blocks broken, `Threat::loads`, C2-1); threats without loads keep the industry
   engine's per-class tunables. **Watched**, the director above.
-- **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
-  and remember the raids on them (a robbery report against the faction).
+- **The real witnesses of a rout** hear when a player breaks one of a faction's bands (a rescue report,
+  C24; CL-D61): the village the band marched on, every village that hates the faction within the
+  view radius of where the band broke (where the breaker stands for a watched fight if within the
+  view radius of the band, else where the band is), and every player base within that radius that
+  a player still marks, plus the base a band that was fighting at its target marched on. A band
+  routed on the road records the rescue as one routed in a fight does, seen there by the village it
+  marched on and a base in view. Every other
+  village hears it from travellers. Villages that
+  hate a faction also remember the raids on them (a robbery report against the faction).
 - **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
   `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands
   down at its muster's end (its warriors back in the pool, its feud a rung down, so that it climbs
   again later). When Peaceful begins, every war party already out stops at once (MZB-15): one on the
   road goes home, its feud a rung down (MZB-29); a watched fight ends; a siege waiting at its target
   goes home. Those in Minecraft get BAND_RECALL 6. No war body spawns while it is Peaceful, and an
-  ambush booked before never falls. Notices, envoys and scouts go on, and grievance keeps its curve.
-  When Peaceful ends every feud is planned again, its dwell clock paused over the Peaceful span and
-  shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so no burst
-  of raids follows. The flag and the span's start are saved (MZB-14 to MZB-17).
+  ambush booked before never falls. Notices and scouts go on, and grievance keeps its curve. No
+  envoy leaves either, its body being a stand-in that cannot exist on Peaceful (MZB-132): the climb
+  to Envoy waits like a war rung's, an envoy in view walks off (BAND_RECALL 4) and stays where it is,
+  abstract, and its muster's end or its wait is held; no demand is made or comes due, so a feud
+  holds at its notice with its grievance kept. A refusal that reaches the engine on Peaceful is
+  recorded, but its climb to a war rung waits for Normal (MZB-134). When Peaceful ends every feud is
+  planned again, its dwell clock paused over the Peaceful span (a span of no time moves nothing,
+  MZB-135) and shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so
+  no burst of raids follows; every open demand's deadline moves by the span it lived through, and the
+  envoys held go on to it, their patience moved by the part of the span they spent waiting
+  (MZB-132, MZB-136). The flag and the span's start are saved (MZB-14 to MZB-17).
 - **Kept notices** (ledger 14). A feud's last FACTION_NOTICE is kept in its row until a NOTICE_SHOWN
   for its serial, faction and player, or until the feud is forgotten; a later notice replaces it.
   Serials are engine-wide, so a forgotten and re-made feud never reuses one (MZB-28). Each session
@@ -1715,13 +1754,13 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
   catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
   `Conflict::ingest`, so the same record again is not counted twice (MZB-23).
-- **The camp records** (slice M4, MZB-150 to MZB-177) are built, with CAMP_BODIES' lines changed
+- **The camp records** (slice M4, MZB-150 to MZB-178) are built, with CAMP_BODIES' lines changed
   to carry their action (MZB-168). CAMP_CENSUS
   (a camp that is in, at an epoch), CAMP_OUT, CAMP_BODIES and CAMP_DEATH are ingested by
   `engine/camp.rs`, and the engine sends CAMP_RECONCILE only to a camp that is in, at most one line
   in flight per slot, voiding its lines at CAMP_OUT and at a session start and never resending one.
-  rtsim-jni sets `Conflict::replaying` around a record whose sequence number is before the session's
-  first, so a census replayed from an earlier session only marks its camp out (MZB-159). An answer
+  A census ingested inside the session's replay window (`Conflict::replaying`, from `session_start`
+  to `replay_done`) only marks its camp out (MZB-159, MZB-178). An answer
   line is booked by its own action, not by the state its slot has now (a line voided at CAMP_OUT is
   still answered), once by its (op, line), and only while its epoch is the latest a census named; a
   CAMP_DEATH by its slot and generation, with no op id kept (MZB-168 to MZB-170).
@@ -2077,24 +2116,24 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK56)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
 market's shortest and fullest goods, its ports' state and up to four pieces of news, each naming who
 did what to whom and where. TALK.md §9 holds the reasons and the lines Java builds from them; this
-section is the wire.
+section is the wire. A ribbit's credited talk goes the other way, as TALKED (§13.7).
 
 Reference codec `crates/rtsim-jni/src/talk_wire.rs` (every record's bytes are pinned by its tests).
 The Java codec is `talk/TalkRecords.java`, pure (no Minecraft types), and `TalkRecordsTest` pins the
 same bytes as the Rust tests. The engine side is `engine/talk.rs`; the Java side is §13.6.
 
-### 13.1 Kind ranges (reserved)
+### 13.1 Kind ranges
 
 | Range | Direction | Class |
 |---|---|---|
 | 0x00C0 to 0x00CF | Java to engine | TALK latest-wins observations: TALK_ASK (0x00C0) |
-| 0x0A00 to 0x0AFF | Java to engine | TALK journaled observations: TALKED (0x0A00, slice 3; the engine does not decode it yet) |
+| 0x0A00 to 0x0AFF | Java to engine | TALK journaled observations: TALKED (0x0A00, §13.7) |
 | 0x8A00 to 0x8AFF | engine to Java | TALK commands (`cmdSeq` at 8): TALK_FACTS (0x8A00) |
 
 0x0B00 to 0x0BFF and 0x8B00 to 0x8BFF stay free.
@@ -2161,11 +2200,12 @@ when one is class 0 or DEAD, is TK36 and TK37.
   buffer that cannot hold the next answer keeps its ask for the next one.
 - **Read only:** it changes nothing in the world. With phase 1 off an ask is answered at once
   without HOLDER (TK32).
+- **TALKED** is the one record that does change it, and is journaled: §13.7.
 
 ### 13.5 Test order 40: `TalkReport`
 
-TEST mode only (rtsim-host's fake Java keeps no 0x8A00 payloads, and the conflict and ports
-engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+TEST mode only (rtsim-host's fake Java keeps the TALK_FACTS records it is sent, `Java::talk_facts`,
+since slice 3, and the conflict and ports engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
 z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
 it does to the knowledge tables, are TK40.
@@ -2191,5 +2231,60 @@ it does to the knowledge tables, are TK40.
   `NativeEngine.TalkActor` for the (class, a, b) of an actor. `TalkAsks.mute` writes no ask, so the 20
   ticks' timeout closes it. `Refs.force` forces names or descriptions (TK52). The GameTests are
   `gametest/TalkNewsGameTests`, each in a batch of its own because of the process-wide hooks.
-- **Nothing is written back.** An ask changes nothing in the world; the daily credit stays where slice 1
-  put it (TK1, TK2, TK25), and the engine hears of a talk only with TALKED, slice 3.
+- **Nothing is written back by an ask.** An ask changes nothing in the world; a villager's daily credit
+  stays where slice 1 put it (TK1, vanilla gossip), and the engine hears of a talk only with TALKED
+  (§13.7), which the Ribbits plugin sends for a credited talk with a resident ribbit (TK60).
+
+### 13.7 TALKED (0x0A00, journaled, aux 0): a ribbit's talk credits its village
+
+A player's first talk of a game day with a resident of a ribbit-culture village (TK60, TK70). The village's feeling
+toward the player rises by `TALK_CREDIT`, 3 (TK2). Not a report: nothing happened that news could carry.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | u16 | kind 0x0A00 |
+| 2 | u16 | size, 64 |
+| 4 | u16 | aux, 0 |
+| 6 | u16 | reserved |
+| 8 | u64 | obsSeq |
+| 16 | i64 | game time |
+| 24 | u64 | op id: 63 random bits with `Obs.JAVA_OP_BIT` set, drawn by the journal's `commitWithOpId` |
+| 32 | u64 | the village's Java id |
+| 40 | u64 | the player's UUID, most significant bits |
+| 48 | u64 | the player's UUID, least significant bits |
+| 56 | u32 | the talker's body: its entity type's name in dictionary 3 (`ribbits:ribbit`); the engine does not read it |
+| 60 | u32 | reserved, 0 |
+
+Pinned by `talk_wire::tests::the_talked_bytes_are_pinned` and Java's `TalkRecordsTest.theTalkedBytesArePinned`,
+the same 64 bytes for obsSeq 0x1234, game time 123456, op id 0x0A0B0C0D0E0F1011, village 0x0102030405060708
+and player (0x1111222233334444, 0x5555666677778888); `TalkRecordsTest` also builds it at the literal offsets above.
+
+**Exactly once.** Three layers, none of them new:
+
+1. Java sends at most one per village, player and game day (TK60), and writes that day on the player before it
+   journals; a talk with no session, a failed one or phase 1 off writes nothing (TK66).
+2. The kernel's `Replay` admits each journaled observation once, by its sequence and by its op id (the
+   `op_of` hook for TALKED returns the op id at 24): a record the engine has already seen, which a resent
+   hand-over or a replay after a crash brings again, is `AlreadyApplied`; a copy under a new sequence with
+   the same op id (`recommit`) is `DuplicateOp`. Phase 1 never sees either.
+3. What `Replay` admits becomes the phase 1 input `Talked { key, player }` (persist tag 21), appended to the
+   input log like every other input, so a crash replays it onto the same world once and the +3 is not
+   applied twice.
+
+**The engine side** (`engine/phase1.rs` `talked`, `engine/talk.rs`). It adds `TALK_CREDIT` to the village's
+feeling toward the player through `Knowledge::adjust`, and makes the player's actor if the village has
+never met them, as a trade does (a credited talk is a real meeting, unlike an ask, TK45). A TALKED that does
+not decode, names a village the world does not know or a base, or is by the nil player is refused and
+counted (`talked_refused`, warned in the log at each power of two) and never applied and never put in the input log (TK68). With phase 1
+off it is counted ignored, like every other kind. A scripted village (a test's) is left alone. Applied
+ones count in `talked`. Nothing is answered: the next TALK_ASK for that village reads the new feeling in
+TALK_FACTS.
+
+**The Java side** is `RibbitTalker.credit` in the Ribbits plugin: one `beginJournaled` and `commitWithOpId`
+of 64 bytes, after the day is written on the player.
+
+Tests: `rtsim-world` (the input applies, makes the player, is refused for a village that is not one,
+replays to the same world), `rtsim-jni` (`engine/talk.rs`: the credit shows in the next ask's sentiment,
+refusals, a scripted village), `tests/protocol.rs` `mod talk` (a talk credits live and across a crash;
+a malformed one is refused and the next still applies), and the GameTests `ribbit_talk_credits_the_village_once_a_day`
+and `ribbit_puppet_talks_without_credit` on the Ribbits jar.

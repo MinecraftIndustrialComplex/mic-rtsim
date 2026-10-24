@@ -695,6 +695,106 @@ fn a_dead_slots_body_is_removed_at_the_next_census() {
     ok(&mut r);
 }
 
+/// A raid recalled on its walk-off loses members in two ways M3 counts live (MZB-142): casualties
+/// journaled before its despawn, counted off the recalled stack, and the dead the despawn finds
+/// (the stack less its survivors). Each member is one death in the camp's books: its slot, gone
+/// (away), is freed as died, once, whichever record counted it, and the survivors come home to
+/// owed slots that are spawned again (nothing is written off, nothing double counted).
+#[test]
+fn a_member_lost_on_a_walk_off_books_once_in_the_camp() {
+    use rtsim_conflict::engine::{Party, body_id};
+    let mut r = grove(75, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    let mut t = r.c.now();
+    while r.c.parties[p].phase != Phase::Out || counts(&r)[SlotState::Gone as usize] != 4 {
+        t += 200;
+        r.run(t);
+        assert!(t < day(20.0), "the party never got out: {:?}", counts(&r));
+    }
+    assert_eq!(counts(&r), [5, 0, 0, 4, 0], "away, gone");
+    let (epoch, body) = {
+        let c = r.c.cultures.get(r.c.factions[r.f as usize].culture).clone();
+        let x = &mut r.c.parties[p];
+        let units = x.units.clone();
+        // The walk-off as M3's tests make it: the bodies are a recalled stack of their epoch.
+        x.recalled = vec![(x.epoch, units)];
+        x.embodied = false;
+        (x.epoch, body_id(&r.c.cultures, &c.unit(x.units[0].0).body))
+    };
+    let alive = r.c.parties[p].alive();
+    assert_eq!(alive, 4);
+    // One death before the despawn: a casualty, counted live off the stack.
+    let at = r.c.now() + 1;
+    r.c.ingest(
+        &mut r.w,
+        &mut rtsim_ecology::infra::NoInfrastructure,
+        &Obs::Casualties(boundary::BandCasualties {
+            agent: Party::agent(p),
+            epoch,
+            by: boundary::BY_MOB,
+            body,
+            count: 1,
+            killer: (0, 0),
+        }),
+        at,
+    );
+    assert_eq!(r.c.parties[p].alive(), 3);
+    assert_eq!(counts(&r), [5, 0, 0, 3, 0], "one slot freed, died");
+    assert_eq!(r.c.camp(r.f).unwrap().slots.len(), 8);
+    // The despawn finds one more dead: the stack less its survivors, of which the casualty is
+    // already off the stack.
+    let survivors: Vec<(u32, u32)> = {
+        let c = r.c.cultures.get(r.c.factions[r.f as usize].culture).clone();
+        let mut left = 1;
+        r.c.parties[p]
+            .units
+            .iter()
+            .map(|&(u, n)| {
+                let n = if left > 0 && n > 0 {
+                    left -= 1;
+                    n - 1
+                } else {
+                    n
+                };
+                (body_id(&r.c.cultures, &c.unit(u).body), n)
+            })
+            .collect()
+    };
+    r.c.ingest(
+        &mut r.w,
+        &mut rtsim_ecology::infra::NoInfrastructure,
+        &Obs::Dematerialized(boundary::BandDematerialized {
+            agent: Party::agent(p),
+            epoch,
+            reason: boundary::RECALL_PASSING,
+            survivors,
+        }),
+        at,
+    );
+    assert_eq!(r.c.parties[p].alive(), 2, "one more, found by the despawn");
+    assert_eq!(counts(&r), [5, 0, 0, 2, 0], "each death, one slot");
+    assert!(r.c.parties[p].recalled.is_empty());
+    ok(&mut r);
+    // The survivors get home: their slots are owed and spawned, the pool refills what the two
+    // deaths left, and nobody is written off.
+    let mut t = r.c.now();
+    while !war_parties(&r).is_empty() {
+        t += 600;
+        r.run(t);
+        assert!(t < day(40.0), "the party never got home: {:?}", counts(&r));
+    }
+    r.run(t + days(8.0));
+    assert_eq!(r.c.stats.camp_written_off, 0);
+    assert_eq!(
+        counts(&r),
+        [9, 0, 0, 0, 0],
+        "refilled to the cap, one body each"
+    );
+    assert_eq!(world_bodies(&r), 9);
+    ok(&mut r);
+}
+
 // ---- draws and the cap -------------------------------------------------------------------------
 
 /// Test 22, the draw order: found bodies first, then a missed one, then owed ones, never one with a
@@ -1123,7 +1223,7 @@ fn a_replayed_census_only_marks_its_camp_out() {
         }),
         at,
     );
-    r.c.replaying = false;
+    r.c.replay_done();
     r.flush(at);
     assert!(!r.c.camp_is_in(r.f), "marked out");
     assert_eq!(
@@ -1552,10 +1652,11 @@ fn lines_in(cmds: &[Cmd], action: u8) -> usize {
         .sum()
 }
 
-/// The journal's tail as the next session replays it: records from before the session start, which
-/// the engine ingests with `replaying` set (rtsim-jni sets it from the record's sequence number).
+/// The journal's tail as the next session replays it: records from before the session start,
+/// which the engine ingests inside the session's replay window (`CampRun::restart_to_replay` opens
+/// it) and `replay_done` closes, as rtsim-jni does when the journal has caught up.
 fn replay(r: &mut CampRun, journal: Vec<(Tick, Obs)>) {
-    r.c.replaying = true;
+    assert!(r.c.replaying, "the session's replay window is open");
     for (t, o) in journal {
         let at = t.max(r.c.now());
         r.c.ingest(
@@ -1565,7 +1666,7 @@ fn replay(r: &mut CampRun, journal: Vec<(Tick, Obs)>) {
             at,
         );
     }
-    r.c.replaying = false;
+    r.c.replay_done();
     let at = r.c.now();
     r.flush(at);
 }
@@ -1759,7 +1860,7 @@ fn an_answer_in_the_journal_is_replayed_after_a_restart_and_booked_by_state() {
     r.round_trip();
     let j = journal(&mut r);
     assert_eq!(j.len(), 1, "the answer, not yet read");
-    r.restart();
+    r.restart_to_replay();
     assert_eq!(counts(&r), [0, 1, 0, 0, 0], "voided: still owed");
     replay(&mut r, j);
     assert_eq!(
@@ -1790,7 +1891,7 @@ fn an_answer_in_the_journal_is_replayed_after_a_restart_and_booked_by_state() {
     assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 4);
     r.round_trip();
     let j = journal(&mut r);
-    r.restart();
+    r.restart_to_replay();
     assert_eq!(counts(&r), [5, 0, 4, 0, 0]);
     replay(&mut r, j);
     assert_eq!(
@@ -1827,7 +1928,7 @@ fn an_answer_already_in_the_pages_is_skipped_by_its_op_id_when_replayed() {
     assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
     assert_eq!(r.c.stats.camp_answers, 1);
     r.round_trip();
-    r.restart();
+    r.restart_to_replay();
     let before = r.c.camp(r.f).unwrap().clone();
     replay(&mut r, again);
     assert_eq!(r.c.stats.camp_answers, 1, "booked once");

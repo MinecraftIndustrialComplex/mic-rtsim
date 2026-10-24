@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! TALK's two records (docs/boundary.md §13, TALK.md §9.2): the reference codec. The core's
-//! `talk/TalkRecords.java` (slice 2b) mirrors it, and the bytes of one ask and one facts record are
-//! pinned on both sides (`tests` here, `TalkRecordsTest` there).
+//! TALK's three records (docs/boundary.md §13, TALK.md §9.2): the reference codec. The core's
+//! `talk/TalkRecords.java` mirrors it, and the bytes of one ask, one facts and one talked record
+//! are pinned on both sides (`tests` here, `TalkRecordsTest` there).
 //!
 //! - **TALK_ASK** (0x00C0, Java to the engine, latest wins, `aux` = n): Java's open questions,
 //!   `n` asks of [`ask::SIZE`] bytes from offset 8, sent each tick until answered.
 //! - **TALK_FACTS** (0x8A00, engine to Java, `aux` = news n): one answer, per session, with no op
 //!   id: 48 bytes of facts and then `n` news items of [`news::SIZE`] bytes, each with three refs of
 //!   [`reference::SIZE`] bytes (TK30).
+//! - **TALKED** (0x0A00, Java to the engine, journaled): a talk the village credits, 64 bytes
+//!   ([`talked`]), exactly once by its op id (docs/boundary.md §13.7).
 //!
 //! The reasons for the layout are in TALK.md §9; this file is the layout. Every value is
 //! little-endian.
 
-use crate::wire::{self, put_i32, put_u16, put_u32, put_u64};
+use crate::wire::{self, put_i32, put_i64, put_u16, put_u32, put_u64};
 
 /// TALK_ASK: latest wins, Java to the engine (TK10: TALK's range is 0x00C0 to 0x00CF).
 pub const TALK_ASK: u16 = 0x00C0;
 /// TALK_FACTS: a command, engine to Java (TK10: 0x8A00 to 0x8AFF).
 pub const TALK_FACTS: u16 = 0x8A00;
-// 0x0A00 is TALKED (journaled, Java to the engine): reserved for slice 3, not decoded here yet.
+/// TALKED: journaled, Java to the engine (TK10: 0x0A00 is TALK's journaled kind).
+pub const TALKED: u16 = 0x0A00;
 
 /// One ask (TALK.md §9.2). The record is the 8-byte header and `n` of these.
 pub mod ask {
@@ -59,6 +62,21 @@ pub mod ask {
     pub const fn record_size(n: usize) -> usize {
         FIRST + n * SIZE
     }
+}
+
+/// TALKED (docs/boundary.md §13.7): a ribbit talked with a player and its village credits it. The
+/// journaled prefix (8 obsSeq, 16 gameTime) comes first, as for every journaled kind.
+pub mod talked {
+    /// u64, Java's: the kernel's `Replay` applies a record of this op id once.
+    pub const OP_ID: usize = 24;
+    /// u64: the village's Java id.
+    pub const VILLAGE: usize = 32;
+    pub const PLAYER_MOST: usize = 40;
+    pub const PLAYER_LEAST: usize = 48;
+    /// u32: the ribbit's body, dictionary 3 (0 unknown).
+    pub const BODY: usize = 56;
+    pub const RESERVED: usize = 60;
+    pub const SIZE: usize = 64;
 }
 
 /// The answer (TALK.md §9.2).
@@ -273,6 +291,94 @@ pub fn encode_asks(asks: &[Ask]) -> Vec<u8> {
         a.encode(&mut rec[ask::FIRST + i * ask::SIZE..]);
     }
     rec
+}
+
+/// A TALKED record, decoded: a talk of a player with one of a village's ribbits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Talked {
+    pub obs_seq: u64,
+    pub game_time: i64,
+    pub op_id: u64,
+    pub village: u64,
+    pub player: (u64, u64),
+    pub body: u32,
+}
+
+/// Why a TALKED record was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TalkedError {
+    /// The record is not a TALKED.
+    Kind(u16),
+    /// The record is not exactly [`talked::SIZE`] bytes.
+    Size(usize),
+    /// The player is the nil UUID: nobody to credit.
+    NilPlayer,
+}
+
+impl std::fmt::Display for TalkedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TalkedError::Kind(k) => write!(f, "kind {k:#06x} is not a TALKED"),
+            TalkedError::Size(n) => {
+                write!(
+                    f,
+                    "a TALKED of {n} bytes (exactly {} expected)",
+                    talked::SIZE
+                )
+            }
+            TalkedError::NilPlayer => write!(f, "a TALKED by the nil player"),
+        }
+    }
+}
+
+impl Talked {
+    /// Decodes a whole TALKED record (header included). Strict: a record of any other size is
+    /// refused, so a layout change cannot be half read.
+    pub fn decode(rec: &[u8]) -> Result<Talked, TalkedError> {
+        if rec.len() < wire::RECORD_HEADER {
+            return Err(TalkedError::Size(rec.len()));
+        }
+        let kind = wire::u16_at(rec, wire::R_KIND);
+        if kind != TALKED {
+            return Err(TalkedError::Kind(kind));
+        }
+        if rec.len() != talked::SIZE || usize::from(wire::u16_at(rec, wire::R_SIZE)) != talked::SIZE
+        {
+            return Err(TalkedError::Size(rec.len()));
+        }
+        let player = (
+            wire::u64_at(rec, talked::PLAYER_MOST),
+            wire::u64_at(rec, talked::PLAYER_LEAST),
+        );
+        if player == (0, 0) {
+            return Err(TalkedError::NilPlayer);
+        }
+        Ok(Talked {
+            obs_seq: wire::u64_at(rec, wire::obs::OBS_SEQ),
+            game_time: wire::i64_at(rec, wire::obs::GAME_TIME),
+            op_id: wire::u64_at(rec, talked::OP_ID),
+            village: wire::u64_at(rec, talked::VILLAGE),
+            player,
+            body: wire::u32_at(rec, talked::BODY),
+        })
+    }
+
+    /// The whole record (what Java writes; the engine only decodes).
+    pub fn encode(&self) -> Vec<u8> {
+        let mut rec = vec![0u8; talked::SIZE];
+        put_u16(&mut rec, wire::R_KIND, TALKED);
+        put_u16(&mut rec, wire::R_SIZE, talked::SIZE as u16);
+        put_u32(&mut rec, wire::R_AUX, 0);
+        put_u64(&mut rec, wire::obs::OBS_SEQ, self.obs_seq);
+        put_i64(&mut rec, wire::obs::GAME_TIME, self.game_time);
+        put_u64(&mut rec, talked::OP_ID, self.op_id);
+        put_u64(&mut rec, talked::VILLAGE, self.village);
+        put_u64(&mut rec, talked::PLAYER_MOST, self.player.0);
+        put_u64(&mut rec, talked::PLAYER_LEAST, self.player.1);
+        put_u32(&mut rec, talked::BODY, self.body);
+        put_u32(&mut rec, talked::RESERVED, 0);
+        rec
+    }
 }
 
 /// A ref, decoded: see [`reference`].
@@ -600,6 +706,81 @@ mod tests {
         18010000ceffffff020200000400000008070605040302010000000000000000\
         f6ffffff05000000000000000000000000000000000000000000000000000000\
         0000000000000000";
+
+    /// The pinned talked record (Java's `TalkRecordsTest` pins the same bytes): observation 0x1234
+    /// at game time 123,456, op id 0x0A0B0C0D0E0F1011, by the player (0x1111222233334444,
+    /// 0x5555666677778888) to a ribbit of village 0x0102030405060708 whose body is dictionary id 3.
+    /// Built at the literal offsets of docs/boundary.md §13.7, not through this file's constants.
+    #[test]
+    fn the_talked_bytes_are_pinned() {
+        let t = Talked {
+            obs_seq: 0x1234,
+            game_time: 123_456,
+            op_id: 0x0A0B_0C0D_0E0F_1011,
+            village: 0x0102_0304_0506_0708,
+            player: (0x1111_2222_3333_4444, 0x5555_6666_7777_8888),
+            body: 3,
+        };
+        let rec = t.encode();
+        let mut want = vec![0u8; 64];
+        want[0..2].copy_from_slice(&0x0A00u16.to_le_bytes());
+        want[2..4].copy_from_slice(&64u16.to_le_bytes());
+        want[8..16].copy_from_slice(&0x1234u64.to_le_bytes());
+        want[16..24].copy_from_slice(&123_456i64.to_le_bytes());
+        want[24..32].copy_from_slice(&0x0A0B_0C0D_0E0F_1011u64.to_le_bytes());
+        want[32..40].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+        want[40..48].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
+        want[48..56].copy_from_slice(&0x5555_6666_7777_8888u64.to_le_bytes());
+        want[56..60].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(rec, want, "got {}", hex(&rec));
+        assert_eq!(
+            hex(&rec),
+            PINNED_TALKED.replace(char::is_whitespace, ""),
+            "the pinned talked"
+        );
+        assert_eq!(Talked::decode(&rec), Ok(t));
+        assert_eq!(talked::SIZE, 64);
+    }
+
+    /// The hex of [`the_talked_bytes_are_pinned`]'s record, for the Java side's test to copy.
+    const PINNED_TALKED: &str = "\
+        000a400000000000341200000000000040e201000000000011100f0e0d0c0b0a\
+        0807060504030201444433332222111188887777666655550300000000000000";
+
+    #[test]
+    fn a_talked_that_does_not_fit_is_an_error() {
+        let good = Talked {
+            obs_seq: 1,
+            game_time: 1,
+            op_id: 9,
+            village: 7,
+            player: (1, 2),
+            body: 0,
+        }
+        .encode();
+        assert!(Talked::decode(&good).is_ok());
+        // Truncated: a record shorter than its layout, with the header still claiming 64.
+        assert_eq!(Talked::decode(&good[..56]), Err(TalkedError::Size(56)));
+        assert_eq!(Talked::decode(&good[..4]), Err(TalkedError::Size(4)));
+        // Oversized: a longer record whose header says so.
+        let mut big = good.clone();
+        big.extend_from_slice(&[0; 8]);
+        put_u16(&mut big, wire::R_SIZE, 72);
+        assert_eq!(Talked::decode(&big), Err(TalkedError::Size(72)));
+        // The header lying about the size of a record that is 64 bytes.
+        let mut lie = good.clone();
+        put_u16(&mut lie, wire::R_SIZE, 72);
+        assert_eq!(Talked::decode(&lie), Err(TalkedError::Size(64)));
+        // Another kind.
+        let mut other = good.clone();
+        put_u16(&mut other, wire::R_KIND, 0x0A01);
+        assert_eq!(Talked::decode(&other), Err(TalkedError::Kind(0x0A01)));
+        // The nil player.
+        let mut nil = good;
+        put_u64(&mut nil, talked::PLAYER_MOST, 0);
+        put_u64(&mut nil, talked::PLAYER_LEAST, 0);
+        assert_eq!(Talked::decode(&nil), Err(TalkedError::NilPlayer));
+    }
 
     #[test]
     fn asks_that_do_not_fit_are_errors() {

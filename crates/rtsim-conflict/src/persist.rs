@@ -57,15 +57,17 @@ use crate::tunables::ConflictTunables;
 /// factions and maps of feuds and sources). RTC3: the indexes, parties and wheel follow the rest
 /// of the resident state (docs/choices-paging-followups.md PF10). RTC4: the Peaceful flag and its
 /// start and the last notice's serial follow presence, and a feud carries its kept notice and its
-/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22). RTC5: a faction carries its cap, its members
-/// away and its camp ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC5");
+/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22). RTC5: a party's recalled stacks are kept by
+/// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
+/// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC6");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
-/// ends with the Peaceful flag, its start and the last notice's serial. 4: a faction row carries
-/// its camp (M4), so every page of rows and every wheel event may differ.
+/// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
+/// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
+/// event may differ.
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 4;
+const META_VERSION: u16 = 5;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -605,7 +607,11 @@ fn put_party(w: &mut Writer, x: &Party) {
     put_opt(w, &x.feud, |w, a| w.u64(a.to_bits()));
     put_stacks(w, &x.units);
     put_stacks(w, &x.spawned);
-    put_stacks(w, &x.recalled);
+    put_usize(w, x.recalled.len());
+    for (epoch, stacks) in &x.recalled {
+        w.var_u64(u64::from(*epoch));
+        put_stacks(w, stacks);
+    }
     w.var_u64(u64::from(x.start_units));
     put_target(w, &x.target);
     w.u16(x.frame);
@@ -642,7 +648,10 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
     let feud = get_opt(r, handle)?;
     let units = get_stacks(r)?;
     let spawned = get_stacks(r)?;
-    let recalled = get_stacks(r)?;
+    let n = r.len_prefix(2)?;
+    let recalled = (0..n)
+        .map(|_| Ok((get_u32(r)?, get_stacks(r)?)))
+        .collect::<codec::Result<Vec<_>>>()?;
     let start_units = get_u32(r)?;
     let target = get_target(r)?;
     let frame = r.u16()?;
