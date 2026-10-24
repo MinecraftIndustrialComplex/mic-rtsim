@@ -326,13 +326,37 @@ public final class JournalBarrierGameTests {
     }
 
     /**
+     * A world save as an autosave makes it ({@code saveEverything}), while the overworld's own autosaves are off
+     * ({@code noSave}): the save turns it back on for itself.
+     */
+    private static void saveWorld(ServerLevel level) {
+        level.noSave = false;
+        try {
+            level.getServer().saveEverything(true, false, false);
+        } finally {
+            level.noSave = true;
+        }
+    }
+
+    /**
      * The world-save marker (WORLD_SAVED) never claims more than the journal's file on disk holds (JB1): while
      * the server's journal is held by a chunk in flight, the marker chained after a world save reports at most
      * what the file had before. The old marker reported the journal in memory, whatever the write did.
+     *
+     * <p>The test's two world saves are the only ones of the overworld while it runs. The GameTest server
+     * autosaves every 6,000 ticks, under a second when it runs unthrottled: an autosave between the two took the
+     * journal's snapshot while the chunk was still in flight, so its write was held too, and while that write
+     * was still queued on the IO chain the second save found the journal clean and wrote nothing ("the file was
+     * written" failed; the journal's file waits for the next save, as it should). So the overworld does not
+     * autosave during the test ({@code noSave}, as {@code /save-off} does; it also pauses the overworld's chunk
+     * unloads, which nothing here needs), and the test's saves turn it on for themselves ({@link #saveWorld}).
      */
     @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_marker", timeoutTicks = 6000)
     public static void theWorldSavedMarkerNeverPassesTheJournalOnDisk(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
+        boolean noSave = level.noSave;
+        level.noSave = true;
+        ChunkWait.of(helper, 6000).onEnd(() -> level.noSave = noSave);
         RtsimSession s = RtsimTests.session();
         JournalSavedData data = s.journal();
         LevelChunk inFlight = new LevelChunk(level, spare(2));
@@ -346,7 +370,7 @@ public final class JournalBarrierGameTests {
                     data.setDirty();
                     // read on the chain, after any write task of an earlier save still queued there
                     IOUtilities.withIOWorker(() -> before.set(new long[] {data.writtenThrough(), data.chunks().held(), data.writes()}));
-                    level.getServer().saveEverything(true, false, false);
+                    saveWorld(level);
                     IOUtilities.withIOWorker(() -> after.set(new long[] {s.boundary().durablePending(), data.writtenThrough(), data.chunks().held(), data.writes()}));
                 })
                 .thenWaitUntil(io(() -> check("the chain looked", after.get() != null)))
@@ -360,7 +384,7 @@ public final class JournalBarrierGameTests {
                     check("the marker is at most the file: " + a[0] + " <= " + a[1], a[0] <= a[1]);
                     data.chunks().onUnload(inFlight);
                     after.set(null);
-                    level.getServer().saveEverything(true, false, false);
+                    saveWorld(level);
                     IOUtilities.withIOWorker(() -> after.set(new long[] {s.boundary().durablePending(), data.writtenThrough(), data.chunks().held(), data.writes()}));
                 })
                 .thenWaitUntil(io(() -> check("the chain looked", after.get() != null)))
