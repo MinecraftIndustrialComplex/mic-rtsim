@@ -3004,6 +3004,21 @@ Where the design left a gap the build took the conservative option; each is undo
   `line: None`. The call is made only if the conflict is running and holds the train. A pass's entry and
   exit are translated with `phase1::world_tick` (offset 0 in the tests, so the translation is not
   checked by equality there).
+- **MZB-346** (bench, MZB-331): `rtsim-cli bench scale --only factions,factions-paged`, full, release,
+  base (f6321fa5, built from `git archive` in a scratch target) against M7 (165f1b58) side by side at
+  nice 10, machine load 15 to 55. The resident `factions` sweep shows no cost: at 1,024 factions the M7
+  over base ratio of CPU per day is 0.964 and 1.041 in two pairs (the A/A pair's ratios are 0.92 to 1.00
+  at 16 to 1,024). The paged `factions-paged` sweep costs more: M7 over base is 1.031, 1.067, 1.041
+  (pair 1) and 1.052, 1.025, 1.062 (pair 2) at 1,024, 2,048 and 4,096 factions, mean 1.047, against an
+  A/A pair of 0.986, 0.998, 0.987. That is about 3.3 points beyond the A/A spread, over MZB-331's gate of
+  3 by a hair. The cause is bytes, not work: the Rail signal kind makes `Feud.raw` seven f64s instead of
+  six, a focus keeps an optional pin, a source an optional boxed pin, and a faction row a meter list, so
+  an encoded faction is 27 bytes larger (save_full 527,088 to 554,743 bytes at 1,024, +5.2%) and the
+  resident estimate of the paged rows is 13.8, 15.4 and 15.9% larger. A paged step is a page load plus
+  its events, and with the budget fixed fewer rows stay resident. Events (28,375, 56,748, 113,227) and
+  conservation are the same as base. Mitigations if the gate is held: pack `Focus.track` (an
+  `Option<Pin>` is 40 bytes and doubles `Focus` from 40 to 80), or carry the Rail rate outside
+  `Feud.raw`. Neither is done: both change a row layout the design fixes (MZB-313, MZB-314).
 
 ## M8 Lying in wait
 
