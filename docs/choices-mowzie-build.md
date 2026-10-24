@@ -385,15 +385,16 @@ under its own heading.
   neither op goes into `applied_ops`, which first held them and grew with every death of a farmed
   grove.
 - **MZB-154** (the pool stays closed-form, and slots follow it on a read): `pool_at` stays a closed
-  form, so a feud, the bench and a save cost what they did, but its refill now stops at the cap
-  less the members away for every culture (MZB-171; M4 first said it was unchanged). A read that
-  needs the slots (`camp_sync`,
-  called by every ledger entry point and by the audit) first adds one owed slot for each whole
-  member the pool gained since the last, each with a generation from the tick it became whole
-  (`whole_at`). A camp that is in books `Ev::Refill` (wheel tag 7) with a stamp for its next whole
-  member; one that is out books none, and its next census spawns what it gained. A state hash or an
-  audit must sync first. Reason: a per-tick or per-refill loop over every camp would break D1, and
-  the closed form already says when a member is whole.
+  form, so a feud, the bench and a save cost what they did, but its refill now stops at the cap less
+  the members away for every culture (MZB-171; M4 first said it was unchanged). A change of the
+  slots (`camp_sync`, called by every ledger entry point that changes them, and by `camp_bodies`
+  after its epoch gate, MZB-172) first adds one owed slot for each whole member the pool gained
+  since the last, each with a generation from the tick it became whole (`whole_at`). A camp that is
+  in books `Ev::Refill` (wheel tag 7) with a stamp for its next whole member; one that is out books
+  none, and its next census spawns what it gained. A state hash must sync first; `camp_audit` is
+  `&self` and adds nothing, so it reads the books as they are, and the slots at home may be fewer
+  than the whole warriors the pool holds (MZB-172). Reason: a per-tick or per-refill loop over every
+  camp would break D1, and the closed form already says when a member is whole.
 - **MZB-155** (waiting for whole bodies counts the slots a draw may take): M2's quorum for a
   party that must muster whole (`ceil(size / 2)`, MZB-52) is unchanged, but it is now measured in
   the slots a draw may take (home, no line in flight). A feud with fewer waits on `BLOCKED`
