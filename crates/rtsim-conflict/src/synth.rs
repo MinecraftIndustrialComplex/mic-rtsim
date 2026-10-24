@@ -406,6 +406,7 @@ impl FakeConflict {
                         dimension: e.dimension,
                         wave: 0,
                         spawned: e.members.iter().map(|m| m.1).sum(),
+                        flags: 0,
                     }),
                 );
                 match self.answer {
@@ -468,6 +469,7 @@ impl FakeConflict {
                         dimension: m.dimension,
                         wave: u32::from(m.wave),
                         spawned: m.members.iter().map(|s| s.count).sum(),
+                        flags: u32::from(m.flags),
                     }),
                 );
                 if let Some(f) = self.fight.filter(|f| {

@@ -1157,7 +1157,7 @@ conservative option at its fork.
   decision to its record; it is normally 1 to 2 ticks, and a spawn group held by Java's spawn quota
   (`DEFAULT_SPAWN_QUOTA` 8, which holds every later command), a full command buffer or a lagging
   engine stretches it. 600 covers 30 s of stall and is no longer a placeholder; a fight recorded
-  past it is a double (RP-51 measures the delay). Its last poll is scheduled
+  past it was a double, and since RP-56 is lost instead (RP-51 measures the delay). Its last poll is scheduled
   at `since` + the slack; there the Ev::Party arm drops the hold and `party_event` runs `arrive()`
   or `wait_over()`, which, still replaying and past the slack, take the unwatched branch at once.
   The replay clock follows the records (§3.6), so that poll runs after every record before the
@@ -1165,8 +1165,9 @@ conservative option at its fork.
   sighting finds no hold and embodies the band as `seen()` did live. The decision is taken as of
   the hold's tick: `wait_over` reads the round as `until.min(at)`, and both it and `arrive()` check
   patience at that tick and set a siege's next round from it, so a later round falls where the
-  session that went on had it (live the tick is the event's own). Residual: a sighting inside the
-  slack is still read as a fight. No rule without one exists here: the record carries the agent,
+  session that went on had it (live the tick is the event's own). Residual, closed by RP-56 (the
+  record's free bytes 44 to 47 carry the command's echoed flags): a sighting inside the slack was
+  still read as a fight. No rule without one exists here: the record carries the agent,
   epoch, dimension, wave and units spawned, a fight's first wave and a sighting's are both wave 0
   at the next epoch, and Java journals both as it applies the command; telling them apart needs a
   field, a format change. Time: an unwatched decision while replaying resolves up to the slack
@@ -1263,9 +1264,10 @@ conservative option at its fork.
   `a_held_arrivals_refused_fight_is_fought_when_replayed` (`Run::refuse` turns the plugin's
   BAND_MATERIALIZED of the band's fight into a refusal, reason 1): replayed (Home, false, epoch 1,
   until 24020, watched 0, raids [55870]) against live (Home, false, epoch 2, until 61270, watched
-  1, no raid). A refused sighting inside the slack is read as the fight, the residual RP-48 names
-  for BAND_MATERIALIZED; BAND_SPAWN_REJECTED's bytes 36 to 39 are reserved too, so fixes4 item 2's
-  echoed flag could go there as well. A replayed refusal of a newer epoch for a party not held
+  1, no raid). A refused sighting inside the slack is read as the fight, the residual RP-48 named
+  for BAND_MATERIALIZED. Corrected by RP-56: BAND_SPAWN_REJECTED has no free bytes (24 agent, 32
+  epoch, 36 wave, 40 u64 cmdSeq, 48 bytes), so fixes4 item 2's echoed flag cannot go there; this
+  residual stays and needs a layout change. A replayed refusal of a newer epoch for a party not held
   raises no epoch floor, so the next decision after the replay can take the refused epoch again
   (reported, not changed). The sims are unchanged.
 - **RP-55** (the replay window's growth, logged; §3.2; RP-49; fixes4 item 7): the engine logs a
@@ -1284,3 +1286,35 @@ conservative option at its fork.
   `a_save_failing_partway_costs_that_save_not_the_engine` (TornLog) 0 against 1 (one failure and no
   stale refusal that run), both `a_held_arrival_across_a_second_*` tests 0 against 1 in S2 (S1
   asserts 0).
+- **RP-56** (a fight's record, told from a sighting's; §6.1; RP-48; RP-23; fixes4 item 2): the
+  command flag `BAND_FIGHT` (8) marks a BAND_MATERIALIZE of a fight's wave (`spawn_wave` with an
+  arc: `start_fight`'s and a siege round's waves; a sighting's passes none), and Java echoes the
+  command's flags into BAND_MATERIALIZED's bytes 44 to 47 (padding Java never wrote, zero-filled by
+  `Journal.begin`, so no layout change: an old record reads as a sighting). Built as option 1,
+  decided by the lead: on an engine from its pages, a newer epoch's sighting inside a held party's
+  slack only embodies it (§5.2) and keeps the hold; a fight record ends the hold in `fight_held` as
+  before; a fight record that finds no hold (at `since` + the slack exactly, as past it) raises the
+  epoch floor only, so its casualties and loot count against nothing (the `Looted` arm skips that
+  epoch's loot while replaying: it counts every party's loot whatever the epoch), and the slack's
+  poll books the round as the abstract raid: lost, never doubled. `ConflictStats::fights_unheld`
+  counts it once per epoch, and rtsim-jni warns of each. Case A's cost, named by the lead (the books
+  matter more than its live parity): for an arrival, the slack's poll is `arrive()`'s unwatched
+  branch, which recalls the band the sighting embodied, where the session that went on kept it
+  embodied; a siege's round recalls nothing. Checked against Rule U before building: BAND_RECALL
+  drops while replaying (§4.4's table), so no body vanishes in a player's sight; the crashed
+  session's bodies are gone; the casualties of that epoch still count through the recalled stack;
+  and the replay end makes every band abstract, so the difference is the engine's `embodied` until
+  the replay end (`a_siege_held_then` asserts that no recall leaves). Tests, mowzie_records:
+  `a_sighting_inside_a_held_decisions_slack_is_no_fight` (a siege's round and its arrival, the
+  sighting 300 ticks after the decision),
+  `a_held_arrivals_fight_recorded_after_the_slack_is_no_double` (the fight's records shifted 1,200
+  ticks past the arrival), `a_held_arrivals_fight_recorded_exactly_at_the_slack_finds_no_hold` (one
+  tick inside is honoured as live; at the slack, no hold) and case B,
+  `a_sighting_journaled_with_a_held_arrivals_fight_is_no_double` (a sighting at T-1 and the watched
+  arrival at T journaled in one step: casualties and loot counted once). Failing first: the sighting
+  in a round's slack replayed (Fighting, true, 1, until 85270, watched 1, raids []) against the
+  session that went on (Waiting, true, 1, 103270, 0, [79270]); the fight at and past the slack
+  (raids, casualties, watched, loot, unheld) ([55870], 3, 0, 5000, 0) against ([55870], 0, 0, 0, 1),
+  live ([], 3, 1, 5000). Case B and the control one tick inside passed before the fix (they guard
+  against reading the flag the other way). The sims are unchanged but for the new stat. Not done: a
+  refused sighting inside the slack (RP-54's residual).

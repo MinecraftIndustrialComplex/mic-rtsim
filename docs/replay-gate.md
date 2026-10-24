@@ -886,10 +886,20 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   `fight_strength`; its leg booked from the record's time to `until`; `seg` on the last segment; an
   Ev::Party at `until` with a bumped plan, which voids the poll; the epoch and the fill as §5.2
   says; `seen_by` None (`wave` returns early while replaying, and the replay end clears it). It
-  leaves `held`. Only a record inside the hold's slack is honoured so (RP-48). Its replayed
+  leaves `held`. Only a fight's record (BAND_FIGHT in its flags, echoed from the command: RP-56)
+  inside the hold's slack is honoured so (RP-48). Its replayed
   casualties count and rout as live ones, and the fight ends at `until` inside the window (§3.6) or
   becomes Waiting at the replay end, as every Fighting party does
   (`a_held_arrivals_replayed_fight_counts_its_casualties_once`, rtsim-jni tests/protocol.rs).
+- **A sighting** (RP-56). A held party's BAND_MATERIALIZED without BAND_FIGHT, a player seeing the
+  band after the decision resolved unwatched live, only embodies it (§5.2) and keeps the hold, so
+  the slack's poll resolves the decision unwatched as of the hold. For an arrival that poll is
+  `arrive()`'s unwatched branch, which recalls the band the sighting embodied, where the session
+  that went on kept it embodied (case A's cost, decided by the lead): the recall reaches no one
+  while replaying (BAND_RECALL drops, §4.4), the crashed session's bodies are gone, the casualties
+  of that epoch still count through the recalled stack, and the replay end makes every band
+  abstract anyway. A siege's round (`wait_over()`) recalls nothing. A sighting and a fight
+  journaled in one step (a sighting at T-1, the watched arrival at T) are read each by its flag.
 - **Refused.** A replayed BAND_SPAWN_REJECTED of a held party's first wave at a newer epoch, inside
   the slack, is that fight too: live `start_fight` took the epoch and the refusal left the band
   fighting unembodied. The party takes the honoured state with the record's epoch, not embodied,
@@ -904,10 +914,14 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   the slack: RP-51), so the value can be set from data. A hold that no record answered by then is
   read as not fought: the poll at the slack ends the hold and runs `arrive()` or `wait_over()`,
   which, still replaying and past the slack, take the unwatched branch at once (recall, `resolve`,
-  then wait or go home), as the session that went on did. The replay clock follows the records (§3.6), and the events up to a record's
-  time run before it, so that poll runs before any record at or past the slack and after every
-  record before it. A later BAND_MATERIALIZED of the party is then a sighting: it finds no hold and
-  embodies the band as `seen()` did live.
+  then wait or go home), as the session that went on did. The replay clock follows the records
+  (§3.6), and the events up to a record's time run before it, so that poll runs before any record
+  at or past the slack and after every record before it. A later sighting of the party finds no
+  hold and embodies the band as `seen()` did live. A later fight record (BAND_FIGHT, a newer
+  epoch) finds no hold either, at the slack exactly as past it: it only raises the epoch floor
+  (§5.3), so its casualties and loot count against nothing, as the abstract raid's were booked at
+  the poll. It is counted once per epoch in `ConflictStats::fights_unheld`, and rtsim-jni warns of
+  each (RP-56).
 - **Not honoured: the replay end.** If the replay ends inside the slack, `replay_done` clears
   `held`, and the poll's next firing runs `arrive()` or `wait_over()` as today. Positions are routed
   only after the modules run in a step (§6 above), so that first decision normally finds no watcher
@@ -926,17 +940,14 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
 
 - A crash right after a watched arrival, before Java journaled its BAND_MATERIALIZED: the fight Java
   may have shown is resolved abstractly at the replay end.
-- A fight recorded past the slack (a double, accepted until the record says which it is; RP-48,
-  RP-51). The replay resolves the decision unwatched at the slack, and the late, newer-epoch
-  record then embodies the band as a sighting: its casualties and loot count again, and
-  `end_fight` never runs.
-- A sighting inside the slack (RP-48's residual). A party that resolved unwatched and was then seen,
-  on its way home or waiting for its next round, answers with a BAND_MATERIALIZED too, and the
-  record does not say which (it carries the agent, epoch, dimension, wave and units spawned, and a
-  fight's first wave and a sighting's are both wave 0 at the next epoch). A sighting within
-  `REPLAY_HOLD_SLACK_TICKS` of the decision is read as a fight at the target: the abstract
-  resolution the live engine made is lost, and the band walks home or waits later. Past the slack a
-  sighting is a sighting.
+- A fight recorded at or past the slack (RP-48, RP-51, RP-56). The replay resolves the decision
+  unwatched at the slack, and the late record raises the floor only: the watched fight is booked
+  as the abstract raid, its own casualties and loot are dropped. Until RP-56 it embodied the band
+  as a sighting and counted them again.
+- A refused sighting inside the slack (RP-54's residual). BAND_SPAWN_REJECTED carries no flags and
+  has no free bytes (36 its wave, 40 its u64 cmdSeq), so a refusal of a newer epoch's wave 0 inside
+  a held party's slack is still read as its fight: the abstract resolution the live engine made is
+  lost. Telling them apart needs a layout change.
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
