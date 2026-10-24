@@ -44,6 +44,9 @@ struct Run {
     /// The player stands at the refinery (observed every 1,200 ticks) while this is set.
     watch: bool,
     next_obs: Tick,
+    /// Java refuses this band's fights: in [`run_journaled`], each BAND_MATERIALIZED the plugin
+    /// answers at the epoch the band fights at is a BAND_SPAWN_REJECTED (1, not ticking).
+    refuse: Option<Handle<Party>>,
 }
 
 impl Run {
@@ -64,6 +67,30 @@ impl Run {
             cmds: Vec::new(),
             watch: false,
             next_obs: Tick::ZERO,
+            refuse: None,
+        }
+    }
+
+    /// `o`, or Java's refusal of it when [`Run::refuse`] names its band, fighting at its epoch.
+    fn refused(&self, o: Obs) -> Obs {
+        match (&o, self.refuse) {
+            (Obs::Materialized(m), Some(band))
+                if m.agent == Party::agent(band)
+                    && self
+                        .c
+                        .parties
+                        .get(band)
+                        .is_some_and(|x| x.phase == Phase::Fighting && x.epoch == m.epoch) =>
+            {
+                Obs::SpawnRejected(boundary::BandSpawnRejected {
+                    agent: m.agent,
+                    epoch: m.epoch,
+                    wave: m.wave,
+                    reason: 1,
+                    cmd_seq: 0,
+                })
+            }
+            _ => o,
         }
     }
 
@@ -2476,6 +2503,7 @@ fn run_journaled(
         .unwrap_or(to)
         .clamp(t + 1, to);
         for (at, o) in r.plugin.due(next) {
+            let o = r.refused(o);
             r.c.ingest(&mut r.w, infra, &o, at);
             journal.push((at, o));
         }
@@ -2624,6 +2652,76 @@ fn a_raid_arriving_after_the_save(
         a.pool = f64::NAN;
     }
     a
+}
+
+/// fixes4 item 5 (RP-54): a raid on the refinery, the pages saved while it marches there
+/// unseen, its arrival in view of the player, and Java refusing every wave of its fight
+/// ([`Run::refuse`]). The session that went on fights unembodied to the fight's end, then walks
+/// home. `crash`: a restart from the pages replays the records, which hold the arrival. Read
+/// 600 ticks past the fight's end, the replay still running: the band's phase, whether embodied,
+/// epoch, phase end, fights watched since the save, and abstract raids since the save.
+fn a_refused_fight_after_the_save(crash: bool) -> (Phase, bool, u32, Tick, u64, Vec<Tick>) {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.refuse = Some(band);
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (watched, saved_at) = (r.c.stats.raids_watched, r.c.now());
+    journal.clear();
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let refused = journal.iter().any(
+        |(_, o)| matches!(o, Obs::SpawnRejected(x) if x.agent == Party::agent(band) && x.wave == 0),
+    );
+    assert!(refused, "its fight's first wave refused");
+    journal.push((end, fillers_casualty()));
+    let read = |c: &Conflict, walls: &Walls| {
+        let x = &c.parties[band];
+        let raids = walls.raids.range(saved_at + 1..).copied().collect();
+        (
+            x.phase,
+            x.embodied,
+            x.epoch,
+            x.until,
+            c.stats.raids_watched - watched,
+            raids,
+        )
+    };
+    if !crash {
+        return read(&r.c, &walls);
+    }
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    read(&back, &walls)
+}
+
+/// fixes4 item 5 (RP-54): a held arrival whose fight Java refused (BAND_SPAWN_REJECTED of its
+/// first wave, at the fight's epoch) is the last session's fight, as an honoured
+/// BAND_MATERIALIZED is: the refusal ends the hold. The replay used to read the refusal against
+/// the party's older epoch, keep the hold and resolve the arrival unwatched at the slack, where
+/// the session that went on fought.
+#[test]
+fn a_held_arrivals_refused_fight_is_fought_when_replayed() {
+    let live = a_refused_fight_after_the_save(false);
+    assert_eq!((live.1, live.4, live.5.len()), (false, 1, 0), "{live:?}");
+    assert_eq!(a_refused_fight_after_the_save(true), live);
 }
 
 /// Whether `band` fights, its fight's BAND_MATERIALIZED journaled.
@@ -3730,6 +3828,7 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        refuse: None,
     };
     assert!(b.c.peaceful, "still Peaceful after the restart");
     assert_eq!(b.c.peaceful_since, a.c.peaceful_since);

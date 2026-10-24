@@ -880,6 +880,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   casualties count and rout as live ones, and the fight ends at `until` inside the window (§3.6) or
   becomes Waiting at the replay end, as every Fighting party does
   (`a_held_arrivals_replayed_fight_counts_its_casualties_once`, rtsim-jni tests/protocol.rs).
+- **Refused.** A replayed BAND_SPAWN_REJECTED of a held party's first wave at a newer epoch, inside
+  the slack, is that fight too: live `start_fight` took the epoch and the refusal left the band
+  fighting unembodied. The party takes the honoured state with the record's epoch, not embodied,
+  nothing placed, `wave` 1 (RP-54).
 - **Not honoured: the slack** (RP-48). A held party with no such record keeps its poll until the
   hold's slack, `REPLAY_HOLD_SLACK_TICKS` (600 world ticks, 30 s) after its arrival or round. No
   hard bound exists on the delay from a watched decision to its BAND_MATERIALIZED (Java journals it
