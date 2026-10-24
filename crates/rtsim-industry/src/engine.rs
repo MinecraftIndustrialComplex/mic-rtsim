@@ -3738,6 +3738,35 @@ impl Engine {
             _ => None,
         };
         let engine_wrote = p.op.is_some() && p.direction == ChainDirection::In;
+        // The frontier's hold (slice S4c): booked with the store only, no port; its `CHAIN_OUT`
+        // was the exporter's port.
+        if p.direction == ChainDirection::Held {
+            match self.stores.get_mut(&p.store) {
+                Some(s) => {
+                    s.chain(p, recorded);
+                }
+                None => self.stats.store_records_unknown += 1,
+            }
+            return;
+        }
+        // A package the frontier held landed: struck from the held ones, wherever a declaration
+        // moved its key (choice SC137).
+        if p.direction == ChainDirection::In
+            && let Some(key) = p.key
+        {
+            let holder = if self.stores.get(&p.store).is_some_and(|s| s.holds(key)) {
+                Some(p.store)
+            } else {
+                self.stores
+                    .iter()
+                    .find(|(_, s)| s.holds(key))
+                    .map(|(id, _)| *id)
+            };
+            if let Some(s) = holder.and_then(|id| self.stores.get_mut(&id)) {
+                s.strike(key);
+                s.counts.held_landed += u64::from(p.packages);
+            }
+        }
         let mut to = None;
         match self.stores.get_mut(&p.store) {
             Some(s) => {
@@ -3745,6 +3774,7 @@ impl Engine {
                 let at_port = match p.direction {
                     ChainDirection::Out => p.destination,
                     ChainDirection::In => Some(p.frogport),
+                    ChainDirection::Held => None,
                 };
                 to = at_port
                     .and_then(|j| s.frogports.get(j as usize))
@@ -3786,7 +3816,7 @@ impl Engine {
             inventory,
             direction: match p.direction {
                 ChainDirection::Out => Direction::Out,
-                ChainDirection::In => Direction::In,
+                ChainDirection::In | ChainDirection::Held => Direction::In,
             },
             address: p.address,
             packages: p.packages,

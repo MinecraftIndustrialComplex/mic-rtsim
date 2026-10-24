@@ -30,7 +30,7 @@ use rtsim_industry::ids::{
 use rtsim_industry::obs::{
     BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
     ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
-    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind, InventoryDecl,
     LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer, ReconcileResult,
     ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl, StoreFrogport,
     SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
@@ -443,7 +443,7 @@ fn code_tables(out: &mut String) {
     table(out, "package_direction", &rows);
 
     // IND_CHAIN_PACKAGE direction, at 44.
-    let rows: Vec<_> = [ChainDirection::Out, ChainDirection::In]
+    let rows: Vec<_> = [ChainDirection::Out, ChainDirection::In, ChainDirection::Held]
         .into_iter()
         .map(|direction| {
             let b = obs_bytes(Obs::ChainPackage(ChainPackage {
@@ -457,6 +457,7 @@ fn code_tables(out: &mut String) {
                 packages: 3,
                 address: 4,
                 op: None,
+                key: None,
                 goods: GoodVec::new(),
             }));
             (format!("{direction:?}"), u32_at(&b, 44))
@@ -1354,6 +1355,7 @@ fn main() {
         let at = game_time(&mut f, &mut g);
         let store = StoreId(f.u64("store", g.u64()));
         let dim = f.u32("dim", g.u32());
+        let epoch = f.u32("epoch", g.u32());
         let into = StoreId(f.u64("into", g.u64()));
         let n = 3usize;
         f.sym("n_frogports", n);
@@ -1398,6 +1400,7 @@ fn main() {
         let o = Obs::PackageStore(StoreDecl {
             store,
             dim,
+            epoch,
             into: Some(into),
             frogports,
             hops,
@@ -1429,6 +1432,11 @@ fn main() {
         let address = f.u32("address", g.u32());
         let op = g.bridge_op();
         f.num("op", op.0);
+        // Both an op and a key, though no record Java sends has both: the layout's test.
+        let key = HeldKey {
+            epoch: f.u32("epoch", g.u32() | 1),
+            serial: f.u64("serial", g.u64()),
+        };
         f.sym("n_entries", 2);
         let goods = goods(&mut f, &mut g, "entry", 2);
         let o = Obs::ChainPackage(ChainPackage {
@@ -1442,6 +1450,7 @@ fn main() {
             packages,
             address,
             op: Some(op),
+            key: Some(key),
             goods,
         });
         obs(
