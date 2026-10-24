@@ -45,6 +45,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
@@ -949,6 +950,80 @@ public final class MowzieGameTests {
                     check("the returned body is still there on Peaceful", MowzieKit.held(grove.faction, 0, 1).size() == 1);
                     check("so is the band's other puppet", puppet[0][1].isAlive() && !puppet[0][1].isRemoved());
                     record(test, "peaceful", "SPAWN STALE, HAND_BACK DONE, the returned body survived 40 ticks");
+                })
+                .thenSucceed();
+    }
+
+    // ---- review fixes: dimension change -----------------------------------------------------------
+
+    /**
+     * A body that changes dimension leaves its camp's index (MZB-240): the leave is posted with the removal
+     * reason CHANGED_DIMENSION, not a death, and the copy that joins the Nether (it carries the camp tag, as
+     * the entity's saved data is copied) is not indexed, since the camp's dimension is another. A den's
+     * adopted Frostmaw is teleported to the Nether: the camp holds nothing, no CAMP_DEATH is booked, and a
+     * TAKE of its slot is NOTHING (the copy stands, untouched).
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_dimension", skyAccess = true)
+    public static void aBodyThatChangesDimensionLeavesItsCampsIndex(GameTestHelper helper) {
+        String test = "aBodyThatChangesDimensionLeavesItsCampsIndex";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        ServerLevel nether = level.getServer().getLevel(Level.NETHER);
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        Entity[] copy = new Entity[1];
+        long[] op = new long[2];
+        int[][] leaves = new int[1][];
+        long[] taken = new long[1];
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the Nether is there", nether != null);
+                    ConflictKit.onEnd(helper, () -> {
+                        Entity c = f[0] == null ? null : nether.getEntity(f[0].getUUID());
+                        if (c != null) {
+                            c.removeData(RtsimAttachments.CAMP_MEMBER); // a tagged body discarded is a death
+                            c.discard();
+                        }
+                        ConflictKit.force(nether, far.k, far.z0, false);
+                    });
+                    ConflictKit.force(nether, far.k, far.z0, true);
+                    den.force();
+                })
+                .thenWaitUntil(far.ready())
+                .thenWaitUntil(() -> check("the Nether chunk is loaded with its entities", nether.hasChunk(far.k, far.z0)
+                        && nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0))))
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("the camp holds it", MowzieKit.camps().held(den.faction).contains(f[0]));
+                    leaves[0] = MowzieKit.watchLeaves(helper, f[0]);
+                    taken[0] = MowzieKit.camps().taken;
+                    boolean ok = f[0].teleportTo(nether, far.k * 16 + 8.5, 80, far.z0 * 16 + 8.5, Set.of(), 0f, 0f);
+                    check("teleported", ok);
+                    check("the original is removed as a change of dimension (" + f[0].getRemovalReason() + ")",
+                            f[0].getRemovalReason() == Entity.RemovalReason.CHANGED_DIMENSION);
+                    check("and left with a removal reason (" + leaves[0][1] + ")", leaves[0][1] == 1);
+                    copy[0] = nether.getEntity(f[0].getUUID());
+                    check("its copy stands in the Nether", copy[0] != null && !copy[0].isRemoved());
+                    check("the copy carries the camp tag", RtsimAttachments.campMember(copy[0]) != null);
+                    check("the camp holds neither (" + MowzieKit.camps().held(den.faction).size() + ")", MowzieKit.camps().held(den.faction).isEmpty());
+                    op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("TAKE of the slot whose body left", ConflictKit.outcomes(den.faction, op[1]), NOTHING);
+                    check("nothing taken", MowzieKit.camps().taken == taken[0]);
+                    check("the copy stands untouched", copy[0].isAlive() && !copy[0].isRemoved());
+                    check("no CAMP_DEATH (" + ConflictKit.campDeaths(den.faction).size() + ")", ConflictKit.campDeaths(den.faction).isEmpty());
+                    record(test, "dimension", "the index let go of the Frostmaw at CHANGED_DIMENSION; its Nether copy was not indexed, no death booked");
                 })
                 .thenSucceed();
     }
