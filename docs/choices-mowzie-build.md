@@ -3114,8 +3114,17 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
   (`a_session_whose_first_record_is_an_arrival_keeps_its_notice`: 60 passes held across a restart, the
   arrival first, one kept notice sent once after the territory) passes with and without the call on this
   branch: the first live conflict record or `simulate` fires the trigger anyway, and `resend_notices`
-  re-adds the kept notices from `feud.notice`, so there was no observable loss here. The call pins the
-  order against a future change to either path; it was not a fix of a failing case.
+  re-adds the kept notices from `feud.notice`, so there is no observable loss when the feud is still
+  there. **Failing first (Opus review C, P3-6):** the case where it is not is a catch-up that climbs the
+  feud to the Notice and lets it fall away again, which the first arrival's catch-up does if it is far
+  enough on. `a_notice_the_first_arrivals_catch_up_makes_is_sent_though_its_feud_ends_there` (60 passes
+  held across a restart, the first record of the next session an arrival 60 days on; the feud ends at
+  about day 41 to 45) passes with the call, the plugin sent the one Notice after the territory and no
+  feud left. With the call removed it fails: the catch-up queued the Notice, the replay-end resend
+  stripped it from the queue and the feud, gone, kept none to send again, so the plugin was sent 0
+  notices, not 1 (`assertion left == right failed: the notice the catch-up made was sent once: []`,
+  left 0, right 1). The call is restored. Days 30 and 40 pass without the call (the feud is still
+  there to be re-sent), day 45 fails.
 - **MZB-376** (P3-3, the booked wake): the meter keeps `wake`, the tick of the wake booked under its
   `stamp` (zero when none waits). A new wake is booked only when none waits or the new one is earlier;
   a later one leaves the booked wake, which fires, finds the rate in its band (or pushes) and books the

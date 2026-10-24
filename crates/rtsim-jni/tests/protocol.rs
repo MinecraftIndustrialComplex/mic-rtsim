@@ -5022,6 +5022,67 @@ mod conflict {
             e.close(true, Duration::from_secs(5)).unwrap();
         }
 
+        /// MZB-375, failing first: the replay-end trigger runs before the rail call, not after it.
+        /// The session's first record is a TRAIN_ARRIVED 60 days on, so its catch-up climbs the
+        /// owner's feud to the Notice and lets it fall away again (the feud ends about day 41 to
+        /// 45); the resend at the replay's end strips every queued NOTICE and sends the notices the
+        /// feuds keep, so a trigger that came after the catch-up would find the feud gone and send
+        /// nothing. With the trigger first the notice is queued after the resend and sent. With the
+        /// call removed the plugin was sent 0 notices, not 1.
+        #[test]
+        fn a_notice_the_first_arrivals_catch_up_makes_is_sent_though_its_feud_ends_there() {
+            const DAYS: i64 = 60;
+            let (dir, e, mut j, dim) = line("conflict-rail-notice-gone");
+            j.conflict_plugin.play_notices = false;
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 200;
+            let exit = j.game_time - 50;
+            for _ in 0..60 {
+                passed(&mut j, dim, 77, PLAYER, exit);
+            }
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            save(&e, &mut j);
+            let (gt, saved) = (j.game_time, j.world_save());
+            let _ = j.crash();
+
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES | MODULE_INDUSTRY;
+            j.game_time = gt + DAYS * 24_000;
+            j.conflict_plugin.play_notices = false;
+            arrive(&mut j, 77, EAST);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (calls, held, kept, feuds) = e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).expect("the den");
+                (
+                    c.stats.rail_calls,
+                    c.held_passes(),
+                    c.kept_notices(),
+                    c.feuds_of(f).len(),
+                )
+            });
+            assert_eq!((calls, held), (1, 0), "the arrival called the rail");
+            assert!(
+                kept.is_empty() && feuds == 0,
+                "the feud climbed and ended in the catch-up: {feuds} feuds, kept {kept:?}"
+            );
+            let sent = notices(&j);
+            assert_eq!(
+                sent.len(),
+                1,
+                "the notice the catch-up made was sent once: {sent:?}"
+            );
+            assert_eq!(sent[0].step, 1, "the Notice rung");
+            let order: Vec<&str> = cmds(&j)
+                .filter(|c| matches!(c, C::Territory(_) | C::Notice(_)))
+                .map(|c| c.name())
+                .collect();
+            assert_eq!(order, vec!["TERRITORY", "FACTION_NOTICE"]);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+
         /// MZB-345: a pass's entry and exit are game time, translated to the engine's clock
         /// (the world tick, the phase 1 test offset added) before the conflict sees them. With an
         /// offset of three days the meter's decay reference is the exit plus the offset, not
