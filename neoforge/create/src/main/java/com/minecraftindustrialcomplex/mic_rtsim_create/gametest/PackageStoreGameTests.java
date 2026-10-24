@@ -607,6 +607,11 @@ public final class PackageStoreGameTests {
         return chainRecords(store, IndRecords.ChainPackage.CHAIN_HELD);
     }
 
+    /** The IND_HELD_LIST records of frontier epoch {@code epoch}. */
+    private static List<ByteBuffer> heldLists(long epoch) {
+        return received(IndRecords.IND_HELD_LIST, b -> b.getInt(IndRecords.HeldList.EPOCH) == (int) epoch);
+    }
+
     /** The keys of the packages circling a conveyor; a package with no key adds 0. */
     private static List<Long> keysAt(ServerLevel level, BlockPos p) {
         List<Long> out = new ArrayList<>();
@@ -624,9 +629,11 @@ public final class PackageStoreGameTests {
      * for FB circle CA, held: one CHAIN_HELD each, keyed, toward FB at CA, and none again while they circle. A
      * restart (CA's table emptied and its packages saved and loaded, the stores and the frontier loaded again
      * from {@code IndustryData}) brings the route back and keeps the keys, each told once more in the new
-     * session; new packages are held once each. One package then leaves the chain unseen (taken out of CA's
-     * list). Once B ticks again, the kept route goes, the four on the chain land in FB as CHAIN_INs carrying
-     * their keys, FB's packages carry no key, and the census releases the fifth's (one CHAIN_RELEASED).
+     * session; one package was gone from CA's saved packages (a crash after the chunk's save lost its
+     * release), and CA's first tick releases it; the session's IND_HELD_LIST names the other two. New
+     * packages are held once each. One package then leaves the chain unseen (taken out of CA's list). Once B
+     * ticks again, the kept route goes, the three on the chain land in FB as CHAIN_INs carrying their keys,
+     * FB's packages carry no key, and the census releases the fifth's (a second CHAIN_RELEASED).
      */
     @GameTest(template = YARD, batch = "sec1_s4c", timeoutTicks = TIMEOUT)
     public static void aRouteToAnAwayFrogportIsKept(GameTestHelper helper) {
@@ -640,6 +647,7 @@ public final class PackageStoreGameTests {
         int[] at = {-1, 0};
         long[] gone = {-1};
         long[] lost = {0};
+        long[] unfound = {0};
         Set<Long> serials = new HashSet<>();
         GameTestSequence s = build(helper, y, false, List.of(fa, fb))
                 .thenWaitUntil(() -> checkStore(level, List.of(fa, fb), new long[] {y.da(), y.db()}, store))
@@ -694,32 +702,53 @@ public final class PackageStoreGameTests {
                     check("the declaration carries the epoch", d.getInt(IndRecords.PackageStore.EPOCH) == f.epoch());
                     at[1] = f.epoch();
                     // A restart: Create's tables start empty, CA's packages come back from its saved tag, the stores
-                    // and the frontier load from IndustryData.
+                    // and the frontier load from IndustryData. One package is not in CA's tag: the chunk was saved
+                    // after it left, and a crash lost its release before IndustryData was saved.
                     ChainConveyorBlockEntity ca = conveyor(level, y.ca);
+                    ChainConveyorPackage first = ca.getLoopingPackages().get(0);
+                    unfound[0] = Frontier.key(first.item).serial();
+                    ca.getLoopingPackages().remove(first);
                     ca.loadWithComponents(ca.saveWithoutMetadata(level.registryAccess()), level.registryAccess());
                     ca.routingTable.entriesByDistance.clear();
                     conveyor(level, y.cb).routingTable.entriesByDistance.clear();
-                    check("CA's packages kept their keys: " + keysAt(level, y.ca), new HashSet<>(keysAt(level, y.ca)).equals(serials));
+                    Set<Long> kept = new HashSet<>(serials);
+                    kept.remove(unfound[0]);
+                    check("CA's packages kept their keys: " + keysAt(level, y.ca), new HashSet<>(keysAt(level, y.ca)).equals(kept));
                     PackageStores.forgetForTest(ind());
+                    Frontier.firstTickForTest(ca);
                 })
                 .thenWaitUntil(() -> check("the kept route is back on CA",
                         conveyor(level, y.ca).routingTable.getExitFor(box("east", 1)).equals(toB)))
+                .thenWaitUntil(() -> check("a held list of this epoch", !heldLists(at[1]).isEmpty()))
                 .thenExecute(() -> {
                     Frontier f = PackageStores.of(ind()).frontier;
+                    Set<Long> kept = new HashSet<>(serials);
+                    kept.remove(unfound[0]);
                     check("the same epoch: " + f.epoch(), f.epoch() == at[1]);
-                    check("the same three held", f.held().keySet().equals(serials));
+                    check("the two on CA still held", f.held().keySet().equals(kept));
+                    List<ByteBuffer> rel = chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED);
+                    check("CA's first tick released the one not there: " + rel.size(), rel.size() == 1
+                            && rel.get(0).getLong(IndRecords.ChainPackage.SERIAL) == unfound[0]);
+                    List<ByteBuffer> lists = heldLists(at[1]);
+                    Set<Long> listed = new HashSet<>();
+                    ByteBuffer l = lists.get(lists.size() - 1);
+                    for (int i = 0; i < aux(l); i++)
+                        listed.add(l.getLong(IndRecords.HeldList.SERIALS + 8 * i));
+                    record(t, "after the restart: held list, " + f.perfLine(), listed.size());
+                    check("the held list names the two: " + listed, listed.containsAll(kept) && !listed.contains(unfound[0]));
                     send(level, fa.pos, box("east", 4));
                     send(level, fa.pos, box("east", 5));
                 })
-                .thenWaitUntil(() -> check("five circle CA, eight held records: " + looping(level, y.ca) + ", " + heldRecords(store[0]).size(),
-                        looping(level, y.ca) == 5 && heldRecords(store[0]).size() == 8))
+                .thenWaitUntil(() -> check("four circle CA, seven held records: " + looping(level, y.ca) + ", " + heldRecords(store[0]).size(),
+                        looping(level, y.ca) == 4 && heldRecords(store[0]).size() == 7))
                 .thenIdle(60)
                 .thenExecute(() -> {
                     Frontier f = PackageStores.of(ind()).frontier;
                     List<ByteBuffer> h = heldRecords(store[0]);
                     record(t, "after the restart: records, CA's keys, " + f.perfLine(), h.size() + ", " + keysAt(level, y.ca));
-                    check("the first three told once more, the new two once: " + h.size(), h.size() == 8);
+                    check("the two kept told once more, the new two once: " + h.size(), h.size() == 7);
                     Set<Long> before = new HashSet<>(serials);
+                    before.remove(unfound[0]);
                     java.util.Map<Long, Integer> times = new java.util.HashMap<>();
                     for (ByteBuffer r : h) {
                         serials.add(r.getLong(IndRecords.ChainPackage.SERIAL));
@@ -727,7 +756,10 @@ public final class PackageStoreGameTests {
                     }
                     for (long k : before)
                         check("told twice: " + times, times.get(k) == 2);
-                    check("five keys", serials.size() == 5 && f.held().keySet().equals(serials));
+                    check("the one not there told once: " + times, times.get(unfound[0]) == 1);
+                    Set<Long> held = new HashSet<>(serials);
+                    held.remove(unfound[0]);
+                    check("five keys, four held", serials.size() == 5 && f.held().keySet().equals(held));
                     // One package leaves the chain unseen by any hook.
                     ChainConveyorBlockEntity ca = conveyor(level, y.ca);
                     ChainConveyorPackage gone1 = ca.getLoopingPackages().get(0);
@@ -739,12 +771,12 @@ public final class PackageStoreGameTests {
                     level.setChunkForced(y.ax + 1, y.az, true);
                     level.setChunkForced(y.bx, y.az, true);
                 })
-                .thenWaitUntil(() -> check("the four land in FB once B ticks: FB " + held(level, fb.pos) + ", CA " + looping(level, y.ca),
-                        held(level, fb.pos) == 4 && looping(level, y.ca) == 0 && travelling(level, y.ca) == 0))
+                .thenWaitUntil(() -> check("the three land in FB once B ticks: FB " + held(level, fb.pos) + ", CA " + looping(level, y.ca),
+                        held(level, fb.pos) == 3 && looping(level, y.ca) == 0 && travelling(level, y.ca) == 0))
                 .thenWaitUntil(() -> {
-                    check("four in at FB", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_IN).size() == 4);
+                    check("three in at FB", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_IN).size() == 3);
                     check("the kept route went", PackageStores.of(ind()).frontier.keptAt(level.dimension(), y.ca) == null);
-                    check("the census released the fifth", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED).size() == 1);
+                    check("the census released the fifth", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED).size() == 2);
                 })
                 .thenExecute(() -> {
                     Frontier f = PackageStores.of(ind()).frontier;
@@ -754,12 +786,13 @@ public final class PackageStoreGameTests {
                         check("with its key", r.getInt(IndRecords.ChainPackage.EPOCH) == f.epoch());
                         landed.add(r.getLong(IndRecords.ChainPackage.SERIAL));
                     }
-                    ByteBuffer rel = chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED).get(0);
+                    ByteBuffer rel = chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED).get(1);
                     record(t, "landed: " + f.perfLine(), landed.size());
                     check("the released key is the lost one", rel.getLong(IndRecords.ChainPackage.SERIAL) == lost[0]
                             && rel.getInt(IndRecords.ChainPackage.EPOCH) == f.epoch() && rel.getInt(IndRecords.ChainPackage.PACKAGES) == 0);
                     Set<Long> rest = new HashSet<>(serials);
                     rest.remove(lost[0]);
+                    rest.remove(unfound[0]);
                     check("every other key landed once", landed.equals(rest));
                     check("nothing held", f.held().isEmpty());
                     FrogportBlockEntity frog = frog(level, fb.pos);

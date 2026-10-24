@@ -373,6 +373,14 @@ pub struct ChainPackage {
     pub goods: GoodVec,
 }
 
+/// IND_HELD_LIST (choice SC140): the keys of `epoch` Java's frontier holds, once a session before
+/// any other frontier record of it. The engine strikes every other key of that epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldList {
+    pub epoch: u32,
+    pub serials: Vec<u64>,
+}
+
 /// IND_STORE_CENSUS (SECTIONS.md §2.5): the packages on a package store's conveyors while every
 /// chunk of it ticks, by the frogport their address resolves to from where they are.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -637,6 +645,7 @@ pub enum Obs {
     StationPorts(StationPorts),
     PackageStore(StoreDecl),
     ChainPackage(ChainPackage),
+    HeldList(HeldList),
     StoreCensus(StoreCensus),
     ReconcileResult(ReconcileResult),
     CarriageResult(CarriageResult),

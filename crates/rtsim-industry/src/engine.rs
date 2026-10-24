@@ -1113,6 +1113,22 @@ impl Engine {
             // A store orders its records against its census by their own game times, not the
             // engine's (`chain`).
             Obs::ChainPackage(p) => self.chain_package(at, t.at, p),
+            // Java's held keys at the start of its session (choice SC140): any other key of the
+            // epoch is no package's (a crash lost the record that struck it).
+            Obs::HeldList(l) => {
+                let listed: std::collections::BTreeSet<u64> = l.serials.iter().copied().collect();
+                let unlisted: Vec<StoreId> = self
+                    .stores
+                    .iter()
+                    .filter(|(_, s)| s.holds_unlisted(l.epoch, &listed))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in unlisted {
+                    if let Some(s) = self.stores.get_mut(&id) {
+                        s.keep_listed(l.epoch, &listed);
+                    }
+                }
+            }
             Obs::StoreCensus(c) => {
                 if let Some(s) = self.stores.get_mut(&c.store) {
                     s.census(t.at, c);
@@ -3754,14 +3770,16 @@ impl Engine {
         };
         let engine_wrote = p.op.is_some() && p.direction == ChainDirection::In;
         // The frontier's hold (slice S4c): booked with the store only, no port; its `CHAIN_OUT`
-        // was the exporter's port. A key another store holds moves here (choice SC137).
+        // was the exporter's port. A key another store holds moves here (choice SC137), once
+        // this store takes it.
         if p.direction == ChainDirection::Held {
-            if !self.stores.contains_key(&p.store) {
+            let Some(takes) = self.stores.get(&p.store).map(|s| s.takes_hold(p)) else {
                 self.stats.store_records_unknown += 1;
                 return;
-            }
+            };
             let moved = p
                 .key
+                .filter(|_| takes)
                 .and_then(|key| Some((key, self.store_holding(key, Some(p.store))?)))
                 .filter(|&(_, other)| other != p.store)
                 .and_then(|(key, other)| self.stores.get_mut(&other)?.strike(key));

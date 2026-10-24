@@ -24,7 +24,7 @@ use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, Store
 use crate::obs::{
     BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
     ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
-    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, HeldList, InvKind,
     InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer,
     ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl,
     StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
@@ -77,6 +77,9 @@ pub const IND_TRAIN_UNWATCHED: u16 = 0x0416;
 pub const IND_PACKAGE_STORE: u16 = 0x0418;
 /// Packages onto or off a package store's chain at one of its frogports (SECTIONS.md §2.5).
 pub const IND_CHAIN_PACKAGE: u16 = 0x0419;
+// 0x041A is left free.
+/// The keys Java's frontier holds, once a session (choice SC140): the engine strikes the others.
+pub const IND_HELD_LIST: u16 = 0x041B;
 pub const IND_RECONCILE_RESULT: u16 = 0x0420;
 pub const IND_CARRIAGE_RESULT: u16 = 0x0421;
 pub const IND_SPAWN_SAMPLE: u16 = 0x0430;
@@ -94,7 +97,7 @@ pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 // 0x8406 is IND_PROBE_SET (glass::codec), 0x8408 slice S3's IND_COUNT_SET; 0x8407 is left free.
 pub const IND_WRITE_CHAIN: u16 = 0x8409;
 
-const OBS_KINDS: [u16; 32] = [
+const OBS_KINDS: [u16; 33] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
@@ -121,6 +124,7 @@ const OBS_KINDS: [u16; 32] = [
     IND_TRAIN_UNWATCHED,
     IND_PACKAGE_STORE,
     IND_CHAIN_PACKAGE,
+    IND_HELD_LIST,
     IND_RECONCILE_RESULT,
     IND_CARRIAGE_RESULT,
     IND_SPAWN_SAMPLE,
@@ -829,6 +833,15 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.goods(&p.goods);
             w.finish()
         }
+        Obs::HeldList(l) => {
+            let mut w = W::obs(out, IND_HELD_LIST, n32(l.serials.len()), seq, at);
+            w.put_u32(l.epoch);
+            w.zero(4);
+            for &k in &l.serials {
+                w.put_u64(k);
+            }
+            w.finish()
+        }
         Obs::StoreCensus(c) => {
             let mut w = W::obs(out, IND_STORE_CENSUS, n32(c.goods.len()), seq, at);
             w.put_u64(c.store.0);
@@ -1279,6 +1292,13 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                     serial: r.get_u64(88),
                 }),
                 goods: r.goods(96, n),
+            })
+        }
+        IND_HELD_LIST => {
+            check(kind, size, sized(32, n, 8))?;
+            Obs::HeldList(HeldList {
+                epoch: r.get_u32(24),
+                serials: (0..n).map(|i| r.get_u64(32 + 8 * i)).collect(),
             })
         }
         IND_STORE_CENSUS => {
@@ -2080,6 +2100,14 @@ mod tests {
                 key: None,
                 goods: goods1(),
             }),
+            Obs::HeldList(HeldList {
+                epoch: 3,
+                serials: vec![0x1_0000_0002, 7],
+            }),
+            Obs::HeldList(HeldList {
+                epoch: 9,
+                serials: Vec::new(),
+            }),
             Obs::ReconcileResult(ReconcileResult {
                 op: ENGINE_OP,
                 district: d,
@@ -2442,6 +2470,7 @@ mod tests {
                 (48 + 48 * n + 2 * (n * n.saturating_sub(1) / 2)).div_ceil(8) * 8
             }
             Obs::ChainPackage(p) => 96 + 16 * p.goods.len(),
+            Obs::HeldList(l) => 32 + 8 * l.serials.len(),
             Obs::StoreCensus(c) => 32 + 8 * c.packages.len() + 16 * c.goods.len(),
             Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
@@ -2492,6 +2521,7 @@ mod tests {
             Obs::StationPorts(_) => 0x0415,
             Obs::PackageStore(_) => 0x0418,
             Obs::ChainPackage(_) => 0x0419,
+            Obs::HeldList(_) => 0x041B,
             Obs::StoreCensus(_) => 0x0051,
             Obs::ReconcileResult(_) => 0x0420,
             Obs::CarriageResult(_) => 0x0421,

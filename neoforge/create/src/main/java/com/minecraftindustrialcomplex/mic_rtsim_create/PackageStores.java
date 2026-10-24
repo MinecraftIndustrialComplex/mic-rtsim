@@ -789,11 +789,14 @@ public final class PackageStores {
             District.Inventory inv = d == null ? null : d.inventoryAt(pos);
             String address = PackageItem.getAddress(box);
             int destination = direction == IndRecords.ChainPackage.CHAIN_OUT ? routeFromPort(s, index, address) : index;
-            Frontier.Key landed = direction == IndRecords.ChainPackage.CHAIN_IN ? ps.frontier.landed(key) : null;
+            Frontier.Key landed = direction == IndRecords.ChainPackage.CHAIN_IN ? ps.frontier.heldKey(key) : null;
             Industry.GoodsCounter goods = ind.counter();
             ind.countStack(box, box.getCount(), goods);
             journalChain(ind, s, index, pos, d, inv, direction, destination, box.getCount(), address, goods, 0,
                     landed == null ? 0 : landed.epoch(), landed == null ? 0 : landed.serial());
+            // After the record: had it failed, the key stays held, and afterLanding releases it.
+            if (landed != null)
+                ps.frontier.landed(landed);
             ps.records++;
         } catch (RuntimeException e) {
             if (!warned) {
@@ -872,6 +875,7 @@ public final class PackageStores {
 
     /** Once per tick (CreatePlugin.tick): the census of each store that is due and whose chunks all tick. */
     public void tick(long now) {
+        frontier.listOnce();
         if (stores.isEmpty())
             return;
         for (Store s : new ArrayList<>(stores.values())) {

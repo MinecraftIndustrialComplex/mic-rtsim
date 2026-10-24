@@ -9,7 +9,8 @@ use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StoreId};
 use rtsim_industry::learn::LinkKey;
 use rtsim_industry::obs::{
-    ChainDirection, ChainPackage, HeldKey, Obs, StoreCensus, StoreDecl, StoreFrogport, Timed,
+    ChainDirection, ChainPackage, HeldKey, HeldList, Obs, StoreCensus, StoreDecl, StoreFrogport,
+    Timed,
 };
 use rtsim_industry::persist::STORE_TABLE;
 use rtsim_industry::stores::Pool;
@@ -23,6 +24,7 @@ const D1: DistrictId = DistrictId(1);
 const D2: DistrictId = DistrictId(2);
 const S: StoreId = StoreId(5);
 const U: StoreId = StoreId(9);
+const V: StoreId = StoreId(13);
 
 fn pos(x: i32) -> BlockPos {
     BlockPos::new(x, 64, 0)
@@ -823,4 +825,94 @@ fn held_packages_follow_their_frogport() {
     send(&mut e, 42, released(S, key(1, 1)));
     assert!(e.stores()[&U].on_hold.is_empty());
     assert_eq!(e.stores()[&U].counts.held_released, 1);
+}
+
+/// A hold another store turns away (a destination its declaration lacks, or another epoch) leaves
+/// the key where it was (review S4c1 #5).
+#[test]
+fn a_hold_turned_away_leaves_the_key_where_it_was() {
+    let mut e = engine();
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(U, vec![pos_c()]), 1)),
+    );
+    send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
+    // U has one frogport: destination 1 is not U's.
+    send(&mut e, 11, held(U, 1, key(1, 1), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 1)]);
+    assert_eq!(e.stores()[&U].counts.stale_records, 1);
+    // U at another epoch turns it away too.
+    send(
+        &mut e,
+        12,
+        Obs::PackageStore(epoch(decl(U, vec![pos_c()]), 2)),
+    );
+    send(&mut e, 13, held(U, 0, key(1, 1), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 1)]);
+    assert_eq!(e.stores()[&U].counts.held_stale, 1);
+    assert!(e.stores()[&U].on_hold.is_empty());
+}
+
+fn pos_c() -> StoreFrogport {
+    port(None, 90, false)
+}
+
+fn held_list(epoch: u32, serials: &[u64]) -> Obs {
+    Obs::HeldList(HeldList {
+        epoch,
+        serials: serials.to_vec(),
+    })
+}
+
+/// Java's held list at the start of a session strikes every key of its epoch it does not name,
+/// in every store, and leaves keys of other epochs and stores of other epochs alone (choice
+/// SC140). The count is paged with the store.
+#[test]
+fn the_held_list_strikes_the_keys_it_does_not_name() {
+    let mut e = engine();
+    e.set_page_check(true);
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)),
+    );
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(U, vec![pos_c()]), 1)),
+    );
+    send(
+        &mut e,
+        0,
+        Obs::PackageStore(epoch(decl(V, vec![port(None, 120, false)]), 4)),
+    );
+    send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
+    send(&mut e, 11, held(S, 2, key(1, 2), &[(IRON, 64)]));
+    send(&mut e, 12, held(U, 0, key(1, 3), &[(GOLD, 3)]));
+    send(&mut e, 13, held(V, 0, key(4, 4), &[(GOLD, 3)]));
+    // Java holds 2 only (a crash lost the records that struck 1 and 3).
+    send(&mut e, 20, held_list(1, &[2, 9]));
+    assert!(on_hold(&e, S, b()).is_empty());
+    assert_eq!(on_hold(&e, S, c()), vec![key(1, 2)]);
+    assert!(e.stores()[&U].on_hold.is_empty());
+    assert_eq!(on_hold(&e, V, port(None, 120, false)), vec![key(4, 4)]);
+    assert_eq!(e.stores()[&S].counts.held_unlisted, 1);
+    assert_eq!(e.stores()[&U].counts.held_unlisted, 1);
+    assert_eq!(e.stores()[&V].counts.held_unlisted, 0);
+    // An empty list of another epoch changes nothing; one of V's strikes V's.
+    send(&mut e, 21, held_list(7, &[]));
+    assert_eq!(on_hold(&e, S, c()), vec![key(1, 2)]);
+    send(&mut e, 22, held_list(4, &[]));
+    assert!(e.stores()[&V].on_hold.is_empty());
+    let mut disk = Disk::new();
+    save(&mut e, &mut disk);
+    let pages = disk.iter().map(|(k, b)| (PageKey(*k), b.clone()));
+    let back = Engine::restore(pages, Tunables::default()).expect("restore");
+    assert_eq!(back.stores(), e.stores());
 }

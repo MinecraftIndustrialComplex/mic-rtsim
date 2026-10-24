@@ -29,7 +29,7 @@
 //! [`PackageStore::owed`], written into a loaded importer's frogport as real packages
 //! (`Engine::store_write_wake`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
@@ -121,6 +121,8 @@ pub struct StoreCounts {
     pub held_again: u64,
     /// Packages whose key a `CHAIN_RELEASED` struck.
     pub held_released: u64,
+    /// Packages whose key Java's held list did not name (IND_HELD_LIST, choice SC140).
+    pub held_unlisted: u64,
 }
 
 /// What a district's replay needs of a package store for one of its chain links (slice S4b).
@@ -561,18 +563,68 @@ impl PackageStore {
         });
     }
 
+    /// The frogport a `CHAIN_HELD` holds its package toward, when the declaration has it.
+    fn held_toward_pos(&self, p: &ChainPackage) -> Option<BlockPos> {
+        p.destination
+            .and_then(|d| self.frogports.get(d as usize))
+            .map(|f| f.pos)
+    }
+
+    /// A `CHAIN_HELD`'s key, when of the last declaration's epoch.
+    fn held_key(&self, p: &ChainPackage) -> Option<HeldKey> {
+        p.key.filter(|k| k.epoch == self.epoch)
+    }
+
+    /// Whether [`PackageStore::hold`] takes the `CHAIN_HELD` `p`: the engine checks this before it
+    /// strikes the key where another store holds it (a key moved to a store that turns it away
+    /// stays where it was).
+    pub fn takes_hold(&self, p: &ChainPackage) -> bool {
+        self.held_toward_pos(p).is_some() && self.held_key(p).is_some()
+    }
+
+    /// Whether [`PackageStore::keep_listed`] strikes anything here.
+    pub fn holds_unlisted(&self, epoch: u32, listed: &BTreeSet<u64>) -> bool {
+        epoch == self.epoch
+            && self
+                .on_hold
+                .values()
+                .flatten()
+                .any(|h| h.key.epoch == epoch && !listed.contains(&h.key.serial))
+    }
+
+    /// Java's frontier listed the keys it holds of `epoch` (IND_HELD_LIST, once a session, choice
+    /// SC140): any other key of that epoch is no package's, and is struck. Returns the packages
+    /// struck. A store of another epoch is left alone: its next declaration drops its keys.
+    pub fn keep_listed(&mut self, epoch: u32, listed: &BTreeSet<u64>) -> u64 {
+        if epoch != self.epoch {
+            return 0;
+        }
+        let mut struck = 0;
+        self.on_hold.retain(|_, l| {
+            l.retain(|h| {
+                let keep = h.key.epoch != epoch || listed.contains(&h.key.serial);
+                if !keep {
+                    struck += h.packages;
+                }
+                keep
+            });
+            !l.is_empty()
+        });
+        self.counts.held_unlisted += struck;
+        struck
+    }
+
     /// A `CHAIN_HELD`: the package joins those held toward its destination, unless its key is of
     /// another epoch than the last declaration's. A key the store holds already moves there (Java
     /// tells a key again when it moved to another destination, and once in each session), keeping
     /// its place in the order, as does `moved`, the key another store held (the engine struck it
     /// there). A census does not clear them: Java releases what it does not find.
     pub fn hold(&mut self, p: &ChainPackage, recorded: Tick, moved: Option<Held>) -> bool {
-        let Some(f) = p.destination.and_then(|d| self.frogports.get(d as usize)) else {
+        let Some(pos) = self.held_toward_pos(p) else {
             self.counts.stale_records += 1;
             return false;
         };
-        let pos = f.pos;
-        let Some(key) = p.key.filter(|k| k.epoch == self.epoch) else {
+        let Some(key) = self.held_key(p) else {
             self.counts.held_stale += 1;
             return false;
         };
@@ -860,7 +912,8 @@ persist_struct!(StoreCounts {
     held_landed,
     held_stale,
     held_again,
-    held_released
+    held_released,
+    held_unlisted
 });
 persist_struct!(Sent { op, at });
 persist_struct!(WriteMark { at, ops });
