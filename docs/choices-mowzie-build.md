@@ -1224,3 +1224,12 @@ conservative option at its fork.
   first, mowzie_records' `a_held_round_that_kills_the_band_before_its_boredom_sends_it_home_done`
   (every raider held at the walls, `abstract_loss_share` 1, `bored_at` the round + 300): the
   replay's bored count 1 against the live 0. The sims are unchanged.
+- **RP-53** (the inference from the pages gates on the round; §6.1; RP-48; fixes4 item 4):
+  `held_since`'s inference for a siege waiting past its round now asks `until < bored_at` (the
+  round before its boredom, as `wait_over` holds it) instead of the record's tick before it. The
+  map answers by the hold's plan and slack alone, so a fight record past the boredom but inside the
+  slack was honoured with the map and refused after a restart that lost it. Failing first,
+  mowzie_records' `a_held_rounds_fight_past_its_boredom_is_honoured_after_a_restart` (`bored_at`
+  the round + 110, pages at + 105, the record at + 115, before the poll at + 120): after the
+  restart (Home, epoch 1, until R + 601, watched 0, raids [R + 600]) against the map's (Home,
+  epoch 1, until R + 116, watched 1, no raid). The sims are unchanged.

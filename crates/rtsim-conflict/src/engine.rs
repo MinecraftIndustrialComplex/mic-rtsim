@@ -3367,7 +3367,8 @@ impl Conflict {
     /// When a party's held arrival (or siege round) came, while replaying (§6.1, RP-23): by the
     /// map, or, when a restart from pages saved mid-replay lost it and a record comes before
     /// the poll arrives again, by what the pages hold: a war party out on its last segment past
-    /// its route's last time (the hold put `seg` back), or a siege waiting past its round. Its
+    /// its route's last time (the hold put `seg` back), or a siege waiting past a round before
+    /// its boredom, as `wait_over` holds it (the round's tick, not the record's: RP-53). Its
     /// patience runs from then, as `arrive` sets it. Only inside the hold's slack (RP-48): a
     /// record at or past it is no fight of the hold's, which its poll there has resolved.
     /// Since RP-42 the host takes no page while replaying, so the inference from the pages is
@@ -3394,7 +3395,7 @@ impl Conflict {
                 if x.kind == PartyKind::Siege
                     && x.until <= at
                     && inside(x.until)
-                    && at < x.bored_at
+                    && x.until < x.bored_at
                     && x.alive() > 0 =>
             {
                 x.until
