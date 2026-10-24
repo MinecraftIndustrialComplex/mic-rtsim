@@ -15,7 +15,7 @@ import sys
 
 HAND = re.compile(r'hand-overs: (\d+) submitted, (\d+) ticks waited on the engine')
 GLASS = re.compile(r'glass: compile (\d+): (\d+) nodes, (\d+) edges, (\d+) rounds \(([^)]*)\), (\d+) solves, last (\d+) us')
-CHECK = re.compile(r'glass checksum: .*?(\d+) sweeps \((\d+) sampled\).*?revision (\d+) \(district (\d+)\)')
+CHECK = re.compile(r'glass checksum: .*?(\d+) sweeps \((\d+) sampled\).*?revision (\d+) \(district (\w+)\)')
 STEPS = re.compile(r'(\d+) steps, ')
 
 
@@ -82,7 +82,7 @@ def report(path):
     if checks:
         m = checks[-1][1]
         r['checksum'] = {'sweeps': int(m.group(1)), 'sampled': int(m.group(2)), 'revision': int(m.group(3)),
-                         'district_revision': int(m.group(4))}
+                         'district_revision': m.group(4)}
     steps = [(t, int(m.group(1))) for t, x in rs for m in [STEPS.search(x)] if m]
     if steps:
         r['engine_steps_end'] = steps[-1][1]

@@ -6,7 +6,9 @@ KIND: plain (load the bases and measure), rtsim (plus district adoption and rtsi
       reset (as reload, on a world whose world/rtsim was deleted: SRV2's sim reset),
       reinstall (as reload, on a world that ran without rtsim after it had it: UR-1),
       hippo and hippo-off (round 2, DR1: no bases; force-load every chunk that holds a hippocampus, listed
-      in the private JSON file HIPPO, and watch for 600 s; hippo-off turns mic_fixes' guard off).
+      in the private JSON file HIPPO, and watch for 600 s; hippo-off turns mic_fixes' guard off),
+      plain-hoff (round 2, DR1: plain with the guard off, round 1's crash conditions: a single force-loaded
+      chunk ticks its entities only while they stay in it, so hippo-off's hippocampi could not swim off).
 Round 2 (2026-10-23) runs the host's JVM arguments of the runbook (8.5): -Xms8G -Xmx8G and the rotated
 GC log; round 1 ran -Xms2G -Xmx8G. Both keep the laptop's stand-ins for the host's four cores.
 """
@@ -63,6 +65,9 @@ def main():
     RT = ('rtsim', 'reload', 'reset', 'reinstall')
     if kind in ('reload', 'reset', 'reinstall', 'hippo', 'hippo-off'):
         sc['jvm'].append('-Dmixin.debug.verbose=true')  # one "Mixing X into Y" line per applied mixin
+    if kind == 'plain-hoff':
+        kind = 'plain'
+        sc['jvm'].append('-Dmic_fixes.hippocampusGuard=false')
     if kind == 'hippo-off':
         sc['jvm'].append('-Dmic_fixes.hippocampusGuard=false')  # the guard's own switch: the crash it prevents
     if kind in ('hippo', 'hippo-off'):
@@ -81,6 +86,13 @@ def main():
         steps += [{'cmd': 'execute positioned %d %d %d in minecraft:overworld run rtsim district adopt 16' % a}
                   for a in ADOPT_AT]
         steps += [{'wait': 60}, {'cmd': 'rtsim district list'}, {'cmd': 'rtsim district perf'}]
+    elif kind == 'reload' and os.environ.get('MERGE'):
+        # round 2, DR9: DS-10 splits the main base into several districts; merge them (MERGE="a:b,a:b", district
+        # ids, one at a time: a merge waits for the detection it starts) so the glass box compiles one large graph
+        for pair in os.environ['MERGE'].split(','):
+            steps += [{'cmd': 'rtsim district merge %s %s' % tuple(pair.split(':'))}, {'wait': 45},
+                      {'cmd': 'rtsim district list'}]
+        steps += [{'cmd': 'rtsim district perf'}]
     else:
         steps += [{'wait': 60}]  # keeps the sampling window level with an rtsim run started beside it
     samp = {'seconds': 300, 'every': 5}
@@ -95,6 +107,8 @@ def main():
             steps += [{'cmd': 'execute positioned %d %d %d in minecraft:overworld run rtsim district %s' % (ADOPT_AT[0] + (name,))}]
         # the main base's district by id (district 1 in every run here): its glass compile and sweeps
         steps += [{'cmd': 'rtsim district %s 1' % name} for name in ('info', 'debug')]
+        # round 2: DS-10 split what round 1 adopted as one district, so every district's glass compile and solves
+        steps += [{'cmd': 'rtsim district info %d' % i} for i in range(2, 13)]
     if kind == 'reload':
         # syn200's spread commands (DS-16) on the real main base, after the measurement
         steps += [{'cmd': 'execute positioned %d %d %d in minecraft:overworld run rtsim district rescan' % ADOPT_AT[0]},
