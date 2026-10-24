@@ -2971,9 +2971,9 @@ changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin 
 Where the design left a gap the build took the conservative option; each is undoable. Code is in
 `crates/rtsim-conflict/src/engine/rail.rs` unless it says otherwise.
 
-M7 took MZB-348, MZB-349 and MZB-375 to MZB-389 (assigned at the Opus engine review of 0fb08ef5; 390 to
+M7 took MZB-348, MZB-349 and MZB-375 to MZB-390 (assigned at the Opus engine review of 0fb08ef5; 391 to
 399 stay spare, and are M7's too if the Java half needs them). The review's fixes are MZB-348, 349 and
-375 to 384, after MZB-347 below; MZB-385 is the lead's decision on the wakes check; 386 to 389 are the
+375 to 384, after MZB-347 below; MZB-385 is the lead's decision on the wakes check; 386 to 390 are the
 Java half's (after MZB-384 below).
 
 - **MZB-334** (a late pass and the line's point): a line's point, y and nearer station are set by a pass
@@ -3229,8 +3229,9 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
     not up, and when the server stops (`ServerStoppedEvent`, with the counters). A pass open then is a
     pass the engine never hears of, which is the cheap side of UR-1 (MZB-326): nothing is saved.
   - A segment that clips a circle keeps the nearer of its two ends as the pass's point, and a pass is kept
-    while the new sample is inside the circle: a train through a circle narrower than 128 blocks that is
-    sampled on each side yields one pass whose point is the nearer sample, on the track.
+    until a sample is beyond the radius plus the margin (MZB-390, which replaced "while the new sample is
+    inside the circle"): a train through a circle narrower than 128 blocks that is sampled on each side
+    yields one pass whose point is the nearer sample, on the track.
   - A train that left Create's list closes its passes at its last sample's time, at the next rebucket.
   - The sampler's `samples` and `passes` are public counters, and `tracked()` and `clear()` are for the
     bench and the GameTests.
@@ -3309,6 +3310,41 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
     Mowzie jar. It names the Frostmaw by `mowziesmobs:frostmaw` and no Mowzie class. Run it with
     `./gradlew :create:runGameTestServer -PwithMowzie` (MZB-329; the build compiles and lists its tasks
     with the property, verified offline).
+- **MZB-390** (Opus review C, P3-3: hysteresis at the circle's edge): a pass opens where a sample's segment
+  meets the radius, as before, and ends at the first sample beyond the radius plus
+  `TrainSampler.MARGIN` = 40 blocks, or when the circle is gone, no longer minds the rail or is in another
+  dimension. Before, a pass ended at the first sample outside the radius, so a track along the edge, or a
+  train reversing on it, sent a pass for every swap in and out (each one a further count in the rail meter).
+  - **The margin**: Create's default powered top speed is 40 blocks a second (`poweredTrainTopSpeed`, 2 blocks a
+    tick) and the sample period is 20 ticks, so a train covers at most 40 blocks between two samples. A
+    train that has just left the radius therefore cannot be beyond radius plus 40 by its next sample (and a
+    train inside cannot reach it in one), so the band is always seen once before a pass ends: no train
+    crosses the band between two samples unseen. A larger margin would keep a leaving train's pass open for
+    longer for nothing; a smaller one lets a fast train that stepped out and back in be two passes. It is a
+    constant, not the config: the config is not readable before the server's config loads, a pack may raise
+    the top speed, and the margin is only a de-duplication. A pack above 40 blocks a second keeps correct passes
+    and loses some of the de-duplication at full speed; the sampler already starts afresh above 128 blocks
+    between samples (MZB-322).
+  - **What a pass is now**: its `entry` is still the sample before the first segment that meets the radius;
+    its `exit` is the first sample beyond the margin, up to about two sample periods later than before (a
+    train at 1.4 blocks a tick, on a straight through the circle, is seen to leave 28 to 56 blocks after
+    the radius). The point is still the sample nearest the centre among all the pass's samples (a sample in the
+    band is a candidate, and is never nearer than one inside). The engine counts a pass at its exit
+    (MZB-311), so the count lands up to about two seconds later than before.
+  - **Test 11's length check** (`TrainSamplerGameTests`) was "at most two samples long"; it is now
+    `ceil(2 * (CIRCLE + MARGIN) / (speed * PERIOD)) + 1` samples (5 at 1.4, 4 at 2.0), which the rail's
+    104 blocks inside the margin circle and a sample's slack at either end stay within (at most 4 and 3).
+  - **The edge test** (`aTrainAtACirclesEdgeIsOnePass`, batch `rail_sampler_edge`, written and compiled, not
+    run): a point walked through the pass rule (`TrainSampler.Walk`, the same `advance` a train's sample
+    calls; the sampler's state for a train needs a Create `Train` only to read its position) on a circle
+    of radius 100. The samples are at 150, 95, 108, 97, 112, 99, 130, 101, 96, 139, 99.5, 141, 150, 98 and
+    145 blocks from the centre, 0.2 radians apart (24 to 57 blocks between samples, one a tick), and the
+    test checks the passes open after each (0, then 1 through sample 10, 0 at 11 and 12, 1 at 13, 0 at 14),
+    that the engine received two passes, with entry and exit at samples 0 and 11, and 12 and 14, and the
+    nearest sample for each point. The old rule, replayed outside the game on the same samples, sends six
+    passes (samples 0 to 2, 2 to 4, 4 to 6, 7 to 9, 9 to 11 and 12 to 14); this one two.
+  - `TrainSampler` keeps `owner` in its state, set from the train at each rebucket, so a walk has no train;
+    `Territories.Territory.within(x, z, margin)` is the new test.
 
 ## M8 Lying in wait
 

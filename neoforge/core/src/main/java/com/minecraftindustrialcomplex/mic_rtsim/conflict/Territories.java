@@ -47,6 +47,12 @@ public final class Territories {
             return ex * ex + ez * ez <= (double) radius * radius;
         }
 
+        /** Whether (px, pz) is within the radius plus {@code margin} of the centre (M7's pass hysteresis, MZB-390). */
+        public boolean within(double px, double pz, double margin) {
+            double dx = px - x, dz = pz - z, r = radius + margin;
+            return dx * dx + dz * dz <= r * r;
+        }
+
         /** Horizontal distance from (px, pz) to the centre. */
         public double distance(double px, double pz) {
             return Math.hypot(px - x, pz - z);
