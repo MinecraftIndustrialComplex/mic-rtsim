@@ -603,6 +603,11 @@ pub(super) fn rail_call(
     train: u64,
     line: Option<(StationEnd, StationEnd)>,
 ) {
+    if wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first {
+        // The replay is over: this session's first live record is the other trigger, here as in
+        // `journaled`, before the catch-up that may make a feud escalate (MZB-375).
+        resend_notices_if_due(st);
+    }
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt))
