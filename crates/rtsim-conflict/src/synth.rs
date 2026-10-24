@@ -738,6 +738,16 @@ impl FakeConflict {
         let epoch = self.op();
         let camp = self.camp_world(faction);
         camp.epoch = epoch;
+        // The chief at home says whether its crystal is on it (MZB-269).
+        let flags = flags
+            | camp.bodies.iter().find(|b| b.chief).map_or(0, |b| {
+                boundary::CENSUS_CHIEF
+                    | if b.crystal {
+                        boundary::CENSUS_CRYSTAL
+                    } else {
+                        0
+                    }
+            });
         let bodies: Vec<boundary::CensusBody> = camp
             .bodies
             .iter()
@@ -788,6 +798,26 @@ impl FakeConflict {
     /// Whether the camp is in.
     pub fn camp_is_in(&self, faction: u64) -> bool {
         self.camps.get(&faction).is_some_and(|c| c.epoch != 0)
+    }
+
+    /// A thief takes the crystal off the camp's chief body (the steal mixin, MZB-276): the body
+    /// stands robbed and CHIEF_STATE with the flag off is on its way at `at`. `false` when the camp
+    /// holds no chief with a crystal.
+    pub fn steal(&mut self, faction: u64, at: Tick) -> bool {
+        let camp = self.camp_world(faction);
+        let Some(b) = camp.bodies.iter_mut().find(|b| b.chief && b.crystal) else {
+            return false;
+        };
+        b.crystal = false;
+        self.push(
+            at,
+            Obs::ChiefState(boundary::ChiefState {
+                faction,
+                flags: 0,
+                health: 100.0,
+            }),
+        );
+        true
     }
 
     /// A body of the camp died, or was carried off (`by`): gone from the world, and a CAMP_DEATH
@@ -1155,6 +1185,16 @@ impl CampRun {
 
     /// [`CampRun::new`] on the given cultures.
     pub fn with_cultures(seed: u64, cultures: Cultures, culture: &str, found: u16) -> CampRun {
+        CampRun::found(seed, cultures, culture, found, false)
+    }
+
+    /// [`CampRun::new`] with its chief found already robbed of its crystal (the census byte says
+    /// so, MZB-257).
+    pub fn robbed(seed: u64, culture: &str, found: u16) -> CampRun {
+        CampRun::found(seed, Cultures::builtin(), culture, found, true)
+    }
+
+    fn found(seed: u64, cultures: Cultures, culture: &str, found: u16, robbed: bool) -> CampRun {
         let (mut w, _) = world(seed);
         let mut c = conflict_with(seed, &w, cultures);
         let ci = c.cultures.index_of(culture).expect("a built-in culture");
@@ -1192,7 +1232,7 @@ impl CampRun {
         };
         if chief && let Some(b) = plugin.camp_world(key).bodies.first_mut() {
             b.chief = true;
-            b.crystal = true;
+            b.crystal = !robbed;
         }
         c.ingest(
             &mut w,
@@ -1205,7 +1245,8 @@ impl CampRun {
                 pos: (CAMP_POS.x, 64, CAMP_POS.z),
                 home_bodies: found,
                 census: if chief {
-                    (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8
+                    (boundary::CENSUS_CHIEF | if robbed { 0 } else { boundary::CENSUS_CRYSTAL })
+                        as u8
                 } else {
                     0
                 },

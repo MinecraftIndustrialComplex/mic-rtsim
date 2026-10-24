@@ -4540,9 +4540,11 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the chief's, the rail's,
-    /// the tribute's; the camp's came with M4) is decoded, counted as deferred and dropped; one with
-    /// an op id spends it, so the same record again is not counted twice.
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the rail's, the
+    /// tribute's; the camp's came with M4 and the chief's state with M6) is decoded, counted as
+    /// deferred and dropped; one with an op id spends it, so the same record again is not counted
+    /// twice. CHIEF_STATE is counted as its own and given to the engine (a camp with no bodies
+    /// to count ignores it).
     #[test]
     fn later_slices_records_are_counted_and_dropped() {
         let (_dir, e, mut j) = camp("conflict-deferred");
@@ -4566,7 +4568,8 @@ mod conflict {
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let (_, link) = e.conflict_stats();
-        assert_eq!((link.deferred, link.ignored), (2, 0), "{link:?}");
+        assert_eq!((link.deferred, link.ignored), (1, 0), "{link:?}");
+        assert_eq!(link.chief_states, 1, "{link:?}");
         assert!(
             e.with_conflict(|c, _| c.op_applied((1 << 63) | 0xDEAD)),
             "the engine spent the op id, as Conflict::ingest does (MZB-23)"
@@ -4587,6 +4590,35 @@ mod conflict {
     /// A grove (FACTION_FOUND with the Umvuthana's structure) with `strays` of its own bodies standing
     /// in it, as the jar places them, in the fake plugin's camp world; the camp is out.
     fn grove(name: &str, strays: u16) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        camp_of(name, "mowziesmobs:umvuthana_grove", WARRIOR, strays, 0)
+    }
+
+    /// The Frostmaw's body, as Java names it.
+    const FROSTMAW: &str = "mic_rtsim:conflict/frostmaw/frostmaw";
+
+    /// A den (FACTION_FOUND with the Frostmaw's structure) with `strays` Frostmaws standing in it;
+    /// the first is its chief, crystal on it, as the census byte says.
+    fn den(name: &str, strays: u16) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        let census = if strays > 0 {
+            (cb::CENSUS_CHIEF | cb::CENSUS_CRYSTAL) as u8
+        } else {
+            0
+        };
+        let (dir, e, mut j) = camp_of(name, "mowziesmobs:frostmaw_spawn", FROSTMAW, strays, census);
+        if let Some(b) = j.conflict_plugin.camp_world(CAMP).bodies.first_mut() {
+            b.chief = true;
+            b.crystal = true;
+        }
+        (dir, e, j)
+    }
+
+    fn camp_of(
+        name: &str,
+        structure: &str,
+        body: &str,
+        strays: u16,
+        census: u8,
+    ) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
         let dir = tmpdir(name);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -4597,8 +4629,8 @@ mod conflict {
         j.conflict_plugin = synth::FakeConflict::new(PLAYER);
         let _ = e.conflict_log(true);
         j.idle();
-        let structure = j.dict_id(wire::DICT_STRUCTURE, "mowziesmobs:umvuthana_grove");
-        let body = j.dict_id(wire::DICT_BODY, WARRIOR);
+        let structure = j.dict_id(wire::DICT_STRUCTURE, structure);
+        let body = j.dict_id(wire::DICT_BODY, body);
         for _ in 0..strays {
             j.conflict_plugin.camp_stray(CAMP, body);
         }
@@ -4609,7 +4641,7 @@ mod conflict {
             structure,
             pos: (CAMP_AT.0, 64, CAMP_AT.1),
             home_bodies: strays,
-            census: 0,
+            census,
         }));
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -4652,6 +4684,48 @@ mod conflict {
     /// Waits (the answers journaled as the plugin sends them) until `done`.
     fn camp_until(j: &mut Java, what: &str, mut done: impl FnMut(&mut Java) -> bool) {
         advance_until(j, 50, 2 * DAY, what, |j| done(j));
+    }
+
+    /// M6: CHIEF_STATE is a latest-wins record, not journaled, given to the engine at its own time
+    /// (MZB-270): a steal sends the crystal off and the faction's follows. A record the engine lost
+    /// (a crash before the next census) is mended by the den's census, whose chief byte is the
+    /// world's own word (MZB-269), and the lines of that census ask for the right body.
+    #[test]
+    fn a_chief_state_reaches_the_engine_and_the_census_corrects_it() {
+        let (_dir, e, mut j) = den("chief-state", 1);
+        let crystal = |e: &Engine| {
+            e.with_conflict(|c, _| c.factions[c.faction_of_key(CAMP).unwrap() as usize].crystal)
+        };
+        assert!(crystal(&e), "found with its chief and its crystal");
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        assert!(j.conflict_plugin.steal(CAMP, at));
+        j.conflict_flush();
+        j.idle();
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.chief_states, 1, "{link:?}");
+        assert!(!crystal(&e), "the steal's CHIEF_STATE");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        // The engine loses it, and the census says the chief stands robbed.
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.factions[f as usize].crystal = true;
+        });
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoption answered", |_| {
+            slots(&e) == [1, 0, 0, 0, 0]
+        });
+        assert!(!crystal(&e), "the census corrected it");
+        let orders = reconciles(&j);
+        assert!(!orders.is_empty());
+        assert!(
+            orders
+                .iter()
+                .flat_map(|r| r.lines.iter())
+                .all(|l| l.flags & cb::LINE_CRYSTAL == 0 && l.flags & cb::LINE_CHIEF != 0),
+            "the chief, robbed: {orders:?}"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
     }
 
     /// MOWZIE.md §4.9 through the journal: a census (CAMP_CENSUS) is journaled, the engine orders

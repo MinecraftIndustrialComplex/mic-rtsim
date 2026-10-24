@@ -1895,6 +1895,12 @@ The tests:
   `chief` and `crystal` from its line's flags. Only the Frostmaw has such a unit today, so the umvuthana
   tests (M4) see no change; M9's `without_crystal` rows will mark theirs the same way. `CampRun.infra`
   (none by default) lets a test put walls under a raid.
+- **MZB-298** (CHIEF_STATE, built; MZB-268 to 270): the engine's `chief_state` ignores a record for an unknown
+  faction or a culture with no camp bodies, and notes only a change of the crystal. The link counts every
+  CHIEF_STATE it decodes in `chief_states` whether or not the engine acts on it, and the protocol test of the
+  later slices' records now counts it apart from `deferred`. The synth's census carries the chief byte from
+  the world (a chief body in the camp, its crystal flag), `FakeConflict::steal` clears the body's crystal and
+  sends the record, and `CampRun::robbed` finds a den with its chief already robbed.
 
 ### M6 design for the implementer
 

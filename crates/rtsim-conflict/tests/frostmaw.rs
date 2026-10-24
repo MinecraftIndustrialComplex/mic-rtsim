@@ -679,3 +679,145 @@ fn a_dead_slots_chief_body_is_not_felled_twice() {
     assert_eq!(r.c.stats.chiefs_killed, falls, "no second fall");
     ok(&mut r);
 }
+
+// ---- the crystal -------------------------------------------------------------------------------
+
+fn crystal_of(r: &CampRun) -> bool {
+    r.c.factions[r.f as usize].crystal
+}
+
+/// The flags of the lines of every reconcile the engine sent, in order.
+fn line_flags(r: &CampRun) -> Vec<u8> {
+    r.cmds
+        .iter()
+        .filter_map(|(_, c)| match c {
+            boundary::Cmd::Reconcile(x) => Some(x.lines.iter().map(|l| l.flags)),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// CHIEF_STATE (MZB-268): a steal sends the crystal off and the faction's follows; the census
+/// carries it too, and corrects an engine that lost the record (a crash: it is latest-wins and not
+/// journaled, MZB-269).
+#[test]
+fn chief_state_sets_the_crystal_and_the_census_corrects_it() {
+    let mut r = den(60, 1);
+    come_in(&mut r);
+    assert!(crystal_of(&r), "found with its chief and crystal");
+    let at = r.c.now() + 1;
+    assert!(r.plugin.steal(r.key, at));
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert!(!crystal_of(&r), "the steal's CHIEF_STATE");
+    assert_eq!(r.c.stats.chiefs_killed, 0, "a robbed Frostmaw is not dead");
+    ok(&mut r);
+    // The engine loses the record (a crash before the next census): its crystal is back by default.
+    r.c.factions[r.f as usize].crystal = true;
+    r.camp_out();
+    let to = r.c.now() + 5;
+    r.run(to);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert!(
+        !crystal_of(&r),
+        "the census says the chief stands robbed, and the engine believes the world"
+    );
+    // The crystal goes back (a CHIEF_STATE with the flag on).
+    let at = r.c.now() + 1;
+    r.plugin.push(
+        at,
+        boundary::Obs::ChiefState(boundary::ChiefState {
+            faction: r.key,
+            flags: boundary::CHIEF_CRYSTAL,
+            health: 100.0,
+        }),
+    );
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert!(crystal_of(&r));
+    ok(&mut r);
+    // A record for a faction no one found is ignored.
+    let at = r.c.now() + 1;
+    r.plugin.push(
+        at,
+        boundary::Obs::ChiefState(boundary::ChiefState {
+            faction: r.key + 99,
+            flags: 0,
+            health: 1.0,
+        }),
+    );
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert!(crystal_of(&r));
+    ok(&mut r);
+}
+
+/// FACTION_FOUND carries the census byte (MZB-257): a chief found with its crystal starts with it,
+/// one found robbed starts without, and the lines asked of its census say so.
+#[test]
+fn faction_found_reads_the_crystal() {
+    let mut r = CampRun::robbed(61, "frostmaw", 1);
+    assert!(!crystal_of(&r), "found robbed");
+    come_in(&mut r);
+    assert!(!crystal_of(&r));
+    assert!(
+        line_flags(&r)
+            .iter()
+            .all(|f| f & boundary::LINE_CRYSTAL == 0),
+        "the lines ask for no crystal: {:?}",
+        line_flags(&r)
+    );
+    assert!(!line_flags(&r).is_empty());
+    ok(&mut r);
+    let mut r = den(62, 1);
+    assert!(crystal_of(&r));
+    come_in(&mut r);
+    assert!(
+        line_flags(&r)
+            .iter()
+            .all(|f| f & boundary::LINE_CRYSTAL != 0 && f & boundary::LINE_CHIEF != 0),
+        "the lines ask for the chief with its crystal: {:?}",
+        line_flags(&r)
+    );
+    // A den found with no body says nothing of a chief: the crystal is the default.
+    let r = den(63, 0);
+    assert!(crystal_of(&r));
+}
+
+/// A steal is not a loss (EQUILIBRIUM item 5, MZB-276): the robbed Frostmaw stands in its den, no
+/// slot changes, no wait is booked and the pressure stays; when it later dies the den waits as for
+/// any chief, and its replacement arrives with the crystal again (MZB-259).
+#[test]
+fn a_stolen_crystal_starts_no_wait() {
+    let mut r = den(64, 1);
+    come_in(&mut r);
+    let at = r.c.now() + 1;
+    assert!(r.plugin.steal(r.key, at));
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0], "the Frostmaw stands");
+    assert_eq!(arrival_at(&r), None, "no wait");
+    assert_eq!(arrivals_pending(&r), 0);
+    assert_eq!(pressure_of(&r), 0.0, "no loss");
+    assert_eq!(r.c.stats.renewal_losses, 0);
+    r.run(r.c.now() + days(30.0));
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    assert_eq!(r.c.stats.arrivals, 0);
+    assert!(!crystal_of(&r), "it stays robbed");
+    ok(&mut r);
+    // It dies; the next arrival comes with its crystal.
+    let died = kill_the_frostmaw(&mut r, boundary::BY_PLAYER);
+    r.run(died + days(12.0) + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert!(crystal_of(&r), "an arrival is a new Frostmaw, crystal on");
+    assert!(
+        line_flags(&r)
+            .last()
+            .is_some_and(|f| f & boundary::LINE_CRYSTAL != 0),
+        "its spawn asks for the crystal"
+    );
+    ok(&mut r);
+}
