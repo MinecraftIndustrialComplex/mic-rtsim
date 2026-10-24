@@ -48,8 +48,10 @@ public final class RtsimCommands {
             return 0;
         }
         BoundarySession b = s.boundary();
+        String readopt = s.industry.districts().readoptSummary();
         String text = String.join("\n",
                 "engine: " + s.engine().describe() + (s.failed() ? " (bridge FAILED)" : ""),
+                com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard.describe(s.server()) + (readopt == null ? "" : "; " + readopt),
                 "hand-overs: " + b.handover().submits() + " submitted, " + b.handover().ticksWaiting() + " ticks waited on the engine",
                 "journal: " + b.journal().size() + " unacknowledged (" + b.journal().bytes() + " bytes), last applied command " + b.journal().lastAppliedCmdSeq(),
                 "puppets: " + s.registry().size() + " groups; spawned " + s.spawnedGroups() + ", rejected " + s.rejectedSpawns()

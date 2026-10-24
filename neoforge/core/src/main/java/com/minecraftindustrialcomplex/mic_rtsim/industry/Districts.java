@@ -303,6 +303,18 @@ public final class Districts {
     // ---- session start --------------------------------------------------------------------------
 
     void sessionStart(long now) {
+        // After a reinstall reset, chunks loaded before the session (spawn chunks, forced chunks) get their seeds back first (UR-1).
+        if (!data.readopt.isEmpty())
+            for (Map.Entry<ResourceKey<Level>, LongOpenHashSet> e : new ArrayList<>(data.readopt.entrySet())) {
+                ServerLevel level = ind.level(e.getKey());
+                if (level == null)
+                    continue;
+                for (long c : e.getValue().toLongArray()) {
+                    LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+                    if (chunk != null)
+                        readopt(level, chunk);
+                }
+            }
         for (District d : data.districts.values()) {
             if (d.declaredRevision < d.revision || d.declaredRevision == 0)
                 declare(d, now);
@@ -325,6 +337,7 @@ public final class Districts {
 
     void onChunkLoad(ServerLevel level, LevelChunk chunk, long now) {
         long c = chunk.getPos().toLong();
+        readopt(level, chunk);
         District d = at(level.dimension(), c);
         if (d != null) {
             loaded.computeIfAbsent(d.id, k -> new LongOpenHashSet()).add(c);
@@ -499,25 +512,88 @@ public final class Districts {
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
                 LevelChunk chunk = level.getChunkSource().getChunkNow(centre.x + dx, centre.z + dz);
-                if (chunk == null)
-                    continue;
-                IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
-                IndustryAttachments.Seeds before = s;
-                for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (seed(level, be, cache) || mayBecomeSeed(be)) {
-                        s = s.plus(be.getBlockPos().asLong());
-                    }
-                }
-                if (s != before) {
-                    n += s.positions().length - before.positions().length;
-                    chunk.setData(IndustryAttachments.SEEDS.get(), s);
-                    chunk.setUnsaved(true);
-                    markDirty(level.dimension(), chunk.getPos().toLong());
-                    changed.add(chunk.getPos().toLong());
-                }
+                if (chunk != null)
+                    n += adoptChunk(level, chunk, cache, changed);
             }
         }
         return n;
+    }
+
+    /** Adopts every machine of one loaded chunk as a seed; returns the seeds added (the chunk is marked dirty and added to {@code changed} if any). */
+    private int adoptChunk(ServerLevel level, LevelChunk chunk, Long2ByteOpenHashMap cache, LongOpenHashSet changed) {
+        IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
+        IndustryAttachments.Seeds before = s;
+        for (BlockEntity be : chunk.getBlockEntities().values()) {
+            if (seed(level, be, cache) || mayBecomeSeed(be)) {
+                s = s.plus(be.getBlockPos().asLong());
+            }
+        }
+        if (s == before)
+            return 0;
+        chunk.setData(IndustryAttachments.SEEDS.get(), s);
+        chunk.setUnsaved(true);
+        markDirty(level.dimension(), chunk.getPos().toLong());
+        changed.add(chunk.getPos().toLong());
+        return s.positions().length - before.positions().length;
+    }
+
+    // ---- the reinstall reset (UR-1) -------------------------------------------------------------
+
+    /** Chunks adopted again after a reinstall reset, those found with their seeds kept, and the seeds adopted. */
+    long readoptChunks, readoptKept, readoptSeeds;
+
+    /**
+     * A reinstall reset (UR-1): every member chunk that held seeds is to be looked at again at its first load. The
+     * gap's saves dropped the seed attachment of each chunk that loaded while rtsim was out, so without this every
+     * district would dissolve as its chunks load (round 2 of the deploy rehearsal). Kept with the districts in
+     * {@code mic_rtsim_industry.dat}, so a crash before every chunk has loaded keeps the rest.
+     */
+    void planReadopt() {
+        int n = 0;
+        for (District d : data.districts.values())
+            for (it.unimi.dsi.fastutil.longs.Long2IntMap.Entry e : d.seedCounts.long2IntEntrySet())
+                if (e.getIntValue() > 0 && data.readopt.computeIfAbsent(d.dim, k -> new LongOpenHashSet()).add(e.getLongKey()))
+                    n++;
+        data.setDirty();
+        MicRtsim.LOGGER.warn("[industry] reinstall reset: {} chunks of {} districts are adopted again as they load", n, data.districts.size());
+    }
+
+    /**
+     * A chunk to adopt again (UR-1) loaded: it leaves the set; if the gap stripped its seed attachment, its machines
+     * are adopted, as {@code rtsim district adopt} would (radius 0), before any detection looks at it. A chunk that
+     * kept its attachment did not load during the gap and is left as it is.
+     */
+    private void readopt(ServerLevel level, LevelChunk chunk) {
+        LongOpenHashSet set = data.readopt.get(level.dimension());
+        if (set == null || !set.remove(chunk.getPos().toLong()))
+            return;
+        if (set.isEmpty())
+            data.readopt.remove(level.dimension());
+        data.setDirty();
+        IndustryAttachments.Seeds s = chunk.getExistingDataOrNull(IndustryAttachments.SEEDS.get());
+        if (s != null && !s.isEmpty()) {
+            readoptKept++;
+            return;
+        }
+        readoptChunks++;
+        readoptSeeds += adoptChunk(level, chunk, kindCache(), new LongOpenHashSet());
+    }
+
+    /** Chunks still to adopt again after a reinstall reset (UR-1). */
+    public int readoptLeft() {
+        int n = 0;
+        for (LongOpenHashSet set : data.readopt.values())
+            n += set.size();
+        return n;
+    }
+
+    /** The reinstall reset's re-adoption, for {@code rtsim perf}, or null when there is none. */
+    public String readoptSummary() {
+        int left = readoptLeft();
+        if (left == 0 && readoptChunks == 0 && readoptKept == 0)
+            return null;
+        return "re-adoption after the reinstall reset: " + readoptChunks + " chunks adopted again (" + readoptSeeds + " machines), "
+                + readoptKept + " kept their seeds, " + left + " not loaded yet";
     }
 
     // ---- the tick -------------------------------------------------------------------------------
