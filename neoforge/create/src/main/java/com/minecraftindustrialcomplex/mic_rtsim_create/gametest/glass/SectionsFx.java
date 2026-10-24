@@ -114,6 +114,21 @@ final class SectionsFx {
         return u != null && u.passed() && !u.stale() && u.windowsCompleted() > 0 && u.verdict() == GlassReport.PASS;
     }
 
+    /**
+     * Null when the far copy may leave for its replay: the report says the district is eligible, and each of
+     * {@code units} (the ones the fixture means to replay) may replay. A scenario's {@code ready} replaces the
+     * harness's eligibility gate, so a fixture that waits only for its units to learn could leave before the
+     * replay is allowed, and its away checks would fail for timing (review M4).
+     */
+    static String replayGate(GlassReport far, GlassReport.Unit... units) {
+        if (!far.replay().eligible())
+            return "the report does not say eligible yet: " + far.replay().summary();
+        for (GlassReport.Unit u : units)
+            if (u == null || !u.mayReplay())
+                return "a unit meant to replay may not yet: " + (u == null ? "none" : u.summary());
+        return null;
+    }
+
     /** Every unit of the report, one line each. */
     static String describe(GlassReport r) {
         if (r == null)

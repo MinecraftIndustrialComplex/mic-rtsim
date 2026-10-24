@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Rat;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import com.simibubi.create.content.contraptions.actors.psi.PortableStorageInterfaceBlockEntity;
 import com.simibubi.create.content.fluids.FluidTransportBehaviour;
 import com.simibubi.create.content.fluids.drain.ItemDrainBlockEntity;
 import com.simibubi.create.content.fluids.pump.PumpBlock;
@@ -130,7 +131,9 @@ final class CreateCompile implements GlassExtractor.Compile {
     enum K {
         MILLSTONE, CRUSHER, PRESS, MIXER, SAW, DEPLOYER, FAN, CRAFTER, SPOUT, DRAIN, BASIN, BELT, FUNNEL, TUNNEL,
         ARM, DEPOT, CHUTE, PUMP, BOILER, ENGINE, BURNER, SWITCH, PACKAGER, FROGPORT, CHAIN, HOPPER, FURNACE,
-        CRATE, CREATIVE_TANK, PIPE, KINETIC
+        CRATE, CREATIVE_TANK, PIPE, KINETIC,
+        /** A portable storage interface: claimed with no node (SECTIONS.md §4.4, choice SC95). */
+        INTERFACE
     }
 
     /** How a node's goods change on the way through it (the reach propagation, step 5). */
@@ -310,7 +313,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (be instanceof CreativeFluidTankBlockEntity)
             return K.CREATIVE_TANK;
         if (be instanceof FluidTankBlockEntity t) {
-            FluidTankBlockEntity c = t.getControllerBE();
+            FluidTankBlockEntity c = tankController(t);
             return c != null && c.boiler != null && c.boiler.attachedEngines > 0 ? K.BOILER : null;
         }
         if (be instanceof SteamEngineBlockEntity)
@@ -331,6 +334,15 @@ final class CreateCompile implements GlassExtractor.Compile {
             return K.HOPPER;
         if (be instanceof AbstractFurnaceBlockEntity)
             return K.FURNACE;
+        // A station's interface exposes a docked train's storage, whose change is the station's cargo, booked
+        // on the inventories IND_STATION_PORTS names (SECTIONS.md §4.4). Claimed with no node when its conveying
+        // walk reaches a district inventory, so the movers beside it have no supply in the graph; left to the
+        // residual, it was a black box that left every station-fed unit unbounded (choice SC95). One that reaches
+        // none (an interface onto a belt into a machine) stays residual: its cargo is booked nowhere, and a
+        // black box keeps what it feeds from failing every window
+        if (be instanceof PortableStorageInterfaceBlockEntity)
+            return com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch.reachesAnInventory(level, g.district, be.getBlockPos())
+                    ? K.INTERFACE : null;
         if (be instanceof KineticBlockEntity)
             return K.KINETIC;
         if (BlockEntityBehaviour.get(be, FluidTransportBehaviour.TYPE) != null)
@@ -381,6 +393,14 @@ final class CreateCompile implements GlassExtractor.Compile {
             return null;
         }
         return c.getBlockEntity(p, net.minecraft.world.level.chunk.LevelChunk.EntityCreationType.IMMEDIATE);
+    }
+
+    /** A tank's controller through {@link #blockAt} ({@code getControllerBE} reads the level); null where it is not loaded. */
+    private FluidTankBlockEntity tankController(FluidTankBlockEntity t) {
+        if (t.isController())
+            return t;
+        BlockPos c = t.getController();
+        return c != null && blockAt(c) instanceof FluidTankBlockEntity x ? x : null;
     }
 
     /** {@code Level.getBlockState} where the chunk is loaded; null (a stop, counted) where it is not. */
@@ -611,22 +631,33 @@ final class CreateCompile implements GlassExtractor.Compile {
      * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
      * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
      * may hold members that never loaded this session) or to a kinetic block entity of the same network.
-     * Each chunk it links into is kept (choice SC77). Reads only loaded chunks.
+     * Each chunk it links into is kept (choice SC77), and so is each loaded chunk outside the district across
+     * a face that any listed member, inside or out, may turn, though nothing is there yet: a part a player
+     * places there joins the network (review M3). Reads only loaded chunks.
      */
     private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
         boolean out = false;
         for (KineticBlockEntity m : net.members.keySet()) {
-            if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+            if (!listed(net, m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
+            boolean in = !outside(m);
+            int lx = p.getX() & 15, lz = p.getZ() & 15;
+            if (!in && lx != 0 && lx != 15 && lz != 0 && lz != 15)
+                continue; // outside and off its chunk's border: no face leaves its chunk
             BlockState state = m.getBlockState();
             IRotate block = state.getBlock() instanceof IRotate r ? r : null;
             for (Direction f : Direction.values()) {
+                if (f.getAxis() == Direction.Axis.Y)
+                    continue;
                 BlockPos n = p.relative(f);
-                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, n, block != null && connects(block, p, state, f)))
+                boolean may = block != null && connects(block, p, state, f);
+                if (in && linksOutTo(id, n, may))
                     out |= reached(n);
+                else if (may && ((n.getX() >> 4) != (p.getX() >> 4) || (n.getZ() >> 4) != (p.getZ() >> 4)) && Loaded.at(level, n))
+                    reached(n);
             }
-            if (block != null)
+            if (in && block != null)
                 for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
                     if (linksOutTo(id, n, true))
                         out |= reached(n);
@@ -1779,7 +1810,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     /** A burner's heat edges into a boiler above it (a basin's come from basinEdges). */
     private void heatEdges(Info i) {
         BlockPos above = i.be.getBlockPos().above();
-        if (blockAt(above) instanceof FluidTankBlockEntity t && t.getControllerBE() != null) {
+        if (blockAt(above) instanceof FluidTankBlockEntity t && tankController(t) != null) {
             int b = acceptFluid.get(t.getController().asLong());
             if (b != NONE && infos.get(b) != null && infos.get(b).kind == K.BOILER) {
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.HEAT, i.node.index, b);

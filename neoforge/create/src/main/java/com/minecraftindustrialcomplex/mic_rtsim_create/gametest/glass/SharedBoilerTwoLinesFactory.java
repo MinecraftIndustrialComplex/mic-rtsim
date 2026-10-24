@@ -10,6 +10,7 @@ import com.simibubi.create.content.fluids.tank.FluidTankBlockEntity;
 import com.simibubi.create.content.kinetics.press.MechanicalPressBlock;
 import com.simibubi.create.content.kinetics.steamEngine.PoweredShaftBlockEntity;
 import com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock;
+import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlock;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlockEntity;
 import net.minecraft.core.BlockPos;
@@ -37,9 +38,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
 /**
  * SEC-1 fixture (SECTIONS.md §9.2): one boiler network driving a crushing line and a press line that share
  * nothing else. Three sections: the boiler's, and the two lines on one kinetic domain (Q1 a: domains do not
- * join sections). An edit to the press line's belt stales only the press line's unit. Adding presses until
- * the stress passes the least capacity the crushing line's window ran at stales the crushing line too
- * ({@code check_domains}, SECTIONS.md §3.6).
+ * join sections). An edit to the press line (its input smart chute broken and a plain chute placed there, which
+ * changes the press section's fingerprint) makes the press line's unit new and leaves the others as they were.
+ * Adding presses until the stress passes the least capacity the crushing line's window ran at stales the
+ * crushing line too ({@code check_domains}, SECTIONS.md §3.6).
  *
  * <pre>
  *   pump (x 5..9, z 13..16)        boiler (x 10..12)               hub (x 14..15)             lines
@@ -50,8 +52,11 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  *   up (6,2..4,14) and east                                          shaft, gearbox (15,5,14)    PRESS LINE (z 16)
  *   (8..9,4,14) into the tank                                        shaft (15,5,15), press       chest (13,5,16) iron, smart chute,
  *                                                                    (15,5,16) on axis Z          belt (13..14,3,16), depot (15,3,16),
- *                                                                    extras (15,5,17..33)         smart chute, chest (15,1,16) sheets
+ *                                                                    shafts (15,5,17..33): extras smart chute, chest (15,1,16) sheets
  * </pre>
+ * The shafts behind the press stand from the start, so every chunk the extra presses take is a member chunk
+ * before the first of them: a press replaces a shaft, which changes no chunk and no inventory, so the
+ * district's revision stays and the recompile carries the units and runs the domain check (review H2).
  * The pump is a level-1 boiler's water: one pump at 32 RPM moves 16 mB per tick from a pool of four sources
  * (the vanilla infinite-water rule), so the supply is 16 mB/t, ceil(16) / 10 = 1. One burner gives heat 1 and
  * the 2 x 2 x 2 tank size 8 / 4 = 2: boiler level min(1, 1, 2) = 1. One engine at level 1 has efficiency 1,
@@ -86,8 +91,10 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
     static final BlockPos MILL = new BlockPos(14, 5, 12), CRUSH_IN = new BlockPos(14, 7, 12), CRUSH_OUT = new BlockPos(14, 3, 12);
     static final BlockPos PRESS = new BlockPos(15, 5, 16), PRESS_IN = new BlockPos(13, 5, 16), SHEETS = new BlockPos(15, 1, 16);
     static final BlockPos BELT_START = new BlockPos(13, 3, 16), BELT_END = new BlockPos(14, 3, 16), DEPOT = new BlockPos(15, 3, 16);
-    /** The extra presses: along the press's axis, behind it. */
+    /** The extra presses: along the press's axis, behind it, each in place of a shaft. */
     static final BlockPos EXTRA_FIRST = new BlockPos(15, 5, 17);
+    /** The press line's input smart chute, which the edit replaces with a plain chute. */
+    static final BlockPos PRESS_CHUTE = new BlockPos(13, 4, 16);
     /** The yard is 34 deep: z 17 to 33. */
     static final int MAX_EXTRA = 17;
 
@@ -166,7 +173,7 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
         BlockPos sheets = at(h, SHEETS.getX(), SHEETS.getY(), SHEETS.getZ());
         chest(h, pressIn);
         fill(h, pressIn, Items.IRON_INGOT, INGOTS);
-        set(h, at(h, 13, 4, 16), AllBlocks.SMART_CHUTE.getDefaultState());
+        set(h, at(h, PRESS_CHUTE.getX(), PRESS_CHUTE.getY(), PRESS_CHUTE.getZ()), AllBlocks.SMART_CHUTE.getDefaultState());
         belt(h, at(h, BELT_START.getX(), BELT_START.getY(), BELT_START.getZ()), at(h, BELT_END.getX(), BELT_END.getY(), BELT_END.getZ()));
         motor(h, at(h, 13, 3, 15), Direction.SOUTH, -BELT_RPM);
         set(h, at(h, DEPOT.getX(), DEPOT.getY(), DEPOT.getZ()), AllBlocks.DEPOT.getDefaultState());
@@ -176,6 +183,9 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
         set(h, sheetChute, AllBlocks.SMART_CHUTE.getDefaultState());
         filtering(h, sheetChute).setFilter(new ItemStack(AllItems.IRON_SHEET.get()));
         chest(h, sheets);
+        // the shafts the extra presses take the place of, out to the yard's end
+        for (int i = 0; i < MAX_EXTRA; i++)
+            shaft(h, at(h, EXTRA_FIRST.getX(), EXTRA_FIRST.getY(), EXTRA_FIRST.getZ() + i), Direction.Axis.Z);
 
         double w = TICKS_PER_MINUTE / (double) MILL_CYCLE, r = TICKS_PER_MINUTE / (double) PRESS_CYCLE;
         List<Expect> expect = List.of(
@@ -184,9 +194,9 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
                 Expect.expected("minecraft:wheat_seeds", 0.25 * w, 0.1875 * w, "milling/wheat: Bernoulli(0.25) seeds per wheat"),
                 Expect.exact("minecraft:iron_ingot", -r, "PressingBehaviour at 128 RPM: 19 ticks per ingot"),
                 Expect.exact("create:iron_sheet", r, "pressing/iron_ingot: one sheet per ingot"));
-        // the factory spans three chunks along z once the extras stand, and its chain crosses x 13..15 by diagonal
-        // cog meshes (no district touch): seed every block entity, as a player's placements would
-        seedAll(h, at(h, 5, 0, 12), at(h, 16, 8, 17));
+        // the factory spans up to three chunks along z, and its chain crosses x 13..15 by diagonal cog meshes (no
+        // district touch): seed every block entity, as a player's placements would
+        seedAll(h, at(h, 5, 0, 12), at(h, 16, 8, 33));
         return new Built(engine, List.of(crushIn, pressIn), List.of(crushOut, sheets), expect, List.of(), WINDOW,
                 "boiler level 1 (1 burner, 1 pump at 16 mB/t, size 8), 1 engine at 64 RPM = 16,384 SU; millstone at 64 RPM (256 SU) and "
                         + "press at 128 RPM (1,024 SU) on its domain; the scenario adds presses (1,024 SU each)");
@@ -229,7 +239,7 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
     }
 
     /**
-     * The scenario: learn, edit the press line's belt, add presses until the stress passes the capacity, remove
+     * The scenario: learn, edit the press line's input chute, add presses until the stress passes the capacity, remove
      * them, learn again, and leave for the replay. Every edit is made to both copies in the same tick.
      */
     static final class Check implements GlassReplayGameTests.Scenario {
@@ -245,7 +255,9 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
         private Phase phase = Phase.LEARN;
         private int step;
         private long startedAt, phaseAt, nextRead, settleAt, deadline, acceptedBefore, learnedAt;
-        private boolean boilerLearned;
+        private boolean boilerLearned, sawStale;
+        private long crushReady, boilerReady;
+        private int crushDone, boilerDone;
         private float[] stress0, stress1;
         private int placed, fit;
         private long lastLog;
@@ -266,6 +278,7 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
             lastLog = 0;
             learnedAt = -1;
             boilerLearned = false;
+            sawStale = false;
         }
 
         @Override
@@ -333,14 +346,32 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
             }
             boilerLearned = SectionsFx.learned(u.boiler);
             structure(run, fr, u);
-            // the first edit: the press line's belt end, event only (the block stays, the engine hears of an edit)
+            // the first edit: the press line's input smart chute broken and a plain chute placed there, which pulls
+            // the same iron from the chest above. The node's model (a smart chute's extraction of 64, a chute's of 16)
+            // changes the press section's fingerprint (an edit the recompile finds as it was would only clear the
+            // stale mark, choice SC62; a filter on the iron alone denies nothing, so no edge test is materialized),
+            // at the same revision: a chute is no district inventory
             acceptedBefore = fr.checksum().acceptedAt();
-            BlockPos belt = run.far.absolutePos(BELT_END);
-            SectionsFx.info(run, "edit at the press line's belt end " + SectionsFx.pos(belt), "compile accepted at " + acceptedBefore);
-            for (BlockPos abs : List.of(run.helper.absolutePos(BELT_END), run.far.absolutePos(BELT_END)))
-                NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(run.level(), abs, run.level().getBlockState(abs), FakePlayers.editor(run.level())));
+            crushReady = u.crush.readyAt();
+            crushDone = u.crush.windowsCompleted();
+            boilerReady = u.boiler == null ? -1 : u.boiler.readyAt();
+            boilerDone = u.boiler == null ? -1 : u.boiler.windowsCompleted();
+            BlockPos chute = run.far.absolutePos(PRESS_CHUTE);
+            SectionsFx.info(run, "edit at the press line's input smart chute " + SectionsFx.pos(chute), "compile accepted at " + acceptedBefore
+                    + "; press unit " + u.press.summary());
+            for (BlockPos abs : List.of(run.helper.absolutePos(PRESS_CHUTE), run.far.absolutePos(PRESS_CHUTE))) {
+                var level = run.level();
+                NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, abs, level.getBlockState(abs), FakePlayers.editor(level)));
+                // the ingot in the chute goes with it (in both copies), not onto the belt as a dropped item
+                if (level.getBlockEntity(abs) instanceof ChuteBlockEntity c)
+                    c.setItem(ItemStack.EMPTY);
+                level.removeBlock(abs, false);
+                level.setBlock(abs, AllBlocks.CHUTE.getDefaultState(), 3);
+                IndustryKit.playerPlacedBare(run.helper, abs);
+            }
             go(Phase.EDIT, now);
-            settleAt = now + 20;
+            step = 1;
+            deadline = now + COMPILE_DEADLINE;
         }
 
         private void structure(GlassReplayGameTests.Run run, GlassReport fr, Units u) {
@@ -365,7 +396,9 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
                     u.crush != null && u.press != null && u.crush != u.press && u.crush.sections() == 1 && u.press.sections() == 1, d);
             SectionsFx.check(run, "the boiler's section is a unit of its own (a third)",
                     u.boiler != null && u.boiler != u.crush && u.boiler != u.press && u.boiler.sections() == 1, d);
-            SectionsFx.check(run, "every unit has learned before the edit", SectionsFx.learned(u.crush) && SectionsFx.learned(u.press) && boilerLearned, d);
+            SectionsFx.check(run, "both lines' units have learned before the edit", SectionsFx.learned(u.crush) && SectionsFx.learned(u.press), d);
+            SectionsFx.info(run, "the boiler's unit before the edit", (boilerLearned ? "learned: " : "not learned (it has no goods): ")
+                    + (u.boiler == null ? "none" : u.boiler.summary()));
         }
 
         private String boilerText(GlassReplayGameTests.Run run) {
@@ -380,31 +413,35 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
             return "no tank";
         }
 
-        // ---- EDIT: the belt end ----------------------------------------------------------------
+        // ---- EDIT: the press line's input chute ----------------------------------------------------
 
         private void edit(GlassReplayGameTests.Run run, GlassReport fr, Units u, long now) {
-            if (step == 0 && now >= settleAt) {
-                reportEdit(run, fr, u, "just after the edit");
+            if (step == 1 && fr.checksum().acceptedAt() == acceptedBefore && u.press != null && u.press.stale())
+                sawStale = true; // the compile from before the edit, once the engine has heard of it
+            if (!compiled(run, fr, "the edit at the press line", now))
+                return;
+            boolean fresh = u.press != null && u.press.windowsCompleted() == 0 && !u.press.passed();
+            if (!fresh && now <= deadline) {
+                // a compile already under way at the edit was accepted first: wait for the next
+                SectionsFx.info(run, "a compile from before the edit", "accepted at " + fr.checksum().acceptedAt()
+                        + "; press unit " + (u.press == null ? "none" : u.press.summary()));
+                acceptedBefore = fr.checksum().acceptedAt();
                 step = 1;
-                settleAt = now + 500;
                 return;
             }
-            if (step == 1 && now >= settleAt) {
-                SectionsFx.info(run, "after the edit", "compile accepted at " + fr.checksum().acceptedAt() + " (was " + acceptedBefore + ")");
-                reportEdit(run, fr, u, "after the recompile window");
-                go(Phase.ADD_ONE, now);
-            }
-        }
-
-        private void reportEdit(GlassReplayGameTests.Run run, GlassReport fr, Units u, String when) {
+            SectionsFx.info(run, "after the edit", "compile accepted at " + fr.checksum().acceptedAt() + " (was " + acceptedBefore
+                    + "); the press unit was seen stale before the recompile: " + sawStale);
             String d = SectionsFx.describe(fr);
-            SectionsFx.check(run, "an edit at the press line's belt stales the press line's unit (" + when + ")",
-                    u.press != null && u.press.stale() && !SectionsFx.learned(u.press), u.press == null ? d : u.press.summary());
-            SectionsFx.check(run, "...and only it: the crushing line's unit stays learned (" + when + ")", SectionsFx.learned(u.crush),
-                    u.crush == null ? d : u.crush.summary());
+            SectionsFx.check(run, "the edit makes the press line's unit new: no window done, none passed",
+                    u.press != null && u.press.windowsCompleted() == 0 && !u.press.passed(), u.press == null ? d : u.press.summary());
+            SectionsFx.check(run, "...and only it: the crushing line's unit keeps its windows and its ready tick",
+                    SectionsFx.learned(u.crush) && u.crush.readyAt() == crushReady && u.crush.windowsCompleted() >= crushDone,
+                    (u.crush == null ? d : u.crush.summary()) + "; ready at " + (u.crush == null ? -1 : u.crush.readyAt()) + ", was " + crushReady);
             if (boilerLearned)
-                SectionsFx.check(run, "...and the boiler's unit stays learned (" + when + ")", SectionsFx.learned(u.boiler),
+                SectionsFx.check(run, "...and the boiler's unit keeps its windows and its ready tick",
+                        SectionsFx.learned(u.boiler) && u.boiler.readyAt() == boilerReady && u.boiler.windowsCompleted() >= boilerDone,
                         u.boiler == null ? d : u.boiler.summary());
+            go(Phase.ADD_ONE, now);
         }
 
         // ---- ADD: presses --------------------------------------------------------------------------
@@ -515,7 +552,9 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
                 BlockPos rel = EXTRA_FIRST.offset(0, 0, i);
                 for (BlockPos abs : List.of(run.helper.absolutePos(rel), run.far.absolutePos(rel))) {
                     NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(run.level(), abs, run.level().getBlockState(abs), FakePlayers.editor(run.level())));
-                    run.level().removeBlock(abs, false);
+                    // the shaft back in its place: the line and its chunks as they were built
+                    run.level().setBlock(abs, AllBlocks.SHAFT.getDefaultState().setValue(BlockStateProperties.AXIS, Direction.Axis.Z), 3);
+                    IndustryKit.playerPlacedBare(run.helper, abs);
                 }
             }
             SectionsFx.info(run, "the extra presses are gone", placed + " removed; " + fuel(run) + "; " + SectionsFx.describe(fr));

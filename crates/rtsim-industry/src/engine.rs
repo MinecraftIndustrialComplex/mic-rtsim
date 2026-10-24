@@ -2756,6 +2756,17 @@ impl Engine {
                 crate::obs::CargoFrom::Departure => self.stats.arrivals_departure += 1,
                 crate::obs::CargoFrom::Arrival => self.stats.arrivals_late += 1,
             }
+            // A train stands at one station: an arrival left at another (a restart while it stood
+            // there sends no departure) would map this call's cargo through that station's ports.
+            let stale: Vec<StationId> = self
+                .arrivals
+                .range((c.train, StationId(0))..=(c.train, StationId(u64::MAX)))
+                .map(|(&(_, s), _)| s)
+                .filter(|&s| s != c.station)
+                .collect();
+            for s in stale {
+                self.arrivals.remove(&(c.train, s));
+            }
             self.arrivals
                 .insert((c.train, c.station), c.carriages.clone());
             return;

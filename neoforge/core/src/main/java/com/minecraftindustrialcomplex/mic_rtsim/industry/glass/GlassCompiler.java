@@ -518,7 +518,7 @@ public final class GlassCompiler {
         st.compiledHash = new Long2LongOpenHashMap(j.chunkHash);
         sends.add(new Send(st, st.records, st.end, false, st.numbering));
         lastGraph.remove(st.district);
-        setReached(st.district, null, null);
+        // the last compile's reached chunks stay (SC77): an edit there still asks this district to recompile
     }
 
     private GraphBuilder.Encoded end(State st, int flags, int records, int nodes, int edges, int recipes, int domains, int reason,
@@ -544,7 +544,7 @@ public final class GlassCompiler {
      * Per dimension and chunk outside a district, the districts whose last compile has a kinetic network
      * reaching it (choice SC77), and per district the chunks it was listed at: a player's edit in such a chunk
      * that no district holds is an edit of those districts too. This session's compiles only; a district's
-     * entries go with its next compile, a compile that fails, or its removal.
+     * entries go with its next compile that succeeds, or its removal (one that is not compilable keeps them).
      */
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<LongArraySet>> reachedBy = new HashMap<>();
     private final Map<Long, Reached> reached = new HashMap<>();
