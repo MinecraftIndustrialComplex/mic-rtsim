@@ -378,5 +378,214 @@ public final class MowzieGameTests {
                 .thenSucceed();
     }
 
+    // ---- review fixes: the den's footprint (MZB-230, MZB-232) --------------------------------
+
+    /**
+     * The jar's Frostmaw falls asleep where it stands inside its restriction (EntityFrostmaw.java:606-616),
+     * so it rests 5 to 8 blocks from the den's spot as often as under the template's box (MZB-230). Placed
+     * there, asleep and untagged, it is in the den's cylinder: the first census lists it home as a stray
+     * chief with its crystal, FACTION_FOUND counts it, and ADOPT takes it. Moved 13 blocks out, beyond the
+     * cylinder but in a forced chunk, and the den cycled out and in, the next census lists the tagged Frostmaw
+     * apart as BODY_ELSEWHERE and BODY_CHIEF, and the chief fields still read it (it is in the faction's
+     * index): CHIEF and CRYSTAL with its health (MZB-232).
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den_asleep_away", skyAccess = true)
+    public static void aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief(GameTestHelper helper) {
+        String test = "aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[1], e1 = new long[1];
+        float[] health = new float[1];
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(6, 4.5), true);
+                    f[0].setHealth(f[0].getMaxHealth() - 40f);
+                    health[0] = f[0].getHealth();
+                    double off = Math.hypot(f[0].getX() - den.spot.x, f[0].getZ() - den.spot.z);
+                    record(test, "placed", String.format("the Frostmaw asleep %.2f blocks from the spot", off));
+                    check("between 5 and 8 blocks from the spot (" + off + ")", off >= 5 && off <= 8);
+                    check("in the den's cylinder", den.site().contains(f[0].position()));
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(den.faction, 1);
+                    List<CensusBody> bodies = ConflictKit.censusBodies(c);
+                    check("one body, the Frostmaw, a stray chief (" + bodies.size() + ")", bodies.size() == 1
+                            && bodies.get(0).uuid().equals(f[0].getUUID())
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                    check("the chief flags CHIEF and CRYSTAL (" + MowzieKit.chiefFlags(c) + ")",
+                            MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.CRYSTAL));
+                    List<ScriptedEngine.Received> found = ConflictKit.factionsFound(den.faction);
+                    check("FACTION_FOUND once, home 1 (" + found.size() + ")", found.size() == 1
+                            && (found.get(0).view().getShort(ConflictRecords.FactionFound.HOME_BODIES) & 0xFFFF) == 1);
+                    e1[0] = MowzieKit.epoch(c);
+                    op[0] = MowzieKit.reconcile(den.faction, e1[0], List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("tagged (faction, 0, 1)", MowzieKit.tagged(f[0], den.faction, 0, 1));
+                    // beyond the cylinder (13 > 11), in the forced chunk east of the den's
+                    Vec3 out = den.at(13, 0);
+                    f[0].moveTo(out.x, out.y, out.z, f[0].getYRot(), 0f);
+                    check("now outside the footprint", !den.site().contains(f[0].position()));
+                    den.release();
+                })
+                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenWaitUntil(io(() -> check("the Frostmaw is unloaded", level.getEntity(f[0].getUUID()) == null)))
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
+                    CensusBody b = MowzieKit.bodyOf(c, f[0].getUUID());
+                    check("the Frostmaw is listed", b != null);
+                    check("apart, as the chief (" + b.flags() + ")",
+                            b.flags() == (ConflictRecords.CampCensus.BODY_ELSEWHERE | ConflictRecords.CampCensus.BODY_CHIEF));
+                    check("by its slot 0, generation 1", b.slot() == 0 && b.generation() == 1);
+                    check("the chief fields still read it: CHIEF and CRYSTAL (" + MowzieKit.chiefFlags(c) + ")",
+                            MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.CRYSTAL));
+                    float h = MowzieKit.chiefHealth(c);
+                    record(test, "elsewhere", "chief health " + h + " (set " + health[0] + ")");
+                    check("with its health (" + h + ")", h >= health[0] - 0.01f && h <= health[0] + 20f);
+                    check("FACTION_FOUND is still once", ConflictKit.factionsFound(den.faction).size() == 1);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A late den (found in a world from before the plugin) looks for its Frostmaw at its first census within
+     * {@code DenKind.STRAY_RADIUS} blocks of the spot, loaded and untagged (MZB-232): one that wandered 30
+     * blocks off is listed as a stray chief, FACTION_FOUND counts it home, and ADOPT takes it, so the den keeps
+     * its one Frostmaw and the pool has nothing to spawn. A den that is not late, with its Frostmaw as far,
+     * lists none: the jar's own is outside its books.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den_late", skyAccess = true)
+    public static void aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus(GameTestHelper helper) {
+        String test = "aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den late = new Den(far, far.k, far.z0), plain = new Den(far, far.k + 8, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[2];
+        long[] op = new long[1], strays = new long[1];
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    late.force(1);
+                    plain.force(1);
+                })
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    late.lay(1);
+                    plain.lay(1);
+                    // both Frostmaws stand before either den is declared: nothing asked for a recount
+                    Vec3 a = late.at(30, 0.5), b = plain.at(30, 0.5);
+                    f[0] = MowzieKit.frostmaw(level, a, true);
+                    f[1] = MowzieKit.frostmaw(level, b, false);
+                    strays[0] = MowzieKit.camps().strays;
+                    late.declare(true);
+                    plain.declare(false);
+                    check("the first is late and the second is not", late.site().late() && !plain.site().late());
+                    check("each Frostmaw is beyond its den's cylinder", !late.site().contains(f[0].position()) && !plain.site().contains(f[1].position()));
+                })
+                .thenWaitUntil(() -> {
+                    check("census of the late den", MowzieKit.censusCount(late.faction) >= 1);
+                    check("census of the plain den", MowzieKit.censusCount(plain.faction) >= 1);
+                })
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(late.faction, 1);
+                    List<CensusBody> bodies = ConflictKit.censusBodies(c);
+                    check("the late den lists its wandered Frostmaw as a stray chief (" + bodies.size() + ")", bodies.size() == 1
+                            && bodies.get(0).uuid().equals(f[0].getUUID())
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                    check("with the chief flags CHIEF and CRYSTAL", MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.CRYSTAL));
+                    List<ScriptedEngine.Received> found = ConflictKit.factionsFound(late.faction);
+                    check("FACTION_FOUND home 1 with the chief and its crystal", found.size() == 1
+                            && (found.get(0).view().getShort(ConflictRecords.FactionFound.HOME_BODIES) & 0xFFFF) == 1
+                            && (found.get(0).view().get(ConflictRecords.FactionFound.CENSUS) & 0xFF)
+                            == (ConflictRecords.FactionFound.CENSUS_CHIEF | ConflictRecords.FactionFound.CENSUS_CRYSTAL));
+                    check("and says it is late (aux " + found.get(0).aux() + ")", found.get(0).aux() == ConflictRecords.FactionFound.FLAG_LATE);
+                    check("one stray counted (" + (MowzieKit.camps().strays - strays[0]) + ")", MowzieKit.camps().strays - strays[0] == 1);
+                    ScriptedEngine.Received p = MowzieKit.census(plain.faction, 1);
+                    check("the plain den lists nothing", p.aux() == 0 && MowzieKit.chiefFlags(p) == 0);
+                    List<ScriptedEngine.Received> pf = ConflictKit.factionsFound(plain.faction);
+                    check("and was found with no one home", pf.size() == 1
+                            && (pf.get(0).view().getShort(ConflictRecords.FactionFound.HOME_BODIES) & 0xFFFF) == 0
+                            && (pf.get(0).view().get(ConflictRecords.FactionFound.CENSUS) & 0xFF) == 0);
+                    op[0] = MowzieKit.reconcile(late.faction, MowzieKit.epoch(c),
+                            List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(late.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(late.faction, op[0]), DONE);
+                    check("tagged (faction, 0, 1) and restricted 8 round the spot", MowzieKit.tagged(f[0], late.faction, 0, 1)
+                            && f[0].hasRestriction() && f[0].getRestrictRadius() == DenKind.RESTRICT);
+                    check("the den holds that one Frostmaw and no second was made", MowzieKit.held(late.faction).size() == 1
+                            && level.getEntitiesOfClass(EntityFrostmaw.class, late.area().expandTowards(64, 0, 0).expandTowards(-64, 0, 0)).size() == 1);
+                    check("the plain den's Frostmaw is still the jar's own", MowzieKit.tag(f[1]) == null);
+                    record(test, "late", "the Frostmaw 30 blocks off was listed at census 1 and adopted; the plain den's was not listed");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * An untagged Frostmaw that joins within {@code STRAY_RADIUS} of a den with a free slot asks for a recount
+     * (MZB-232): the next census lists it as a stray chief and ADOPT takes it. With the slot taken, a second
+     * Frostmaw joining as near asks for nothing: no recount, no census, and it stays the jar's.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den_joiner", skyAccess = true)
+    public static void aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot(GameTestHelper helper) {
+        String test = "aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[2];
+        long[] op = new long[1], watches = new long[1];
+
+        helper.startSequence()
+                .thenExecute(() -> den.force(1))
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay(1).declare();
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(den.faction, 1);
+                    check("census 1 lists no one", c.aux() == 0 && MowzieKit.chiefFlags(c) == 0);
+                    watches[0] = MowzieKit.camps().strayWatches;
+                    f[0] = MowzieKit.frostmaw(level, den.at(30, 0.5), true);
+                    check("the join was noticed (" + (MowzieKit.camps().strayWatches - watches[0]) + ")", MowzieKit.camps().strayWatches == watches[0] + 1);
+                })
+                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
+                    List<CensusBody> bodies = ConflictKit.censusBodies(c);
+                    check("census 2 lists the joiner as a stray chief (" + bodies.size() + ")", bodies.size() == 1
+                            && bodies.get(0).uuid().equals(f[0].getUUID())
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                    op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(c), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    watches[0] = MowzieKit.camps().strayWatches;
+                    f[1] = MowzieKit.frostmaw(level, den.at(30, 5.5), true);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("a full den watched nothing (" + (MowzieKit.camps().strayWatches - watches[0]) + ")", MowzieKit.camps().strayWatches == watches[0]);
+                    check("and made no census (" + MowzieKit.censusCount(den.faction) + ")", MowzieKit.censusCount(den.faction) == 2);
+                    check("the second Frostmaw is the jar's own", MowzieKit.tag(f[1]) == null && f[1].isAlive());
+                    record(test, "joiners", "a join with a free slot recounted; a join at a full den did not");
+                })
+                .thenSucceed();
+    }
+
     // @@NEXT@@
 }
