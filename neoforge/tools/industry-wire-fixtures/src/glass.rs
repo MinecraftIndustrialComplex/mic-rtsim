@@ -7,8 +7,9 @@
 
 use rtsim_industry::glass::codec as gc;
 use rtsim_industry::glass::records::{
-    ChunkTicking, DomainLevel, EdgeKind, GlassObs, GraphDomain, GraphEdge, GraphEnd, GraphHead,
-    GraphNode, GraphRecipe, Member, NodeKind, ProbeSample, ProbeSet, RateEntry, Term,
+    ChunkTicking, Count, CountSample, CountSet, DomainLevel, EdgeKind, GlassObs, GraphDomain,
+    GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NodeKind, ProbeSample,
+    ProbeSet, RateEntry, Term,
 };
 use rtsim_industry::ids::{ChunkPos, Good};
 use rtsim_industry::obs::{Obs, Timed};
@@ -21,7 +22,7 @@ const HEADER: &str = "\
 # Regenerate: cd neoforge/tools/industry-wire-fixtures && nix develop ../../..# -c cargo run --release --quiet -- glass > ../../core/src/test/resources/glass-wire-fixtures.txt
 # Lines: '<NAME> <hex>' is one encoded record (little-endian, header included); '<NAME>.fields k=v ...' the values it was built from;
 # 'CODES.<group> Variant=code ...' an enum code table. f64 values are whole eighths, printed exactly. Latest-wins records carry
-# game_time at 8; IND_CHUNK_TICKING obs_seq at 8 and game_time at 16; IND_PROBE_SET cmd_seq at 8.
+# game_time at 8; IND_CHUNK_TICKING obs_seq at 8 and game_time at 16; IND_PROBE_SET and IND_COUNT_SET cmd_seq at 8.
 ";
 
 /// A double that prints and parses exactly: a whole number of eighths, not zero.
@@ -357,6 +358,39 @@ pub fn fixtures() -> String {
     }
 
     {
+        // Two entries: a counted good, and a pair that counted nothing yet (good NONE on the wire).
+        let name = "IND_COUNT_SAMPLE";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let sweep = f.u32("sweep", g.u32());
+        let compile = f.u32("compile", g.u32());
+        f.sym("n_entries", 2);
+        let counts = (0..2)
+            .map(|i| Count {
+                mover: f.u32(&format!("entry{i}.mover"), g.u32()),
+                store: f.u32(&format!("entry{i}.store"), g.u32()),
+                good: if i == 0 {
+                    Some(Good(f.u32("entry0.good", g.u32() & 0x7FFF_FFFF)))
+                } else {
+                    f.sym("entry1.good", "none");
+                    None
+                },
+                since: f.i64(&format!("entry{i}.since"), g.i64(Sign::Pos)),
+                moved_in: f.i64(&format!("entry{i}.in"), g.i64(Sign::Pos)),
+                moved_out: f.i64(&format!("entry{i}.out"), g.i64(Sign::Pos)),
+            })
+            .collect();
+        let o = GlassObs::CountSample(CountSample {
+            district,
+            sweep,
+            compile,
+            counts,
+        });
+        glass_obs(&mut out, name, gc::IND_COUNT_SAMPLE, 0, at, o, &f);
+    }
+
+    {
         let name = "IND_CHUNK_TICKING";
         let (mut g, mut f) = begin(name);
         let seq = f.u64("obs_seq", g.u64());
@@ -390,6 +424,29 @@ pub fn fixtures() -> String {
             nodes,
         });
         cmd(&mut out, name, gc::IND_PROBE_SET, seq, c, &f);
+    }
+
+    {
+        let name = "IND_COUNT_SET";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let district = district(&mut f, &mut g);
+        let compile = f.u32("compile", g.u32());
+        f.sym("n_pairs", 3);
+        let pairs: Vec<(u32, u32)> = (0..3)
+            .map(|i| {
+                (
+                    f.u32(&format!("pair{i}.mover"), g.u32()),
+                    f.u32(&format!("pair{i}.store"), g.u32()),
+                )
+            })
+            .collect();
+        let c = Cmd::CountSet(CountSet {
+            district,
+            compile,
+            pairs,
+        });
+        cmd(&mut out, name, gc::IND_COUNT_SET, seq, c, &f);
     }
 
     code_tables(&mut out);
