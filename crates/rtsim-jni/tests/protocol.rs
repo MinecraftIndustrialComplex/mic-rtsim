@@ -367,6 +367,62 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// RP-49 (fixes4 item 6): a save Java asks for while the engine lags its journal by more than
+/// a save interval is taken. Each round Java journals more than one hand-over carries and asks
+/// for a save through its journal's end, as every world save does, and hands over once: the
+/// engine falls further behind each round, and every request after the first lies past it. The
+/// pages must stop at the first request's world save once the engine reaches it. A request that
+/// replaced the pending one pushed the target past the engine each round: no save was taken,
+/// and the journal the next start replays grew without bound.
+#[test]
+fn a_save_asked_for_while_the_engine_lags_is_taken() {
+    const SAVES_DONE: usize = 9;
+    const ROUNDS: u64 = 4;
+    let dir = tmpdir("save-lag");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.idle();
+    // A hand-over of MIN_CAPACITY carries less than its bytes' worth of transfers (about
+    // 1,000): two buffers' worth a round.
+    let per_round = (2 * wire::MIN_CAPACITY / obs::transfer::SIZE) as u64;
+    let saves = e.stats_array()[SAVES_DONE];
+    let mut first = 0;
+    for round in 0..ROUNDS {
+        for i in 0..per_round {
+            j.transfer(wire::JAVA_OP_BIT | (round << 32) | i, 1, 2, 1);
+        }
+        let through = j.next_obs - 1;
+        if first == 0 {
+            first = through;
+        }
+        e.request_save(through);
+        j.flush();
+    }
+    let applied = e.stats_array()[4];
+    assert!(
+        applied > first && applied < j.next_obs - 1,
+        "the engine passed the first request and lags the last: applied {applied}, first \
+         {first}, journal end {}",
+        j.next_obs - 1
+    );
+    let deadline = Instant::now() + DURABLE_WAIT;
+    while e.durable_obs_seq() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "no save taken: {} saves done, durable {}, applied {applied}, first request {first}",
+            e.stats_array()[SAVES_DONE] - saves,
+            e.durable_obs_seq()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        e.durable_obs_seq(),
+        first,
+        "the pages stop at the first request's world save"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn repeats_are_no_ops_and_a_session_start_disembodies() {
     let dir = tmpdir("repeat");
