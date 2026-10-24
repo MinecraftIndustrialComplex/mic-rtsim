@@ -408,9 +408,20 @@ public final class ConflictKit {
         return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_CENSUS, ConflictRecords.CampCensus.FACTION, faction);
     }
 
-    /** CAMP_BODIES records of one camp, in the order received (a holder's record journaled again is one more). */
+    /**
+     * CAMP_BODIES records of one camp, in the order received. A holder's record journaled again is one more:
+     * a copy (REASSERT, docs/boundary.md §3.2) whether the engine applied it or dropped it as a record it had
+     * ({@code skipped}), listed under the copy's sequence.
+     */
     public static List<ScriptedEngine.Received> campBodies(long faction) {
-        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.FACTION, faction);
+        ScriptedEngine engine = RtsimTests.engine();
+        List<ScriptedEngine.Received> out = new ArrayList<>(RtsimTests.recordsWith(engine, ConflictRecords.CAMP_BODIES,
+                ConflictRecords.CampBodies.FACTION, faction));
+        for (ScriptedEngine.Received c : engine.copies(ConflictRecords.CAMP_BODIES))
+            if (c.bytes().length >= ConflictRecords.CampBodies.FACTION + 8 && c.view().getLong(ConflictRecords.CampBodies.FACTION) == faction)
+                out.add(c);
+        out.sort(java.util.Comparator.comparingLong(ScriptedEngine.Received::obsSeq));
+        return out;
     }
 
     /** CAMP_BODIES records answering one op. */

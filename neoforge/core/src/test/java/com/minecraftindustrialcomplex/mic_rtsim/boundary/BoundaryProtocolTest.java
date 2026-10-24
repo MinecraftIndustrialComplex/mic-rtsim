@@ -146,7 +146,7 @@ class BoundaryProtocolTest {
         tick(s, sink, e);
         assertEquals(5, e.ledger(7));
         tick(s, sink, e);
-        assertEquals(1, s.journal().size(), "applied but not on the engine's disk: still journaled");
+        assertEquals(2, s.journal().size(), "applied but not on the engine's disk: still journaled (with the JOURNAL_GEN)");
 
         e.requestSaveAtNextStep();
         tick(s, sink, e); // the step saves its pages and acknowledges in its command header
@@ -218,7 +218,7 @@ class BoundaryProtocolTest {
         e2.requestSaveAtNextStep();
         tick(s2, k2, e2);
         Journal.Snapshot worldSave2 = s2.journal().snapshot();
-        assertEquals(1, Journal.restore(worldSave2).size());
+        assertEquals(3, Journal.restore(worldSave2).size(), "the transfer between the two sessions' JOURNAL_GENs");
 
         // Session 3: the replay arrives at an engine whose pages already include it: skipped.
         StubEngine e3 = stub(e2.pages(), StubEngine.DEFAULT_CAPACITY);
@@ -367,36 +367,39 @@ class BoundaryProtocolTest {
         StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
         BoundarySession s1 = new BoundarySession(e1, new Journal(), 0b101, time);
         Sink k1 = new Sink(s1);
-        transfer(s1, 1, 1);
-        transfer(s1, 1, 1);
+        long op2 = transfer(s1, 1, 1);
+        long op3 = transfer(s1, 1, 1);
         tick(s1, k1, e1);
         s1.worldSaveDurable(2);
         tick(s1, k1, e1);
         List<ScriptedEngine.Received> saved = e1.received(Obs.WORLD_SAVED);
         assertEquals(1, saved.size());
         assertEquals(2L, saved.get(0).view().getLong(Obs.WorldSaved.DURABLE_OBS_SEQ));
+        assertFalse(e1.opApplied(op2), "the engine forgets op ids the world save holds");
+        assertTrue(e1.opApplied(op3), "and keeps the ones past it");
         tick(s1, k1, e1);
         assertEquals(1, e1.received(Obs.WORLD_SAVED).size(), "reported once per save");
 
-        // A world save that knew sequences 1 and 2, against engine pages that include only 1.
+        // A world save that knew sequences 1 to 3 (the session's JOURNAL_GEN and the two transfers),
+        // against engine pages that include only 1.
         StubEngine e2 = stub(new StubEngine.Pages(1, 1, java.util.Set.of(), java.util.Map.of()), StubEngine.DEFAULT_CAPACITY);
         Journal j = Journal.restore(s1.journal().snapshot());
         BoundarySession s2 = new BoundarySession(e2, j, 0b101, time);
         tick(s2, new Sink(s2), e2);
         ByteBuffer start = e2.received(Obs.SESSION_START).get(0).view();
         assertEquals(1L, start.getLong(Obs.SessionStart.JOURNAL_FIRST_OBS_SEQ));
-        assertEquals(3L, start.getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ));
+        assertEquals(4L, start.getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ));
         assertEquals(0b101, start.getInt(Obs.SessionStart.MODULE_MASK));
-        assertEquals(3L, j.nextObsSeq(), "the world is ahead of the pages: no sequence moves");
+        assertEquals(5L, j.nextObsSeq(), "the world is ahead of the pages: no sequence moves (4 is the session's JOURNAL_GEN)");
 
         // Engine pages ahead of the world save (P29): Java moves past them and never reuses one.
         StubEngine e3 = stub(new StubEngine.Pages(10, 1, java.util.Set.of(), java.util.Map.of()), StubEngine.DEFAULT_CAPACITY);
         Journal j3 = Journal.restore(s1.journal().snapshot());
         BoundarySession s3 = new BoundarySession(e3, j3, 0, time);
         tick(s3, new Sink(s3), e3);
-        assertEquals(3L, e3.received(Obs.SESSION_START).get(0).view().getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ),
+        assertEquals(4L, e3.received(Obs.SESSION_START).get(0).view().getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ),
                 "the engine sees the world's own next sequence, so it can tell it is ahead");
-        assertEquals(11L, j3.nextObsSeq());
+        assertEquals(12L, j3.nextObsSeq(), "past the pages, and 11 is the session's JOURNAL_GEN");
     }
 
     @Test
@@ -421,14 +424,215 @@ class BoundaryProtocolTest {
         Sink sink = new Sink(s);
         transfer(s, 1, 1);
         transfer(s, 1, 1);
-        e.requestSave(2); // the world save knew sequences 1 and 2
-        transfer(s, 1, 1); // 3 and 4 come after it, in the same hand-over
+        e.requestSave(3); // the world save knew sequences 1 to 3 (the JOURNAL_GEN and two transfers)
+        transfer(s, 1, 1); // 4 and 5 come after it, in the same hand-over
         transfer(s, 1, 1);
         tick(s, sink, e);
         assertEquals(4, e.ledger(1), "everything is applied");
-        assertEquals(2, e.pages().obsSeq(), "but the pages stop where the world save did");
+        assertEquals(3, e.pages().obsSeq(), "but the pages stop where the world save did");
         tick(s, sink, e);
         assertEquals(2, s.journal().size(), "and only what they include is trimmed");
+    }
+
+    // ---- generations and copies (docs/boundary.md §3.2) -----------------------------------------
+
+    /** A transfer journaled with no op id, as a holder keeps it: its bytes as journaled. */
+    private static byte[] carried(BoundarySession s, long to, long amount) {
+        ByteBuffer r = s.beginJournaled(Obs.TRANSFER, Obs.Transfer.SIZE, Obs.Transfer.GENERIC, 0);
+        r.putLong(Obs.Transfer.TO, to);
+        r.putLong(Obs.Transfer.AMOUNT, amount);
+        s.commit(r);
+        return r.array().clone();
+    }
+
+    @Test
+    void aSessionJournalsItsGenerationFirst() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        Journal j = new Journal();
+        BoundarySession s1 = new BoundarySession(e, j, 0, time);
+        Journal.Entry first = j.entries().iterator().next();
+        ByteBuffer g = ByteBuffer.wrap(first.bytes()).order(Layout.ORDER);
+        assertEquals(Obs.JOURNAL_GEN, Short.toUnsignedInt(g.getShort(Layout.R_KIND)));
+        assertEquals(1, first.seq());
+        assertEquals(s1.gen(), g.getLong(Obs.JournalGen.GEN));
+        assertTrue(s1.gen() != 0);
+        StubEngine e2 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s2 = new BoundarySession(e2, Journal.restore(j.snapshot()), 0, time);
+        assertTrue(s2.gen() != s1.gen(), "every session is its own generation");
+    }
+
+    @Test
+    void aCopyOfARecordTheEngineHasIsDropped() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        Sink k = new Sink(s);
+        byte[] held = carried(s, 7, 5);
+        tick(s, k, e);
+        long seq = s.reassert(s.gen(), held); // the holder unloaded and loaded before the acknowledgement
+        s.reassert(s.gen(), held);
+        tick(s, k, e);
+        assertEquals(5, e.ledger(7), "applied once");
+        assertEquals(0, e.copiesApplied());
+        assertEquals(2, e.copiesDropped());
+        ScriptedEngine.Received copy = e.copies(Obs.TRANSFER).get(0);
+        assertEquals(seq, copy.obsSeq(), "received under the copy's sequence");
+        assertTrue(copy.skipped(), "and dropped");
+        assertEquals(0, s.plainRecommits());
+    }
+
+    @Test
+    void aCopyOfARecordACrashLostAppliesOnce() {
+        StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s1 = new BoundarySession(e1, new Journal(), 0, time);
+        Journal.Snapshot worldSave = s1.journal().snapshot(); // the last world save, with the JOURNAL_GEN
+        Sink k1 = new Sink(s1);
+        byte[] held = carried(s1, 7, 5);
+        long gen = s1.gen();
+        tick(s1, k1, e1);
+        assertEquals(5, e1.ledger(7));
+
+        // The crash: the holder's chunk was saved, the journal and the pages were not.
+        StubEngine e2 = stub(e1.pages(), StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s2 = new BoundarySession(e2, Journal.restore(worldSave), 0, time);
+        Sink k2 = new Sink(s2);
+        s2.reassert(gen, held);
+        tick(s2, k2, e2);
+        s2.reassert(gen, held); // loaded again before the acknowledgement
+        tick(s2, k2, e2);
+        assertEquals(5, e2.ledger(7), "the copy applied once");
+        assertEquals(1, e2.copiesApplied());
+        assertEquals(1, e2.copiesDropped());
+
+        // The pages take the copy; the next session drops another.
+        e2.requestSaveAtNextStep();
+        tick(s2, k2, e2);
+        StubEngine e3 = stub(e2.pages(), StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s3 = new BoundarySession(e3, Journal.restore(s2.journal().snapshot()), 0, time);
+        Sink k3 = new Sink(s3);
+        s3.reassert(gen, held);
+        tick(s3, k3, e3);
+        tick(s3, k3, e3);
+        assertEquals(5, e3.ledger(7));
+        assertEquals(0, e3.copiesApplied());
+        assertEquals(1, e3.copiesDropped(), "the pages remember the copy applied");
+    }
+
+    @Test
+    void aRecordTooLargeToCopyIsJournaledAgainPlainly() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, Layout.MIN_CAPACITY * 2);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        ByteBuffer r = s.beginJournaled(Obs.TRANSFER, Layout.MAX_RECORD, Obs.Transfer.GENERIC, 0);
+        r.putLong(Obs.Transfer.TO, 7);
+        r.putLong(Obs.Transfer.AMOUNT, 5);
+        s.commitWithOpId(r, Obs.Transfer.OP_ID);
+        long seq = s.reassert(s.gen(), r.array().clone());
+        assertEquals(1, s.plainRecommits());
+        Journal.Entry last = null;
+        for (Journal.Entry x : s.journal().entries())
+            last = x;
+        assertEquals(seq, last.seq());
+        assertEquals(Obs.TRANSFER, Short.toUnsignedInt(ByteBuffer.wrap(last.bytes()).order(Layout.ORDER).getShort(Layout.R_KIND)),
+                "the record itself, under a new sequence");
+    }
+
+    @Test
+    void aCopyOfAnAppliedCommandResultCountsAsApplied() {
+        Journal j = new Journal();
+        ByteBuffer r = j.begin(Obs.COMMAND_RESULT, Obs.CommandResult.SIZE, Obs.CommandResult.APPLIED, 0);
+        r.putLong(Obs.CommandResult.OP_ID, ENGINE_900);
+        long seq = j.commit(r);
+        j.trim(seq);
+        assertFalse(j.commandOpApplied(ENGINE_900), "acknowledged: the engine has it");
+        ByteBuffer c = j.begin(Obs.REASSERT, Obs.Reassert.INNER + r.capacity(), 0, 0);
+        c.putLong(Obs.Reassert.GEN, 42);
+        c.put(Obs.Reassert.INNER, r.array());
+        long copy = j.commit(c);
+        assertTrue(j.commandOpApplied(ENGINE_900), "a copy says it was applied, until the engine acknowledges it");
+        assertTrue(Journal.restore(j.snapshot()).commandOpApplied(ENGINE_900), "across a world save");
+        ByteBuffer c2 = j.begin(Obs.REASSERT, Obs.Reassert.INNER + r.capacity(), 0, 0);
+        c2.putLong(Obs.Reassert.GEN, 42);
+        c2.put(Obs.Reassert.INNER, r.array());
+        j.commit(c2); // a second copy: the first one's acknowledgement leaves the op applied
+        j.trim(copy);
+        assertTrue(j.commandOpApplied(ENGINE_900), "each entry that holds the op counts");
+        j.trim(j.nextObsSeq() - 1);
+        assertFalse(j.commandOpApplied(ENGINE_900));
+    }
+
+    @Test
+    void theNewestAcknowledgedGenerationOutlivesTheTrim() {
+        Journal j = new Journal();
+        long g1 = gen(j, 11);
+        long t1 = j.commit(transferRecord(j));
+        long g2 = gen(j, 22);
+        long t2 = j.commit(transferRecord(j));
+        j.trim(t1);
+        assertEquals(g1, j.pinnedGen().seq());
+        j.trim(t2 - 1);
+        assertEquals(g2, j.pinnedGen().seq(), "the newest one trimmed");
+        assertEquals(22, ByteBuffer.wrap(j.pinnedGen().bytes()).order(Layout.ORDER).getLong(Obs.JournalGen.GEN));
+        assertEquals(1, j.size(), "not an entry");
+        assertEquals(t2, j.firstSeq());
+        assertTrue(j.consistent());
+        Journal back = Journal.restore(j.snapshot());
+        assertEquals(g2, back.pinnedGen().seq(), "a world save keeps it");
+        assertTrue(back.consistent());
+        Journal.Snapshot ok = j.snapshot();
+        Journal.Snapshot above = new Journal.Snapshot(ok.lastAppliedCmdSeq(), ok.nextObsSeq(), ok.seqs(), ok.records(),
+                ok.dictKinds(), ok.dictNames(), ok.records()[0]);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> Journal.restore(above),
+                "a kept generation that is not a JOURNAL_GEN below the first entry is a corrupt journal");
+        j.trim(t2);
+        assertEquals(g2, j.pinnedGen().seq(), "a record that is not a JOURNAL_GEN leaves it");
+        assertEquals(0, j.size());
+    }
+
+    private static long gen(Journal j, long nonce) {
+        ByteBuffer g = j.begin(Obs.JOURNAL_GEN, Obs.JournalGen.SIZE, 0, 0);
+        g.putLong(Obs.JournalGen.GEN, nonce);
+        return j.commit(g);
+    }
+
+    private static ByteBuffer transferRecord(Journal j) {
+        ByteBuffer r = j.begin(Obs.TRANSFER, Obs.Transfer.SIZE, Obs.Transfer.GENERIC, 0);
+        r.putLong(Obs.Transfer.TO, 1);
+        r.putLong(Obs.Transfer.AMOUNT, 1);
+        return r;
+    }
+
+    /**
+     * Pages older than the journal's first entry (Pages.EMPTY stands for a restored backup), after an
+     * acknowledgement trimmed the session's JOURNAL_GEN: the journal keeps it, so the replayed record is
+     * the generation's, and a copy of it is dropped (docs/boundary.md §3.2).
+     */
+    @Test
+    void aCopyOfARecordReplayedIntoOlderPagesNeverAppliesTwice() {
+        StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s1 = new BoundarySession(e1, new Journal(), 0, time);
+        Sink k1 = new Sink(s1);
+        long gen = s1.gen();
+        byte[] trimmed = carried(s1, 8, 2);
+        tick(s1, k1, e1);
+        e1.requestSaveAtNextStep();
+        for (int i = 0; i < 10 && s1.journal().pinnedGen() == null; i++)
+            tick(s1, k1, e1);
+        assertEquals(0, s1.journal().size(), "the acknowledgement trimmed the session's records");
+        assertEquals(1, s1.journal().pinnedGen().seq(), "but not its JOURNAL_GEN");
+        byte[] replayed = carried(s1, 7, 5);
+        tick(s1, k1, e1);
+        Journal.Snapshot worldSave = s1.journal().snapshot();
+
+        StubEngine e2 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s2 = new BoundarySession(e2, Journal.restore(worldSave), 0, time);
+        Sink k2 = new Sink(s2);
+        s2.reassert(gen, replayed);
+        s2.reassert(gen, trimmed);
+        tick(s2, k2, e2);
+        tick(s2, k2, e2);
+        assertEquals(5, e2.ledger(7), "the replayed record applied once");
+        assertEquals(0, e2.ledger(8), "the trimmed stretch is what such pages lose");
+        assertEquals(0, e2.copiesApplied());
+        assertEquals(2, e2.copiesDropped());
     }
 
     @Test

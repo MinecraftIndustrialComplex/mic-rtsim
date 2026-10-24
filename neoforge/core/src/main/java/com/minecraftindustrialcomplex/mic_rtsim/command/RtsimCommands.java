@@ -54,7 +54,7 @@ public final class RtsimCommands {
                 com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard.describe(s.server()) + (readopt == null ? "" : "; " + readopt),
                 "hand-overs: " + b.handover().submits() + " submitted, " + b.handover().ticksWaiting() + " ticks waited on the engine",
                 "journal: " + b.journal().size() + " unacknowledged (" + b.journal().bytes() + " bytes), last applied command " + b.journal().lastAppliedCmdSeq()
-                        + "; pending records journaled again " + s.reasserted() + ", of an earlier engine life dropped " + s.stalePending(),
+                        + "; carried records journaled again " + s.reasserted() + " (" + b.plainRecommits() + " too large to copy), of an earlier engine life dropped " + s.stalePending(),
                 "puppets: " + s.registry().size() + " groups; spawned " + s.spawnedGroups() + ", rejected " + s.rejectedSpawns()
                         + ", captured " + s.capturedGroups() + ", taken " + s.takes() + ", died " + s.deaths()
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),
