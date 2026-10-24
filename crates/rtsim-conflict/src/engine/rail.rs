@@ -26,6 +26,27 @@ pub const RETIRE_PER_DAY: f64 = 0.01;
 /// (PLACEHOLDER, MZB-307).
 pub const MAX_LINES: usize = 16;
 
+/// Where a rail source sits on the track: the y of the track at the source's position and the
+/// station nearer to it that has a district (MZB-313). A source that has one is a rail source.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pin {
+    pub y: i32,
+    pub station: Option<(Pos, DistrictId)>,
+}
+
+/// What a feud's focus keeps of the pin that set it (MZB-314).
+pub type TrackFocus = Pin;
+
+/// The key of the source a faction's meter for one actor pushes to: `fnv1a64("rail" ++ the
+/// faction's key ++ the actor's bits)` (MZB-313).
+pub fn rail_key(faction_key: u64, actor: ActorId) -> u64 {
+    let mut b = Vec::with_capacity(20);
+    b.extend_from_slice(b"rail");
+    b.extend_from_slice(&faction_key.to_le_bytes());
+    b.extend_from_slice(&actor.to_bits().to_le_bytes());
+    fnv1a64(&b)
+}
+
 /// `n` as it stands at `t`, for a count last set at `t_ref`. A `t` before `t_ref` reads `n`.
 fn decayed(n: f64, t_ref: Tick, t: Tick) -> f64 {
     n * (-(t.0.saturating_sub(t_ref.0) as f64) / RAIL_TAU).exp()
@@ -196,5 +217,51 @@ impl RailMeter {
                     .then((y.0.a, y.0.b).cmp(&(x.0.a, x.0.b)))
             })
             .map(|(l, _)| l)
+    }
+}
+
+impl Conflict {
+    /// A rail meter's push (MZB-313): faction `f`'s one source for `actor`, `per_day` legs a day at
+    /// `pos` (a point on the track) with `pin`. It reaches only `f` (falloff 1), has no district,
+    /// chunks or places, and counts against `actor` whoever stands where: so `reattribute` never
+    /// moves it and a camp founded later never picks it up. A rate of 0 removes the source and
+    /// `f`'s reach of it. The feud's rate is then recomputed (tolerance once from this one rate,
+    /// as for any kind).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_emission_for(
+        &mut self,
+        w: &mut World,
+        f: u32,
+        actor: ActorId,
+        per_day: f64,
+        pos: Pos,
+        pin: Pin,
+        at: Tick,
+    ) {
+        let _ = w;
+        self.run_to(at);
+        let key = (
+            rail_key(self.factions[f as usize].key, actor),
+            SignalKind::Rail,
+        );
+        let rate = per_day.max(0.0) / TICKS_PER_DAY as f64;
+        if rate > 0.0 {
+            let id = self.sources.insert(
+                key,
+                Source {
+                    pos,
+                    district: None,
+                    rate,
+                    affects: vec![(f, 1.0)],
+                    actor,
+                    chunks: Vec::new(),
+                    pin: Some(Box::new(pin)),
+                },
+            );
+            self.factions.row_mut(f).add_reach(SignalKind::Rail, id);
+        } else if let Some((id, _)) = self.sources.remove(&key) {
+            self.factions.row_mut(f).remove_reach(SignalKind::Rail, id);
+        }
+        self.refresh_rates(f, actor, SignalKind::Rail, at);
     }
 }

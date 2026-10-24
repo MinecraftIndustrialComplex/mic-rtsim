@@ -73,7 +73,7 @@ pub mod camp;
 pub mod rail;
 
 pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
-pub use rail::{LineCount, RailMeter};
+pub use rail::{LineCount, Pin, RailMeter, TrackFocus};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
 /// event is booked for it, and `Conflict::unblock` plans it again when one comes.
@@ -143,6 +143,24 @@ pub struct Focus {
     pub pos: Pos,
     pub district: Option<DistrictId>,
     pub weight: f64,
+    /// Set by a rail source (a source with a pin): the y of the track at `pos` and the station
+    /// nearer to it that has a district (MZB-314). A focus with a district outranks one with a
+    /// track, and that a bare position.
+    pub track: Option<TrackFocus>,
+}
+
+impl Focus {
+    /// Which focus a new one may displace: a district (2), a track (1), a bare position (0). A
+    /// new focus of the same class or above takes the old one's place.
+    fn class(&self) -> u8 {
+        if self.district.is_some() {
+            2
+        } else if self.track.is_some() {
+            1
+        } else {
+            0
+        }
+    }
 }
 
 /// One faction's grievance against one actor.
@@ -216,6 +234,10 @@ pub struct Source {
     pub actor: ActorId,
     /// The chunks it comes from (a district's chunks, or a record's one chunk).
     pub chunks: Vec<ChunkKey>,
+    /// A rail source's pin (`Conflict::set_emission_for`, MZB-313): it reaches only its own
+    /// faction, has no chunks or places, and its actor is fixed. Boxed: every other source
+    /// carries one pointer.
+    pub pin: Option<Box<Pin>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1094,6 +1116,10 @@ impl Conflict {
             .filter_map(|id| {
                 let row = self.sources.by_id(id)?;
                 let s = &row.s;
+                // A rail source reaches only the faction it was made for (MZB-313).
+                if s.pin.is_some() {
+                    return None;
+                }
                 let d = tdist(t, pxz(s.pos), pxz(pos));
                 (s.pos.frame == pos.frame && d <= reach).then(|| {
                     let r = f64::from(cu.def.territory_radius);
@@ -1462,14 +1488,17 @@ impl Conflict {
             {
                 d.after += s.amount;
             }
+            // A district outranks a track, which outranks a bare position (MZB-314): a kill site
+            // with no district does not displace a track.
             let better = feud
                 .focus
-                .is_none_or(|fo| fo.district.is_none() || s.district.is_some());
+                .is_none_or(|fo| fo.class() <= if s.district.is_some() { 2 } else { 0 });
             if better {
                 feud.focus = Some(Focus {
                     pos: s.pos,
                     district: s.district.or(feud.focus.and_then(|fo| fo.district)),
                     weight: amount,
+                    track: None,
                 });
             }
             self.plan_feud(f, s.actor, at, false);
@@ -1594,6 +1623,7 @@ impl Conflict {
                     affects: affects.clone(),
                     actor,
                     chunks,
+                    pin: None,
                 },
             );
             // Only the factions and places that changed are touched (their pages dirtied).
@@ -1711,6 +1741,7 @@ impl Conflict {
                         pos: s.pos,
                         district: s.district,
                         weight: wgt,
+                        track: s.pin.as_deref().copied(),
                     });
                 }
             }
@@ -1725,8 +1756,12 @@ impl Conflict {
         let feud = self.feud_entry(f, a, at);
         feud.raw[kind.index()] = raw;
         feud.g.set_rate(kind, eff, at, lambda);
+        // A kind the culture gives no weight sets no focus; otherwise the strongest source sets
+        // it when its class is at least the focus's now (MZB-314): a district is never displaced
+        // by a pass through the wild, nor a track by a bare position.
         if let Some(b) = best
-            && b.district.is_some()
+            && sd.weight > 0.0
+            && b.class() >= feud.focus.as_ref().map_or(0, Focus::class)
         {
             feud.focus = Some(b);
         }

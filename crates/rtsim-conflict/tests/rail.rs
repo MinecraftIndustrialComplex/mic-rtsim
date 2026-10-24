@@ -194,3 +194,221 @@ fn the_seventeenth_line_evicts_the_smallest() {
     assert!(m.lines.iter().any(|l| l.a == 60));
     assert_eq!(m.lines.len(), 16);
 }
+
+// ---- the source and the focus (MZB-313, MZB-314) ---------------------------------------------
+
+use rtsim_conflict::SignalKind;
+use rtsim_conflict::engine::rail::rail_key;
+use rtsim_conflict::engine::{Conflict, Pin, Signal};
+use rtsim_conflict::synth::{self, CAMP, CAMP_POS, PLAYER, REFINERY};
+use rtsim_industry::ids::DistrictId;
+use rtsim_world::World;
+
+const DEN_B: u64 = 0xC0B1_0002;
+const DEN_C: u64 = 0xC0B1_0003;
+
+/// A synthetic world with a Frostmaw den at `CAMP_POS` and the player's actor.
+fn dens(seed: u64) -> (World, Conflict, u32, ActorId) {
+    let (mut w, _) = synth::world(seed);
+    let mut c = synth::conflict(seed, &w);
+    let f = c
+        .add_faction(&mut w, CAMP, "frostmaw", CAMP_POS, Tick::ZERO)
+        .unwrap();
+    let player = c.player(&mut w, PLAYER);
+    (w, c, f, player)
+}
+
+fn track(y: i32) -> Pin {
+    Pin { y, station: None }
+}
+
+fn rail_source(c: &Conflict, f: u32, a: ActorId) -> Option<rtsim_conflict::engine::Source> {
+    let key = (rail_key(c.factions[f as usize].key, a), SignalKind::Rail);
+    c.sources.get(&key).cloned()
+}
+
+#[test]
+fn set_emission_for_reaches_only_its_faction() {
+    let (mut w, mut c, f, player) = dens(11);
+    // A second den whose territory overlaps the first's: a pollution source here would reach both.
+    let b = c
+        .add_faction(
+            &mut w,
+            DEN_B,
+            "frostmaw",
+            Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z),
+            Tick::ZERO,
+        )
+        .unwrap();
+    let spot = Pos::new(0, CAMP_POS.x + 50, CAMP_POS.z + 30);
+    // A control: an ordinary source in the same chunk, to see `reattribute` run at all.
+    let ctl = (0xC7_u64, SignalKind::Building);
+    c.set_emission(&mut w, ctl.0, ctl.1, spot, None, 3.0, Tick(10));
+    c.set_emission_for(&mut w, f, player, 10.0, spot, track(70), Tick(100));
+
+    let s = rail_source(&c, f, player).expect("the source");
+    assert_eq!(s.affects, vec![(f, 1.0)]);
+    assert_eq!((s.pos, s.district, s.actor), (spot, None, player));
+    assert!(s.chunks.is_empty());
+    assert_eq!(s.pin.as_deref().copied(), Some(track(70)));
+    assert!((s.rate - 10.0 / 24_000.0).abs() < 1e-15);
+    assert_eq!(c.factions.row(f).reach_ids(SignalKind::Rail).len(), 1);
+    assert!(c.factions.row(b).reach_ids(SignalKind::Rail).is_empty());
+    assert!(c.feud(b, player).is_none(), "the other den hears nothing");
+    let fe = c.feud(f, player).expect("the feud");
+    assert!((fe.raw[SignalKind::Rail.index()] - 10.0 / 24_000.0).abs() < 1e-15);
+    let fo = fe.focus.expect("a focus");
+    assert_eq!(
+        (fo.pos, fo.district, fo.track),
+        (spot, None, Some(track(70)))
+    );
+
+    // Another player takes the chunk: the ordinary source follows, the rail source never does.
+    let other = (0x0B0B_u64, 0x1234_u64);
+    c.observe_presence(&mut w, other, spot, Tick(200));
+    c.observe_presence(&mut w, other, spot, Tick(9_000));
+    assert!(c.stats.reattributed >= 1, "the control moved");
+    assert_eq!(rail_source(&c, f, player).unwrap().actor, player);
+
+    // A den founded later, with the source in its reach, does not pick it up.
+    let d = c
+        .add_faction(
+            &mut w,
+            DEN_C,
+            "frostmaw",
+            Pos::new(0, CAMP_POS.x + 60, CAMP_POS.z + 60),
+            Tick(300),
+        )
+        .unwrap();
+    assert_eq!(rail_source(&c, f, player).unwrap().affects, vec![(f, 1.0)]);
+    assert!(c.factions.row(d).reach_ids(SignalKind::Rail).is_empty());
+    assert!(c.feud(d, player).is_none());
+
+    // A rate of 0 removes the source and its reach; the feud's rate goes with it and its focus
+    // stays where it was.
+    c.set_emission_for(&mut w, f, player, 0.0, spot, track(70), Tick(400));
+    assert!(rail_source(&c, f, player).is_none());
+    assert!(c.factions.row(f).reach_ids(SignalKind::Rail).is_empty());
+    let fe = c.feud(f, player).unwrap();
+    assert_eq!(fe.raw[SignalKind::Rail.index()], 0.0);
+    assert_eq!(fe.focus.map(|f| f.pos), Some(spot));
+    // A new push at another point replaces the source under the same key.
+    let elsewhere = Pos::new(0, CAMP_POS.x - 80, CAMP_POS.z);
+    c.set_emission_for(&mut w, f, player, 4.0, elsewhere, track(65), Tick(500));
+    c.set_emission_for(&mut w, f, player, 6.0, elsewhere, track(65), Tick(600));
+    assert_eq!(c.factions.row(f).reach_ids(SignalKind::Rail).len(), 1);
+    assert!((rail_source(&c, f, player).unwrap().rate - 6.0 / 24_000.0).abs() < 1e-15);
+}
+
+fn kill_at(
+    w: &mut World,
+    c: &mut Conflict,
+    a: ActorId,
+    pos: Pos,
+    district: Option<DistrictId>,
+    at: u64,
+) {
+    c.signal(
+        w,
+        Signal {
+            faction: Some(CAMP),
+            kind: SignalKind::Killing,
+            amount: 0.5,
+            actor: a,
+            pos,
+            district,
+        },
+        Tick(at),
+    );
+}
+
+#[test]
+fn a_district_focus_is_not_displaced_by_a_track_nor_a_track_by_a_bare_pos() {
+    let (mut w, mut c, f, player) = dens(12);
+    let site = Pos::new(0, CAMP_POS.x + 20, CAMP_POS.z + 20);
+    let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
+    let wild = Pos::new(0, CAMP_POS.x - 90, CAMP_POS.z + 40);
+    let focus = |c: &Conflict| c.feud(f, player).and_then(|x| x.focus);
+
+    // A district focus (a kill with a district) stays when a track source is pushed.
+    kill_at(&mut w, &mut c, player, site, Some(REFINERY), 10);
+    assert_eq!(focus(&c).unwrap().district, Some(REFINERY));
+    c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
+    let fo = focus(&c).unwrap();
+    assert_eq!(
+        (fo.pos, fo.district, fo.track),
+        (site, Some(REFINERY), None)
+    );
+
+    // A track takes the place of a bare position, and a bare position does not take a track's.
+    let (mut w, mut c, f2, player) = dens(13);
+    assert_eq!(f2, f);
+    kill_at(&mut w, &mut c, player, site, None, 10);
+    assert_eq!(focus(&c).unwrap().track, None);
+    c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
+    let fo = focus(&c).unwrap();
+    assert_eq!((fo.pos, fo.track), (rail, Some(track(64))));
+    // A kill with no district (the signal path) and an ordinary source with none (refresh_rates)
+    // leave the track where it is.
+    kill_at(&mut w, &mut c, player, wild, None, 30);
+    assert_eq!(focus(&c).unwrap().pos, rail);
+    c.observe_presence(&mut w, PLAYER, wild, Tick(33));
+    c.observe_presence(&mut w, PLAYER, wild, Tick(35));
+    c.set_emission(
+        &mut w,
+        0xB1D,
+        SignalKind::Building,
+        wild,
+        None,
+        5.0,
+        Tick(40),
+    );
+    assert!(c.feud(f, player).unwrap().raw[SignalKind::Building.index()] > 0.0);
+    assert_eq!(
+        focus(&c).unwrap().pos,
+        rail,
+        "a bare source is a lower class"
+    );
+    // A district does take a track's place, and a newer track replaces an older one.
+    kill_at(&mut w, &mut c, player, site, Some(REFINERY), 50);
+    let fo = focus(&c).unwrap();
+    assert_eq!((fo.pos, fo.district), (site, Some(REFINERY)));
+    let (mut w, mut c, f3, player) = dens(14);
+    assert_eq!(f3, f);
+    c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
+    c.set_emission_for(&mut w, f, player, 8.0, wild, track(66), Tick(60));
+    let fo = focus(&c).unwrap();
+    assert_eq!((fo.pos, fo.track), (wild, Some(track(66))));
+}
+
+#[test]
+fn a_zero_weight_kind_sets_no_focus() {
+    // The Frostmaw has no weight for smog: a district's smog adds no grievance and no focus. The
+    // Umvuthana, whose weight for it is above 0, take the district for their focus.
+    let at_district = |culture: &str| {
+        let (mut w, _) = synth::world(21);
+        let mut c = synth::conflict(21, &w);
+        let f = c
+            .add_faction(&mut w, CAMP, culture, CAMP_POS, Tick::ZERO)
+            .unwrap();
+        let a = c.player(&mut w, PLAYER);
+        let site = Pos::new(0, CAMP_POS.x + 30, CAMP_POS.z);
+        c.observe_presence(&mut w, PLAYER, site, Tick(3));
+        c.observe_presence(&mut w, PLAYER, site, Tick(5));
+        c.set_emission(
+            &mut w,
+            0x5309,
+            SignalKind::Smog,
+            site,
+            Some(REFINERY),
+            12.0,
+            Tick(10),
+        );
+        c.feud(f, a).and_then(|x| x.focus)
+    };
+    assert_eq!(at_district("frostmaw"), None);
+    assert_eq!(
+        at_district("umvuthana").and_then(|f| f.district),
+        Some(REFINERY)
+    );
+}

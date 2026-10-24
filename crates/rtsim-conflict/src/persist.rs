@@ -521,6 +521,7 @@ fn get_focus(r: &mut Reader<'_>) -> codec::Result<Focus> {
         pos: get_pos(r)?,
         district: get_opt(r, |r| Ok(DistrictId(r.u64()?)))?,
         weight: r.f64()?,
+        track: None,
     })
 }
 
@@ -1016,6 +1017,7 @@ fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
         affects,
         actor,
         chunks,
+        pin: None,
     })
 }
 
