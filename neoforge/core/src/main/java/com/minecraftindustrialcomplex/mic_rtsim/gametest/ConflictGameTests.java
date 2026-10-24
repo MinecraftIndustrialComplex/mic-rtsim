@@ -1247,7 +1247,8 @@ public final class ConflictGameTests {
      * with the faction); each kind is one TERRITORY_SIGNAL a batch, its count summed, after
      * {@link ConflictBridge#SIGNAL_FLUSH} ticks. A signal the territory does not mind, a block outside it
      * and a kill of a body that is no kin count nothing. {@code reportCamp} sends FACTION_FOUND with the
-     * structure and the census.
+     * structure and the census. The waits on what crosses the boundary are paced ({@link RtsimTests#io}):
+     * the engine's steps run on its own thread while the server ticks on without waiting for them.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 800, batch = "conflict_signals", skyAccess = true)
     public static void signalsInsideATerritoryAreCountedAndBatched(GameTestHelper helper) {
@@ -1268,7 +1269,7 @@ public final class ConflictGameTests {
                             e -> e.getTags().contains(kinTag), null, false, 7, ConflictRecords.FactionFound.CENSUS_CHIEF);
                     check("a faction key", faction[0] != 0 && bridge().hasCamp(faction[0]));
                 })
-                .thenWaitUntil(() -> check("FACTION_FOUND", !ConflictKit.factionsFound(faction[0]).isEmpty()))
+                .thenWaitUntil(RtsimTests.io(() -> check("FACTION_FOUND", !ConflictKit.factionsFound(faction[0]).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received f = ConflictKit.factionsFound(faction[0]).get(0);
                     check("the structure", f.view().getInt(ConflictRecords.FactionFound.STRUCTURE)
@@ -1282,7 +1283,7 @@ public final class ConflictGameTests {
                     int mask = (1 << ConflictRecords.SIGNAL_LOGGING) | (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING);
                     ConflictKit.territory(faction[0], dim, mask, camp.getX(), camp.getZ(), 64);
                 })
-                .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction[0]) != null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory", bridge().territories().get(faction[0]) != null)))
                 .thenExecute(() -> {
                     counted[0] = bridge().signalsCounted;
                     level.setBlock(log, Blocks.OAK_LOG.defaultBlockState(), 3);
@@ -1312,9 +1313,9 @@ public final class ConflictGameTests {
                 })
                 .thenIdle(ConflictBridge.SIGNAL_FLUSH / 2)
                 .thenExecute(() -> check("batched: nothing journaled yet", ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()))
-                .thenWaitUntil(() -> check("journaled", !ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()
+                .thenWaitUntil(RtsimTests.io(() -> check("journaled", !ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()
                         && !ConflictKit.signals(ConflictRecords.SIGNAL_MINING, player.getUUID()).isEmpty()
-                        && !ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player.getUUID()).isEmpty()))
+                        && !ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player.getUUID()).isEmpty())))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> logs = ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID());
                     check("one logging record of 2", logs.size() == 1 && logs.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == 2);
@@ -1331,7 +1332,7 @@ public final class ConflictGameTests {
                     FakePlayers.remove(player);
                     ConflictKit.territoryRemoved(faction[0], dim);
                 })
-                .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction[0]) == null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory removed", bridge().territories().get(faction[0]) == null)))
                 .thenSucceed();
     }
 
