@@ -744,6 +744,13 @@ public final class Camps {
         return found.size() > free ? found.subList(0, free) : found;
     }
 
+    /** A census body's chief bits: BODY_CHIEF for a chief body, and BODY_CRYSTAL when the crystal is on it (review C). */
+    private static int chiefBits(Site c, Entity e) {
+        if (!c.kind.isChief(e))
+            return 0;
+        return ConflictRecords.CampCensus.BODY_CHIEF | (c.kind.hasCrystal(e) ? ConflictRecords.CampCensus.BODY_CRYSTAL : 0);
+    }
+
     /**
      * A new epoch and its census (CAMP_CENSUS): every holder in the footprint's chunks journals its records
      * first (MZB-174), so an answer of the last epoch reaches the engine while that epoch is still the
@@ -777,8 +784,7 @@ public final class Camps {
                 indexAdd(e, c.faction); // a tagged body standing here is indexed whatever its visibility did (MZB-231)
             else
                 strayHome++;
-            int flags = (m == null ? ConflictRecords.CampCensus.BODY_STRAY : 0)
-                    | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
+            int flags = (m == null ? ConflictRecords.CampCensus.BODY_STRAY : 0) | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m == null ? 0 : m.slot(),
                     m == null ? 0 : m.generation(), e.getUUID()));
             home++;
@@ -793,7 +799,7 @@ public final class Camps {
                 if (insideSet.contains(e) || !e.isAlive() || !e.level().dimension().equals(c.dimension))
                     continue;
                 CampMember m = RtsimAttachments.campMember(e);
-                int flags = ConflictRecords.CampCensus.BODY_ELSEWHERE | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
+                int flags = ConflictRecords.CampCensus.BODY_ELSEWHERE | chiefBits(c, e);
                 bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m.slot(), m.generation(), e.getUUID()));
                 view.add(e);
             }
@@ -801,7 +807,7 @@ public final class Camps {
         for (Entity e : wideStrays(level, c, insideSet, strayHome)) {
             if (bodies.size() >= CENSUS_CAP)
                 break;
-            int flags = ConflictRecords.CampCensus.BODY_STRAY | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
+            int flags = ConflictRecords.CampCensus.BODY_STRAY | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, 0, 0, e.getUUID()));
             view.add(e);
             home++;

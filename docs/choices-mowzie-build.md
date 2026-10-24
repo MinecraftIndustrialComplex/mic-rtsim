@@ -402,6 +402,11 @@ under its own heading.
 - **MZB-109** (the war chief is an extra body): a band with the chief flag embodies the chief as one more
   body of its first stack's kind, at the rear of that stack, named; CHIEF_KILLED is sent for it (with a
   Java op id) and no BAND_CASUALTIES.
+  Amended at review C (M6): the meaning stands, and it is the engine that adapts for a culture whose chief is
+  its one unit (`renewal.boss`, the Frostmaw): `spawn_wave` sends that chief stack with `count` one less than
+  its units, so a one-Frostmaw raid is a stack of count 0 with MEMBER_CHIEF, which is MZB-127's chief alone
+  and one body (see MZB-295). Before this a raid sent count 1 with the chief flag, and Java made two
+  Frostmaws: the unit slot took the den's body and the extra chief slot a fresh one with its crystal.
 - **MZB-110** (clicking an envoy; no click refuses): the main session's ruling of 2026-10-23, over the first
   build's plain-click refusal. The demand's player pays by clicking the envoy with the demanded good in
   either hand, crouching or not: what is held, up to what is owed (TRIBUTE_PAID with a Java op id each
@@ -506,6 +511,8 @@ under its own heading.
 - **MZB-127** (a war chief with no units left): a chief-flagged stack whose count is 0 is a stack of the
   chief alone, one body of the stack's kind; the first build skipped it, so the chief got no body. Stacks
   keep the record's order otherwise (an empty stack without the chief is still skipped).
+  Amended at review C (M6): this is how a Frostmaw raid is embodied (MZB-109, MZB-295): the engine sends it as
+  count 0 with the chief flag.
 - **MZB-128** (test 14's withdrawn demand, scripted): test 14's parties are scripted commands the
   engine does not know, so its DEMAND_SETTLED 5 cannot come from the engine; the test sends it as M1's
   engine does (the engine's own rule is M1's Rust tests). The engine sends it when its count of the
@@ -1887,6 +1894,14 @@ The tests:
   (`FakePlayer`) that deals the blow is BY_OTHER by `byKind` (MZB-111), and the vanilla fallback then still
   names a real player whose hit came within the 100 ticks: the credit goes to the player, not to the machine.
   `Camps.onDeath` takes the credit when the death event fires, so a hit after that moment changes nothing.
+  Corrected at review C: the claim above about a machine is wrong. In vanilla's `LivingEntity.hurt`, the
+  killing blow's `FakePlayer` replaces `lastHurtByPlayer` (a `Player` attacker is stored as the last hurt
+  by player whether or not it is a `FakePlayer`), so after a machine's blow `getKillCredit` is the machine
+  itself, which `credit` refuses as a player. The result of a machine's kill is `Credit(BY_OTHER, null)`,
+  and the credit does not fall back to the earlier real player. EQUILIBRIUM item 9 still holds for what it
+  names (a pet's kill, a death within 5 s of a player's hit with no machine in the way). For a boss BY_OTHER
+  is still a player's loss (`renewal_cause`: BY_NONE and BY_OTHER count for a boss's camp, EQUILIBRIUM.md
+  §2.2), so a machine's kill of a Frostmaw still bumps the pressure. No code changed.
 - **MZB-262** (one fall for every chief death): M4's `chief_killed` is split. `chief_falls(w, f, killer,
   fall: At, at)` does what both paths share: `stats.chiefs_killed`, the Killing report witnessed by the old
   chief and the heir when there is a killer, `die`, `succeed(killer, true)`, the cowed time and the tape
@@ -1940,6 +1955,18 @@ The tests:
   rule); it is also the census-after-an-arrival-with-a-Dead-body-standing test. Residual: with two chief
   bodies standing at once (a leftover and the fresh Frostmaw, for the one census that removes the leftover)
   the byte is the one Java found first, and the engine cannot tell which body it came from.
+  Amended at review C: the residue is closed. A census body of the chief kind carries its own crystal in a
+  new bit, `BODY_CRYSTAL` (8, in the body flags field: no size change), set from `DenKind.hasCrystal(body)`
+  (the core's `CampKind` gains that hook, false by default; the Frostmaw's is `getHasCrystal()`). The
+  engine's `camp_census` sets the crystal from the chief bodies it keeps (a matched Body or Left slot, or an
+  adopted stray) and the bit of those, never from the camp byte's `CENSUS_CRYSTAL`; a leftover body no slot
+  keeps says nothing, whichever body Java found first. `CENSUS_CHIEF` still says whether a chief is present
+  and `CENSUS_CRYSTAL` is still sent, as the byte FACTION_FOUND carries. The synth's census bodies carry the
+  bit. Test `a_leftover_body_nearest_the_spot_does_not_flip_the_crystal` has the leftover robbed body listed
+  before the fresh Frostmaw with the camp byte saying robbed, and the SPAWN still carries `LINE_CRYSTAL` (it
+  fails with the old byte read). FACTION_FOUND's census byte has no kept-chief concept (the engine has no
+  slots at discovery), so it still comes from the first chief body found: a residue, MZB-289. The GameTests
+  that compared census body flags exactly (`MowzieGameTests`, and test 1 here) now include `BODY_CRYSTAL`.
 - **MZB-270** (CHIEF_STATE in rtsim-jni): `observe_state` decodes `Obs::ChiefState`, counts
   `ConflictLinkStats::chief_states`, and gives it to the conflict's ingest at the conflict's own time
   (`c.now()`, so no module catches up for it), through the same `with_infra` hand-over as the journaled
@@ -1951,8 +1978,15 @@ The tests:
   `gametest_worlds`).
   Amended at review: each camp slot also writes its chief (`Slot.chief`, 8 bytes after the slot's line, the
   slots' `len_prefix` 25 to 33), MZB-296. Still RTC7 and META 6, since M6's bump has not landed.
-- **MZB-272** (the synth, the emulated plugin): `kill_chief` takes one unit off the chief's stack in
-  `Body.members` (the first stack's body), so the dead chief no longer comes back as a survivor; `camp_kill`
+- **MZB-272** (the synth, the emulated plugin): the synth embodies a band as Java does (MZB-109, MZB-127):
+  a stack's `count` units go into `Body.members`, and the chief stack makes one body more, `Body.chief`
+  (the body id), outside the units, so a count-0 chief stack is the chief alone. `kill_chief` clears that
+  extra body and takes no unit off any culture, a boss's included (a boss's raid carries no unit besides the
+  chief, MZB-295); a recalled band's DEMATERIALIZED names the units in `members` and never the chief, as
+  Java's survivors do. A band's `spawned` is its units plus the chief. (The first form took one unit off
+  the first stack for every culture's chief kill, which hid a mismatch for a boss and cost a goblin raid a
+  survivor Java would count.) A count-0 stack's chief ignores a fight's `kill_share`; a band wiped out
+  stays in `parties` with no one alive. `camp_kill`
   sets `DEATH_CHIEF` for a body made from a `LINE_CHIEF` line; `CampBody` gains `chief` and `crystal`; a
   killer variant of the camp kill; a `steal` that pushes CHIEF_STATE with flags 0 and clears the body's
   crystal. Run 10's den timings move with MZB-252 (expected).
@@ -1988,6 +2022,24 @@ The tests:
   no record); a robbed puppet gets no persistence (puppets are not saved, M5); a Frostmaw loaded from NBT
   passes through the setter only. A crystal-less Frostmaw adopted already robbed keeps MZB-210 and MZB-245
   (it can despawn, booked BY_NONE, and as a boss that bumps, MZB-258).
+  Amended at review C (P2-a, a robbed Frostmaw does not get its crystal back as a raid puppet): any raid
+  puppet not made from the den's body is a new Frostmaw, and the jar's `finalizeSpawn` gives every new
+  Frostmaw a crystal, so a robbed den's raid came back armed. The build lead's preference was a bare body id
+  (`frostmaw_bare` mapped to the Frostmaw with a post-create step). Built instead as a stack flag,
+  MEMBER_BARE (2) in BAND_MATERIALIZE's stack flags (no size change), set by `spawn_wave` when the unit has
+  a bare row (`c.bare[u] != u`) and the faction's crystal is false. The reason: a bare body id would make
+  body identity depend on the crystal's mutable state in `claim`, in the HAND_BACK, in `back_of`, in
+  casualties and in `member_died`, which all go by body id, so a body's identity would follow a state that
+  changes while the raid is out. The flag costs one bit of an existing field
+  and is read once, at materialize. The core stays generic: `ConflictRecords.Materialize.STACK_BARE`;
+  `ConflictBridge` marks each slot of such a stack `bare`; after it creates a bare slot's body, and before
+  `kind.copy`, it calls `BodyKinds.makeBare(body, mob)`, so a body handed off from its den, which `copy`
+  fills in afterwards, keeps its own crystal state; the plugin owns the Frostmaw knowledge
+  (`BodyKinds.registerBare(FROSTMAW, f -> f.setHasCrystal(false))`, like `registerStandIn`). A refilled
+  slot is made bare again. GameTest `anUnwatchedRaidOfARobbedDenPlacesAFrostmawWithoutItsCrystal` (batch
+  `frostmaw_raid_bare`; compiled, not run): two fresh count-0 chief stacks, one flagged bare, one not; the
+  first has no crystal and the second has one. Rust `a_robbed_frostmaws_raid_is_materialized_bare` checks the
+  flag on a robbed den and its absence on an armed one.
 - **MZB-278** (UR-1 and D1 for the mixin): after an uninstall a robbed den Frostmaw keeps
   `PersistenceRequired`, which the jar reads as any persistent mob; it stays in its den, harmless. Without
   the plugin (rtsim alone) a robbed den body despawns and is booked BY_NONE. The mixin runs once per steal,
@@ -2029,6 +2081,21 @@ The tests:
   the jar's no-spectator filter can explain a robbery that does not happen; the full-inventory thief holds
   one dirt in each of the 36 main slots. Test 3 puts its five Frostmaws 48 blocks apart, not 40, so that
   each has its own 3 x 3 forced chunks.
+  Amended at review C: the mock `Player` is replaced by `FakePlayers.addSeen`. A mock added with
+  `addFreshEntity` is in the entity manager but not in `level.players()`, which `NearestAttackableTargetGoal`
+  reads, so every "the Frostmaw sleeps on" of test 3 held for a reason a real player does not share.
+  `addSeen` joins a `ServerPlayer` with `level.addNewPlayer`, so it is in both; `MowzieKit.thief` now makes
+  that, sets its game mode and makes it invulnerable (a target the Frostmaw may strike for 100 ticks without
+  ending the test), gives it the invisibility effect and `setInvisible(true)` when asked, and removes it with
+  `FakePlayers.removeSeen` at the end (it loads chunks round itself, so the robbed-Frostmaw test removes it
+  before it releases the den). The jar's own rules (the 1.8.2 sources): a visible target within 8 blocks wakes a
+  sleeper, an invisible one is dropped from the target each asleep tick, a spectator is no target
+  (`NO_SPECTATORS`). So test 3 asserts that the spectator's Frostmaw sleeps on, and it records, without
+  asserting, whether the visible survival player's and the full-inventory invisible thief's Frostmaws woke.
+  The old per-Frostmaw "and sleeps" check on the three thieves that steal nothing is replaced by the
+  spectator's alone, and each of those three Frostmaws is also asserted to keep its crystal. UNVERIFIED: `addSeen`
+  compiled and not run; it may log or fail where a login would not. If it does, the thief reverts to the mock
+  `Player`, and the clause is written down as not proven.
 - **MZB-282** (test 6 without TaCZ): the Mowzie GameTest run holds only rtsim, Mowzie's Mobs and GeckoLib
   (D4), so the bullet is a Snowball, a `Projectile` that is not an `AbstractArrow`; TaCZ's
   `EntityKineticBullet extends Projectile` takes the same branch (cfr). The jar's arrow branch catches
@@ -2050,6 +2117,11 @@ The tests:
 - **MZB-288** (boundary.md): the Mowzie paragraph of §9 (CHIEF_STATE's engine half built in M6), the
   CHIEF_STATE bullet (the steal sends flags 0; the census corrects a lost one), the "Deferred kinds" bullet
   without CHIEF_STATE, and one line on the kill credit (MZB-261) under CAMP_DEATH and CHIEF_KILLED.
+  Built (step 11, with review C): those four, and the review C changes: BAND_MATERIALIZE's stack flag 2
+  (the stack's units are made without a crystal), CAMP_CENSUS's body flag 8 (the crystal is on this chief
+  body), the paragraph on a boss's chief being its band's one unit (count 0 with the chief flag, the living
+  chief back into the survivors), the paragraph on how the engine reads the census's crystal, the observation
+  line's list of kinds the engine acts on (CHIEF_STATE added), and MZB-261's machine case corrected.
 - **MZB-289** (gaps left open): the pressure and a running wait are lost at a reset, and FACTION_FOUND
   carries no site ledger row (S9, M12); a CHIEF_STATE lost in a crash leaves the engine's crystal wrong
   until the den's next census (MZB-269), which matters only to a raid drawn from it in between; a Frostmaw
@@ -2088,6 +2160,21 @@ The tests:
   Frostmaw home with no arrival booked (it dates from M4). Test
   `a_chief_killed_away_stays_dead_across_a_crash_before_the_band_is_counted_out`: after `restart()` the band
   has no Frostmaw, `away` is 0, the pressure is 1 and the arrival stands at the death plus 12 days.
+  Amended at review C (P1, one Frostmaw per raid): the boss's chief is its one unit, but `spawn_wave` sent it
+  as a stack of count 1 with MEMBER_CHIEF, which Java embodies as one unit slot plus MZB-109's extra chief
+  slot: two Frostmaws (the unit slot took the den's body, the chief slot a fresh one with a crystal), and
+  killing the den's body first counted as a casualty, not a fall. Fixed in the engine, Java keeping MZB-109's
+  meaning: (1) `spawn_wave` takes `boss` (the same `renewal.boss` test as `chief_unit_lost`) and sends
+  `t - 1` on the chief stack for a boss culture (`if chief && boss { t - 1 } else { t }`), so one Frostmaw is
+  count 0 with MEMBER_CHIEF, MZB-127's chief alone; (2) in the Dematerialized arm, on the live path and on the
+  recalled path, the living chief is added back into the first unit's `backs`, since Java's survivors leave
+  the chief out. Tests in `tests/frostmaw.rs`: `a_frostmaw_raid_is_materialized_as_the_chief_alone` (count 0,
+  MEMBER_CHIEF), `a_recalled_frostmaw_band_keeps_its_unit_while_the_chief_lives`,
+  `a_chief_killed_then_counted_out_takes_exactly_one_unit`. GameTest
+  `aFrostmawRaidMadeFromTheDensBodyEmbodiesOneFrostmaw` (batch `frostmaw_raid_one`; compiled, not run): a
+  SET_OUT of the den's body and `StackSpec(FROSTMAW, 0, chief)` place exactly one Frostmaw within 64 blocks
+  of the den, the den's own, with its crystal. Why the tests missed it: the synth took the chief for a unit,
+  so the mismatch with Java's slots could not show (MZB-272, reworded).
 - **MZB-296** (a chief the books already buried, built): `chief_killed_at_camp` compares the faction's chief
   before and after `ensure_chief`; a succession `ensure_chief` ran means the body that died was the old
   chief's (dead of age), so the kill is stale and nothing falls, as the away path's stale rule has it
@@ -2129,6 +2216,11 @@ The tests:
   walkthrough's "plus about 62.5"); CONFLICT-LIFE.md is left alone. The regenerated `sim-conflict.json` also
   moved (survivors 20 to 19 and 8 to 7) because of MZB-272's synth fix: the dead chief is no longer counted a
   survivor.
+  Amended at review C: that was the synth's mistake, not the engine's (a goblin chief is an extra body outside
+  the units, MZB-109, so killing it loses no unit). With MZB-272 reworded the survivors are back at 20 and 8,
+  and the conflict's state hash is again `cccb9a4f55839f1f`, the value it had before M6's step 7; the
+  regenerated `sim-conflict.json` moves only in `wall_ms`, the hash and those two lines are the same as at
+  the merge of M5 (`0d6eee77`). `sim-mowzie.json` did not change.
 
 ### M6 design for the implementer
 
@@ -2269,6 +2361,10 @@ stub engine first, then native):
      tagged, slot 0, generation 1) is persistent and crystal-less, and the CHIEF_STATE count is still 1.
      Census 2 has CHIEF without CRYSTAL, and no line restores a crystal.
    - A second den: a scripted SPAWN with `LINE_CHIEF` only is DONE with a crystal-less persistent Frostmaw.
+     Amended at review C: that den is at `far.k + 6`, not `far.k + 4`, so that the first den's east column
+     is not held loaded by the second den's forced chunk and its release unloads. The test also checks that
+     census 1 lists the Frostmaw as `BODY_STRAY | BODY_CHIEF | BODY_CRYSTAL` and census 2 as `BODY_CHIEF`
+     alone (the per-body crystal bit).
 2. `anArrowAndATridentDoNothingAndABulletHurtsAFrostmaw` (§7 test 6, batch `frostmaw_arrows`): an untagged
    sleeping Frostmaw and a `FakePlayers.add` player. In this order (a hit that lands makes it invulnerable
    for 10 ticks): `hurt(arrow(new Arrow(level, player, new ItemStack(ARROW), null), player), 10)` is false,
@@ -2386,6 +2482,14 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
 - Pressure decays by whole days (`day.saturating_sub(at_day)`): compare waits with the whole-day form.
 - Test 6 must strike with the snowball last: a hit that lands makes the Frostmaw invulnerable for 10 ticks.
 - `isInventoryFull` ignores stack room: fill the 36 slots with one item each.
+- (Review C) A count-0 chief stack ignores a synth fight's `kill_share`: the only body is the chief. A band
+  wiped out in the synth stays in `parties` with no one alive, so assert `is_none_or`, not `is_none`.
+- (Review C) A bare body id would couple body identity to the crystal's state in every place that goes by
+  body id (MZB-277, amended).
+- (Review C) Java's census byte comes from the chief body nearest the spot, which can be the leftover of a
+  Dead slot; the per-body crystal bit closes that for the camp census (MZB-269), not for FACTION_FOUND.
+- (Review C) A `FakePlayers.addSeen` player loads chunks round itself: remove it with `removeSeen` before
+  releasing chunks. It is compiled only.
 
 ## M7 Rail
 

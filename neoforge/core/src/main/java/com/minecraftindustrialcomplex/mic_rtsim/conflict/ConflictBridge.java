@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
@@ -343,6 +344,8 @@ public final class ConflictBridge implements SessionPlugin {
         public final String body;
         final int javaBody;
         final EntityType<?> type;
+        /** Its stack's units have no crystal on them (STACK_BARE): its body is made bare, and made so again if it is refilled. */
+        boolean bare;
         /** Its place behind the anchor: {@code lat} to the right, {@code back} behind (blocks). */
         final double lat, back;
         UUID uuid;
@@ -939,6 +942,9 @@ public final class ConflictBridge implements SessionPlugin {
                 // stack's kind at its rear (MZB-109).
                 st.slots.add(new Slot(st, true, false, k.body(), k.javaBody(), k.type(), 0.0, ROW * ((counts[i] + 1) / 2)));
             }
+            if ((sflags[i] & ConflictRecords.Materialize.STACK_BARE) != 0)
+                for (Slot sl : st.slots)
+                    sl.bare = true;
             st.walk(tx + st.offX, tz + st.offZ, p.speed, 0L, now);
             p.stacks.add(st);
         }
@@ -1143,6 +1149,9 @@ public final class ConflictBridge implements SessionPlugin {
             Mob m;
             try {
                 m = ConflictBodies.create(level, sl.type, x, y, z, yw);
+                // A bare unit's body is made without its crystal, then a camp body's own state is copied over it.
+                if (m != null && sl.bare)
+                    BodyKinds.makeBare(sl.body, m);
                 if (m != null && from != null)
                     so.site.kind.copy(from, m);
             } catch (RuntimeException ex) {

@@ -239,8 +239,8 @@ public final class ConflictRecords {
         /** Within a stack entry. */
         public static final int S_BODY = 0, S_COUNT = 4, S_FLAGS = 8;
         public static final int FLAG_HOSTILE = 1, FLAG_CHIEF = 2, FLAG_SURFACE = 4;
-        /** A stack's flags: the war chief is in this stack. */
-        public static final int STACK_CHIEF = 1;
+        /** A stack's flags: the war chief is in this stack; its units have no crystal on them (review C). */
+        public static final int STACK_CHIEF = 1, STACK_BARE = 2;
 
         public static int size(int m) {
             return STACKS + STACK * m;
@@ -282,7 +282,8 @@ public final class ConflictRecords {
         /** Per body. */
         public static final int B_BODY = 0, B_FLAGS = 4, B_SLOT = 8, B_GENERATION = 12, B_UUID_MOST = 16, B_UUID_LEAST = 24;
         public static final int CHIEF = 1, CRYSTAL = 2, THRONE = 4;
-        public static final int BODY_STRAY = 1, BODY_ELSEWHERE = 2, BODY_CHIEF = 4;
+        /** Per body; BODY_CRYSTAL: the crystal is on this chief body (review C: read per body, not off the camp's byte). */
+        public static final int BODY_STRAY = 1, BODY_ELSEWHERE = 2, BODY_CHIEF = 4, BODY_CRYSTAL = 8;
 
         public static int size(int n, int t) {
             return BODIES + BODY * n + TRADER * t;

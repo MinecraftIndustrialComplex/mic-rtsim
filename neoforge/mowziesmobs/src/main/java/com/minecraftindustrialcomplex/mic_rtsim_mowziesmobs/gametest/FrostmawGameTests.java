@@ -1,7 +1,9 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
@@ -22,6 +24,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.entity.player.Player;
@@ -59,6 +62,7 @@ public final class FrostmawGameTests {
     private static final int DONE = ConflictRecords.CampBodies.DONE;
     private static final int SPAWN = ConflictRecords.CampReconcile.SPAWN, ADOPT = ConflictRecords.CampReconcile.ADOPT;
     private static final int CHIEF = ConflictRecords.CampReconcile.LINE_CHIEF;
+    private static final int SET_OUT = ConflictRecords.CampReconcile.SET_OUT;
 
     /** Inside {@code thenWaitUntil}: the entity is out of the level (its chunk is unloaded). */
     private static Runnable gone(ServerLevel level, UUID... ids) {
@@ -95,9 +99,9 @@ public final class FrostmawGameTests {
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
         Den den = new Den(far, far.k, far.z0);
-        Den fresh = new Den(far, far.k + 4, far.z0);
+        Den fresh = new Den(far, far.k + 6, far.z0);
         EntityFrostmaw[] f = new EntityFrostmaw[1];
-        Player[] thief = new Player[1];
+        ServerPlayer[] thief = new ServerPlayer[1];
         UUID[] id = new UUID[1];
         long[] op = new long[2];
         long[] queued = new long[1];
@@ -149,7 +153,7 @@ public final class FrostmawGameTests {
                     check("the Frostmaw is persistence-required now (MZB-276)", f[0].isPersistenceRequired());
                     check("awake", f[0].getActive());
                     check("still tagged (faction, 0, 1)", MowzieKit.tagged(f[0], den.faction, 0, 1));
-                    thief[0].discard();
+                    FakePlayers.removeSeen(thief[0]);
                     den.release();
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
@@ -173,6 +177,13 @@ public final class FrostmawGameTests {
                     check("census 1 read the crystal (" + c1 + ")", (c1 & ConflictRecords.CampCensus.CRYSTAL) != 0);
                     check("census 2 reads the chief without it (" + c2 + ")",
                             (c2 & ConflictRecords.CampCensus.CHIEF) != 0 && (c2 & ConflictRecords.CampCensus.CRYSTAL) == 0);
+                    // The census's bodies carry the crystal each on its own (review C): the engine reads the kept chief
+                    // body's bit, never the camp's byte.
+                    ConflictKit.CensusBody b1 = MowzieKit.bodyOf(MowzieKit.census(den.faction, 1), id[0]);
+                    ConflictKit.CensusBody b2 = MowzieKit.bodyOf(MowzieKit.census(den.faction, 2), id[0]);
+                    check("census 1 lists the Frostmaw as a stray chief with its crystal", b1 != null && b1.flags() == (ConflictRecords.CampCensus.BODY_STRAY
+                            | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
+                    check("census 2 lists it as the den's chief with no crystal bit", b2 != null && b2.flags() == ConflictRecords.CampCensus.BODY_CHIEF);
                     List<EntityFrostmaw> all = level.getEntitiesOfClass(EntityFrostmaw.class, den.area());
                     check("one Frostmaw at the den, crystal-less (" + all.size() + ")", all.size() == 1 && !all.get(0).getHasCrystal());
                     op[1] = MowzieKit.reconcile(fresh.faction, MowzieKit.epoch(MowzieKit.census(fresh.faction, 1)),
@@ -254,9 +265,12 @@ public final class FrostmawGameTests {
      * Who can steal a sleeping Frostmaw's crystal (§7 test 7). Five untagged Frostmaws 48 blocks apart, a thief
      * (MZB-281) at each crystal point. An invisible survival player takes it: the crystal is in its
      * inventory, the Frostmaw is without one and awake, still not persistence-required (it is no camp's,
-     * MZB-277), and no CHIEF_STATE is sent. A visible creative player takes it too. Nothing happens after 100
-     * more ticks to an invisible player whose 36 main slots each hold something, to a visible survival
-     * player or to an invisible spectator.
+     * MZB-277), and no CHIEF_STATE is sent. A visible creative player takes it too. After 100 more ticks an
+     * invisible player whose 36 main slots each hold something, a visible survival player and an invisible
+     * spectator have taken nothing, and each of those Frostmaws still has its crystal. The thieves are server
+     * players in the entity manager and in {@code level.players()} (review C), so the goals see them as they
+     * see a real player: only the spectator's Frostmaw is asserted asleep, and whether the other two woke is
+     * recorded.
      */
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_thieves", skyAccess = true)
     public static void anInvisiblePlayerStealsTheCrystalFromASleepingFrostmaw(GameTestHelper helper) {
@@ -268,7 +282,7 @@ public final class FrostmawGameTests {
         for (int i = 0; i < n; i++)
             cx[i] = far.k + 3 * i;
         EntityFrostmaw[] f = new EntityFrostmaw[n];
-        Player[] thief = new Player[n];
+        ServerPlayer[] thief = new ServerPlayer[n];
         boolean[] persistent = new boolean[n];
         int[] states = new int[1];
         long[] queued = new long[2];
@@ -313,12 +327,18 @@ public final class FrostmawGameTests {
                     for (int i = 2; i < n; i++) {
                         check(who[i] + " steals nothing (" + MowzieKit.crystals(thief[i]) + ")", MowzieKit.crystals(thief[i]) == 0);
                         check("Frostmaw " + i + " keeps its crystal", f[i].getHasCrystal());
-                        check("and sleeps", !f[i].getActive());
                     }
+                    // The thieves are players the goals see (review C). A spectator is no target and no entity of the jar's
+                    // search (NO_SPECTATORS), so only its Frostmaw is certain to sleep on; the visible survival player is
+                    // a target within 8 blocks, which wakes a sleeper, and the invisible one has its target dropped each
+                    // tick: whether those two woke is recorded, not asserted (the mock player of M6 made all three sleep
+                    // because no goal could see it).
+                    check("the spectator's Frostmaw sleeps on", !f[4].getActive());
                     check("no CHIEF_STATE was sent (" + (chiefStateRecords() - states[0]) + ")", chiefStateRecords() == states[0]);
                     check("none was queued (" + (MowzieKit.camps().chiefStatesQueued - queued[0]) + ")", MowzieKit.camps().chiefStatesQueued == queued[0]);
                     check("none was written (" + (MowzieKit.camps().chiefStates - queued[1]) + ")", MowzieKit.camps().chiefStates == queued[1]);
-                    record(test, "thieves", "invisible survival and visible creative stole; a full inventory, a visible survival player and a spectator did not; no CHIEF_STATE for strays");
+                    record(test, "thieves", "invisible survival and visible creative stole; a full inventory, a visible survival player and a spectator did not; no CHIEF_STATE for strays; awake after 100 ticks: full inventory "
+                            + f[2].getActive() + ", visible survival " + f[3].getActive() + ", spectator " + f[4].getActive());
                 })
                 .thenSucceed();
     }
@@ -468,6 +488,131 @@ public final class FrostmawGameTests {
                     }
                     record(test, "kills", "player, wolf of the player and a generic kill after his hit: by a player; zombie: by a mob; generic: by none; the body went "
                             + (removed[0] - died[0]) + " ticks after the death; " + (h.raw.size() - heard[0]) + " chat lines came, none rtsim's");
+                })
+                .thenSucceed();
+    }
+
+    // ---- 5: a Frostmaw raid ----------------------------------------------------------------------
+
+    /**
+     * A Frostmaw raid embodies one Frostmaw, the den's (review C, MZB-109, MZB-127). An adopted den Frostmaw
+     * with its crystal; in one hand-over a SET_OUT of its slot and a BAND_MATERIALIZE of one stack,
+     * {@code StackSpec(FROSTMAW, 0, chief)}, as the engine sends a boss's raid: the stack is the chief alone.
+     * The SET_OUT is DONE, one body is handed off, and the band is one slot (the chief) whose puppet is the
+     * only Frostmaw within 64 blocks of the den: the den's body is its puppet, with its crystal, and the den
+     * holds nothing. A stack of count 1 with the chief flag made two (the den's, and a fresh one with a
+     * crystal for the extra chief slot).
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "frostmaw_raid_one", skyAccess = true)
+    public static void aFrostmawRaidMadeFromTheDensBodyEmbodiesOneFrostmaw(GameTestHelper helper) {
+        String test = "aFrostmawRaidMadeFromTheDensBodyEmbodiesOneFrostmaw";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2], agent = new long[1], was = new long[1];
+
+        helper.startSequence()
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    was[0] = MowzieKit.camps().handedOff;
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.Band b = ConflictKit.band(agent[0], den.faction, RtsimTests.dimension(helper));
+                    b.arcX = den.spot.x;
+                    b.arcZ = den.spot.z;
+                    b.targetX = den.spot.x + 1000;
+                    b.targetY = den.spot.y;
+                    b.targetZ = den.spot.z;
+                    b.speed = 0f;
+                    b.flags = ConflictRecords.Materialize.FLAG_HOSTILE | ConflictRecords.Materialize.FLAG_CHIEF;
+                    ConflictKit.together(() -> {
+                        op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(
+                                CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, agent[0], b.epoch)));
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 0, true)));
+                    });
+                })
+                .thenWaitUntil(() -> {
+                    MowzieKit.answered(den.faction, op[1], 1);
+                    check("the band is placed", !ConflictKit.party(agent[0]).stacks().isEmpty()
+                            && ConflictKit.party(agent[0]).stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
+                    check("one body handed off (" + (MowzieKit.camps().handedOff - was[0]) + ")", MowzieKit.camps().handedOff - was[0] == 1);
+                    ConflictBridge.Party party = ConflictKit.party(agent[0]);
+                    check("one stack", party.stacks().size() == 1);
+                    List<ConflictBridge.Slot> slots = party.stacks().get(0).slots();
+                    check("of one slot, the chief (" + slots.size() + ")", slots.size() == 1 && slots.get(0).chief);
+                    Mob p = slots.get(0).entity();
+                    check("a Frostmaw puppet", p instanceof EntityFrostmaw && RtsimApi.isPuppet(p));
+                    List<EntityFrostmaw> all = level.getEntitiesOfClass(EntityFrostmaw.class, den.area().inflate(64));
+                    check("the only Frostmaw about (" + all.size() + ")", all.size() == 1 && all.get(0) == p);
+                    check("with the crystal the den's body had", ((EntityFrostmaw) p).getHasCrystal());
+                    check("the den holds nothing now", MowzieKit.held(den.faction).isEmpty());
+                    record(test, "one", "a count-0 chief stack made one Frostmaw, the den's, handed to its puppet");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A robbed den's raid comes without the crystal (review C). A band made fresh, with no den body to hand off
+     * (a raid seen by a player while its den is out): a count-0 chief stack of a Frostmaw flagged bare is a
+     * Frostmaw with no crystal (the plugin's {@code registerBare}), and the same stack without the flag, beside
+     * it, is a fresh one with its crystal, since the jar's {@code finalizeSpawn} gives every new Frostmaw one.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_raid_bare", skyAccess = true)
+    public static void anUnwatchedRaidOfARobbedDenPlacesAFrostmawWithoutItsCrystal(GameTestHelper helper) {
+        String test = "anUnwatchedRaidOfARobbedDenPlacesAFrostmawWithoutItsCrystal";
+        Far far = new Far(helper, test);
+        int[] cx = {far.k, far.k + 4};
+        long[] agent = new long[2];
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    for (int x : cx)
+                        far.forceRect(x - 1, far.z0 - 1, x + 1, far.z0 + 1);
+                })
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        agent[i] = ConflictKit.newAgent();
+                        ConflictKit.Band b = ConflictKit.band(agent[i], ConflictKit.newFaction(), RtsimTests.dimension(helper));
+                        b.arcX = cx[i] * 16 + 8.5;
+                        b.arcZ = far.z0 * 16 + 8.5;
+                        b.targetX = b.arcX + 1000;
+                        b.targetZ = b.arcZ;
+                        b.speed = 0f;
+                        b.flags = ConflictRecords.Materialize.FLAG_HOSTILE | ConflictRecords.Materialize.FLAG_CHIEF;
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 0, true, i == 0)));
+                    }
+                })
+                .thenWaitUntil(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("band " + i + " is placed", !ConflictKit.party(agent[i]).stacks().isEmpty()
+                                && ConflictKit.party(agent[i]).stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                })
+                .thenExecute(() -> {
+                    Mob[] p = new Mob[2];
+                    for (int i = 0; i < 2; i++) {
+                        List<ConflictBridge.Slot> slots = ConflictKit.party(agent[i]).stacks().get(0).slots();
+                        check("band " + i + " is one chief body (" + slots.size() + ")", slots.size() == 1 && slots.get(0).chief);
+                        p[i] = slots.get(0).entity();
+                        check("band " + i + "'s body is a Frostmaw puppet", p[i] instanceof EntityFrostmaw && RtsimApi.isPuppet(p[i]));
+                    }
+                    check("the bare one has no crystal", !((EntityFrostmaw) p[0]).getHasCrystal());
+                    check("the one without the flag is a fresh Frostmaw with its crystal", ((EntityFrostmaw) p[1]).getHasCrystal());
+                    record(test, "bare", "a bare chief stack: no crystal; the same stack unflagged: crystal");
                 })
                 .thenSucceed();
     }

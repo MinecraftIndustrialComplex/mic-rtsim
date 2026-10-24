@@ -189,7 +189,8 @@ public final class MowzieGameTests {
                         CensusBody b = bodies.get(0);
                         check("it is the Frostmaw", b.body() == ConflictKit.bodyId(MowzieKit.FROSTMAW) && b.uuid().equals(frost[i].getUUID()));
                         check("a stray chief (" + b.flags() + ")",
-                                b.flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                                b.flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF
+                                        | (crystal[i] ? ConflictRecords.CampCensus.BODY_CRYSTAL : 0)));
                         float h = MowzieKit.chiefHealth(c);
                         record(test, "den " + i + " health", "set " + set[i] + ", census " + h + ", now " + frost[i].getHealth());
                         check("its health reads between what was set and what it has now (" + h + ")",
@@ -432,7 +433,7 @@ public final class MowzieGameTests {
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
                     check("one body, the Frostmaw, a stray chief (" + bodies.size() + ")", bodies.size() == 1
                             && bodies.get(0).uuid().equals(f[0].getUUID())
-                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
                     check("the chief flags CHIEF and CRYSTAL (" + MowzieKit.chiefFlags(c) + ")",
                             MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.CRYSTAL));
                     List<ScriptedEngine.Received> found = ConflictKit.factionsFound(den.faction);
@@ -461,7 +462,7 @@ public final class MowzieGameTests {
                     CensusBody b = MowzieKit.bodyOf(c, f[0].getUUID());
                     check("the Frostmaw is listed", b != null);
                     check("apart, as the chief (" + b.flags() + ")",
-                            b.flags() == (ConflictRecords.CampCensus.BODY_ELSEWHERE | ConflictRecords.CampCensus.BODY_CHIEF));
+                            b.flags() == (ConflictRecords.CampCensus.BODY_ELSEWHERE | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
                     check("by its slot 0, generation 1", b.slot() == 0 && b.generation() == 1);
                     check("the chief fields still read it: CHIEF and CRYSTAL (" + MowzieKit.chiefFlags(c) + ")",
                             MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.CRYSTAL));
@@ -517,7 +518,7 @@ public final class MowzieGameTests {
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
                     check("the late den lists its wandered Frostmaw as a stray chief (" + bodies.size() + ")", bodies.size() == 1
                             && bodies.get(0).uuid().equals(f[0].getUUID())
-                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
                     check("with the chief flags CHIEF and CRYSTAL", MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.CRYSTAL));
                     List<ScriptedEngine.Received> found = ConflictKit.factionsFound(late.faction);
                     check("FACTION_FOUND home 1 with the chief and its crystal", found.size() == 1
@@ -582,7 +583,7 @@ public final class MowzieGameTests {
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
                     check("census 2 lists the joiner as a stray chief (" + bodies.size() + ")", bodies.size() == 1
                             && bodies.get(0).uuid().equals(f[0].getUUID())
-                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
                     op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(c), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
                 })
                 .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
@@ -1402,7 +1403,7 @@ public final class MowzieGameTests {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
                     CensusBody b = MowzieKit.bodyOf(c, id[0]);
                     check("census 2 lists the Frostmaw, a stray chief", b != null && b.body() == ConflictKit.bodyId(MowzieKit.FROSTMAW)
-                            && b.flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
+                            && b.flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
                     check("with its crystal", (MowzieKit.chiefFlags(c) & ConflictRecords.CampCensus.CRYSTAL) != 0);
                     far.forceRect(grove.cx, grove.cz - 2, grove.cx + 2, grove.cz + 2);
                 })
