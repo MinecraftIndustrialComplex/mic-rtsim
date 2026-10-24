@@ -38,6 +38,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
@@ -47,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
@@ -85,6 +88,45 @@ public final class MowzieKit {
     public static void everyTick(GameTestHelper helper, Runnable r) {
         TICKERS.add(r);
         ConflictKit.onEnd(helper, () -> TICKERS.remove(r));
+    }
+
+    // ---- join and leave hooks -------------------------------------------------------------------
+
+    /**
+     * While true, a join of a body a camp holds (tagged, no puppet) is cancelled before the camps see it, as
+     * another mod's (In Control's) would: the GameTests of a hand-back whose add fails. Reset when the test ends.
+     */
+    public static volatile boolean cancelCampJoins;
+
+    private static final Map<UUID, int[]> LEAVES = new ConcurrentHashMap<>();
+
+    static {
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, false, EntityJoinLevelEvent.class, e -> {
+            Entity en = e.getEntity();
+            if (cancelCampJoins && !e.getLevel().isClientSide() && en instanceof Mob && RtsimAttachments.campMember(en) != null
+                    && !RtsimAttachments.isTagged(en))
+                e.setCanceled(true);
+        });
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, EntityLeaveLevelEvent.class, e -> {
+            int[] n = LEAVES.get(e.getEntity().getUUID());
+            if (n != null && !e.getLevel().isClientSide())
+                n[e.getEntity().getRemovalReason() == null ? 0 : 1]++;
+        });
+    }
+
+    /** Arms {@link #cancelCampJoins} for the test (off again when it ends). */
+    public static void cancelCampJoins(GameTestHelper helper, boolean on) {
+        cancelCampJoins = on;
+        if (on)
+            ConflictKit.onEnd(helper, () -> cancelCampJoins = false);
+    }
+
+    /** Counts the leave events of an entity from now on (until the test ends): [0] with no removal reason (hidden), [1] with one. */
+    public static int[] watchLeaves(GameTestHelper helper, Entity e) {
+        int[] n = new int[2];
+        LEAVES.put(e.getUUID(), n);
+        ConflictKit.onEnd(helper, () -> LEAVES.remove(e.getUUID()));
+        return n;
     }
 
     // ---- a test's far place ---------------------------------------------------------------------
@@ -270,13 +312,32 @@ public final class MowzieKit {
 
         /** Forces the 3 x 3 chunks round the den (the footprint is the chunk and its four neighbours). */
         public Den force() {
-            far.forceRect(cx - 1, cz - 1, cx + 1, cz + 1);
+            return force(0);
+        }
+
+        /** As above, and {@code east} more columns of chunks east of them (a stray far from the spot stands in one). */
+        public Den force(int east) {
+            far.forceRect(cx - 1, cz - 1, cx + 1 + east, cz + 1);
             return this;
+        }
+
+        /** Releases what {@link #force(int)} forced. */
+        public Den release(int east) {
+            far.releaseRect(cx - 1, cz - 1, cx + 1 + east, cz + 1);
+            return this;
+        }
+
+        public Den release() {
+            return release(0);
         }
 
         /** A stone floor over the 3 x 3 chunks. */
         public Den lay() {
-            platform(far.level, (cx - 1) * 16, (cx + 1) * 16 + 15, (cz - 1) * 16, (cz + 1) * 16 + 15);
+            return lay(0);
+        }
+
+        public Den lay(int east) {
+            platform(far.level, (cx - 1) * 16, (cx + 1 + east) * 16 + 15, (cz - 1) * 16, (cz + 1) * 16 + 15);
             return this;
         }
 
