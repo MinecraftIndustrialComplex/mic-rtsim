@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 339.751998,
+      "wall_ms": 300.005629,
       "checks": [
         {
           "name": "conservation",
@@ -717,7 +717,7 @@
       ],
       "wire_bytes": 3080,
       "state_hashes": [
-        "aee5811773f10f71",
+        "dabf4e2857806c6b",
         "d450929438383fb2"
       ],
       "archive": {
@@ -765,7 +765,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 368.671395,
+      "wall_ms": 289.127589,
       "checks": [
         {
           "name": "conservation",
@@ -1289,7 +1289,7 @@
       ],
       "wire_bytes": 2480,
       "state_hashes": [
-        "0f154fd15bad8674",
+        "480eaf0fb8dd592a",
         "a7cefff0accd3c46"
       ],
       "archive": {
@@ -1330,7 +1330,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 336.996647,
+      "wall_ms": 293.537255,
       "checks": [
         {
           "name": "conservation",
@@ -1737,7 +1737,7 @@
       ],
       "wire_bytes": 1344,
       "state_hashes": [
-        "db3ab4cbbee52e4b",
+        "d0d70ac8415bcf9b",
         "2c2221234256e7c3"
       ],
       "archive": {
@@ -1782,7 +1782,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict aee5811773f10f71, world d450929438383fb2 (uninterrupted aee5811773f10f71, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict dabf4e2857806c6b, world d450929438383fb2 (uninterrupted dabf4e2857806c6b, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,
