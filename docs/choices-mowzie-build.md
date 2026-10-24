@@ -3658,7 +3658,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       the train alone (`slot(train)` for `slot(train ^ at.rotate_left(32))` in the engine's roll), it fails
       at 0% of 254 after a miss and 100% of 434 after a hit at 12 legs a day, 0% of 297 and 100% of 590 at
       24; the share check fails too then (64%), but only by chance before.
-    - **The legs.** The detail line says what the trains made: 11.9 legs a day on the 12-a-day line and
+    - **Legs a day.** The detail line says what the trains made: 11.9 legs a day on the 12-a-day line and
       23.9 on the 24-a-day line, so the two trains with a 600-tick dwell do keep the named rate (a
       line's lap is well under 1,800 ticks in the rig's scene).
     - **The three counts of a robbery.** The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands the
@@ -3666,6 +3666,40 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       must agree pass for pass: the same trains at the same ticks, and the items the engine counted for a
       pass equal the ones the industry booked. (The check was the engine's counter against the rig's count
       of the engine's own command, one site: it could not disagree.)
+    - **What the emulation does not model (review B; documented, no engine outcome moves).** Each
+      divergence from MZB-363's sampler is a place where Java's pass can differ from the rig's by a few
+      ticks or by one pass, never by a rule:
+      - *Sample times.* `pass_tick` counts its 20-tick samples from the leg's departure; Java's sampler
+        samples a train every 20 ticks of its own phase (the server tick), not of the departure. A pass
+        can come up to 19 ticks earlier or later than the rig's.
+      - *One pass per leg.* The rig sends one TRAIN_PASSED for a leg, at the polyline's nearest approach.
+        Java re-arms an approach once the train is more than 64 blocks from the track point, so a leg that
+        runs by the point, away beyond 64 blocks and back within reach would send two. A rig leg is a
+        straight run and passes a lurk's point once.
+      - *The dimension* is ignored: the rig has one, and Java skips a lurk in another dimension from the
+        train's.
+      - *No TrainArrived reaches the industry.* The legs are booked as departed and never arrive there, so
+        a leg's cargo is not delivered and no stock moves except what a lurk takes. Cooldowns, theft caps
+        and the books are the industry's own all the same.
+      - *Curves.* The rig takes the polyline's nearest approach to the point against the spot's reach;
+        Java tests the chord of each 20-tick sample against it. On a curve a chord cuts across the bend,
+        so Java can read a nearer or a farther distance than the polyline's, and a point just inside or
+        outside the reach can differ. The rig's lines are one straight run each (`straight(x)`), where the
+        chord and the polyline agree, so no number here depends on it.
+    - **What Java must match when it lands (steps 5 and 6; these do move engine outcomes).** The rig's
+      table (`synth::LurkTable`, `hear` in `lurk.rs`) is the specification, and run 1's stale-pass check
+      (a stale pass only in `[end, end + LAG]`) fails for a Java that does not:
+      - *Drop by agent.* AMBUSH_REMOVED removes the lurk by agent, not by epoch. A lurk the engine saw
+        (`seen`) has its passes carry epoch E against the party's E+1, and its REMOVED goes out at E+1.
+      - *Latest wins.* A second AMBUSH_SPOT for an agent (a session start's resend, a watch's new epoch)
+        replaces the first; the table holds one lurk for each agent.
+      - *Clear at session end.* The table is per session and is empty at a new one; the engine sends each
+        lurk again once (MZB-353).
+      - *Drop the sampler's pending work on REMOVED.* The rig drops the agent's scheduled passes
+        (`self.due.retain(|_, tp| tp.agent != s.agent)`, `lurk.rs`) as it hears the removal, and again on a
+        new spot of the agent. In Java that is the sampler's approach state for the agent (MZB-363's
+        `approaches`) and any pass the same sample was about to send: a removed lurk sends nothing from
+        the tick Java hears it, and a lurk begun again by the agent starts armed.
 - **MZB-372** (run 8): save and restore, blob and paged, at four points: mid-lurk, in a cowed time, in a
   meter's decay (a booked `Ev::Rail` and held passes), and with a reconcile in flight.
   - Each is compared with an uninterrupted control: the outbox (by bytes, in order), the stats, and each
