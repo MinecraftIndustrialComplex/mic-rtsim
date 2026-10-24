@@ -40,7 +40,7 @@ scan() { python3 -I $T/prune.py scan $R/$1/world $R/scan-$1.json > $R/scan-$1.lo
 scen plain 26101 pack-a; scen rtsim 26111 rtsim-b
 scen rtsim 26121 rtsim-a; scen plain 26131 pack-b
 scen hippo 26141 hippo-on; scen hippo-off 26151 hippo-off
-scen reload 26161 reload
+MERGE=1:2,1:4 scen reload 26161 reload  # the main base's three districts (DS-10) merged into one, for DR9
 scen uninstall 26171 uninstall; scen reset 26181 reset
 scen reload 26191 reset-reload; scen reinstall 26201 reinstall
 scen plain 26211 july 21.1.230; scen plain 26221 pack-c
