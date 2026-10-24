@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 
@@ -458,22 +459,50 @@ public final class TrainWatch {
      * {@link #PORT_DEPTH} steps and {@link #PORT_VISITS} blocks from each, never into an unloaded chunk.
      * A container ends the walk; one touching an interface with nothing between them is not a port.
      * Journaled when the set differs from the last one sent for the station at this revision.
+     *
+     * <p>J6 (SECTIONS.md §2.1 and §2.4, choice SC6): each inventory is resolved by its chunk to whichever
+     * district holds it, not only {@code d}, the district of the station's chunk. The district holding the most
+     * of them (ties to the lowest id) is the one the station serves: the record names it, and the station's
+     * chunk is told to join it ({@code Districts.stationServed}), so its cargo goes there from the next docking.
      */
     static void ports(Industry ind, District d, long station, ServerLevel level, Set<BlockPos> psis) {
         if (level == null || psis.isEmpty())
             return;
-        TreeSet<Integer> found = new TreeSet<>();
+        Map<Long, TreeSet<Integer>> byDistrict = new TreeMap<>();
+        Map<Long, BlockPos> lowest = new HashMap<>();
         for (BlockPos psi : psis)
-            reached(level, d, psi, found);
-        if (found.isEmpty())
+            reached(level, psi, canon -> {
+                District od = ind.districtAt(level.dimension(), ChunkPos.asLong(canon.getX() >> 4, canon.getZ() >> 4));
+                District.Inventory inv = od == null ? null : od.inventoryAt(canon);
+                if (inv == null)
+                    return;
+                byDistrict.computeIfAbsent(od.id, k -> new TreeSet<>()).add(inv.index());
+                lowest.merge(od.id, canon, (a, b) -> a.asLong() <= b.asLong() ? a : b);
+            });
+        long servedId = -1;
+        int most = 0;
+        for (Map.Entry<Long, TreeSet<Integer>> e : byDistrict.entrySet())
+            if (e.getValue().size() > most) {
+                most = e.getValue().size();
+                servedId = e.getKey();
+            }
+        District served = servedId < 0 ? null : ind.district(servedId);
+        if (served == null)
             return;
-        String key = d.revision + ":" + found;
+        TreeSet<Integer> found = byDistrict.get(servedId);
+        for (District.Station st : d.stations)
+            if (st.id() == station) {
+                BlockPos at = lowest.get(servedId);
+                ind.districts().stationServed(level.dimension(), st.pos(), ChunkPos.asLong(at.getX() >> 4, at.getZ() >> 4));
+                break;
+            }
+        String key = served.id + ":" + served.revision + ":" + found;
         if (Objects.equals(PORTS_SENT.get(station), key))
             return;
         PORTS_SENT.put(station, key);
         ByteBuffer r = ind.journal(IndRecords.IND_STATION_PORTS, IndRecords.StationPorts.size(found.size()), found.size());
         r.putLong(IndRecords.StationPorts.STATION, station);
-        r.putLong(IndRecords.StationPorts.DISTRICT, d.id);
+        r.putLong(IndRecords.StationPorts.DISTRICT, served.id);
         int i = 0;
         for (int inv : found)
             r.putInt(IndRecords.StationPorts.INVENTORIES + 4 * i++, inv);
@@ -486,6 +515,15 @@ public final class TrainWatch {
      * {@code found}.
      */
     static void reached(ServerLevel level, District d, BlockPos psi, Set<Integer> found) {
+        reached(level, psi, canon -> {
+            District.Inventory inv = d.inventoryAt(canon);
+            if (inv != null)
+                found.add(inv.index());
+        });
+    }
+
+    /** The canonical positions of the containers one interface reaches through conveyance (SG32), to {@code out}. */
+    static void reached(ServerLevel level, BlockPos psi, java.util.function.Consumer<BlockPos> out) {
         Map<BlockPos, Integer> depth = new HashMap<>();
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         depth.put(psi, 0);
@@ -511,9 +549,8 @@ public final class TrainWatch {
                 if (be == null || be instanceof PortableStorageInterfaceBlockEntity)
                     continue;
                 BlockPos canon = Districts.canonicalInventory(level, q);
-                District.Inventory inv = canon == null ? null : d.inventoryAt(canon);
-                if (inv != null)
-                    found.add(inv.index());
+                if (canon != null)
+                    out.accept(canon);
             }
         }
     }

@@ -54,8 +54,31 @@ public interface IndustryPlugin {
         return false;
     }
 
-    /** Positions joined to this block entity beyond touching (chain conveyor connections, wires). */
+    /**
+     * Positions in other chunks joined to this block entity beyond a face touch (SECTIONS.md §2.1): J2, what
+     * moves goods across a border without touching (a fan's current, an arm's points, an ejector's target),
+     * and J4, rotation that is not a face (diagonal cogs). Read only; never loads a chunk. The core drops a
+     * target in the block entity's own chunk, in a chunk that is not loaded, or that is not an industrial
+     * block entity, and joins the two chunks for the rest.
+     */
     default void links(BlockEntity be, Consumer<BlockPos> out) {}
+
+    /**
+     * False while this block entity's {@link #links} cannot be read yet (a mechanical arm before its first
+     * tick): its chunk keeps the join pairs its district saved (SECTIONS.md §2.3, choice SC4). The default: true.
+     */
+    default boolean linksKnown(BlockEntity be) {
+        return true;
+    }
+
+    /**
+     * Whether a face touch of this industrial block entity across a chunk border joins the two chunks (J1).
+     * False for blocks that carry goods or trains between districts without making them one (a Create chain
+     * conveyor, a station: SECTIONS.md §2.1, choices SC1 and SC6). The default: true.
+     */
+    default boolean touchJoins(BlockEntity be) {
+        return true;
+    }
 
     /**
      * Whether this block entity is a part of a network that a district's compile follows out of its chunks
@@ -118,8 +141,8 @@ public interface IndustryPlugin {
 
     /**
      * Whether this block entity is a station, even before it has an identity (a Create station's track graph
-     * forms a moment after it is placed). A station's chunk joins the district beside it but never starts one
-     * (DS-10).
+     * forms a moment after it is placed). A station's chunk with no seed of its own joins exactly one district
+     * (J6): the one its interfaces serve, else the lowest beside it; it never starts one (DS-10).
      */
     default boolean isStation(BlockEntity be) {
         return station(be) != null;

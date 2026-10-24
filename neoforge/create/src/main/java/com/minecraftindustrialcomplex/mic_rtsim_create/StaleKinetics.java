@@ -190,6 +190,11 @@ public final class StaleKinetics {
      * ({@code addPropagationLocations}: a chain conveyor's connections, a large cog's diagonals) outside its
      * chunk. Reads nothing.
      */
+    /** Whether {@code k}'s class adds propagation of its own beyond one block ({@link #OWN_PROPAGATION}); J4's walk asks it too. */
+    static boolean ownPropagation(KineticBlockEntity k) {
+        return OWN_PROPAGATION.get(k.getClass());
+    }
+
     private static List<BlockPos> linksOut(KineticBlockEntity k) {
         BlockPos p = k.getBlockPos();
         int lx = p.getX() & 15, lz = p.getZ() & 15;

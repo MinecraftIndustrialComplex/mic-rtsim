@@ -143,12 +143,29 @@ public final class CreatePlugin implements IndustryPlugin {
     }
 
     /**
-     * Links between chunks: a fan's blown stream (FanLinks). A chain conveyor is not one (SEC-1): it carries
-     * packages between districts, it does not join them.
+     * Links between chunks (SECTIONS.md §2.1): a fan's blown stream ({@link FanLinks}), an arm's points, an
+     * ejector's target and rotation that is not a face ({@link JoinLinks}). A chain conveyor is not one (SEC-1):
+     * it carries packages and rotation between districts, it does not join them.
      */
     @Override
     public void links(BlockEntity be, Consumer<BlockPos> out) {
         FanLinks.links(be, out);
+        JoinLinks.links(be, out);
+    }
+
+    /** An arm before its first tick has not read its points (J2, choice SC4). */
+    @Override
+    public boolean linksKnown(BlockEntity be) {
+        return JoinLinks.known(be);
+    }
+
+    /**
+     * J1's exceptions (SECTIONS.md §2.1): a chain conveyor carries packages and rotation between districts and a
+     * station carries trains; neither joins two chunks by touching (choices SC1, SC6).
+     */
+    @Override
+    public boolean touchJoins(BlockEntity be) {
+        return !(be instanceof ChainConveyorBlockEntity) && !(be instanceof StationBlockEntity);
     }
 
     /**
@@ -174,9 +191,9 @@ public final class CreatePlugin implements IndustryPlugin {
                 || be instanceof GantryCarriageBlockEntity || be instanceof ClockworkBearingBlockEntity || be instanceof TurntableBlockEntity;
     }
 
-    // No links(): a chain conveyor is a link between districts, not a reason to join them (SEC-1, DS-10). The
-    // packages on it are counted at the ports (packagers, frogports, postboxes), the exports at one district's
-    // edge and the imports at the other's.
+    // A chain conveyor joins no chunks (touchJoins, links): its packages between districts are a package store's,
+    // counted at its frogports as CHAIN_OUT and CHAIN_IN (SECTIONS.md §2.5), and its rotation is a shared network
+    // (§2.6).
 
     @Override
     public BlockPos canonicalInventory(BlockEntity be) {
