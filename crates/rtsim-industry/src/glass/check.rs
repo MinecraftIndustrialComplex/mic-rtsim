@@ -142,10 +142,11 @@ struct UnitWin {
     stt: f64,
 }
 
-/// The least capacity at which a unit's window saw one of its kinetic domains run (SECTIONS.md
-/// §3.3): the solve's capacity there and the speed it ran at, as [`speed_key`] keeps it. The
-/// domain is its compile's index; a recompile that carries the unit maps it by the unit's own
-/// nodes on it.
+/// The least capacity at which a unit's window saw one of its kinetic domains run at one speed
+/// (SECTIONS.md §3.3): the solve's capacity there and that speed, as [`speed_key`] keeps it. One
+/// per speed the domain ran at (a faster row may have more capacity and fail first), in
+/// [`cap_order`]. The domain is its compile's index; a recompile that carries the unit maps it by
+/// the unit's own nodes on it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DomCap {
     pub domain: u32,
@@ -153,6 +154,13 @@ pub struct DomCap {
     pub source: Option<i64>,
     pub speed: f64,
     pub capacity: f64,
+}
+
+/// The order a unit's [`DomCap`]s are kept in: by domain, then speed.
+fn cap_order(a: &DomCap, b: &DomCap) -> std::cmp::Ordering {
+    (a.domain, a.source)
+        .cmp(&(b.domain, b.source))
+        .then(a.speed.total_cmp(&b.speed))
 }
 
 /// Domain `dom`'s reference speed `v` in a frame a recompile keeps (its reference may move with
@@ -1109,14 +1117,14 @@ impl Compiled {
             let mut stale = false;
             match open {
                 Some(mut c) => {
-                    c.sort_by_key(|x| x.domain);
+                    c.sort_by(cap_order);
                     st.caps = c;
                 }
                 None => stale = true,
             }
             match passed {
                 Some(mut c) => {
-                    c.sort_by_key(|x| x.domain);
+                    c.sort_by(cap_order);
                     stale |= st.passed.is_some() && c.iter().any(|x| over_capacity(&self.graph, x));
                     st.passed_caps = c;
                 }
@@ -1739,7 +1747,7 @@ impl Compiled {
             w.last = at;
             times[u] = t;
         }
-        // The least capacity each unit's domains ran at in this sample's regime (§3.3).
+        // The least capacity each unit's domains ran at, per speed, in this sample's regime (§3.3).
         for (u, &took) in take.iter().enumerate() {
             if !took || self.unit_state[u].win.is_none() {
                 continue;
@@ -1761,7 +1769,7 @@ impl Compiled {
                     capacity,
                 };
                 let caps = &mut self.unit_state[u].caps;
-                match caps.binary_search_by_key(&d, |c| c.domain) {
+                match caps.binary_search_by(|c| cap_order(c, &cap)) {
                     Ok(i) if caps[i].capacity <= capacity => {}
                     Ok(i) => caps[i] = cap,
                     Err(i) => caps.insert(i, cap),
@@ -2624,7 +2632,7 @@ impl Compiled {
             .all(|p| (p[0].unit, p[0].good) < (p[1].unit, p[1].good));
         let nd = self.graph.domains.len() as u32;
         let caps_fit = |c: &[DomCap]| {
-            c.iter().all(|x| x.domain < nd) && c.windows(2).all(|p| p[0].domain < p[1].domain)
+            c.iter().all(|x| x.domain < nd) && c.windows(2).all(|p| cap_order(&p[0], &p[1]).is_lt())
         };
         sorted
             && self.rows.iter().all(|r| {
