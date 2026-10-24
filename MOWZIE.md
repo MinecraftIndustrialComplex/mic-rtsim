@@ -1615,8 +1615,10 @@ camp's next census.
   *body there* for the slot it fills. Each line is booked once, by its (op, line), and only while its
   epoch is the latest a census of the camp named: a census of a later epoch read the world after Java
   applied the lines and books by its own table what the answer would have. A copy of an answer is then a
-  no-op, and an answer or record for a generation its slot no longer holds books nothing. So Java sends
-  a camp's census only after every holder in its footprint has journaled its record again.
+  no-op, and an answer or record for a generation its slot no longer holds books nothing. Once a world
+  save has made an answer's record durable the engine forgets the answer, and a copy that comes later is
+  booked by its slot's state, as a TAKEN's is (MZB-177). So Java sends a camp's census only after every
+  holder in its footprint has journaled its record again.
 - The engine keeps at most one line in flight per slot, and sends only to camps that are in. On
   CAMP_OUT it marks the camp out and voids that epoch's lines still in flight, which Java answers
   stale. Java applies an epoch's lines before that epoch's CAMP_OUT or the next census, so their

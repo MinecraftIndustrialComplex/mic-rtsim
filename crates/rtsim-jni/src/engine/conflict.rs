@@ -567,6 +567,7 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
     st.conflict.engine.replaying = replaying;
+    st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
     ingest(st, &o, at);
     st.conflict.engine.replaying = false;
 }
