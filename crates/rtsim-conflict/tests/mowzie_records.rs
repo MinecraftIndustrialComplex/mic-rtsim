@@ -2483,7 +2483,7 @@ fn a_raid_arriving_after_the_save(watched: bool, crash: bool, restart: Option<u6
     r.next_obs = r.c.now();
     let mut end = arrival;
     while r.c.parties.get(band).is_some() {
-        end = end + 600;
+        end += 600;
         assert!(end < day(8.0), "the band comes home");
         run_journaled(&mut r, &mut walls, end, &mut journal);
     }
@@ -2623,7 +2623,7 @@ fn a_siege_round_after_the_save(crash: bool) -> (Vec<Tick>, Tick) {
     let mut journal = Vec::new();
     let mut to = r.c.now();
     while r.c.parties[band].phase != Phase::Waiting {
-        to = to + 600;
+        to += 600;
         assert!(to < day(6.0), "the siege waits at its target");
         run_journaled(&mut r, &mut walls, to, &mut journal);
     }
