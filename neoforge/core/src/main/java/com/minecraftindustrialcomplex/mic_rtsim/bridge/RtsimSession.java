@@ -904,10 +904,22 @@ public final class RtsimSession {
         }
     }
 
+    /**
+     * {@code old}, a holder's pending records, with {@code more} added in this engine life and generation. Records
+     * of an earlier life in it are dropped and counted as stale, as the holder's reassert counts them (RG14): a
+     * write into a chunk that loaded this tick comes before the chunk's end-of-tick reassert.
+     */
+    public com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords carried(
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old, java.util.List<byte[]> more) {
+        if (old.life() != engineLife)
+            stalePending += old.records().size(); // of an engine that started over since: never journaled again
+        return old.plus(engineLife, boundary.gen(), more);
+    }
+
     /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
-        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), records));
+        holder.setData(RtsimAttachments.PENDING, carried(old, records));
         dropPendingWhenAcked(holder, lastSeq);
     }
 
@@ -996,7 +1008,7 @@ public final class RtsimSession {
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), java.util.List.of(commandResult.array())));
+        chunk.setData(RtsimAttachments.PENDING, carried(old, java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
