@@ -159,6 +159,9 @@ pub(super) struct Link {
     /// (`begin_replay`), run by [`replay_end`] at the session's replay end, or at once when no
     /// replay runs (docs/replay-gate.md §3.2). Not saved.
     replay_end_due: bool,
+    /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
+    /// §4.3). Not saved.
+    never_logged: u64,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
 }
@@ -264,6 +267,7 @@ impl Link {
             deferred: 0,
             from_pages: false,
             replay_end_due: false,
+            never_logged: 0,
             fed: 0,
         }
     }
@@ -410,11 +414,24 @@ pub(super) fn replay_end(st: &mut State) {
     st.conflict.replay_end_due = false;
     st.conflict.engine.replay_done();
     take_commands(st);
-    st.conflict
-        .queue
-        .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_)));
+    // The gate dropped every notice a replayed record made again (docs/replay-gate.md §4.4), and
+    // the session start cleared the queue: what is kept is what goes.
+    debug_assert!(
+        !st.conflict
+            .queue
+            .iter()
+            .any(|q| q.names.is_none() && matches!(q.cmd, Cmd::Notice(_))),
+        "a conflict notice queued at the replay end"
+    );
     st.conflict.engine.resend_notices();
     take_commands(st);
+}
+
+/// The replay gate's counts for the replay end's log line (docs/replay-gate.md §4.3): (dropped,
+/// never).
+pub(super) fn gate_counts(st: &State) -> (u64, u64) {
+    let (dropped, never, _) = st.conflict.engine.replay_gate_counts();
+    (dropped, never)
 }
 
 /// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
@@ -759,8 +776,19 @@ fn feed_districts(st: &mut State, at: Tick) {
     take_commands(st);
 }
 
-/// Takes what the conflict decided into the link's queue.
+/// Takes what the conflict decided into the link's queue. A rise in the gate's "never" count is
+/// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 pub(super) fn take_commands(st: &mut State) {
+    let (_, never, kind) = st.conflict.engine.replay_gate_counts();
+    if never > st.conflict.never_logged {
+        let (code, name) = kind.unwrap_or((0, "?"));
+        log_error(&format!(
+            "conflict decided a {name} ({code:#06x}) while replaying ({} since the last take): \
+             skipped, a bug (docs/replay-gate.md §4)",
+            never - st.conflict.never_logged
+        ));
+        st.conflict.never_logged = never;
+    }
     let cmds = st.conflict.engine.take_commands();
     st.conflict
         .queue
@@ -1077,6 +1105,10 @@ pub struct ConflictLinkStats {
     pub deferred: u64,
     /// Sources the industry engine's districts set or changed.
     pub fed: u64,
+    /// The replay gate's counts (docs/replay-gate.md §4.3, not saved): commands dropped while
+    /// replaying, and commands of a "never" kind decided while replaying (a bug).
+    pub replay_dropped: u64,
+    pub replay_never: u64,
 }
 
 impl super::Engine {
@@ -1122,6 +1154,7 @@ impl super::Engine {
     pub fn conflict_stats(&self) -> (ConflictStats, ConflictLinkStats) {
         let st = super::lock(&self.state);
         let l = &st.conflict;
+        let (replay_dropped, replay_never, _) = l.engine.replay_gate_counts();
         (
             l.engine.stats,
             ConflictLinkStats {
@@ -1131,6 +1164,8 @@ impl super::Engine {
                 band_states: l.band_states,
                 deferred: l.deferred,
                 fed: l.fed,
+                replay_dropped,
+                replay_never,
             },
         )
     }

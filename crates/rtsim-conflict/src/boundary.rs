@@ -1794,7 +1794,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
@@ -2017,7 +2017,8 @@ mod tests {
         ]
     }
 
-    fn cmds() -> Vec<Cmd> {
+    /// One command of each kind (the replay gate's table test reads them too, `outbox.rs`).
+    pub(crate) fn cmds() -> Vec<Cmd> {
         vec![
             Cmd::Territory(Territory {
                 faction: 77,

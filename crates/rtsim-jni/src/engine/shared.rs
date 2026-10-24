@@ -374,9 +374,11 @@ pub(super) fn replay_end_before(st: &mut State, seq: u64) {
 fn replay_end(st: &mut State) {
     st.replaying = false;
     st.replays_ended += 1;
+    let (dropped, never) = conflict::gate_counts(st);
     log_info(&format!(
-        "the session's replay is over: {} records replayed over {} hand-overs",
-        st.replay_records, st.replay_handovers
+        "the session's replay is over: {} records replayed over {} hand-overs; conflict: {} \
+         commands dropped while replaying, {} of a kind that embodies (a bug)",
+        st.replay_records, st.replay_handovers, dropped, never
     ));
     dragons::replay_end(st);
     ships::replay_end(st);

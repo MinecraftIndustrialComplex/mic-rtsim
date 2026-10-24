@@ -49,6 +49,7 @@ use serde::Serialize;
 use crate::boundary::{self, Cmd, Obs, Uuid};
 use crate::culture::{Culture, Cultures, PartyKind, SignalKind, Step, days_to_ticks};
 use crate::grievance::{Grievance, K};
+use crate::outbox::Outbox;
 use crate::presence::{ChunkKey, Presence, chunk_of};
 use crate::tables::{FactionTable, PlaceIndex, SourceTable};
 use crate::tunables::ConflictTunables;
@@ -656,7 +657,9 @@ pub struct Conflict {
     pub(crate) java_dict: BTreeMap<(u8, u32), String>,
     pub ledger: ConflictLedger,
     pub stats: ConflictStats,
-    pub(crate) outbox: Vec<Cmd>,
+    /// The commands not yet taken, behind the replay gate (docs/replay-gate.md §4): every push
+    /// goes through it.
+    pub(crate) outbox: Outbox,
     pub(crate) now: Tick,
     pub log: Vec<LogEntry>,
     pub log_enabled: bool,
@@ -676,10 +679,6 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
-    /// Between a session's start and the replay having caught up (`replay_done`): the bodies the
-    /// pages held in Minecraft are kept as recalled stacks for the replayed records to count
-    /// (MZB-138). Not state: a session sets it.
-    pub replaying: bool,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -751,7 +750,7 @@ impl Conflict {
             java_dict: BTreeMap::new(),
             ledger: ConflictLedger::default(),
             stats: ConflictStats::default(),
-            outbox: Vec::new(),
+            outbox: Outbox::default(),
             now,
             log: Vec::new(),
             log_enabled: false,
@@ -762,7 +761,6 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
-            replaying: false,
         }
     }
 
@@ -854,7 +852,21 @@ impl Conflict {
     }
 
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.take()
+    }
+
+    /// Between [`Conflict::begin_replay`] and [`Conflict::replay_done`]: the session's replay
+    /// runs, and the outbox gates every command (docs/replay-gate.md §3.3, §4). Not state: a
+    /// session sets it.
+    pub fn replaying(&self) -> bool {
+        self.outbox.replaying()
+    }
+
+    /// The replay gate's counts since this engine was built or loaded (docs/replay-gate.md
+    /// §4.3): (commands dropped while replaying, commands of a "never" kind decided while
+    /// replaying (a bug), the last such kind and its name).
+    pub fn replay_gate_counts(&self) -> (u64, u64, Option<(u16, &'static str)>) {
+        self.outbox.counts()
     }
 
     /// A name in Java's dictionary (kind 2 items, 3 bodies, 4 structures, 0x20 pollution types).
@@ -4571,13 +4583,11 @@ impl Conflict {
                 x.phase = Phase::Waiting;
             }
         }
-        self.replaying = true;
-        // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
-        // again from what is kept, after the replay (`resend_notices`).
-        self.outbox.retain(|c| {
-            c.agent().is_none()
-                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_))
-        });
+        // What is still queued takes its verdict (docs/replay-gate.md §4.4): a party's commands
+        // are derived again, a camp's reconcile in flight is void (MOWZIE.md §4.9), and the
+        // notices go again from what is kept, after the replay (`resend_notices`). Every push is
+        // gated from here to `replay_done`.
+        self.outbox.begin_replay();
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
@@ -4594,10 +4604,10 @@ impl Conflict {
     /// the last session (nothing will report them), so the stacks the session start kept for the
     /// replay are dropped, and their members count as alive, as they always did (MZB-138).
     pub fn replay_done(&mut self) {
-        if !self.replaying {
+        if !self.outbox.replaying() {
             return;
         }
-        self.replaying = false;
+        self.outbox.replay_done();
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
             self.parties[p].recalled.clear();
@@ -4619,7 +4629,9 @@ impl Conflict {
                 .iter()
                 .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
                 .collect();
-            self.outbox.extend(kept);
+            for n in kept {
+                self.outbox.push(n);
+            }
             if (f + 1) % per == 0 {
                 self.enforce_budget();
             }
