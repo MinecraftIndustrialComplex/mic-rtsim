@@ -70,8 +70,10 @@ pub const TRIBUTE_PRICE_CAP: f64 = 4.0;
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
 pub mod camp;
+pub mod rail;
 
 pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
+pub use rail::{LineCount, RailMeter};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
 /// event is booked for it, and `Conflict::unblock` plans it again when one comes.
