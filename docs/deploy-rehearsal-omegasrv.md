@@ -976,8 +976,8 @@ and Ben has two choices to make before rtsim goes on: DR6, changed by DS-10, and
   `Level.isLoaded`, which such a chunk passes, and read a block in it; and a vault's item handler, built
   the first time anything asks for it, read every block of the vault, one of them in such a chunk. Fan
   links now read only FULL chunks (RG15), a vault with a block in a chunk not FULL is described from its
-  controller without its handler (RG17), and a detection's tick also stops at a time limit, 5 ms by
-  default (RG12).
+  controller without its handler (RG17), so is a double chest with a half in such a chunk (RG18, found
+  by review), and a detection's tick also stops at a time limit, 5 ms by default (RG12).
 
 ### 10.1 What ran
 
