@@ -464,7 +464,7 @@ impl Conflict {
             return;
         };
         let (r, p, day_due) = {
-            let m = &self.factions.row(f).rail[i];
+            let m = &self.factions.row(f).rail()[i];
             (
                 m.per_day(at),
                 m.pushed,
@@ -560,7 +560,7 @@ impl Conflict {
         let Ok(i) = self.factions.row(f).rail_at(actor) else {
             return;
         };
-        if self.factions.row(f).rail[i].pushed > 0.0 {
+        if self.factions.row(f).rail()[i].pushed > 0.0 {
             let pos = self.factions[f as usize].pos;
             self.set_emission_for(
                 w,
@@ -578,7 +578,7 @@ impl Conflict {
         // A wake already booked for it finds no meter and counts stale.
         let row = self.factions.row_mut(f);
         if let Ok(i) = row.rail_at(actor) {
-            row.rail.remove(i);
+            row.rail_remove(i);
         }
     }
 

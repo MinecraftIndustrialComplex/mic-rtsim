@@ -256,10 +256,10 @@ fn set_emission_for_reaches_only_its_faction() {
     assert!(c.factions.row(b).reach_ids(SignalKind::Rail).is_empty());
     assert!(c.feud(b, player).is_none(), "the other den hears nothing");
     let fe = c.feud(f, player).expect("the feud");
-    assert!((fe.raw[SignalKind::Rail.index()] - 10.0 / 24_000.0).abs() < 1e-15);
-    let fo = fe.focus.expect("a focus");
+    assert!((fe.raw_of(SignalKind::Rail) - 10.0 / 24_000.0).abs() < 1e-15);
+    let fo = fe.focus.as_ref().expect("a focus");
     assert_eq!(
-        (fo.pos, fo.district, fo.track),
+        (fo.pos, fo.district, fo.track.as_deref().copied()),
         (spot, None, Some(track(70)))
     );
 
@@ -290,8 +290,8 @@ fn set_emission_for_reaches_only_its_faction() {
     assert!(rail_source(&c, f, player).is_none());
     assert!(c.factions.row(f).reach_ids(SignalKind::Rail).is_empty());
     let fe = c.feud(f, player).unwrap();
-    assert_eq!(fe.raw[SignalKind::Rail.index()], 0.0);
-    assert_eq!(fe.focus.map(|f| f.pos), Some(spot));
+    assert_eq!(fe.raw_of(SignalKind::Rail), 0.0);
+    assert_eq!(fe.focus.as_ref().map(|f| f.pos), Some(spot));
     // A new push at another point replaces the source under the same key.
     let elsewhere = Pos::new(0, CAMP_POS.x - 80, CAMP_POS.z);
     c.set_emission_for(&mut w, f, player, 4.0, elsewhere, track(65), Tick(500));
@@ -340,7 +340,7 @@ fn a_district_focus_is_not_displaced_by_a_track_nor_a_track_by_a_bare_pos() {
     let site = Pos::new(0, CAMP_POS.x + 20, CAMP_POS.z + 20);
     let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
     let wild = Pos::new(0, CAMP_POS.x - 90, CAMP_POS.z + 40);
-    let focus = |c: &Conflict| c.feud(f, player).and_then(|x| x.focus);
+    let focus = |c: &Conflict| c.feud(f, player).and_then(|x| x.focus.clone());
 
     // A district focus (a kill with a district) stays when a track source is pushed.
     kill_at(&mut w, &mut c, player, site, Some(REFINERY), 10);
@@ -359,7 +359,10 @@ fn a_district_focus_is_not_displaced_by_a_track_nor_a_track_by_a_bare_pos() {
     assert_eq!(focus(&c).unwrap().track, None);
     c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
     let fo = focus(&c).unwrap();
-    assert_eq!((fo.pos, fo.track), (rail, Some(track(64))));
+    assert_eq!(
+        (fo.pos, fo.track.as_deref().copied()),
+        (rail, Some(track(64)))
+    );
     // A kill with no district (the signal path) and an ordinary source with none (refresh_rates)
     // leave the track where it is.
     kill_at(&mut w, &mut c, player, wild, None, 30);
@@ -390,7 +393,10 @@ fn a_district_focus_is_not_displaced_by_a_track_nor_a_track_by_a_bare_pos() {
     c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
     c.set_emission_for(&mut w, f, player, 8.0, wild, track(66), Tick(60));
     let fo = focus(&c).unwrap();
-    assert_eq!((fo.pos, fo.track), (wild, Some(track(66))));
+    assert_eq!(
+        (fo.pos, fo.track.as_deref().copied()),
+        (wild, Some(track(66)))
+    );
 }
 
 #[test]
@@ -416,7 +422,7 @@ fn a_zero_weight_kind_sets_no_focus() {
             12.0,
             Tick(10),
         );
-        c.feud(f, a).and_then(|x| x.focus)
+        c.feud(f, a).and_then(|x| x.focus.clone())
     };
     assert_eq!(at_district("frostmaw"), None);
     assert_eq!(
@@ -832,7 +838,7 @@ fn a_quiet_meter_retires_and_pushes_zero() {
     assert!(c.factions.row(f).reach_ids(SignalKind::Rail).is_empty());
     // Its feud, if it has not been forgotten by now, hears no rail.
     if let Some(fe) = c.feud(f, player) {
-        assert_eq!(fe.raw[SignalKind::Rail.index()], 0.0);
+        assert_eq!(fe.raw_of(SignalKind::Rail), 0.0);
     }
 
     // One leg, never pushed: it retires without a push.
@@ -892,7 +898,7 @@ fn rail_pass_for_an_unknown_faction_or_a_zero_weight_culture_is_dropped() {
     );
     assert_eq!((c.stats.rail_unknown, c.stats.rail_passes), (2, 0));
     assert!(!c.holds_train(3) && !c.holds_train(4));
-    assert!(c.factions.row(u).rail.is_empty() && c.factions.row(f).rail.is_empty());
+    assert!(c.factions.row(u).rail().is_empty() && c.factions.row(f).rail().is_empty());
     assert!(c.feud(u, player).is_none());
     // A pass for the Frostmaw den is taken.
     c.ingest(&mut w, &mut probe, &pass(5, PLAYER, 1_200), Tick(1_200));
@@ -973,7 +979,7 @@ fn an_owned_pass_counts_at_once_and_an_ownerless_one_on_credit() {
     c.observe_presence(&mut w, PLAYER, station_a, Tick(100));
     c.observe_presence(&mut w, PLAYER, station_a, Tick(600));
     c.ingest(&mut w, &mut probe, &pass(9, NOBODY, 1_000), Tick(1_000));
-    assert!(c.factions.row(f).rail.is_empty(), "held, not counted");
+    assert!(c.factions.row(f).rail().is_empty(), "held, not counted");
     assert!(c.holds_train(9));
     c.rail_call(
         &mut w,
@@ -1001,7 +1007,7 @@ fn an_owned_pass_counts_at_once_and_an_ownerless_one_on_credit() {
         },
         Tick(1_500),
     );
-    assert!(c.factions.row(f).rail.is_empty());
+    assert!(c.factions.row(f).rail().is_empty());
     assert!(!c.holds_train(9));
     assert_eq!(c.stats.rail_let_go, 0, "credited, not let go");
 }
@@ -1052,7 +1058,7 @@ fn an_ownerless_pass_let_go_counts_against_the_chunks_top_or_nobody() {
     );
     assert_eq!(c.stats.rail_let_go, 1, "the first went, the second is held");
     assert!(c.holds_train(10) && !c.holds_train(9));
-    assert!(c.factions.row(f).rail.is_empty());
+    assert!(c.factions.row(f).rail().is_empty());
     // A rail wake does it too, and an owned pass is only dropped (it was counted when it came).
     let (mut w, mut c, f, player) = dens(54);
     c.ingest(&mut w, &mut probe, &pass(9, PLAYER, 1_000), Tick(1_000));
@@ -1150,7 +1156,7 @@ fn a_self_edge_or_no_departure_lets_go() {
         Tick(5),
     );
     assert_eq!((c.stats.rail_calls, c.stats.rail_let_go), (1, 0));
-    assert!(c.factions.row(f).rail.is_empty());
+    assert!(c.factions.row(f).rail().is_empty());
 }
 
 #[test]
@@ -1269,7 +1275,15 @@ fn rail_run(seed: u64, trip: Trip) -> RunEnd {
             let row = c.factions.row(f);
             assert!(row.rail_meter(player).is_some_and(|m| !m.lines.is_empty()));
             assert!(c.holds_train(2) && c.holds_train(3));
-            assert!(c.feud(f, player).unwrap().focus.unwrap().track.is_some());
+            assert!(
+                c.feud(f, player)
+                    .unwrap()
+                    .focus
+                    .as_ref()
+                    .unwrap()
+                    .track
+                    .is_some()
+            );
             assert!(c.pending_by_kind().get("rail").is_some_and(|n| *n >= 2));
             match trip {
                 Trip::Never => {}
@@ -1300,7 +1314,7 @@ fn rail_run(seed: u64, trip: Trip) -> RunEnd {
         }
     }
     assert!(tripped_at.is_some(), "a raid went to the track");
-    let m = c.factions.row(f).rail.clone();
+    let m = c.factions.row(f).rail().to_vec();
     let s = &c.stats;
     let end = (
         c.state_hash(),
@@ -1476,4 +1490,16 @@ mod synthetic {
         assert_eq!(run(1), run(1));
         assert_ne!(run(1), run(2));
     }
+}
+
+/// A world with no rail pays base's resident bytes, but for the pointers (MZB-313, MZB-314 as
+/// amended by the lead for MZB-331's gate): a focus, a feud (its grievance's tail and its
+/// focus's track) and a faction row one pointer more than at f6321fa5, which measured 40, 296
+/// and 200.
+#[test]
+fn a_world_with_no_rail_keeps_base_layout_but_for_pointers() {
+    use std::mem::size_of;
+    assert_eq!(size_of::<rtsim_conflict::engine::Focus>(), 40 + 8);
+    assert_eq!(size_of::<rtsim_conflict::engine::Feud>(), 296 + 16);
+    assert_eq!(size_of::<rtsim_conflict::tables::FactionRow>(), 200 + 8);
 }

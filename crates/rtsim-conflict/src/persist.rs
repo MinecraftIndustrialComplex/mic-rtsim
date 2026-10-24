@@ -46,7 +46,7 @@ use crate::engine::{
     Held, Line, LineCount, Party, Phase, Pin, RailMeter, Retired, Slot, SlotState, Source, Target,
     Throne,
 };
-use crate::grievance::{Grievance, K};
+use crate::grievance::{Grievance, KB, RailTail};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
 use crate::tables::{
     FACTION_CELL_TABLE, FACTION_KEY_TABLE, FACTION_TABLE, FACTIONS_PER_PAGE, FEUD_TABLE,
@@ -65,7 +65,10 @@ use crate::tunables::ConflictTunables;
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
 /// arrival (M6, MZB-271). RTC8: a focus may keep its track, a source its pin, a party's target may
 /// be a track, a faction carries its rail meters, the wheel's events may be a rail wake and the
-/// resident state ends with the passes held for a line (M7, MZB-302).
+/// resident state ends with the passes held for a line (M7, MZB-302). So that a world with no
+/// rail pays base's bytes, the Rail kind's grievance components ride after a feud's flags byte
+/// (bit 1), a focus's track after a focus tag of 2, and a source's pin after a flags byte (bit 1)
+/// that also says whether it has a district (MZB-331's gate, MZB-313, MZB-314).
 const MAGIC: u32 = u32::from_le_bytes(*b"RTC8");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -300,15 +303,17 @@ fn put_grievance(w: &mut Writer, g: &Grievance) {
 
 fn get_grievance(r: &mut Reader<'_>) -> codec::Result<Grievance> {
     let anchor = Tick(r.u64()?);
-    let mut level = [0.0; K];
-    let mut rate = [0.0; K];
+    let mut level = [0.0; KB];
+    let mut rate = [0.0; KB];
     for v in level.iter_mut().chain(rate.iter_mut()) {
         *v = r.f64()?;
     }
+    // The Rail kind's components come with the feud's (`get_feud`).
     Ok(Grievance {
         anchor,
         level,
         rate,
+        rail: None,
     })
 }
 
@@ -534,20 +539,44 @@ fn get_pin(r: &mut Reader<'_>) -> codec::Result<Pin> {
     })
 }
 
-fn put_focus(w: &mut Writer, f: &Focus) {
+/// A feud's focus: a tag of 0 (none), 1 (a focus with no track) or 2 (with one, written last),
+/// so that a world with no rail pays no byte for the track.
+fn put_focus(w: &mut Writer, f: &Option<Focus>) {
+    let Some(f) = f else {
+        w.u8(0);
+        return;
+    };
+    w.u8(if f.track.is_some() { 2 } else { 1 });
     put_pos(w, f.pos);
     put_opt(w, &f.district, |w, d| w.u64(d.0));
     w.f64(f.weight);
-    put_opt(w, &f.track, put_pin);
+    if let Some(t) = &f.track {
+        put_pin(w, t);
+    }
 }
 
-fn get_focus(r: &mut Reader<'_>) -> codec::Result<Focus> {
-    Ok(Focus {
-        pos: get_pos(r)?,
-        district: get_opt(r, |r| Ok(DistrictId(r.u64()?)))?,
-        weight: r.f64()?,
-        track: get_opt(r, get_pin)?,
-    })
+fn get_focus(r: &mut Reader<'_>) -> codec::Result<Option<Focus>> {
+    let tag = r.u8()?;
+    if tag == 0 {
+        return Ok(None);
+    }
+    if tag > 2 {
+        return bad(format!("focus tag {tag}"));
+    }
+    let pos = get_pos(r)?;
+    let district = get_opt(r, |r| Ok(DistrictId(r.u64()?)))?;
+    let weight = r.f64()?;
+    let track = if tag == 2 {
+        Some(Box::new(get_pin(r)?))
+    } else {
+        None
+    };
+    Ok(Some(Focus {
+        pos,
+        district,
+        weight,
+        track,
+    }))
 }
 
 fn put_demand(w: &mut Writer, d: &Demand) {
@@ -584,7 +613,7 @@ fn put_feud(w: &mut Writer, x: &Feud) {
     put_opt(w, &x.demand, put_demand);
     put_opt(w, &x.party, |w, p| w.u64(p.to_bits()));
     w.var_u64(u64::from(x.stamp));
-    put_opt(w, &x.focus, put_focus);
+    put_focus(w, &x.focus);
     w.u64(x.wait_until.0);
     w.var_u64(u64::from(x.raids));
     put_opt(w, &x.notice, |w, n| {
@@ -592,32 +621,58 @@ fn put_feud(w: &mut Writer, x: &Feud) {
         boundary::encode_cmd(0, &Cmd::Notice(**n), &mut b);
         w.bytes(&b);
     });
-    w.u8(u8::from(x.envoy_again));
+    // Flags: the envoy is held (bit 0); the Rail kind's level, rate and raw rate follow (bit 1).
+    w.u8(u8::from(x.envoy_again) | (u8::from(x.g.rail.is_some()) << 1));
+    if let Some(t) = &x.g.rail {
+        w.f64(t.level);
+        w.f64(t.rate);
+        w.f64(t.raw);
+    }
 }
 
 fn get_feud(r: &mut Reader<'_>) -> codec::Result<Feud> {
-    let g = get_grievance(r)?;
-    let mut raw = [0.0; K];
+    let mut g = get_grievance(r)?;
+    let mut raw = [0.0; KB];
     for v in &mut raw {
         *v = r.f64()?;
     }
     let s = r.u8()?;
+    let step = Step::from_u8(s).ok_or_else(|| CodecError::Invalid(format!("step {s}")))?;
+    let since = Tick(r.u64()?);
+    let demand = get_opt(r, get_demand)?;
+    let party = get_opt(r, handle)?;
+    let stamp = get_u32(r)?;
+    let focus = get_focus(r)?;
+    let wait_until = Tick(r.u64()?);
+    let raids = get_u32(r)?;
+    let notice = get_opt(r, |r| match boundary::decode_cmd(r.bytes()?) {
+        Ok((_, Cmd::Notice(n), _)) => Ok(Box::new(n)),
+        _ => bad("a kept notice that is not FACTION_NOTICE".into()),
+    })?;
+    let flags = r.u8()?;
+    if flags > 3 {
+        return bad(format!("feud flags {flags}"));
+    }
+    if flags & 2 != 0 {
+        g.rail = Some(Box::new(RailTail {
+            level: r.f64()?,
+            rate: r.f64()?,
+            raw: r.f64()?,
+        }));
+    }
     Ok(Feud {
         g,
         raw,
-        step: Step::from_u8(s).ok_or_else(|| CodecError::Invalid(format!("step {s}")))?,
-        since: Tick(r.u64()?),
-        demand: get_opt(r, get_demand)?,
-        party: get_opt(r, handle)?,
-        stamp: get_u32(r)?,
-        focus: get_opt(r, get_focus)?,
-        wait_until: Tick(r.u64()?),
-        raids: get_u32(r)?,
-        notice: get_opt(r, |r| match boundary::decode_cmd(r.bytes()?) {
-            Ok((_, Cmd::Notice(n), _)) => Ok(Box::new(n)),
-            _ => bad("a kept notice that is not FACTION_NOTICE".into()),
-        })?,
-        envoy_again: r.u8()? != 0,
+        step,
+        since,
+        demand,
+        party,
+        stamp,
+        focus,
+        wait_until,
+        raids,
+        notice,
+        envoy_again: flags & 1 != 0,
     })
 }
 
@@ -1045,7 +1100,11 @@ fn stats_from(v: &[u64]) -> ConflictStats {
 /// A continuous source's fields (its key and kind are the row's).
 fn put_source(w: &mut Writer, s: &Source) {
     put_pos(w, s.pos);
-    put_opt(w, &s.district, |w, d| w.u64(d.0));
+    // Flags: a district follows (bit 0); a pin ends the source (bit 1).
+    w.u8(u8::from(s.district.is_some()) | (u8::from(s.pin.is_some()) << 1));
+    if let Some(d) = &s.district {
+        w.u64(d.0);
+    }
     w.f64(s.rate);
     put_usize(w, s.affects.len());
     for (f, fall) in &s.affects {
@@ -1057,12 +1116,22 @@ fn put_source(w: &mut Writer, s: &Source) {
     for c in &s.chunks {
         put_chunk(w, *c);
     }
-    put_opt(w, &s.pin.as_deref().copied(), put_pin);
+    if let Some(p) = &s.pin {
+        put_pin(w, p);
+    }
 }
 
 fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
     let pos = get_pos(r)?;
-    let district = get_opt(r, |r| Ok(DistrictId(r.u64()?)))?;
+    let flags = r.u8()?;
+    if flags > 3 {
+        return bad(format!("source flags {flags}"));
+    }
+    let district = if flags & 1 != 0 {
+        Some(DistrictId(r.u64()?))
+    } else {
+        None
+    };
     let rate = r.f64()?;
     let m = r.len_prefix(9)?;
     let affects = (0..m)
@@ -1081,7 +1150,11 @@ fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
         affects,
         actor,
         chunks,
-        pin: get_opt(r, get_pin)?.map(Box::new),
+        pin: if flags & 2 != 0 {
+            Some(Box::new(get_pin(r)?))
+        } else {
+            None
+        },
     })
 }
 
@@ -1098,8 +1171,8 @@ impl Encode for FactionRow {
             w.u8(*k as u8);
             w.var_u64(u64::from(*id));
         }
-        put_usize(w, self.rail.len());
-        self.rail.iter().for_each(|m| put_meter(w, m));
+        put_usize(w, self.rail().len());
+        self.rail().iter().for_each(|m| put_meter(w, m));
     }
 }
 
@@ -1202,12 +1275,14 @@ impl Decode for FactionRow {
             }
             rail.push(m);
         }
-        Ok(FactionRow {
+        let mut row = FactionRow {
             x,
             feuds,
             reach,
-            rail,
-        })
+            rail: None,
+        };
+        row.set_rail(rail);
+        Ok(row)
     }
 }
 
@@ -1797,5 +1872,101 @@ mod tests {
         let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &b).unwrap();
         assert_eq!(back.state_hash(), c.state_hash());
         assert_eq!(back.save(), b);
+    }
+
+    fn encoded(f: impl FnOnce(&mut Writer)) -> usize {
+        let mut w = Writer::with_capacity(256);
+        f(&mut w);
+        w.into_bytes().len()
+    }
+
+    fn at(x: i32) -> Pos {
+        Pos { frame: 0, x, z: -x }
+    }
+
+    /// The bytes a feud, a focus and a source take with no rail in them, as measured at f6321fa5,
+    /// the base before M7 (MZB-331's gate: a world with no rail pays what base paid).
+    #[test]
+    fn a_world_with_no_rail_encodes_what_it_did_before_m7() {
+        let mut f = Feud::new(Tick(5));
+        assert_eq!(encoded(|w| put_feud(w, &f)), 176);
+        f.focus = Some(Focus {
+            pos: at(40),
+            district: Some(DistrictId(3)),
+            weight: 2.0,
+            track: None,
+        });
+        assert_eq!(encoded(|w| put_feud(w, &f)), 197);
+        let mut s = Source {
+            pos: at(40),
+            district: None,
+            rate: 1.0,
+            affects: vec![(0, 1.0)],
+            actor: ActorId::from_bits(0x0B0B),
+            chunks: vec![],
+            pin: None,
+        };
+        assert_eq!(encoded(|w| put_source(w, &s)), 32);
+        s.district = Some(DistrictId(3));
+        assert_eq!(encoded(|w| put_source(w, &s)), 40);
+    }
+
+    /// A feud with the Rail kind's components, a focus with a track and a source with a pin come
+    /// back as they went, in every mix of the flags.
+    #[test]
+    fn the_rail_parts_of_a_feud_focus_and_source_round_trip() {
+        let pin = Pin {
+            y: -12,
+            station: Some((at(7), DistrictId(9))),
+        };
+        for tail in [false, true] {
+            for envoy_again in [false, true] {
+                for focus in [None, Some(None), Some(Some(pin))] {
+                    let mut f = Feud::new(Tick(5));
+                    f.envoy_again = envoy_again;
+                    f.raw[2] = 0.5;
+                    f.g.level[1] = 3.0;
+                    f.g.rate[3] = 0.25;
+                    if tail {
+                        f.g.rail = Some(Box::new(RailTail {
+                            level: 1.5,
+                            rate: 0.0,
+                            raw: 2.5e-4,
+                        }));
+                    }
+                    f.focus = focus.map(|t| Focus {
+                        pos: at(11),
+                        district: t.is_none().then_some(DistrictId(2)),
+                        weight: 4.0,
+                        track: t.map(Box::new),
+                    });
+                    let mut w = Writer::with_capacity(256);
+                    put_feud(&mut w, &f);
+                    let b = w.into_bytes();
+                    let mut r = Reader::new(&b);
+                    assert_eq!(get_feud(&mut r).unwrap(), f);
+                    assert!(r.finish_check().is_ok());
+                }
+            }
+        }
+        for district in [None, Some(DistrictId(4))] {
+            for pin in [None, Some(Box::new(pin))] {
+                let s = Source {
+                    pos: at(3),
+                    district,
+                    rate: 0.125,
+                    affects: vec![(1, 1.0), (4, 0.5)],
+                    actor: ActorId::from_bits(0x0B0B),
+                    chunks: vec![],
+                    pin,
+                };
+                let mut w = Writer::with_capacity(256);
+                put_source(&mut w, &s);
+                let b = w.into_bytes();
+                let mut r = Reader::new(&b);
+                assert_eq!(get_source(&mut r).unwrap(), s);
+                assert!(r.finish_check().is_ok());
+            }
+        }
     }
 }

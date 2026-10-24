@@ -64,8 +64,12 @@ pub struct FactionRow {
     pub feuds: Vec<(ActorId, Feud)>,
     /// The sources that reach this faction, by (kind, source id), sorted (PM-C3).
     pub reach: Vec<(SignalKind, u32)>,
-    /// The rail meters, one per actor, sorted by actor (M7, MZB-304).
-    pub rail: Vec<RailMeter>,
+    /// The rail meters, one per actor, sorted by actor (M7, MZB-304). Boxed, and `None` while
+    /// there are none (never an empty list), so that a faction of a world with no rail pays one
+    /// pointer resident and one byte encoded (MZB-313, amended by the lead for MZB-331's gate).
+    /// Read it through [`FactionRow::rail`].
+    #[allow(clippy::box_collection)]
+    pub(crate) rail: Option<Box<Vec<RailMeter>>>,
 }
 
 impl FactionRow {
@@ -74,21 +78,27 @@ impl FactionRow {
             x,
             feuds: Vec::new(),
             reach: Vec::new(),
-            rail: Vec::new(),
+            rail: None,
         }
     }
 
+    /// The rail meters, one per actor, sorted by actor.
+    pub fn rail(&self) -> &[RailMeter] {
+        self.rail.as_deref().map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn rail_at(&self, a: ActorId) -> Result<usize, usize> {
-        self.rail.binary_search_by(|m| m.actor.cmp(&a))
+        self.rail().binary_search_by(|m| m.actor.cmp(&a))
     }
 
     /// The rail meter of `a`, if it has one.
     pub fn rail_meter(&self, a: ActorId) -> Option<&RailMeter> {
-        self.rail_at(a).ok().map(|i| &self.rail[i])
+        self.rail_at(a).ok().map(|i| &self.rail()[i])
     }
 
     pub(crate) fn rail_meter_mut(&mut self, a: ActorId) -> Option<&mut RailMeter> {
-        self.rail_at(a).ok().map(|i| &mut self.rail[i])
+        let i = self.rail_at(a).ok()?;
+        self.rail.as_mut().map(|v| &mut v[i])
     }
 
     /// The rail meter of `a`, made if it has none.
@@ -96,11 +106,29 @@ impl FactionRow {
         let i = match self.rail_at(a) {
             Ok(i) => i,
             Err(i) => {
-                self.rail.insert(i, RailMeter::new(a));
+                self.rail
+                    .get_or_insert_with(Default::default)
+                    .insert(i, RailMeter::new(a));
                 i
             }
         };
-        &mut self.rail[i]
+        &mut self.rail.as_mut().expect("just made")[i]
+    }
+
+    /// Drops the meter at `i` (a place [`FactionRow::rail_at`] found); the last one takes the
+    /// list with it.
+    pub(crate) fn rail_remove(&mut self, i: usize) {
+        if let Some(v) = self.rail.as_mut() {
+            v.remove(i);
+            if v.is_empty() {
+                self.rail = None;
+            }
+        }
+    }
+
+    /// Replaces the meters, `None` for an empty list.
+    pub(crate) fn set_rail(&mut self, meters: Vec<RailMeter>) {
+        self.rail = (!meters.is_empty()).then(|| Box::new(meters));
     }
 
     pub(crate) fn feud_at(&self, a: ActorId) -> Result<usize, usize> {
@@ -141,9 +169,13 @@ impl Row for FactionRow {
             + self.feuds.iter().filter(|e| e.1.notice.is_some()).count()
                 * std::mem::size_of::<crate::boundary::Notice>()
             + self.reach.capacity() * std::mem::size_of::<(SignalKind, u32)>()
-            + self.rail.capacity() * std::mem::size_of::<RailMeter>()
+            + self.feuds.iter().map(|e| e.1.tail_bytes()).sum::<usize>()
+            + self.rail.as_deref().map_or(0, |v| {
+                std::mem::size_of::<Vec<RailMeter>>()
+                    + v.capacity() * std::mem::size_of::<RailMeter>()
+            })
             + self
-                .rail
+                .rail()
                 .iter()
                 .map(|m| m.lines.capacity() * std::mem::size_of::<LineCount>())
                 .sum::<usize>()

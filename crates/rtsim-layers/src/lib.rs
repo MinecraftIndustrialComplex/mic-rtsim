@@ -1188,7 +1188,7 @@ fn feuds(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
         let f = f as u32;
         let Some(x) = c.factions.get(f) else { continue };
         for (actor, feud) in c.feuds_of(f) {
-            let to = feud.focus.map(|fo| fo.pos).or_else(|| {
+            let to = feud.focus.as_ref().map(|fo| fo.pos).or_else(|| {
                 let p = c.parties.get(feud.party?)?;
                 party_target_pos(cx.world, &p.target)
             });
