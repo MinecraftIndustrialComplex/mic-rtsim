@@ -25,6 +25,16 @@
 //! sweep in which another part of the district did not run, an edit outside its box, and a
 //! recompile that left it unchanged. The district's window stays the checksum over everything and
 //! keeps today's rules; derates and demotions are still its own.
+//!
+//! **Counted stores** (SECTIONS.md §4.1, §4.2; slice S3). At a shared store between units whose
+//! moves Java counts ([`Units::counted`]), a unit is measured on what its own movers put in less what
+//! they took out (IND_COUNT_SAMPLE, cumulative since each pair's `since`), and on the store's
+//! **residue**: its stock less the ports into it less every counted move there, as it changed since
+//! the unit's window began. The model has no move at a counted store but its movers', so a residue is
+//! a move it lacks, and every unit at the store fails on that good as the district's window does
+//! (§4.3's judging group for one window). A unit's window opens only at a sweep whose count sample
+//! holds each pair at its counted stores; a sweep without that loses it, and a pair whose `since`
+//! moved (Java forgot its counters) starts it again from that sweep.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -36,7 +46,7 @@ use super::records::{CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, NodeKind, ProbeS
 use super::report::{self, GoodReport, Report};
 use super::sections::Sections;
 use super::solve::{self, Regime, Solution, burn};
-use super::units::{self, UnitBound, Units};
+use super::units::{self, PAIR_IN, PAIR_OUT, UnitBound, Units};
 use crate::district::Inventory;
 use crate::ids::{BlockPos, DistrictId, Good, GoodClass, GoodVec, VecMap};
 use crate::reconcile::GoodLookup;
@@ -169,6 +179,13 @@ pub struct UnitState {
     /// The goods its windows' rows held since the compile, kept as those rows go (a discard or a
     /// conclusion): the veto reads them (choice SC65). Sorted.
     pub touched: Vec<Good>,
+    /// Its open window's pairs at its counted stores, by (mover, store) position, with each one's
+    /// `since` at the window's first sample: a pair whose `since` moved starts the window again.
+    /// By position, so a recompile that names the same pairs keeps the window (§4.2).
+    pub count_since: Vec<PairSince>,
+    /// Its counted stores' summed residue per good at its open window's first sample, sorted:
+    /// what each later sample's residue is measured from.
+    pub rbase: Vec<(Good, i64)>,
 }
 
 /// Which chunks ran through a sweep, for the units' liveness (SECTIONS.md §3.4).
@@ -223,6 +240,34 @@ pub struct ProbeTrack {
     pub first: i64,
     pub last_sweep: u32,
     pub last: i64,
+}
+
+/// The counters of one sweep's IND_COUNT_SAMPLE records (SECTIONS.md §4.2), for the pairs of the
+/// current count set: each pair's `since`, and its cumulative moves in and out per good. Not
+/// saved: a sweep's sample comes before its end, which reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CountTake {
+    pub sweep: u32,
+    /// (mover, store) to the game time its counters started at.
+    pub since: BTreeMap<(u32, u32), i64>,
+    /// (mover, store, good) to (moved in, moved out).
+    pub moved: BTreeMap<(u32, u32, Good), (i64, i64)>,
+    /// (mover, store) to how many entries its records said the pair has in all (the largest said).
+    pub stated: BTreeMap<(u32, u32), u32>,
+    /// (mover, store) to how many entries of it the records of the sweep held.
+    pub got: BTreeMap<(u32, u32), u32>,
+}
+
+impl CountTake {
+    /// The pair's `since`, when the sample holds the pair whole: at least one entry, and as many
+    /// as it says the pair has. A pair split over records, one of them lost, is partial: its
+    /// goods in the records that came would count, and those in the lost one read as not moved.
+    pub fn since_of(&self, pair: (u32, u32)) -> Option<i64> {
+        let since = *self.since.get(&pair)?;
+        let stated = self.stated.get(&pair).copied().unwrap_or(0);
+        let got = self.got.get(&pair).copied().unwrap_or(0);
+        (stated >= 1 && got >= stated).then_some(since)
+    }
 }
 
 /// What the district's glass did, for operators and tests (bounded: the last few events).
@@ -354,10 +399,13 @@ pub struct Compiled {
     pub unit_state: Vec<UnitState>,
     /// The units' open windows' rows, sorted by (unit, good).
     rows: Vec<Row>,
-    /// Per inventory a unit holds: the ports into it since the compile (cumulative, positive in),
-    /// what a unit's measured series subtracts (§4.4). Kept across a recompile of the same
-    /// revision, with the windows it carries.
+    /// Per inventory a unit holds or a counted store between units holds: the ports into it since
+    /// the compile (cumulative, positive in), what a unit's measured series and a counted store's
+    /// residue subtract (§4.4). Kept across a recompile of the same revision, with the windows it
+    /// carries.
     pub ports_at: VecMap<u32, GoodVec>,
+    /// The latest sweep's IND_COUNT_SAMPLE (§4.2). Not saved.
+    pub counts: Option<CountTake>,
 }
 
 /// One district's glass state.
@@ -400,9 +448,14 @@ pub struct DistrictGlass {
     pub joins: Option<(u32, Vec<Vec<u32>>)>,
 }
 
+/// A counted pair's mover and store positions, and the game time its counters started at (§4.2).
+pub type PairSince = (BlockPos, BlockPos, i64);
+
 /// What a sweep sees of the district.
 pub struct View<'a> {
     pub revision: u32,
+    /// The sweep's number: the count sample it reads is this sweep's (SECTIONS.md §4.2).
+    pub sweep: u32,
     pub inventories: &'a VecMap<u32, Inventory>,
     pub ports: &'a GoodVec,
 }
@@ -808,7 +861,7 @@ impl Compiled {
                 }
             })
             .collect();
-        let sections = Sections::compute(&graph, max);
+        let sections = Sections::cut_counted(&graph, max, tun.sections_max, tun.counted_stores_max);
         let units = Units::build(&graph, &sections, joins);
         let mut regime = Regime::new(n);
         regime.demoted = demoted.clone();
@@ -869,6 +922,7 @@ impl Compiled {
             ubounds: Vec::new(),
             rows: Vec::new(),
             ports_at: VecMap::new(),
+            counts: None,
         }
     }
 
@@ -876,7 +930,8 @@ impl Compiled {
     /// keeping each unit the cut leaves as it was (by its sections' fingerprints) with its window
     /// and verdicts; a merged unit starts learning after a fresh warm-up from `at`.
     pub fn recut(&mut self, max: usize, at: Tick, tun: &GlassTunables) {
-        let sections = Sections::compute(&self.graph, max);
+        let sections =
+            Sections::cut_counted(&self.graph, max, tun.sections_max, tun.counted_stores_max);
         let units = Units::build(&self.graph, &sections, &self.joins);
         let ready = self
             .ready_at
@@ -1255,17 +1310,76 @@ impl Compiled {
 
     /// Discards unit `u`'s open window and its rows; its next starts after a fresh warm-up.
     pub fn discard_unit(&mut self, u: u16, at: Tick, tun: &GlassTunables) {
+        let latency = self.graph.longest_latency;
+        let Some(st) = self.unit_state.get_mut(u as usize) else {
+            return;
+        };
+        st.ready_at = st.ready_at.max(Tick(at.0 + tun.warmup_ticks + latency));
+        self.restart_unit(u);
+    }
+
+    /// Closes unit `u`'s open window unjudged, with its rows: a new one may open at once (a pair
+    /// whose counters started again, §4.2).
+    fn restart_unit(&mut self, u: u16) {
         let Some(st) = self.unit_state.get_mut(u as usize) else {
             return;
         };
         st.win = None;
         st.caps.clear();
-        st.ready_at = st
-            .ready_at
-            .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
+        st.count_since.clear();
+        st.rbase.clear();
         let span = rows_of(&self.rows, u);
         keep_touched(&mut st.touched, &self.rows[span.clone()]);
         self.rows.drain(span);
+    }
+
+    /// Per unit: its pairs' `since` by position in this sweep's count sample, sorted, or None when
+    /// the sample lacks one of them (§4.2); empty for a unit with no counted store.
+    fn count_cover(&self, sweep: u32) -> Vec<Option<Vec<PairSince>>> {
+        let take = self.counts.as_ref().filter(|t| t.sweep == sweep);
+        self.units
+            .pairs_of
+            .iter()
+            .map(|ps| {
+                let mut out = Vec::with_capacity(ps.len());
+                for &(m, h) in ps {
+                    let since = take?.since_of((m, h))?;
+                    out.push((self.graph.node(m).pos, self.graph.node(h).pos, since));
+                }
+                out.sort_unstable();
+                Some(out)
+            })
+            .collect()
+    }
+
+    /// IND_COUNT_SAMPLE of sweep `sweep` for this compile: the counters of the pairs of the count
+    /// set it names; several records of one sweep add up, and a later sweep's replaces them. A pair
+    /// whose entries are fewer than its records say ([`Count::entries`]) gives no cover.
+    pub fn count_sample(&mut self, sweep: u32, counts: &[super::records::Count]) {
+        if self.counts.as_ref().is_none_or(|t| t.sweep != sweep) {
+            self.counts = Some(CountTake {
+                sweep,
+                ..CountTake::default()
+            });
+        }
+        let units = &self.units;
+        let t = self.counts.as_mut().expect("set");
+        for c in counts {
+            let Ok(i) = units.pairs.binary_search(&(c.mover, c.store)) else {
+                continue;
+            };
+            t.since.insert((c.mover, c.store), c.since);
+            *t.got.entry((c.mover, c.store)).or_insert(0) += 1;
+            let said = t.stated.entry((c.mover, c.store)).or_insert(0);
+            *said = (*said).max(c.entries);
+            // Each count once, though Java names it under every pair of movers at one block
+            let dirs = units.pair_dirs[i];
+            let moved_in = if dirs & PAIR_IN != 0 { c.moved_in } else { 0 };
+            let moved_out = if dirs & PAIR_OUT != 0 { c.moved_out } else { 0 };
+            if let Some(g) = c.good {
+                t.moved.insert((c.mover, c.store, g), (moved_in, moved_out));
+            }
+        }
     }
 
     /// An edit (SECTIONS.md §3.6): the district's window goes, as it covers every section, and the
@@ -1416,6 +1530,8 @@ impl Compiled {
         // What the stores could not give (they held too little), per good and per unit's good.
         let mut corr: BTreeMap<Good, f64> = BTreeMap::new();
         let mut ucorr: BTreeMap<(u16, Good), f64> = BTreeMap::new();
+        // At a counted store between units: (store, good, short), shared after the loop.
+        let mut short: Vec<(u32, Good, f64)> = Vec::new();
         for &(inv, g, net) in &self.sol.per_store {
             let est = self.stock_est.entry((inv, g)).or_insert(0.0);
             let raw = net * dt;
@@ -1426,8 +1542,33 @@ impl Compiled {
             }
             if clamped != raw {
                 *corr.entry(g).or_insert(0.0) += clamped - raw;
-                if units_open && let Some(u) = self.units.unit_of_inv(inv) {
-                    *ucorr.entry((u, g)).or_insert(0.0) += clamped - raw;
+                if units_open {
+                    if let Some(u) = self.units.unit_of_inv(inv) {
+                        *ucorr.entry((u, g)).or_insert(0.0) += clamped - raw;
+                    } else if let Some(h) = self.units.counted_store_of_inv(inv) {
+                        short.push((h, g, clamped - raw));
+                    }
+                }
+            }
+        }
+        // What a counted store could not give is short in its takers' units, each by its share of
+        // the predicted take there (§4.1: a unit's own edges at the store are its flows).
+        for (h, g, c) in short {
+            let mut takers: BTreeMap<u16, f64> = BTreeMap::new();
+            for se in &self.sol.store_edges {
+                let ed = self.graph.edge(se.edge);
+                if se.into || se.good != g || ed.from != h || se.flow <= 0.0 {
+                    continue;
+                }
+                let u = self.units.of_node[ed.to as usize];
+                if u != super::sections::NONE {
+                    *takers.entry(u).or_insert(0.0) += se.flow;
+                }
+            }
+            let total: f64 = takers.values().sum();
+            if total > 0.0 {
+                for (u, f) in takers {
+                    *ucorr.entry((u, g)).or_insert(0.0) += c * f / total;
                 }
             }
         }
@@ -1507,8 +1648,16 @@ impl Compiled {
 
     /// Adds the sample at `at` to the open windows of the units `take` names: each unit's stores'
     /// stock less the ports into its inventories, per good (SECTIONS.md §4.1, the units' stores
-    /// interior).
-    fn sample_units(&mut self, at: Tick, view: &View<'_>, take: &[bool]) {
+    /// interior), plus at its counted stores what its own movers moved in less what they moved
+    /// out and the stores' residue since its window's first sample (`cover`: the pairs' `since`
+    /// per unit, [`Compiled::count_cover`], kept at that first sample).
+    fn sample_units(
+        &mut self,
+        at: Tick,
+        view: &View<'_>,
+        take: &[bool],
+        cover: &[Option<Vec<PairSince>>],
+    ) {
         if !take.iter().any(|&x| x) || view.revision != self.graph.end.revision {
             return;
         }
@@ -1535,6 +1684,7 @@ impl Compiled {
                 }
             }
         }
+        self.sample_counted(view, take, cover, &mut y);
         // A unit holding a node of a model demoted here (G-B14) is unbounded as one holding a
         // black box is: the solve treats the node as one.
         let mut unbounded = self.units.unbounded.clone();
@@ -1599,6 +1749,93 @@ impl Compiled {
             }
             let v = y.get(&(r.unit, r.good)).copied().unwrap_or(0) as f64;
             add_sample(&mut r.acc, &r.cum, times[u], v);
+        }
+    }
+
+    /// The counted stores' part of the samples of the units `take` names (§4.1), into `y`: what a
+    /// unit's own movers moved in less what they moved out at its counted stores, and those stores'
+    /// summed residue (stock less ports less every counted move there) less its value at the unit's
+    /// window's first sample. That first sample keeps the residue as the window's base, and the
+    /// pairs' `since` (`cover`).
+    fn sample_counted(
+        &mut self,
+        view: &View<'_>,
+        take: &[bool],
+        cover: &[Option<Vec<PairSince>>],
+        y: &mut BTreeMap<(u16, Good), i64>,
+    ) {
+        let units = &self.units;
+        let wanted = |u: usize| {
+            take.get(u).copied().unwrap_or(false)
+                && units.counted_of.get(u).is_some_and(|c| !c.is_empty())
+        };
+        if !(0..units.len()).any(wanted) {
+            return;
+        }
+        let Some(t) = self.counts.as_ref().filter(|t| t.sweep == view.sweep) else {
+            return;
+        };
+        let mut r: BTreeMap<(u32, Good), i64> = BTreeMap::new();
+        for (&(m, h, g), &(moved_in, moved_out)) in &t.moved {
+            let net = moved_in.saturating_sub(moved_out);
+            let e = r.entry((h, g)).or_insert(0);
+            *e = e.saturating_sub(net);
+            let u = units.of_node[m as usize];
+            if u != super::sections::NONE && wanted(u as usize) {
+                let e = y.entry((u, g)).or_insert(0);
+                *e = e.saturating_add(net);
+            }
+        }
+        for &h in &units.counted {
+            let Some(inv) = self.graph.node(h).inventory else {
+                continue;
+            };
+            if let Some(i) = view.inventories.get(&inv) {
+                for (g, a) in i.known.iter() {
+                    let e = r.entry((h, g)).or_insert(0);
+                    *e = e.saturating_add(a);
+                }
+            }
+            if let Some(p) = self.ports_at.get(&inv) {
+                for (g, a) in p.iter() {
+                    let e = r.entry((h, g)).or_insert(0);
+                    *e = e.saturating_sub(a);
+                }
+            }
+        }
+        for u in 0..units.len() {
+            if !wanted(u) {
+                continue;
+            }
+            let mut sum: BTreeMap<Good, i64> = BTreeMap::new();
+            for &h in &units.counted_of[u] {
+                for (&(_, g), &v) in r.range((h, Good(0))..=(h, Good(u32::MAX))) {
+                    let e = sum.entry(g).or_insert(0);
+                    *e = e.saturating_add(v);
+                }
+            }
+            let st = &mut self.unit_state[u];
+            if st.win.is_some_and(|w| w.n == 0) {
+                st.rbase = sum.into_iter().collect();
+                st.count_since = cover.get(u).cloned().flatten().unwrap_or_default();
+                continue;
+            }
+            for &(g, _) in &st.rbase {
+                sum.entry(g).or_insert(0);
+            }
+            for (g, v) in sum {
+                let base = st
+                    .rbase
+                    .binary_search_by_key(&g, |&(x, _)| x)
+                    .map_or(0, |i| st.rbase[i].1);
+                let e = v.saturating_sub(base);
+                // Inserted only when not zero: a row that starts later than the window had a
+                // residue of zero before, as its absent samples say.
+                if e != 0 {
+                    let x = y.entry((u as u16, g)).or_insert(0);
+                    *x = x.saturating_add(e);
+                }
+            }
         }
     }
 
@@ -1915,16 +2152,26 @@ impl Compiled {
         // The units first: each open one that ran is sampled, the others lose their windows.
         let nu = self.unit_state.len();
         let ran = |u: usize| unit_live.get(u).copied().unwrap_or(false);
-        // Warming up or not: a unit that did not run warms up afresh once it runs again.
+        // Warming up or not: a unit that did not run warms up afresh once it runs again, as one
+        // does whose counted stores this sweep's count sample does not cover (§4.2). A pair whose
+        // counters started again starts its unit's window again.
+        let cover = self.count_cover(view.sweep);
+        let covered = |u: usize| cover.get(u).is_some_and(|c| c.is_some());
         for u in 0..nu {
-            if !ran(u) {
-                self.discard_unit(u as u16, at, tun);
+            match cover.get(u) {
+                Some(Some(since)) if ran(u) => {
+                    let st = &self.unit_state[u];
+                    if st.win.is_some() && *since != st.count_since {
+                        self.restart_unit(u as u16);
+                    }
+                }
+                _ => self.discard_unit(u as u16, at, tun),
             }
         }
         let take: Vec<bool> = (0..nu)
             .map(|u| ran(u) && self.unit_state[u].win.is_some())
             .collect();
-        self.sample_units(at, view, &take);
+        self.sample_units(at, view, &take, &cover);
         let mut first = self.conclude_units(at, tun.checksum_z);
         let stock = self.stock(view);
         let per = self.store_levels(view);
@@ -1972,7 +2219,7 @@ impl Compiled {
         // warm-up whose chunks ran open one.
         for (u, f) in first.iter_mut().enumerate() {
             let st = &mut self.unit_state[u];
-            if st.win.is_none() && ran(u) && at >= st.ready_at {
+            if st.win.is_none() && ran(u) && covered(u) && at >= st.ready_at {
                 st.win = Some(UnitWin {
                     start: at,
                     ..UnitWin::default()
@@ -1981,7 +2228,7 @@ impl Compiled {
                 *f = true;
             }
         }
-        self.sample_units(at, view, &first);
+        self.sample_units(at, view, &first, &cover);
         self.set_stock(view);
         self.last_sweep = Some(at);
         out
@@ -2288,10 +2535,14 @@ impl Compiled {
     /// The largest section count at most `below - 1` whose cut would hold at most `limit` extra
     /// rows, counting each unit of it as the goods of the units it merges (a lower count only
     /// merges more: `Sections::compute`'s merges are a prefix of a lower count's). 1 always does.
-    pub fn sections_for_rows(&self, limit: usize, below: usize) -> usize {
+    /// Counted are the stores the full cut counts (`tun`'s `glass.sectionsMax` and
+    /// `glass.countedStoresMax`, [`Sections::cut_counted`]).
+    pub fn sections_for_rows(&self, limit: usize, below: usize, tun: &GlassTunables) -> usize {
         let goods = self.unit_goods();
+        let base = Sections::compute_counted(&self.graph, tun.sections_max, tun.counted_stores_max)
+            .counted;
         let extra_at = |max: usize| -> usize {
-            let s = Sections::compute(&self.graph, max);
+            let s = Sections::cut_with(&self.graph, max, &base);
             let u = Units::build(&self.graph, &s, &self.joins);
             if !u.active() {
                 return 0;
@@ -2563,7 +2814,9 @@ mod persist_impls {
         caps,
         passed_caps,
         derated_at,
-        touched
+        touched,
+        count_since,
+        rbase
     });
 
     impl Persist for GlassEvent {
@@ -2607,9 +2860,9 @@ mod persist_impls {
 
     /// Every field but `solve_micros` (wall-clock time, restored as 0), `sections` and `units`
     /// (recomputed by the page's reader, which checks them against the fingerprints the page keeps
-    /// and the unit state against the units) and `ubounds` (recomputed from the solve): the regime
-    /// cache too, as a regime it answers is not a solve, and the replay's settle budget counts
-    /// solves (G2-61).
+    /// and the unit state against the units), `ubounds` (recomputed from the solve) and `counts` (a
+    /// sweep's sample is read at its end): the regime cache too, as a regime it answers is not a
+    /// solve, and the replay's settle budget counts solves (G2-61).
     impl Persist for Compiled {
         fn put(&self, w: &mut Writer) {
             self.graph.put(w);
@@ -2693,6 +2946,7 @@ mod persist_impls {
                 sections: Sections::default(),
                 units: Units::default(),
                 ubounds: Vec::new(),
+                counts: None,
             };
             // What the solve and the window index by node must cover the graph's nodes.
             let n = c.graph.nodes.len();
