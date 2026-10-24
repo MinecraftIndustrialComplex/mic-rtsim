@@ -48,7 +48,7 @@ pub const PROBE_FIXED: usize = 40;
 pub const TICKING_SIZE: usize = 48;
 pub const PROBE_SET_FIXED: usize = 32;
 
-fn node_code(k: NodeKind) -> u32 {
+pub(crate) fn node_code(k: NodeKind) -> u32 {
     match k {
         NodeKind::Store => 1,
         NodeKind::Buffer => 2,
@@ -89,7 +89,7 @@ fn node_from(kind: u16, code: u32) -> Result<NodeKind, WireError> {
     })
 }
 
-fn edge_code(k: EdgeKind) -> u32 {
+pub(crate) fn edge_code(k: EdgeKind) -> u32 {
     match k {
         EdgeKind::Adjacency => 1,
         EdgeKind::Belt => 2,
