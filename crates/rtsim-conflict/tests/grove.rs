@@ -1,0 +1,612 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! The engine half of MOWZIE.md's slice M9a (§4.10): the Umvuthana grove's chief and its heir,
+//! the tribute at the grove's price and the chest it lands in, owed hunts and plunder of
+//! livestock. Played against the emulated plugin (`synth::CampRun`) on the shipped cultures.
+
+use std::collections::BTreeMap;
+
+use rtsim_conflict::boundary::{self, Cmd, Obs};
+use rtsim_conflict::culture::PartyKind;
+use rtsim_conflict::engine::{
+    CHIEF_SLOT, Conflict, HUNT_RADIUS, Party, Phase, SlotState, Target, body_id, item_of,
+};
+use rtsim_conflict::synth::{self, CAMP, CampRun, REFINERY_POS};
+use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
+use rtsim_industry::ids::{Good, GoodVec};
+use rtsim_industry::threat::Threat;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::handle::Handle;
+use rtsim_settle::NodeKind;
+use rtsim_trade::{Amount, GoodId, MILLI};
+use rtsim_world::World;
+
+fn days(d: f64) -> u64 {
+    (d * TICKS_PER_DAY as f64).round() as u64
+}
+
+fn grove(seed: u64, found: u16) -> CampRun {
+    CampRun::new(seed, "umvuthana", found)
+}
+
+fn ok(r: &mut CampRun) {
+    let bad = r.check();
+    assert!(bad.is_empty(), "the invariants break: {bad:#?}");
+    assert!(r.failures.is_empty(), "{:#?}", r.failures);
+}
+
+/// The camp comes in and its first lines are answered.
+fn come_in(r: &mut CampRun) {
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+}
+
+/// The chief's slot: its state and generation.
+fn chief(r: &CampRun) -> Option<(SlotState, u32)> {
+    r.c.camp(r.f)
+        .and_then(|c| c.chief())
+        .map(|s| (s.state, s.generation))
+}
+
+/// Where the heir is due.
+fn heir_due(r: &CampRun) -> Tick {
+    r.c.camp(r.f).and_then(|c| c.heir).expect("an heir").due
+}
+
+/// The bodies of the chief's slot in the camp's world.
+fn chief_bodies(r: &CampRun) -> Vec<synth::CampBody> {
+    r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| b.slot == CHIEF_SLOT && b.generation != 0)
+        .copied()
+        .collect()
+}
+
+/// The warriors standing in the camp's world (the chief is not among them).
+fn warriors(r: &CampRun) -> usize {
+    r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| b.slot != CHIEF_SLOT || b.generation == 0)
+        .count()
+}
+
+/// Every CAMP_RECONCILE the engine sent, with the tick.
+fn orders(r: &CampRun) -> Vec<(Tick, boundary::CampReconcile)> {
+    r.cmds
+        .iter()
+        .filter_map(|(t, c)| match c {
+            Cmd::Reconcile(x) => Some((*t, x.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn lines_of(r: &CampRun, action: u8) -> usize {
+    orders(r)
+        .iter()
+        .flat_map(|(_, x)| x.lines.iter())
+        .filter(|l| l.action == action)
+        .count()
+}
+
+/// The camp comes in and waits out its first heir: a seated Umvuthi, its generation.
+fn seat_chief(r: &mut CampRun) -> u32 {
+    come_in(r);
+    let due = heir_due(r);
+    let predicted = r
+        .c
+        .camp(r.f)
+        .and_then(|c| c.heir_generation(r.key))
+        .expect("an heir waits");
+    r.run(due + 100);
+    assert_eq!(chief(r), Some((SlotState::Body, predicted)), "seated");
+    predicted
+}
+
+// ---- the heir -----------------------------------------------------------------------------------
+
+/// MZB-405, MZB-408, MZB-409: a grove found without its Umvuthi waits the cap's wait (192 days)
+/// for an heir, orders nothing before it, and then sends one CAMP_RECONCILE of two lines, a MASK of
+/// a warrior at home and a SEAT_HEIR of the new chief, in the generation the books derived while
+/// it waited. The answer seats the chief's slot: a Body with that generation, the warrior gone,
+/// the wait over.
+#[test]
+fn a_grove_found_without_its_umvuthi_seats_an_heir_when_the_cap_wait_ends() {
+    let mut r = grove(5, 9);
+    assert_eq!(chief(&r), None, "found without a chief");
+    assert_eq!(heir_due(&r), Tick(1 + days(192.0)), "the cap's wait from the finding");
+    come_in(&mut r);
+    r.run(Tick(days(191.0)));
+    assert_eq!(lines_of(&r, boundary::ACTION_MASK), 0, "nothing before the wait is over");
+    let key = r.key;
+    let generation = r.c.camp(r.f).unwrap().heir_generation(key).expect("an heir");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().heir_generation(key),
+        Some(generation),
+        "the generation does not move while the heir waits"
+    );
+    r.run(heir_due(&r) + 100);
+    let pairs: Vec<_> = orders(&r)
+        .into_iter()
+        .filter(|(_, x)| x.lines.iter().any(|l| l.action == boundary::ACTION_SEAT_HEIR))
+        .collect();
+    assert_eq!(pairs.len(), 1, "one reconcile seats the heir");
+    let lines = &pairs[0].1.lines;
+    assert_eq!(lines.len(), 2, "the pair");
+    assert_eq!(lines[0].action, boundary::ACTION_MASK);
+    assert_eq!((lines[0].slot, lines[0].generation), (0, 0), "a MASK names no slot");
+    assert_eq!(lines[1].action, boundary::ACTION_SEAT_HEIR);
+    assert_eq!((lines[1].slot, lines[1].generation), (CHIEF_SLOT, generation));
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)));
+    assert!(r.c.camp(r.f).unwrap().heir.is_none(), "the wait is over");
+    let bodies = chief_bodies(&r);
+    assert_eq!(bodies.len(), 1, "one chief body");
+    assert_eq!(bodies[0].generation, generation);
+    assert!(bodies[0].chief);
+    assert_eq!(warriors(&r), 8, "the masked warrior is gone");
+    let slots = r.c.camp(r.f).unwrap().slots.len();
+    assert_eq!(slots, 9, "eight warriors and the chief");
+    ok(&mut r);
+    r.round_trip();
+    ok(&mut r);
+}
+
+/// MZB-409 (lost answer): the pair applied in the world and its answer lost, the books still
+/// wait on it; the next census finds the chief body of the generation the books derived, seats it
+/// and takes the masked warrior's slot off the books, and no second pair is sent.
+#[test]
+fn a_lost_answer_to_the_heirs_pair_is_mended_by_the_census() {
+    let mut r = grove(6, 9);
+    come_in(&mut r);
+    let generation = r.c.camp(r.f).unwrap().heir_generation(r.key).unwrap();
+    // The camp has been recruiting and sending its members out all the while: the answer to lose
+    // is the pair's, the next one after the wait is nearly over.
+    r.run(Tick(heir_due(&r).0 - 10));
+    let before = warriors(&r);
+    r.plugin.lose_answers = 1;
+    r.run(heir_due(&r) + 100);
+    assert_eq!(chief_bodies(&r).len(), 1, "the world has its chief");
+    assert_eq!(warriors(&r), before - 1, "and one warrior less");
+    assert_eq!(chief(&r), None, "the books do not know yet");
+    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 2, "the pair is in flight");
+    r.camp_out();
+    r.run(r.c.now() + 5);
+    r.camp_in();
+    r.run(r.c.now() + 100);
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)));
+    assert_eq!(lines_of(&r, boundary::ACTION_MASK), 1, "no second pair");
+    assert_eq!(chief_bodies(&r).len(), 1);
+    assert_eq!(warriors(&r), before - 1);
+    ok(&mut r);
+}
+
+/// MZB-406, MZB-407: a player's kill of the chief steps the camp's pressure by one, so its heir
+/// is due after twice the wait of a death no player caused; the players the chief had traded with
+/// are forgotten; the heir that comes has another generation. (The pressure is what is left of the
+/// cap's, found without a chief and decayed over the 192 days the first heir took: 1.25.)
+#[test]
+fn a_chiefs_death_sets_the_next_heir_by_who_caused_it() {
+    let mut waits = Vec::new();
+    for by in [boundary::BY_PLAYER, boundary::BY_MOB] {
+        let mut r = grove(7, 9);
+        let first = seat_chief(&mut r);
+        // The chief remembers a player who paid it.
+        let at = r.c.now();
+        r.c.ingest(
+            &mut r.w,
+            &mut *r.infra,
+            &Obs::ChiefPaid(boundary::ChiefPaid {
+                faction: r.key,
+                slot: CHIEF_SLOT,
+                generation: first,
+                flags: 0,
+                player: synth::PLAYER,
+                op: 0x77,
+                items: Vec::new(),
+            }),
+            at,
+        );
+        assert_eq!(r.c.camp(r.f).unwrap().traded, vec![synth::PLAYER]);
+        let body = chief_bodies(&r)[0];
+        let at = r.c.now() + 1;
+        assert!(r.plugin.camp_kill(r.key, body.uuid, by, at));
+        r.run(at + 5);
+        assert_eq!(chief(&r), None, "the slot is freed");
+        assert!(r.c.camp(r.f).unwrap().traded.is_empty(), "its memory goes");
+        waits.push((heir_due(&r).0 - at.0) as f64 / TICKS_PER_DAY as f64);
+        r.run(heir_due(&r) + 100);
+        let (state, second) = chief(&r).expect("the heir sits");
+        assert_eq!(state, SlotState::Body);
+        assert_ne!(second, first, "another generation");
+        ok(&mut r);
+    }
+    assert!(
+        (waits[0] / waits[1] - 2.0).abs() < 0.05,
+        "one player's loss doubles the wait: {waits:?}"
+    );
+    assert!((12.0..16.0).contains(&waits[1]), "6 x 2^1.25 days: {waits:?}");
+}
+
+/// MZB-413: the Umvuthi leads an invasion and no raid (`chief_leads`): drawn into the party, its
+/// slot leaves with it; a raid leaves it at home. Whatever the party meets, the chief ends back in
+/// the camp's books (or its heir seated) and the invariants hold.
+#[test]
+fn the_chief_leads_an_invasion_and_stays_home_from_a_raid() {
+    let mut r = grove(8, 9);
+    seat_chief(&mut r);
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, REFINERY_POS);
+    r.c.order_party(&mut r.w, r.key, PartyKind::Raid, target, None, at)
+        .expect("a raid");
+    r.flush(at);
+    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body), "a raid is led by a warrior");
+    r.settle();
+    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body));
+    let at = r.c.now();
+    let p = r
+        .c
+        .order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+        .expect("an invasion");
+    r.flush(at);
+    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Left), "the chief leads");
+    let in_party: Vec<u32> = r
+        .c
+        .camp(r.f)
+        .unwrap()
+        .slots
+        .iter()
+        .filter(|s| s.party == p)
+        .map(|s| s.id)
+        .collect();
+    assert!(in_party.contains(&CHIEF_SLOT), "{in_party:?}");
+    r.settle();
+    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body), "home again");
+    ok(&mut r);
+}
+
+/// MZB-405: a census that finds an untagged Umvuthi in a camp found without one adopts it as the
+/// chief (an ADOPT line on the chief's slot), and the heir's wait is over; the warrior slot its
+/// body had counted for is owed again and spawned.
+#[test]
+fn a_census_that_finds_an_untagged_umvuthi_adopts_it_as_the_chief() {
+    let mut r = grove(9, 9);
+    let umvuthi = body_id(&r.c.cultures, "mic_rtsim:conflict/umvuthana/umvuthi");
+    {
+        let b = r.plugin.camp_world(r.key).bodies.first_mut().unwrap();
+        b.body = umvuthi;
+        b.chief = true;
+    }
+    assert!(r.c.camp(r.f).unwrap().heir.is_some_and(|h| h.found_empty), "waiting for an heir");
+    come_in(&mut r);
+    assert!(r.c.camp(r.f).unwrap().heir.is_none(), "the wait is over");
+    assert!(matches!(chief(&r), Some((SlotState::Body, g)) if g != 0));
+    let adopted: Vec<_> = orders(&r)
+        .into_iter()
+        .flat_map(|(_, x)| x.lines)
+        .filter(|l| l.action == boundary::ACTION_ADOPT && l.slot == CHIEF_SLOT)
+        .collect();
+    assert_eq!(adopted.len(), 1, "the chief's slot adopts the body");
+    assert_eq!(chief_bodies(&r).len(), 1);
+    assert_eq!(warriors(&r), 9, "eight warriors found and one spawned");
+    ok(&mut r);
+}
+
+// ---- tribute, trade and the chest ---------------------------------------------------------------
+
+/// The item dictionary of a good by name: its engine item id, named for the conflict.
+fn item(r: &mut CampRun, name: &str) -> (GoodId, u32) {
+    let g = r.w.goods.find(name).expect("a good of the synthetic world");
+    let id = item_of(g);
+    r.c.define(2, id, name);
+    (g, id)
+}
+
+fn grievance(r: &CampRun) -> f64 {
+    r.c.feud_view(r.key, r.player).map_or(0.0, |v| v.grievance)
+}
+
+/// A player's payment to an Umvuthi body, as the plugin reports it.
+fn paid(
+    r: &mut CampRun,
+    slot: u32,
+    generation: u32,
+    flags: u32,
+    op: u64,
+    items: &[(u32, i32)],
+) {
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::ChiefPaid(boundary::ChiefPaid {
+            faction: r.key,
+            slot,
+            generation,
+            flags,
+            player: synth::PLAYER,
+            op,
+            items: items
+                .iter()
+                .map(|&(item, count)| boundary::Item { item, count })
+                .collect(),
+        }),
+        at,
+    );
+}
+
+/// The relief a player's payment brings (the grievance it takes off a killing's, which is large
+/// enough that no payment below clears it), in a fresh run.
+fn relief(pay: impl FnOnce(&mut CampRun)) -> f64 {
+    let mut r = grove(10, 9);
+    r.kill(40.0);
+    let g0 = grievance(&r);
+    pay(&mut r);
+    let g1 = grievance(&r);
+    assert!(g1 > 0.0, "a payment that clears the feud proves nothing ({g0})");
+    g0 - g1
+}
+
+/// MZB-416: gold nuggets are the grove's tribute and the haven's market has no price for them: they
+/// are worth what the grove asks per coin (9), so 81 nuggets soften a feud as 9 coins do. A trade
+/// at the grove (TRADED, MZB-417) is worth a tenth of that: 810 nuggets are 9 coins' relief.
+#[test]
+fn unpriced_tribute_is_worth_the_groves_price_and_a_trade_a_tenth() {
+    let nuggets = relief(|r| {
+        let (_, id) = item(r, "gold_nugget");
+        paid(r, 0, 0, boundary::PAID_STRAY, 0x31, &[(id, 81)]);
+    });
+    let coins = relief(|r| {
+        let (_, id) = item(r, "emerald");
+        paid(r, 0, 0, boundary::PAID_STRAY, 0x32, &[(id, 9)]);
+    });
+    assert!(nuggets > 1.0, "a gift softens the feud: {nuggets}");
+    assert!((nuggets - coins).abs() < 1e-9, "81 nuggets {nuggets} are 9 coins {coins}");
+    let traded = relief(|r| {
+        let at = r.c.now();
+        let t = Obs::Traded(boundary::Traded {
+            faction: r.key,
+            player: synth::PLAYER,
+            nuggets: 810,
+            op: 0x33,
+        });
+        r.c.ingest(&mut r.w, &mut *r.infra, &t, at);
+    });
+    assert!(
+        (traded - coins).abs() < 1e-9,
+        "a trade of 810 nuggets is worth 9 coins' relief at a tenth: {traded} against {coins}"
+    );
+}
+
+/// MZB-418, MZB-420: a payment to the live Umvuthi (its slot and generation, Body) joins its trade
+/// memory, once, sorted; a payment to a stray, to another generation, to a slot that is not the
+/// chief's, or to no chief at all does not; the memory is at most `TRADED_CAP`.
+#[test]
+fn only_a_payment_to_the_live_chief_is_remembered() {
+    let mut r = grove(11, 9);
+    let (_, id) = item(&mut r, "gold_nugget");
+    come_in(&mut r);
+    let memory = |r: &CampRun| r.c.camp(r.f).unwrap().traded.clone();
+    // No chief yet: tribute and no memory.
+    paid(&mut r, CHIEF_SLOT, 5, 0, 0x41, &[(id, 9)]);
+    assert!(memory(&r).is_empty(), "no chief seated");
+    let generation = seat_chief(&mut r);
+    paid(&mut r, CHIEF_SLOT, generation.wrapping_add(1), 0, 0x42, &[(id, 9)]);
+    assert!(memory(&r).is_empty(), "another generation");
+    paid(&mut r, CHIEF_SLOT, generation, boundary::PAID_STRAY, 0x43, &[(id, 9)]);
+    assert!(memory(&r).is_empty(), "a stray Umvuthi");
+    paid(&mut r, 0, 1, 0, 0x44, &[(id, 9)]);
+    assert!(memory(&r).is_empty(), "a warrior's slot");
+    paid(&mut r, CHIEF_SLOT, generation, 0, 0x45, &[(id, 9)]);
+    assert_eq!(memory(&r), vec![synth::PLAYER]);
+    paid(&mut r, CHIEF_SLOT, generation, 0, 0x46, &[(id, 9)]);
+    assert_eq!(memory(&r), vec![synth::PLAYER], "once");
+    // The memory is bounded.
+    let mut camp = r.c.camp(r.f).unwrap().clone();
+    camp.traded.clear();
+    for n in 0..(rtsim_conflict::engine::TRADED_CAP as u64 + 5) {
+        camp.remember((n, n));
+    }
+    assert_eq!(camp.traded.len(), rtsim_conflict::engine::TRADED_CAP);
+    assert!(camp.traded.windows(2).all(|w| w[0] < w[1]), "sorted");
+    assert!(camp.remember((0, 0)), "one already in is still in");
+    assert!(!camp.remember((u64::MAX, 0)), "a full memory takes no more");
+    ok(&mut r);
+}
+
+/// MZB-420, MZB-421: the live chief's census lists the players it remembers; the engine unions
+/// that with its own memory, and when the body lacks some of what the engine holds it writes them
+/// (CHIEF_BODY). A census of another generation's chief says nothing about this one.
+#[test]
+fn the_censuss_trade_memory_is_unioned_and_a_short_body_is_written_to() {
+    let mut r = grove(12, 9);
+    let (_, id) = item(&mut r, "gold_nugget");
+    let generation = seat_chief(&mut r);
+    paid(&mut r, CHIEF_SLOT, generation, 0, 0x51, &[(id, 9)]);
+    let census = |r: &mut CampRun, slot: u32, generation: u32, traded: Vec<boundary::Uuid>| {
+        let at = r.c.now() + 1;
+        r.plugin.camp_in(r.key, at);
+        let mut q = r.plugin.drop_queued();
+        let Some(Obs::CampCensus(c)) = q.first_mut() else {
+            panic!("a census");
+        };
+        c.traded_slot = slot;
+        c.traded_generation = generation;
+        c.traded = traded;
+        let o = q.remove(0);
+        r.c.ingest(&mut r.w, &mut *r.infra, &o, at);
+        r.c.take_commands()
+    };
+    let other = (0xAAAA, 0xBBBB);
+    // The wrong generation: its list is not this chief's.
+    let cmds = census(&mut r, CHIEF_SLOT, generation.wrapping_add(1), vec![other]);
+    assert_eq!(r.c.camp(r.f).unwrap().traded, vec![synth::PLAYER]);
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::ChiefBody(_))));
+    // The chief's own: a player the engine did not know joins, and the body lacks the engine's.
+    let cmds = census(&mut r, CHIEF_SLOT, generation, vec![other]);
+    let mut want = vec![synth::PLAYER, other];
+    want.sort_unstable();
+    assert_eq!(r.c.camp(r.f).unwrap().traded, want);
+    let written: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::ChiefBody(b) => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(written.len(), 1, "the body is written to: {cmds:?}");
+    // The body with the whole list is not written to.
+    let cmds = census(&mut r, CHIEF_SLOT, generation, want.clone());
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::ChiefBody(_))), "{cmds:?}");
+}
+
+/// The grove's tribute (567 nuggets, one stack at most 64 at a time): a run with the camp in and
+/// `pay` done.
+fn tribute_run(seed: u64) -> (CampRun, GoodId) {
+    let mut r = grove(seed, 9);
+    let (nugget, id) = item(&mut r, "gold_nugget");
+    come_in(&mut r);
+    paid(&mut r, 0, 0, boundary::PAID_STRAY, 0x61, &[(id, 567)]);
+    (r, nugget)
+}
+
+fn owed(r: &CampRun) -> i64 {
+    r.c.camp(r.f).unwrap().owed_tribute.iter().map(|e| e.1).sum::<i64>() / MILLI
+}
+
+fn chest(r: &mut CampRun, free: u32) {
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::HavenChest(boundary::HavenChest {
+            faction: r.key,
+            dimension: u32::from(synth::CAMP_POS.frame),
+            pos: (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2),
+            free,
+        }),
+        at,
+    );
+}
+
+fn stock(r: &CampRun, g: GoodId) -> Amount {
+    r.w.market(r.c.factions[r.f as usize].node).stock(g)
+}
+
+/// MZB-423: tribute booked is owed to the chest (567 nuggets); with no chest known nothing is
+/// sent; once the plugin names one the stacks go one at a time, each after the last one's answer,
+/// whole stacks of at most 64, until every nugget has left the grove's books; the chest has a slot
+/// less for each stack.
+#[test]
+fn tribute_goes_to_the_chest_in_stacks_one_after_another() {
+    let (mut r, nugget) = tribute_run(20);
+    let held = stock(&r, nugget);
+    assert!(held >= 567 * MILLI, "the nuggets are stocked at the haven: {held}");
+    assert_eq!(owed(&r), 567);
+    assert_eq!(r.c.placings().count(), 0, "no chest, nothing sent");
+    chest(&mut r, 27);
+    let mut amounts = Vec::new();
+    let mut ops = Vec::new();
+    loop {
+        let Some((op, p)) = r.c.placings().next() else {
+            break;
+        };
+        assert_eq!(r.c.placings().count(), 1, "one at a time");
+        assert_eq!(p.good, u32::from(nugget.0));
+        assert_eq!(p.dimension, u32::from(synth::CAMP_POS.frame));
+        assert_eq!(p.pos, (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2));
+        amounts.push(p.amount / MILLI);
+        ops.push(op);
+        let at = r.c.now();
+        assert!(r.c.tribute_placed(&mut r.w, op, at));
+    }
+    assert_eq!(amounts, [64, 64, 64, 64, 64, 64, 64, 64, 55]);
+    let distinct: std::collections::BTreeSet<u64> = ops.iter().copied().collect();
+    assert_eq!(distinct.len(), 9, "each stack has its own op");
+    assert_eq!(owed(&r), 0);
+    assert_eq!(r.c.camp(r.f).unwrap().stacks, 9);
+    assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.free), Some(27 - 9));
+    assert_eq!(r.c.stats.tribute_stacks, 9);
+    assert_eq!(stock(&r, nugget), held - 567 * MILLI, "they have left the books");
+    ok(&mut r);
+}
+
+/// MZB-423 (failure and duplicates): a stack the plugin could not put down goes back to the
+/// grove's stock, the tribute is still owed and the chest is forgotten until it is named again,
+/// when the next stack goes under a new op. An answer for an op that is not in flight (a second
+/// answer to the same stack, an unknown op) changes nothing.
+#[test]
+fn a_failed_stack_goes_back_and_a_duplicate_answer_changes_nothing() {
+    let (mut r, nugget) = tribute_run(21);
+    let held = stock(&r, nugget);
+    chest(&mut r, 27);
+    let (op1, p1) = r.c.placings().next().expect("a stack");
+    assert_eq!(stock(&r, nugget), held - 64 * MILLI, "booked as leaving");
+    let at = r.c.now();
+    assert!(r.c.tribute_failed(&mut r.w, op1, at));
+    assert_eq!(stock(&r, nugget), held, "back");
+    assert_eq!(owed(&r), 567);
+    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "the chest is forgotten");
+    assert_eq!(r.c.placings().count(), 0);
+    assert!(!r.c.tribute_failed(&mut r.w, op1, at), "answered once");
+    assert!(!r.c.tribute_placed(&mut r.w, op1, at), "and not placed after");
+    assert!(!r.c.tribute_placed(&mut r.w, 0xDEAD, at), "an op of no stack");
+    chest(&mut r, 27);
+    let (op2, p2) = r.c.placings().next().expect("the chest again");
+    assert_ne!(op1, op2, "a new op");
+    assert_eq!(p1.amount, p2.amount);
+    assert!(r.c.tribute_placed(&mut r.w, op2, at));
+    assert!(!r.c.tribute_placed(&mut r.w, op2, at), "a duplicate answer");
+    assert_eq!(owed(&r), 567 - 64, "lowered once");
+    ok(&mut r);
+}
+
+/// MZB-423 (saves): a stack in flight is saved with its op, dimension and place, the chest is not
+/// (it is the plugin's word, latest wins); after a load the stack's answer lowers what is owed, and
+/// the next stack goes only when the chest is named again, under an op the saved counter makes new.
+#[test]
+fn a_stack_in_flight_survives_a_save_and_the_chest_does_not() {
+    let (mut r, _) = tribute_run(22);
+    chest(&mut r, 27);
+    let before: Vec<_> = r.c.placings().collect();
+    assert_eq!(before.len(), 1);
+    r.round_trip();
+    assert_eq!(r.c.placings().collect::<Vec<_>>(), before);
+    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "the chest is not saved");
+    assert_eq!(owed(&r), 567);
+    let at = r.c.now();
+    assert!(r.c.tribute_placed(&mut r.w, before[0].0, at));
+    assert_eq!(owed(&r), 567 - 64);
+    assert_eq!(r.c.placings().count(), 0, "no chest, no next stack");
+    chest(&mut r, 27);
+    let (op, _) = r.c.placings().next().expect("the next stack");
+    assert_ne!(op, before[0].0);
+    ok(&mut r);
+}
+
+/// MZB-446: only the tribute good is owed to the chest, since another item's stack may exceed its
+/// limit; other gifts are stocked and not placed. A camp that is out places nothing, and one that
+/// goes out forgets its chest but not the stack in flight.
+#[test]
+fn only_the_tribute_good_is_owed_and_a_camp_that_is_out_places_nothing() {
+    let (mut r, nugget) = tribute_run(23);
+    let (emerald, id) = item(&mut r, "emerald");
+    paid(&mut r, 0, 0, boundary::PAID_STRAY, 0x62, &[(id, 40)]);
+    let camp = r.c.camp(r.f).unwrap();
+    assert_eq!(camp.owed_tribute.len(), 1, "{:?}", camp.owed_tribute);
+    assert_eq!(camp.owed_tribute[0].0, u32::from(nugget.0));
+    assert!(stock(&r, emerald) >= 40 * MILLI, "the emeralds are stocked");
+    chest(&mut r, 27);
+    let (op, _) = r.c.placings().next().expect("a stack");
+    r.camp_out();
+    r.run(r.c.now() + 5);
+    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "forgotten at CAMP_OUT");
+    assert_eq!(r.c.placings().count(), 1, "the stack in flight stays");
+    let at = r.c.now();
+    assert!(r.c.tribute_placed(&mut r.w, op, at));
+    assert_eq!(r.c.placings().count(), 0, "nothing goes while the camp is out");
+    chest(&mut r, 27);
+    assert_eq!(r.c.placings().count(), 0, "a chest named to a camp that is out");
+    ok(&mut r);
+}
