@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -182,8 +183,9 @@ final class ReinstallRulesTest {
         assertFalse(ReinstallRules.stateExists(world));
     }
     /**
-     * The engine life (RG13): new exactly when the engine's pages are, kept while they are not, and gone with
-     * the page directory, so a reset (8.6's or the reinstall's) always starts a new one.
+     * The engine life (RG13): it belongs to the page directory. A new directory whose engine starts over draws one,
+     * the directory keeps it whatever later sessions find, and a reset (the reinstall's move, 8.6's delete) takes it
+     * away with the pages, so the next directory draws again.
      */
     @Test
     void theEngineLifeChangesExactlyWhenThePagesStartOver() throws IOException {
@@ -192,24 +194,32 @@ final class ReinstallRulesTest {
         int[] next = {0};
         java.util.function.LongSupplier random = () -> draws[next[0]++];
         long first = ReinstallRules.engineLife(pages, true, random);
-        assertEquals(0x1234, first, "new pages: a new life, never 0 (0 is the life of entries without one)");
+        assertEquals(0x1234, first, "an engine that starts over: a new life, never 0 (0 is the life of entries without one)");
         assertTrue(Files.exists(pages.resolve(ReinstallRules.LIFE_FILE)));
         assertFalse(Files.exists(pages.resolve(ReinstallRules.LIFE_FILE + ".tmp")));
         assertEquals(first, ReinstallRules.engineLife(pages, false, random), "a restart on the same pages keeps it");
-        assertEquals(first, ReinstallRules.engineLife(pages, false, random));
-        long second = ReinstallRules.engineLife(pages, true, random);
-        assertEquals(0x5678, second, "an engine that starts over again starts a new life");
-        assertEquals(second, ReinstallRules.engineLife(pages, false, random));
-        // the reinstall reset moves the directory, 8.6's deletes it: the next pages are new, and so is the life
+        assertEquals(first, ReinstallRules.engineLife(pages, true, random),
+                "a crash before the first page save starts over on the same journal, and numbers its epochs as before: the life stays");
+        // the reinstall reset moves the directory: the next pages are new, and so is the life
         ReinstallRules.moveAside(world, Instant.parse("2026-10-23T12:00:00Z"));
+        assertEquals(0x5678, ReinstallRules.engineLife(pages, true, random));
+        assertEquals(0x5678, ReinstallRules.engineLife(pages, false, random));
+        // 8.6's sim reset deletes it
+        try (java.util.stream.Stream<Path> walk = Files.walk(pages)) {
+            for (Path q : walk.sorted(java.util.Comparator.reverseOrder()).toList())
+                Files.delete(q);
+        }
         assertEquals(-2, ReinstallRules.engineLife(pages, true, random), "every bit of the draw is kept");
         assertEquals(-2, ReinstallRules.engineLife(pages, false, random));
-        // pages from before the life file: their entries carry no life, which reads as 0
+        // a first install, or pages from before the life file: entries carry no life, which reads as 0
         Path old = world.resolve("old-pages");
         Files.createDirectories(old);
         assertEquals(0, ReinstallRules.engineLife(old, false, random));
-        assertEquals(0, ReinstallRules.engineLife(old, false, random));
-        assertEquals(4, next[0], "only an engine that starts over draws");
+        assertEquals(0, ReinstallRules.engineLife(old, true, random), "a directory with a life keeps it, 0 included");
+        assertEquals(4, next[0], "only a new directory whose engine starts over draws");
+        // a file that is no life fails loudly, never guesses
+        Files.writeString(old.resolve(ReinstallRules.LIFE_FILE), "not hex\n");
+        assertThrows(IOException.class, () -> ReinstallRules.engineLife(old, false, random));
     }
 
     /**

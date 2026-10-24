@@ -159,23 +159,27 @@ public final class ReinstallRules {
     public static final String LIFE_FILE = "bridge-life.txt";
 
     /**
-     * The engine life for a session (RG13): a token that changes exactly when the engine's state starts
-     * over ({@code startsOver}, {@link #startsOver}): such an engine numbers every district's reconcile epochs
-     * from 1 again, so it gets a new token, written and synced before anything is stamped with it. Otherwise
-     * the session keeps the token in {@code pagesDir}, or 0 when there is none (a first install, or pages from
-     * before the token, whose chunk entries carry none either). The file lives in the page directory itself:
-     * deleting, moving or restoring {@code world/rtsim/} takes the token with it.
+     * The engine life for a session (RG13): a token for the lineage of the engine's page directory. A directory
+     * that has one keeps it, whatever the session: deleting, moving or restoring {@code world/rtsim/} takes it
+     * with the pages, and an engine that crashed before its first page save restarts on the same journal and
+     * numbers its epochs as before. A directory without one gets a new token when the engine starts over
+     * ({@code startsOver}, {@link #startsOver}: it numbers every district's reconcile epochs from 1 again), written
+     * and synced before anything is stamped with it, and 0 otherwise (a first install, or pages from before the
+     * token, whose chunk entries carry none either).
      */
     public static long engineLife(Path pagesDir, boolean startsOver, java.util.function.LongSupplier random) throws IOException {
         Path f = pagesDir.resolve(LIFE_FILE);
-        if (!startsOver) {
-            if (Files.exists(f))
-                return Long.parseUnsignedLong(Files.readString(f, StandardCharsets.UTF_8).strip(), 16);
-            writeLife(pagesDir, 0);
-            return 0;
+        if (Files.exists(f)) {
+            String text = Files.readString(f, StandardCharsets.UTF_8).strip();
+            try {
+                return Long.parseUnsignedLong(text, 16);
+            } catch (NumberFormatException e) {
+                throw new IOException(f + " holds no engine life (\"" + text + "\"); it belongs to the pages beside it:"
+                        + " restore it from the same backup, or reset the sim (delete world/rtsim/, runbook 8.6)", e);
+            }
         }
         long life = 0;
-        while (life == 0)
+        while (startsOver && life == 0)
             life = random.getAsLong();
         writeLife(pagesDir, life);
         return life;
