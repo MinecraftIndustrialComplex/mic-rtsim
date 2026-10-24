@@ -44,7 +44,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 88daebd7ace3c6e4"
+          "detail": "state hash f52e8007d8247837"
         }
       ],
       "rungs": [
@@ -471,7 +471,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 29e8bdcac5241e51"
+          "detail": "state hash 358c5aeb7771dab8"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",

@@ -633,7 +633,14 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    resend_notices_if_due(st);
+    // The notices (and with them the end of the replay, `replay_done`) wait for the replay to
+    // catch up: Java drains its journal while it fits, so a long one spreads over several
+    // hand-overs, and the bodies the session start kept for the replay are still needed by the
+    // records of the later ones (MZB-141). The first live record is the other trigger
+    // (`journaled`).
+    if st.replay.applied_through().0 + 1 >= st.session_first {
+        resend_notices_if_due(st);
+    }
     let at = Tick(phase1::world_tick(st, st.game_time));
     shared::run_to(st, at);
     feed_districts(st, at);
