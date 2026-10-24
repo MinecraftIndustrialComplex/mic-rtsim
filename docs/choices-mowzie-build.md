@@ -3441,11 +3441,20 @@ Two fixes for M6:
   So a HAND_BACK line for a raptor unit finds no warrior puppet and plays as a SPAWN at the far edge
   (MZB-213, MZB-214), while the pack walks off through `homeAt`. `camp_home` is unchanged (test 32's raptor
   clause).
-- **MZB-466** (the race at home; the question for Ben, decided on the recommendation): a puppet may be killed
+- **MZB-466** (the race at home; decided by the coordinator on 2026-10-24, not Ben, since it is reversible): a puppet may be killed
   in the tick or two between the engine's `home` and its HAND_BACK line.
   - Its BAND_CASUALTIES is for an ended party, so it books nothing and sends no Killing signal.
   - Its slot's line then finds no puppet, and the body spawns at the edge.
   - Accept it. Keeping the party until Java answers each line would change how every party ends.
+  - The coordinator added two conditions:
+    - **A counter:** `stats.unbooked_home_deaths`, plus a debug log line naming the party and the slot. It counts
+      each BAND_CASUALTIES (and CHIEF_KILLED) that names a party already ended by `home` before its HAND_BACK line
+      is answered, so the rate shows in GameTests and soaks. Java logs the matching case on its side too: a death
+      of a puppet whose party has a HAND_BACK in flight.
+    - **A test:** the unbooked death costs at most that one body and does not cascade. Afterwards the faction's
+      party count, its pool, the camp's slots and the audit sums agree. No other party, slot or later band is
+      touched. A second copy of the same casualty changes nothing.
+  - If the counter shows the race is common, revisit it by keeping a party until every line is answered.
 - **MZB-467** (idempotency): M10 adds or changes no holder-carried record and no op id.
   - BAND_MARCH is an engine command, latest-wins by revision within a session, and the engine sends every
     party again at a session start. Java sends nothing back for it.
@@ -4049,7 +4058,7 @@ extracted to `target/m10-vanilla`.
   9. `start_fight` on an embodied band.
   10. `lose_units`' clamp, then `camp_home -> bool` and `home`'s fallback.
   11. `FakeConflict`.
-  12. `mowzie_march.rs` and the protocol tests.
+  12. `mowzie_march.rs` and the protocol tests, including MZB-466's counter and its no-cascade test.
   13. Runs 11 and 13.
   14. The boundary.md amendments (MZB-482, MZB-484).
 
@@ -4081,10 +4090,8 @@ extracted to `target/m10-vanilla`.
   **Opus review at the end**, of M10 whole against MOWZIE.md §4.16, ledgers 23 and 25, and tests 22, 28,
   32 to 34.
 
-**Question for Ben** (the design follows the recommendation):
-1. MZB-466, the race at home: may a puppet killed in the tick or two between the engine's `home` and its
-   HAND_BACK line go unbooked, its body then spawning at the edge? Recommended: accept it. Keeping a party
-   until Java answers each line would change how every party ends.
+**No open question.** The coordinator decided MZB-466 (the race at home) on 2026-10-24: it is accepted, with a
+counter and a no-cascade test.
 
 **Traps.**
 - **The cell fold.** Java folds the block centre, `(x + 0.5, z + 0.5)`. Folding the corner lands on the
