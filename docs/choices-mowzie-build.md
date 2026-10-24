@@ -1038,3 +1038,14 @@ conservative option at its fork.
   its raw value and time (the closed form alone does not show when the band came home). The crate
   tests that called `session_start` call `begin_replay(true)`, and `replay_done` where they wanted
   the old reset's effects; `boundary::tests::cmds` is `pub(crate)` for the gate's table test.
+- **RP-43** (§2.5's tests, written by the merger at 96ca2219): tests 1, 2, 3 and 5 sit in rtsim-jni
+  tests/protocol.rs's `conflict` module, not tests/reassert.rs, because the camp, raid and band
+  helpers they need live there; test 4 (pinnedGen, no conflict state) sits in tests/reassert.rs
+  beside S4p's. Without the copy bit (`applying_copy`) five fail: the live materialized copy embodies
+  ([1], want [2]), the unknown-generation copy takes 0 of 6, the replayed and live casualty copies
+  leave 12 alive (want 6), and generation 0 refuses 0 (want 4). The replayed materialized variant
+  holds either way, since a replayed BAND_MATERIALIZED raises the epoch floor too; it is kept as the
+  control. Test 4 cannot tell an end right before the JOURNAL_GEN from one right after it (a
+  JOURNAL_GEN is never dispatched, so nothing reads the difference); it does fail with no end at the
+  record, when the step's top ends it after the session's live transfer, counted as replayed
+  ((1, 1, 4), want (1, 1, 3)).
