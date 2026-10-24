@@ -3477,7 +3477,7 @@ mod conflict {
     use rtsim_conflict::culture::PartyKind;
     use rtsim_conflict::engine::{Party, Phase, Target};
     use rtsim_conflict::{Step, synth};
-    use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT};
+    use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT, MODULE_INDUSTRY};
     use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
@@ -4228,10 +4228,15 @@ mod conflict {
     /// A conflict session with the camp founded, its territory back, the fake plugin answering
     /// as `PLAYER` and the player standing in the territory.
     fn camp(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        camp_with(name, MODULES)
+    }
+
+    /// [`camp`] with the module switches `mask`.
+    fn camp_with(name: &str, mask: u32) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
         let dir = tmpdir(name);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
-        j.module_mask = MODULES;
+        j.module_mask = mask;
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
         j.players = vec![(PLAYER, dim, base)];
@@ -5178,9 +5183,20 @@ mod conflict {
         gt: i64,
         capacity: usize,
     ) -> (std::sync::Arc<Engine>, Java) {
+        reopen_mask(dir, saved, gt, capacity, MODULES)
+    }
+
+    /// [`reopen_with`] with the module switches `mask`.
+    fn reopen_mask(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        capacity: usize,
+        mask: u32,
+    ) -> (std::sync::Arc<Engine>, Java) {
         let e = engine(dir, capacity);
         let mut j = Java::open(e.clone(), saved);
-        j.module_mask = MODULES;
+        j.module_mask = mask;
         j.game_time = gt;
         assert_eq!(e.conflict_restore_check(), (None, false));
         // Java hands its journal over while it fits: until it has sent every record.
@@ -5398,9 +5414,9 @@ mod conflict {
     /// (`home()`, which pools the party) all after them, inside the replayed window, on a short
     /// route home (100 blocks). The session that goes on pools what is left of the band; after a
     /// crash the replay must leave the same pool. `capacity`: the next session's buffer (`None`,
-    /// no crash).
-    fn a_fight_kept_in_the_pages_across_a_replay(name: &str, capacity: Option<usize>) {
-        let (dir, e, mut j) = camp(name);
+    /// no crash); `mask`: the module switches of both sessions.
+    fn a_fight_kept_in_the_pages_across_a_replay(name: &str, capacity: Option<usize>, mask: u32) {
+        let (dir, e, mut j) = camp_with(name, mask);
         // The player sees the band leave the camp too: only the fight's waves are fought. A
         // quarter falls, short of a rout: the fight ends sooner, not at once.
         j.conflict_plugin.fight = Some(synth::Fight {
@@ -5448,9 +5464,13 @@ mod conflict {
         );
         // Past where the fight would have ended without its losses, and the walk after it.
         let home_at = j.game_time;
-        advance_until(&mut j, 100, DAY, "past the unshortened fight's walk home", |j| {
-            j.game_time >= home_at + 2_000
-        });
+        advance_until(
+            &mut j,
+            100,
+            DAY,
+            "past the unshortened fight's walk home",
+            |j| j.game_time >= home_at + 2_000,
+        );
         let gt = j.game_time;
         let live = pool(&e);
         let cap = e.with_conflict(|c, _| {
@@ -5480,7 +5500,7 @@ mod conflict {
             "the replay's records: {bytes} bytes"
         );
 
-        let (e, j) = reopen_with(&dir, saved, gt, capacity);
+        let (e, j) = reopen_mask(&dir, saved, gt, capacity, mask);
         let (ended, hand_overs, _) = replay_counts(&e);
         assert_eq!(ended, 1, "the replay ended");
         if capacity == wire::MIN_CAPACITY {
@@ -5505,19 +5525,30 @@ mod conflict {
 
     #[test]
     fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_long_replay() {
-        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long", Some(wire::MIN_CAPACITY));
+        let long = Some(wire::MIN_CAPACITY);
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long", long, MODULES);
+    }
+
+    /// The same with industry on: its clock is not held (docs/replay-gate.md §3.6), and the
+    /// conflict's still is.
+    #[test]
+    fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_long_replay_with_industry_on() {
+        let long = Some(wire::MIN_CAPACITY);
+        let mask = MODULES | MODULE_INDUSTRY;
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long-industry", long, mask);
     }
 
     /// Control: the same replay in one hand-over.
     #[test]
     fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_one_hand_over_replay() {
-        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-one", Some(ONE_HAND_OVER));
+        let one = Some(ONE_HAND_OVER);
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-one", one, MODULES);
     }
 
     /// Control: no crash.
     #[test]
     fn a_fight_kept_in_the_pages_pools_what_is_left_without_a_crash() {
-        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None);
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None, MODULES);
     }
 
     /// RP-22 (the review's amendment a): an invasion of 26 of one body kind, seen leaving the
@@ -5576,7 +5607,10 @@ mod conflict {
         let saved = j.crash();
         let (e, j) = reopen(&dir, saved, gt);
         let (alive, _, embodied, recalled, spawned) = books(&e, p);
-        assert!(!embodied && !recalled && spawned == 0, "abstract after the replay");
+        assert!(
+            !embodied && !recalled && spawned == 0,
+            "abstract after the replay"
+        );
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
         alive
@@ -5584,19 +5618,31 @@ mod conflict {
 
     #[test]
     fn an_invasion_seen_after_the_save_is_counted_as_placed_after_a_crash() {
-        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22", 0, true), 26);
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22", 0, true),
+            26
+        );
     }
 
     #[test]
     fn an_invasion_seen_after_the_save_counts_its_dead_once_after_a_crash() {
-        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22-dead", 3, true), 23);
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22-dead", 3, true),
+            23
+        );
     }
 
     /// Control: no crash.
     #[test]
     fn an_invasion_seen_and_despawned_without_a_crash() {
-        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22-live", 0, false), 26);
-        assert_eq!(an_invasion_seen_after_the_save("conflict-rp22-live-dead", 3, false), 23);
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22-live", 0, false),
+            26
+        );
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22-live-dead", 3, false),
+            23
+        );
     }
 
     /// RP-26 (the review's item): a watched fight kept in the pages, its casualties journaled
@@ -5622,15 +5668,25 @@ mod conflict {
         });
         let fight_at = j.game_time;
         let at_save = books(&e, p);
-        assert!(at_save.2 && at_save.4 > 0, "in view at the save: {at_save:?}");
+        assert!(
+            at_save.2 && at_save.4 > 0,
+            "in view at the save: {at_save:?}"
+        );
         save(&e, &mut j);
         advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
             j.game_time >= fight_at + 1_500 + 200
         });
         let live = books(&e, p);
         assert!(n - live.0 >= 2, "the fight cost members: {live:?}");
-        assert_eq!(party(&e, p), Some((Phase::Fighting, true)), "still fighting");
-        assert!(live.4 < at_save.4, "off its stack: {live:?}, at the save {at_save:?}");
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Fighting, true)),
+            "still fighting"
+        );
+        assert!(
+            live.4 < at_save.4,
+            "off its stack: {live:?}, at the save {at_save:?}"
+        );
         fillers(&mut j, 4_000);
         if !crash {
             j.idle();
@@ -5691,6 +5747,544 @@ mod conflict {
     #[test]
     fn a_watched_band_keeps_its_books_without_a_crash() {
         a_watched_band_kept_across_the_arm("conflict-rp26-live", false);
+    }
+
+    /// §9.1 test 1 (the scratch audit's band first seen after a save): a raid in view only after
+    /// the save, so it is materialized at a new epoch, fought and half killed, then a crash. The
+    /// replay honours its BAND_MATERIALIZED (RP-6), so the casualties of that epoch find the band
+    /// (12 alive before RP-6: none of them counted). Returns its alive count after the crash and
+    /// the replay, or in the session that went on (`crash` false).
+    fn a_band_first_seen_after_the_save(name: &str, crash: bool) -> u32 {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        assert_eq!(party(&e, p).map(|x| x.1), Some(false), "not in view yet");
+        save(&e, &mut j);
+        let epoch_at_save = books(&e, p).1;
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let live = books(&e, p);
+        let lost = n - live.0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        assert!(live.1 > epoch_at_save, "seen after the save at a new epoch");
+        if !crash {
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return live.0;
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, j) = reopen(&dir, saved, gt);
+        let (alive, epoch, embodied, recalled, _) = books(&e, p);
+        assert_eq!(alive, n - lost, "the replay counts each death once");
+        assert_eq!(epoch, live.1, "at the epoch the replay honoured");
+        assert!(!embodied && !recalled, "abstract after the replay");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        alive
+    }
+
+    #[test]
+    fn a_band_first_seen_after_the_save_is_counted_after_a_crash() {
+        assert_eq!(
+            a_band_first_seen_after_the_save("conflict-seen-after-save", true),
+            6
+        );
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_band_first_seen_after_the_save_is_counted_without_a_crash() {
+        assert_eq!(
+            a_band_first_seen_after_the_save("conflict-seen-after-save-live", false),
+            6
+        );
+    }
+
+    /// A raid out and in view at a save, half of it killed after the save behind `count` fillers,
+    /// then a crash (scratch audit :5586): what the crash saved, the band, its size and losses,
+    /// the epochs Java was commanded for it, and where it stood at the save and at the crash.
+    struct InView {
+        dir: std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        p: Handle<Party>,
+        n: u32,
+        lost: u32,
+        epochs: Vec<u32>,
+        at_save: (i32, i32),
+        at_crash: (i32, i32),
+    }
+
+    /// See [`InView`]. `resave`: a save after the casualties too, right before the crash, so that
+    /// nothing is left to replay.
+    fn a_band_in_view_at_the_save(name: &str, mask: u32, count: usize, resave: bool) -> InView {
+        let (dir, e, mut j) = camp_with(name, mask);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let epoch_at_save = books(&e, p).1;
+        let at_save = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+        let first = j.world_save().next_obs;
+        fillers(&mut j, count);
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        assert_eq!(
+            books(&e, p).1,
+            epoch_at_save,
+            "one epoch in the old session"
+        );
+        if resave {
+            save(&e, &mut j);
+        }
+        let epochs = materialized_epochs(&j, 0, p);
+        let gt = j.game_time;
+        let at_crash = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        if count >= 4_000 && !resave {
+            assert!(
+                bytes > 3 * wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        InView {
+            dir,
+            saved,
+            gt,
+            p,
+            n,
+            lost,
+            epochs,
+            at_save,
+            at_crash,
+        }
+    }
+
+    /// The epochs of the BAND_MATERIALIZEs Java was commanded for `p` from `from` on, each once,
+    /// in order.
+    fn materialized_epochs(j: &Java, from: usize, p: Handle<Party>) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new();
+        for (_, c) in &j.conflict[from..] {
+            if let C::Materialize(m) = c
+                && m.agent == Party::agent(p)
+                && out.last() != Some(&m.epoch)
+            {
+                out.push(m.epoch);
+            }
+        }
+        out
+    }
+
+    /// The next session over `saved`, a player standing at `at`, its journal not handed over.
+    fn reopen_at(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        at: (i32, i32),
+        capacity: usize,
+        mask: u32,
+    ) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, capacity);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = mask;
+        j.game_time = gt;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(at.0) + 0.5, 64.0, f64::from(at.1) + 0.5];
+        j.players = vec![(PLAYER, dim, pos)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        (e, j)
+    }
+
+    /// Hands Java's whole journal over.
+    fn hand_over_all(j: &mut Java) {
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        assert!(j.sent_obs >= last, "the whole journal handed over");
+        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    }
+
+    /// §9.1 test 2 (scratch audit :5586): the band in view at the save, its casualties replayed
+    /// over the hand-overs a `capacity` buffer takes, with a player standing at the band. The
+    /// replay never embodies it again (RP-11), so the casualties' epoch stays its own and each
+    /// death counts once.
+    fn a_long_replay_at_the_band(name: &str, capacity: usize, mask: u32) {
+        let v = a_band_in_view_at_the_save(name, mask, 4_000, false);
+        let (e, mut j) = reopen_at(&v.dir, v.saved.clone(), v.gt, v.at_crash, capacity, mask);
+        hand_over_all(&mut j);
+        let (ended, hand_overs, _) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        if capacity == wire::MIN_CAPACITY {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        } else {
+            assert_eq!(hand_overs, 1, "a replay of one hand-over");
+        }
+        assert_eq!(
+            books(&e, v.p).0,
+            v.n - v.lost,
+            "the replay counts each death once ({} out, {} lost)",
+            v.n,
+            v.lost
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_long_replay_counts_every_casualty_against_its_band() {
+        a_long_replay_at_the_band("conflict-long-replay", wire::MIN_CAPACITY, MODULES);
+    }
+
+    /// The same with industry on (its clock is not held, docs/replay-gate.md §3.6).
+    #[test]
+    fn a_long_replay_counts_every_casualty_against_its_band_with_industry_on() {
+        let mask = MODULES | MODULE_INDUSTRY;
+        a_long_replay_at_the_band("conflict-long-replay-industry", wire::MIN_CAPACITY, mask);
+    }
+
+    /// Control: the same replay in one hand-over.
+    #[test]
+    fn a_one_hand_over_replay_counts_every_casualty_against_its_band() {
+        a_long_replay_at_the_band("conflict-long-replay-one", ONE_HAND_OVER, MODULES);
+    }
+
+    /// §9.1 test 3: the long replay of test 2, hand-over by hand-over. Until the replay end no
+    /// BAND_MATERIALIZE, ENVOY_MATERIALIZE or FACTION_NOTICE goes in any command buffer; after it
+    /// the band materializes where it is now (seen on the march: the arc's centre is the band's
+    /// place), at an epoch above every one Java was commanded. `resave`, the control: a save right
+    /// before the crash, nothing to replay, and the band materializes as soon as the session
+    /// starts (in the second hand-over, as below).
+    fn a_band_materialized_after_the_replay(name: &str, resave: bool) {
+        let v = a_band_in_view_at_the_save(name, MODULES, 4_000, resave);
+        let (e, mut j) = reopen_at(
+            &v.dir,
+            v.saved.clone(),
+            v.gt,
+            v.at_crash,
+            wire::MIN_CAPACITY,
+            MODULES,
+        );
+        let embodies = |c: &C| matches!(c, C::Materialize(_) | C::Envoy(_) | C::Notice(_));
+        let mut hand_overs = 0;
+        while replay_counts(&e).0 == 0 {
+            assert!(hand_overs < 64, "the replay never ended");
+            j.flush();
+            hand_overs += 1;
+            if replay_counts(&e).0 == 0 {
+                let early: Vec<&str> = j
+                    .conflict
+                    .iter()
+                    .filter(|(_, c)| embodies(c))
+                    .map(|(_, c)| c.name())
+                    .collect();
+                assert!(
+                    early.is_empty(),
+                    "hand-over {hand_overs}, replaying: {early:?}"
+                );
+            }
+        }
+        if resave {
+            assert_eq!(
+                hand_overs, 1,
+                "nothing to replay: it ends in the first hand-over"
+            );
+        } else {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        }
+        // The step books the players' areas after the conflict's run (`shared::simulate` comes
+        // after `conflict::simulate`), so the sighting found in the hand-over that ends the replay
+        // runs in the next one, as a live player's coming into view does.
+        let ended_at = hand_overs;
+        while materialized_epochs(&j, 0, v.p).is_empty() {
+            assert!(
+                hand_overs < ended_at + 8,
+                "never materialized after the replay"
+            );
+            j.flush();
+            hand_overs += 1;
+        }
+        assert_eq!(
+            hand_overs,
+            ended_at + 1,
+            "materialized in the next hand-over"
+        );
+        let (m, live) = (
+            j.conflict
+                .iter()
+                .find_map(|(_, c)| match c {
+                    C::Materialize(m) if m.agent == Party::agent(v.p) => Some(m.clone()),
+                    _ => None,
+                })
+                .expect("the materialize"),
+            e.with_conflict(|c, _| c.party_pos(v.p, c.now())),
+        );
+        let old = v
+            .epochs
+            .iter()
+            .copied()
+            .max()
+            .expect("materialized last session");
+        assert!(
+            m.epoch > old,
+            "a new epoch: {} after {:?}",
+            m.epoch,
+            v.epochs
+        );
+        let off = |a: (f64, f64), b: (i32, i32)| (a.0 - f64::from(b.0)).hypot(a.1 - f64::from(b.1));
+        let moved = off((f64::from(v.at_save.0), f64::from(v.at_save.1)), live);
+        assert!(moved > 16.0, "the band moved since the save: {moved}");
+        assert!(
+            off(m.arc_centre, live) < 4.0,
+            "from where the band is now, {live:?}: {:?} (at the save {:?})",
+            m.arc_centre,
+            v.at_save
+        );
+        assert_eq!(
+            books(&e, v.p).0,
+            v.n - v.lost,
+            "and each death counted once"
+        );
+        hand_over_all(&mut j);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn no_band_materializes_while_a_long_replay_runs_with_a_player_near() {
+        a_band_materialized_after_the_replay("conflict-no-materialize", false);
+    }
+
+    /// Control: nothing to replay.
+    #[test]
+    fn a_band_materializes_at_the_session_start_with_nothing_to_replay() {
+        a_band_materialized_after_the_replay("conflict-no-materialize-resaved", true);
+    }
+
+    /// §9.1 test 4 (RP-7, RP-30): a raid not in view at the save (epoch E), seen after it at
+    /// E + 1 and its BAND_MATERIALIZED journaled, then a crash. The replay honours E + 1 (RP-6),
+    /// and the next session's sighting takes E + 2: E + 1 named the last session's bodies. Returns
+    /// the epochs Java was commanded for the band, as offsets from E, in order. `crash` false, the
+    /// control: the session goes on, the player leaves (a recall and its despawn) and comes back
+    /// to the band.
+    fn epochs_of_a_band_seen_after_the_save(name: &str, crash: bool) -> Vec<u32> {
+        let (dir, e, mut j) = camp(name);
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        assert_eq!(party(&e, p).map(|x| x.1), Some(false), "not in view yet");
+        save(&e, &mut j);
+        let at_save = books(&e, p).1;
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let seen_at = j.game_time;
+        advance_until(&mut j, 100, 1_000, "its BAND_MATERIALIZED journaled", |j| {
+            j.game_time >= seen_at + 200
+        });
+        let mut epochs = materialized_epochs(&j, 0, p);
+        let watch = |j: &mut Java, at: (i32, i32)| {
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let pos = [f64::from(at.0) + 0.5, 64.0, f64::from(at.1) + 0.5];
+            j.players = vec![(PLAYER, dim, pos)];
+        };
+        let (e, mut j) = if crash {
+            let gt = j.game_time;
+            let saved = j.crash();
+            let (e, mut j) = reopen(&dir, saved, gt);
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            let b = books(&e, p);
+            assert!(
+                b.1 == at_save + 1 && !b.2,
+                "the replay honoured E + 1, abstract after it: {b:?}"
+            );
+            // The player comes back where the band is now.
+            let band = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+            watch(&mut j, band);
+            (e, j)
+        } else {
+            let from = j.conflict.len();
+            j.players.clear();
+            advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
+                !recalls(j, from, p).is_empty()
+            });
+            advance_until(&mut j, 100, 3_000, "the despawn", |j| {
+                let b = books(&j.e, p);
+                !b.2 && !b.3
+            });
+            let band = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+            watch(&mut j, band);
+            (e, j)
+        };
+        let from = j.conflict.len();
+        advance_until(&mut j, 20, 2_000, "seen again", |j| {
+            !materialized_epochs(j, from, p).is_empty()
+        });
+        epochs.extend(materialized_epochs(&j, from, p));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epochs.iter().map(|x| x - at_save).collect()
+    }
+
+    #[test]
+    fn a_band_epoch_decided_after_the_save_is_never_decided_again() {
+        let epochs = epochs_of_a_band_seen_after_the_save("conflict-epoch-floor", true);
+        assert_eq!(epochs, vec![1, 2]);
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_band_seen_twice_without_a_crash_takes_two_epochs() {
+        let epochs = epochs_of_a_band_seen_after_the_save("conflict-epoch-floor-live", false);
+        assert_eq!(epochs, vec![1, 2]);
+    }
+
+    /// §9.1 test 7 (U10, docs/replay-gate.md §3.1): the conflict switched off at the session start
+    /// and on in the middle of the session. Its reset begins its replay, and with the session's
+    /// replay over, that replay ends at once. `long`, the control: switched on while the session's
+    /// replay still runs (4,000 fillers after the save), its replay ends with the session's.
+    fn the_conflict_switched_on_mid_session(name: &str, long: bool) {
+        let (dir, e, mut j) = camp(name);
+        save(&e, &mut j);
+        if long {
+            fillers(&mut j, 4_000);
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES & !MODULE_CONFLICT;
+        j.game_time = gt;
+        j.flush();
+        let conflict_replaying = |e: &Engine| e.with_conflict(|c, _| c.replaying());
+        assert_eq!(
+            replay_counts(&e).0,
+            u64::from(!long),
+            "the session's replay end"
+        );
+        assert!(
+            !conflict_replaying(&e),
+            "switched off: its replay has not begun"
+        );
+        j.modules(MODULES);
+        j.flush();
+        assert_eq!(
+            conflict_replaying(&e),
+            long,
+            "switched on: its replay ends with the session's"
+        );
+        hand_over_all(&mut j);
+        assert_eq!(replay_counts(&e).0, 1, "one replay end a session");
+        assert!(!conflict_replaying(&e), "the conflict's replay ended");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_module_switched_on_mid_session_ends_its_replay_at_once() {
+        the_conflict_switched_on_mid_session("conflict-switched-on", false);
+    }
+
+    /// Control: switched on while the session's replay runs.
+    #[test]
+    fn a_module_switched_on_while_the_replay_runs_ends_it_with_the_session() {
+        the_conflict_switched_on_mid_session("conflict-switched-on-replaying", true);
+    }
+
+    /// §9.1 test 7 (docs/replay-gate.md §2.1, §2.2, RP-29): where the replay ends and the
+    /// hand-overs it counts. A camp saved, `count` fillers journaled after the save, and a crash;
+    /// `trim`: Java's journal trimmed past the pages (emptied, its next sequence kept), so that it
+    /// starts at or past `session_first`. Returns the replay counts after the next session's first
+    /// hand-over; by then the replay has ended, and the conflict's with it.
+    fn replay_counts_after(name: &str, count: usize, trim: bool) -> (u64, u64, u64) {
+        let (dir, e, mut j) = camp(name);
+        save(&e, &mut j);
+        fillers(&mut j, count);
+        let gt = j.game_time;
+        let mut saved = j.crash();
+        if trim {
+            saved.journal.clear();
+        }
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.flush();
+        let counts = replay_counts(&e);
+        assert!(
+            !e.with_conflict(|c, _| c.replaying()),
+            "the conflict's replay ended"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        counts
+    }
+
+    #[test]
+    fn a_session_with_nothing_to_replay_ends_its_replay_at_the_session_start() {
+        assert_eq!(
+            replay_counts_after("conflict-replay-nothing", 0, false),
+            (1, 0, 0)
+        );
+    }
+
+    /// RP-29: without the journal check the replay waited for the first live record.
+    #[test]
+    fn a_journal_starting_past_the_session_first_ends_the_replay_at_the_session_start() {
+        assert_eq!(
+            replay_counts_after("conflict-replay-trimmed", 10, true),
+            (1, 0, 0)
+        );
+    }
+
+    /// Control: the same ten records kept, a replay of one hand-over.
+    #[test]
+    fn a_short_replay_ends_in_its_first_hand_over() {
+        let (ended, hand_overs, records) = replay_counts_after("conflict-replay-short", 10, false);
+        assert_eq!((ended, hand_overs), (1, 1));
+        assert!(records >= 10, "the fillers replayed: {records}");
     }
 }
 
