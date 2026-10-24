@@ -271,6 +271,11 @@ pub struct UnitDef {
     /// same row either way.
     #[serde(default)]
     pub without_crystal: Option<String>,
+    /// Animals one surviving unit of this row leaves owed to a district it raided and nobody
+    /// watched (MOWZIE.md ledger 11, MZB-424): the raptor's pack hunts what the jar's AI would
+    /// have hunted. PLACEHOLDER; 0 when the data leaves it out.
+    #[serde(default)]
+    pub hunts: u32,
 }
 
 /// How a site's members come back once a player has killed them (EQUILIBRIUM.md §2.2, MZB-251): the
@@ -420,6 +425,29 @@ pub struct CultureDef {
     /// and `camp_bodies` (`Culture::resolve`). Absent: the pool refills by its rate, as M4 built.
     #[serde(default)]
     pub renewal: Option<RenewalDef>,
+    /// The body kind (dictionary kind 3) of a camp's chief when the chief is a body of its own,
+    /// kept in one slot outside the pool (`CHIEF_SLOT`, MZB-401): the grove's Umvuthi. Absent: the
+    /// chief has no slot (a den's chief is its one unit, a goblin camp's has no body).
+    #[serde(default)]
+    pub chief_body: Option<String>,
+    /// The wait for the next chief after a death, by the shared renewal rule (MZB-407). A field of
+    /// its own, since `renewal` replaces the rate and the grove still recruits. Needs `chief_body`.
+    #[serde(default)]
+    pub chief_renewal: Option<RenewalDef>,
+    /// The party kinds the chief leads, by name (MZB-413). Absent: raid, invasion and siege, any
+    /// war party. Needs `chief_body`.
+    #[serde(default)]
+    pub chief_leads: Option<Vec<String>>,
+    /// The strength the chief adds to the party it leads, in the first unit's class (MZB-413).
+    #[serde(default)]
+    pub chief_strength: f32,
+    /// The goods a raid's plunder takes when this culture's raiders live off the land (MZB-427):
+    /// those only, eaten, whatever the units carry. Absent: plunder takes what the units carry.
+    #[serde(default)]
+    pub plunder_goods: Vec<String>,
+    /// The most animals a district can owe one raid's survivors at once (MZB-424). PLACEHOLDER.
+    #[serde(default)]
+    pub hunt_cap: u32,
 }
 
 fn one() -> f64 {
@@ -446,6 +474,11 @@ pub struct Culture {
     pub bare: Vec<u8>,
     /// `def.renewal` resolved (MZB-251).
     pub renewal: Option<Renewal>,
+    /// `def.chief_renewal` resolved (MZB-407).
+    pub chief_renewal: Option<Renewal>,
+    /// The party kinds the chief leads (MZB-413): `def.chief_leads` resolved, raid, invasion and
+    /// siege when the data leaves it out.
+    pub chief_leads: Vec<PartyKind>,
 }
 
 /// The longest `repeat_days` a culture may set: ten years.
@@ -570,6 +603,67 @@ impl Culture {
                 Ok(Renewal { rule, boss: r.boss })
             })
             .transpose()?;
+        // The chief's slot and its fields (MZB-401, MZB-407, MZB-413). A chief's body is a body
+        // kind of its own: a unit's body in its place would let a census read one as the other.
+        if let Some(b) = &def.chief_body {
+            if b.is_empty() || def.units.iter().any(|u| &u.body == b) {
+                return Err(format!("{n}: chief_body must name a body kind no unit has"));
+            }
+            if !def.camp_bodies {
+                return Err(format!("{n}: a chief_body needs camp_bodies"));
+            }
+        } else if def.chief_renewal.is_some()
+            || def.chief_leads.is_some()
+            || def.chief_strength != 0.0
+        {
+            return Err(format!(
+                "{n}: chief_renewal, chief_leads and chief_strength need a chief_body"
+            ));
+        }
+        if !(def.chief_strength.is_finite() && def.chief_strength >= 0.0) {
+            return Err(format!(
+                "{n}: chief_strength must be finite and not below 0"
+            ));
+        }
+        let chief_renewal = def
+            .chief_renewal
+            .map(|r| -> Result<Renewal, String> {
+                Ok(Renewal {
+                    rule: r.rule(n, "chief_renewal")?,
+                    boss: r.boss,
+                })
+            })
+            .transpose()?;
+        let chief_leads = match &def.chief_leads {
+            None => vec![PartyKind::Raid, PartyKind::Invasion, PartyKind::Siege],
+            Some(names) => {
+                let mut v: Vec<PartyKind> = Vec::new();
+                for name in names {
+                    let k = PartyKind::ALL
+                        .into_iter()
+                        .find(|k| k.name() == name)
+                        .ok_or(format!("{n}: chief_leads names unknown party {name}"))?;
+                    if !matches!(k, PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege) {
+                        return Err(format!("{n}: a chief cannot lead a {name} party"));
+                    }
+                    if v.contains(&k) {
+                        return Err(format!("{n}: chief_leads names {name} twice"));
+                    }
+                    v.push(k);
+                }
+                v
+            }
+        };
+        // Plunder goods are checked against the catalogue where one is at hand (the engine's
+        // `add_faction` and the tests): here only that each is named once.
+        for (i, g) in def.plunder_goods.iter().enumerate() {
+            if g.is_empty() || def.plunder_goods[..i].contains(g) {
+                return Err(format!("{n}: plunder_goods must name each good once"));
+            }
+        }
+        if def.units.iter().any(|u| u.hunts > 0) && def.hunt_cap == 0 {
+            return Err(format!("{n}: a unit with hunts needs hunt_cap above 0"));
+        }
         let lambda = std::f64::consts::LN_2 / (def.half_life_days * TICKS_PER_DAY as f64);
         Ok(Culture {
             signals,
@@ -580,6 +674,8 @@ impl Culture {
             market,
             bare,
             renewal,
+            chief_renewal,
+            chief_leads,
             def,
         })
     }
@@ -641,6 +737,11 @@ impl Culture {
 
     pub fn hates(&self, culture: &str) -> bool {
         self.def.hates.iter().any(|h| h == culture)
+    }
+
+    /// Whether the chief leads a party of this kind (MZB-413).
+    pub fn leads(&self, k: PartyKind) -> bool {
+        self.chief_leads.contains(&k)
     }
 }
 
@@ -783,6 +884,95 @@ mod tests {
         assert!(um.def.units.iter().all(|u| u.carry == 0 && u.breaks == 0));
         assert_eq!(um.unit_as(1, false).name, "raptor");
         assert!(c.of_structure("mowziesmobs:umvuthana_grove").is_some());
+    }
+
+    /// MZB-401, MZB-407, MZB-413, MZB-424, MZB-427: the grove's chief, its heir's wait, who it leads,
+    /// and what its raiders hunt and plunder.
+    #[test]
+    fn the_groves_chief_fields_parse_and_resolve() {
+        let c = Cultures::builtin();
+        let um = c.get(c.index_of("umvuthana").unwrap());
+        assert_eq!(
+            um.def.chief_body.as_deref(),
+            Some("mic_rtsim:conflict/umvuthana/umvuthi")
+        );
+        let r = um.chief_renewal.expect("a chief renewal");
+        assert_eq!(
+            (r.rule.base_days, r.rule.cap_days, r.rule.half_life_days),
+            (6.0, 192.0, 96.0)
+        );
+        assert!(r.boss);
+        // The grove still recruits: its chief's wait is not its members' (MZB-407).
+        assert!(um.renewal.is_none());
+        assert_eq!(um.def.recruits_per_day, 2.0);
+        assert_eq!(um.chief_leads, vec![PartyKind::Invasion]);
+        assert!(um.leads(PartyKind::Invasion) && !um.leads(PartyKind::Raid));
+        assert_eq!(um.def.chief_strength, 5.0);
+        assert_eq!(um.def.plunder_goods, ["leather", "wool"]);
+        assert_eq!(um.def.hunt_cap, 8);
+        let hunts: Vec<u32> = um.def.units.iter().map(|u| u.hunts).collect();
+        assert_eq!(hunts, [0, 2, 0], "only the raptor hunts");
+        // The others have no chief slot and lead any war party, as before.
+        for n in ["goblin", "bandit", "raider", "frostmaw"] {
+            let x = c.get(c.index_of(n).unwrap());
+            assert!(
+                x.def.chief_body.is_none() && x.chief_renewal.is_none(),
+                "{n}"
+            );
+            assert!(x.leads(PartyKind::Raid) && x.leads(PartyKind::Siege), "{n}");
+            assert!(x.def.plunder_goods.is_empty() && x.def.hunt_cap == 0, "{n}");
+        }
+    }
+
+    /// MZB-444: each way the chief's fields can be wrong is its own error.
+    #[test]
+    fn each_chief_field_error_is_its_own() {
+        let with = |edit: &dyn Fn(&mut CultureDef)| {
+            let mut d: CultureDef = serde_json::from_str(UMVUTHANA_JSON).unwrap();
+            edit(&mut d);
+            Culture::resolve(d).err()
+        };
+        assert_eq!(with(&|_| {}), None);
+        let e = with(&|d| d.chief_body = Some(d.units[0].body.clone())).expect("refused");
+        assert!(
+            e.contains("chief_body must name a body kind no unit has"),
+            "{e}"
+        );
+        let e = with(&|d| d.chief_body = Some(String::new())).expect("refused");
+        assert!(e.contains("chief_body"), "{e}");
+        let e = with(&|d| d.camp_bodies = false).expect("refused");
+        assert!(e.contains("needs camp_bodies"), "{e}");
+        // A chief's fields without a chief are a mistake in the data, not a no-op.
+        let e = with(&|d| d.chief_body = None).expect("refused");
+        assert!(e.contains("need a chief_body"), "{e}");
+        let e = with(&|d| d.chief_renewal.as_mut().unwrap().cap_days = 1.0).expect("refused");
+        assert!(e.contains("chief_renewal cap_days"), "{e}");
+        for bad in [f32::NAN, f32::INFINITY, -1.0] {
+            let e = with(&|d| d.chief_strength = bad).expect("refused");
+            assert!(e.contains("chief_strength"), "{e}");
+        }
+        let e = with(&|d| d.chief_leads = Some(vec!["parade".into()])).expect("refused");
+        assert!(e.contains("unknown party parade"), "{e}");
+        let e = with(&|d| d.chief_leads = Some(vec!["scouts".into()])).expect("refused");
+        assert!(e.contains("cannot lead a scouts party"), "{e}");
+        let e =
+            with(&|d| d.chief_leads = Some(vec!["raid".into(), "raid".into()])).expect("refused");
+        assert!(e.contains("twice"), "{e}");
+        assert_eq!(
+            with(&|d| d.chief_leads = Some(Vec::new())),
+            None,
+            "leads nothing"
+        );
+        let e = with(&|d| d.plunder_goods = vec!["wool".into(), "wool".into()]).expect("refused");
+        assert!(e.contains("plunder_goods"), "{e}");
+        let e = with(&|d| d.hunt_cap = 0).expect("refused");
+        assert!(e.contains("hunt_cap"), "{e}");
+        // A renewal for the members stands apart from the chief's (MZB-407).
+        let e = with(&|d| {
+            d.renewal = Some(d.chief_renewal.unwrap());
+        })
+        .expect("refused");
+        assert!(e.contains("recruits_per_day"), "{e}");
     }
 
     #[test]
