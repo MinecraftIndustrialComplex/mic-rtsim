@@ -608,6 +608,18 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   other did on the route, nor on a Project Atmosphere region entry (one sat between two, 14 s after and 4 s
   before; one ended 16 s before an entry; ten other entries brought nothing). So storm fog off does not clear the
   black; the pack's d00ca03 was reverted (8947c6a).
+- **Without SimpleClouds, Project Atmosphere and watut: still black.** Arm B, the same with those three jars out of
+  the copy's mods (watut, which stopped the load before, went with them) and vanilla weather held by `/weather
+  thunder 3d`. The copy's season is winter, and Serene Seasons turns vanilla thunder off then
+  (`config/sereneseasons/seasons.toml`: `min_thunder_time = -1`, `max_thunder_time = -1` for the three winter
+  sub-seasons), so the storm was vanilla snow at full: 35.9 minutes over two loops, no thunder or lightning. Black
+  once, for 10 s in the second loop: a long straight black slab across the view (24% of the frame) with snow
+  falling in front of it, then a black band with a straight lower edge across the top of the sky (78% of the sky
+  band). The same shapes as in Ben's client and arm A, if rarer (once in 36 minutes, against twice in 34 in arm A
+  and three times in 34 in the arm above). So what draws them is none of the three, and neither storm fog nor a
+  SimpleClouds storm; left in the copy that draw: DH (loaded; the DH-off arm below was black with DH loaded and
+  drawing nothing), Sable 2.0.5, Sodium 0.8.13 with Sodium Extra 0.9.4, Particle Core 0.3.3, and vanilla's own
+  weather. No Iris or Oculus.
 - **DH rendering off: still black.** With DH's renderer off (`rendererMode = "DISABLED"`, DH still loaded) and storm
   fog on, at noon, three huge black polygons with straight edges came 568 s into the flight and stayed 20 s, up to
   96% of the sky band. With DH loaded SimpleClouds always takes its DH pipeline, which draws its cloud mesh, storm
