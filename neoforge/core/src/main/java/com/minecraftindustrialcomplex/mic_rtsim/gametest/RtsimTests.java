@@ -133,6 +133,18 @@ public final class RtsimTests {
         return out;
     }
 
+    /**
+     * The records of one kind for one agent that copies carried (REASSERT, docs/boundary.md §2.6), applied
+     * or dropped ({@link ScriptedEngine.Received#skipped}), oldest first.
+     */
+    public static List<ScriptedEngine.Received> copiesFor(ScriptedEngine engine, int kind, long agent) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : engine.copies(kind))
+            if (r.bytes().length >= Obs.BODY + 8 && r.view().getLong(Obs.BODY) == agent)
+                out.add(r);
+        return out;
+    }
+
     /** Every journaled record for one agent, in the order the engine received them. */
     public static List<ScriptedEngine.Received> allFor(ScriptedEngine engine, long agent) {
         List<ScriptedEngine.Received> out = new ArrayList<>();

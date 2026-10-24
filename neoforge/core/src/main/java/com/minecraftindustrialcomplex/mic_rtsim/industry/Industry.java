@@ -445,7 +445,7 @@ public final class Industry {
         carried.add(r.array().clone());
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old =
                 chunk.getData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
-        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(carried));
+        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(boundary.gen(), carried));
         chunk.setUnsaved(true);
         journalDependsOn(chunk);
         ResourceKey<Level> dim = chunk.getLevel().dimension();
@@ -459,15 +459,12 @@ public final class Industry {
                     c.getExistingDataOrNull(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
             if (p == null)
                 return;
-            java.util.List<byte[]> keep = new java.util.ArrayList<>();
-            for (byte[] rec : p.records())
-                if (com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.pendingOp(rec) != opId)
-                    keep.add(rec);
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords keep =
+                    p.filter(rec -> com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.pendingOp(rec) != opId);
             if (keep.isEmpty())
                 c.removeData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
             else
-                c.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING,
-                        new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+                c.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, keep);
             c.setUnsaved(true);
         });
     }

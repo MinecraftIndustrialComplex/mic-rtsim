@@ -55,18 +55,25 @@ public final class IndustryAttachments {
 
     /**
      * One district's reconcile state in a chunk (I8): the last applied epoch and, until the engine
-     * acknowledges it, the IND_RECONCILE_RESULT that applied it.
+     * acknowledges it, the IND_RECONCILE_RESULT that applied it, with the generation it was journaled in
+     * (docs/boundary.md §2.6; 0 with no result).
      */
-    public record EpochEntry(long district, int epoch, Optional<byte[]> pendingResult) {
+    public record EpochEntry(long district, int epoch, Optional<byte[]> pendingResult, long gen) {
+        /** No pending result. */
+        public EpochEntry(long district, int epoch) {
+            this(district, epoch, Optional.empty(), 0);
+        }
+
         public static final Codec<EpochEntry> CODEC = RecordCodecBuilder.create(i -> i.group(
                 Codec.LONG.fieldOf("district").forGetter(EpochEntry::district),
                 Codec.INT.fieldOf("epoch").forGetter(EpochEntry::epoch),
-                Codec.BYTE_BUFFER.optionalFieldOf("result").forGetter(e -> e.pendingResult.map(ByteBuffer::wrap))
-        ).apply(i, (d, e, r) -> new EpochEntry(d, e, r.map(b -> {
+                Codec.BYTE_BUFFER.optionalFieldOf("result").forGetter(e -> e.pendingResult.map(ByteBuffer::wrap)),
+                Codec.LONG.optionalFieldOf("gen", 0L).forGetter(EpochEntry::gen)
+        ).apply(i, (d, e, r, g) -> new EpochEntry(d, e, r.map(b -> {
             byte[] bytes = new byte[b.remaining()];
             b.duplicate().get(bytes);
             return bytes;
-        }))));
+        }), g)));
     }
 
     /** {@code mic_rtsim:reconcile}: per district, the epoch applied in this chunk (I8). */
