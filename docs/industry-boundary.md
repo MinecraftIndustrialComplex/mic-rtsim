@@ -443,8 +443,10 @@ argument). Choices are GB# in `docs/choices-glassbox-g1.md`.
 | 0x004B | IND_GRAPH_DOMAIN | latest-wins | Java to engine |
 | 0x004C | IND_GRAPH_END | latest-wins | Java to engine |
 | 0x004D | IND_PROBE_SAMPLE | latest-wins, not counted in a sweep | Java to engine |
+| 0x004F | IND_COUNT_SAMPLE | latest-wins, not counted in a sweep (SECTIONS.md §4.2) | Java to engine |
 | 0x040B | IND_CHUNK_TICKING | journaled | Java to engine |
 | 0x8406 | IND_PROBE_SET | command | engine to Java |
+| 0x8408 | IND_COUNT_SET | command, no op id (SECTIONS.md §4.2) | engine to Java |
 
 **A compile** is a district's graph: NODE, EDGE, RECIPE and DOMAIN records carrying the district's
 compile number (Java's counter, from 1), then IND_GRAPH_END saying how many records it sent. **The
@@ -467,6 +469,8 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
 | IND_PROBE_SAMPLE | n entries | 16 u64 district, 24 u32 sweep, 28 u32 node, 32 u32 compile, 36 reserved, 40 n × Entry16 | 40 + 16n |
 | IND_CHUNK_TICKING | 1 ticking, 0 not | (journaled prefix) 24 u64 district, 32 u32 dim, 36 i32 chunkX, 40 i32 chunkZ, 44 reserved | 48 |
 | IND_PROBE_SET | n nodes | (cmdSeq at 8) 16 u64 district, 24 u32 compile, 28 reserved, 32 n × u32 node | 32 + 4n, padded to 8 |
+| IND_COUNT_SAMPLE | n counts | 16 u64 district, 24 u32 sweep, 28 u32 compile, 32 n × Count40 | 32 + 40n |
+| IND_COUNT_SET | n pairs | (cmdSeq at 8) 16 u64 district, 24 u32 compile, 28 reserved, 32 n × Pair8 | 32 + 8n |
 
 **Sub-records:**
 - **Rate24:** `0 u32 level, 4 u32 recipe (NONE: the transfer, or the only recipe), 8 u32 batch,
@@ -480,6 +484,20 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
   driver's value that picks the level (a boiler's level, 0 to 18), 0 without a driver.
 - **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
   `count` blocks at speed `ratio × root speed` and `impact` SU per RPM each.
+- **Count40:** `0 u32 mover, 4 u32 store, 8 u32 good (NONE: the pair counted nothing yet),
+  12 u32 entries, 16 i64 since, 24 i64 in, 32 i64 out`: what the mover put into the store and took
+  from it since game time `since`, cumulative, in the sample's compile's node numbers. One entry
+  per (pair, good). `entries` is how many entries the entry's (mover, store) pair has in all over
+  the sweep's records (at least 1; the same on each of the pair's entries). A large sample comes in
+  several records of one sweep, cut between pairs; only a pair with more goods than one record
+  holds (about 1,600) is split, and the engine gives no cover to a pair it got fewer entries of
+  than `entries` (a lost part would read as goods not moved; SECTIONS.md §13, SC123).
+- **Pair8:** `0 u32 mover, 4 u32 store`: node numbers of the set's compile, ascending by mover
+  then store. Java keys each pair's counters by the two blocks' positions, so a pair a later set
+  names again keeps them and its `since`; a pair no set names any more is dropped, and an empty set
+  drops the district's counters. Java sends each sweep's IND_COUNT_SAMPLE before that sweep's
+  IND_SWEEP_END, in the numbers of the latest compile whose END it sent, leaving out pairs that
+  compile lacks (SECTIONS.md §13, SC89 to SC91).
 
 **Codes** (the Rust `records.rs` modules, mirrored in `GlassRecords`):
 - **Node kinds:** 1 store, 2 buffer, 3 machine, 4 mover, 5 junction, 6 heater, 7 source, 8 sink,
