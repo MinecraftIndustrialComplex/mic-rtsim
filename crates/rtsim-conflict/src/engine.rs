@@ -4553,7 +4553,11 @@ impl Conflict {
     /// Minecraft become a recalled stack of their epoch, beside the stacks already walking off,
     /// for those records to count; whatever no record counted is dropped when the replay has
     /// caught up ([`Conflict::replay_done`], MZB-138).
-    pub fn session_start(&mut self) {
+    ///
+    /// `from_pages`: whether this engine came back from its pages (docs/replay-gate.md §5.2,
+    /// RP-31); read by the honour of a replayed BAND_MATERIALIZED, which comes with slice C's
+    /// engine changes.
+    pub fn begin_replay(&mut self, _from_pages: bool) {
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
             let x = &mut self.parties[p];
