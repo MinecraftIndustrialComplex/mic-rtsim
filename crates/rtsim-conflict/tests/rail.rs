@@ -308,12 +308,24 @@ fn kill_at(
     district: Option<DistrictId>,
     at: u64,
 ) {
+    kill_of(w, c, a, pos, district, 0.5, at);
+}
+
+fn kill_of(
+    w: &mut World,
+    c: &mut Conflict,
+    a: ActorId,
+    pos: Pos,
+    district: Option<DistrictId>,
+    amount: f64,
+    at: u64,
+) {
     c.signal(
         w,
         Signal {
             faction: Some(CAMP),
             kind: SignalKind::Killing,
-            amount: 0.5,
+            amount,
             actor: a,
             pos,
             district,
@@ -410,5 +422,219 @@ fn a_zero_weight_kind_sets_no_focus() {
     assert_eq!(
         at_district("umvuthana").and_then(|f| f.district),
         Some(REFINERY)
+    );
+}
+
+// ---- the target (MZB-315 to MZB-317) ----------------------------------------------------------
+
+use rtsim_conflict::Step;
+use rtsim_conflict::engine::{Party, Phase, Target};
+use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome, TrainSighting};
+use rtsim_industry::ids::{Good, TrainId};
+use rtsim_industry::threat::Threat;
+use rtsim_kernel::handle::Handle;
+use rtsim_space::topology::{Topologies, Topology};
+
+/// An infrastructure that counts what the engine asks of it and has nothing in it, except a train
+/// crossing every walk (so an ambush roll, if one is made, finds one).
+#[derive(Default)]
+struct Probe {
+    districts_near: u32,
+    trains_crossed: u32,
+    raids: u32,
+}
+
+impl Infrastructure for Probe {
+    fn districts_near(&mut self, _: u16, _: i64, _: i64, _: i64) -> Vec<DistrictSite> {
+        self.districts_near += 1;
+        Vec::new()
+    }
+
+    fn raid(&mut self, _: &Threat) -> Option<RaidOutcome> {
+        self.raids += 1;
+        None
+    }
+
+    fn good_name(&self, _: Good) -> Option<String> {
+        None
+    }
+
+    fn trains_crossed(
+        &mut self,
+        _: u16,
+        _: &[(i32, i32)],
+        from: Tick,
+        to: Tick,
+    ) -> Vec<TrainSighting> {
+        self.trains_crossed += 1;
+        vec![TrainSighting {
+            train: TrainId(9),
+            from,
+            to,
+        }]
+    }
+}
+
+/// Runs the engine hour by hour to day `days`, noting each party the first time it is seen and
+/// the phases the first Raid and Invasion parties pass through.
+struct Watch {
+    seen: Vec<(Handle<Party>, Step, Target)>,
+    phases: Vec<(Step, Phase)>,
+}
+
+fn watch(c: &mut Conflict, w: &mut World, probe: &mut Probe, from: Tick, days: u64) -> Watch {
+    let mut out = Watch {
+        seen: Vec::new(),
+        phases: Vec::new(),
+    };
+    let mut t = from;
+    while t < Tick::from_days(days) {
+        t = Tick(t.0 + 1_000);
+        c.run_until(w, probe, t);
+        for (h, p) in c.parties.iter() {
+            let step = if p.kind == rtsim_conflict::culture::PartyKind::Raid {
+                Step::Raid
+            } else {
+                Step::Invasion
+            };
+            if !out.seen.iter().any(|s| s.0 == h) {
+                out.seen.push((h, step, p.target));
+            }
+            if out.phases.last() != Some(&(step, p.phase)) {
+                out.phases.push((step, p.phase));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_raid_on_a_track_focus_targets_the_track_and_an_invasion_the_station() {
+    let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
+    // A track that names no station: both rungs go to the track, five blocks toward the den.
+    let (mut w, mut c, f, player) = dens(31);
+    c.set_emission_for(&mut w, f, player, 30.0, rail, track(66), Tick(10));
+    let seen = watch(&mut c, &mut w, &mut Probe::default(), Tick(10), 40).seen;
+    let spot = Pos::new(0, rail.x - 5, rail.z);
+    let want = Target::Track {
+        track: rail,
+        spot,
+        y: 66,
+    };
+    let raid = seen.iter().find(|s| s.1 == Step::Raid).expect("a raid");
+    assert_eq!(raid.2, want);
+    let inv = seen
+        .iter()
+        .find(|s| s.1 == Step::Invasion)
+        .expect("an invasion");
+    assert_eq!(inv.2, want, "no station: the invasion goes to the track");
+
+    // A track that names a station with a district: the invasion marches on the station.
+    let (mut w, mut c, f, player) = dens(32);
+    let station = Pos::new(0, rail.x + 40, rail.z + 10);
+    let pin = Pin {
+        y: 66,
+        station: Some((station, REFINERY)),
+    };
+    c.set_emission_for(&mut w, f, player, 30.0, rail, pin, Tick(10));
+    let seen = watch(&mut c, &mut w, &mut Probe::default(), Tick(10), 40).seen;
+    let raid = seen.iter().find(|s| s.1 == Step::Raid).expect("a raid");
+    assert_eq!(raid.2, want, "a raid still goes to the track");
+    let inv = seen
+        .iter()
+        .find(|s| s.1 == Step::Invasion)
+        .expect("an invasion");
+    assert_eq!(inv.2, Target::District(REFINERY, station));
+}
+
+#[test]
+fn the_spot_is_five_blocks_toward_the_den() {
+    let (_w, c, _f, _) = dens(33);
+    let at = |x: i32, z: i32| Pos::new(0, x, z);
+    // Toward the den along each axis, and on a 3-4-5 diagonal.
+    assert_eq!(c.spot_toward(at(100, 0), at(0, 0)), at(95, 0));
+    assert_eq!(c.spot_toward(at(0, 100), at(0, 0)), at(0, 95));
+    assert_eq!(c.spot_toward(at(-60, -80), at(0, 0)), at(-57, -76));
+    // The den on top of the point, or a block from it, or in another frame: +x.
+    assert_eq!(c.spot_toward(at(40, 40), at(40, 40)), at(45, 40));
+    assert_eq!(c.spot_toward(at(40, 40), at(40, 41)), at(45, 40));
+    assert_eq!(c.spot_toward(at(40, 40), Pos::new(1, 0, 0)), at(45, 40));
+    // The result is whole blocks: a direction that is not a multiple rounds.
+    assert_eq!(c.spot_toward(at(10, 10), at(0, 0)), at(6, 6));
+
+    // Across a seam: x wraps over [0, 2000), so the den at 10 is 20 blocks east of a track at
+    // 1990, the short way, and one at 1998 is 4 blocks west of a track at 2.
+    let (_w, mut c, _, _) = dens(34);
+    let mut topo = Topologies::new();
+    topo.set(0, Topology::x_wrap(0, 2000));
+    c.set_topologies(topo.shared());
+    assert_eq!(c.spot_toward(at(1990, 0), at(10, 0)), at(1995, 0));
+    assert_eq!(c.spot_toward(at(1990, 0), at(10, 30)), at(1993, 4));
+    assert_eq!(
+        c.spot_toward(at(2, 0), at(1998, 0)),
+        at(1997, 0),
+        "2 - 5 = -3, which is 1997 canonical"
+    );
+}
+
+#[test]
+fn a_raid_at_a_track_waits_and_goes_home_raiding_nothing() {
+    let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
+    let (mut w, mut c, f, player) = dens(35);
+    // One raid only: the climb stops short of Invasion.
+    c.set_emission_for(&mut w, f, player, 14.0, rail, track(66), Tick(10));
+    let mut probe = Probe::default();
+    let run = watch(&mut c, &mut w, &mut probe, Tick(10), 12);
+    let raid = run.seen.iter().find(|s| s.1 == Step::Raid).expect("a raid");
+    let Target::Track { spot, .. } = raid.2 else {
+        panic!("{:?}", raid.2);
+    };
+    // It musters, walks out, waits at the spot and goes home.
+    let phases: Vec<Phase> = run.phases.iter().map(|p| p.1).collect();
+    assert!(
+        phases.starts_with(&[Phase::Mustering, Phase::Out, Phase::Waiting, Phase::Home]),
+        "{phases:?}"
+    );
+    assert!(
+        c.parties
+            .iter()
+            .all(|(_, p)| p.kind != rtsim_conflict::culture::PartyKind::Raid)
+    );
+    assert_eq!(c.stats.bored, 1, "it waited out its patience");
+    // Nothing was raided, looked for, ambushed or asked of the industry.
+    assert_eq!(
+        (probe.districts_near, probe.trains_crossed, probe.raids),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        (
+            c.stats.raids_district,
+            c.stats.raids_village,
+            c.stats.ambushes
+        ),
+        (0, 0, 0)
+    );
+    assert!(c.ledger.from_players.is_empty() && c.ledger.from_villages.is_empty());
+    // It waited at the spot, five blocks from the track point on the den's side.
+    assert_eq!(spot, Pos::new(0, rail.x - 5, rail.z));
+    assert!(c.feud(f, player).unwrap().raids >= 1);
+
+    // The control: the same den raided by kills at a bare position walks to that place, where
+    // the engine looks for a district and rolls for a train on the way.
+    let (mut w, mut c, _, player) = dens(36);
+    let mut probe = Probe::default();
+    for day in 0..14u64 {
+        let t = Tick::from_days(day) + 10;
+        kill_of(&mut w, &mut c, player, rail, None, 2.0, t.0);
+        c.run_until(&mut w, &mut probe, Tick::from_days(day + 1));
+    }
+    assert!(c.stats.parties[rtsim_conflict::culture::PartyKind::Raid.index()] >= 1);
+    assert!(
+        probe.trains_crossed > 0,
+        "a walk to a place rolls for trains"
+    );
+    assert!(
+        probe.districts_near > 0,
+        "and looks for a district at the end"
     );
 }

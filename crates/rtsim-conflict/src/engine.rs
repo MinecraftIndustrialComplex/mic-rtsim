@@ -245,6 +245,14 @@ pub enum Target {
     District(DistrictId, Pos),
     Node(usize),
     Pos(Pos),
+    /// A rail source's track (MZB-315): `track` is the point on it, `spot` where the band stands,
+    /// [`rail::SPOT_BLOCKS`] from it toward the den, and `y` the track's. The band waits at the
+    /// spot and raids nothing.
+    Track {
+        track: Pos,
+        spot: Pos,
+        y: i32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -2005,7 +2013,7 @@ impl Conflict {
                 debug_assert!(false, "escalate to the empty rung {}", to.name());
                 return;
             }
-            let target = self.target_of(w, f, focus, at);
+            let target = self.target_of(w, f, pk, focus, at);
             let Some(p) = self.send_party(w, f, Some(a), pk, target, at) else {
                 // Not enough warriors: wait for the pool (closed form). The whole warriors
                 // `send_party` needs, so the wait ends when it can send (MOWZIE.md ledger 6).
@@ -2185,7 +2193,7 @@ impl Conflict {
             feud.g.dominant(at, lambda),
             feud.focus,
         );
-        let target = self.target_of(w, f, focus, at);
+        let target = self.target_of(w, f, PartyKind::Envoy, focus, at);
         let Some(p) = self.send_party(w, f, Some(a), PartyKind::Envoy, target, at) else {
             // The whole warriors `send_party` needs, as `escalate` waits for (MZB-52).
             let need = (self.party_size(f, PartyKind::Envoy) as f64 / 2.0).ceil();
@@ -2228,8 +2236,17 @@ impl Conflict {
         }
     }
 
-    /// Where a feud's party goes: its focus's district, else the place, else the camp's edge.
-    fn target_of(&self, w: &World, f: u32, focus: Option<Focus>, at: Tick) -> Target {
+    /// Where a feud's party goes: its focus's district, else the track, else the place, else the
+    /// camp's edge. A track focus sends a Raid to the track and an Invasion to the station it
+    /// names (the track when it names none); any other party to the place (MZB-315).
+    fn target_of(
+        &self,
+        w: &World,
+        f: u32,
+        kind: PartyKind,
+        focus: Option<Focus>,
+        at: Tick,
+    ) -> Target {
         let _ = (w, at);
         match focus {
             Some(Focus {
@@ -2237,6 +2254,19 @@ impl Conflict {
                 pos,
                 ..
             }) => Target::District(d, pos),
+            Some(Focus {
+                track: Some(t),
+                pos,
+                ..
+            }) => match (kind, t.station) {
+                (PartyKind::Invasion, Some((sp, d))) => Target::District(d, sp),
+                (PartyKind::Raid | PartyKind::Invasion, _) => Target::Track {
+                    track: pos,
+                    spot: self.spot_toward(pos, self.factions[f as usize].pos),
+                    y: t.y,
+                },
+                _ => Target::Pos(pos),
+            },
             Some(fo) => Target::Pos(fo.pos),
             None => Target::Pos(self.factions[f as usize].pos),
         }
@@ -2620,6 +2650,7 @@ impl Conflict {
         match t {
             Target::District(_, p) | Target::Pos(p) => p,
             Target::Node(i) => w.nodes[i].pos,
+            Target::Track { spot, .. } => spot,
         }
     }
 
@@ -3012,6 +3043,8 @@ impl Conflict {
         let (a, b) = (x.route[s], x.route[s + 1]);
         let (t0, t1) = (x.times[s], x.times[s + 1]);
         let (kind, phase, embodied, epoch, frame) = (x.kind, x.phase, x.embodied, x.epoch, x.frame);
+        // A band bound for a track has its trains from sampling (MOWZIE.md ledger 8).
+        let to_track = matches!(x.target, Target::Track { .. });
         self.book_leg(w, p, a, b, t0.max(at), t1);
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
@@ -3055,6 +3088,7 @@ impl Conflict {
         }
         // Supply lines (C16, I24): a war band on its way out may fall on a train leg it crosses.
         if phase == Phase::Out
+            && !to_track
             && matches!(
                 kind,
                 PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege
@@ -3357,6 +3391,23 @@ impl Conflict {
                 );
                 self.go_home(w, p, boundary::RECALL_DONE, at);
             }
+            _ if matches!(target, Target::Track { .. }) => {
+                // A band at a track waits for its patience to run out: nobody to fight and
+                // nothing to raid (M7; M8 makes it lie in wait there).
+                let bored = self.parties[p].bored_at;
+                self.wait(w, p, bored, at);
+                self.note(
+                    at,
+                    Some(f),
+                    "track",
+                    format!(
+                        "the {} waits at the track by ({}, {})",
+                        kind.name(),
+                        tpos.x,
+                        tpos.z
+                    ),
+                );
+            }
             _ => {
                 if let Some(player) = self.watcher(w, tpos, at) {
                     self.start_fight(w, p, player, at);
@@ -3473,12 +3524,17 @@ impl Conflict {
                     }
                 }
             }
+            Target::Track { .. } => {
+                // Nothing of a player's stands at a track that the sim knows (M8 changes this).
+                self.note(at, Some(f), "raid", "raids nothing".into());
+                (0, 0)
+            }
         };
         let (aim, after) = (self.target_pos(w, target), self.parties[p].alive());
         let what = match self.parties[p].target {
             Target::District(d, _) => format!("district {}", d.0),
             Target::Node(i) => format!("node {}", w.nodes[i].key),
-            Target::Pos(_) => "nothing".to_string(),
+            Target::Pos(_) | Target::Track { .. } => "nothing".to_string(),
         };
         let severity = if stolen == 0 && blocks == 0 {
             Severity::Minor
@@ -4402,7 +4458,7 @@ impl Conflict {
                         bases.insert(i);
                     }
                 }
-                Target::District(..) | Target::Pos(_) => {
+                Target::District(..) | Target::Pos(_) | Target::Track { .. } => {
                     for i in self.nodes.within(w, topo.of(aim.frame), aim, view) {
                         if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. })
                             && w.base_active(i)

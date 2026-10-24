@@ -22,6 +22,9 @@ pub const RAIL_TAU: f64 = 48_000.0;
 /// A meter whose rate has fallen to this many legs a day, with nothing pushed above the culture's
 /// tolerance, is retired (MZB-306).
 pub const RETIRE_PER_DAY: f64 = 0.01;
+/// How far from the track point a band bound for a track stands, toward its den (PLACEHOLDER,
+/// MOWZIE.md §4.4, MZB-316).
+pub const SPOT_BLOCKS: f64 = 5.0;
 /// Lines kept per meter; a new one beyond this evicts the one with the smallest count
 /// (PLACEHOLDER, MZB-307).
 pub const MAX_LINES: usize = 16;
@@ -263,5 +266,33 @@ impl Conflict {
             self.factions.row_mut(f).remove_reach(SignalKind::Rail, id);
         }
         self.refresh_rates(f, actor, SignalKind::Rail, at);
+    }
+}
+
+impl Conflict {
+    /// Where a band bound for the track point `pos` stands: [`SPOT_BLOCKS`] from it toward `den`,
+    /// in whole blocks and canonical (MZB-316). The direction is read in the track's chart, so a
+    /// den across a seam is the short way round. A den within a block of the point, or in another
+    /// frame, puts the spot toward +x.
+    pub fn spot_toward(&self, pos: Pos, den: Pos) -> Pos {
+        let t = self.topo(pos.frame);
+        let from = (i64::from(pos.x), i64::from(pos.z));
+        let (dx, dz) = if den.frame == pos.frame {
+            let to = t.toward(from, (i64::from(den.x), i64::from(den.z)));
+            ((to.0 - from.0) as f64, (to.1 - from.1) as f64)
+        } else {
+            (0.0, 0.0)
+        };
+        let d = dx.hypot(dz);
+        let (ox, oz) = if d <= 1.0 {
+            (SPOT_BLOCKS, 0.0)
+        } else {
+            (dx / d * SPOT_BLOCKS, dz / d * SPOT_BLOCKS)
+        };
+        let (x, z) = t.canonical_i32(
+            (f64::from(pos.x) + ox).round() as i32,
+            (f64::from(pos.z) + oz).round() as i32,
+        );
+        Pos::new(pos.frame, x, z)
     }
 }

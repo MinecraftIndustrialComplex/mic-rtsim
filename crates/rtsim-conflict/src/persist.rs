@@ -611,6 +611,12 @@ fn put_target(w: &mut Writer, t: &Target) {
             w.u8(2);
             put_pos(w, *p);
         }
+        Target::Track { track, spot, y } => {
+            w.u8(3);
+            put_pos(w, *track);
+            put_pos(w, *spot);
+            w.var_i64(i64::from(*y));
+        }
     }
 }
 
@@ -619,6 +625,11 @@ fn get_target(r: &mut Reader<'_>) -> codec::Result<Target> {
         0 => Target::District(DistrictId(r.u64()?), get_pos(r)?),
         1 => Target::Node(get_usize(r)?),
         2 => Target::Pos(get_pos(r)?),
+        3 => Target::Track {
+            track: get_pos(r)?,
+            spot: get_pos(r)?,
+            y: get_i32(r)?,
+        },
         t => return bad(format!("target tag {t}")),
     })
 }
