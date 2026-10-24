@@ -69,6 +69,8 @@ public final class ReinstallGuard {
         volatile boolean markerCleared;
         /** The deletion is queued behind a save. */
         volatile boolean deletionQueued;
+        /** The industry module of the session this reset opened has planned its re-adoption (RG7). */
+        final java.util.concurrent.atomic.AtomicBoolean readoptTaken = new java.util.concurrent.atomic.AtomicBoolean();
 
         Status(Capture capture, Reset reset) {
             this.capture = capture;
@@ -159,6 +161,15 @@ public final class ReinstallGuard {
     public static Reset reset(MinecraftServer server) {
         Status s = STATUS.get(worldDir(server));
         return s == null ? null : s.reset;
+    }
+
+    /**
+     * The industry module's question as it starts: plan the re-adoption (RG7)? True once per reset, so for the
+     * session the reset opened; a later session in the same server start (a GameTest's own) plans nothing.
+     */
+    public static boolean takeReadopt(MinecraftServer server) {
+        Status s = STATUS.get(worldDir(server));
+        return s != null && s.reset != null && s.readoptTaken.compareAndSet(false, true);
     }
 
     /**
