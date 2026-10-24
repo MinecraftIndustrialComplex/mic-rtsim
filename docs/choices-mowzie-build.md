@@ -1868,6 +1868,33 @@ The tests:
   `renewal` field alone, in `Culture::resolve`: a culture whose chief renews while its warriors still refill
   by rate is legal, and the Frostmaw's rule does not have to be edited for it. The `rate_den_cultures`
   helper of `synth` (MZB-286) and `CampRun::with_cultures` serve the engine tests that keep a rate.
+- **MZB-294** (the chief paths, built; MZB-262 to 266): `chief_falls` carries a `what` that opens the tape's
+  text, so the away path's tape line is the one M4 wrote ("the band routs; cowed for N days") and the den's
+  and the abstract wipe-out's are their own ("the chief's body falls", "the band is wiped out"). A body
+  taken (BY_TAKEN) names a killer only when the record's `killer` is not the null UUID: the emulated
+  plugin sends none for a carried-off body, and `player(w, (0, 0))` would mint an actor for it. Such a
+  chief falls with no killer, steps no feud down and still bumps the pressure (MZB-258). The killer's
+  actor is made only when the death is a chief's, so no other camp death changes the knowledge's actors.
+  This amends MZB-265.
+- **MZB-295** (the pressure's order in the away path, built): CHIEF_KILLED is what Java sends for a chief
+  puppet, never BAND_CASUALTIES, so `chief_killed_by` bumps the pressure right after `chief_falls` and the
+  loss reaches the books once. The DEMATERIALIZED that follows, with the chief missing from its survivors,
+  runs `party_lost`, whose `unblock` plans the wait from a pressure that already holds the bump. An
+  abstract wipe-out (`lose_units`) bumps before `party_lost` for the same reason; `camp_death` bumps
+  before its slot is freed. A boss whose chief fell away is not stepped down twice: `step_down` leaves a
+  feud at or below Notice alone.
+- **MZB-296** (a chief the books already buried, built): `chief_killed_at_camp` compares the faction's chief
+  before and after `ensure_chief`; a succession `ensure_chief` ran means the body that died was the old
+  chief's (dead of age), so the kill is stale and nothing falls, as the away path's stale rule has it
+  (MZB-146). The camp's pressure is still `camp_death`'s, since the body was a member lost. `camp_death`
+  runs the fall for a Body or Owed slot after it is freed, for a Left or Gone slot before `member_died`,
+  and never for a Dead slot.
+- **MZB-297** (the synth marks the chief, built; MZB-272): `CampRun::new` marks the first body of a camp
+  whose home unit has a row without its crystal (`bare[u] != u`) as the chief with its crystal on it, and
+  gives the FACTION_FOUND record `CENSUS_CHIEF | CENSUS_CRYSTAL` for it; a body the plugin spawns takes
+  `chief` and `crystal` from its line's flags. Only the Frostmaw has such a unit today, so the umvuthana
+  tests (M4) see no change; M9's `without_crystal` rows will mark theirs the same way. `CampRun.infra`
+  (none by default) lets a test put walls under a raid.
 
 ### M6 design for the implementer
 

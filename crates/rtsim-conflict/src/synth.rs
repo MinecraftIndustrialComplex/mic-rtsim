@@ -258,6 +258,10 @@ pub struct CampBody {
     pub generation: u32,
     /// Loaded outside the footprint (the census's `BODY_ELSEWHERE`).
     pub elsewhere: bool,
+    /// The camp's chief body (a Frostmaw): its death is a `DEATH_CHIEF`.
+    pub chief: bool,
+    /// The chief body's crystal is on it: a steal takes it.
+    pub crystal: bool,
 }
 
 /// A camp as the plugin sees it (MOWZIE.md §4.9, emulated): its epoch while it is in (0 while it
@@ -603,6 +607,13 @@ impl FakeConflict {
                         }
                     }
                     if f.kill_chief && m.flags & boundary::BAND_CHIEF != 0 && m.wave == 0 {
+                        // The chief's body dies with it: one unit of the first stack, which is no
+                        // survivor when the band leaves (MZB-272).
+                        if let Some(b) = self.bodies.get_mut(&m.agent)
+                            && let Some(n) = b.members.values_mut().next()
+                        {
+                            *n = n.saturating_sub(1);
+                        }
                         let op = self.op();
                         self.push(
                             at + f.after + 20,
@@ -705,6 +716,8 @@ impl FakeConflict {
             slot,
             generation,
             elsewhere: false,
+            chief: false,
+            crystal: false,
         });
         uuid
     }
@@ -790,11 +803,11 @@ impl FakeConflict {
             faction,
             by,
             body: b.body,
-            flags: if b.generation == 0 {
+            flags: (if b.generation == 0 {
                 boundary::DEATH_STRAY
             } else {
                 0
-            },
+            }) | (if b.chief { boundary::DEATH_CHIEF } else { 0 }),
             slot: b.slot,
             generation: b.generation,
             killer: if by == boundary::BY_PLAYER {
@@ -984,6 +997,8 @@ impl FakeConflict {
                     slot: l.slot,
                     generation: l.generation,
                     elsewhere: false,
+                    chief: l.flags & boundary::LINE_CHIEF != 0,
+                    crystal: l.flags & boundary::LINE_CRYSTAL != 0,
                 });
                 LINE_DONE
             }
@@ -1123,6 +1138,9 @@ pub struct CampRun {
     /// Whether the chaos run checks the books after each event (off, it checks nothing until
     /// asked: the run to compare with, for an audit that must change nothing).
     pub audits: bool,
+    /// The infrastructure the run's engine acts on (none by default: a raid is skipped). A test
+    /// puts walls here to have a raid on a district fought abstractly (MZB-266).
+    pub infra: Box<dyn rtsim_ecology::infra::Infrastructure>,
     /// What the chaos run did, with when: for a failure's report.
     pub events: Vec<(Tick, String)>,
     next_obs: Tick,
@@ -1159,6 +1177,23 @@ impl CampRun {
         for _ in 0..found {
             plugin.camp_stray(key, body);
         }
+        // A chief's unit (one with a row of its own without its crystal) found in its camp is the
+        // jar's chief, crystal on it: the census byte says so (MZB-257, MZB-272).
+        let chief = {
+            let cu = c.cultures.get(ci);
+            let u = [
+                crate::culture::PartyKind::Raid,
+                crate::culture::PartyKind::Invasion,
+            ]
+            .into_iter()
+            .find_map(|k| cu.parties[k.index()].first().map(|u| u.0))
+            .expect("a war party");
+            cu.bare[usize::from(u)] != u && found > 0
+        };
+        if chief && let Some(b) = plugin.camp_world(key).bodies.first_mut() {
+            b.chief = true;
+            b.crystal = true;
+        }
         c.ingest(
             &mut w,
             &mut rtsim_ecology::infra::NoInfrastructure,
@@ -1169,7 +1204,11 @@ impl CampRun {
                 structure: CAMP_STRUCTURE,
                 pos: (CAMP_POS.x, 64, CAMP_POS.z),
                 home_bodies: found,
-                census: 0,
+                census: if chief {
+                    (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8
+                } else {
+                    0
+                },
             }),
             Tick(1),
         );
@@ -1191,6 +1230,7 @@ impl CampRun {
             watch: false,
             round_trips: true,
             audits: true,
+            infra: Box::new(rtsim_ecology::infra::NoInfrastructure),
             events: Vec::new(),
             next_obs: Tick::ZERO,
         };
@@ -1304,18 +1344,9 @@ impl CampRun {
             .unwrap_or(to)
             .clamp(t + 1, to);
             for (at, o) in self.plugin.due(next) {
-                self.c.ingest(
-                    &mut self.w,
-                    &mut rtsim_ecology::infra::NoInfrastructure,
-                    &o,
-                    at,
-                );
+                self.c.ingest(&mut self.w, &mut *self.infra, &o, at);
             }
-            self.c.run_until(
-                &mut self.w,
-                &mut rtsim_ecology::infra::NoInfrastructure,
-                next,
-            );
+            self.c.run_until(&mut self.w, &mut *self.infra, next);
             if self.watch && next >= self.next_obs {
                 self.c
                     .observe_player(&mut self.w, PLAYER, REFINERY_POS, next);
