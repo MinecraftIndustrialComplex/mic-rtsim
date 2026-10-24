@@ -1206,15 +1206,15 @@ conservative option at its fork.
   Claude Opus 5.5 (1M context)), on main through the overnight/jni merges 3e5a7e0c and 3d47d4e6;
   d1edb812 only reflowed it. The herds, the largest paged module, do not fit "normally small",
   measured in `a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save` (128 herds, a 4
-  KiB row budget, 50 transfers a step of 1,200 ticks, no save asked for, a crash): the replay held
-  177,178 B after 2 steps (2,400 ticks, less than one autosave) against 186,606 B unpaged, and
-  191,730 B against 203,970 B after 80 steps; the live peak under the budget was 1,232 B or 95,540 B
-  (2 steps) and 1,400 B or 103,406 B (80), by when the IO lane's saves came back, so it is printed,
-  not asserted. A herd page holds 32 herds and the herds move every step, so any window touches
-  nearly every page: the herd replay is near the unpaged footprint in a normal window, not only in
-  the bad cases. Also seen, cause not traced: every start loads every herd page before its first
-  step (163,314 B in 4 loads here), clean, evicted at the first step, a full-footprint peak at each
-  start, crash or not. Both reported to the build lead; no fix built.
+  KiB row budget, 50 transfers a step of 1,200 ticks, no save asked for, a crash; the replayed
+  engine outside TEST mode, RP-55): the replay held 95,540 B after 2 steps (2,400 ticks, less than
+  one autosave) against 186,606 B unpaged, and 191,730 B against 203,970 B after 80 steps; the live
+  peak under the budget was 1,232 B or 95,540 B (2 steps) and 1,400 B or 103,406 B (80), by when
+  the IO lane's saves came back, so it is printed, not asserted. A herd page holds 32 herds and one
+  herd's event dirties it, and no page is taken while replaying (RP-42), so the herd replay's rows
+  grow fast with the window: about half the unpaged footprint after 2 steps, nearly all after 80.
+  Corrected by RP-55 (fixes5 item 3): the 177,178 B first recorded here for 2 steps, and "every
+  start loads every herd page", were TEST mode's read-back hash, main's, not the replay's.
 - **RP-50** (a copy whose op id was heard; §2.3; SEC-1's meeting-point review, item 2): in
   `reasserted()` the copy bit is set and `copies_applied` counted only on `admit_copy`'s Apply. A
   new copy whose op id the engine already heard (generation 0 is new each time) is dispatched as
@@ -1293,6 +1293,27 @@ conservative option at its fork.
   `a_save_failing_partway_costs_that_save_not_the_engine` (TornLog) 0 against 1 (one failure and no
   stale refusal that run), both `a_held_arrival_across_a_second_*` tests 0 against 1 in S2 (S1
   asserts 0).
+  Finding 4 (fixes5 item 3), the herd replay near the unpaged footprint: main loads every herd page
+  at each start, with or without a replay, in TEST mode only (the GameTests and rtsim-jni's tests),
+  never in production. The load is rtsim-jni `engine/herds.rs:187`, `saved.map(|_|
+  engine.state_hash())`, TEST mode's read-back check against the hash its save wrote: `state_hash`
+  (rtsim-ecology `herds/engine.rs:2667`) encodes `Herds::save()` (`herds/persist.rs:710-722`), whose
+  `PagedRows::for_each` (rtsim-kernel `rows.rs:799-822`) loads every herd and forage page. Every
+  TEST-mode save does the same (rtsim-jni `engine/paging.rs:158-162`). Both are on origin/main
+  (4a3392f9d and 9d521ea6; main's `paging.rs:161`), and the dragons, the conflict and the ships
+  check the same way at a start (`dragons.rs:193`, `conflict.rs:328`, `ships.rs:199`). A production
+  start reads the meta page only (`Herds::open_paged`, `herds/persist.rs:764-786`) and
+  `session_start` touches the active set (`herds/engine.rs:2110-2128`). Measured in RP-49's 2-step
+  run: 163,314 B resident right after the start in TEST mode, 0 outside it; still resident when the
+  replay's one step returned (177,178 B, the figure RP-49 first gave as the replay's; why that step
+  did not evict them is not traced), gone a step later (95,540 B), and back after each TEST-mode
+  pressure save (175,858 B and 179,438 B, against 46,278 B and 49,466 B outside TEST mode). What the
+  replay itself causes: RP-42's gate (rtsim-jni `engine.rs:1431`, `!st.replaying`, 63b0bd902, not on
+  main, which has no gate at `engine.rs:1307`) takes no pressure save while replaying, so every page
+  the window dirtied stays to the replay end: 95,540 B after 2 steps, 191,730 B after 80, the same
+  in and outside TEST mode. The RP-49 herds test now runs its replayed engine outside TEST mode and
+  asserts that the 2-step replay holds less than the unpaged footprint and the 80-step one more than
+  the 2-step (it asserted the 2-step replay held more than half of it).
 - **RP-56** (a fight's record, told from a sighting's; §6.1; RP-48; RP-23; fixes4 item 2): the
   command flag `BAND_FIGHT` (8) marks a BAND_MATERIALIZE of a fight's wave (`spawn_wave` with an
   arc: `start_fight`'s and a siege round's waves; a sighting's passes none), and Java echoes the
