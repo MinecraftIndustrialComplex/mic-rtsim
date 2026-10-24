@@ -1,7 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.client;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
-import com.iafenvoy.uranus.animation.IAnimatedEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
@@ -154,7 +153,7 @@ final class DragonArrivals {
      * loop starts. GeckoLib starts the next loop at the first render past a loop's end, dropping what it ran over,
      * so a render at the end itself keeps the beat (the stand-ins do the same). Only a body that plays the flight
      * loop ({@link #inFlight}) for a far model that flies: one at rest plays no loop (Ice and Fire's ground pose has
-     * no length), and an action (a blast's charge, a roar) would play out of sight. The flight animation has no
+     * no length), and the blast's charge or a breath would play out of sight. The flight animation has no
      * sound, particle or instruction keyframes, so the renders at past ticks start nothing. Not under {@code /tick
      * freeze}: the far clock runs on while the body's ticks do not.
      */
@@ -195,13 +194,15 @@ final class DragonArrivals {
     }
 
     /**
-     * Whether Ice and Fire's controller plays the flight loop for {@code d} (DragonBaseEntity's animation pool: not
-     * dead, not swimming, airborne, and neither breathing fire nor in an action).
+     * Whether Ice and Fire's controller plays the flight loop for {@code d}, as its {@code selectGeckoAnimation}
+     * decides: the airborne pool (not dead, not swimming, flying or hovering or part way into either), and in it
+     * neither the blast's charge nor a fire breath. Any other action, and none, plays the flight loop; a body new
+     * to the client has no action at all ({@code getAnimation} null, not {@code NO_ANIMATION}).
      */
     private static boolean inFlight(DragonBaseEntity d) {
         return !d.isModelDead() && !(d.isSwimming || d.isInWater() && d.swimProgress > 0f)
                 && (d.isFlying() || d.isHovering() || d.flyProgress > 0f || d.hoverProgress > 0f)
-                && !d.isBreathingFire() && d.getAnimation() == IAnimatedEntity.NO_ANIMATION;
+                && !d.isBreathingFire() && d.getAnimation() != DragonBaseEntity.ANIMATION_FIRECHARGE;
     }
 
     /** A render of {@code d} into nothing at its tick {@code tick}, partial 0. */
