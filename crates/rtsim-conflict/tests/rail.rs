@@ -1199,3 +1199,128 @@ fn the_nearer_station_with_a_district_is_the_pin() {
         Some((Pos::new(0, CAMP_POS.x + 600, CAMP_POS.z), DistrictId(9)))
     );
 }
+
+// ---- the page round trip (MZB-302) -------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Trip {
+    Never,
+    Blob,
+    Paged,
+}
+
+type RunEnd = (u64, Vec<RailMeter>, usize, [u64; 4], bool);
+
+/// A den hears a train a 1,000 ticks from `PLAYER` (an owner, whose lines are named for train 1
+/// only), a sparser one from another player, and a pass nobody owns; at the first sight of a raid
+/// bound for the track the engine is saved and loaded (or not), and the stream goes on for three
+/// days more.
+fn rail_run(seed: u64, trip: Trip) -> RunEnd {
+    use rtsim_conflict::scenario::META_KEY;
+    use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+    use std::sync::{Arc, RwLock};
+    let (mut w, mut c, f, player) = dens(seed);
+    let dir = std::env::temp_dir().join(format!("rtsim-rail-{seed}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = Arc::new(RwLock::new(
+        PageStore::open(&dir, Durability::NoSync).unwrap(),
+    ));
+    if trip == Trip::Paged {
+        c.attach_store(store.clone(), 8 << 10);
+    }
+    let mut probe = Probe::default();
+    let other = (0x0B0B_u64, 0x1234_u64);
+    let (a, b) = (
+        end(41, CAMP_POS.x - 200, CAMP_POS.z, None),
+        end(42, CAMP_POS.x + 300, CAMP_POS.z, Some(5)),
+    );
+    // Nobody owns this one, and nobody stands by it: held for good (a day, then let go).
+    c.ingest(&mut w, &mut probe, &pass(77, NOBODY, 500), Tick(500));
+    let mut tripped_at = None;
+    let mut step = 0u64;
+    while step < 24 * 40 {
+        step += 1;
+        let t = Tick(step * 1_000);
+        let train = 1 + step % 3;
+        c.ingest(&mut w, &mut probe, &pass(train, PLAYER, t.0), t);
+        if step % 6 == 0 {
+            c.ingest(
+                &mut w,
+                &mut probe,
+                &pass(100, other, t.0 + 10),
+                Tick(t.0 + 10),
+            );
+        }
+        if step % 4 == 1 {
+            let call = RailCall {
+                train: 1,
+                line: Some((a, b)),
+            };
+            c.rail_call(&mut w, &call, Tick(t.0 + 20));
+        }
+        c.run_until(&mut w, &mut probe, Tick(t.0 + 30));
+        let raid_bound = c
+            .parties
+            .iter()
+            .any(|(_, p)| matches!(p.target, Target::Track { .. }));
+        if tripped_at.is_none() && raid_bound {
+            tripped_at = Some(step);
+            // The state has what the round trip must keep.
+            let row = c.factions.row(f);
+            assert!(row.rail_meter(player).is_some_and(|m| !m.lines.is_empty()));
+            assert!(c.holds_train(2) && c.holds_train(3));
+            assert!(c.feud(f, player).unwrap().focus.unwrap().track.is_some());
+            assert!(c.pending_by_kind().get("rail").is_some_and(|n| *n >= 2));
+            match trip {
+                Trip::Never => {}
+                Trip::Blob => {
+                    let bytes = c.save();
+                    c = Conflict::load(c.tun.clone(), c.cultures.clone(), &bytes).expect("loads");
+                    assert_eq!(c.save(), bytes, "the same bytes");
+                }
+                Trip::Paged => {
+                    let mut batch = SaveBatch::new();
+                    let t = c.save_paged(&mut batch, META_KEY);
+                    store.write().unwrap().commit(batch, 0).unwrap();
+                    c.saved(t);
+                    c.enforce_budget();
+                    let (tun, cultures, hash) = (c.tun.clone(), c.cultures.clone(), c.state_hash());
+                    drop(c);
+                    c = Conflict::open_paged(store.clone(), 8 << 10, META_KEY, tun, cultures)
+                        .unwrap()
+                        .expect("a meta page");
+                    assert_eq!(c.state_hash(), hash, "the same state at once");
+                }
+            }
+        }
+        if let Some(at) = tripped_at
+            && step >= at + 72
+        {
+            break;
+        }
+    }
+    assert!(tripped_at.is_some(), "a raid went to the track");
+    let m = c.factions.row(f).rail.clone();
+    let s = &c.stats;
+    let end = (
+        c.state_hash(),
+        m,
+        c.held_passes(),
+        [s.rail_passes, s.rail_pushes, s.rail_wakes, s.rail_let_go],
+        c.holds_train(3),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    end
+}
+
+#[test]
+fn the_meter_round_trips_blob_and_paged() {
+    let whole = rail_run(81, Trip::Never);
+    assert!(whole.3[2] > 0, "wakes ran: {:?}", whole.3);
+    assert!(whole.2 > 0 && !whole.1.is_empty());
+    // The engine saved and loaded in the middle goes on as the one that kept going: the same
+    // meters, the same held passes and counters, to the state hash (a booked wake fires at the
+    // same tick with the same stamp).
+    assert_eq!(rail_run(81, Trip::Blob), whole, "blob");
+    assert_eq!(rail_run(81, Trip::Paged), whole, "paged");
+}
