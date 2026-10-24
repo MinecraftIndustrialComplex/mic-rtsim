@@ -1295,8 +1295,9 @@ public final class SectionsChunkLoadGameTests {
      * places in B, meshing with B's, is an IND_EDIT (placed) of A at the cog, and A recompiles. Breaking it
      * is A's edit (broken) too. A chest placed and broken in B is no part of the network and no edit of A
      * (review M2). A cog line a player runs in A out to its chunk's east border leaves M, empty there, as a
-     * chunk A's compile reaches across the last cog's face (review M3): a cog placed in M meshing with it is
-     * an edit of A, with no compile asked for in between. B stays in no district.
+     * chunk A's compile reaches across the last cog's face (review M3; the compile after the line turns, as
+     * the edits' own may run before its last cog joins): a cog placed in M meshing with it is an edit of A,
+     * with no compile asked for in between. B stays in no district.
      */
     @GameTest(template = YARD, batch = "sec1_9", timeoutTicks = 12000)
     public static void anEditOutsideEveryDistrictReachesTheDistrictOnItsNetwork(GameTestHelper helper) {
@@ -1409,6 +1410,17 @@ public final class SectionsChunkLoadGameTests {
                 .thenWaitUntil(io(() -> {
                     check("the cog line turns: " + speedOf(level, line.get(2)), Math.abs(speedOf(level, line.get(2))) == 64);
                     check("A recompiled after the cog line: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                            ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
+                }))
+                .thenExecute(() -> {
+                    // the edits' recompile may have run before the last cog joined A's network (a cog placed
+                    // this tick turns from its first tick on): a part the network takes only after a compile
+                    // is read at the next one (SC77), as for B above
+                    mark[1] = ind().glass().compileNo(f.da());
+                    ind().glass().requestCompile(ind().district(f.da()));
+                })
+                .thenWaitUntil(io(() -> {
+                    check("A recompiled once the cog line turns: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
                             ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
                     long[] by = ind().glass().reachedBy(level.dimension(), chunkM);
                     check("A's compile reaches M across the line's last face: " + java.util.Arrays.toString(by), by.length == 1 && by[0] == f.da());
