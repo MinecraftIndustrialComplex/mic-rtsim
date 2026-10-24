@@ -111,6 +111,12 @@ public final class PackageStores {
     public static void forgetForTest(Industry ind) {
         BY_INDUSTRY.remove(ind);
         last = null;
+        // As a restart reads them: copies, which the forgotten state no longer writes into.
+        for (String k : new String[] {KEY, Frontier.KEY}) {
+            CompoundTag t = ind.data().plugin(k);
+            if (t != null)
+                ind.data().putPlugin(k, t.copy());
+        }
     }
 
     /** One frogport of a store. */
@@ -572,6 +578,7 @@ public final class PackageStores {
             for (long p : s.conveyors)
                 if (c.get(p) == s.id)
                     c.remove(p);
+        frontier.storeGone(s.id, into != 0 && into != s.id && stores.containsKey(into) ? into : 0);
         ByteBuffer r = ind.journal(IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(0), 0);
         r.putLong(IndRecords.PackageStore.STORE, s.id);
         r.putInt(IndRecords.PackageStore.DIM, ind.dimId(s.dim));
@@ -635,6 +642,9 @@ public final class PackageStores {
 
     private void send(Store s, long into, long[] from, long[] district, int[] inventory) {
         int n = s.ports.size();
+        for (int i = 0; i < n; i++)
+            if (from[i] != 0 && from[i] != s.id)
+                frontier.moved(from[i], s.id, s.ports.get(i).pos);
         ByteBuffer r = ind.journal(IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(n), n);
         r.putLong(IndRecords.PackageStore.STORE, s.id);
         r.putInt(IndRecords.PackageStore.DIM, ind.dimId(s.dim));
@@ -779,7 +789,7 @@ public final class PackageStores {
             District.Inventory inv = d == null ? null : d.inventoryAt(pos);
             String address = PackageItem.getAddress(box);
             int destination = direction == IndRecords.ChainPackage.CHAIN_OUT ? routeFromPort(s, index, address) : index;
-            Frontier.Key landed = direction == IndRecords.ChainPackage.CHAIN_IN ? ps.frontier.landed(s.id, key) : null;
+            Frontier.Key landed = direction == IndRecords.ChainPackage.CHAIN_IN ? ps.frontier.landed(key) : null;
             Industry.GoodsCounter goods = ind.counter();
             ind.countStack(box, box.getCount(), goods);
             journalChain(ind, s, index, pos, d, inv, direction, destination, box.getCount(), address, goods, 0,
@@ -829,6 +839,29 @@ public final class PackageStores {
         return r;
     }
 
+    /**
+     * Journals and commits one {@code CHAIN_RELEASED} (choice SC137): the frontier no longer holds the package keyed
+     * {@code epoch}/{@code serial}, last at {@code pos}; no frogport, destination, packages or goods.
+     */
+    static void journalRelease(Industry ind, long store, BlockPos pos, int epoch, long serial) {
+        ByteBuffer r = ind.journal(IndRecords.IND_CHAIN_PACKAGE, IndRecords.ChainPackage.size(0), 0);
+        r.putLong(IndRecords.ChainPackage.STORE, store);
+        r.putLong(IndRecords.ChainPackage.DISTRICT, 0);
+        r.putInt(IndRecords.ChainPackage.INVENTORY, IndRecords.NO_INVENTORY);
+        r.putInt(IndRecords.ChainPackage.DIRECTION, IndRecords.ChainPackage.CHAIN_RELEASED);
+        r.putInt(IndRecords.ChainPackage.FROGPORT, IndRecords.NO_INVENTORY);
+        r.putInt(IndRecords.ChainPackage.DESTINATION, IndRecords.NO_INVENTORY);
+        r.putInt(IndRecords.ChainPackage.PACKAGES, 0);
+        r.putInt(IndRecords.ChainPackage.ADDRESS, 0);
+        r.putLong(IndRecords.ChainPackage.OP_ID, 0);
+        r.putInt(IndRecords.ChainPackage.X, pos.getX());
+        r.putInt(IndRecords.ChainPackage.Y, pos.getY());
+        r.putInt(IndRecords.ChainPackage.Z, pos.getZ());
+        r.putInt(IndRecords.ChainPackage.EPOCH, epoch);
+        r.putLong(IndRecords.ChainPackage.SERIAL, serial);
+        ind.commit(r);
+    }
+
     /** The store {@code id} names, or null. */
     Store store(long id) {
         return stores.get(id);
@@ -869,8 +902,7 @@ public final class PackageStores {
 
     private void census(ServerLevel level, Store s, Walk w, long now) {
         int n = s.ports.size();
-        List<ItemStack> keyed = new ArrayList<>();
-        List<ChainConveyorBlockEntity> keyedOn = new ArrayList<>();
+        LongOpenHashSet seen = new LongOpenHashSet();
         int[][] dist = new int[n][];
         for (int i = 0; i < n; i++)
             dist[i] = w.bfs(w.of(s.ports.get(i).conveyor));
@@ -879,26 +911,30 @@ public final class PackageStores {
         for (int c = 0; c < w.order.size(); c++) {
             if (!(Loaded.blockEntity(level, BlockPos.of(w.order.getLong(c))) instanceof ChainConveyorBlockEntity cc))
                 continue;
-            int before = keyed.size();
+            boolean changed = false;
             for (ChainConveyorPackage p : cc.getLoopingPackages()) {
-                keyed(p.item, keyed);
+                changed |= frontier.atCensus(p.item, cc.getBlockPos(), seen);
                 count(s, dist, c, p.item, packages, goods);
             }
             for (Map.Entry<BlockPos, List<ChainConveyorPackage>> e : cc.getTravellingPackages().entrySet()) {
                 int next = w.of(cc.getBlockPos().offset(e.getKey()));
                 for (ChainConveyorPackage p : e.getValue()) {
-                    keyed(p.item, keyed);
+                    changed |= frontier.atCensus(p.item, cc.getBlockPos(), seen);
                     count(s, dist, next >= 0 ? next : c, p.item, packages, goods);
                 }
             }
-            if (keyed.size() > before)
-                keyedOn.add(cc);
+            if (changed)
+                cc.setChanged();
         }
         for (int i = 0; i < n; i++) {
             if (Loaded.blockEntity(level, s.ports.get(i).pos) instanceof FrogportBlockEntity f && f.isAnimationInProgress()
-                    && !f.currentlyDepositing && f.animatedPackage != null && !f.animatedPackage.isEmpty())
+                    && !f.currentlyDepositing && f.animatedPackage != null && !f.animatedPackage.isEmpty()) {
+                frontier.seenLanding(Frontier.key(f.animatedPackage), seen);
                 add(i, f.animatedPackage, packages, goods);
+            }
         }
+        // The held packages stay held (they are on the chain, and counted here); the keys the walk did not find go.
+        frontier.census(s, w, seen);
         int m = 0, entries = 0;
         List<int[]> ids = new ArrayList<>();
         for (int d = 0; d <= n; d++) {
@@ -935,19 +971,6 @@ public final class PackageStores {
                 b.putLong(o + 8, goods[d].get(id));
             }
         censuses++;
-        // Sent: nothing of the store is held now (the engine clears its held packages at the census).
-        for (ItemStack box : keyed)
-            Frontier.strip(box);
-        frontier.stripped += keyed.size();
-        for (ChainConveyorBlockEntity cc : keyedOn)
-            cc.setChanged();
-        frontier.census(s.id);
-    }
-
-    /** A package the census counts loses the frontier's key once the census is sent: nothing is held while all of its store ticks. */
-    private static void keyed(ItemStack box, List<ItemStack> keyed) {
-        if (box != null && !box.isEmpty() && Frontier.key(box) != null)
-            keyed.add(box);
     }
 
     private void count(Store s, int[][] dist, int c, ItemStack box, long[] packages, Industry.GoodsCounter[] goods) {

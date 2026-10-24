@@ -10,6 +10,8 @@ import com.simibubi.create.content.kinetics.chainConveyor.ChainConveyorRoutingTa
 import com.simibubi.create.content.logistics.box.PackageItem;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.Registries;
@@ -22,6 +24,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.LevelChunk;
 import org.apache.commons.lang3.mutable.MutableInt;
 
 import java.util.ArrayList;
@@ -43,20 +46,23 @@ import java.util.concurrent.ThreadLocalRandom;
  *       route. Just before the tick that would expire it ({@link #beforeRoutes}, before
  *       {@code ChainConveyorRoutingTable.tick}), an entry whose next conveyor does not tick and whose port is
  *       a far frogport of the conveyor's store (one with that filter whose chunk does not tick) is given
- *       Create's full timeout again and kept, with its port, distance and connection. Every
+ *       Create's full timeout again and kept, with its port, distance, connection and store. Every
  *       {@link #KEEP_TICKS} each conveyor with kept routes inserts them again (Create's private
  *       {@code insert}, which refreshes an identical entry), so they also come back after a restart, when
  *       Create's tables start empty; Create's own adverts carry them along the near side. A kept route goes
- *       when its connection is gone, its next conveyor ticks (Create's adverts take over), or no far
- *       frogport of the store has its filter.</li>
+ *       when its connection or store is gone or no far frogport of the store has its filter; when its next
+ *       conveyor ticks again (the boundary moved out), it moves on along the chain to the new boundary
+ *       conveyor ({@link #handOver}).</li>
  *   <li><b>The hold</b> (choice SC138). Where the guard refuses a hand-off ({@link #hold}), a package whose
  *       route is a far frogport's gets a key in vanilla's {@code minecraft:custom_data} ({@link #TAG}: the
  *       store, the epoch, a serial; choice SC136) and one {@code CHAIN_HELD}, whose frogport and destination
- *       are that far frogport and whose position is the boundary conveyor. A package already keyed in this
- *       epoch and held by Java is not recorded again; one with any other key has it stripped first. The key
- *       goes where a frogport takes the package off the chain ({@code FrogportChainMixin}), whose
- *       {@code CHAIN_IN} then carries it, and at a census, which counts every package of a store whose
- *       chunks all tick (nothing is held then).</li>
+ *       are that far frogport and whose position is the boundary conveyor. A key Java holds is followed,
+ *       never stripped: it is told again ({@code CHAIN_HELD}, the same key) when its store or destination
+ *       changed, and once in each session (a crash can lose a record its chunk kept). Any other key is
+ *       stripped first. A package leaves the hold where a frogport takes it off the chain
+ *       ({@code FrogportChainMixin}, whose {@code CHAIN_IN} then carries the key), where Create drops it or
+ *       a player takes it ({@code CHAIN_RELEASED}), and at a census, which releases every key of the store
+ *       its walk did not find (choice SC137).</li>
  *   <li><b>The epoch</b> (choice SC136). It starts anywhere (a random nonzero value, so an engine reset that
  *       also lost this state never meets its old keys again), changes at every announce (the engine forgot
  *       what it was told) and reaches the engine in each IND_PACKAGE_STORE. Keys of any other epoch are not
@@ -73,8 +79,11 @@ public final class Frontier {
     /** TUNABLE (choice SC135): ticks between two inserts of a conveyor's kept routes. */
     public static final int KEEP_TICKS = 20;
 
-    /** A kept route on a boundary conveyor: Create's entry, as it was when it would have expired. */
-    public record Kept(String port, int distance, BlockPos connection) {}
+    /** TUNABLE (choice SC135): at most this many conveyors a kept route moves on when its next conveyor ticks again. */
+    static final int HAND_OVER_MAX = 64;
+
+    /** A kept route on a boundary conveyor: Create's entry, as it was when it would have expired, and its store. */
+    public record Kept(String port, int distance, BlockPos connection, long store) {}
 
     /** A package Java holds: its store, the far frogport it heads for, the boundary conveyor it circles. */
     public record Held(long store, ResourceKey<Level> dim, BlockPos destination, BlockPos at) {}
@@ -89,10 +98,14 @@ public final class Frontier {
     private int serialLow;
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<List<Kept>>> kept = new HashMap<>();
     private final Long2ObjectOpenHashMap<Held> held = new Long2ObjectOpenHashMap<>();
+    /** The serials told to the engine in this session (a held key is told once more in each). */
+    private final LongOpenHashSet sent = new LongOpenHashSet();
+    /** The serial of the last keyed {@code CHAIN_IN} ({@link #landed}), for {@link #afterLanding}. */
+    private long lastLanded;
     /** The saved state, kept up to date in place: {@code epoch}, {@code kept} (written whole), {@code held} (by serial). */
     private final CompoundTag tag;
     // Counters (perfLine).
-    long captured, insertedAgain, dropped, holds, landed, stripped;
+    long captured, insertedAgain, dropped, handedOver, holds, followed, landed, released, stripped;
 
     Frontier(Industry ind, PackageStores stores) {
         this.ind = ind;
@@ -138,6 +151,7 @@ public final class Frontier {
         int e = epoch + 1;
         epoch = e == 0 ? 1 : e;
         held.clear();
+        sent.clear();
         tag.putInt("epoch", epoch);
         tag.put("held", new CompoundTag());
         save();
@@ -197,7 +211,8 @@ public final class Frontier {
         BlockPos pos = cc.getBlockPos();
         PackageStores.Store s = null;
         for (ChainConveyorRoutingTable.RoutingTableEntry e : table.entriesByDistance) {
-            if (e.endOfRoute() || e.timeout().intValue() > 1 || Loaded.ticksFrom(level, pos, pos.offset(e.nextConnection())))
+            if (e.endOfRoute() || e.timeout().intValue() > 1 || !cc.connections.contains(e.nextConnection())
+                    || Loaded.ticksFrom(level, pos, pos.offset(e.nextConnection())))
                 continue;
             if (s == null)
                 s = stores.storeOfConveyor(level.dimension(), pos);
@@ -206,7 +221,7 @@ public final class Frontier {
             if (awayPort(level, s, e.port()) < 0)
                 continue;
             e.timeout().setValue(ChainConveyorRoutingTable.ENTRY_TIMEOUT);
-            keep(level.dimension(), pos, new Kept(e.port(), e.distance(), e.nextConnection().immutable()));
+            keep(level.dimension(), pos, new Kept(e.port(), e.distance(), e.nextConnection().immutable(), s.id));
         }
     }
 
@@ -214,7 +229,7 @@ public final class Frontier {
         List<Kept> l = kept.computeIfAbsent(dim, d -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(pos.asLong(), p -> new ArrayList<>());
         for (int i = 0; i < l.size(); i++)
             if (l.get(i).port().equals(k.port()) && l.get(i).connection().equals(k.connection())) {
-                if (l.get(i).distance() == k.distance())
+                if (l.get(i).equals(k))
                     return;
                 l.set(i, k);
                 saveKept();
@@ -231,15 +246,25 @@ public final class Frontier {
         List<Kept> l = m == null ? null : m.get(pos.asLong());
         if (l == null)
             return;
-        PackageStores.Store s = stores.storeOfConveyor(level.dimension(), pos);
+        PackageStores.Store here = stores.storeOfConveyor(level.dimension(), pos);
         boolean changed = false;
         for (int i = l.size() - 1; i >= 0; i--) {
             Kept k = l.get(i);
-            if (s == null || !cc.connections.contains(k.connection()) || Loaded.ticksFrom(level, pos, pos.offset(k.connection()))
-                    || awayPort(level, s, k.port()) < 0) {
+            PackageStores.Store s = here != null && here.id == k.store() ? here : stores.store(k.store());
+            if (s == null || !cc.connections.contains(k.connection()) || awayPort(level, s, k.port()) < 0) {
                 l.remove(i);
                 dropped++;
                 changed = true;
+                continue;
+            }
+            if (Loaded.ticksFrom(level, pos, pos.offset(k.connection()))) {
+                l.remove(i);
+                changed = true;
+                BlockPos to = handOver(level, s, pos, k);
+                if (to == null)
+                    dropped++;
+                else
+                    handedOver++;
                 continue;
             }
             ((ChainConveyorRoutingTableAccessor) table).mic_rtsim$insert(new ChainConveyorRoutingTable.RoutingTableEntry(k.port(), k.distance(),
@@ -252,7 +277,49 @@ public final class Frontier {
             saveKept();
     }
 
-    /** A chain conveyor is destroyed: its kept routes go. */
+    /**
+     * Kept route {@code k} of the conveyor at {@code from}, whose next conveyor ticks again (the boundary moved
+     * out): it moves on along the chain while each conveyor has one way on (but the way back) and that way
+     * ticks, and is kept, and inserted, on the first conveyor whose way on does not tick, the new boundary,
+     * one hop nearer for each conveyor passed; Create's adverts then carry it back. Returns that conveyor, or
+     * null when it goes: a conveyor on the way has a route of the port already (Create's adverts reach it),
+     * the way forks or ends, it reaches the port's own conveyor, or more than {@link #HAND_OVER_MAX} conveyors.
+     */
+    private BlockPos handOver(ServerLevel level, PackageStores.Store s, BlockPos from, Kept k) {
+        BlockPos back = from;
+        BlockPos at = from.offset(k.connection());
+        int distance = k.distance() - 1;
+        for (int step = 0; step < HAND_OVER_MAX && distance > 0; step++) {
+            if (!(Loaded.blockEntity(level, at) instanceof ChainConveyorBlockEntity next))
+                return null;
+            for (ChainConveyorRoutingTable.RoutingTableEntry e : next.routingTable.entriesByDistance)
+                if (e.port().equals(k.port()))
+                    return null;
+            BlockPos onward = null;
+            for (BlockPos c : next.connections) {
+                if (at.offset(c).equals(back))
+                    continue;
+                if (onward != null)
+                    return null;
+                onward = c;
+            }
+            if (onward == null)
+                return null;
+            if (!Loaded.ticksFrom(level, at, at.offset(onward))) {
+                Kept moved = new Kept(k.port(), distance, onward.immutable(), s.id);
+                keep(level.dimension(), at, moved);
+                ((ChainConveyorRoutingTableAccessor) next.routingTable).mic_rtsim$insert(new ChainConveyorRoutingTable.RoutingTableEntry(
+                        moved.port(), moved.distance(), moved.connection(), new MutableInt(ChainConveyorRoutingTable.ENTRY_TIMEOUT), false));
+                return at.immutable();
+            }
+            back = at;
+            at = at.offset(onward);
+            distance--;
+        }
+        return null;
+    }
+
+    /** A chain conveyor is destroyed: its kept routes go (its packages are released as Create drops them, {@link #leaves}). */
     public static void destroyed(ChainConveyorBlockEntity cc) {
         if (!(cc.getLevel() instanceof ServerLevel level))
             return;
@@ -306,45 +373,82 @@ public final class Frontier {
 
     private void hold(ServerLevel level, ChainConveyorBlockEntity cc, ChainConveyorRoutingTable table, ItemStack box) {
         BlockPos pos = cc.getBlockPos();
+        ResourceKey<Level> dim = level.dimension();
         Key k = key(box);
-        if (k != null) {
-            Held h = held.get(k.serial());
-            if (k.epoch() == epoch && h != null && h.store() == k.store()) {
-                if (!h.at().equals(pos))
-                    putHeld(k.serial(), new Held(h.store(), h.dim(), h.destination(), pos.immutable()));
-                return;
-            }
+        Held h = k != null && k.epoch() == epoch ? held.get(k.serial()) : null;
+        // Held here and told in this session: nothing to do (each loop past the refused exit comes here).
+        if (h != null && h.at().equals(pos) && h.dim().equals(dim) && sent.contains(k.serial()))
+            return;
+        if (k != null && h == null) {
+            // Not Java's: another epoch's, or a key Java no longer holds (the engine may: released).
             strip(box);
             stripped++;
             cc.setChanged();
+            release(k, pos);
         }
-        PackageStores.Store s = stores.storeOfConveyor(level.dimension(), pos);
-        if (s == null)
-            return;
-        String port = null;
-        for (ChainConveyorRoutingTable.RoutingTableEntry e : table.entriesByDistance)
-            if (PackageItem.matchAddress(box, e.port())) {
-                port = e.port();
-                break;
+        PackageStores.Store s = stores.storeOfConveyor(dim, pos);
+        int dest = s == null ? -1 : routedAway(level, s, table, box);
+        if (dest < 0 && h != null) {
+            // No route here to a far frogport now: a held package stays held toward where it was.
+            PackageStores.Store was = stores.store(h.store());
+            int i = was == null ? -1 : was.indexOf(h.destination());
+            if (i >= 0 && !Loaded.ticks(level, was.ports.get(i).pos)) {
+                s = was;
+                dest = i;
             }
-        if (port == null)
+        }
+        if (dest < 0) {
+            if (h != null) {
+                strip(box);
+                stripped++;
+                cc.setChanged();
+                release(k, pos);
+            }
             return;
-        int dest = awayPort(level, s, port);
-        if (dest < 0)
-            return;
-        long serial = nextSerial();
-        CompoundTag kt = new CompoundTag();
-        kt.putLong("store", s.id);
-        kt.putInt("epoch", epoch);
-        kt.putLong("serial", serial);
-        CustomData.update(DataComponents.CUSTOM_DATA, box, t -> t.put(TAG, kt));
-        cc.setChanged();
-        putHeld(serial, new Held(s.id, level.dimension(), s.ports.get(dest).pos, pos.immutable()));
+        }
+        BlockPos destination = s.ports.get(dest).pos;
+        long serial;
+        if (h != null) {
+            serial = k.serial();
+            boolean moved = h.store() != s.id || !h.destination().equals(destination);
+            if (moved || !h.at().equals(pos) || !h.dim().equals(dim))
+                putHeld(serial, new Held(s.id, dim, destination, pos.immutable()));
+            if (!moved && sent.contains(serial))
+                return;
+            followed++;
+        } else {
+            serial = nextSerial();
+            CompoundTag kt = new CompoundTag();
+            kt.putLong("store", s.id);
+            kt.putInt("epoch", epoch);
+            kt.putLong("serial", serial);
+            CustomData.update(DataComponents.CUSTOM_DATA, box, t -> t.put(TAG, kt));
+            cc.setChanged();
+            putHeld(serial, new Held(s.id, dim, destination, pos.immutable()));
+            holds++;
+        }
+        sent.add(serial);
         Industry.GoodsCounter goods = ind.counter();
         ind.countStack(box, box.getCount(), goods);
         PackageStores.journalChain(ind, s, dest, pos, null, null, IndRecords.ChainPackage.CHAIN_HELD, dest, box.getCount(),
                 PackageItem.getAddress(box), goods, 0, epoch, serial);
-        holds++;
+        if (h == null) {
+            // The record speaks for the key in this chunk: the journal's next file waits for the chunk (R21).
+            LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+            if (chunk != null)
+                ind.journalDependsOn(chunk);
+        }
+    }
+
+    /**
+     * The far frogport of {@code s} that {@code box}'s route from {@code table} leads to (the first entry its
+     * address matches, as {@code getExitFor} reads it), or -1.
+     */
+    private static int routedAway(ServerLevel level, PackageStores.Store s, ChainConveyorRoutingTable table, ItemStack box) {
+        for (ChainConveyorRoutingTable.RoutingTableEntry e : table.entriesByDistance)
+            if (PackageItem.matchAddress(box, e.port()))
+                return awayPort(level, s, e.port());
+        return -1;
     }
 
     /** A package's key, or null. */
@@ -366,33 +470,164 @@ public final class Frontier {
     }
 
     /**
-     * A frogport of store {@code store} took a package keyed {@code k} off the chain: the key, when Java holds
-     * it in this epoch (it is then no longer held), else null.
+     * Java no longer holds the package keyed {@code k}, last at {@code pos}: one {@code CHAIN_RELEASED} for a key of
+     * this epoch (the engine may hold it even when Java does not: a crash between their saves), none for another
+     * epoch's (the engine dropped those at the declaration that changed it).
      */
-    Key landed(long store, Key k) {
+    private void release(Key k, BlockPos pos) {
         if (k == null || k.epoch() != epoch)
-            return null;
+            return;
         Held h = held.get(k.serial());
-        if (h == null || h.store() != k.store())
+        if (h != null)
+            removeHeld(k.serial());
+        PackageStores.journalRelease(ind, h != null ? h.store() : k.store(), pos, epoch, k.serial());
+        released++;
+    }
+
+    /**
+     * A keyed package leaves the chain otherwise than into a frogport: Create drops it (its conveyor destroyed or a
+     * connection removed, {@code ChainConveyorBlockEntityMixin}) or a player takes it
+     * ({@code ChainPackageInteractionPacketMixin}). Its key is stripped and released.
+     */
+    public static void leaves(Level level, BlockPos pos, ItemStack box) {
+        if (!(level instanceof ServerLevel) || box == null || box.isEmpty())
+            return;
+        try {
+            Key k = key(box);
+            if (k == null)
+                return;
+            strip(box);
+            Industry ind = IndustryApi.current();
+            if (ind == null)
+                return;
+            Frontier f = PackageStores.of(ind).frontier;
+            f.stripped++;
+            f.release(k, pos);
+        } catch (RuntimeException e) {
+            if (!warnedLeaves) {
+                warnedLeaves = true;
+                MicRtsim.LOGGER.warn("[mic_rtsim] create: a held package that left the chain at {} was not released", pos, e);
+            }
+        }
+    }
+
+    private static boolean warnedLeaves;
+
+    /**
+     * A frogport took a package keyed {@code k} off the chain (the key taken out already): the key, when Java holds
+     * it in this epoch (it is then no longer held, and its {@code CHAIN_IN} carries it), else null. A key moves
+     * between stores with its frogport, so the one in the package may name another store than Java's.
+     */
+    Key landed(Key k) {
+        if (k == null || k.epoch() != epoch || !held.containsKey(k.serial()))
             return null;
         removeHeld(k.serial());
+        lastLanded = k.serial();
         landed++;
         return k;
     }
 
-    /** A census of store {@code id}: nothing of it is held now (its keys are stripped as it counts them). */
-    void census(long id) {
-        boolean any = false;
-        for (var it = held.long2ObjectEntrySet().iterator(); it.hasNext();) {
-            Long2ObjectMap.Entry<Held> e = it.next();
-            if (e.getValue().store() == id) {
-                it.remove();
-                tag.getCompound("held").remove(Long.toHexString(e.getLongKey()));
-                any = true;
+    /**
+     * After a frogport's insert of a package that came off the chain keyed {@code k}, at {@code pos}
+     * ({@code FrogportChainMixin}): released unless its {@code CHAIN_IN} carried it (the insert left something,
+     * which Create drops, or the frogport is no store's).
+     */
+    public static void afterLanding(Level level, BlockPos pos, Key k) {
+        if (k == null || !(level instanceof ServerLevel))
+            return;
+        try {
+            Industry ind = IndustryApi.current();
+            if (ind == null)
+                return;
+            Frontier f = PackageStores.of(ind).frontier;
+            if (f.lastLanded == k.serial() && k.epoch() == f.epoch) {
+                f.lastLanded = 0;
+                return;
+            }
+            f.release(k, pos);
+        } catch (RuntimeException e) {
+            if (!warnedLeaves) {
+                warnedLeaves = true;
+                MicRtsim.LOGGER.warn("[mic_rtsim] create: a held package that landed at {} was not released", pos, e);
             }
         }
-        if (any)
-            save();
+    }
+
+    /**
+     * A census found {@code box} on the chain at {@code pos}: a key Java holds is noted in {@code seen}; any other is
+     * stripped (and released when of this epoch). True when the package changed.
+     */
+    boolean atCensus(ItemStack box, BlockPos pos, LongOpenHashSet seen) {
+        Key k = box == null || box.isEmpty() ? null : key(box);
+        if (k == null)
+            return false;
+        if (k.epoch() == epoch && held.containsKey(k.serial())) {
+            seen.add(k.serial());
+            return false;
+        }
+        strip(box);
+        stripped++;
+        release(k, pos);
+        return true;
+    }
+
+    /** A census found a package keyed {@code k} in a frogport's arriving animation: still held until it lands. */
+    void seenLanding(Key k, LongOpenHashSet seen) {
+        if (k != null && k.epoch() == epoch && held.containsKey(k.serial()))
+            seen.add(k.serial());
+    }
+
+    /**
+     * A census of store {@code s}, whose complete walk {@code w} found the held keys {@code seen}: every other key
+     * held for the store, or last held on a conveyor of the walk, is released (the package left the chain some way
+     * no hook saw).
+     */
+    void census(PackageStores.Store s, PackageStores.Walk w, LongOpenHashSet seen) {
+        LongArrayList gone = null;
+        for (Long2ObjectMap.Entry<Held> e : held.long2ObjectEntrySet()) {
+            Held h = e.getValue();
+            if (!seen.contains(e.getLongKey()) && h.dim().equals(s.dim) && (h.store() == s.id || w.of(h.at()) >= 0))
+                (gone == null ? gone = new LongArrayList() : gone).add(e.getLongKey());
+        }
+        if (gone == null)
+            return;
+        for (long serial : gone) {
+            Held h = held.get(serial);
+            release(new Key(h.store(), epoch, serial), h.at());
+        }
+    }
+
+    /** Frogport {@code destination} moved from store {@code from} to {@code to}: so do the packages held toward it. */
+    void moved(long from, long to, BlockPos destination) {
+        LongArrayList serials = null;
+        for (Long2ObjectMap.Entry<Held> e : held.long2ObjectEntrySet())
+            if (e.getValue().store() == from && e.getValue().destination().equals(destination))
+                (serials == null ? serials = new LongArrayList() : serials).add(e.getLongKey());
+        if (serials != null)
+            for (long serial : serials) {
+                Held h = held.get(serial);
+                putHeld(serial, new Held(to, h.dim(), h.destination(), h.at()));
+            }
+    }
+
+    /**
+     * Store {@code id} went, into {@code into} (0 for none): its held packages go with it, as the engine's do, or are
+     * forgotten (the engine dropped them; a package still keyed is released and keyed again where it is held next).
+     */
+    void storeGone(long id, long into) {
+        LongArrayList serials = null;
+        for (Long2ObjectMap.Entry<Held> e : held.long2ObjectEntrySet())
+            if (e.getValue().store() == id)
+                (serials == null ? serials = new LongArrayList() : serials).add(e.getLongKey());
+        if (serials == null)
+            return;
+        for (long serial : serials) {
+            Held h = held.get(serial);
+            if (into != 0)
+                putHeld(serial, new Held(into, h.dim(), h.destination(), h.at()));
+            else
+                removeHeld(serial);
+        }
     }
 
     // ---- persistence (IndustryData, under KEY) ----------------------------------------------------
@@ -427,6 +662,7 @@ public final class Frontier {
                     e.putString("port", k.port());
                     e.putInt("distance", k.distance());
                     e.putLong("connection", k.connection().asLong());
+                    e.putLong("store", k.store());
                     list.add(e);
                 }
         tag.put("kept", list);
@@ -445,7 +681,7 @@ public final class Frontier {
             if (dim == null)
                 continue;
             kept.computeIfAbsent(dim, d -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(e.getLong("pos"), p -> new ArrayList<>())
-                    .add(new Kept(e.getString("port"), e.getInt("distance"), BlockPos.of(e.getLong("connection"))));
+                    .add(new Kept(e.getString("port"), e.getInt("distance"), BlockPos.of(e.getLong("connection")), e.getLong("store")));
         }
         CompoundTag h = tag.getCompound("held");
         for (String serial : h.getAllKeys()) {
@@ -473,6 +709,7 @@ public final class Frontier {
             for (List<Kept> l : m.values())
                 routes += l.size();
         return "frontier epoch " + Integer.toUnsignedString(epoch) + " kept routes " + routes + " held " + held.size() + " captured " + captured
-                + " inserted again " + insertedAgain + " dropped " + dropped + " holds " + holds + " landed " + landed + " stripped " + stripped;
+                + " inserted again " + insertedAgain + " dropped " + dropped + " handed over " + handedOver + " holds " + holds + " followed " + followed
+                + " landed " + landed + " released " + released + " stripped " + stripped;
     }
 }

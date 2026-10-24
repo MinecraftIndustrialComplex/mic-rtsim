@@ -5,6 +5,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Frontier;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.kinetics.chainConveyor.ChainConveyorBlockEntity;
+import com.simibubi.create.content.kinetics.chainConveyor.ChainConveyorPackage;
 import com.simibubi.create.content.kinetics.chainConveyor.ChainConveyorRoutingTable;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.ItemStack;
@@ -36,7 +37,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <p>Slice S4c1 adds the frontier (SECTIONS.md §2.5, Q5; PATCHES.md row 80; {@link Frontier}): before the
  * routing table ticks, routes toward a far frogport are kept ({@link Frontier#beforeRoutes}); a refused
- * hand-off holds its package ({@link Frontier#hold}); a destroyed conveyor's kept routes go.
+ * hand-off holds its package ({@link Frontier#hold}); a destroyed conveyor's kept routes go, and a package
+ * Create drops (its conveyor destroyed, its connection removed) loses its key ({@link Frontier#leaves}).
  */
 @Mixin(value = ChainConveyorBlockEntity.class, remap = false)
 public abstract class ChainConveyorBlockEntityMixin {
@@ -84,5 +86,13 @@ public abstract class ChainConveyorBlockEntityMixin {
     @Inject(method = "destroy", at = @At("HEAD"))
     private void mic_rtsim$destroyed(CallbackInfo ci) {
         Frontier.destroyed((ChainConveyorBlockEntity) (Object) this);
+    }
+
+    /** Create drops a package off the chain (private {@code drop}: from {@code destroy} and {@code removeConnectionTo}). */
+    @Inject(method = "drop", at = @At("HEAD"))
+    private void mic_rtsim$dropped(ChainConveyorPackage box, CallbackInfo ci) {
+        ChainConveyorBlockEntity self = (ChainConveyorBlockEntity) (Object) this;
+        if (box != null)
+            Frontier.leaves(self.getLevel(), self.getBlockPos(), box.item);
     }
 }
