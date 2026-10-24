@@ -7,7 +7,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 use serde::Serialize;
 
-use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, TrainId};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StoreId, TrainId};
 use crate::obs::DepositPluginId;
 
 /// One boundary inventory's change for one good.
@@ -87,6 +87,24 @@ pub struct WritePackage {
     pub goods: GoodVec,
 }
 
+/// Packages replays sent toward a package store's frogport, written into it while it is loaded
+/// (IND_WRITE_CHAIN, SECTIONS.md §2.5, slice S4b): Java writes what fits, addressed to the
+/// frogport's filter, and journals one `CHAIN_IN` with this op for what it wrote.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WriteChain {
+    #[serde(skip)]
+    pub op: OpId,
+    pub store: StoreId,
+    pub district: DistrictId,
+    pub inventory: u32,
+    /// The frogport's index in the store's last IND_PACKAGE_STORE.
+    pub frogport: u32,
+    pub pos: BlockPos,
+    pub count: u32,
+    /// The contents of one package.
+    pub goods: GoodVec,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Cmd {
     ChunkReconcile(ChunkReconcile),
@@ -95,6 +113,9 @@ pub enum Cmd {
     WritePackage(WritePackage),
     /// IND_PROBE_SET (GLASSBOX.md §5.3, G-B14): buffers to add to a district's sweeps.
     ProbeSet(crate::glass::records::ProbeSet),
+    /// IND_COUNT_SET (SECTIONS.md §4.2): the movers to count at a district's shared stores.
+    CountSet(crate::glass::records::CountSet),
+    WriteChain(WriteChain),
 }
 
 impl Cmd {
@@ -104,7 +125,8 @@ impl Cmd {
             Cmd::CarriageDelta(c) => Some(c.op),
             Cmd::DepositDelta(c) => Some(c.op),
             Cmd::WritePackage(c) => Some(c.op),
-            Cmd::ProbeSet(_) => None,
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) => None,
+            Cmd::WriteChain(c) => Some(c.op),
         }
     }
 }
@@ -178,7 +200,8 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = OpId(0),
             Cmd::DepositDelta(x) => x.op = OpId(0),
             Cmd::WritePackage(x) => x.op = OpId(0),
-            Cmd::ProbeSet(_) => {}
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) => {}
+            Cmd::WriteChain(x) => x.op = OpId(0),
         }
         c
     }
@@ -190,7 +213,8 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = op,
             Cmd::DepositDelta(x) => x.op = op,
             Cmd::WritePackage(x) => x.op = op,
-            Cmd::ProbeSet(_) => {}
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) => {}
+            Cmd::WriteChain(x) => x.op = op,
         }
     }
 }
@@ -247,11 +271,26 @@ mod persist_impls {
         count,
         goods
     });
+    persist_struct!(WriteChain {
+        op,
+        store,
+        district,
+        inventory,
+        frogport,
+        pos,
+        count,
+        goods
+    });
     persist_struct!(IndustryOps { recent });
     persist_struct!(crate::glass::records::ProbeSet {
         district,
         compile,
         nodes
+    });
+    persist_struct!(crate::glass::records::CountSet {
+        district,
+        compile,
+        pairs
     });
 
     impl Persist for Cmd {
@@ -277,6 +316,15 @@ mod persist_impls {
                     w.u8(6);
                     c.put(w);
                 }
+                Cmd::CountSet(c) => {
+                    w.u8(7);
+                    c.put(w);
+                }
+                // 8 left free.
+                Cmd::WriteChain(c) => {
+                    w.u8(9);
+                    c.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -286,6 +334,8 @@ mod persist_impls {
                 3 => Cmd::DepositDelta(Persist::get(r)?),
                 4 => Cmd::WritePackage(Persist::get(r)?),
                 6 => Cmd::ProbeSet(Persist::get(r)?),
+                7 => Cmd::CountSet(Persist::get(r)?),
+                9 => Cmd::WriteChain(Persist::get(r)?),
                 _ => return invalid("command tag"),
             })
         }

@@ -130,8 +130,9 @@ public final class PendingRecordGameTests {
     }
 
     /**
-     * A tamed llama carries its MEMBER_STATE and TAKEN. A copy of it loaded from disk journals them
-     * again, with the same op id; once the engine acknowledges, both drop them.
+     * A tamed llama carries its MEMBER_STATE and TAKEN. A copy of it loaded from disk journals copies of
+     * them (REASSERT), which the engine drops: the generation that journaled the TAKEN admitted it. Once
+     * the engine acknowledges, both drop them.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400)
     public static void aTakenCreatureCarriesItsTakenUntilTheEngineHasIt(GameTestHelper helper) {
@@ -161,12 +162,17 @@ public final class PendingRecordGameTests {
                     e[1] = copy;
                     check("the copy joined", helper.getLevel().getEntity(copy.getUUID()) == copy);
                 })
-                .thenWaitUntil(() -> check("the engine received the TAKEN twice",
-                        RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).size() == 2))
+                .thenWaitUntil(() -> check("the engine received the TAKEN, then a copy of it",
+                        RtsimTests.copiesFor(RtsimTests.engine(), Obs.TAKEN, agent).size() == 1))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> t = RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent);
-                    check("with the same op id", t.get(0).view().getLong(Obs.Taken.OP_ID) == t.get(1).view().getLong(Obs.Taken.OP_ID));
-                    check("under a new sequence", t.get(1).obsSeq() > t.get(0).obsSeq());
+                    ScriptedEngine.Received copy = RtsimTests.copiesFor(RtsimTests.engine(), Obs.TAKEN, agent).get(0);
+                    check("the TAKEN arrived once", t.size() == 1);
+                    check("the copy is the TAKEN as first journaled", copy.view().getLong(Obs.OBS_SEQ) == t.get(0).obsSeq()
+                            && copy.view().getLong(Obs.Taken.OP_ID) == t.get(0).view().getLong(Obs.Taken.OP_ID));
+                    check("under a new sequence", copy.obsSeq() > t.get(0).obsSeq());
+                    check("and dropped", copy.skipped());
+                    check("so the take counts once", RtsimTests.engine().eventOpCount(t.get(0).view().getLong(Obs.Taken.OP_ID)) == 1);
                     RtsimTests.engine().requestSaveAtNextStep();
                 })
                 .thenWaitUntil(() -> check("both dropped their records once the engine acknowledged",

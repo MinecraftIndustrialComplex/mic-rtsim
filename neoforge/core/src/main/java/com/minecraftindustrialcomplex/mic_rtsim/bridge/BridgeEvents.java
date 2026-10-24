@@ -173,9 +173,13 @@ public final class BridgeEvents {
      * the marker reports what the file on disk holds, read on the chain.
      */
     private static void onLevelSave(LevelEvent.Save event) {
-        RtsimSession s = RtsimSession.current();
-        if (s == null || !(event.getLevel() instanceof ServerLevel level) || level.dimension() != Level.OVERWORLD)
+        if (!(event.getLevel() instanceof ServerLevel saved) || saved.dimension() != Level.OVERWORLD)
             return;
+        RtsimSession s = RtsimSession.current();
+        if (s == null)
+            return;
+        // After the overworld's saved data queued their writes: a reinstall reset's marker goes behind them (UR-1).
+        ReinstallGuard.onOverworldSave(saved.getServer());
         long through = s.boundary().journal().nextObsSeq() - 1;
         s.engine().requestSave(through);
         com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData file = s.journal();
