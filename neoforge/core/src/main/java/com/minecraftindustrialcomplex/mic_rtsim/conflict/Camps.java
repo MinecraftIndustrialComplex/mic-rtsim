@@ -651,6 +651,19 @@ public final class Camps {
         return held.size();
     }
 
+    /**
+     * GameTests only: the camp counts again at the end of this tick, as a body read from disk outside its footprint
+     * asks for (a new epoch; its waiting lines are answered stale). A second body's mark survives it (MZB-611).
+     */
+    public void forceRecount(long faction) {
+        Site c = sites.get(faction);
+        if (c == null)
+            return;
+        c.recount = true;
+        recounts++;
+        attention.add(c);
+    }
+
     // ---- the end of a tick ----------------------------------------------------------------------
 
     /** Deaths, the tick's set-outs, held spawns, then the camps whose chunks moved. */

@@ -36,6 +36,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Zombie;
@@ -528,6 +529,14 @@ public final class UmvuthiGameTests {
                 .thenSucceed();
     }
 
+    /** The experience lying about the grove (the orbs' values summed; no player is within 8 blocks to draw them off). */
+    private static int xp(ServerLevel level, Grove g) {
+        int n = 0;
+        for (ExperienceOrb o : level.getEntitiesOfClass(ExperienceOrb.class, g.area()))
+            n += o.getValue();
+        return n;
+    }
+
     private static int visages(ServerLevel level, Grove g) {
         ResourceLocation sol = ResourceLocation.fromNamespaceAndPath("mowziesmobs", "sol_visage");
         int n = 0;
@@ -821,6 +830,122 @@ public final class UmvuthiGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * A second chief body's death is nobody's (§7 test 29, the second-body clause; MZB-431, MZB-611). Three scripted
+     * groves (320 blocks apart), each with an adopted Umvuthi (the chief, generation 1) and an adopted FEAR-masked
+     * warrior 10 blocks from it, and a player 150 blocks off in z. E is the control and is sent nothing. C and D are
+     * sent a REMOVE of the chief: both held (a player is near), so both bodies are second ones and E's is not. D's camp
+     * then counts again ({@link Camps#forceRecount}: a new epoch, its REMOVE answered STALE, nothing held), which is
+     * the order the review found (P1): a second body with no held line behind it. Each Umvuthi, last hurt by its
+     * player, is then killed by him. E's death is the chief's: a CAMP_DEATH for the chief and one for the warrior, a
+     * Sol Visage and experience. C's and D's are nobody's: no CAMP_DEATH of any kind, no Sol Visage, no experience,
+     * and the warrior alive and still tagged. C's REMOVE, held when its body died, is answered NOTHING.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_second_body", skyAccess = true)
+    public static void aSecondChiefBodysDeathIsNobodys(GameTestHelper helper) {
+        String test = "aSecondChiefBodysDeathIsNobodys";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove[] g = {groveAt(far, 0, 0), groveAt(far, 1, 0), groveAt(far, 2, 0)}; // C, D, E
+        String[] name = {"C", "D", "E"};
+        EntityUmvuthi[] u = new EntityUmvuthi[3];
+        EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[3];
+        ServerPlayer[] p = new ServerPlayer[3];
+        long[] adopt = new long[3];
+        long[] remove = new long[2];
+        int[] lines0 = new int[1];
+        long[] second0 = new long[1];
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    for (Grove x : g)
+                        x.force();
+                })
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        g[i].lay().declare();
+                        u[i] = MowzieKit.umvuthi(level, g[i].at(-22, 0));
+                        w[i] = MowzieKit.warrior(level, g[i].at(-12, 0));
+                        w[i].setMask(MaskType.FEAR);
+                        p[i] = MowzieKit.player(helper, off(g[i], 0, 150), "mowzie-second-" + name[i]);
+                    }
+                })
+                .thenWaitUntil(censused(g))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++)
+                        adopt[i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), List.of(
+                                CampLine.of(CHIEF_SLOT, 1, UMVUTHI, ADOPT, CHIEF, u[i].getUUID()),
+                                CampLine.of(0, 1, WARRIOR, ADOPT, 0, w[i].getUUID())));
+                })
+                .thenWaitUntil(() -> {
+                    for (int i = 0; i < 3; i++)
+                        MowzieKit.answered(g[i].faction, adopt[i], 2);
+                })
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        MowzieKit.allOutcomes("ADOPT " + name[i], ConflictKit.outcomes(g[i].faction, adopt[i]), DONE);
+                        check(name[i] + "'s player is within 160 blocks of its Umvuthi", p[i].distanceToSqr(u[i]) < GroveKind.HOLD_RANGE * GroveKind.HOLD_RANGE);
+                        check(name[i] + "'s warrior is within 30 blocks of its Umvuthi", w[i].distanceTo(u[i]) <= 30);
+                    }
+                    lines0[0] = MowzieKit.camps().heldLines();
+                    for (int i = 0; i < 2; i++)
+                        remove[i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, REMOVE, CHIEF)));
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("two more held lines (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")", MowzieKit.camps().heldLines() == lines0[0] + 2);
+                    for (int i = 0; i < 2; i++) {
+                        check(name[i] + "'s REMOVE has no answer", unanswered(g[i].faction, remove[i]));
+                        check(name[i] + "'s Umvuthi is a second body", MowzieKit.camps().secondBody(u[i]));
+                    }
+                    check("E's Umvuthi is not", !MowzieKit.camps().secondBody(u[2]));
+                    MowzieKit.camps().forceRecount(g[1].faction);
+                })
+                .thenWaitUntil(() -> {
+                    check("D counted again", MowzieKit.censusCount(g[1].faction) >= 2);
+                    MowzieKit.answered(g[1].faction, remove[1], 1);
+                })
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("D's REMOVE", ConflictKit.outcomes(g[1].faction, remove[1]), STALE);
+                    check("only C's REMOVE is held now (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")", MowzieKit.camps().heldLines() == lines0[0] + 1);
+                    check("D's Umvuthi lives, tagged, with no line behind it, and is still a second body",
+                            u[1].isAlive() && MowzieKit.tagged(u[1], g[1].faction, CHIEF_SLOT, 1) && MowzieKit.camps().secondBody(u[1]));
+                    check("no visage and no experience yet", visages(level, g[0]) + visages(level, g[1]) + visages(level, g[2])
+                            + xp(level, g[0]) + xp(level, g[1]) + xp(level, g[2]) == 0);
+                    second0[0] = MowzieKit.camps().secondBodies;
+                    for (int i = 0; i < 3; i++) {
+                        u[i].setLastHurtByPlayer(p[i]);
+                        MowzieKit.kill(u[i], level.damageSources().playerAttack(p[i]));
+                    }
+                })
+                .thenWaitUntil(() -> {
+                    check("E dropped a Sol Visage (" + visages(level, g[2]) + ")", visages(level, g[2]) >= 1);
+                    check("E dropped experience (" + xp(level, g[2]) + ")", xp(level, g[2]) >= 1);
+                    check("E booked its chief and its warrior (" + ConflictKit.campDeaths(g[2].faction).size() + ")",
+                            ConflictKit.campDeaths(g[2].faction).size() >= 2);
+                })
+                .thenIdle(80)
+                .thenExecute(() -> {
+                    check("E's warrior died with its Umvuthi", !w[2].isAlive());
+                    check("exactly two deaths for E (" + ConflictKit.campDeaths(g[2].faction).size() + ")", ConflictKit.campDeaths(g[2].faction).size() == 2);
+                    for (int i = 0; i < 2; i++) {
+                        check(name[i] + "'s Umvuthi is dead", !u[i].isAlive());
+                        check("no death booked for " + name[i] + " (" + ConflictKit.campDeaths(g[i].faction).size() + ")", ConflictKit.campDeaths(g[i].faction).isEmpty());
+                        check("no Sol Visage for " + name[i] + " (" + visages(level, g[i]) + ")", visages(level, g[i]) == 0);
+                        check("no experience for " + name[i] + " (" + xp(level, g[i]) + ")", xp(level, g[i]) == 0);
+                        check(name[i] + "'s warrior lives, tagged", w[i].isAlive() && MowzieKit.tagged(w[i], g[i].faction, 0, 1));
+                    }
+                    check("both deaths were met as second bodies (" + (MowzieKit.camps().secondBodies - second0[0]) + ")",
+                            MowzieKit.camps().secondBodies - second0[0] >= 2);
+                    MowzieKit.allOutcomes("C's REMOVE, its body dead", ConflictKit.outcomes(g[0].faction, remove[0]), ConflictRecords.CampBodies.NOTHING);
+                    check("the held lines are back to the start (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == lines0[0]);
+                    record(test, "second body", "C killed with its REMOVE held, D after a recount: no death, no Sol Visage, no experience, the warriors alive; "
+                            + "the control E: " + visages(level, g[2]) + " Sol Visage, " + xp(level, g[2]) + " experience, both bodies booked");
+                })
+                .thenSucceed();
+    }
+
     // ---- 30: the heir ---------------------------------------------------------------------------------
 
     /**
@@ -834,19 +959,24 @@ public final class UmvuthiGameTests {
      * (one held pair, no answer, all warriors home). The player steps to 170 blocks west of the centre; the warriors are
      * then 155, 175 and 190 blocks from it, the farthest is held, so the pair takes the 5-block warrior: the MASK
      * answer names slot 1, generation 1, the heir stands at the throne facing 3 restricted to it with no trade
-     * memory, and the other two warriors are still tagged.
+     * memory, and the other two warriors are still tagged. G4 (P3-10) has three warriors at 6, 14 and 22 blocks south
+     * of its centre in slots 1, 0 and 2, a throne 10 blocks north and a player 165 blocks south: the warriors are
+     * 159, 151 and 143 blocks from the player (every one within 160) and the throne 175 (no hold). The pair is played
+     * at once and takes the farthest of the three, slot 1: not the lowest slot and not the nearest.
      */
     @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_heir", skyAccess = true)
     public static void anUmvuthiHeirTakesTheFarthestFreeWarrior(GameTestHelper helper) {
         String test = "anUmvuthiHeirTakesTheFarthestFreeWarrior";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
-        Grove g1 = groveAt(far, 0, 0), g2 = groveAt(far, 1, 0), g3 = groveAt(far, 2, 0);
+        Grove g1 = groveAt(far, 0, 0), g2 = groveAt(far, 1, 0), g3 = groveAt(far, 2, 0), g4 = groveAt(far, 3, 0);
         EntityUmvuthanaMinion[] w1 = new EntityUmvuthanaMinion[3];
         EntityUmvuthanaMinion[] w3 = new EntityUmvuthanaMinion[1];
+        EntityUmvuthanaMinion[] w4 = new EntityUmvuthanaMinion[3];
         ServerPlayer[] p1 = new ServerPlayer[1];
+        ServerPlayer[] p4 = new ServerPlayer[1];
         Vec3[] throne = new Vec3[1];
-        long[] op = new long[7];
+        long[] op = new long[9];
         long[] counters = new long[4];
         int[] lines0 = new int[1];
 
@@ -855,12 +985,18 @@ public final class UmvuthiGameTests {
                     g1.force();
                     g2.force();
                     g3.force();
+                    g4.force();
                 })
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
                     g1.lay().declare(MowzieKit.TEST_GROVE, HoldingKind.INSTANCE);
                     g2.lay().declare();
                     g3.lay().declare();
+                    g4.lay().declare();
+                    double[] south = {-14, -6, -22}; // slots 0, 1 and 2; the player is south of the grove, so slot 1 is the farthest from it
+                    for (int i = 0; i < 3; i++)
+                        w4[i] = MowzieKit.warrior(level, g4.at(0, south[i]));
+                    p4[0] = MowzieKit.player(helper, off(g4, 0, -165), "mowzie-heir-p4");
                     double[] at = {-15, 5, 20};
                     for (int i = 0; i < 3; i++)
                         w1[i] = MowzieKit.warrior(level, g1.at(at[i], 0));
@@ -869,21 +1005,35 @@ public final class UmvuthiGameTests {
                     throne[0] = g1.at(0, 8);
                     p1[0] = MowzieKit.player(helper, new Vec3(throne[0].x, throne[0].y + 1, throne[0].z + 100), "mowzie-heir-p1");
                 })
-                .thenWaitUntil(censused(g1, g2, g3))
+                .thenWaitUntil(censused(g1, g2, g3, g4))
                 .thenExecute(() -> {
                     List<CampLine> lines = new java.util.ArrayList<>();
-                    for (int i = 0; i < 3; i++)
+                    List<CampLine> lines4 = new java.util.ArrayList<>();
+                    for (int i = 0; i < 3; i++) {
                         lines.add(CampLine.of(i, 1, WARRIOR, ADOPT, 0, w1[i].getUUID()));
+                        lines4.add(CampLine.of(i, 1, WARRIOR, ADOPT, 0, w4[i].getUUID()));
+                    }
                     op[0] = MowzieKit.reconcile(g1.faction, epochOf(g1), lines);
                     op[1] = MowzieKit.reconcile(g3.faction, epochOf(g3), List.of(CampLine.of(0, 1, WARRIOR, ADOPT, 0, w3[0].getUUID())));
+                    op[7] = MowzieKit.reconcile(g4.faction, epochOf(g4), lines4);
                 })
                 .thenWaitUntil(() -> {
                     MowzieKit.answered(g1.faction, op[0], 3);
                     MowzieKit.answered(g3.faction, op[1], 1);
+                    MowzieKit.answered(g4.faction, op[7], 3);
                 })
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G1's ADOPT", ConflictKit.outcomes(g1.faction, op[0]), DONE);
                     MowzieKit.allOutcomes("G3's ADOPT", ConflictKit.outcomes(g3.faction, op[1]), DONE);
+                    MowzieKit.allOutcomes("G4's ADOPT", ConflictKit.outcomes(g4.faction, op[7]), DONE);
+                    double[] near = new double[3];
+                    for (int i = 0; i < 3; i++)
+                        near[i] = p4[0].distanceTo(w4[i]);
+                    check("every G4 warrior is within 160 blocks of the player (" + near[0] + ", " + near[1] + ", " + near[2] + ")",
+                            near[0] < 160 && near[1] < 160 && near[2] < 160);
+                    check("slot 1 is the farthest of them, slot 2 the nearest", near[1] > near[0] && near[0] > near[2]);
+                    double throneD = p4[0].position().distanceTo(g4.at(0, 10));
+                    check("the G4 throne is beyond 160 blocks from the player (" + throneD + ")", throneD > 160);
                     Camps camps = MowzieKit.camps();
                     counters[0] = camps.heirs;
                     counters[1] = camps.masks;
@@ -894,10 +1044,13 @@ public final class UmvuthiGameTests {
                     List<CampLine> pair = List.of(CampLine.of(0, 0, WARRIOR, MASK, 0), CampLine.of(CHIEF_SLOT, 2, UMVUTHI, SEAT_HEIR, CHIEF));
                     op[2] = MowzieKit.reconcile(g2.faction, epochOf(g2), pair);
                     op[3] = MowzieKit.reconcile(g3.faction, epochOf(g3), pair);
+                    // G4: every warrior has a player within 160 blocks, the throne has none: the farthest warrior goes (P3-10)
+                    op[8] = MowzieKit.reconcile(g4.faction, epochOf(g4), g4.at(0, 10), 3f, pair);
                 })
                 .thenWaitUntil(() -> {
                     MowzieKit.answered(g2.faction, op[2], 2);
                     MowzieKit.answered(g3.faction, op[3], 2);
+                    MowzieKit.answered(g4.faction, op[8], 2);
                 })
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G2's pair, no warrior", ConflictKit.outcomes(g2.faction, op[2]), STALE);
@@ -916,8 +1069,16 @@ public final class UmvuthiGameTests {
                             h.getRestrictCenter().getZ() + 0.5 - g3.spot.z) < 7);
                     check("the warrior is gone, no other body stands", w3[0].isRemoved() && MowzieKit.held(g3.faction).size() == 1);
                     Camps camps = MowzieKit.camps();
-                    check("one heir and one mask so far (" + (camps.heirs - counters[0]) + ", " + (camps.masks - counters[1]) + ")",
-                            camps.heirs == counters[0] + 1 && camps.masks == counters[1] + 1);
+                    check("two heirs and two masks so far (" + (camps.heirs - counters[0]) + ", " + (camps.masks - counters[1]) + ")",
+                            camps.heirs == counters[0] + 2 && camps.masks == counters[1] + 2);
+                    MowzieKit.allOutcomes("G4's pair", ConflictKit.outcomes(g4.faction, op[8]), DONE);
+                    Map<Integer, MowzieKit.Answered> a4 = MowzieKit.answeredLines(g4.faction, op[8]);
+                    check("G4's MASK names the farthest warrior, slot 1, generation 1 (" + a4.get(0) + ")", a4.get(0).slot() == 1 && a4.get(0).generation() == 1);
+                    check("that warrior is gone", w4[1].isRemoved());
+                    check("the other two are still tagged", MowzieKit.tagged(w4[0], g4.faction, 0, 1) && MowzieKit.tagged(w4[2], g4.faction, 2, 1));
+                    List<Entity> heir4 = MowzieKit.held(g4.faction, CHIEF_SLOT, 2);
+                    check("G4 has an heir at its throne (" + heir4.size() + ")", heir4.size() == 1 && heir4.get(0) instanceof EntityUmvuthi
+                            && heir4.get(0).position().distanceTo(g4.at(0, 10)) < 5);
                     // G1: a TAKE of the 20-block warrior is held (a line in flight), then the pair
                     op[4] = MowzieKit.reconcile(g1.faction, epochOf(g1), throne[0], 3f, List.of(CampLine.of(2, 1, WARRIOR, TAKE, 0)));
                 })
@@ -958,11 +1119,12 @@ public final class UmvuthiGameTests {
                             h.getRestrictRadius() == -1f && h.getRestrictCenter().equals(BlockPos.containing(throne[0])));
                     check("no trade memory (" + h.getTradedPlayers() + ")", h.getTradedPlayers().isEmpty());
                     Camps camps = MowzieKit.camps();
-                    check("two heirs and two masks in all (" + (camps.heirs - counters[0]) + ", " + (camps.masks - counters[1]) + ")",
-                            camps.heirs == counters[0] + 2 && camps.masks == counters[1] + 2);
+                    check("three heirs and three masks in all (" + (camps.heirs - counters[0]) + ", " + (camps.masks - counters[1]) + ")",
+                            camps.heirs == counters[0] + 3 && camps.masks == counters[1] + 3);
                     check("the pair was held once (" + (camps.heldPairs - counters[2]) + ")", camps.heldPairs == counters[2] + 1);
                     record(test, "heir", "G3 plain seat at the fire pit; G2 stale with no warrior; G1 held for a player at the throne, then took the 5-block "
-                            + "warrior (155, 175 and 190 blocks from the player, the farthest held)");
+                            + "warrior (155, 175 and 190 blocks from the player, the farthest held); G4 with every warrior within 160 blocks of a player took "
+                            + "the farthest (slot 1)");
                 })
                 .thenSucceed();
     }
@@ -991,7 +1153,6 @@ public final class UmvuthiGameTests {
         long[] op = new long[8];
         long[] counters = new long[5];
         long[] hitAt = new long[1];
-        boolean[] landed = new boolean[1];
 
         helper.startSequence()
                 .thenExecute(() -> {
@@ -1075,13 +1236,9 @@ public final class UmvuthiGameTests {
                     oldAt[1] = old[1].position();
                     hitAt[0] = level.getGameTime();
                     old[1].setTarget(p[1]);
-                    landed[0] = old[1].hurt(level.damageSources().playerAttack(p[1]), 1f);
-                    if (landed[0]) {
-                        check("the hit reached the fight watch", FightWatch.recent(old[1], level.getGameTime()));
-                    } else {
-                        FightWatch.hit(old[1], level.getGameTime());
-                        record(test, "fallback", "the Umvuthi refused the 1 point hit; the fight watch was told as its event does");
-                    }
+                    boolean landed = old[1].hurt(level.damageSources().playerAttack(p[1]), 1f);
+                    check("the player's 1 point hit on the old Umvuthi lands (" + landed + ")", landed); // no fallback (MZB-608)
+                    check("the hit reached the fight watch", FightWatch.recent(old[1], level.getGameTime()));
                 })
                 .thenIdle(100)
                 .thenExecute(() -> {
@@ -1110,8 +1267,7 @@ public final class UmvuthiGameTests {
                     check("the old body is gone and the warrior taken", old[1].isRemoved() && w[1].isRemoved());
                     check("no CAMP_DEATH was booked", ConflictKit.campDeaths(g5.faction).isEmpty());
                     check("two seats in place in all (" + (MowzieKit.camps().seatedInPlace - counters[2]) + ")", MowzieKit.camps().seatedInPlace == counters[2] + 2);
-                    record(test, "in place", "G4 over a held REMOVE (stale, no death); G5 held until the fight was " + after + " ticks old"
-                            + (landed[0] ? "" : " (the hit did not land: the fight watch was told directly)"));
+                    record(test, "in place", "G4 over a held REMOVE (stale, no death); G5 held until the fight was " + after + " ticks old");
                 })
                 .thenSucceed();
     }
