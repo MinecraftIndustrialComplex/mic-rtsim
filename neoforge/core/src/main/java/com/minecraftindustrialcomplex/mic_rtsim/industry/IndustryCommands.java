@@ -309,6 +309,7 @@ public final class IndustryCommands {
                         + ind.districts.lastRescanPhases() + "), longest tick " + ind.districts.maxSliceNanos / 1000 + " us: "
                         + ind.districts.maxSliceWhat + "), declarations " + ind.districts.declared + ", detection "
                         + (ind.districts.rescanning() ? "under way or waiting" : "idle"),
+                "last detection: " + ind.districts.lastRescanCold(),
                 "sweeps: " + s.sweeps + " (" + s.liveSweeps + " live), inventories read " + s.inventoriesRead + ", slots " + s.slotsRead
                         + ", read time " + s.readNanos / 1000 + " us (slowest inventory " + s.maxInventoryNanos / 1000 + " us), records "
                         + s.recordsSent + " sent, " + s.recordsDropped + " dropped",

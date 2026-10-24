@@ -84,6 +84,9 @@ public final class Districts {
     public static final TagKey<Block> NOT_SEED_TAG = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "district_not_seed"));
 
+    /** The JVM's class count, for the cold-code counter of a detection (R2-11). */
+    private static final java.lang.management.ClassLoadingMXBean CLASSES = java.lang.management.ManagementFactory.getClassLoadingMXBean();
+
     private final Industry ind;
     private final IndustryData data;
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<District>> byChunk = new HashMap<>();
@@ -113,6 +116,20 @@ public final class Districts {
     long lastRescanLongestItem;
     /** What the longest tick was: the commit's, or a look at this many block entities. */
     String maxSliceWhat = "";
+    /**
+     * The last detection's costliest single look at one chunk, in wall time: what a tick's time limit
+     * ({@code rescanSliceMicros}) does not bound, since a chunk is looked at whole (R2-11).
+     */
+    long lastRescanLongestItemNanos;
+    /**
+     * Chunks that loaded while the last detection looked, and classes the JVM loaded meanwhile (R2-11). The first
+     * should be 0: the detection reads only loaded chunks, but another mod's code it calls (a capability, a plugin's
+     * query) can read a neighbour that has a ticket and is still loading, and that read waits for the load. The
+     * second is cold code.
+     */
+    long lastRescanChunkLoads, lastRescanClassLoads;
+    /** The block entity type whose look loaded the last detection's first chunk, or "". */
+    String lastRescanLoadedBy = "";
     long declared;
 
     Districts(Industry ind) {
@@ -170,6 +187,27 @@ public final class Districts {
     /** What the costliest single look at a chunk spent in the last detection (a tick's spend is at most the budget less one, plus this). */
     public long lastRescanLongestItem() {
         return lastRescanLongestItem;
+    }
+
+    /** The last detection's costliest single look at one chunk, in nanoseconds (R2-11). */
+    public long lastRescanLongestItemNanos() {
+        return lastRescanLongestItemNanos;
+    }
+
+    /** Chunks that loaded while the last detection looked (R2-11: should be 0). */
+    public long lastRescanChunkLoads() {
+        return lastRescanChunkLoads;
+    }
+
+    /** Classes the JVM loaded while the last detection looked (R2-11: cold code). */
+    public long lastRescanClassLoads() {
+        return lastRescanClassLoads;
+    }
+
+    /** What the last detection's time limits and loads were, for the perf line (R2-11). */
+    public String lastRescanCold() {
+        return "longest chunk " + lastRescanLongestItemNanos / 1000 + " us, " + lastRescanClassLoads + " classes loaded, "
+                + lastRescanChunkLoads + " chunk loads" + (lastRescanLoadedBy.isEmpty() ? "" : " (first by " + lastRescanLoadedBy + ")");
     }
 
     /**
@@ -729,6 +767,16 @@ public final class Districts {
         /** Chunks looked at for a station, and the ones that hold one. */
         final LongOpenHashSet stationLooked = new LongOpenHashSet();
         final LongOpenHashSet stationChunks = new LongOpenHashSet();
+        /** The block entity type whose look first loaded a chunk (R2-11), or null. */
+        String loadedBy;
+
+        /** After a look at {@code be} that began when {@link IndustryEvents#chunkLoads} was {@code before}: names it if a chunk loaded meanwhile. */
+        void loads(long before, BlockEntity be) {
+            if (loadedBy == null && IndustryEvents.chunkLoads() != before) {
+                ResourceLocation key = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be.getType());
+                loadedBy = key == null ? be.getClass().getName() : key.toString();
+            }
+        }
     }
 
     /**
@@ -821,6 +869,8 @@ public final class Districts {
         long rootNanos, walkNanos, commitNanosAll;
         /** Block entities looked at in all, and in the biggest step. */
         long looked, maxLooked, maxItem;
+        /** The costliest look at one chunk in wall time, and the chunk and class loads during the steps (R2-11). */
+        long maxItemNanos, chunkLoads, classLoads;
         /** Run in one call by a command or a test: its one big tick is not a scheduling figure. */
         boolean manual;
         /** What to run when this detection is done and has committed ({@link #rescanSoon}). */
@@ -916,24 +966,32 @@ public final class Districts {
          */
         boolean step(int budget) {
             long t0 = System.nanoTime();
+            long loads0 = IndustryEvents.chunkLoads(), classes0 = CLASSES.getTotalLoadedClassCount();
+            int micros = IndustryConfig.get(IndustryConfig.RESCAN_SLICE_MICROS);
+            long limit = micros <= 0 ? Long.MAX_VALUE : micros * 1000L;
             long spent = 0;
             boolean progressed = false, done = false;
             long commitNanos = 0;
             while (true) {
-                if (progressed && spent >= budget)
+                // At least one chunk a tick; then the block entity budget or the time limit, whichever comes first (R2-11).
+                if (progressed && (spent >= budget || System.nanoTime() - t0 >= limit))
                     break;
                 if (cursor < pending.size()) {
                     long r0 = System.nanoTime();
                     int cost = root(pending.getLong(cursor++));
                     spent += cost;
                     maxItem = Math.max(maxItem, cost);
-                    rootNanos += System.nanoTime() - r0;
+                    long dt = System.nanoTime() - r0;
+                    rootNanos += dt;
+                    maxItemNanos = Math.max(maxItemNanos, dt);
                 } else if (!queue.isEmpty()) {
                     long w0 = System.nanoTime();
                     int cost = walk(queue.dequeueLong());
                     spent += cost;
                     maxItem = Math.max(maxItem, cost);
-                    walkNanos += System.nanoTime() - w0;
+                    long dt = System.nanoTime() - w0;
+                    walkNanos += dt;
+                    maxItemNanos = Math.max(maxItemNanos, dt);
                 } else {
                     Set<Long> more = full ? Set.of() : grown();
                     if (!more.isEmpty()) {
@@ -956,6 +1014,8 @@ public final class Districts {
             maxSlice = Math.max(maxSlice, dt);
             looked += spent;
             maxLooked = Math.max(maxLooked, spent);
+            chunkLoads += IndustryEvents.chunkLoads() - loads0;
+            classLoads += CLASSES.getTotalLoadedClassCount() - classes0;
             if (done) {
                 rescans++;
                 rescanNanos += nanos;
@@ -968,10 +1028,16 @@ public final class Districts {
                 lastRescanRootNanos = rootNanos;
                 lastRescanWalkNanos = walkNanos;
                 lastRescanCommitNanos = commitNanosAll;
+                lastRescanLongestItemNanos = maxItemNanos;
+                lastRescanChunkLoads = chunkLoads;
+                lastRescanClassLoads = classLoads;
+                lastRescanLoadedBy = scan.loadedBy == null ? "" : scan.loadedBy;
             }
             if (!manual && dt > maxSliceNanos) {
                 maxSliceNanos = dt;
-                maxSliceWhat = done ? spent + " block entities, then the commit " + commitNanos / 1000 + " us" : spent + " block entities";
+                maxSliceWhat = (done ? spent + " block entities, then the commit " + commitNanos / 1000 + " us" : spent + " block entities")
+                        + ", " + (CLASSES.getTotalLoadedClassCount() - classes0) + " classes and " + (IndustryEvents.chunkLoads() - loads0)
+                        + " chunks loaded meanwhile";
             }
             return done;
         }
@@ -1312,11 +1378,15 @@ public final class Districts {
                 BlockEntity be = chunk.getBlockEntities().get(BlockPos.of(p));
                 if (be == null || be.isRemoved()) {
                     kept = kept.minus(p);
-                } else if (seed(level, be, scan.kinds)) {
+                    continue;
+                }
+                long loads = IndustryEvents.chunkLoads();
+                if (seed(level, be, scan.kinds)) {
                     n++;
                 } else if (!mayBecomeSeed(be)) {
                     kept = kept.minus(p);
                 }
+                scan.loads(loads, be);
             }
             if (kept != s) {
                 if (kept.isEmpty())
@@ -1342,11 +1412,14 @@ public final class Districts {
         for (BlockEntity be : chunk.getBlockEntities().values()) {
             if (be.isRemoved())
                 continue;
+            long loads = IndustryEvents.chunkLoads();
             for (IndustryPlugin plugin : IndustryApi.PLUGINS)
                 if (plugin.isStation(be)) {
                     scan.stationChunks.add(c);
+                    scan.loads(loads, be);
                     return true;
                 }
+            scan.loads(loads, be);
         }
         return false;
     }
@@ -1363,7 +1436,10 @@ public final class Districts {
             int lx = p.getX() & 15, lz = p.getZ() & 15;
             if (lx != 0 && lx != 15 && lz != 0 && lz != 15)
                 continue;
-            if (!industrial(level, be, scan.kinds))
+            long loads = IndustryEvents.chunkLoads();
+            boolean isIndustrial = industrial(level, be, scan.kinds);
+            scan.loads(loads, be);
+            if (!isIndustrial)
                 continue;
             for (Direction d : Direction.Plane.HORIZONTAL) {
                 BlockPos n = p.relative(d);
@@ -1393,7 +1469,14 @@ public final class Districts {
             }
         };
         List<BlockEntity> blockEntities = new ArrayList<>(chunk.getBlockEntities().values());
+        BlockEntity last = null;
+        long loads = 0;
         for (BlockEntity be : blockEntities) {
+            // Names the look that loaded a chunk (R2-11): checked as the next look begins, since a look has several exits.
+            if (last != null)
+                scan.loads(loads, last);
+            last = be;
+            loads = IndustryEvents.chunkLoads();
             if (be.isRemoved())
                 continue;
             BlockPos p = be.getBlockPos();
@@ -1461,6 +1544,8 @@ public final class Districts {
                 });
             }
         }
+        if (last != null)
+            scan.loads(loads, last);
         // Describe the chunk's boundary inventories now, while their chunks are loaded (the commit may come ticks later).
         if (!candidates.isEmpty()) {
             List<District.Inventory> out = new ArrayList<>();

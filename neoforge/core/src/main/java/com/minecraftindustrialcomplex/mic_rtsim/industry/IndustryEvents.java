@@ -35,6 +35,13 @@ final class IndustryEvents {
 
     private static final ConcurrentLinkedQueue<LevelChunk> LOADED = new ConcurrentLinkedQueue<>();
     private static final ConcurrentLinkedQueue<Placed> PLACED = new ConcurrentLinkedQueue<>();
+    /** Every server chunk load since the start (R2-11): a detection reads it around its looks, which must never load one. */
+    private static final java.util.concurrent.atomic.AtomicLong CHUNK_LOADS = new java.util.concurrent.atomic.AtomicLong();
+
+    /** Server chunk loads so far ({@code ChunkEvent.Load} of a server level's full chunk), whether or not a module runs. */
+    public static long chunkLoads() {
+        return CHUNK_LOADS.get();
+    }
 
     static void register() {
         IEventBus bus = NeoForge.EVENT_BUS;
@@ -76,6 +83,7 @@ final class IndustryEvents {
         // found at the session start instead, and nothing is retained when the module is off.
         if (event.getLevel().isClientSide() || !(event.getChunk() instanceof LevelChunk chunk) || !(event.getLevel() instanceof ServerLevel level))
             return;
+        CHUNK_LOADS.incrementAndGet();
         Industry ind = IndustryApi.current();
         if (ind == null)
             return;
