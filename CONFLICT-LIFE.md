@@ -981,9 +981,10 @@ and the two actors:
   packet. A betrayal names the camp that fell on its ally.
 - **A raid, an invasion or a skirmish fell on a target:** `who` the camp, `whom` the target (the
   village or haven it marched on, else the feud's player), the severity byte the outcome
-  (`report::raid`: 1 held, a watched fight the band left bored or done; 2 beaten, a rout in a fight
-  or on the road, or an unwatched raid that lost warriors and took nothing; 3 plundered, it took goods or blocks), joint
-  or not by a flag (unused so far). A raid that found nothing is no news.
+  (`report::raid`: 1 held, a watched fight the band left bored or done; 2 beaten, a rout in a fight,
+  on the road or while waiting at the target, or an unwatched raid that lost warriors and took
+  nothing; 3 plundered, it took goods or blocks), joint or not by a flag (unused so far). A raid that
+  found nothing is no news.
 - **A chief or a champion fell:** `who` the camp, `whom` the fallen notable, the severity byte how
   (`report::fell`: 1 died of age, 2 killed in a fight). When a player killed the chief, the
   Killing report the engine already makes names them. No champion exists yet.
@@ -992,7 +993,9 @@ The reasons are the engine's motive and memory codes (2.14), so the text is writ
 from them and from names.
 
 **How it travels.** As every report does (PR6, rtsim-knowledge's packets): the holders that saw it
-first-hand (the camp's own board; the target's village or base, if it was a raid) learn it at once,
+first-hand learn it at once (the camp's chief and heir, whose boards its talkers read; for a raid on a
+village or a rival camp's haven, that village or haven too, the haven through its camp's chief and
+heir; a raid on a player's district or a place names the feud's player, and no base witnesses it),
 and everyone else only from a packet a traveller carried, so news spreads at the speed of trade and a
 village nobody trades with learns nothing. Messengers walk each road four times a day as flows;
 caravans and bands carry gossip on their circuits. News has a lifetime by kind, like any report

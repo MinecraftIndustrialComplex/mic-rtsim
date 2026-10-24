@@ -5259,6 +5259,12 @@ impl Conflict {
                     if let Some(player) = self.parties[p].breaker {
                         self.rescue_news(w, p, player, at);
                     }
+                    // And a raid beaten off (TK26), as when its war chief is killed there.
+                    if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
+                        let (x, z) = self.party_pos(p, at);
+                        let frame = self.parties[p].frame;
+                        self.raid_news(w, p, raid::BEATEN, Pos::new(frame, x, z), at);
+                    }
                 }
                 self.go_home(w, p, boundary::RECALL_ROUTED, at);
             }
@@ -5344,8 +5350,9 @@ impl Conflict {
             if let Some(player) = self.parties[p].breaker {
                 self.rescue_news(w, p, player, at);
             }
-            // And a raid beaten off before it arrived (TK26); one still mustering at its camp
-            // had not set out on anyone.
+            // And a raid beaten off (TK26): a band out on the road, or waiting at its target (a
+            // siege between rounds, a fight nobody watches any more); one still mustering at its
+            // camp had not set out on anyone.
             if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
                 let frame = self.parties[p].frame;
                 self.raid_news(w, p, raid::BEATEN, Pos::new(frame, x, z), at);
