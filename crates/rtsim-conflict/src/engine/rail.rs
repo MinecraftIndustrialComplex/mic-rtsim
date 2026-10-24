@@ -274,6 +274,15 @@ impl Conflict {
             self.factions.row_mut(f).add_reach(SignalKind::Rail, id);
         } else if let Some((id, _)) = self.sources.remove(&key) {
             self.factions.row_mut(f).remove_reach(SignalKind::Rail, id);
+            // The track ends with its source: the feud's focus keeps its position but not the
+            // track, so a kill in the wild (a lower class) can take the focus (MZB-314, MZB-348).
+            if self
+                .feud(f, actor)
+                .is_some_and(|x| x.focus.as_ref().is_some_and(|fo| fo.track.is_some()))
+                && let Some(fo) = self.feud_mut(f, actor).and_then(|x| x.focus.as_mut())
+            {
+                fo.track = None;
+            }
         }
         self.refresh_rates(f, actor, SignalKind::Rail, at);
     }

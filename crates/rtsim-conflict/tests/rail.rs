@@ -553,6 +553,54 @@ fn a_raid_on_a_track_focus_targets_the_track_and_an_invasion_the_station() {
     assert_eq!(inv.2, Target::District(REFINERY, station));
 }
 
+/// A track focus ends with its rail source (the meter's 0 push when it retires): the focus keeps
+/// its position but not its track, so a kill in the wild afterwards takes the focus and the next
+/// Raid goes to the kill site, not to a track nobody runs (M7 review P2-1, MZB-348).
+#[test]
+fn a_dead_track_no_longer_holds_the_focus() {
+    let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
+    let wild = Pos::new(0, CAMP_POS.x - 90, CAMP_POS.z + 40);
+    let (mut w, mut c, f, player) = dens(36);
+    c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
+    let fo = c.feud(f, player).and_then(|x| x.focus.clone()).unwrap();
+    assert_eq!(
+        (fo.pos, fo.track.as_deref().copied()),
+        (rail, Some(track(64)))
+    );
+    // The meter retires: its source is pushed to 0.
+    c.set_emission_for(&mut w, f, player, 0.0, CAMP_POS, track(0), Tick(30));
+    assert!(rail_source(&c, f, player).is_none());
+    let fo = c.feud(f, player).and_then(|x| x.focus.clone()).unwrap();
+    assert_eq!(
+        (fo.pos, fo.district, fo.track),
+        (rail, None, None),
+        "the position stays, the track does not"
+    );
+    // A kill in the wild now takes the focus, and the Raid it earns goes there.
+    kill_of(&mut w, &mut c, player, wild, None, 100.0, 40);
+    let fo = c.feud(f, player).and_then(|x| x.focus.clone()).unwrap();
+    assert_eq!((fo.pos, fo.track), (wild, None));
+    let seen = watch(&mut c, &mut w, &mut Probe::default(), Tick(40), 12).seen;
+    let raid = seen.iter().find(|s| s.1 == Step::Raid).expect("a raid");
+    assert_eq!(raid.2, Target::Pos(wild));
+}
+
+/// A district focus has no track to clear, and stays when the source is removed.
+#[test]
+fn clearing_a_dead_track_leaves_a_district_focus_alone() {
+    let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
+    let site = Pos::new(0, CAMP_POS.x + 20, CAMP_POS.z + 20);
+    let (mut w, mut c, f, player) = dens(37);
+    kill_at(&mut w, &mut c, player, site, Some(REFINERY), 10);
+    c.set_emission_for(&mut w, f, player, 8.0, rail, track(64), Tick(20));
+    c.set_emission_for(&mut w, f, player, 0.0, CAMP_POS, track(0), Tick(30));
+    let fo = c.feud(f, player).and_then(|x| x.focus.clone()).unwrap();
+    assert_eq!(
+        (fo.pos, fo.district, fo.track),
+        (site, Some(REFINERY), None)
+    );
+}
+
 #[test]
 fn the_spot_is_five_blocks_toward_the_den() {
     let (_w, c, _f, _) = dens(33);
