@@ -4,6 +4,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntityStorageAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.SimpleRegionStorageAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
@@ -22,6 +26,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.storage.EntityStorage;
 import net.minecraft.world.level.chunk.storage.IOWorker;
 import net.minecraft.world.level.chunk.storage.RegionFileVersion;
 import net.minecraft.world.level.dimension.DimensionType;
@@ -449,6 +454,31 @@ public final class JournalBarrierGameTests {
         m.moveTo(cx * 16 + 8, 64, cz * 16 + 8);
         check("the holder is added", level.addFreshEntity(m));
         return m;
+    }
+
+    /**
+     * The entity chunk storage (the {@code entities/} folder, its own worker) gets the strategy its worker's class
+     * calls for (MZB-225): vanilla's for {@code IOWorker}, C2ME's reflection path for
+     * {@code C2MEStorageVanillaInterface}, which C2ME builds as the worker of every {@code SimpleRegionStorage},
+     * the entity storage's included. Under {@code -Pc2me} this is the check that the camp records' entity chunks
+     * are ordered by the same polling barrier as the block chunks.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_entities", timeoutTicks = 200)
+    public static void theEntityStorageGetsTheStrategyOfItsOwnWorker(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        JournalSavedData data = JournalSavedData.fresh();
+        helper.startSequence()
+                .thenExecute(() -> {
+                    Object storage = ((EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager()).mic_rtsim$permanentStorage();
+                    check("the entity storage is vanilla's EntityStorage (" + storage.getClass().getName() + ")", storage instanceof EntityStorage);
+                    IOWorker worker = ((SimpleRegionStorageAccessor) ((EntityStorageAccessor) storage).mic_rtsim$regions()).mic_rtsim$worker();
+                    String expected = expectedStrategy(worker);
+                    String got = data.chunks().entityStrategy(level);
+                    record("journal_barrier_entities", "strategy", "the entity worker is " + worker.getClass().getName() + "; the barrier uses " + got);
+                    check("the barrier uses the " + expected + " strategy for the entity worker " + worker.getClass().getName() + ", not " + got,
+                            expected.equals(got));
+                })
+                .thenSucceed();
     }
 
     /** One chunk's NBT straight from its region file (a sector table, then length, compression, data). */
