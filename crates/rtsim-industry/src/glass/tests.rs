@@ -8396,6 +8396,98 @@ mod replay_path {
         e.check_books().expect("books");
     }
 
+    /// Three districts on one network: press D reads A's boiler (32 RPM) and C's (16 RPM), all
+    /// away, A and C frozen (D stopped); then C comes back live. With `mark_a`, a record that does
+    /// not change frozen A's presence (a border chunk unloading) comes at the same tick. Returns
+    /// D's sheets over the next 2,000 ticks.
+    fn frozen_owner_and_a_live_one(mark_a: bool) -> i64 {
+        const C: DistrictId = DistrictId(9);
+        let foreign = |pos: i64| DomainSource {
+            driver: None,
+            levels: Vec::new(),
+            current: None,
+            ratio_num: 1,
+            ratio_den: 1,
+            pos,
+        };
+        // A: driven at 9 (level 4, 32 RPM), C's 11 foreign.
+        let mut a = shared_boiler([1593, i64::from(heat::KINDLED), 1600, 500], D);
+        a.domains[0].peers = vec![D, C];
+        a.domains[0].sources.push(foreign(11));
+        // C: driven at 11, level 2 (16 RPM), A's 9 foreign.
+        let mut c = shared_boiler([1593, i64::from(heat::KINDLED), 1600, 500], DA);
+        c.domains[0].peers = vec![DA, D];
+        for e in c.edges.iter_mut().filter(|e| e.kind == EdgeKind::Heat) {
+            e.param = 2;
+        }
+        c.domains[0].sources[0].pos = 11;
+        c.domains[0].sources.insert(0, foreign(9));
+        // D: the press, both shafts foreign.
+        let mut b = shared_press(DA);
+        b.domains[0].peers = vec![DA, C];
+        b.domains[0].sources.push(foreign(11));
+        let mut s = setup_of(DA, &a, 1);
+        s.extend(setup_of(D, &b, 2));
+        s.extend(setup_of(C, &c, 1));
+        sweep_of(&mut s, DA, 1, 100, &[&[(COAL, 16)]]);
+        sweep_of(&mut s, D, 1, 100, &[&[(BRASS, 10_000)], &[]]);
+        sweep_of(&mut s, C, 1, 100, &[&[(COAL, 16)]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        let part = PartId {
+            district: D,
+            domain: 0,
+        };
+        let net = e.glass.nets.net_of(part).expect("a network");
+        assert_eq!(net.status, Status::Coupled, "{}", net.why);
+        assert_eq!(net.districts().collect::<Vec<_>>(), vec![DA, D, C]);
+        pass_of(&mut e, D);
+        feed(&mut e, &load_of(C, 200, LoadState::Unloaded));
+        feed(&mut e, &load_of(D, 200, LoadState::Unloaded));
+        e.advance_to(Tick(1_000));
+        let at1000 = e.sim_stock(D).expect("replaying").get(SHEET);
+        assert!((70..=85).contains(&at1000), "{at1000}");
+        feed(&mut e, &load_of(DA, 1_000, LoadState::Unloaded));
+        e.advance_to(Tick(3_000));
+        let at3000 = e.sim_stock(D).expect("replaying").get(SHEET);
+        assert!(
+            (at1000..=at1000 + 1).contains(&at3000),
+            "A frozen, C frozen: stopped {at1000} {at3000}"
+        );
+        if mark_a {
+            feed(
+                &mut e,
+                &at(
+                    3_000,
+                    Obs::ChunkUnloaded {
+                        district: DA,
+                        chunk: crate::ids::ChunkPos { dim: 0, x: 0, z: 0 },
+                    },
+                ),
+            );
+        }
+        feed(&mut e, &load_of(C, 3_000, LoadState::Live));
+        e.advance_to(Tick(5_000));
+        let at5000 = e.sim_stock(D).expect("replaying").get(SHEET);
+        at5000 - at3000
+    }
+
+    #[test]
+    /// A frozen owner whose coverage pass is pending gives the rows it last gave (none), not its
+    /// old check solve's, to a drain another owner's change starts at that tick (SC152).
+    fn a_frozen_owner_awaiting_its_coverage_pass_still_gives_nothing() {
+        let control = frozen_owner_and_a_live_one(false);
+        let marked = frozen_owner_and_a_live_one(true);
+        // C alone at 16 RPM: a sheet per 20 ticks over 2,000 ticks.
+        assert!((98..=101).contains(&control), "control {control}");
+        assert!(
+            (98..=101).contains(&marked),
+            "with A's chunk record: {marked} (control {control})"
+        );
+    }
+
     /// A part whose peer has no part (A's compile is not in) is decoupled: B replays the press at
     /// the speed it ran at at compile, its sheets bounded, as S1 replays an unstable domain.
     #[test]

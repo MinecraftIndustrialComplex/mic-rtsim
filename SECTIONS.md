@@ -421,8 +421,8 @@ Inside a district nothing changes here (Q1 is about sections).
   its district does not replay on glass (SC152); a fixed source its one row. A loaded district's rows
   are its check solve's. When an owner's rows change at a tick, each replaying reader's cluster settles
   to that tick and its parts on the network re-run on the new input, for up to 8 rounds a tick;
-  after that a reader whose input changes again, having taken one in round 8 or later, falls back as
-  oscillating, and the others still take theirs. G2-16's rule (a power link sends its districts to
+  after that a reader whose own rows an input of round 8 or later changed falls back as oscillating
+  when its input changes again, and a reader whose rows do not move still takes its input. G2-16's rule (a power link sends its districts to
   the black box: the `dist.links` arm of `glass_mode` in `engine.rs`, and its doc) does not apply: both sides model the network. A black-box district on a shared network runs its box
   as today, ungated by the network, and gives the network no driven rows (§14).
 - **Loaded districts.** A loaded district's network is Create's. Its check solves read the other
@@ -934,7 +934,7 @@ No migration code (no backward compatibility before release; G2-85). On load:
 - **Shared networks** (choice SC153). Each district replays in its own cluster, never merged by a
   network. A change in an owner's published rows settles each replaying reader's cluster to that tick
   and re-runs the reader's parts: one settle and one re-solve per reader per change, at most 8 rounds
-  a tick (`NET_ROUNDS`); after that a reader that changes again falls back as oscillating. The registry is
+  a tick (`NET_ROUNDS`); after that a reader whose rows keep changing falls back as oscillating. The registry is
   rebuilt (a union-find over the parts' source positions, linear in sources) at a compile accepted or
   dropped, a district removed and a restore, and is never saved. A network with parts in more
   districts than `industry.clusterDistrictsMax` is past the cap: its parts run decoupled (each bounds
