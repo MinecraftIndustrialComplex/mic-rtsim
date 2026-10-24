@@ -34,11 +34,24 @@ public abstract class ArmInteractionPointMixin {
     private ItemStack mic_rtsim$countInsert(IItemHandler handler, ItemStack stack, boolean simulate, Operation<ItemStack> original,
             @Local(argsOnly = true) ArmBlockEntity arm) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                if (c.isMover(arm.getLevel(), arm.getBlockPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("an arm's insert", e); // never break the arm's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(handler, stack, simulate);
-        if (seen != null && c.isMover(arm.getLevel(), arm.getBlockPos()))
-            c.moved(arm.getLevel(), arm.getBlockPos(), ((ArmInteractionPoint) (Object) this).getPos(), seen, before - remainder.getCount(), true);
+        if (seen != null) {
+            try {
+                c.moved(arm.getLevel(), arm.getBlockPos(), ((ArmInteractionPoint) (Object) this).getPos(), seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("an arm's insert", e);
+            }
+        }
         return remainder;
     }
 
@@ -48,8 +61,14 @@ public abstract class ArmInteractionPointMixin {
             @Local(argsOnly = true) ArmBlockEntity arm) {
         ItemStack taken = original.call(handler, slot, amount, simulate);
         Counting c = Counting.active();
-        if (c != null && !simulate && !taken.isEmpty() && c.isMover(arm.getLevel(), arm.getBlockPos()))
-            c.moved(arm.getLevel(), arm.getBlockPos(), ((ArmInteractionPoint) (Object) this).getPos(), taken, taken.getCount(), false);
+        if (c != null && !simulate && !taken.isEmpty()) {
+            try {
+                if (c.isMover(arm.getLevel(), arm.getBlockPos()))
+                    c.moved(arm.getLevel(), arm.getBlockPos(), ((ArmInteractionPoint) (Object) this).getPos(), taken, taken.getCount(), false);
+            } catch (RuntimeException e) {
+                c.failed("an arm's extract", e); // never break the arm's tick
+            }
+        }
         return taken;
     }
 }

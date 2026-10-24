@@ -35,9 +35,13 @@ public abstract class InvManipulationBehaviourMixin {
         ItemStack taken = original.call(inventory, test, mode, amount, simulate);
         Counting c = Counting.active();
         if (c != null && !simulate && !taken.isEmpty()) {
-            InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
-            if (c.isMover(self.getWorld(), self.getPos()))
-                c.moved(self.getWorld(), self.getPos(), self.getTarget().getConnectedPos(), taken, taken.getCount(), false);
+            try {
+                InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
+                if (c.isMover(self.getWorld(), self.getPos()))
+                    c.moved(self.getWorld(), self.getPos(), self.getTarget().getConnectedPos(), taken, taken.getCount(), false);
+            } catch (RuntimeException e) {
+                c.failed("a behaviour's extract", e); // never break the block's tick
+            }
         }
         return taken;
     }
@@ -46,13 +50,25 @@ public abstract class InvManipulationBehaviourMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countInsert(IItemHandler inventory, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
+                if (c.isMover(self.getWorld(), self.getPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("a behaviour's insert", e); // never break the block's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(inventory, stack, simulate);
         if (seen != null) {
-            InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
-            if (c.isMover(self.getWorld(), self.getPos()))
+            try {
+                InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
                 c.moved(self.getWorld(), self.getPos(), self.getTarget().getConnectedPos(), seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("a behaviour's insert", e);
+            }
         }
         return remainder;
     }

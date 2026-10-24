@@ -27,13 +27,25 @@ public abstract class FrogportBlockEntityMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countPush(IItemHandler handler, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                FrogportBlockEntity self = (FrogportBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("a frogport's push", e); // never break the port's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(handler, stack, simulate);
         if (seen != null) {
-            FrogportBlockEntity self = (FrogportBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos()))
+            try {
+                FrogportBlockEntity self = (FrogportBlockEntity) (Object) this;
                 c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("a frogport's push", e);
+            }
         }
         return remainder;
     }
@@ -44,10 +56,14 @@ public abstract class FrogportBlockEntityMixin {
         ItemStack taken = original.call(handler, filter, simulate);
         Counting c = Counting.active();
         if (c != null && !simulate && !taken.isEmpty()) {
-            FrogportBlockEntity self = (FrogportBlockEntity) (Object) this;
-            // The port's own buffer is tried first and is not the inventory below it.
-            if (handler != self.inventory && c.isMover(self.getLevel(), self.getBlockPos()))
-                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), taken, taken.getCount(), false);
+            try {
+                FrogportBlockEntity self = (FrogportBlockEntity) (Object) this;
+                // The port's own buffer is tried first and is not the inventory below it.
+                if (handler != self.inventory && c.isMover(self.getLevel(), self.getBlockPos()))
+                    c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), taken, taken.getCount(), false);
+            } catch (RuntimeException e) {
+                c.failed("a frogport's pull", e); // never break the port's tick
+            }
         }
         return taken;
     }
