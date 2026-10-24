@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StoreId};
+use rtsim_industry::learn::LinkKey;
 use rtsim_industry::obs::{
     ChainDirection, ChainPackage, Obs, StoreCensus, StoreDecl, StoreFrogport, Timed,
 };
@@ -214,8 +215,10 @@ fn a_store_books_its_packages_by_destination() {
 
 /// A chain package is a port of its frogport's district, and never a link: a `LinkKey::Mail`
 /// would send the district to the black box (SECTIONS.md §2.5).
+/// A chain package is a port of its loaded district and, routed to a district's frogport, its
+/// chain link (slice S4b, choice SC108): out toward the frogport it resolves to, in at its own.
 #[test]
-fn a_chain_package_is_a_port_of_its_district_and_no_link() {
+fn a_chain_package_is_a_port_and_a_link_of_its_district() {
     let mut e = engine();
     send(&mut e, 0, Obs::PackageStore(decl(S, vec![a(), b()])));
     send(
@@ -244,13 +247,19 @@ fn a_chain_package_is_a_port_of_its_district_and_no_link() {
             &[(IRON, 64)],
         ),
     );
+    let to_b = |good| LinkKey::Chain {
+        inventory: 3,
+        to: b().pos,
+        good,
+    };
     let d1 = e.district(D1).expect("D1");
     assert_eq!(d1.ports.get(IRON), -64);
-    assert!(d1.links.is_empty(), "{:?}", d1.links);
-    assert!(d1.batches.is_empty());
+    assert_eq!(d1.links.iter().collect::<Vec<_>>(), [(&to_b(IRON), &-64)]);
+    assert!(d1.batches.is_empty(), "a mail batch is the postbox's, not the chain's");
+    assert_eq!(e.stores()[&S].batch[&b().pos].get(IRON), 64);
     let d2 = e.district(D2).expect("D2");
     assert_eq!(d2.ports.get(IRON), 64);
-    assert!(d2.links.is_empty());
+    assert_eq!(d2.links.iter().collect::<Vec<_>>(), [(&to_b(IRON), &64)]);
     // A player's frogport has no district: the store books it, no district is made.
     send(
         &mut e,
@@ -258,6 +267,23 @@ fn a_chain_package_is_a_port_of_its_district_and_no_link() {
         chain(S, None, ChainDirection::Out, 1, Some(0), 1, &[(GOLD, 1)]),
     );
     assert_eq!(e.districts().count(), 2);
+    // Toward a frogport of no district, or toward none (circling), a package is no link.
+    for dest in [Some(2), None] {
+        send(
+            &mut e,
+            50,
+            chain(S, Some(D1), ChainDirection::Out, 0, dest, 1, &[(GOLD, 5)]),
+        );
+    }
+    send(&mut e, 50, Obs::PackageStore(decl(S, vec![a(), b(), c()])));
+    send(
+        &mut e,
+        60,
+        chain(S, Some(D1), ChainDirection::Out, 0, Some(2), 1, &[(GOLD, 5)]),
+    );
+    let d1 = e.district(D1).expect("D1");
+    assert_eq!(d1.ports.get(GOLD), -15);
+    assert_eq!(d1.links.len(), 1, "{:?}", d1.links);
 }
 
 /// What a store holds for a frogport follows it when the network splits or merges (SECTIONS.md
