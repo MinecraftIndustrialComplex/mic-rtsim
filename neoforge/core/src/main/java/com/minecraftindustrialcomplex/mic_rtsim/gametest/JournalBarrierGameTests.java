@@ -272,7 +272,7 @@ public final class JournalBarrierGameTests {
         Path[] file = {null};
         CompletableFuture<?> anchor = writeAnchor(level);
         var seq = helper.startSequence()
-                .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
+                .thenWaitUntil(io(() -> check("the region file is there", anchor.isDone())))
                 .thenExecute(() -> {
                     try {
                         file[0] = testFile(level);
@@ -364,7 +364,7 @@ public final class JournalBarrierGameTests {
         AtomicReference<long[]> after = new AtomicReference<>();
         CompletableFuture<?> anchor = writeAnchor(level);
         helper.startSequence()
-                .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
+                .thenWaitUntil(io(() -> check("the region file is there", anchor.isDone())))
                 .thenExecute(() -> {
                     data.chunks().dependsOn(inFlight);
                     data.setDirty();

@@ -472,8 +472,9 @@ public final class WorldGameTests {
      * from vanilla's own entity storage, journal the DIED again with the same op id (the engine applies
      * it once), and the world holds the cargo once: nothing is dropped again.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_crash")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_p1_crash")
     public static void killingALlamaDropsItsCargoExactlyOnceAcrossACrash(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 400);
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1); // llama 1 carries 12 emeralds and 30 wheat
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
@@ -484,12 +485,12 @@ public final class WorldGameTests {
         Object[] future = new Object[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenWaitUntil(waits.logic(() -> RtsimTests.embodied(agent)))
                 .thenExecute(() -> {
                     TraderLlama llama = (TraderLlama) RtsimTests.member(RtsimTests.group(agent), 1);
                     llama.hurt(level.damageSources().playerAttack(player), 1000f);
                 })
-                .thenWaitUntil(() -> check("DIED reached the engine", !RtsimTests.recordsFor(stub, Obs.DIED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("DIED reached the engine", !RtsimTests.recordsFor(stub, Obs.DIED, agent).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received died = RtsimTests.recordsFor(stub, Obs.DIED, agent).get(0);
                     op[0] = died.view().getLong(Obs.Died.OP_ID);
@@ -508,7 +509,7 @@ public final class WorldGameTests {
                     // The chunk is saved (as on an unload); the journal is not. Then the server dies.
                     future[0] = PuppetSaveGameTests.saveAndReadBack(level, chunks.toArray(ChunkPos[]::new));
                 })
-                .thenWaitUntil(() -> check("the chunk was saved and read back", ((CompletableFuture<?>) future[0]).isDone()))
+                .thenWaitUntil(waits.chunks(() -> check("the chunk was saved and read back", ((CompletableFuture<?>) future[0]).isDone())))
                 .thenExecute(() -> {
                     @SuppressWarnings("unchecked")
                     List<Entity> fromDisk = ((CompletableFuture<List<Entity>>) future[0]).join();
@@ -524,8 +525,8 @@ public final class WorldGameTests {
                         item.discard(); // the world before the crash is gone; what loads is the saved chunk
                     level.addLegacyChunkEntities(back.stream());
                 })
-                .thenWaitUntil(() -> check("the reloaded drops journaled copies of the DIED",
-                        !RtsimTests.copiesFor(stub, Obs.DIED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("the reloaded drops journaled copies of the DIED",
+                        !RtsimTests.copiesFor(stub, Obs.DIED, agent).isEmpty())))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> died = RtsimTests.recordsFor(stub, Obs.DIED, agent);
                     List<ScriptedEngine.Received> copies = RtsimTests.copiesFor(stub, Obs.DIED, agent);
@@ -544,7 +545,7 @@ public final class WorldGameTests {
                         item.discard();
                     stub.despawnGroup(agent, 1);
                 })
-                .thenWaitUntil(() -> check("the caravan despawned", RtsimTests.group(agent) == null))
+                .thenWaitUntil(waits.logic(() -> check("the caravan despawned", RtsimTests.group(agent) == null)))
                 .thenSucceed();
     }
 }
