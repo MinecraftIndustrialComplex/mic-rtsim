@@ -2,16 +2,26 @@ package com.minecraftindustrialcomplex.mic_rtsim_create;
 
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurk;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories;
 import com.simibubi.create.Create;
+import com.simibubi.create.content.trains.entity.Carriage;
 import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.entity.TravellingPoint;
+import com.simibubi.create.content.trains.graph.TrackGraph;
+import com.simibubi.create.content.trains.station.GlobalStation;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -36,7 +46,15 @@ import java.util.function.LongConsumer;
  * a wrapped world's seam, a teleport), or of a train that derailed or has no graph, is not tested: it ends
  * the train's passes at its last sample and the next sample starts a fresh segment.
  *
- * <p>D1: with no territory that minds the rail the tick is one array read; a sample reads at most the cells
+ * <p><b>Lurks (M8, MZB-363 to 366).</b> The same samples feed the lurk pass: for each lurk of the conflict
+ * engine in the train's dimension ({@link RtsimApi#lurks}), a segment within the lurk's {@code reach} of its
+ * track point sends one TRAIN_PASSED per approach (armed again beyond {@link #APPROACH_RESET} blocks), the
+ * engine rolls the robbery, and a train whose sample is within that distance of a live lurk puppet joins a
+ * near set that is read every tick: a carriage point within {@link #STRIKE_REACH} blocks of the puppet calls
+ * {@link RtsimApi#strike} once per carriage per approach. {@link #arrived} is the mixin's call at a
+ * station, for the roar of a robbed train. The sampler runs for a lurk without a territory minding the rail.
+ *
+ * <p>D1: with no territory that minds the rail and no lurk the tick is two reads; a sample reads at most the cells
  * of its segment's box (two blocks of track at most 128 long, so at most four) and a short list, allocating
  * only the position {@code Vec3} and a pass at its start. D3: no entity. D4: Create code that reaches the
  * core only through {@link RtsimApi}. UR-1: it keeps nothing in the world (MZB-326); its state is dropped
@@ -56,6 +74,10 @@ public final class TrainSampler {
      * edge, or a train reversing on it, is one pass and not one for each swap in and out.
      */
     public static final double MARGIN = 2.0 * PERIOD;
+    /** A train beyond this many blocks of a lurk's track point may send TRAIN_PASSED again, and strikes again (MZB-363, 365). */
+    public static final double APPROACH_RESET = 64.0;
+    /** A carriage point this close (blocks, horizontal) to a lurk puppet is struck at (the swipe's range, MZB-365). */
+    public static final double STRIKE_REACH = 6.5;
     private static final int SIGNAL = ConflictRecords.SIGNAL_RAIL;
 
     /** A pass in progress: the circle's faction and the sample nearest its centre so far. */
@@ -81,6 +103,28 @@ public final class TrainSampler {
         }
     }
 
+    /** One train's approach to one lurk (MZB-363, 365): whether TRAIN_PASSED may go, and the carriages struck at. */
+    private static final class Approach {
+        /** The table entry it belongs to: a lurk begun again by its agent starts armed. */
+        final Lurk lurk;
+        boolean armed = true;
+        BitSet struck;
+
+        Approach(Lurk lurk) {
+            this.lurk = lurk;
+        }
+
+        boolean struck(int carriage) {
+            return struck != null && struck.get(carriage);
+        }
+
+        void mark(int carriage) {
+            if (struck == null)
+                struck = new BitSet();
+            struck.set(carriage);
+        }
+    }
+
     /** What the sampler remembers of a train. */
     private static final class State {
         /** Null for a {@link Walk}. */
@@ -93,6 +137,10 @@ public final class TrainSampler {
         double x, y, z;
         long tick;
         final List<Open> open = new ArrayList<>(2);
+        /** Its approaches to lurks, by agent; made when a pass or a strike first needs one, null until then. */
+        Map<Long, Approach> approaches;
+        /** In {@link #NEAR}: a live lurk puppet is within {@link #APPROACH_RESET} blocks of its last sample. */
+        boolean near;
 
         State(Train train) {
             this(CreateIds.of(train.id), train.owner);
@@ -109,6 +157,8 @@ public final class TrainSampler {
     private static final Map<UUID, State> STATES = new HashMap<>();
     @SuppressWarnings("unchecked")
     private static final List<State>[] BUCKETS = new List[PERIOD];
+    /** The trains near a live lurk puppet (MZB-365): rebuilt by their samples, read every tick for strikes. */
+    private static final List<State> NEAR = new ArrayList<>();
     /** The circles one segment meets (reused). */
     private static final List<Territories.Territory> HIT = new ArrayList<>(4);
     private static boolean warned;
@@ -116,6 +166,8 @@ public final class TrainSampler {
     private static LongConsumer sampleTimer, tickTimer;
     /** Samples taken and passes sent since the server started (the bench and GameTests read them). */
     public static long samples, passes;
+    /** M8's, since the server started: TRAIN_PASSEDs sent and strikes the puppets started (GameTests read them). */
+    public static long lurkPasses, strikes;
 
     static {
         for (int i = 0; i < PERIOD; i++)
@@ -130,6 +182,7 @@ public final class TrainSampler {
 
     /** Drops what is remembered: the server stopped, or the engine side went (a pass open then is lost). */
     public static void clear() {
+        NEAR.clear();
         STATES.clear();
         for (List<State> b : BUCKETS)
             b.clear();
@@ -138,7 +191,7 @@ public final class TrainSampler {
     /** The server stopped: nothing of it outlives it (single player starts another in the same JVM). */
     public static void stopped(net.neoforged.neoforge.event.server.ServerStoppedEvent event) {
         clear();
-        samples = passes = 0;
+        samples = passes = lurkPasses = strikes = 0;
     }
 
     /** How many trains are remembered (GameTests). */
@@ -155,12 +208,13 @@ public final class TrainSampler {
     }
 
     private static void run(long now) {
-        // One array read when no territory minds the rail; the config and session are asked only past it
-        if (!RtsimApi.territories().anyMinding(SIGNAL) || !RtsimApi.conflictUp()) {
+        // Two reads when no territory minds the rail and no lurk waits; the config and session are asked only past them
+        if ((!RtsimApi.territories().anyMinding(SIGNAL) && RtsimApi.lurks().isEmpty()) || !RtsimApi.conflictUp()) {
             if (!STATES.isEmpty())
                 clear();
             return;
         }
+        strike();
         int phase = (int) Math.floorMod(now, (long) PERIOD);
         if (phase == 0)
             rebucket();
@@ -206,6 +260,8 @@ public final class TrainSampler {
             s.owner = t.owner;
             s.seen = true;
             BUCKETS[s.bucket].add(s);
+            if (s.approaches != null)
+                forgetApproaches(s);
         }
         for (Iterator<State> it = STATES.values().iterator(); it.hasNext(); ) {
             State s = it.next();
@@ -218,6 +274,8 @@ public final class TrainSampler {
                     s.open.clear();
                     warn(e);
                 }
+                if (s.near)
+                    NEAR.remove(s);
                 it.remove();
             }
         }
@@ -274,11 +332,186 @@ public final class TrainSampler {
                 send(s, o, now);
             }
         }
+        lurkPass(s, dim, continued ? s.x : x, continued ? s.y : y, continued ? s.z : z, x, y, z);
         s.has = true;
         s.x = x;
         s.y = y;
         s.z = z;
         s.tick = now;
+    }
+
+    // ---- lurks (M8) -------------------------------------------------------------------------------
+
+    /**
+     * The sample's segment (from the last sample, or the point alone) against each lurk in the train's dimension
+     * (MZB-363): within the lurk's reach and armed sends TRAIN_PASSED, once per approach, and beyond
+     * {@link #APPROACH_RESET} blocks arms it again. Then whether a live puppet is within that distance of the
+     * lurk's track point joins or leaves the near set (MZB-365). The distance is the segment's from the track
+     * point in three dimensions: a rail above or below the lurk is not beside it.
+     */
+    private static void lurkPass(State s, ResourceKey<Level> dim, double x0, double y0, double z0, double x, double y, double z) {
+        Map<Long, Lurk> lurks = RtsimApi.lurks();
+        boolean near = false;
+        for (Lurk l : lurks.values()) {
+            if (!l.dimension().equals(dim))
+                continue;
+            double d = segmentDistance(l.track(), x0, y0, z0, x, y, z);
+            Approach a = approach(s, l);
+            if (d <= l.reach() && (a == null || a.armed)) {
+                if (a == null)
+                    a = openApproach(s, l);
+                a.armed = false;
+                if (RtsimApi.trainPassed(l.agent(), l.epoch(), RtsimApi.lurkBody(l.agent()) != null, carriageNear(s, l.track()), s.id))
+                    lurkPasses++;
+            } else if (d > APPROACH_RESET && a != null) {
+                s.approaches.remove(l.agent());
+            }
+            if (s.train != null && d <= APPROACH_RESET && RtsimApi.lurkBody(l.agent()) != null)
+                near = true;
+        }
+        if (near != s.near) {
+            s.near = near;
+            if (near)
+                NEAR.add(s);
+            else
+                NEAR.remove(s);
+        }
+    }
+
+    /** The approach of a train to a lurk, or null when it has none (it is armed and has struck nothing). */
+    private static Approach approach(State s, Lurk l) {
+        Approach a = s.approaches == null ? null : s.approaches.get(l.agent());
+        return a != null && a.lurk == l ? a : null;
+    }
+
+    private static Approach openApproach(State s, Lurk l) {
+        if (s.approaches == null)
+            s.approaches = new HashMap<>(2);
+        Approach a = new Approach(l);
+        s.approaches.put(l.agent(), a);
+        return a;
+    }
+
+    /** Drops the approaches to lurks that are gone or begun again (once a second per train). */
+    private static void forgetApproaches(State s) {
+        Map<Long, Lurk> lurks = RtsimApi.lurks();
+        s.approaches.values().removeIf(a -> lurks.get(a.lurk.agent()) != a.lurk);
+        if (s.approaches.isEmpty())
+            s.approaches = null;
+    }
+
+    /** The distance from {@code p} to the segment (x0, y0, z0) to (x1, y1, z1). */
+    static double segmentDistance(Vec3 p, double x0, double y0, double z0, double x1, double y1, double z1) {
+        double dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+        double len2 = dx * dx + dy * dy + dz * dz;
+        double t = len2 < 1e-9 ? 0.0 : Math.max(0.0, Math.min(1.0, ((p.x - x0) * dx + (p.y - y0) * dy + (p.z - z0) * dz) / len2));
+        double ex = x0 + t * dx - p.x, ey = y0 + t * dy - p.y, ez = z0 + t * dz - p.z;
+        return Math.sqrt(ex * ex + ey * ey + ez * ez);
+    }
+
+    /** The index of the carriage whose leading point is nearest {@code track}; 0 for a walked point or an unreadable train. */
+    private static int carriageNear(State s, Vec3 track) {
+        Train t = s.train;
+        if (t == null || t.graph == null)
+            return 0;
+        int best = 0;
+        double bd = Double.POSITIVE_INFINITY;
+        List<Carriage> cs = t.carriages;
+        for (int c = 0, n = cs.size(); c < n; c++) {
+            Vec3 v = positionOf(cs.get(c).getLeadingPoint(), t.graph);
+            if (v == null)
+                continue;
+            double d = v.distanceToSqr(track);
+            if (d < bd) {
+                bd = d;
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    private static Vec3 positionOf(TravellingPoint p, TrackGraph graph) {
+        if (p == null || p.edge == null || p.node1 == null || p.edge.isInterDimensional())
+            return null;
+        return p.getPosition(graph);
+    }
+
+    /**
+     * Every tick, for the trains near a live lurk puppet: a carriage's leading or trailing point within
+     * {@link #STRIKE_REACH} blocks (horizontal) of the puppet calls {@link RtsimApi#strike} (MZB-365). A strike that
+     * started marks the carriage struck for the approach; one a busy puppet refused is tried again next tick
+     * while the point stays in reach, so a carriage is struck at most once and a refusal loses nothing.
+     */
+    private static void strike() {
+        if (NEAR.isEmpty())
+            return;
+        Map<Long, Lurk> lurks = RtsimApi.lurks();
+        for (int i = NEAR.size() - 1; i >= 0; i--) {
+            State s = NEAR.get(i);
+            Train t = s.train;
+            if (t == null || t.invalid || t.derailed || t.graph == null || s.dim == null || lurks.isEmpty()) {
+                s.near = false;
+                NEAR.remove(i);
+                continue;
+            }
+            try {
+                for (Lurk l : lurks.values()) {
+                    if (!l.dimension().equals(s.dim))
+                        continue;
+                    Mob body = RtsimApi.lurkBody(l.agent());
+                    if (body != null)
+                        strikeAt(s, t, l, body);
+                }
+            } catch (RuntimeException e) {
+                warn(e);
+            }
+        }
+    }
+
+    private static void strikeAt(State s, Train t, Lurk l, Mob body) {
+        List<Carriage> cs = t.carriages;
+        for (int c = 0, n = cs.size(); c < n; c++) {
+            Approach a = approach(s, l);
+            if (a != null && a.struck(c))
+                continue;
+            Vec3 hit = within(cs.get(c).getLeadingPoint(), t.graph, body);
+            if (hit == null)
+                hit = within(cs.get(c).getTrailingPoint(), t.graph, body);
+            if (hit == null || !RtsimApi.strike(l.agent(), hit))
+                continue;
+            if (a == null)
+                a = openApproach(s, l);
+            a.mark(c);
+            strikes++;
+        }
+    }
+
+    /** The point's position when it is within {@link #STRIKE_REACH} blocks (horizontal) of the body, else null. */
+    private static Vec3 within(TravellingPoint p, TrackGraph graph, Mob body) {
+        Vec3 v = positionOf(p, graph);
+        if (v == null)
+            return null;
+        double dx = v.x - body.getX(), dz = v.z - body.getZ();
+        return dx * dx + dz * dz <= STRIKE_REACH * STRIKE_REACH ? v : null;
+    }
+
+    /**
+     * Mixin: a train arrived at a station (Train.arriveAt, at its end, beside {@link TrainWatch#arrived}, which
+     * returns early without an industry or district): a train a lurk robbed roars at its players (MZB-366).
+     */
+    public static void arrived(Train train, GlobalStation station) {
+        try {
+            ResourceKey<Level> dim = station == null ? null : station.getBlockEntityDimension();
+            BlockPos pos = station == null ? null : station.getBlockEntityPos();
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (dim == null || pos == null || server == null)
+                return;
+            ServerLevel level = server.getLevel(dim);
+            if (level != null)
+                RtsimApi.trainCalled(CreateIds.of(train.id), level, pos);
+        } catch (RuntimeException e) {
+            warn(e);
+        }
     }
 
     private static Open find(State s, long faction) {
