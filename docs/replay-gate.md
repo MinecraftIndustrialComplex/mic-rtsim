@@ -369,6 +369,17 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
   `a_long_replay_takes_no_budget_save_before_its_end` (200 factions and 4,000 filler records
   replayed in 5 hand-overs under a 4,096 B row budget): 56,792 B at the peak while replaying, 2,680 B
   after the end's budget save.
+- **The bound** (RP-49). The replay starts from the last durable save, the last one Java asked for:
+  the budget's own saves are pending generations, which a crash rolls back (PF15). Taking no page,
+  the replay keeps every row its records and the window's own events touch, so its resident rows
+  are bounded by the rows the crashed session touched between its last durable save and the crash,
+  plus, after a session that crashed before its replay end (§6.1's "More than one crash"), the rows
+  that session's own records touched. The window is Java's save cadence, not the budget. The live
+  session's budget saves held it near the budget and a step, so the replay can pass the live peak
+  by the window's rows less the budget, which grows with the window: not a constant. Measured in
+  `a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save` (20 camps found a
+  hand-over under a 4,096 B budget, no save asked for): live 5,776 B at the peak in both; replayed
+  28,528 B after 100 camps (the session touched 28,616 B), 56,792 B after 200 (56,880 B).
 
 ### 3.3 How engines see it
 

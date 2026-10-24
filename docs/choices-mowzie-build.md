@@ -1150,3 +1150,18 @@ conservative option at its fork.
   102673, 1, []) against (Fighting, true, 2, 109270, 1, [79270]); a held arrival then a sighting,
   (Fighting, true, 1, 61270, 1, []) against (Waiting, true, 1, 79270, 0, [55270]). Rejected:
   telling the records apart by position (a waiting siege is seen at its target).
+- **RP-49** (the replay's resident peak; §3.2; RP-42; the re-review's item 2): no save path while
+  replaying (the reviewer's pending-generation save is a design change, not this slice's). The
+  bound instead: the replay opens on the last durable save, the last one Java asked for, since the
+  budget's saves are pending generations that a crash rolls back (PF15); taking no page until its
+  end, it holds every row the replayed window touches. So its resident rows are bounded by the rows
+  the crashed session touched between its last durable save and the crash, plus, for each session
+  that crashed before its replay end (RP-47), the rows its own records touched. Java's save cadence
+  limits that window, not the budget. The live session's budget saves kept it near its budget and
+  a step, so the replay passes the live peak by the window's rows less the budget, which grows
+  with the window. Measured in rtsim-jni's
+  `a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save` (20 camps a hand-over
+  under 4,096 B, no save asked for): the live peak 5,776 B both times; the replay 28,528 B after
+  100 camps and 56,792 B after 200, against the 28,616 B and 56,880 B the same sessions touched
+  with a budget they never reached. The test asserts the bound and the growth. Reported to the
+  build lead as a finding (an excess that is no constant); no fix built.

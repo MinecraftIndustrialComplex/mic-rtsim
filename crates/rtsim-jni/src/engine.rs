@@ -1366,7 +1366,8 @@ impl Engine {
         phase1::simulate(&mut st);
         // No page is taken while the session's replay runs (docs/replay-gate.md §3.2, RP-42): a
         // save asked for waits for the replay end, and so does the budget's, so the resident rows
-        // may pass their budget by what the replay's hand-overs change until then.
+        // may pass their budget by what the replay's hand-overs change until then: at most the
+        // rows the crashed session touched since its last durable save (RP-49).
         let req = self.save_through.load(Ordering::Acquire);
         if !st.replaying {
             if self.save_at_step_end.swap(false, Ordering::AcqRel) {
