@@ -18,6 +18,9 @@
 //!   `debug_assert!` (no release panic: the replay end makes every party abstract, which heals
 //!   the skip).
 //!
+//! - **Deferred**: the engine's early returns from a decision that embodies while replaying
+//!   (§6) are counted here too ([`Outbox::defer`]), so that the replay end's log shows them.
+//!
 //! Not saved: `replaying` and the counts are a session's (the pages hold the commands alone).
 
 use crate::boundary::Cmd;
@@ -78,17 +81,26 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
     }
 }
 
+/// The replay gate's counts (docs/replay-gate.md §4.3): an engine's, since it was built or
+/// loaded; not saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GateCounts {
+    /// Commands the gate dropped while replaying (verdict drop).
+    pub dropped: u64,
+    /// Commands of a "never" kind decided while replaying (a bug, counted and not queued).
+    pub never: u64,
+    /// Decisions that embody, returned from early while replaying (§6).
+    pub deferred: u64,
+    /// The last "never" command's kind and name (`Cmd::kind`, `Cmd::name`), for the host's log.
+    pub last_never: Option<(u16, &'static str)>,
+}
+
 /// The conflict's commands not yet taken by the host, behind the gate.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Outbox {
     cmds: Vec<Cmd>,
     replaying: bool,
-    /// Commands the gate dropped while replaying (verdict drop).
-    dropped: u64,
-    /// Commands of a "never" kind decided while replaying (a bug, counted and not queued).
-    never: u64,
-    /// The last such command's kind and name (`Cmd::kind`, `Cmd::name`), for the host's log.
-    last_never: Option<(u16, &'static str)>,
+    counts: GateCounts,
 }
 
 impl Outbox {
@@ -98,12 +110,12 @@ impl Outbox {
             match gate(&cmd).replaying {
                 Replaying::Send => {}
                 Replaying::Drop => {
-                    self.dropped += 1;
+                    self.counts.dropped += 1;
                     return;
                 }
                 Replaying::Never => {
-                    self.never += 1;
-                    self.last_never = Some((cmd.kind(), cmd.name()));
+                    self.counts.never += 1;
+                    self.counts.last_never = Some((cmd.kind(), cmd.name()));
                     debug_assert!(
                         false,
                         "{} ({:#06x}) decided while replaying",
@@ -139,6 +151,15 @@ impl Outbox {
         self.replaying
     }
 
+    /// A decision that embodies returned early because the replay runs (§6). Returns whether
+    /// it does: the caller's early return is `if self.outbox.defer() { return; }`.
+    pub(crate) fn defer(&mut self) -> bool {
+        if self.replaying {
+            self.counts.deferred += 1;
+        }
+        self.replaying
+    }
+
     pub(crate) fn take(&mut self) -> Vec<Cmd> {
         std::mem::take(&mut self.cmds)
     }
@@ -156,9 +177,8 @@ impl Outbox {
         self.cmds.iter()
     }
 
-    /// (dropped, never, the last never kind): this engine's, since it was built or loaded.
-    pub(crate) fn counts(&self) -> (u64, u64, Option<(u16, &'static str)>) {
-        (self.dropped, self.never, self.last_never)
+    pub(crate) fn counts(&self) -> GateCounts {
+        self.counts
     }
 }
 
@@ -222,8 +242,16 @@ mod tests {
         }
         let sent: Vec<u16> = o.take().iter().map(Cmd::kind).collect();
         assert_eq!(sent, vec![boundary::TERRITORY, boundary::BAND_MARCH]);
-        assert_eq!(o.counts(), (6, 0, None), "the drops are counted");
+        let want = GateCounts {
+            dropped: 6,
+            ..GateCounts::default()
+        };
+        assert_eq!(o.counts(), want, "the drops are counted");
+        assert!(o.defer(), "an early return while replaying");
+        assert_eq!(o.counts().deferred, 1);
         o.replay_done();
+        assert!(!o.defer(), "no early return after the replay");
+        assert_eq!(o.counts().deferred, 1, "nor a count");
         for c in &cmds {
             o.push(c.clone());
         }
@@ -244,10 +272,12 @@ mod tests {
         let mut o = Outbox::default();
         o.begin_replay();
         o.push(m);
-        assert_eq!(
-            o.counts(),
-            (0, 1, Some((boundary::BAND_MATERIALIZE, "BAND_MATERIALIZE")))
-        );
+        let want = GateCounts {
+            never: 1,
+            last_never: Some((boundary::BAND_MATERIALIZE, "BAND_MATERIALIZE")),
+            ..GateCounts::default()
+        };
+        assert_eq!(o.counts(), want);
         assert_eq!(o.len(), 0, "not queued");
     }
 }
