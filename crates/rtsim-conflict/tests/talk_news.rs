@@ -293,38 +293,53 @@ fn a_chief_killed_after_dying_of_age_is_one_fell_died_and_no_raid() {
     );
 }
 
-/// The player kills every member of a band on the road (CL-D61 routs it there): a beaten raid, as
-/// when its war chief is killed there, against the feud's player.
+/// The player kills every member of a band on the road or waiting at its target (CL-D61 routs it
+/// there): a beaten raid, as when its war chief is killed there, against the feud's player. One
+/// wiped out while it still musters at its camp had set out on nobody: no raid.
 #[test]
-fn a_band_wiped_out_on_the_road_is_a_beaten_raid() {
-    let (mut r, band) = chief_in_a_fight(9);
-    r.c.parties[band].phase = Phase::Out;
-    r.c.parties[band].embodied = true;
-    let at = Tick::from_days(1) + 100;
-    let (fa, _, _) = r.camp();
-    let epoch = r.c.parties[band].epoch;
-    let goblins =
-        r.c.cultures
-            .get(r.c.cultures.index_of("goblin").unwrap())
-            .clone();
-    for (u, count) in r.c.parties[band].units.clone() {
-        let body = body_id(&r.c.cultures, &goblins.unit(u).body);
-        let o = Obs::Casualties(boundary::BandCasualties {
-            agent: Party::agent(band),
-            epoch,
-            by: boundary::BY_PLAYER,
-            body,
-            count,
-            killer: synth::PLAYER,
-        });
-        r.ingest(o, at);
+fn a_band_wiped_out_on_its_way_is_a_beaten_raid_and_at_its_muster_none() {
+    for (phase, told) in [
+        (Phase::Out, true),
+        (Phase::Waiting, true),
+        (Phase::Mustering, false),
+    ] {
+        let (mut r, band) = chief_in_a_fight(9);
+        r.c.parties[band].phase = phase;
+        r.c.parties[band].embodied = true;
+        let at = Tick::from_days(1) + 100;
+        let (fa, _, _) = r.camp();
+        let epoch = r.c.parties[band].epoch;
+        let goblins =
+            r.c.cultures
+                .get(r.c.cultures.index_of("goblin").unwrap())
+                .clone();
+        for (u, count) in r.c.parties[band].units.clone() {
+            let body = body_id(&r.c.cultures, &goblins.unit(u).body);
+            let o = Obs::Casualties(boundary::BandCasualties {
+                agent: Party::agent(band),
+                epoch,
+                by: boundary::BY_PLAYER,
+                body,
+                count,
+                killer: synth::PLAYER,
+            });
+            r.ingest(o, at);
+        }
+        assert_eq!(r.c.parties[band].alive(), 0, "{phase:?}");
+        assert_eq!(
+            r.c.parties[band].phase,
+            Phase::Home,
+            "routed home: {phase:?}"
+        );
+        let raids = r.news(ReportKind::Raid);
+        if !told {
+            assert!(raids.is_empty(), "no raid from the muster");
+            continue;
+        }
+        assert_eq!(raids.len(), 1, "the wipe-out is one raid report: {phase:?}");
+        assert_eq!((raids[0].1.who, raids[0].1.whom), (fa, r.p));
+        assert_eq!(raids[0].1.severity, raid::BEATEN);
     }
-    assert_eq!(r.c.parties[band].alive(), 0);
-    assert_eq!(r.c.parties[band].phase, Phase::Home, "routed home");
-    let raids = r.news(ReportKind::Raid);
-    assert_eq!(raids.len(), 1, "the wipe-out is one raid report");
-    assert_eq!((raids[0].1.who, raids[0].1.whom), (fa, r.p));
-    assert_eq!(raids[0].1.severity, raid::BEATEN);
 }
 
 /// A watched fight the band leaves done (not bored) or bored, not routed, held: a Raid report,
@@ -336,6 +351,7 @@ fn a_watched_fight_left_done_or_bored_is_a_held_raid() {
         let at = Tick::from_days(1) + 100;
         r.c.parties[band].bored_at = if bored { at } else { day(100.0) };
         let (fa, _, _) = r.camp();
+        let was_bored = r.c.stats.bored;
         let mut d = 1.0;
         while r.c.parties[band].phase == Phase::Fighting {
             assert!(d < 10.0, "the fight never ended (bored {bored})");
@@ -346,6 +362,11 @@ fn a_watched_fight_left_done_or_bored_is_a_held_raid() {
         assert_eq!(raids.len(), 1, "one fight, one report (bored {bored})");
         assert_eq!((raids[0].1.who, raids[0].1.whom), (fa, r.p));
         assert_eq!(raids[0].1.severity, raid::HELD, "bored {bored}");
+        assert_eq!(
+            r.c.stats.bored - was_bored,
+            u64::from(bored),
+            "the fight ended bored, or done"
+        );
     }
 }
 

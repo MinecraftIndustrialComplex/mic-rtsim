@@ -5259,7 +5259,8 @@ impl Conflict {
                     if let Some(player) = self.parties[p].breaker {
                         self.rescue_news(w, p, player, at);
                     }
-                    // And a raid beaten off (TK26), as when its war chief is killed there.
+                    // And a raid beaten off (TK26), as when its war chief is killed there. (A band
+                    // home with loot stays Waiting only at a haven with no storehouse: never.)
                     if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
                         let (x, z) = self.party_pos(p, at);
                         let frame = self.parties[p].frame;
