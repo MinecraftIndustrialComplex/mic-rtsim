@@ -1649,7 +1649,11 @@ mod dragons {
                 _ => None,
             })
             .collect();
-        assert_eq!(answers, vec![("discard", 1)], "the natural dragon is discarded");
+        assert_eq!(
+            answers,
+            vec![("discard", 1)],
+            "the natural dragon is discarded"
+        );
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
@@ -2059,17 +2063,31 @@ mod dragons {
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
         let (agent, epoch) = (first[0].agent, first[0].epoch);
-        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
+        let last = |j: &Java| {
+            *j.far
+                .iter()
+                .rev()
+                .find(|r| r.agent == agent)
+                .expect("a far leg")
+        };
         let body = last(&j);
-        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
+        assert_eq!(
+            body.state,
+            FarState::Body,
+            "an adopted dragon is a body in the game"
+        );
         assert_eq!(body.kind, FAR_KIND_DRAGON);
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_BODY, body.body))
+                .map(String::as_str),
             Some("iceandfire:fire_dragon"),
             "its species in the engine's dictionary"
         );
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_DIMENSION, body.dimension))
+                .map(String::as_str),
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
@@ -2088,7 +2106,11 @@ mod dragons {
             j.game_time
         );
         if after.state == FarState::Roost {
-            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
+            assert_eq!(
+                (after.x0, after.z0),
+                (HOME.0, HOME.2),
+                "it rests at its lair"
+            );
         }
 
         // Quiet steps send nothing.
@@ -3441,7 +3463,7 @@ mod conflict {
     use rtsim_conflict::culture::PartyKind;
     use rtsim_conflict::engine::{Party, Phase, Target};
     use rtsim_conflict::{Step, synth};
-    use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT};
+    use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT, MODULE_INDUSTRY};
     use rtsim_kernel::clock::TICKS_PER_DAY;
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
@@ -4678,9 +4700,9 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the rail's, the
-    /// tribute's; the camp's came with M4 and the chief's state with M6) is decoded, counted as
-    /// deferred and dropped; one with an op id spends it, so the same record again is not counted
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the tribute's; the
+    /// camp's came with M4, the chief's state with M6 and the rail's with M7) is decoded, counted
+    /// as deferred and dropped; one with an op id spends it, so the same record again is not counted
     /// twice. CHIEF_STATE is counted as its own and given to the engine (a camp with no bodies
     /// to count ignores it).
     #[test]
@@ -4717,6 +4739,170 @@ mod conflict {
             casualties,
             "nothing reached the conflict"
         );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- M7: the rail through the journal ----------------------------------------------------------
+
+    /// MOWZIE.md 4.3 (MZB-310 to 312): RAIL_PASS is live, not deferred, held per train until the
+    /// train's arrival; the industry module's arrival names the line (the station it left, read
+    /// before the arrival clears it, and the one it reached) and the pass is credited to it; an
+    /// unwatched stop, an arrival with no departure on the books and a leg that ends where it began
+    /// name none and the passes are let go.
+    #[test]
+    fn rail_passes_wait_for_the_arrival_and_its_line() {
+        use rtsim_industry::ids::BlockPos;
+        use rtsim_industry::ids::{DistrictId, StationId, TrainId};
+        use rtsim_industry::obs::{
+            CargoFrom, Obs as IO, StationDecl, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+        };
+        use rtsim_kernel::clock::Tick;
+
+        const WEST: StationId = StationId(10);
+        const EAST: StationId = StationId(11);
+        let (_dir, e, mut j) = den("conflict-rail", 0);
+        j.modules(MODULES | MODULE_INDUSTRY);
+        j.idle();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.game_time += 60_000;
+        for (station, district, x) in [(WEST, 1, 600), (EAST, 2, 1300)] {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::Station(StationDecl {
+                    station,
+                    district: Some(DistrictId(district)),
+                    dim,
+                    pos: BlockPos::new(x, 64, 1000),
+                    name: 0,
+                }),
+            });
+        }
+        let depart = |j: &mut Java, train: u64, from: StationId, to: StationId| {
+            let (district, destination) = (DistrictId(from.0 - 9), Some(to));
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainDeparted(TrainDeparture {
+                    train: TrainId(train),
+                    station: from,
+                    district,
+                    destination,
+                    eta_ticks: 2_000,
+                    carriages: Vec::new(),
+                }),
+            });
+        };
+        let arrive = |j: &mut Java, train: u64, at: StationId| {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainArrived(TrainCall {
+                    train: TrainId(train),
+                    station: at,
+                    district: DistrictId(at.0 - 9),
+                    simulated: false,
+                    cargo_from: CargoFrom::Approach,
+                    carriages: Vec::new(),
+                }),
+            });
+        };
+        let passed = |j: &mut Java, train: u64, owner: (u64, u64), exit: i64| {
+            j.conflict_obs(&O::RailPass(cb::RailPass {
+                faction: CAMP,
+                train,
+                owner,
+                dimension: dim,
+                pos: (980.5, 66.25, 1000.5),
+                entry: exit - 100,
+                exit,
+            }));
+        };
+        let meter = |e: &Engine| {
+            e.with_conflict_mut(|c, w| {
+                let f = c.faction_of_key(CAMP).expect("the den");
+                let a = w.player_uuid(PLAYER.0, PLAYER.1);
+                c.factions.row(f).rail_meter(a).cloned()
+            })
+        };
+
+        // Train 77 leaves the west station, passes the den (owned), reaches the east station.
+        depart(&mut j, 77, WEST, EAST);
+        j.game_time += 500;
+        let exit = j.game_time - 50;
+        passed(&mut j, 77, PLAYER, exit);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.deferred, 0, "RAIL_PASS is live: {link:?}");
+        let (passes, held, holds) =
+            e.with_conflict(|c, _| (c.stats.rail_passes, c.held_passes(), c.holds_train(77)));
+        assert_eq!((passes, held, holds), (1, 1, true));
+        let m = meter(&e).expect("the owner's meter, counted at the pass");
+        assert!(
+            m.lines.is_empty(),
+            "no line before the train arrives: {m:?}"
+        );
+        assert_eq!(m.t_ref, Tick(exit as u64), "the pass's own time");
+
+        j.game_time += 1_500;
+        arrive(&mut j, 77, EAST);
+        j.idle();
+        let (calls, held) = e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes()));
+        assert_eq!((calls, held), (1, 0), "the arrival called the rail");
+        let m = meter(&e).unwrap();
+        assert_eq!(m.lines.len(), 1, "{m:?}");
+        let line = &m.lines[0];
+        assert_eq!((line.a, line.b), (WEST.0, EAST.0), "the line the train ran");
+        assert_eq!(line.t_ref, Tick(exit as u64));
+        assert!((line.n - 1.0).abs() < 1e-9, "one leg: {line:?}");
+        assert_eq!(
+            line.near.map(|n| n.1),
+            Some(DistrictId(2)),
+            "the east station is nearer the point"
+        );
+
+        // The passes of a train that names no line are let go, three ways. (Not a stale station:
+        // the other module knows both.)
+        let let_go = |e: &Engine| e.with_conflict(|c, _| c.stats.rail_let_go);
+        for (train, case) in [
+            (78u64, "unwatched"),
+            (79, "no departure"),
+            (80, "round trip"),
+        ] {
+            j.game_time += 100;
+            if case != "no departure" {
+                depart(&mut j, train, WEST, EAST);
+            }
+            j.game_time += 100;
+            let exit = j.game_time - 10;
+            passed(&mut j, train, PLAYER, exit);
+            j.idle();
+            assert!(e.with_conflict(|c, _| c.holds_train(train)), "{case}");
+            let before = let_go(&e);
+            j.game_time += 100;
+            match case {
+                "unwatched" => j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::TrainUnwatched(UnwatchedStop {
+                        train: TrainId(train),
+                        station: EAST,
+                    }),
+                }),
+                "no departure" => arrive(&mut j, train, EAST),
+                _ => arrive(&mut j, train, WEST),
+            }
+            j.idle();
+            assert_eq!(let_go(&e), before + 1, "{case}");
+            assert!(!e.with_conflict(|c, _| c.holds_train(train)), "{case}");
+        }
+        let (calls, held) = e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes()));
+        assert_eq!((calls, held), (4, 0));
+        let m = meter(&e).unwrap();
+        assert_eq!(
+            m.lines.len(),
+            1,
+            "no line from a call that named none: {m:?}"
+        );
+        assert!((m.lines[0].n - 1.0).abs() < 1e-9);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
