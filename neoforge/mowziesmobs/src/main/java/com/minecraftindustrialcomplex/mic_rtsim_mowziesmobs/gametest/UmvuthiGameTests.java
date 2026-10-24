@@ -388,7 +388,8 @@ public final class UmvuthiGameTests {
                     EntityUmvuthi u = (EntityUmvuthi) held.get(0);
                     check("it stands at the throne (" + u.position().distanceTo(throne[0]) + " blocks off)", u.position().distanceTo(throne[0]) < 5);
                     check("facing direction 3 (" + u.getDirectionData() + ")", u.getDirectionData() == 3);
-                    check("restricted to the throne", u.hasRestriction() && u.getRestrictCenter().equals(BlockPos.containing(throne[0])));
+                    check("restricted to the throne, radius -1 as worldgen sets it (" + u.getRestrictRadius() + ")",
+                            u.getRestrictRadius() == -1f && u.getRestrictCenter().equals(BlockPos.containing(throne[0])));
                     check("it remembers A and B (" + u.getTradedPlayers() + ")", u.getTradedPlayers().equals(Set.of(pl[0].getUUID(), pl[1].getUUID())));
                     check("hasTradedWith: A and B yes, C no", u.hasTradedWith(pl[0]) && u.hasTradedWith(pl[1]) && !u.hasTradedWith(pl[2]));
                     Camps camps = MowzieKit.camps();
@@ -910,7 +911,7 @@ public final class UmvuthiGameTests {
                     check("within 6 blocks of the fire pit (" + flat + ")", flat < 6);
                     check("on the ground (" + h.getY() + " over " + g3.at(0, 0).y + ")", Math.abs(h.getY() - g3.at(h.getX() - g3.spot.x, h.getZ() - g3.spot.z).y) < 1.5);
                     check("facing direction 1 (" + h.getDirectionData() + ")", h.getDirectionData() == 1);
-                    check("restricted near the fire pit", h.hasRestriction() && Math.hypot(h.getRestrictCenter().getX() + 0.5 - g3.spot.x,
+                    check("restricted near the fire pit, radius -1 (" + h.getRestrictRadius() + ")", h.getRestrictRadius() == -1f && Math.hypot(h.getRestrictCenter().getX() + 0.5 - g3.spot.x,
                             h.getRestrictCenter().getZ() + 0.5 - g3.spot.z) < 7);
                     check("the warrior is gone, no other body stands", w3[0].isRemoved() && MowzieKit.held(g3.faction).size() == 1);
                     Camps camps = MowzieKit.camps();
@@ -952,7 +953,8 @@ public final class UmvuthiGameTests {
                     EntityUmvuthi h = (EntityUmvuthi) heir.get(0);
                     check("at the throne (" + h.position().distanceTo(throne[0]) + " blocks off)", h.position().distanceTo(throne[0]) < 5);
                     check("facing direction 3 (" + h.getDirectionData() + ")", h.getDirectionData() == 3);
-                    check("restricted to the throne", h.hasRestriction() && h.getRestrictCenter().equals(BlockPos.containing(throne[0])));
+                    check("restricted to the throne, radius -1 (" + h.getRestrictRadius() + ")",
+                            h.getRestrictRadius() == -1f && h.getRestrictCenter().equals(BlockPos.containing(throne[0])));
                     check("no trade memory (" + h.getTradedPlayers() + ")", h.getTradedPlayers().isEmpty());
                     Camps camps = MowzieKit.camps();
                     check("two heirs and two masks in all (" + (camps.heirs - counters[0]) + ", " + (camps.masks - counters[1]) + ")",
