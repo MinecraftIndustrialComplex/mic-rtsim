@@ -1612,6 +1612,92 @@ fn an_answer_of_a_superseded_epoch_books_nothing() {
     assert_eq!(counts(&r)[SlotState::Owed as usize], 1);
 }
 
+/// A sim reset keeps the journal (docs/choices-reinstall-guard.md RG5), so the old engine's
+/// unacknowledged tail reaches the new one (RG14's "not covered"). Its camps are no camps of this
+/// engine, whatever their kind of record: a census, an answer, a death and an out for a faction
+/// this engine never founded book nothing and order nothing, and a camp this engine did found is
+/// left as it was (MZB-650, MZB-651).
+#[test]
+fn camp_records_of_a_camp_this_engine_never_founded_book_nothing() {
+    let mut r = grove(66, 9);
+    come_in(&mut r);
+    let before = r.c.camp(r.f).unwrap().clone();
+    let stats = r.c.stats;
+    let sent = orders(&r).len();
+    let other = r.key ^ 0x5eed_5eed_5eed;
+    assert_ne!(other, r.key);
+    ingest(
+        &mut r,
+        &Obs::CampCensus(boundary::CampCensus {
+            faction: other,
+            epoch: 0xBEEF,
+            flags: 0,
+            health: 0.0,
+            throne: (0.0, 0.0, 0.0),
+            direction: 0.0,
+            traded_slot: 0,
+            traded_generation: 0,
+            bodies: vec![boundary::CensusBody {
+                body: 0,
+                flags: boundary::BODY_STRAY,
+                slot: 0,
+                generation: 0,
+                uuid: (1, 2),
+            }],
+            traded: Vec::new(),
+        }),
+    );
+    ingest(
+        &mut r,
+        &Obs::CampBodies(boundary::CampBodies {
+            faction: other,
+            epoch: 0xBEEF,
+            op: 0xFEED,
+            lines: vec![boundary::LineAnswer {
+                line: 0,
+                slot: 0,
+                generation: 1,
+                action: boundary::ACTION_TAKE,
+                outcome: boundary::LINE_DONE,
+            }],
+        }),
+    );
+    ingest(
+        &mut r,
+        &Obs::CampDeath(boundary::CampDeath {
+            faction: other,
+            by: boundary::BY_PLAYER,
+            body: 0,
+            flags: 0,
+            slot: 0,
+            generation: 1,
+            killer: (3, 4),
+            op: 0xD1ED,
+        }),
+    );
+    ingest(
+        &mut r,
+        &Obs::CampOut(boundary::CampOut {
+            faction: other,
+            epoch: 0xBEEF,
+        }),
+    );
+    assert_eq!(r.c.stats, stats, "nothing was counted");
+    assert_eq!(
+        r.c.camp(r.f).unwrap(),
+        &before,
+        "the camp it did found is as it was"
+    );
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert_eq!(
+        orders(&r).len(),
+        sent,
+        "nothing was ordered for the strangers"
+    );
+    ok(&mut r);
+}
+
 /// A camp death is idempotent by its slot and generation, so its op id is not kept: the set of
 /// applied ops does not grow with each death (a farmed grove is a death a few minutes), and the
 /// same record twice (the journal's, then a holder's) is booked once.

@@ -36,7 +36,7 @@
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use serde::Serialize;
 
-use crate::ids::{Good, GoodVec};
+use crate::ids::{BlockPos, Good, GoodVec};
 use crate::tunables::LearnTunables;
 
 /// A flow learned as its own rate rather than as box production.
@@ -47,6 +47,15 @@ pub enum LinkKey {
     Mail {
         inventory: u32,
         address: u32,
+        good: Good,
+    },
+    /// Packages across a package store's frogport (inventory index, SECTIONS.md §2.5, slice S4b):
+    /// `to` is the frogport they go to, by position (a split or a merge keeps it). Negative: what the
+    /// district sends on the chain to the frogport at `to`; positive: what lands at its own frogport
+    /// (`to` is that frogport).
+    Chain {
+        inventory: u32,
+        to: BlockPos,
         good: Good,
     },
 }
@@ -1260,6 +1269,16 @@ mod persist_impls {
                     address.put(w);
                     good.put(w);
                 }
+                LinkKey::Chain {
+                    inventory,
+                    to,
+                    good,
+                } => {
+                    w.u8(2);
+                    inventory.put(w);
+                    to.put(w);
+                    good.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -1267,6 +1286,11 @@ mod persist_impls {
                 1 => LinkKey::Mail {
                     inventory: Persist::get(r)?,
                     address: Persist::get(r)?,
+                    good: Persist::get(r)?,
+                },
+                2 => LinkKey::Chain {
+                    inventory: Persist::get(r)?,
+                    to: Persist::get(r)?,
                     good: Persist::get(r)?,
                 },
                 _ => return invalid("link key"),

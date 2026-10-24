@@ -104,8 +104,10 @@ public final class Sampler {
             }
             while (budget > 0 && slotsThisTick < slotBudget && d.sweepCursor < d.inventories.size()) {
                 District.Inventory inv = d.inventories.get(d.sweepCursor++);
-                if (level.getChunkSource().getChunkNow(inv.pos().getX() >> 4, inv.pos().getZ() >> 4) == null) {
-                    d.sweepLive = false; // an inventory in an unloaded chunk: a partial sweep
+                if (!StockAccess.loaded(level, inv.pos())) {
+                    // An inventory in an unloaded chunk, or with a part in one (a vault across a chunk still
+                    // loading, whose read would wait for the load, R2-11): a partial sweep.
+                    d.sweepLive = false;
                     continue;
                 }
                 read(level, d, inv, now);
@@ -139,6 +141,7 @@ public final class Sampler {
         Industry.GoodsCounter goods = ind.counter();
         StockAccess access = access(level, inv);
         access.read(goods);
+        ind.counting().snapshot(d, inv, d.sweepNo); // the movers' counters as of this read (SC88: a store not read sends none)
         int[] ids = goods.nonZeroIds();
         int from = 0;
         do {

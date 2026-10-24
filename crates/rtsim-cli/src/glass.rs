@@ -115,8 +115,10 @@ fn report(world: &Path, only: Option<u64>, graph: bool) -> Result<Value, String>
             .read(PageKey::new(GLASS_TABLE, id))
             .map_err(|e| format!("glass page {id}: {e}"))?
             .ok_or_else(|| format!("glass page {id} is listed and missing"))?;
-        let max = Tunables::default().glass.sections_max;
-        match read_district_page(&b, max).map_err(|e| format!("glass page {id}: {e}"))? {
+        let tun = Tunables::default().glass;
+        match read_district_page(&b, tun.sections_max, tun.counted_stores_max)
+            .map_err(|e| format!("glass page {id}: {e}"))?
+        {
             PageRead::Kept(dg) => districts.push(district(iv, &saved.names, id, &dg, graph)),
             PageRead::Dropped(why) => districts.push(json!({
                 "district": id,

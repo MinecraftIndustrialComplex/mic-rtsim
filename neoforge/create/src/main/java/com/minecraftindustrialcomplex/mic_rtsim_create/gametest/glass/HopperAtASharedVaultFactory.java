@@ -24,11 +24,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * not counted, so the lines' sections stay one judging group with the vault interior, and the group's row
  * balances and passes.
  *
- * <p>In S2 the grouping proves nothing of the hopper: SC56 joins every section that shares a store, so the
- * vault alone makes the group ({@link FrozenNeighbourFactory}, the same lines without the hopper, groups the
- * same). The check is kept, and a GAP says so: from S3 the counted movers cut the lines apart at the vault,
- * and only an uncounted mover there (this hopper) keeps them one group, which S3 asserts against
- * FrozenNeighbour's split (review M5).
+ * <p>The counted movers at the vault would cut the lines apart (S3): {@link FrozenNeighbourFactory}, the same
+ * lines without the hopper, checks that they are two units there. Here the uncounted hopper at the vault keeps
+ * them one group, so the two fixtures together show that the hopper is what joins them (review M5).
  *
  * <p>The hopper's chest ({@value #HOPPER_BRASS} ingots, near a chest's 27 stacks of 64) lasts 13,600 ticks at one per 8; the loaded
  * stage and the away span take about 11,000. Should a slow learning run it dry while away, the replay has a
@@ -164,10 +162,8 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
             String d = SectionsFx.describe(r);
             SectionsFx.info(run, "far units", d);
             SectionsFx.check(run, "the mixing line and the press line are in one judging group", group != null && group == pressUnit, d);
-            // TODO(S3): counted movers cut the lines apart at the vault; then FrozenNeighbour's lines are two units and this
-            // fixture's stay one group because of the hopper. Until then the shared vault alone groups them (SC56).
-            SectionsFx.gap(run, "the hopper is what keeps the lines one group (without it they are two units)", false,
-                    "S3: assert FrozenNeighbour's vault splits its lines into two units while the hopper's keeps one group", d);
+            // Review M5: without the hopper the vault is counted and the lines are two units (FrozenNeighbour checks it); the
+            // uncounted hopper here is what keeps them one group, which the check above makes.
             SectionsFx.check(run, "the group has the lines' sections (at least two)", group != null && group.sections() >= 2,
                     group == null ? "no unit" : group.sections() + " sections");
             SectionsFx.check(run, "the group's box holds the vault", group != null && group.holds(vault.getX(), vault.getY(), vault.getZ()),

@@ -1621,6 +1621,43 @@ under its own heading.
     census that would have followed has nothing a later one does not carry. Not tested (a test would race the
     period).
 
+- **MZB-650** (main's a95bd2a2 merged into M5: the merge and the formats):
+  - One conflict, `RtsimSession`, both sides kept: this branch's `asserted` set and `ensureReasserted` /
+    `reasserted(holder)` beside main's `stalePending` and chunk `reassert`. The one change main's `PendingRecords`
+    `{life, records}` forced elsewhere: `dropPendingWhenAcked` keeps what is left with `p.with(...)` (the holder's
+    life stays) where it built a one-argument record, and the two Mowzie tests that hand-made a holder's records
+    stamp the session's `engineLife()`.
+  - Formats. Main did not touch the conflict crate's pages: its fixtures say RTC5 with meta version 4. M4's
+    pages stay RTC6 with meta version 5, above them (the camp ledger is in meta 5). Main's own new numbers are
+    IGL5 (the glass page), IDS4, `IndustryData` format 3, the package stores' IST2 in table 0x4906 and
+    `rtsim/bridge-life.txt`; its new record kinds (0x004F, 0x0051, 0x0418, 0x0419, 0x8408, 0x8409) do not meet
+    the camp records (0x080F and its neighbours). The rtsim-view fixtures were taken as main has them for the
+    merge and are regenerated once at the end (the lead's order).
+- **MZB-651** (RG13 and RG14 against the camp ledger; docs/choices-reinstall-guard.md):
+  - RG13 (a chunk's applied reconcile epoch carries the engine life) has nothing to carry here: a camp's epoch
+    is a journal op id kept in memory (`Site.epoch`), no chunk or entity stores one. The journal outlives a sim
+    reset (RG5), so op ids never repeat across lives, and a CAMP_RECONCILE of an earlier life matches no live
+    `Site.epoch` and is answered STALE (the stale-line test). The old engine's own pending orders sit in its pages,
+    which the reset moved aside (RG6), so none is replayed.
+  - RG14 (pending records carry the engine life): every holder M5 adds takes part. A body or marker takes records
+    only through `RtsimSession.carry` and `carryOnCampHolder`, which stamp `engineLife` with `PendingRecords.plus`;
+    `Camps.takeRecords` and `answer` call `ensureReasserted` first, so records of another life are dropped
+    there (`stalePending`), never put on the marker a body leaves. A holder of another life in a camp's footprint
+    loses its records at the census, not journaled: `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus` has a third
+    holder now, a marker whose record is the adopt's bytes under another op id, in the previous engine life: after the
+    census the stale count is up by one and a CAMP_BODIES of that op id never reached the engine.
+  - Engine side: the old engine's unacknowledged journal tail still reaches the new engine (RG14 "not
+    covered"). The engine looks every camp record's faction up in its own books (`by_key`) and an answer's epoch in
+    its camp's seen epochs, so a record of a camp it never founded books nothing; the new Rust test
+    `camp_records_of_a_camp_this_engine_never_founded_book_nothing` feeds a census, an answer, a death and an out
+    for a stranger and checks the stats, the camp's ledger and the orders unchanged. A replayed census only marks its camp out
+    (`a_replayed_census_only_marks_its_camp_out`) and a superseded epoch's answer books nothing, as before.
+  - Left as it is, on purpose: a record marker whose records were all of another life stays in the world, empty and
+    inert (a vanilla `Marker`, tagged `mic_rtsim.record`). Discarding it inside the entity's join event is unsafe
+    (the manager has not set the entity's callback yet), a deferred discard is more code than the case is worth (a
+    marker lives only until its records are acknowledged, so only those alive at a sim reset), and an admin can
+    clear them with `/kill @e[type=minecraft:marker,tag=mic_rtsim.record]`. The GameTest discards its own.
+
 ### M5 design for the implementer
 
 **Where it stands.** Branch `feat/mowzie-m5`, from `feat/mowzie-m3` at 0a5a4c2c; the code is in 5a87527d,

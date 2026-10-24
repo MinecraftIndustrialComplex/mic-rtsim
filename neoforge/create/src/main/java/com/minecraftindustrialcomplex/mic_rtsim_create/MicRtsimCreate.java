@@ -32,6 +32,7 @@ public final class MicRtsimCreate {
         IndustryApi.register(new RepairSchematics());
         IndustryApi.registerCommand(IndRecords.IND_CARRIAGE_DELTA, TrainWatch::carriageDelta);
         IndustryApi.registerCommand(IndRecords.IND_WRITE_PACKAGE, WritePackages::accept);
+        IndustryApi.registerCommand(IndRecords.IND_WRITE_CHAIN, WriteChains::accept);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::joined);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::left);
         StaleKinetics.register();

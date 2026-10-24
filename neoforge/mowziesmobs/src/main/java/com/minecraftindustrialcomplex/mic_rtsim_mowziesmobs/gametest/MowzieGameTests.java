@@ -68,6 +68,7 @@ import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -1693,7 +1694,9 @@ public final class MowzieGameTests {
      * gone, and forced again: the new Frostmaw (same UUID, another object) is tagged, restricted again and
      * known to the session as reasserted; each re-journaled CAMP_BODIES of the op comes after the CAMP_OUT and
      * before the new CAMP_CENSUS; the census lists the Frostmaw by slot 0, generation 1, as the chief; the
-     * marker is discarded once its records are acknowledged.
+     * marker is discarded once its records are acknowledged. A third holder, a marker whose records are of
+     * another engine life (RG14, MZB-651), loses them at the census with nothing journaled: the stale
+     * count rises by one, and a CAMP_BODIES of its own op id never reaches the engine.
      */
     @GameTest(template = ARENA, timeoutTicks = 3000, batch = "mowzie_reassert", skyAccess = true)
     public static void aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus(GameTestHelper helper) {
@@ -1702,9 +1705,10 @@ public final class MowzieGameTests {
         ServerLevel level = far.level;
         Den den = new Den(far, far.k, far.z0);
         EntityFrostmaw[] f = new EntityFrostmaw[1];
-        UUID[] id = new UUID[2];
-        long[] op = new long[1];
+        UUID[] id = new UUID[3];
+        long[] op = new long[1], stale = new long[2];
         Markers[] markers = new Markers[1];
+        long staleOp = 0x5a5a5a5a5a5aL;
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
@@ -1723,18 +1727,31 @@ public final class MowzieGameTests {
                 .thenWaitUntil(() -> check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING)))
                 .thenExecute(() -> {
                     byte[] adopt = ConflictKit.campBodies(den.faction, op[0]).get(0).bytes();
-                    f[0].setData(RtsimAttachments.PENDING, new PendingRecords(List.of(adopt.clone())));
+                    f[0].setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(), List.of(adopt.clone())));
                     Marker m = EntityType.MARKER.create(level);
                     check("a marker is made", m != null);
                     m.setPos(den.spot.x + 2, den.spot.y + 1, den.spot.z + 2);
                     m.addTag(RtsimSession.RECORD_MARKER_TAG);
-                    m.setData(RtsimAttachments.PENDING, new PendingRecords(List.of(adopt.clone())));
+                    m.setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(), List.of(adopt.clone())));
                     check("the marker is added", level.addFreshEntity(m));
                     id[1] = m.getUUID();
+                    // A marker whose record is of another engine life: the same bytes under another op id, so the
+                    // engine receiving it would show (RG14).
+                    byte[] old = adopt.clone();
+                    ByteBuffer.wrap(old).order(ByteOrder.LITTLE_ENDIAN).putLong(ConflictRecords.CampBodies.OP_ID, staleOp);
+                    Marker sm = EntityType.MARKER.create(level);
+                    check("a stale marker is made", sm != null);
+                    sm.setPos(den.spot.x - 2, den.spot.y + 1, den.spot.z - 2);
+                    sm.addTag(RtsimSession.RECORD_MARKER_TAG);
+                    sm.setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife() + 1, List.of(old)));
+                    check("the stale marker is added", level.addFreshEntity(sm));
+                    id[2] = sm.getUUID();
+                    stale[0] = RtsimSession.current().stalePending();
+                    stale[1] = RtsimSession.current().reasserted();
                     den.release();
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, id[0], id[1]))
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, id[0], id[1], id[2]))
                 .thenExecute(() -> {
                     check("the old Frostmaw object is removed", f[0].isRemoved());
                     check("no second census yet", MowzieKit.censusCount(den.faction) == 1);
@@ -1760,7 +1777,17 @@ public final class MowzieGameTests {
                     check("census 2 lists the Frostmaw", b != null);
                     check("by slot 0, generation 1, as the chief and no stray (" + b.flags() + ")", b.slot() == 0 && b.generation() == 1
                             && (b.flags() & ConflictRecords.CampCensus.BODY_CHIEF) != 0 && (b.flags() & ConflictRecords.CampCensus.BODY_STRAY) == 0);
-                    record(test, "reassert", r.size() + " CAMP_BODIES of the op, " + (r.size() - 1) + " journaled again between obsSeq " + out + " and " + c2.obsSeq());
+                    RtsimSession s = RtsimSession.current();
+                    Entity sm = level.getEntity(id[2]);
+                    check("the stale marker is back, a new object", sm instanceof Marker);
+                    check("its records of another engine life are dropped (stale " + (s.stalePending() - stale[0]) + ")",
+                            !sm.hasData(RtsimAttachments.PENDING) && s.stalePending() == stale[0] + 1);
+                    check("the Frostmaw's and the live marker's records were journaled again (" + (s.reasserted() - stale[1]) + ")",
+                            s.reasserted() - stale[1] >= 2);
+                    check("the stale record never reached the engine", ConflictKit.campBodies(den.faction, staleOp).isEmpty());
+                    sm.discard(); // an emptied marker stays otherwise (MZB-651)
+                    record(test, "reassert", r.size() + " CAMP_BODIES of the op, " + (r.size() - 1) + " journaled again between obsSeq " + out + " and " + c2.obsSeq()
+                            + "; a record of another engine life dropped, none journaled for it");
                     MowzieKit.acknowledge();
                 })
                 .thenWaitUntil(() -> check("the marker is discarded once acknowledged", markers[0].gone(id[1])))
