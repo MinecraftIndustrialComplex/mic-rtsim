@@ -2398,6 +2398,8 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
 
 ## M9 Umvuthana
 
+M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under "M9b build choices" below.
+
 - **MZB-400** (ids and base): M9 takes MZB-400 to 449, the header's range (the design was first written as
   300 to 343 and renumbered by the lead). M5 has also written MZB-290 to 292, inside M6's range; M6 uses
   250 to 289. The design
@@ -2420,6 +2422,8 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - Any other untagged Umvuthi is left alone, as the jar's own. A tagged one of a retired generation is
     REMOVEd under Rule U (MZB-433).
   - Followers, cranes and raptors stay uncounted.
+  - Built in M9b: the core's `CampKind.pooled(e)` (default true, the den's Frostmaw) is false for the Umvuthi,
+    so a census lists it with BODY_CHIEF while FACTION_FOUND's home bodies leave it out.
 - **MZB-403** (per-slot line flags; the mask in flight):
   - Each line's flags come from `line_flags(f, slot)`: LINE_CHIEF for CHIEF_SLOT, and the den's crystal
     flag as M4 sets it.
@@ -3384,6 +3388,67 @@ Two fixes for M6:
   private inner class. Use an accessor and `this$0`. Keep the accessor out of a GameTest holder's
   signatures (nest it).
 
+### M9b build choices
+
+M9b (the Java camp and chief) takes MZB-600 to 624; MZB-625 to 649 are M9c's. The branch is `feat/mowzie-m9`,
+the GameTests are written and compiled only (the lead runs them). Refinements of M9a ids are amended in
+place (MZB-402), not given new ids.
+
+- **MZB-600** (the gold of one trade): `GroveTrade.nuggets(Trade)` is the larger of the gold on the trade's
+  input side and on its output side, with ingots at 9 nuggets and blocks at 81 (MZB-419). A trade of gold for
+  gold is not counted twice, and a trade with no gold side is worth nothing (TRADED is not sent for it).
+- **MZB-601** (what test 25 reads from Java): the Java half of test 25 asserts the CHIEF_PAID record (faction,
+  the chief's slot and generation, flags 0 for a tagged chief, the payer's profile id, the desires' item and
+  count, a Java op id) and that a second trade by the same player journals nothing more. What the engine does
+  with the payment (a settled demand or a gift, the engine's P) is booked inside the engine and is not
+  visible from Java; it is the Rust tests' and M9c's test 13's to assert. The test runs on the native engine
+  only and records a skip on the stub (a camp is the engine's only under a structure a culture claims).
+- **MZB-602** (test 15 runs scripted; deviates from MZB-439): a chief killed at its grove is reported with its
+  killer on one scripted camp (`mic_rtsim_mowziesmobs:test_grove`), five Umvuthi adopted one after another as
+  generations 1 to 5 in the chief slot, killed by a player, by his tame wolf, by a generic kill 40 ticks after
+  his hit (vanilla's kill credit), by a zombie and by a generic kill. The reason is the same as for the den's
+  test 15 half: the engine's own bookings after the death (the Killing signal, `cowed_until`, P = 1, the heir
+  due) are not visible from Java, and a native grove would book them and move the camp under the test. The
+  Rust tests cover them. The jar's double death event (`EntityUmvuthi.die` posts it twice) is covered by
+  asserting exactly one CAMP_DEATH per Umvuthi.
+- **MZB-603** (`HoldingKind`, a test-only kind): `GroveKind` never holds a warrior's removal (a warrior goes at
+  once), so test 30's "a line in flight keeps a warrior out of the pair" cannot be had from the real kind.
+  `MowzieKit.HoldingKind` is `GroveKind` with `holdRemoval` true for the warrior it is told to hold, and a
+  grove declares it under the test grove name. The pair's own holds (a player near the throne, a fight) are
+  the real kind's.
+- **MZB-604** (thrones on every reconcile): a CAMP_RECONCILE without FLAG_THRONE resets the camp's throne to
+  the fire pit for that epoch, so every test reconcile that needs a throne carries it
+  (`MowzieKit.reconcile(faction, epoch, throne, direction, lines)`, on `ConflictKit`'s new overload). A test
+  that wants the fire pit sends the plain overload.
+- **MZB-605** (test 29 is three tests): 29a (a TAKE and a REMOVE of the chief held while a player is near, then
+  while the Umvuthi has a player as its target, then played), 29b (a chief SPAWN held until the player leaves
+  or `Camps.HOLD_MAX` ticks pass) and 29c (an epoch's end answers every held line stale). The brief's three
+  clauses (MZB-440) are three methods because the second takes 6,000 ticks and the first 6,100. The groves of
+  one test stand 320 blocks apart in x and a test's players are offset in z only, so that no player is near a
+  grove that is not its own (the holds read 160 blocks).
+- **MZB-606** (test 30 is two tests; one batch each): 30a (the pair takes the farthest free warrior: plain,
+  stale with no warrior, held for a player at the throne) and 30b (an heir seated in place over a held REMOVE,
+  and held until the fight is 600 ticks old). Every test has a batch of its own, since the reconciler's
+  counters are global; the tests read them as deltas. A held pair is one held line (`Camps.heldLines()` rises
+  by one for a pair, not two), and `heldPairs` counts the first hold only.
+- **MZB-607** (test-support forks in test 27): the warriors wear a FEAR mask (a FURY mask blocks a player's
+  hit); the Umvuthi is marked as last hurt by the player (`setLastHurtByPlayer`) before the kill, because the
+  Sol Visage is dropped under `killed_by_player` and `MowzieKit.kill`'s fallback bypasses `hurt`. The Sol
+  Visage is asserted as at least one (the count is recorded), not exactly one. The devoted warrior within 30
+  blocks dies on the jar's own timer (up to 20 ticks, `random.nextInt(20)`), so the deaths are asserted within
+  30 ticks of the kill. The player's follower (`UMVUTHANA_FOLLOWER_TO_PLAYER`, not devoted) stays alive.
+- **MZB-608** (the fight watch fallback): test 30b hits the old Umvuthi with a 1 point player attack and asserts
+  the fight watch saw it. If the Umvuthi refuses the hit (it is a NoAi stray in a far place), the test tells
+  `FightWatch.hit` directly, as the hit event does, and records the note in the test log.
+- **MZB-609** (the hunt records are M9c's): by the lead's change, M9b writes no Java layout, constant or code
+  for OWED_HUNT or HUNT_APPLIED (the M9a re-check changes OWED_HUNT's layout). HAVEN_CHEST has its layout
+  only, with no code behind it.
+- **MZB-610** (tolerances to settle in the first run): a chief or an heir stands within 5 blocks of its throne
+  (the place is exact unless the first try is blocked, then jittered by up to 3 blocks on each axis); at the
+  fire pit, within 6 (7 for the restriction centre); a held chief SPAWN is answered 5,990 to 6,040 ticks
+  after the reconcile; an heir over a fight is answered 600 to 640 ticks after the hit (`inFight` is
+  `now - at <= 600`); the player-hit and target assertions of 29a and 30b depend on `setTarget` sticking on a
+  NoAi Umvuthi. These are the numbers to adjust if the first run shows a different quantum.
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
