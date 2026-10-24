@@ -660,6 +660,10 @@ public final class ConflictBridge implements SessionPlugin {
                 if (RtsimConfig.on(Module.CONFLICT))
                     reconciler.reconcile(b, at, size, aux, names, now);
             }
+            case ConflictRecords.CHIEF_BODY -> {
+                if (RtsimConfig.on(Module.CONFLICT))
+                    reconciler.chiefBody(b, at, size, aux);
+            }
             default -> unknownCommands++; // a later slice's command (MOWZIE.md §9): nothing here plays it
         }
         return true;
@@ -1669,6 +1673,8 @@ public final class ConflictBridge implements SessionPlugin {
     /** LivingDeathEvent (lowest, not cancelled): a member's death is journaled at the end of the tick, once certain. */
     void onDeath(LivingEntity dead, DamageSource source, long now) {
         reconciler.onDeath(dead, source);
+        if (reconciler.secondBody(dead))
+            return; // no path journals a second body's death, and it kills nobody's kin (MZB-431)
         Slot sl = live(dead);
         Entity killer = source.getEntity();
         if (sl != null) {
