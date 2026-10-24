@@ -3912,6 +3912,21 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   `getLeashData() != null` in the 1.21.1 sources (checked in the decompiled `Leashable`), so it also covers a
   restored leash. The test is 17b's outer-ring leashed animal (MZB-645).
 
+- **MZB-645** (test 17b catches the owner, tame and leash rules; amends MZB-442; review P2-4): the first form of the
+  test used a tamed parrot as the tame animal, and a parrot has an attack damage of 3.0, which the damage rule
+  spares at the threshold whatever its taming (`OwedHunts.eligible`, lines 220 to 222), so deleting the owner and
+  tame rules (lines 231 to 235) still passed. The test now has two horses (no attack damage in
+  `createBaseHorseAttributes`, volume 3.1): one with an owner and not tame, one tame with no owner (a horse saves
+  its `Tame` flag and its `Owner` apart, so both survive the unload; a `TamableAnimal` keeps a taming only through
+  its owner). Each stands nearer than the fifth prey, so with either rule deleted the first hunt kills it and
+  "five killed", "prey 4 (near) is dead" and "the ineligible ... lives" all fail. A leashed sheep stands in a chunk
+  of the circle's outer ring (26 blocks out, on a 9 x 9 pad the test lays) and loads with the hunt; the fourth hunt
+  (count 10) is sent with every chunk released again, so it meets all the animals as they load together, and it
+  must still find nothing: with the `mayBeLeashed` line (MZB-644) back to `isLeashed` it kills a leashed sheep
+  whose holder is not restored yet, if the hunt's tick comes before the sheep's first (the race is the review's;
+  the test cannot make the order, only offer it on each load). The tame rule on `TamableAnimal` (line 233) is not
+  reachable with vanilla animals (the cat, wolf and parrot all have a damage of 3.0 or more) and has no test.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so

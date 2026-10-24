@@ -46,8 +46,9 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.animal.Cow;
 import net.minecraft.world.entity.animal.IronGolem;
-import net.minecraft.world.entity.animal.Parrot;
 import net.minecraft.world.entity.animal.Sheep;
+import net.minecraft.world.entity.animal.horse.AbstractHorse;
+import net.minecraft.world.entity.animal.horse.Horse;
 import net.minecraft.world.entity.decoration.LeashFenceKnotEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Skeleton;
@@ -181,6 +182,25 @@ public final class UmvuthanaWorldGameTests {
         a.setPersistenceRequired();
         check(type + " is added", level.addFreshEntity(a));
         return a;
+    }
+
+    /** A fence at {@code fenceAt} with the mob leashed to its knot. */
+    private static void leash(ServerLevel level, Mob mob, Vec3 fenceAt) {
+        BlockPos fence = BlockPos.containing(fenceAt);
+        level.setBlock(fence, Blocks.OAK_FENCE.defaultBlockState(), 3);
+        mob.setLeashedTo(LeashFenceKnotEntity.getOrCreateKnot(level, fence), true);
+        check("the " + mob.getType() + " is leashed", mob.isLeashed());
+    }
+
+    /** A 9 x 9 stone floor at the stage's floor height with three blocks of air over it, around {@code at}: a floor outside the stage's 3 x 3. */
+    private static void pad(ServerLevel level, int top, Vec3 at) {
+        BlockPos c = BlockPos.containing(at);
+        for (int dx = -4; dx <= 4; dx++)
+            for (int dz = -4; dz <= 4; dz++) {
+                level.setBlock(new BlockPos(c.getX() + dx, top, c.getZ() + dz), Blocks.STONE.defaultBlockState(), 2);
+                for (int y = 1; y <= 3; y++)
+                    level.setBlock(new BlockPos(c.getX() + dx, top + y, c.getZ() + dz), Blocks.AIR.defaultBlockState(), 2);
+            }
     }
 
     /** Inside {@code thenWaitUntil}: no entity of the ids is in the level (its chunk is unloaded). */
@@ -955,16 +975,22 @@ public final class UmvuthanaWorldGameTests {
     /**
      * An owed hunt is applied when its district loads, and kills the nearest eligible animals (§7 test 17, the owed half;
      * MZB-426 to MZB-429, MZB-442; the circle is 30 blocks, not the engine's 48, to keep the chunks few: 21 of them).
-     * Seven animals of the jar's eligible kinds stand at 3, 5, 7, 9, 11, 14 and 17 blocks from the middle, among a
-     * named cow, a tamed parrot and a leashed sheep, which are nearer and are no prey. All stay (no AI), and every chunk
-     * is released until none is loaded. OWED_HUNT (count 5): held, nothing killed with the chunks out; with only the
-     * middle 3 x 3 loaded, after 60 ticks it is still held and all live; with the rest of the circle loaded it is
-     * applied: exactly the five nearest eligible die, the three ineligible and the two farthest live, their drops
-     * lie on the ground, and HUNT_APPLIED is journaled with the op and 5. The same op again is ignored. A second
-     * hunt that replaces it (rest 1) kills one (the 14-block cow). A third that names the first (stale) kills its
-     * count, 1 (the 17-block cow). A fourth finds nothing and kills none, though it is answered.
+     * Seven animals of the jar's eligible kinds stand at 3, 5, 7, 9, 11, 14 and 17 blocks from the middle, among five
+     * that are no prey: a named cow, a horse with an owner (not tame), a tame horse (no owner), a leashed sheep, and a
+     * leashed sheep in a chunk of the circle's outer ring, 26 blocks out. The horses are here because a horse has no
+     * attack damage, so the damage rule does not spare it (a tamed parrot is spared by its 3.0 whatever its taming:
+     * the first form of this test passed with the owner and tame rules deleted); each stands nearer than the fifth
+     * prey, so with either rule deleted the first hunt kills it and the count of five fails. All stay (no AI), and
+     * every chunk is released until none is loaded. OWED_HUNT (count 5): held, nothing killed with the chunks out;
+     * with only the middle 3 x 3 loaded, after 60 ticks it is still held and all live; with the rest of the circle
+     * loaded it is applied: exactly the five nearest eligible die, the five ineligible and the two farthest live,
+     * their drops lie on the ground, and HUNT_APPLIED is journaled with the op and 5. The same op again is ignored.
+     * A second hunt that replaces it (rest 1) kills one (the 14-block cow). A third that names the first (stale)
+     * kills its count, 1 (the 17-block cow). A fourth is sent with every chunk out again, and applied when all load
+     * together (MZB-645): the leashed sheep, whose leash is data until its first tick, are what a hunt that counted
+     * isLeashed would kill (count 10); it finds nothing and kills none, though it is answered.
      */
-    @GameTest(template = ARENA, timeoutTicks = 4000, batch = "umvuthana_owed_hunt", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 6000, batch = "umvuthana_owed_hunt", skyAccess = true)
     public static void anOwedHuntIsAppliedWhenItsDistrictLoadsAndKillsTheNearestEligibleAnimals(GameTestHelper helper) {
         String test = "anOwedHuntIsAppliedWhenItsDistrictLoadsAndKillsTheNearestEligibleAnimals";
         Stage st = new Stage(helper, test);
@@ -975,13 +1001,13 @@ public final class UmvuthanaWorldGameTests {
         long op1 = ConflictKit.newOp(), op2 = ConflictKit.newOp(), op3 = ConflictKit.newOp(), op4 = ConflictKit.newOp();
         // The eligible prey, nearest first, then the ineligible.
         double[][] eligible = {{3, 0}, {0, -5}, {-7, 0}, {0, 9}, {-8, -8}, {14, 0}, {0, -17}};
-        UUID[] prey = new UUID[eligible.length], no = new UUID[3];
+        UUID[] prey = new UUID[eligible.length], no = new UUID[5];
         long[] received0 = new long[1], ignored0 = new long[1], applied0 = new long[1], killed0 = new long[1];
         int[] held0 = new int[1];
         int cxBlock = st.cx * 16 + 8, czBlock = st.cz * 16 + 8, radius = 30;
 
         helper.startSequence()
-                .thenExecute(() -> st.force(1))
+                .thenExecute(() -> st.force(2))
                 .thenWaitUntil(st.far.ready())
                 .thenExecute(() -> {
                     st.lay();
@@ -991,20 +1017,36 @@ public final class UmvuthanaWorldGameTests {
                     }
                     Cow named = animal(level, EntityType.COW, st.at(1, -1));
                     named.setCustomName(net.minecraft.network.chat.Component.literal("Daisy"));
-                    Parrot parrot = animal(level, EntityType.PARROT, st.at(-2, 1));
-                    // An owner is what the save keeps of a taming (a tame flag with no owner is lost on a reload).
-                    parrot.setOwnerUUID(UUID.randomUUID());
-                    parrot.setTame(true, true);
+                    // A horse has no attack damage (a parrot's 3.0 would spare it whatever its taming) and fits the volume
+                    // rule, so only the owner and tame rules can spare these two. An owner is what the save keeps of a
+                    // taming for a TamableAnimal; a horse keeps its tame flag alone, so one has the flag and one the owner.
+                    Horse owned = animal(level, EntityType.HORSE, st.at(-3, 2));
+                    owned.setOwnerUUID(UUID.randomUUID());
+                    Horse tame = animal(level, EntityType.HORSE, st.at(-4, -3));
+                    tame.setTamed(true);
+                    for (Horse h : List.of(owned, tame)) {
+                        var damage = h.getAttribute(Attributes.ATTACK_DAMAGE);
+                        float volume = h.getBbWidth() * h.getBbWidth() * h.getBbHeight();
+                        check("a horse is not spared by its damage (" + damage + ") or its size (" + volume + ")",
+                                (damage == null || damage.getValue() < 3.0) && volume > 0.1 && volume < 6.0f);
+                    }
+                    check("the owned horse is not tame, the tame one has no owner", !owned.isTamed() && owned.getOwnerUUID() != null
+                            && tame.isTamed() && tame.getOwnerUUID() == null);
                     Sheep leashed = animal(level, EntityType.SHEEP, st.at(3, 3));
-                    BlockPos fence = BlockPos.containing(st.at(5, 3));
-                    level.setBlock(fence, Blocks.OAK_FENCE.defaultBlockState(), 3);
-                    LeashFenceKnotEntity knot = LeashFenceKnotEntity.getOrCreateKnot(level, fence);
-                    leashed.setLeashedTo(knot, true);
-                    check("the sheep is leashed", leashed.isLeashed());
+                    leash(level, leashed, st.at(5, 3));
+                    // In a chunk of the circle that only the second force loads (the platform is the middle 3 x 3).
+                    Vec3 outerAt = st.at(26, 0);
+                    pad(level, st.top, outerAt);
+                    Sheep outer = animal(level, EntityType.SHEEP, outerAt);
+                    leash(level, outer, st.at(28, 0));
+                    check("the outer sheep is in a chunk the middle 3 x 3 does not hold",
+                            (outer.blockPosition().getX() >> 4) == st.cx + 2 && (outer.blockPosition().getZ() >> 4) == st.cz);
                     no[0] = named.getUUID();
-                    no[1] = parrot.getUUID();
-                    no[2] = leashed.getUUID();
-                    st.far.releaseRect(st.cx - 1, st.cz - 1, st.cx + 1, st.cz + 1);
+                    no[1] = owned.getUUID();
+                    no[2] = tame.getUUID();
+                    no[3] = leashed.getUUID();
+                    no[4] = outer.getUUID();
+                    st.far.releaseRect(st.cx - 2, st.cz - 2, st.cx + 2, st.cz + 2);
                 })
                 .thenWaitUntil(gone(level, java.util.stream.Stream.concat(java.util.Arrays.stream(prey), java.util.Arrays.stream(no)).toList()))
                 .thenExecute(() -> {
@@ -1025,13 +1067,14 @@ public final class UmvuthanaWorldGameTests {
                 .thenIdle(60)
                 .thenExecute(() -> {
                     check("still held with only the middle 3 x 3 loaded", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0]);
-                    check("the leash held through the reload", level.getEntity(no[2]) instanceof Mob m && m.isLeashed());
-                    check("and so did the taming", level.getEntity(no[1]) instanceof Parrot q && q.isTame());
+                    check("the leash held through the reload", level.getEntity(no[3]) instanceof Mob m && m.isLeashed());
+                    check("and the owner", level.getEntity(no[1]) instanceof AbstractHorse o && o.getOwnerUUID() != null && !o.isTamed());
+                    check("and the taming", level.getEntity(no[2]) instanceof AbstractHorse q && q.isTamed() && q.getOwnerUUID() == null);
                     check("and the name", level.getEntity(no[0]) instanceof Cow cw && cw.hasCustomName());
                     for (UUID p : prey)
                         check("prey " + p + " lives", alive(level, p));
-                    for (UUID p : no)
-                        check("the ineligible " + p + " lives", alive(level, p));
+                    for (int i = 0; i < 4; i++) // not the outer sheep: whether its chunk holds its entities yet is not claimed
+                        check("the ineligible " + no[i] + " lives", alive(level, no[i]));
                     st.force(2);
                 })
                 .thenWaitUntil(() -> check("the hunt is applied", hunts.appliedHunts == applied0[0] + 1))
@@ -1048,6 +1091,7 @@ public final class UmvuthanaWorldGameTests {
                         drops += d.getItem().getCount();
                     check("the drops lie on the ground (" + drops + ")", drops >= 5);
                 })
+                .thenWaitUntil(() -> check("the outer sheep's leash is restored", level.getEntity(no[4]) instanceof Mob m && m.isLeashed()))
                 .thenWaitUntil(() -> {
                     List<ScriptedEngine.Received> r = RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.HUNT_APPLIED, ConflictRecords.HuntApplied.OP_ID, op1);
                     check("HUNT_APPLIED is journaled", r.size() == 1);
@@ -1075,13 +1119,28 @@ public final class UmvuthanaWorldGameTests {
                 .thenExecute(() -> {
                     check("it killed its count, 1 (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 7);
                     check("the 17-block cow is dead", !alive(level, prey[6]));
+                    st.far.releaseRect(st.cx - 2, st.cz - 2, st.cx + 2, st.cz + 2); // the fourth meets the district as it loads
+                })
+                .thenWaitUntil(gone(level, List.of(no)))
+                .thenExecute(() -> {
+                    received0[0] = hunts.received;
                     ConflictKit.owedHunt(faction, district, op4, 0, dim, 10, cxBlock, czBlock, radius, 0);
+                })
+                .thenWaitUntil(() -> check("OWED_HUNT received", hunts.received == received0[0] + 1))
+                .thenIdle(45)
+                .thenExecute(() -> {
+                    check("held with every chunk out", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0] + 3);
+                    st.force(2);
                 })
                 .thenWaitUntil(() -> check("the last hunt is applied", hunts.appliedHunts == applied0[0] + 4))
                 .thenExecute(() -> {
                     check("it found nothing (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 7);
                     for (UUID p : no)
                         check("the ineligible " + p + " lives", alive(level, p));
+                })
+                .thenWaitUntil(() -> {
+                    check("both leashed sheep are leashed again", level.getEntity(no[3]) instanceof Mob a && a.isLeashed()
+                            && level.getEntity(no[4]) instanceof Mob b && b.isLeashed());
                 })
                 .thenWaitUntil(() -> {
                     long[] ops = {op2, op3, op4};
@@ -1092,7 +1151,7 @@ public final class UmvuthanaWorldGameTests {
                         check("with " + want[i] + " killed", r.get(0).view().getInt(ConflictRecords.HuntApplied.KILLED) == want[i]);
                     }
                 })
-                .thenExecute(() -> record(test, "hunts", "5 of 5, then 1, 1, 0; the named cow, the tamed parrot and the leashed sheep lived"))
+                .thenExecute(() -> record(test, "hunts", "5 of 5, then 1, 1, 0; the named cow, the owned horse, the tame horse and the two leashed sheep lived"))
                 .thenSucceed();
     }
 
