@@ -210,6 +210,11 @@ public final class ReinstallGuard {
         return CAPTURES.get(worldDir(server));
     }
 
+    /** GameTests: forgets a capture this start will not take (a test's read that did not restart). */
+    public static void forgetCaptureForTest(MinecraftServer server) {
+        CAPTURES.remove(worldDir(server));
+    }
+
     /** GameTests: whether this start's reset has deleted its marker. */
     public static boolean markerCleared(MinecraftServer server) {
         Status s = STATUS.get(worldDir(server));
