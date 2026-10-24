@@ -579,6 +579,21 @@ public final class Districts {
         readoptSeeds += adoptChunk(level, chunk, kindCache(), new LongOpenHashSet());
     }
 
+    /** Chunks adopted again after a reinstall reset (UR-1). */
+    public long readoptChunks() {
+        return readoptChunks;
+    }
+
+    /** Chunks planned for re-adoption that loaded with their seeds kept (they did not load during the gap). */
+    public long readoptKept() {
+        return readoptKept;
+    }
+
+    /** Machines adopted again after a reinstall reset. */
+    public long readoptSeeds() {
+        return readoptSeeds;
+    }
+
     /** Chunks still to adopt again after a reinstall reset (UR-1). */
     public int readoptLeft() {
         int n = 0;
