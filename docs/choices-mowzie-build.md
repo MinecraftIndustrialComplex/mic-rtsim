@@ -771,7 +771,334 @@ under its own heading.
 
 ## M5 Camp reconciler, Java
 
-(none yet)
+- **MZB-200** (the plugin): `neoforge/mowziesmobs`, mod id `mic_rtsim_mowziesmobs`, built against Mowzie's
+  Mobs 1.8.2 for 1.21.1 (`mowziesmobs-1.21.1-1.8.2.jar`) and GeckoLib 4.9.3, ordered AFTER `mic_rtsim` and
+  `mowziesmobs`. Its GameTest server copies the pack's `config/mowziesmobs-common.toml` into
+  `run-gametest/config` (task `packMowzieConfig`), so health multipliers and the Frostmaw's
+  `healsOutOfBattle` are the pack's.
+- **MZB-201** (holders before the census, the rule of MZB-174): a census first calls
+  `RtsimSession.ensureReasserted` on every entity carrying `mic_rtsim:pending` in the footprint chunks' whole
+  columns, and only then writes CAMP_CENSUS. The session keeps a weak identity set of the holders it has
+  journaled (a load's reassert or a carry), so one holder object is journaled at most once a session and a
+  holder that loads again, a new object, is journaled again. The loaded-entity drain at the start of
+  BridgeEvents' post tick usually gets there first; the census's own call covers a holder the drain has not
+  reached.
+- **MZB-202** (TRADED): the census writes TRADED 0 and no trader list. The Umvuthi's trade memory is M9's.
+- **MZB-203** (in and out from the tick's last levels): `ChunkTicketLevelUpdatedEvent` fires twice for one
+  rise, so the event only stores the footprint chunk's level and queues the camp; the camp is looked at once,
+  at the end of the tick. Out: a footprint chunk above FULL (33). Waiting: every chunk at FULL or better but
+  some chunk's entities not in (`ServerLevel.areEntitiesLoaded`), looked at again each tick. In: all at FULL
+  with entities in, after being out.
+- **MZB-204** (census cap): a census lists at most 1,024 bodies (`Camps.CENSUS_CAP`); the rest wait for a
+  later census.
+- **MZB-205** (den footprint): the Frostmaw piece's template box, grown 1 block in x and z and 2 in y, so a
+  Frostmaw on the edge or a step up is in.
+- **MZB-206** (FACTION_FOUND): the reconciler sends it at a camp's first census of each session, with the
+  bodies at home (u16 at 52) and the census flags (u8 at 54: chief present, crystal held). Its block is the
+  camp's position clamped into the start chunk, because the start chunk keys the faction
+  (`Obs.villageId(dim, start.x, start.z)`). FLAG_LATE when the start chunk was not new.
+- **MZB-207** (SET_OUT hand-off): a SET_OUT line waits for the end of the tick. A BAND_MATERIALIZE in the same
+  hand-over whose stack is placed in that tick claims it (same agent, party epoch and body name): the puppet
+  is made where the camp body stands, with the kind's `copy`, and the camp body goes, its record on a marker.
+  The CAMP_RECONCILE must come before the BAND_MATERIALIZE in the hand-over, since a materialize places its
+  stacks while it is applied.
+- **MZB-208** (another camp's body): a census skips a body tagged by another camp that stands in its
+  footprint. Its own camp counts it, as ELSEWHERE.
+- **MZB-209** (M9's lines): SEAT_HEIR, and a LINE_CHIEF line on a kind whose `chiefLines()` is false (the
+  grove), are answered STALE and change nothing.
+- **MZB-210** (adoption keeps the jar's persistence): ADOPT sets the tag and the restriction only, never
+  `setPersistenceRequired`. A body the reconciler makes (SPAWN, HAND_BACK) is persistence-required.
+- **MZB-211** (homecoming): after a HAND_BACK line the rest of that party is recalled toward the camp
+  (`ConflictBridge.homeAt`, RECALL_DONE) and goes as a recalled band does. The engine has ended the party,
+  so its BAND_DEMATERIALIZED books nothing.
+- **MZB-212** (pending records dropped by identity): on an acknowledgement a holder drops the records it
+  carried when that record was journaled, by identity, so a record added later under a newer sequence stays.
+  A record marker left with none is discarded.
+- **MZB-213** (a hand-back with no puppet): played as a SPAWN line, held and placed like one.
+- **MZB-214** (where a grove warrior spawns): 20 blocks from the centre on the side away from the nearest
+  non-spectator player within 256 blocks; with none, 2 to 11 blocks out at a random angle, as the fire pit
+  places its own. On the MOTION_BLOCKING_NO_LEAVES surface, at the block's centre.
+- **MZB-215** (Peaceful): a hostile body (`ConflictBodies.hostile`) is not made on Peaceful; the line is
+  answered STALE and the next census orders it again.
+- **MZB-216** (stand-ins): `conflict/frostmaw/frostmaw` is `mowziesmobs:frostmaw`; `conflict/umvuthana/warrior`
+  and `conflict/umvuthana/envoy` are `mowziesmobs:umvuthana` (the grove warrior, `EntityUmvuthanaMinion`);
+  `conflict/umvuthana/raptor` is `mowziesmobs:umvuthana_raptor`.
+- **MZB-217** (den spot): the template box's floor centre, ((minX + maxX + 1) / 2, minY, (minZ + maxZ + 1) / 2).
+  The template stands its Frostmaw at (3, 0, 3.5) of the unrotated [6, 5, 7] template, so under every
+  rotation it is within about a block of the spot. A home Frostmaw is restricted round the spot's block.
+- **MZB-218** (grove centre): the fire pit piece's (minX + 4, maxZ - 4) on the MOTION_BLOCKING_NO_LEAVES
+  surface (the piece's floor when that column is not loaded). That is the jar's `findGround(4, 4)` under
+  TemplateStructurePiece's NORTH orientation, the block its warriors are restricted to. The footprint is the
+  25-block circle round it: every chunk whose nearest point is within 25 blocks. A grove start with no fire
+  pit piece is no grove.
+- **MZB-219** (made as the jar makes them): `make` calls `finalizeSpawn(STRUCTURE)` directly, as the jar's
+  worldgen does, so no FinalizeSpawnEvent fires. The den's Frostmaw then gets the line's crystal and is put
+  to sleep (`setActive(false)`).
+- **MZB-220** (the Umvuthi is no census body): `GroveKind.isBody` is the exact type `mowziesmobs:umvuthana`.
+  The Umvuthi is reported only in the census's chief fields (CHIEF, THRONE, health, position, direction).
+  Followers, cranes and raptors share the warrior's base class and are not counted.
+- **MZB-221** (a discard is a death): a tagged body removed as DISCARDED by anything but the reconciler
+  (which takes the tag off first) is a CAMP_DEATH with killer kind none (BY_NONE).
+- **MZB-222** (an unclaimed SET_OUT is a take): the body goes, its record on a marker, answered DONE; the
+  party gets fresh puppets when it is seen later. With no body: NOTHING. Camp out or a newer epoch: STALE.
+- **MZB-223** (restrictions): a home Frostmaw is restricted 8 blocks round its spot (PLACEHOLDER), set on every
+  join, because vanilla does not save a mob's restriction and the jar never restricts a Frostmaw. A grove
+  warrior is restricted 25 round the centre on join and on adoption (the jar's own also save theirs as
+  `HomePos`).
+- **MZB-224** (held spawns): a Frostmaw's SPAWN waits while a non-spectator player is within 160 blocks of the
+  spot (its tracking range), for at most 6,000 ticks (`Camps.HOLD_MAX`, PLACEHOLDER). Any SPAWN also waits for
+  the session's spawn budget. A waiting line is answered STALE when its camp goes out or recounts.
+- **MZB-225** (the entity-chunk barrier): only vanilla's `EntityStorage`, through its `SimpleRegionStorage`
+  IOWorker, is ordered. Another entity storage is warned about once and its camp records ride without the
+  barrier. How C2ME stores entities in the pack is UNVERIFIED.
+- **MZB-226** (the finder's queue): a chunk holding structure starts is queued when it loads, at most 4,096
+  (PLACEHOLDER), and drained at the end of the server tick once a session is live; a dropped chunk's camp is
+  found when it next loads. A camp is declared once a server run and kept across sessions; at a session
+  start every camp is out and looked at again.
+- **MZB-227** (test camps): GameTests declare camps under structure names no culture claims
+  (`mic_rtsim_mowziesmobs:test_den`, `mic_rtsim_mowziesmobs:test_grove`), through
+  `MowzieCamps.declareDen/declareGrove(level, start, late, structure)` or `RtsimApi.declareCamp`. The engine
+  (M3 and M4 alike) ignores FACTION_FOUND for a structure no culture claims, so a test camp gets only the
+  test's scripted CAMP_RECONCILE lines, on the stub or the native engine.
+- **MZB-228** (test 3's reset half, a gap): a GameTest cannot restart the session (`Camps.sessionStarted` is
+  package-private and the session belongs to the server), so test 3 checks the recount by taking the grove
+  out and in. The reset itself has no GameTest.
+- **MZB-229** (Carry On): picking up a body a camp holds is a CAMP_DEATH with killer kind taken (BY_TAKEN)
+  and that player; the tag goes before Carry On saves the entity, so it is put down a stray.
+
+### M5 design for the implementer
+
+**Where it stands.** Branch `feat/mowzie-m5`, from `feat/mowzie-m3` at 0a5a4c2c; the code is in 5a87527d,
+3ec0ff78, 5f973106, 7f1d4d16 and deeb63d1. Every production class below is written and compiles, and so are
+ConflictKit's camp helpers. Not written: `MowzieKit` and `MowzieGameTests`. Nothing of M5 has run yet.
+- Compile: `cd neoforge && nice -n 10 nix develop ..# -c ./gradlew --max-workers=4 --console=plain :core:compileJava :mowziesmobs:compileJava -PskipJni`.
+- Run: `neoforge/gametest.sh mowziesmobs` (add `core` to rerun the core suite); the log is
+  `neoforge/mowziesmobs/build/gametest.log`, grep `'[g]ametest'`. `-PrtsimEngine=stub` runs on the stub.
+- When the lead says M4 has landed: merge it, delete `neoforge/*/run-gametest/world`, run the native
+  GameTests. M4's decoder was read at b7ace993: CAMP_CENSUS, CAMP_BODIES (action u8 at +12, outcome u8 at
+  +13 of each 16-byte line), CAMP_OUT and CAMP_DEATH match `ConflictRecords` byte for byte.
+
+**Jar facts** (Mowzie's Mobs 1.8.2, read with cfr in `target/m5-mowzie-cfr/src`):
+- `EntityHandler` holds DeferredHolders `FROSTMAW`, `UMVUTHANA_MINION` (id `mowziesmobs:umvuthana`),
+  `UMVUTHANA_RAPTOR`, `UMVUTHI`. Structures: `mowziesmobs:frostmaw_spawn`, `mowziesmobs:umvuthana_grove`.
+- `EntityFrostmaw extends MowzieLLibraryEntity`. `getHasCrystal/setHasCrystal` (NBT `has_crystal`),
+  `getActive/setActive` (NBT `active`), `alwaysActive`. `requiresCustomPersistence()` is `getHasCrystal()`.
+  `finalizeSpawn` sets the crystal. Max health 250 times the config's `healthMultiplier`. While inactive it
+  heals 0.3 a tick when `healsOutOfBattle` is on. It wakes when an attackable entity is within 8 blocks and
+  it has a target. A creative or invisible player within 1.8 blocks of the crystal takes it when
+  `stealableIceCrystal` is on.
+- `EntityUmvuthi extends MowzieGeckoEntity`, not `EntityUmvuthana`. Direction is synced data,
+  `getDirectionData()` and `setDirection(int)`, default 0. Worldgen makes it at the throne piece's `umvuthi`
+  data marker: `setDirection(rotation.rotate(3, 4))`, `finalizeSpawn(STRUCTURE)`, then
+  `restrictTo(marker + (0, 0, -18) rotated, on the surface, -1)`.
+- `EntityUmvuthanaMinion` and `EntityUmvuthanaRaptor` extend the abstract `EntityUmvuthana`:
+  `getMaskType/setMask`, `getWeapon/setWeapon`. The minion's `requiresCustomPersistence()` is true and it
+  saves `HomePos`; it restricts itself in `finalizeSpawn` only for COMMAND spawns.
+- `FrostmawPieces.FrostmawPiece(StructureTemplateManager, ResourceLocation, BlockPos, Rotation)`: template
+  `mowziesmobs:frostmaw_spawn`, size [6, 5, 7], OFFSET (0, 1, 0), no data markers. The Frostmaw is an entity
+  in the template, placed without `finalizeSpawn` (the template's own crystal and health).
+- `UmvuthanaGrovePieces.FirepitPiece(StructureTemplateManager, Rotation, BlockPos)` extends `Piece`. The
+  constructor moves a THRONE or FIREPIT box up 1, but `TemplateStructurePiece.postProcess` recomputes the box.
+  The orientation is NORTH, so `findGround(x, z)` is (minX + x, maxZ - z) on MOTION_BLOCKING_NO_LEAVES.
+  `postProcess` makes 5 to 9 minions, each tried at up to 20 places 2 to 11 blocks from (4, 4), kept if
+  `checkSpawnRules(STRUCTURE)` and `noCollision` pass, then `finalizeSpawn(STRUCTURE)` and
+  `restrictTo(findGround(4, 4), 25)`.
+- No Mowzie class overrides `shouldBeSaved`, so the core's `EntitySaveMixin` keeps every puppet out of saves.
+
+**Layout.**
+- Core, `com.minecraftindustrialcomplex.mic_rtsim`:
+  - `conflict/Camps`: the reconciler (sites, the index, held spawns, set-outs, deaths, every record). It is
+    owned by `ConflictBridge` (`reconciler()`), which calls `tick(now)` from `endOfTick` after the
+    placements, and `claim/claimed/unclaim/handedOff` from `spawn`.
+  - `conflict/CampKind`: what a plugin tells the core: `isBody`, `bodyName`, `isChief`, `chief` (census chief
+    fields), `make`, `spawnAt`, `holdSpawn`, `joined`, `copy`, `chiefLines`, `kin`, `sound`.
+  - `conflict/CampMember`: the attachment's payload. `ConflictRecords`: the layouts of CAMP_CENSUS, CAMP_BODIES,
+    CAMP_OUT, CAMP_DEATH and the CAMP_RECONCILE command. `ConflictEvents`: ticket, join and leave listeners at
+    LOWEST, kept whatever the module's state.
+  - `bridge/RtsimSession`: `ensureReasserted`, `reasserted`, `carryOnCampHolder`, `RECORD_MARKER_TAG`, drop by
+    identity. `journal/ChunkWriteBarrier.dependsOnEntities` and `Journal.newOpId` (a camp's epoch).
+  - Mixins: `ChunkMapInvoker.mic_rtsim$updating`, `EntitySectionManagerAccessor`, `EntityStorageAccessor`,
+    `SimpleRegionStorageAccessor`.
+  - `api/RtsimApi`: `registerCampKind`, `declareCamp`, `isCampBody`, `takeCampBody`. The Carry On plugin calls
+    the last two.
+- Plugin, `com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs`:
+  - `MicRtsimMowziesMobs`: stand-ins, kinds, listeners (ChunkEvent.Load, ServerTickEvent.Post, ServerStoppedEvent).
+  - `MowzieCamps`: the finder. `DenKind`, `GroveKind`: the two kinds, stateless singletons.
+  - To write: `gametest/MowzieKit` and `gametest/MowzieGameTests` (`@GameTestHolder(MicRtsimMowziesMobs.MODID)`,
+    `@PrefixGameTestTemplate(false)`, template `arena`, already at
+    `src/main/resources/data/mic_rtsim_mowziesmobs/structure/arena.nbt`).
+
+**Finding a camp and its footprint.** `ChunkEvent.Load` queues a server `LevelChunk` that has structure starts
+(MZB-226). The post-tick drain matches each valid start's registry key: a den uses its `FrostmawPiece` box
+(else the start's), a grove its `FirepitPiece`. It calls `RtsimApi.declareCamp(level, startChunk, structure,
+kind, pos, spot, box, radius, late)`. `Camps.declare` keys the camp by the start chunk's village id, computes
+its footprint chunks (the den's grown box, or the grove's circle) and reads each chunk's ticket level once
+from `ChunkMap.getUpdatingChunkIfPresent` (46 when there is no holder). It restricts the camp's tagged bodies
+already loaded and queues the camp for a look. After that only `ChunkTicketLevelUpdatedEvent` moves the
+levels: no per-tick scan (D1).
+
+**In, out and the census** (at the end of the tick, `Camps.tick`): settle deaths, resolve set-outs, play held
+spawns, then look at each queued camp (MZB-203). Out: CAMP_OUT with the ending epoch, held lines STALE, epoch 0.
+In: `census()`:
+1. Held lines of the old epoch are answered STALE, and the new epoch is a fresh Java op id.
+2. All entities in the footprint chunks' columns are listed once. A body is in the footprint if it is in the
+   den's box or within the grove's radius.
+3. Bodies: the kind's bodies inside, alive, not puppets, not another camp's (MZB-208). A stray is flagged
+   BODY_STRAY, the chief BODY_CHIEF. Then the camp's tagged bodies loaded elsewhere (from the index), flagged
+   BODY_ELSEWHERE.
+4. The chief fields come from `kind.chief`. FACTION_FOUND goes if this is the session's first census
+   (MZB-206).
+5. Every holder in the columns is journaled (MZB-201). Then CAMP_CENSUS is written. That order is the rule of
+   MZB-174.
+
+A tagged body loaded from disk outside the footprint of a camp that is in sets `recount`: a new census without
+an out.
+
+**Reconcile actions** (`Camps.reconcile`, applied with the hand-over's commands). A camp not in at the command's
+epoch answers every line STALE and changes nothing. Lines answered with no holder (NOTHING, STALE) share one
+CAMP_BODIES. A line with a holder gets its own CAMP_BODIES, carried on the holder.
+
+| Action | Den (Frostmaw) | Grove (warriors) |
+|---|---|---|
+| SPAWN | NOTHING if the slot's tagged body is loaded. Held while a player is within 160 (MZB-224) or the spawn budget is spent. Otherwise made at the spot with the line's crystal, asleep; tagged, persistence-required, added; DONE on the body. | The same with no player hold, made at the place of MZB-214. |
+| ADOPT | The stray named by UUID (a, b): alive, the kind's body, not a puppet, not another camp's. Tagged (slot, generation), indexed, `joined` restricts it; DONE on it. Otherwise NOTHING. | The same. |
+| TAKE, REMOVE | By UUID when a or b is nonzero (a stray or the camp's own), else by tag. Removed with a marker carrying its records and the answer; DONE on the marker. None: NOTHING. | The same. |
+| SET_OUT | Waits for the end of the tick: handed to a materialize's puppet (MZB-207), or taken (MZB-222). | The same. |
+| HAND_BACK | Party a at epoch b: its live puppet of that body becomes a tagged body where it stands (`make`, `copy`, persistence). The puppet despawns first, then the body is added; DONE on the body. Body already home: the puppet only goes, NOTHING. No puppet: as SPAWN (MZB-213). The party then goes home (MZB-211). | The same. |
+| SEAT_HEIR, chief lines | STALE (MZB-209). | STALE. |
+
+**`camp_member` and its index.** The attachment `mic_rtsim:camp_member` holds `CampMember(long faction, int slot,
+int generation)`. It is saved with the body and never stored for NONE (faction 0);
+`RtsimAttachments.campMember` returns null for an untagged entity. The index, `Camps.index`, maps a faction to an
+identity set of its loaded, tagged, non-puppet bodies. EntityJoinLevelEvent and EntityLeaveLevelEvent keep it,
+so nothing scans entities. A join restricts the body (`kind.joined`). A leave as DISCARDED while the session is
+live is a death (MZB-221).
+
+**Markers.** A `minecraft:marker` tagged `mic_rtsim.record` (vanilla `Tags`) is left where a body was removed or
+died. It carries that body's pending records plus the new answer or death in `mic_rtsim:pending`.
+`carryOnCampHolder` makes the journal's next file wait for the marker's entity chunk (`dependsOnEntities`). On
+acknowledgement the records drop and the marker is discarded (MZB-212). When the marker loads again unacknowledged,
+its records are journaled again before any census of its camp.
+
+**UR-1.**
+- Without the plugin: no camp is declared. Tagged bodies are indexed but play no lines, and their deaths still
+  go to the engine as CAMP_DEATH.
+- Without mic_rtsim: NeoForge logs and skips the unknown attachments, so the bodies load as the jar's own.
+  Markers are inert: a marker never ticks and is never sent to a client.
+- Puppets are never saved. No block, registry entry or entity type is added (D3).
+
+**GameTests to write** (one batch each, every check logged on a `[gametest]` line). Setup recipe for each test:
+1. `ConflictKit.releaseFarChunks`, then `ConflictKit.farBase()`. Force the footprint chunks, released in
+   `ConflictKit.onEnd`.
+2. Wait (`RtsimTests.io`) until every chunk ticks entities (`RtsimSession.entitiesTickAt`) and
+   `areEntitiesLoaded`.
+3. Lay a stone platform (copy `ConflictGameTests.platform`). Place the bodies, then declare the camp under a
+   test name (MZB-227).
+4. Read records with `ConflictKit.censuses/campBodies/outcomes/campOuts/campDeaths/censusBodies/factionsFound`.
+   Script lines with `ConflictKit.reconcile(faction, epoch, ConflictKit.newOp(), lines)`; the epoch is
+   CAMP_CENSUS's u64 at 32. Use `ConflictKit.together` to put a reconcile and a materialize in one hand-over.
+   A marker's NBT has to be caught by an `EventPriority.LOWEST` `ServerTickEvent.Post` hook, because it is
+   discarded a tick or two after its acknowledgement.
+
+The tests:
+1. `aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth` (§7 test 1):
+   - Four real `FrostmawPiece`s, one per rotation, each at local (8, 8) of its own chunk; place each with
+     `postProcess(level, level.structureManager(), generator, level.random, piece box, chunk, pos)`.
+   - The template's Frostmaw is within 1.5 blocks of `denSpot` (MZB-217).
+   - Set crystal and health per den, then declare through `MowzieCamps.declareDen(..., TEST_DEN)` with
+     `new StructureStart(structure, chunk, 0, new PiecesContainer(List.of(piece)))`.
+   - Per den: FACTION_FOUND once, home 1, census flags CHIEF plus CRYSTAL as set. The census has one body,
+     BODY_STRAY plus BODY_CHIEF, its UUID, and health at least what was set and at most its health now (it
+     heals). The Frostmaw is no puppet and untagged.
+   - ADOPT one: DONE. It is tagged (faction, 0, 1) and restricted 8 round the spot, still no puppet,
+     `shouldBeSaved`, its persistence flag unchanged (MZB-210), and its NBT has `mic_rtsim:camp_member` under
+     `neoforge:attachments`.
+2. `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt` (§7 test 3):
+   - A real `FirepitPiece`, rotation at random. Every warrior it makes is restricted 25 round
+     `MowzieCamps.groveCentre` (MZB-218).
+   - Add a warrior inside, a raptor inside, a no-AI warrior 27 blocks out, and a no-AI Umvuthi with direction 2.
+   - Census: exactly the minions inside, all strays. No raptor, no outside warrior, no Umvuthi body. Chief
+     flags CHIEF plus THRONE at the Umvuthi's position, direction 2. FACTION_FOUND home n, CENSUS_CHIEF.
+   - ADOPT all in one reconcile: all DONE, tagged, restricted.
+   - Release and re-force the footprint: CAMP_OUT, then census 2 lists every adopted UUID with its slot,
+     flags 0 or ELSEWHERE. FACTION_FOUND is still once. The reset half is MZB-228.
+3. `aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved` (§7 test 4):
+   - A test grove and a band of the grove's faction, two WARRIOR, placed. A puppet is a
+     `mowziesmobs:umvuthana`, a puppet, and `!shouldBeSaved`.
+   - Set puppet 0's health, then HAND_BACK slot 0 for it. DONE. One held body, no puppet, tagged (faction, 0, 1),
+     persistence-required, `shouldBeSaved`, at the puppet's last position with its health, mask and weapon.
+     Puppet 0 is removed. Puppet 1 is still unsaved and its party is recalling or gone.
+   - Then REMOVE slot 0: DONE. The marker's NBT, caught by the hook, has `Tags` with `mic_rtsim.record` and
+     `mic_rtsim:pending`. The marker is discarded after its acknowledgement.
+4. `aRefilledPoolIsSpawnedAtTheNextCensus` (§7 test 5):
+   - A test den and a test grove with one stray warrior. A fake player stands 40 blocks from the den spot, so
+     it is the grove's nearest player within 256.
+   - Den SPAWN with LINE_CHIEF plus LINE_CRYSTAL: held (`heldLines`), no answer, no Frostmaw after 40 ticks.
+   - Grove reconcile with ADOPT and SPAWN: both DONE. The spawned warrior is 20 (plus or minus 1.5) from the
+     centre on the side away from the player, restricted 25, persistence-required.
+   - A second SPAWN for that slot gives NOTHING.
+   - Remove the player: the den line is DONE. The Frostmaw stands at the spot with the crystal, asleep,
+     restricted 8, tagged (faction, 0, 1).
+5. `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear` (§7 test 5, timeout 7,000): a player stays within 160.
+   The line is DONE no sooner than `Camps.HOLD_MAX` ticks after it was sent, and within 40 ticks after that.
+6. `theCensusWaitsForEntitiesOnACampsColdLoad` (§7 test 21):
+   - A test den with a crystal Frostmaw; census 1.
+   - Release the chunk until it is unloaded (`!level.hasChunk`), then force it again. The camp is seen
+     waiting, and no census comes before the entities are in. The next census has the Frostmaw's UUID and
+     CRYSTAL.
+   - A test grove centred mid-chunk, footprint columns c - 2 to c + 2, forcing only c - 2 and c - 1: column
+     c + 2 sits at 34 and the camp stays out, with no census after 40 ticks. Force the rest: a census.
+7. `aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent` (§7 test 22):
+   - A test grove with two strays; census e1. Out and in: census e2.
+   - Lines at e1 are STALE and tag nothing. ADOPT at e2 is DONE; the same op again leaves the same tags and
+     the same two bodies.
+   - SPAWN at e2 is DONE; the same op again is NOTHING, with one body.
+8. `aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut` (§7 test 22):
+   - A Frostmaw SPAWN held by a player, then the den released: CAMP_OUT and the line STALE.
+   - Re-forced with no player: census 2, `heldLines` 0, and no Frostmaw.
+9. `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot` (§7 test 22):
+   - A test grove with four strays, three adopted, and a test den with an adopted Frostmaw.
+   - Warrior 0 killed by a fake player: CAMP_DEATH aux BY_PLAYER, killer UUID, slot 0, generation 1, an op id,
+     and a marker. A stray killed: no CAMP_DEATH. Warrior 1 discarded: BY_NONE.
+   - `RtsimApi.takeCampBody(warrior 2, player)`: BY_TAKEN with the player, and the tag is gone.
+   - The Frostmaw killed: FLAG_CHIEF and the FROSTMAW body id.
+10. `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus` (§7 test 22, MZB-174):
+    - A test den in chunk (k, z0), Frostmaw adopted. Give it, and a hand-made `mic_rtsim.record` marker in the
+      box, a `PendingRecords` copy of the adopt's CAMP_BODIES bytes, set directly so no acknowledgement drops
+      them.
+    - Force (k + 4, z0) and release (k, z0): the chunk stays in memory at level 35 and its entities unload.
+      CAMP_OUT comes.
+    - Force (k, z0) again. The re-journaled CAMP_BODIES (same op, highest obsSeq) comes after the CAMP_OUT's
+      obsSeq and before the new CAMP_CENSUS's obsSeq. `reasserted(newFrostmaw)` is true.
+    - Census 2 lists it tagged (CHIEF, slot 0, generation 1), and it is restricted again on rejoin. The marker
+      is discarded after its acknowledgement.
+11. `aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake` (§7 test 22):
+    - A test grove with three adopted warriors.
+    - `together`: SET_OUT slots 0 and 1 for agent A, then BAND_MATERIALIZE A with one WARRIOR at the grove.
+      Slot 0 is handed off: the puppet stands where body 0 stood, with its health and mask, and
+      `handedOff` goes up 1. Slot 1 is taken (`taken` goes up 1). Both are DONE, and the camp holds only
+      body 2.
+12. `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart` (§7 test 22):
+    - Three strays. ADOPT w0, REMOVE w1 by UUID: DONE, with a marker.
+    - Move w0, no AI, 60 blocks out into a forced chunk. Out and in: census lists w0 BODY_ELSEWHERE (slot 0,
+      generation 1).
+    - Release and re-force w0's chunk while the camp is in: `recounts` goes up 1 and a census comes with no
+      CAMP_OUT.
+
+**Traps.**
+- A record marker is gone a tick or two after its acknowledgement: catch its NBT in a LOWEST post-tick hook.
+- A Frostmaw heals while asleep: compare census health within a range, never exactly.
+- Entities unload when their chunk goes above 33, even while the chunk stays in memory below 45. Forcing a
+  chunk 4 away holds one at 35. A forced chunk's neighbours are FULL (32 and 33), so a footprint chunk is out
+  only 3 or more chunks from every forced chunk.
+- `FakePlayers.add` players count for `Camps.playerNear`, but they hold no ticket and make no natural spawns.
+  A kill by one is BY_PLAYER, but a kill by NeoForge's `FakePlayer` is BY_OTHER.
+- A BAND_MATERIALIZE places its stacks while it is applied, so a SET_OUT's CAMP_RECONCILE must come first in
+  the hand-over. On the native engine, `together` sends two orders in a row, which normally land in one step.
+- `ConflictKit.outcomes` keeps a line's first answer. A line answered again (a holder journaled again) is a
+  further CAMP_BODIES with the same op; take the highest obsSeq for the latest.
+- The GameTest world is reused: each test gets its own far base. Test camps stay declared until the server
+  stops, so never reuse a start chunk within a run.
 
 ## M6 Frostmaw
 
