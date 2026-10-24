@@ -761,17 +761,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state bb712916279d2368 against bb712916279d2368, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state 9a40499dcc0c05d4 against 9a40499dcc0c05d4, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state 6a6a0f237a25ba0d against 6a6a0f237a25ba0d, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state dde23f6ce3e5cf53 against dde23f6ce3e5cf53, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state bff38ffdb12017c6 against bff38ffdb12017c6, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state 2a40c95265f72db2 against 2a40c95265f72db2, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",

@@ -1357,6 +1357,103 @@ fn an_answer_delivered_twice_is_booked_once_even_after_the_slot_moved_on() {
     ok(&mut r);
 }
 
+/// A booked answer is kept with the journal sequence of its record and forgotten once a world
+/// save has made that sequence durable (MZB-177): a camp that stays in one epoch for months books
+/// answers for months, and the set must not grow with them. Until then a copy is skipped, and a
+/// copy's own sequence keeps the answer until that is durable too; after it, a copy is booked by
+/// its slot's state like any answer (here a no-op spawn answer: its slot has its body).
+#[test]
+fn a_booked_answer_is_forgotten_once_its_record_is_durable() {
+    let mut r = grove(68, 9);
+    come_in(&mut r);
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    let epoch = r.c.camp(r.f).unwrap().seen;
+    // One spawn answer for slot `n`, as op `op`'s line 0, carried by the record with sequence `seq`.
+    let give = |r: &mut CampRun, op: u64, n: usize, seq: u64| {
+        let (id, generation) = {
+            let s = &r.c.camp(r.f).unwrap().slots[n];
+            (s.id, s.generation)
+        };
+        r.c.obs_seq = seq;
+        let record = boundary::CampBodies {
+            faction: r.key,
+            epoch,
+            op,
+            lines: vec![boundary::LineAnswer {
+                line: 0,
+                slot: id,
+                generation,
+                action: boundary::ACTION_SPAWN,
+                outcome: boundary::LINE_DONE,
+            }],
+        };
+        let before = r.c.stats.camp_answers;
+        ingest(r, &Obs::CampBodies(record));
+        r.c.stats.camp_answers - before
+    };
+    // The answers with a sequence: the plugin's own, which have none, are kept to the epoch's end.
+    let plugin_answers = r.c.camp(r.f).unwrap().answered.len();
+    assert!(plugin_answers >= 9, "the census's nine spawns, answered");
+    let kept = |r: &CampRun| -> Vec<(u64, u64)> {
+        r.c.camp(r.f)
+            .unwrap()
+            .answered
+            .iter()
+            .filter(|a| a.seq != 0)
+            .map(|a| (a.op, a.seq))
+            .collect()
+    };
+    assert_eq!(give(&mut r, 0xA1, 0, 10), 1, "booked");
+    assert_eq!(
+        give(&mut r, 0xA1, 0, 20),
+        0,
+        "its copy, journaled again: skipped"
+    );
+    assert_eq!(
+        kept(&r),
+        vec![(0xA1, 20)],
+        "the copy's sequence is the answer's"
+    );
+    // A save durable through 10 covers the original but not the copy.
+    r.c.durable_obs_seq = 10;
+    assert_eq!(give(&mut r, 0xB1, 1, 30), 1);
+    assert_eq!(kept(&r), vec![(0xA1, 20), (0xB1, 30)], "the copy keeps it");
+    assert_eq!(give(&mut r, 0xA1, 0, 31), 0, "still skipped");
+    // Durable through 31: both are forgotten as the camp next books one.
+    r.c.durable_obs_seq = 31;
+    assert_eq!(give(&mut r, 0xC1, 2, 40), 1);
+    assert_eq!(
+        kept(&r),
+        vec![(0xC1, 40)],
+        "only what no save covers is kept"
+    );
+    // The known cost: a copy that comes after the answer is forgotten is booked again.
+    assert_eq!(give(&mut r, 0xA1, 0, 41), 1);
+    assert_eq!(
+        counts(&r),
+        [9, 0, 0, 0, 0],
+        "by its slot's state: nothing moves"
+    );
+    // Over a long epoch the set holds what the last save has not covered, whatever came before.
+    for k in 0..300u64 {
+        r.c.durable_obs_seq = 100 + k;
+        give(&mut r, 0x1000 + k, (k % 9) as usize, 101 + k);
+        assert!(
+            kept(&r).len() <= 2,
+            "{} answers kept at {k}",
+            kept(&r).len()
+        );
+    }
+    let camp = r.c.camp(r.f).unwrap();
+    assert_eq!(
+        camp.answered.len() - kept(&r).len(),
+        plugin_answers,
+        "those were never forgotten"
+    );
+    assert!(camp.answered.capacity() <= 2 * camp.answered.len() + 16);
+    ok(&mut r);
+}
+
 /// An answer of an epoch a later census has superseded books nothing: that census read the world
 /// after the lines were applied, and the answer's fact is older than the books.
 #[test]
@@ -1852,12 +1949,28 @@ fn a_death_booked_whose_body_is_on_disk_is_removed_by_the_census() {
 /// A ledger with every field set: slots in each state with misses and lines in flight, retired
 /// generations of both kinds, a throne, an epoch, the answers booked in it and a booked refill.
 fn rich_ledger(r: &mut CampRun) {
-    use rtsim_conflict::engine::{Line, Retired, Slot, Throne};
+    use rtsim_conflict::engine::{Answered, Line, Retired, Slot, Throne};
     let k = &mut r.c.factions[r.f as usize];
     let camp = k.camp.as_mut().expect("a ledger");
     camp.epoch = 0x1234_5678_9abc;
     camp.seen = 0x1234_5678_9abc;
-    camp.answered = vec![(0xAB00, 0), (0xAB00, 3), (0xCD00, 1)];
+    camp.answered = vec![
+        Answered {
+            op: 0xAB00,
+            line: 0,
+            seq: 41,
+        },
+        Answered {
+            op: 0xAB00,
+            line: 3,
+            seq: 0,
+        },
+        Answered {
+            op: 0xCD00,
+            line: 1,
+            seq: 1 << 40,
+        },
+    ];
     camp.seq = 7;
     camp.refill = 3;
     camp.refill_at = Some(Tick(123_456));

@@ -113,6 +113,17 @@ pub struct Retired {
     pub died: bool,
 }
 
+/// An answer line booked in a camp's latest epoch: its (op, line), and the journal sequence of the
+/// latest record that carried it (a holder's copy included). The host's world save makes the
+/// sequence durable, and the answer is forgotten then (MZB-177). Sequences start at 1: 0 is a host
+/// with none (the simulations), and its answers are kept to the end of their epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Answered {
+    pub op: u64,
+    pub line: u32,
+    pub seq: u64,
+}
+
 /// The Umvuthi's throne spot, kept from the grove's first census (MOWZIE.md ledger 7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Throne {
@@ -129,8 +140,11 @@ pub struct Camp {
     /// answers are still booked, an older one's being superseded by that census.
     pub seen: u64,
     /// The (op, line) answers booked in `seen`'s epoch, in order: the records that may come twice
-    /// (a holder's, journaled again) are skipped by it. Cleared at each census of a new epoch.
-    pub answered: Vec<(u64, u32)>,
+    /// (a holder's, journaled again) are skipped by it. Cleared at each census of a new epoch, and
+    /// an answer is forgotten once the world save that makes its record durable has been reported
+    /// (`Conflict::durable_obs_seq`), as `Replay` forgets op ids; a copy that comes later is booked
+    /// by its slot's state and the next census (MZB-177).
+    pub answered: Vec<Answered>,
     /// CAMP_RECONCILEs sent in this epoch (the decision in their op ids).
     pub seq: u32,
     /// The stamp of the booked refill event, and its tick.
@@ -183,14 +197,32 @@ impl Camp {
         }
     }
 
-    /// Records the answer to line `line` of reconcile `op`; false if it was booked already.
-    fn answer(&mut self, op: u64, line: u32) -> bool {
-        match self.answered.binary_search(&(op, line)) {
-            Ok(_) => false,
+    /// Records the answer to line `line` of reconcile `op`, carried by the record with journal
+    /// sequence `seq`; false if it was booked already (the copy's sequence then keeps the answer
+    /// until that is durable too).
+    fn answer(&mut self, op: u64, line: u32, seq: u64) -> bool {
+        match self
+            .answered
+            .binary_search_by_key(&(op, line), |a| (a.op, a.line))
+        {
+            Ok(i) => {
+                let a = &mut self.answered[i];
+                a.seq = a.seq.max(seq);
+                false
+            }
             Err(at) => {
-                self.answered.insert(at, (op, line));
+                self.answered.insert(at, Answered { op, line, seq });
                 true
             }
+        }
+    }
+
+    /// Forgets the answers whose records a world save has made durable (`seq` and before).
+    fn forget_answers_through(&mut self, seq: u64) {
+        self.answered.retain(|a| a.seq == 0 || a.seq > seq);
+        // The paging budget counts capacity: a long epoch's burst is not kept after it.
+        if self.answered.capacity() > 2 * self.answered.len() + 16 {
+            self.answered.shrink_to_fit();
         }
     }
 
@@ -231,7 +263,7 @@ impl Camp {
         std::mem::size_of::<Camp>()
             + self.slots.capacity() * std::mem::size_of::<Slot>()
             + self.retired.capacity() * std::mem::size_of::<Retired>()
-            + self.answered.capacity() * std::mem::size_of::<(u64, u32)>()
+            + self.answered.capacity() * std::mem::size_of::<Answered>()
     }
 }
 
@@ -1035,6 +1067,9 @@ impl Conflict {
         // would else depend on whether an audit (or any read) synced before a freed one.
         self.camp_sync(f, at);
         let mut camp = self.factions[f as usize].camp.take().expect("a ledger");
+        // The answers a durable world save covers are forgotten as the camp next books one: a
+        // camp that books many is the one that would grow (MZB-177).
+        camp.forget_answers_through(self.durable_obs_seq);
         let mut lines: Vec<ReconcileLine> = Vec::new();
         let mut cleared = 0;
         let is_in = camp.is_in();
@@ -1047,7 +1082,7 @@ impl Conflict {
             let Some(i) = camp.index(a.slot, a.generation) else {
                 continue;
             };
-            if !camp.answer(b.op, a.line) {
+            if !camp.answer(b.op, a.line, self.obs_seq) {
                 continue;
             }
             let s = &mut camp.slots[i];

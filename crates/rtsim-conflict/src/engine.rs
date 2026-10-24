@@ -69,7 +69,7 @@ pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
 pub mod camp;
 
-pub use camp::{Camp, Line, Retired, Slot, SlotState, Throne};
+pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
 /// event is booked for it, and `Conflict::unblock` plans it again when one comes.
@@ -678,6 +678,14 @@ pub struct Conflict {
     /// one: a CAMP_CENSUS then only marks its camp out (MOWZIE.md §4.9). Set by the host around
     /// the records it replays; not state.
     pub replaying: bool,
+    /// The journal sequence of the record being ingested (0 where the host has none, as in the
+    /// simulations, whose answers are then kept to the end of their epoch): a CAMP_BODIES answer is
+    /// kept with it. Set by the host; not state.
+    pub obs_seq: u64,
+    /// The highest journal sequence the host has reported durable in a world save (WORLD_SAVED):
+    /// answers booked from records at or before it are forgotten, as `Replay` forgets op ids
+    /// (docs/boundary.md §2.3, MZB-177). Set by the host, which never lowers it; not state.
+    pub durable_obs_seq: u64,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -761,6 +769,8 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             replaying: false,
+            obs_seq: 0,
+            durable_obs_seq: 0,
         }
     }
 

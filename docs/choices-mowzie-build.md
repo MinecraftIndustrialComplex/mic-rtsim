@@ -458,7 +458,7 @@ under its own heading.
 - **MZB-165** (pages): the conflict page magic is RTC5 and `META_VERSION` is 4: a camp's ledger
   (slots, retired generations, throne, refill stamp) is saved with its faction, and the stats grew
   six camp counters; a camp's page also holds the latest epoch a census named and the (op, line)
-  answers booked in it (MZB-169). No migration (no backward compatibility before release). This changes a page
+  answers booked in it, each with its record's journal sequence (MZB-169, MZB-177). No migration (no backward compatibility before release). This changes a page
   format, so this branch must not land while the coordinator's format freeze holds (until M2 is on
   origin/main), and the rtsim-view fixtures are regenerated from fresh GameTest worlds at landing.
   The fixtures and hashes tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state`
@@ -696,6 +696,33 @@ under its own heading.
   pool that refilled for 30 days with the slots unadded, which is no shortfall). A fork (reported):
   the review said "at the camp's last sync"; the pool's stamp (`pool_at`) is that moment, since a
   sync comes before every move and the books hold no other mark of it.
+
+- **MZB-177** (a camp forgets the answers a durable world save covers): the (op, line) answers
+  booked in a camp's latest epoch (`Camp::answered`, MZB-169) grew with every answer until the next
+  census, and a grove can stay in one epoch for months. Each answer is now kept with the journal
+  sequence of the latest record that carried it (`Answered { op, line, seq }`; a holder's copy that
+  is skipped raises it, so a copy keeps the answer until the copy is durable too). The host reports
+  the highest durable sequence at WORLD_SAVED (`Conflict::durable_obs_seq`, set where
+  `Replay::forget_ops_through` is called, which is the rule docs/boundary.md §2.3 gives for op ids)
+  and `Conflict::obs_seq` carries the record being ingested. A camp forgets the answers at or below
+  the durable sequence when it next books an answer, so only the camp that grows is touched: no scan
+  of the faction table (its pages would load and dirty), and the set stays at what the last save has
+  not covered. A host with no sequences (the simulations, whose records carry 0) keeps its answers
+  to the end of the epoch. The camp page gains each answer's sequence (a varint); the layout change
+  goes with group E's RTC6 bump (unreleased, no migration, MZB-165's rule). Cost, accepted as
+  TAKEN's is (docs/boundary.md §2.3: by state after the op id is forgotten): a holder's copy
+  journaled after the save but before Java has processed the engine's acknowledgement and dropped
+  the record (an unloaded and reloaded holder chunk in that gap) is booked a second time, by its
+  slot's state. A spawn answer or an answer for a slot the action cannot move changes nothing; a
+  take answer for a slot spawned again since turns it owed once more, and the next order or census
+  sets it right (Java's spawn does nothing where a body with that slot and generation is loaded).
+  Tests: `a_booked_answer_is_forgotten_once_its_record_is_durable` (the sequence kept and raised by
+  a copy, the bound exactly at the save, the cost, and the set bounded over 300 answers), the page
+  round trip in `rich_ledger`, and rtsim-jni's
+  `a_durable_world_save_lets_the_camp_forget_the_answers_it_covers` (both host hooks). A fork
+  (reported): the trigger is WORLD_SAVED, the signal `Replay` already uses, not the engine's own
+  `ackedObsSeq`, which the IO lane writes after the pages are on disk and which would need the camp
+  ledger touched from that thread.
 
 ## M5 Camp reconciler, Java
 

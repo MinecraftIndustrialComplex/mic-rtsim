@@ -4259,6 +4259,87 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// A world save that makes an answer's record durable lets the camp forget it (MZB-177): the
+    /// ledger keeps (op, line) with the record's sequence, a copy before the save is skipped, and one
+    /// after it is booked again, by its slot's state (here the adopted body stays one body).
+    #[test]
+    fn a_durable_world_save_lets_the_camp_forget_the_answers_it_covers() {
+        let (_dir, e, mut j) = grove("camp-forget", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        let record = j
+            .conflict_plugin
+            .queued()
+            .into_iter()
+            .find_map(|o| match o {
+                O::CampBodies(b) => Some(b),
+                _ => None,
+            })
+            .expect("the answer, on its way");
+        let _ = j.conflict_plugin.drop_queued();
+        let part = |lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+        let kept = || {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .unwrap()
+                    .answered
+                    .iter()
+                    .map(|a| (a.line, a.seq))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let first = j.conflict_obs(&part(&record.lines[..2]));
+        let copy = j.conflict_obs(&part(&record.lines[..1]));
+        j.idle();
+        assert_eq!(slots(&e), [2, 1, 0, 0, 0]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_answers),
+            2,
+            "the copy skipped"
+        );
+        assert_eq!(
+            kept(),
+            vec![(record.lines[0].line, copy), (record.lines[1].line, first)],
+            "kept with the record's sequence, a copy's included"
+        );
+        // A save durable through the first record only: the copy keeps line 0.
+        let durable = |j: &mut Java, through: u64| {
+            let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+                panic!()
+            };
+            wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, through);
+            j.idle();
+        };
+        durable(&mut j, first);
+        j.conflict_obs(&part(&record.lines[2..]));
+        j.idle();
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(
+            kept().iter().map(|k| k.0).collect::<Vec<_>>(),
+            vec![record.lines[0].line, record.lines[2].line],
+            "line 1 (first record only) forgotten, line 0 kept by its copy"
+        );
+        // A save past the copy: the next answer forgets it too, and its copy books again.
+        let now = j.next_obs - 1;
+        durable(&mut j, now);
+        let again = j.conflict_obs(&part(&record.lines[..1]));
+        j.idle();
+        assert_eq!(kept(), vec![(record.lines[0].line, again)]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_answers),
+            4,
+            "the copy after the save is booked again, by state"
+        );
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0], "nothing moves");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// CAMP_OUT ends the epoch: the lines in flight are void, and a late answer for them is booked by
     /// the world fact it reports, not dropped, and a CAMP_OUT for another epoch ends nothing.
     #[test]
