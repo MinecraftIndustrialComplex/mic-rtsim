@@ -84,7 +84,9 @@ public final class RailFrostmawGameTests {
         drive(helper, FROSTMAW, true);
     }
 
-    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_pass", timeoutTicks = 2400)
+    // Its own batch: a batch's tests run together, and each releases the far chunks the other has forced
+    // (ConflictKit.releaseFarChunks), which stops the other's train
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_control", timeoutTicks = 2400)
     public static void theControlZombieOnTheRailIsMoved(GameTestHelper helper) {
         drive(helper, ZOMBIE, false);
     }
