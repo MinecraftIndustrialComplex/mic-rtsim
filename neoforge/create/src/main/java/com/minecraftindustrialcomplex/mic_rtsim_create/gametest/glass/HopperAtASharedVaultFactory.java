@@ -47,6 +47,8 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
 
     /** Line A, BrassMixing's (8,y,8) moved by this. */
     static final BlockPos A_BY = new BlockPos(-4, 5, 0);
+    /** Line A one lower, its basin's spout over the vault's top ({@link BasinIntoASharedVaultFactory}). */
+    static final BlockPos A_BY_BASIN = new BlockPos(-4, 4, 0);
     static final BlockPos MIXER = new BlockPos(4, 10, 8), VAULT = new BlockPos(5, 6, 8), VAULT_BOTTOM = new BlockPos(5, 5, 8);
     static final BlockPos PRESS = new BlockPos(7, 5, 8), HOPPER = new BlockPos(6, 7, 9), HOPPER_CHEST = new BlockPos(6, 8, 9);
     static final BlockPos FEED = new BlockPos(5, 4, 8), BELT_END = new BlockPos(6, 3, 8);
@@ -54,14 +56,21 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
     /** Whether the hopper is built ({@link FrozenNeighbourFactory} builds the same lines without it). */
     private final boolean withHopper;
     private final String name;
+    /** Whether line A's basin pours into the vault itself, not through a chute ({@link BasinIntoASharedVaultFactory}). */
+    private final boolean basinOutput;
 
     public HopperAtASharedVaultFactory() {
         this(true, "hopper_vault");
     }
 
     HopperAtASharedVaultFactory(boolean withHopper, String name) {
+        this(withHopper, name, false);
+    }
+
+    HopperAtASharedVaultFactory(boolean withHopper, String name, boolean basinOutput) {
         this.withHopper = withHopper;
         this.name = name;
+        this.basinOutput = basinOutput;
     }
 
     @Override
@@ -76,8 +85,9 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
 
     @Override
     public Built build(GameTestHelper h) {
-        // Line A, with its output chest where the vault will be: the vault replaces it.
-        Built a = new BrassMixingFactory().build(new SectionsFx.Shifted(h, A_BY));
+        // Line A, with its output chest where the vault will be: the vault replaces it (and the chute over it,
+        // when the basin pours into the vault: its spout then faces the vault's top).
+        Built a = new BrassMixingFactory().build(new SectionsFx.Shifted(h, basinOutput ? A_BY_BASIN : A_BY));
         // The vault, x 5..6, y 5..6, z 8..9 (corner at the +z side, as StationCargoGameTests lays one out).
         BlockState v = AllBlocks.ITEM_VAULT.getDefaultState().setValue(ItemVaultBlock.HORIZONTAL_AXIS, Direction.Axis.X);
         BlockPos corner = at(h, 5, 5, 9);
