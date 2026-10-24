@@ -1004,7 +1004,7 @@ impl Engine {
                 applied_epoch,
             } => {
                 self.district_mut(*district).loaded_chunks.insert(*chunk);
-                self.chain_chunk_loaded(*district, *chunk, at);
+                self.chain_chunk_loaded(*district, Some(*chunk), at);
                 // It leaves the replay once the tick's records are in (I7).
                 self.mark(*district);
                 // The chunk's attachment says an epoch is applied whose result never came (a
@@ -1400,6 +1400,7 @@ impl Engine {
                     self.glass.back(at, d, &self.tun.glass);
                 }
                 self.reconcile_round(d, at, Round::Full);
+                self.chain_chunk_loaded(d, None, at);
             }
             Presence::Partial => {
                 if old == Presence::Unloaded {
@@ -1849,8 +1850,9 @@ impl Engine {
         }
     }
 
-    /// A chunk of district `d` loaded: what replays sent a frogport there is written in.
-    fn chain_chunk_loaded(&mut self, d: DistrictId, chunk: ChunkPos, at: Tick) {
+    /// A chunk of district `d` loaded (None: all of it): what replays sent a frogport there is
+    /// written in.
+    fn chain_chunk_loaded(&mut self, d: DistrictId, chunk: Option<ChunkPos>, at: Tick) {
         let Some(dist) = self.districts.get(&d) else {
             return;
         };
@@ -1858,7 +1860,7 @@ impl Engine {
             f.district == Some(d)
                 && f.inventory
                     .and_then(|i| dist.inventories.get(&i))
-                    .is_some_and(|i| i.chunk == chunk)
+                    .is_some_and(|i| chunk.is_none_or(|c| i.chunk == c))
         };
         let stores: Vec<StoreId> = self
             .stores
@@ -1899,9 +1901,10 @@ impl Engine {
         let mut again = false;
         for (index, pos, d, inv) in ports {
             let loaded = self.districts.get(&d).is_some_and(|x| {
-                x.inventories
-                    .get(&inv)
-                    .is_some_and(|i| !i.destroyed && x.loaded_chunks.contains(&i.chunk))
+                x.inventories.get(&inv).is_some_and(|i| {
+                    !i.destroyed
+                        && (x.presence == Presence::Live || x.loaded_chunks.contains(&i.chunk))
+                })
             });
             if !loaded {
                 continue;
