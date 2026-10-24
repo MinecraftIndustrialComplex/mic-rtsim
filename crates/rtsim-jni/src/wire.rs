@@ -90,6 +90,11 @@ pub mod obs {
     pub const DIED: u16 = 0x0105;
     pub const TRANSFER: u16 = 0x0110;
     pub const COMMAND_RESULT: u16 = 0x0111;
+    /// A session's generation (docs/boundary.md §2.6): the first record a session journals.
+    pub const JOURNAL_GEN: u16 = 0x0130;
+    /// A copy of a record a chunk or entity carried (docs/boundary.md §2.6): the record whole,
+    /// after the generation it was first journaled in.
+    pub const REASSERT: u16 = 0x0131;
 
     pub const fn is_journaled(kind: u16) -> bool {
         kind >= 0x0100 && kind < 0x8000
@@ -234,6 +239,20 @@ pub mod obs {
         pub const ITEM: usize = 48;
         pub const AMOUNT: usize = 56;
         pub const SIZE: usize = 64;
+    }
+
+    /// JOURNAL_GEN: 24 u64 the session's nonce (random, never 0).
+    pub mod journal_gen {
+        pub const GEN: usize = 24;
+        pub const SIZE: usize = 32;
+    }
+
+    /// REASSERT: 24 u64 the generation the copied record was first journaled in (0 for none
+    /// known), 32 the copied record whole, its own header and first sequence included.
+    pub mod reassert {
+        pub const GEN: usize = 24;
+        pub const INNER: usize = 32;
+        pub const SIZE: usize = 32;
     }
 
     pub mod command_result {
