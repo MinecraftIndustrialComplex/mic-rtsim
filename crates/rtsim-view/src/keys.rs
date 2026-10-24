@@ -63,13 +63,14 @@ pub const CONFLICT: PageKey = PageKey::new(0x4300, 0);
 pub const WORLD_MODEL: PageKey = PageKey::new(0x5700, 0);
 pub const WORLD_MODEL_REGIONS: u16 = 0x5701;
 /// The industry engine's tables (`rtsim_industry::persist`): globals, districts, clusters, glass,
-/// train legs.
-pub const INDUSTRY_TABLES: [u16; 5] = [
+/// train legs, package stores.
+pub const INDUSTRY_TABLES: [u16; 6] = [
     rtsim_industry::persist::GLOBAL_TABLE,
     rtsim_industry::persist::DISTRICT_TABLE,
     rtsim_industry::persist::CLUSTER_TABLE,
     rtsim_industry::persist::GLASS_TABLE,
     rtsim_industry::persist::LEG_TABLE,
+    rtsim_industry::persist::STORE_TABLE,
 ];
 
 /// Java's dictionary kind of dimension names (docs/boundary.md §2).
