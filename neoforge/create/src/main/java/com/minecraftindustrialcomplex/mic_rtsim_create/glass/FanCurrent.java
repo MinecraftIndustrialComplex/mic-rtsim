@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.glass;
 
+import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.fan.AirCurrent;
 import com.simibubi.create.content.kinetics.fan.EncasedFanBlock;
@@ -53,7 +54,7 @@ final class FanCurrent {
         BlockPos start = fan.getBlockPos();
         // getFlowLimit reads the blocks up to the reach: stop it short of an unloaded chunk, never load one
         for (int d = 1; d <= (int) Math.ceil(max); d++)
-            if (!level.isLoaded(start.relative(facing, d))) {
+            if (!Loaded.at(level, start.relative(facing, d))) {
                 max = Math.min(max, d - 1);
                 break;
             }
@@ -67,7 +68,7 @@ final class FanCurrent {
         BlockPos curCatalyst = null;
         for (int i = searchStart; i * step <= searchEnd * step; i += step) {
             BlockPos p = start.relative(facing, i);
-            if (!level.isLoaded(p))
+            if (!Loaded.at(level, p))
                 break;
             FanProcessingType t = FanProcessingType.getAt(level, p);
             if (t != null) {
