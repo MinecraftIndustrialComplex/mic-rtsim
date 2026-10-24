@@ -73,9 +73,13 @@ pub const REPLAY_HOLD_TICKS: u64 = 20;
 /// How long a held arrival or siege round waits, while the session's replay runs, for a
 /// replayed BAND_MATERIALIZED to show that the last session fought it (docs/replay-gate.md
 /// §6.1, RP-48). Past it no fight answered the hold, and it resolves unwatched as the last
-/// session did. A watched decision's record comes a hand-over or two after it, plus what the
-/// step lagged Java by. PLACEHOLDER: 600 world ticks (30 s of game time), far past both and a
-/// fortieth of the shortest siege interval (a day).
+/// session did. No hard bound exists on the delay from a watched decision to its record: it is
+/// normally 1 to 2 ticks, but a spawn group held by Java's spawn quota (8 a tick by default,
+/// which holds every later command), a full command buffer or a lagging engine stretches it.
+/// 600 world ticks covers 30 s of stall, and is a fortieth of the shortest siege interval (a
+/// day). A fight recorded later than that is resolved unwatched by the replay, and its late
+/// record then embodies the band: a double. `ConflictStats::fight_record_gap_max` measures the
+/// delay live, so the value can be set from data (RP-51).
 pub const REPLAY_HOLD_SLACK_TICKS: u64 = 600;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
@@ -398,6 +402,11 @@ pub struct ConflictStats {
     /// War parties sent again on the same rung, `repeat_days` after the last came home (MOWZIE.md
     /// ledger 3).
     pub repeats: u64,
+    /// The largest gap, in ticks, between a live watched fight's decision (`start_fight`) and
+    /// its first BAND_MATERIALIZED, which a replay's hold waits for up to
+    /// [`REPLAY_HOLD_SLACK_TICKS`] (docs/replay-gate.md §6.1, RP-48, RP-51). Not saved: this
+    /// process's, so the slack can be set from data (rtsim-jni logs each new largest).
+    pub fight_record_gap_max: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -708,6 +717,10 @@ pub struct Conflict {
     /// (docs/replay-gate.md §6.1, RP-23): per party, the tick it arrived and the plan of its
     /// poll. In memory only: a restart from pages saved mid-replay arrives again at the poll.
     pub(crate) held: BTreeMap<Handle<Party>, (Tick, u32)>,
+    /// Live watched fights whose first BAND_MATERIALIZED has not come yet (RP-51): per party,
+    /// the fight's epoch and the tick `start_fight` decided it, for
+    /// `ConflictStats::fight_record_gap_max`. In memory only.
+    pub(crate) fights_unanswered: BTreeMap<Handle<Party>, (u32, Tick)>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -794,6 +807,7 @@ impl Conflict {
             floors: BTreeMap::new(),
             fill_deaths: BTreeMap::new(),
             held: BTreeMap::new(),
+            fights_unanswered: BTreeMap::new(),
         }
     }
 
@@ -3921,6 +3935,7 @@ impl Conflict {
         }
         if self.parties[p].loot.is_empty() {
             self.parties.remove(p);
+            self.fights_unanswered.remove(&p);
         } else {
             // A haven with no storehouse (never, by construction): keep the row so the goods
             // stay accounted for.
@@ -4050,6 +4065,7 @@ impl Conflict {
             x.wave = 0;
             x.spawned.clear();
         }
+        self.fights_unanswered.insert(p, (epoch, at));
         let here = *self.parties[p].route.last().expect("route");
         self.book_leg(w, p, here, here, at, ends);
         let plan = self.bump(p);
@@ -5405,11 +5421,20 @@ impl Conflict {
     }
 
     /// A BAND_MATERIALIZED (docs/replay-gate.md §5.2, §5.3). Live, Java's answer to a command of
-    /// this session, which embodied the party when it was decided: nothing to do. While
-    /// replaying, Java's answer to a decision of the last session: on an engine that came back
-    /// from its pages it is honoured (§5.2); on a fresh engine (RP-31) its epoch only raises the
-    /// party's floor.
+    /// this session, which embodied the party when it was decided: nothing to do but measure a
+    /// watched fight's first (RP-51). While replaying, Java's answer to a decision of the last
+    /// session: on an engine that came back from its pages it is honoured (§5.2); on a fresh
+    /// engine (RP-31) its epoch only raises the party's floor.
     fn materialized(&mut self, w: &mut World, m: &boundary::BandMaterialized, at: Tick) {
+        // A live watched fight's first record: how long it took (RP-51).
+        if let Some(p) = Party::of_agent(m.agent)
+            && let Some(&(epoch, decided)) = self.fights_unanswered.get(&p)
+            && epoch == m.epoch
+        {
+            self.fights_unanswered.remove(&p);
+            let gap = at.0.saturating_sub(decided.0);
+            self.stats.fight_record_gap_max = self.stats.fight_record_gap_max.max(gap);
+        }
         if !self.outbox.replaying() {
             return;
         }

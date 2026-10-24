@@ -1152,8 +1152,12 @@ conservative option at its fork.
   the replay's records too.
 - **RP-48** (a held decision's slack; §6.1; amends RP-23; the re-review's item 1): while
   replaying, a held arrival or siege round waits for its fight's BAND_MATERIALIZED only
-  `REPLAY_HOLD_SLACK_TICKS` (PLACEHOLDER 600 world ticks, 30 s; a watched decision's record comes a
-  hand-over or two after it, and the shortest siege interval is a day). Its last poll is scheduled
+  `REPLAY_HOLD_SLACK_TICKS` (600 world ticks, 30 s; the shortest siege interval is a day). Amended
+  by the RP-48/RP-49 check (fixes4 item 1): no hard bound exists on the delay from a watched
+  decision to its record; it is normally 1 to 2 ticks, and a spawn group held by Java's spawn quota
+  (`DEFAULT_SPAWN_QUOTA` 8, which holds every later command), a full command buffer or a lagging
+  engine stretches it. 600 covers 30 s of stall and is no longer a placeholder; a fight recorded
+  past it is a double (RP-51 measures the delay). Its last poll is scheduled
   at `since` + the slack; there the Ev::Party arm drops the hold and `party_event` runs `arrive()`
   or `wait_over()`, which, still replaying and past the slack, take the unwatched branch at once.
   The replay clock follows the records (§3.6), so that poll runs after every record before the
@@ -1199,3 +1203,16 @@ conservative option at its fork.
   `a_copy_whose_op_id_was_heard_is_dropped_not_applied` and its replayed twin: (applied, dropped)
   (1, 0) against (0, 1); with the assertion and not the fix, both stop at "the copy bit on a
   DuplicateOp". Rejected: leaving a duplicate-op copy out of both counts.
+- **RP-51** (the slack from data; §6.1; RP-48; fixes4 item 1): `ConflictStats::fight_record_gap_max`,
+  the largest gap from a live `start_fight` to its fight's first BAND_MATERIALIZED (same epoch),
+  measured at the record's ingest tick, the one `held_since` compares with the slack. `start_fight`
+  notes (epoch, tick) per party in an in-memory map, `fights_unanswered`; the first record of that
+  epoch takes it out and raises the stat; a sighting's record has no entry, and a replay none (the
+  map is per process, and `start_fight` does nothing while replaying). An entry whose record never
+  comes (a rejected spawn, a crash) waits for the party's next fight or its removal. Not saved: a
+  field in the saved stats vector would change the page, so the stat is this process's, and
+  rtsim-jni logs each new largest (info; a warning at or past the slack), which a server's log
+  keeps across restarts. Failing first, mowzie_records'
+  `a_watched_fights_record_gap_is_measured_from_its_decision` (the band seen on its road, then
+  fought at its arrival; the plugin answers a tick later): 0 against 1. The sims' JSON gains the
+  field.

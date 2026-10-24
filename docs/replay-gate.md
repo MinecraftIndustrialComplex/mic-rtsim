@@ -881,12 +881,16 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   becomes Waiting at the replay end, as every Fighting party does
   (`a_held_arrivals_replayed_fight_counts_its_casualties_once`, rtsim-jni tests/protocol.rs).
 - **Not honoured: the slack** (RP-48). A held party with no such record keeps its poll until the
-  hold's slack, `REPLAY_HOLD_SLACK_TICKS` (PLACEHOLDER 600 world ticks, 30 s) after its arrival or
-  round. A watched decision's BAND_MATERIALIZED comes a hand-over or two after it (Java journals it
-  as it applies the command), so a hold that no record answered by then was not fought: the poll at
-  the slack ends the hold and runs `arrive()` or `wait_over()`, which, still replaying and past the
-  slack, take the unwatched branch at once (recall, `resolve`, then wait or go home), as the session
-  that went on did. The replay clock follows the records (§3.6), and the events up to a record's
+  hold's slack, `REPLAY_HOLD_SLACK_TICKS` (600 world ticks, 30 s) after its arrival or round. No
+  hard bound exists on the delay from a watched decision to its BAND_MATERIALIZED (Java journals it
+  as it applies the command): normally 1 to 2 ticks, but a spawn group held by Java's spawn quota
+  (`DEFAULT_SPAWN_QUOTA` 8 a tick, which holds every later command), a full command buffer or a
+  lagging engine stretches it; 600 covers 30 s of stall. The live engine measures it
+  (`ConflictStats::fight_record_gap_max`, and rtsim-jni logs each new largest, warning at or past
+  the slack: RP-51), so the value can be set from data. A hold that no record answered by then is
+  read as not fought: the poll at the slack ends the hold and runs `arrive()` or `wait_over()`,
+  which, still replaying and past the slack, take the unwatched branch at once (recall, `resolve`,
+  then wait or go home), as the session that went on did. The replay clock follows the records (§3.6), and the events up to a record's
   time run before it, so that poll runs before any record at or past the slack and after every
   record before it. A later BAND_MATERIALIZED of the party is then a sighting: it finds no hold and
   embodies the band as `seen()` did live.
@@ -905,6 +909,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
 
 - A crash right after a watched arrival, before Java journaled its BAND_MATERIALIZED: the fight Java
   may have shown is resolved abstractly at the replay end.
+- A fight recorded past the slack (a double, accepted until the record says which it is; RP-48,
+  RP-51). The replay resolves the decision unwatched at the slack, and the late, newer-epoch
+  record then embodies the band as a sighting: its casualties and loot count again, and
+  `end_fight` never runs.
 - A sighting inside the slack (RP-48's residual). A party that resolved unwatched and was then seen,
   on its way home or waiting for its next round, answers with a BAND_MATERIALIZED too, and the
   record does not say which (it carries the agent, epoch, dimension, wave and units spawned, and a
