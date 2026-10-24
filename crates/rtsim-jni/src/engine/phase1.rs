@@ -1871,21 +1871,27 @@ pub(super) fn simulate(st: &mut State) {
         st.phase1.world.run_until(Tick(target));
     }
     take_world_commands(st);
-    let near: Vec<SpawnNear> = std::mem::take(&mut st.phase1.spawn_near);
-    for s in near {
-        spawn_near(st, s);
-    }
-    let gt = st.game_time;
-    if st.phase1.last_interest == i64::MIN || gt - st.phase1.last_interest >= INTEREST_TICKS {
-        st.phase1.last_interest = gt;
-        interest(st);
-    }
-    if !st.phase1.market_dirty.is_empty()
-        || st.phase1.last_market == i64::MIN
-        || gt - st.phase1.last_market >= MARKET_TICKS
-    {
-        st.phase1.last_market = gt;
-        markets(st);
+    // Nothing is materialized and no market is sent while the session's replay runs
+    // (docs/replay-gate.md §6, RP-44): the world is the replayed past (held at the replay clock
+    // when a module shares it, §3.6), and the records still to come change what a player would
+    // see there. The first step after the replay end runs both, and a test's P1_SPAWN_NEAR waits.
+    if !st.replaying {
+        let near: Vec<SpawnNear> = std::mem::take(&mut st.phase1.spawn_near);
+        for s in near {
+            spawn_near(st, s);
+        }
+        let gt = st.game_time;
+        if st.phase1.last_interest == i64::MIN || gt - st.phase1.last_interest >= INTEREST_TICKS {
+            st.phase1.last_interest = gt;
+            interest(st);
+        }
+        if !st.phase1.market_dirty.is_empty()
+            || st.phase1.last_market == i64::MIN
+            || gt - st.phase1.last_market >= MARKET_TICKS
+        {
+            st.phase1.last_market = gt;
+            markets(st);
+        }
     }
     let l = &mut st.phase1;
     l.stats[stat::VILLAGES] = l.nodes.len() as u64;
