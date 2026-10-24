@@ -175,8 +175,8 @@ pub struct Placing {
     pub pos: (i32, i32, i32),
 }
 
-/// The haven chest the plugin chose for a camp (HAVEN_CHEST, MZB-422): unsaved, latest wins, and
-/// forgotten at CAMP_OUT and at a session start.
+/// The haven chest the plugin chose for a camp (HAVEN_CHEST, MZB-422): journaled (MZB-446), the
+/// latest record wins; unsaved, and forgotten at CAMP_OUT and at a session start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chest {
     pub dimension: u32,
@@ -455,10 +455,22 @@ fn chief_body_record(key: u64, camp: &Camp) -> Cmd {
     })
 }
 
-/// The op id of a camp's `n`th tribute transfer: the core's namespace, derived from the camp and
-/// the count so a rewritten transfer is the same op (MZB-423).
-fn tribute_op(key: u64, n: u32) -> u64 {
-    rtsim_world::ribbits::identity_op(key, TRIBUTE_SLOT | u64::from(n))
+/// The op id of a camp's `n`th tribute transfer: the core's namespace, derived from the camp, the
+/// count, the good and the amount, so a transfer rewritten after a crash is the same op, and a
+/// different decision never is (docs/boundary.md §2.2): a stack decided again with another amount
+/// (a second payment replayed before it) cannot be answered DUPLICATE_OP for the one the plugin
+/// put down (MZB-423, MZB-446).
+fn tribute_op(key: u64, n: u32, good: u32, amount: i64) -> u64 {
+    let slot = fnv1a64(
+        &[
+            TRIBUTE_SLOT.to_le_bytes(),
+            u64::from(n).to_le_bytes(),
+            u64::from(good).to_le_bytes(),
+            amount.to_le_bytes(),
+        ]
+        .concat(),
+    );
+    rtsim_world::ribbits::identity_op(key, slot)
 }
 
 /// A CAMP_RECONCILE's op id: the engine's allocator byte over 56 bits derived from the camp, the
@@ -1747,7 +1759,10 @@ impl Conflict {
         self.place_tribute(w, f, at);
     }
 
-    /// HAVEN_CHEST (MZB-422): the chest the plugin chose for a grove, latest wins. Unsaved.
+    /// HAVEN_CHEST (MZB-422): the chest the plugin chose for a grove, its position and free slots
+    /// as they were at the record's time: the latest wins, so a record is idempotent by the state
+    /// it names. Journaled (MZB-446), so that a replay after a crash knows the chest the session
+    /// knew; unsaved.
     pub(super) fn haven_chest(&mut self, w: &mut World, h: &boundary::HavenChest, at: Tick) {
         let Some(&f) = self.by_key.get(&h.faction) else {
             return;
@@ -1808,7 +1823,7 @@ impl Conflict {
         let Some(camp) = self.camp_mut(f) else {
             return;
         };
-        let op = tribute_op(key, camp.stacks);
+        let op = tribute_op(key, camp.stacks, u32::from(good.0), n);
         camp.stacks += 1;
         // A stack may fill a slot: the chest has one less until the plugin says otherwise.
         camp.chest = Some(Chest {

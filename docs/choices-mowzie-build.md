@@ -2572,6 +2572,10 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     footprint nearest the centre that has room or a loot table not yet rolled.
   - It sends HAVEN_CHEST when the choice or its free slots change, and one with 0 free slots when there is
     none.
+  - Amended at review (MZB-446, P3-3): HAVEN_CHEST is journaled at 0x0817, so it is no `observe_latest` arm
+    and the engine's copy is still unsaved. The plugin sends it from the server (never carried by a holder),
+    at most once per tick per grove, and once at the start of a session for a grove that is in or comes in,
+    since the pages do not hold the chest.
 - **MZB-423** (tribute into the chest):
   - Each booked payment (CHIEF_PAID, the envoy's TRIBUTE_PAID, a gift) adds its goods to
     `Camp.owed_tribute`.
@@ -2804,8 +2808,8 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - `Placing` carries the chest (Java's dimension and position) as well as the good and amount, so a
     transfer rewritten after a restart knows where it goes. The stacks in flight are `Conflict.placing`, a
     resident list of (faction, `Placing`) saved in the meta page, never a field of a paged row.
-  - The op id is `identity_op(faction key, TRIBUTE_SLOT | stacks)` over a counter saved in the camp, so the
-    same decision after a crash has the same id.
+  - The op id is `identity_op(faction key, hash(TRIBUTE_SLOT, stacks, good, amount))` over a counter saved in
+    the camp (amended at review, P3-3, below), so the same decision after a crash has the same id.
   - Each stack takes one free slot off the chest's count until HAVEN_CHEST says otherwise; FAILED forgets
     the chest; CAMP_OUT and a session start clear it.
   - The engine books the goods as left to the players (`World::stock_to_players`, `player_out`) when it
@@ -2815,6 +2819,27 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     got and puts the rest back with `stock_from_players`. The grove's stock of the tribute good draws about
     two a day in the test world, so a stack read at the world's older clock was taken short and left the
     books with no stack to show for it.
+  - Amended at review, P3-3: HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired, as DIFFICULTY's 0x0093
+    is), with obsSeq at 8 and gameTime at 16, and rtsim-jni takes it through `Replay` into `Conflict::ingest`
+    at its own time like the other grove records, not through `observe_state`. It names a state (the
+    chest's place and free slots), the latest record wins, and nothing carries it: a holder does not (it is
+    sent from the server), so there is no old copy to overwrite a newer chest, and the journal's order is
+    the order of the chest's changes. The chest itself is still unsaved (forgotten at CAMP_OUT and at a
+    session start), so a replay gives the engine the chest that a record after the last save named, and
+    the plugin's session-start record gives it the rest.
+  - Amended at review, P3-3, the op id: `tribute_op(key, stacks, good, amount)`, the hash of the counter,
+    the good and the amount over the faction (docs/boundary.md §2.2: the same decision after a crash gets
+    the same id, a different one never does). The journal alone does not make a replay decide the same
+    stack: the camp is out during a replay (a replayed census only marks it), so no stack is placed until
+    the live census and the chest record after it, and the stack is then decided from everything the replay
+    owed. When that is the stack decided before the crash (one payment, then the chest), the op and the
+    amount are the same and the plugin's DUPLICATE_OP answer books what it put down. When a second
+    payment, journaled after the first stack went, is owed too, the amount differs (60 against 30) and so
+    does the op: the plugin puts the new stack down, and the chest holds the first stack too, a gift of at
+    most one stack per crash and never a loss. With the counter alone the same op would have been answered
+    DUPLICATE_OP for 60 nuggets when 30 were in the chest. What is left of the window: a stack decided
+    again from different state is put down twice, the first in the chest by Java's save and the second by
+    the replay, since the pages lack the first's answer.
 - **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
   tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
   coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.
@@ -3167,7 +3192,7 @@ Two fixes for M6:
   - Save and load with every new field.
 - `rtsim-jni` protocol tests:
   - The CHIEF_PAID gold equivalents.
-  - HAVEN_CHEST is latest-wins.
+  - HAVEN_CHEST is journaled (0x0817, MZB-446), replayed after a crash.
   - A restart after a payment and before any CHIEF_BODY keeps the memory (test 25).
   - The Invasion round trip (test 25): the chief Gone, home, CHIEF_BODY before SPAWN.
   - A dead slot's census and a payment to it add nothing, and the payment is still tribute (test 25).

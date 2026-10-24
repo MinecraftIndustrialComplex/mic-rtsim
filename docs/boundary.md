@@ -1443,9 +1443,9 @@ none of their commands.
 
 The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
 ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
-stay as they are; these three are next to the herds'. Mowzie's kinds take 0x0091 and 0x0092
-(latest-wins; 0x0093 is retired, DIFFICULTY's before it was journaled), 0x080C to 0x0816 (journaled)
-and 0x8807 to 0x880C (commands). **Dictionary kind 0x20**
+stay as they are; these three are next to the herds'. Mowzie's kinds take 0x0091 (latest-wins; 0x0092
+and 0x0093 are retired, HAVEN_CHEST's and DIFFICULTY's before they were journaled), 0x080C to 0x0817
+(journaled) and 0x8807 to 0x880C (commands). **Dictionary kind 0x20**
 (each direction, as §2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12
 are untouched.
 **Pages**: table 0x4300 ('C'), the meta page at id 0 and the rows at 0x4310 and up, as the ships'
@@ -1497,7 +1497,7 @@ are untouched.
 |---|---|---|---|---|
 | 0x0090 | BAND_STATE (latest-wins) | flags: 1 ticking, 2 fighting | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied party (PLACEHOLDER) | 56 |
 | 0x0091 | CHIEF_STATE (latest-wins) | flags: 1 crystal held | 8 u64 faction, 16 f32 health, 20 reserved | 24 |
-| 0x0092 | HAVEN_CHEST (latest-wins) | 0 | 8 u64 faction, 16 u32 dimension, 20 i32 x, 24 y, 28 z, 32 u32 free slots (as LAIR_CHEST), 36 reserved | 40 |
+| 0x0092 | retired (HAVEN_CHEST's until MZB-446 journaled it as 0x0817; never reuse) | | | |
 | 0x0093 | retired (DIFFICULTY's until MZB-17 journaled it as 0x0815; never reuse) | | | |
 | 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved | 56 |
 | 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
@@ -1522,11 +1522,12 @@ are untouched.
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 | 0x0816 | HUNT_APPLIED | 0 | 24 u64 faction, 32 u64 district, 40 u64 opId (the OWED_HUNT's), 48 u32 killed, 52 reserved | 56 |
+| 0x0817 | HAVEN_CHEST | 0 | 24 u64 faction, 32 u32 dimension, 36 i32 x, 40 y, 44 z, 48 u32 free slots (as LAIR_CHEST), 52 reserved | 56 |
 
-All of 0x0800 to 0x0816 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, the camp records
+All of 0x0800 to 0x0817 are journaled; 0x0090 and 0x0091 are latest-wins (§2.3), and 0x0092 and
+0x0093 are retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, the camp records
 (0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census), the chief's (0x0091 and
-0x880A) and the grove's (0x0092, 0x0810, 0x0814, 0x0816 and 0x880C) today; RAIL_PASS and TRAIN_PASSED
+0x880A) and the grove's (0x0810, 0x0814, 0x0816, 0x0817 and 0x880C) today; RAIL_PASS and TRAIN_PASSED
 are deferred (§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
@@ -1591,7 +1592,11 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 - **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5);
   **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`), with that body's
   slot and generation; **TRADED** a masked trade with the grove's minions; **HAVEN_CHEST** a grove
-  chest tribute can go into.
+  chest tribute can go into (MZB-422): the chest's place and free slots as they are, journaled so
+  that a replay after a crash knows the chest the session knew (MZB-446). It names a state, so a
+  copy is idempotent (the latest record wins). Java sends it from the server, never carried by a
+  holder: when the chest chosen or its free slots change (at most once per tick per grove) and once
+  at the start of a session, for a grove whose camp is in or comes in.
 - **RAIL_PASS** is one Create train's pass through a camp's range, at the sampled point nearest the
   camp (MOWZIE.md §4.3); **TRAIN_PASSED** a train passing a lurking party's AMBUSH_SPOT (§4.4).
 
@@ -1766,7 +1771,9 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   TRIBUTE_PAID, a gift) is owed to its chest; with HAVEN_CHEST known and free slots, the engine takes
   one stack (64 items at most, the tribute good only) out of the faction's stock and writes it as a
   TRANSFER_TO_CONTAINER through the core's outbox under an op id derived from the faction and a
-  saved counter, so a restart sends it again and Java answers DUPLICATE_OP (MZB-446). APPLIED or
+  saved counter, the good and the amount (the same decision re-derived after a crash is the same op,
+  a different one never is, §2.2), so a restart sends it again and Java answers DUPLICATE_OP
+  (MZB-446). APPLIED or
   DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
   chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and

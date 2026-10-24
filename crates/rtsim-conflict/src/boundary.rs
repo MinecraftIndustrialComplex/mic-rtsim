@@ -19,8 +19,8 @@
 
 pub const BAND_STATE: u16 = 0x0090;
 pub const CHIEF_STATE: u16 = 0x0091;
-pub const HAVEN_CHEST: u16 = 0x0092;
-// 0x0093 is retired: DIFFICULTY was latest-wins there before it was journaled (MZB-17).
+// 0x0092 is retired: HAVEN_CHEST was latest-wins there before it was journaled (MZB-446, review
+// P3-3). 0x0093 is retired the same way: DIFFICULTY (MZB-17).
 pub const FACTION_FOUND: u16 = 0x0800;
 pub const TERRITORY_SIGNAL: u16 = 0x0801;
 pub const POLLUTION: u16 = 0x0802;
@@ -45,6 +45,9 @@ pub const CHIEF_PAID: u16 = 0x0814;
 pub const DIFFICULTY: u16 = 0x0815;
 /// An owed hunt was applied (MZB-425): the animals the raiding raptors would have hunted, killed.
 pub const HUNT_APPLIED: u16 = 0x0816;
+/// The chest the plugin chose for a grove's tribute (MZB-422), journaled so that a replay places
+/// the stacks it placed (MZB-446).
+pub const HAVEN_CHEST: u16 = 0x0817;
 
 pub const TERRITORY: u16 = 0x8800;
 pub const FACTION_NOTICE: u16 = 0x8801;
@@ -331,7 +334,7 @@ pub struct ChiefState {
     pub health: f32,
 }
 
-/// A chest at a haven the tribute can go into (latest-wins, as LAIR_CHEST).
+/// A chest at a haven the tribute can go into (journaled, MZB-446; the position as LAIR_CHEST's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HavenChest {
     pub faction: u64,
@@ -1143,11 +1146,11 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.finish(CHIEF_STATE, c.flags, 24);
         }
         Obs::HavenChest(h) => {
-            w.u64(8, h.faction);
-            w.u32(16, h.dimension);
-            w.ipos(20, h.pos);
-            w.u32(32, h.free);
-            w.finish(HAVEN_CHEST, 0, 40);
+            w.u64(24, h.faction);
+            w.u32(32, h.dimension);
+            w.ipos(36, h.pos);
+            w.u32(48, h.free);
+            w.finish(HAVEN_CHEST, 0, 56);
         }
         Obs::Difficulty(d) => {
             w.u32(24, d.difficulty);
@@ -1383,10 +1386,10 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             health: r.f32(16)?,
         }),
         HAVEN_CHEST => Obs::HavenChest(HavenChest {
-            faction: r.u64(8)?,
-            dimension: r.u32(16)?,
-            pos: r.ipos(20)?,
-            free: r.u32(32)?,
+            faction: r.u64(24)?,
+            dimension: r.u32(32)?,
+            pos: r.ipos(36)?,
+            free: r.u32(48)?,
         }),
         DIFFICULTY => Obs::Difficulty(Difficulty {
             difficulty: r.u32(24)?,
@@ -2281,7 +2284,7 @@ mod tests {
         match kind {
             BAND_STATE => 56,
             CHIEF_STATE => 24,
-            HAVEN_CHEST => 40,
+            HAVEN_CHEST => 56,
             DIFFICULTY => 32,
             FACTION_FOUND => 56,
             TERRITORY_SIGNAL => 72,
@@ -2685,5 +2688,28 @@ mod tests {
         assert_eq!(u16::from_le_bytes([b[0], b[1]]), 0x0815);
         assert_eq!(u32::from_le_bytes(b[24..28].try_into().unwrap()), 3);
         assert_eq!(decode_obs(&b), Ok((Some((41, 9_000)), o, 32)));
+    }
+
+    /// MZB-446 (review P3-3): HAVEN_CHEST is journaled (obsSeq at 8, gameTime at 16) at 0x0817, so
+    /// a replay places the stacks the session did; the latest-wins id it had is retired.
+    #[test]
+    fn haven_chest_is_journaled_and_its_old_id_is_retired() {
+        let o = Obs::HavenChest(HavenChest {
+            faction: 77,
+            dimension: 1,
+            pos: (905, 71, -1002),
+            free: 27,
+        });
+        assert!(o.is_journaled());
+        let mut b = Vec::new();
+        encode_obs(52, 12_000, &o, &mut b);
+        assert_eq!(b.len(), 56);
+        assert_eq!(u16::from_le_bytes([b[0], b[1]]), 0x0817);
+        assert_eq!(u64::from_le_bytes(b[24..32].try_into().unwrap()), 77);
+        assert_eq!(u32::from_le_bytes(b[48..52].try_into().unwrap()), 27);
+        assert_eq!(decode_obs(&b), Ok((Some((52, 12_000)), o, 56)));
+        // The retired id decodes as nothing.
+        b[0..2].copy_from_slice(&0x0092u16.to_le_bytes());
+        assert_eq!(decode_obs(&b), Err(CodecError::Unknown(0x0092)));
     }
 }
