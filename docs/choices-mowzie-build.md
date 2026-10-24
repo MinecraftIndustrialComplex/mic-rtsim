@@ -2810,6 +2810,11 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     the chest; CAMP_OUT and a session start clear it.
   - The engine books the goods as left to the players (`World::stock_to_players`, `player_out`) when it
     sends them, and back (`stock_from_players`) on FAILED.
+  - Amended at review, P3-2: the stock is read after the world is caught up to the tick of the decision
+    (`run_until`), as `stock_to_players` does, and a take short of what was read places the whole items it
+    got and puts the rest back with `stock_from_players`. The grove's stock of the tribute good draws about
+    two a day in the test world, so a stack read at the world's older clock was taken short and left the
+    books with no stack to show for it.
 - **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
   tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
   coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.
