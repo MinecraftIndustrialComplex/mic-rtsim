@@ -1739,6 +1739,7 @@ impl CampRun {
         self.plugin.drop_queued();
         // What the plugin held is in its memory, which a session's end clears.
         self.plugin.take_held(None);
+        self.plugin.hunts.clear();
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }

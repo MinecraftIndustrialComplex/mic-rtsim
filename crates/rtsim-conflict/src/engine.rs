@@ -3733,8 +3733,16 @@ impl Conflict {
             }
         };
         self.stats.hunts_owed += u64::from(count);
-        let cmd = self.hunt_cmd(f, d, pos, count, op);
-        self.outbox.push(cmd);
+        // TEMPORARY (fix/replay-push): a replay re-derives the raids of the last session, whose
+        // OWED_HUNTs the plugin already had; the host moves every command out of the outbox after
+        // each ingest, so a push here reaches the next session's plugin, which forgot what it
+        // applied. `resend_notices` sends every hunt still held once the replay has caught up.
+        // The choke point of fix/replay-push declares OWED_HUNT not-while-replaying, and this
+        // guard and the one in `hunt_applied` go.
+        if !self.replaying {
+            let cmd = self.hunt_cmd(f, d, pos, count, op);
+            self.outbox.push(cmd);
+        }
         self.note(
             at,
             Some(f),
@@ -3791,8 +3799,12 @@ impl Conflict {
         if e.count == 0 {
             x.hunts.remove(i);
         }
-        let cmd = self.hunt_cmd(f, e.district, e.pos, e.count, e.op);
-        self.outbox.push(cmd);
+        // TEMPORARY (fix/replay-push): see `owe_hunt`. A replayed late answer changes the books
+        // and sends nothing; the hunt that is left goes with `resend_notices`.
+        if !self.replaying {
+            let cmd = self.hunt_cmd(f, e.district, e.pos, e.count, e.op);
+            self.outbox.push(cmd);
+        }
     }
 
     /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
@@ -4945,13 +4957,12 @@ impl Conflict {
         }
         self.replaying = true;
         // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
-        // again from what is kept, after the replay (`resend_notices`).
+        // again from what is kept, after the replay (`resend_notices`). A hunt is not dropped here
+        // (it was, before the re-check): no hunt is pushed while replaying, and the host takes the
+        // outbox after every ingest, so no host test needed the filter.
         self.outbox.retain(|c| {
             c.agent().is_none()
-                && !matches!(
-                    c,
-                    Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_) | Cmd::OwedHunt(_)
-                )
+                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_))
         });
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
@@ -4987,8 +4998,7 @@ impl Conflict {
     /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
         self.replay_done();
-        self.outbox
-            .retain(|c| !matches!(c, Cmd::Notice(_) | Cmd::OwedHunt(_)));
+        self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
             let mut kept: Vec<Cmd> = self

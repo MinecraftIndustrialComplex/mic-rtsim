@@ -1626,7 +1626,13 @@ session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that n
 answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
 notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). Every OWED_HUNT no HUNT_APPLIED has answered goes
 again with the notices, for the same reason (MZB-449); and a hunt whose replaced op's answer comes late
-goes again at once with the count that is left, a count of 0 being the hunt cancelled. BAND_MARCH goes again for
+goes again at once with the count that is left, a count of 0 being the hunt cancelled. Neither goes
+while the session's replay is open (`Conflict::replaying`): the host takes every command out of the
+engine's outbox after each ingest, so a hunt a replayed raid owed, or a replayed late answer sent
+again, would reach the plugin of the next session, which had forgotten what it applied, and the animals
+would die twice. A replay only changes the books; `resend_notices` sends every hunt still held, once,
+when the replay has caught up (MZB-449, amended at the re-check; the guard is temporary, until
+fix/replay-push's one choke point for the outbox declares OWED_HUNT not-while-replaying). BAND_MARCH goes again for
 every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
 session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
 (refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
