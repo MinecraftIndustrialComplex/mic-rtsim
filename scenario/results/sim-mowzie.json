@@ -883,9 +883,24 @@
           "detail": "9 adopts in flight, then void and the camp out ((0, false)), nothing resent (true); the next census: [9, 0, 0, 0, 0], 9 adopts"
         },
         {
-          "name": "chaos holds I1 to I5 after every event (I6 is by construction), every member lost unseen is written off and no other, no draw passes its bound",
+          "name": "a raid's lost set-out answers are booked from the holders, no member lost",
           "ok": true,
-          "detail": "64 camps of 220 events each; 874 camp in, 381 camp out, 1149 kill slot, 850 lose the next, 425 raid true, 881 replay answers, 918 restart, 817 save and load, 909 stray; 1215 censuses, 2276 lines, 1311 answers, 661 deaths, 4 written off, each a ghost"
+          "detail": "4 set-outs, 4 records on the markers; party home with its slots body: true; the records land: 4 owed; 0 written off, [8, 0, 0, 1, 0], 8 bodies, 1 war parties out"
+        },
+        {
+          "name": "the same, journaled again one line to a record, each booked, no member lost",
+          "ok": true,
+          "detail": "4 set-outs, 4 records on the markers; party home with its slots body: true; the records land: 4 owed; 0 written off, [8, 0, 0, 1, 0], 8 bodies, 1 war parties out"
+        },
+        {
+          "name": "holders journal their records as the camp comes in, before its census: no member lost",
+          "ok": true,
+          "detail": "4 set-outs, 4 records on the markers; party home, books never told, 5 bodies: true; 9 bodies after the census; 0 written off"
+        },
+        {
+          "name": "chaos holds I1 to I5 after every event (I6 is by construction), every member lost unseen is written off and no other, none at all where holders journal again, no draw passes its bound",
+          "ok": true,
+          "detail": "64 camps of 220 events each; 874 camp in, 380 camp out, 1150 kill slot, 850 lose the next, 425 raid true, 882 replay answers, 919 restart, 816 save and load, 907 stray; 1215 censuses, 2286 lines, 1443 answers, 664 deaths, 4 written off, each a ghost"
         }
       ],
       "rungs": [],

@@ -470,8 +470,9 @@ under its own heading.
   over several records (`split_answers`, that many lines to a record, as holders in several chunks
   answer). Holders are emulated as MOWZIE.md §4.9 has them: a line applied and done, and a death,
   leaves its record on a holder (`holders`, `death_holders`) until the engine has it, and with
-  `holders_again` the restart journals those records again (`journal_holders`), which the engine
-  books by the action each carries and skips by (op, line). `CampRun` drives an engine against one,
+  `holders_again` the restart and each camp-in, before its census, journal those records again
+  (`journal_holders`, MZB-175), which the engine books by the action each carries and skips by
+  (op, line). `CampRun` drives an engine against one,
   with `decide` and `census_held` for crash tests, `track` and `settle` for the ghosts (MZB-167),
   and `check`: I1 and I2 by the engine's own audit, I4 by counting each (op, line) the plugin
   applied, I3 and I5 against the world; I6 is by construction, the engine never sees the world. Run
@@ -479,7 +480,7 @@ under its own heading.
   follow-up party changes from world to world) and chaos over 64 camps from `--seed`, whose
   plugin follows the seed (a lost record stays lost; holders journal it again; holders journal it
   again one line to a record), settled at the end and asserting that the engine's write-offs are
-  exactly the ghosts (MZB-167); run 8's part saves and restarts with lines in flight three ways.
+  exactly the ghosts, and none where holders journal again (MZB-167, MZB-175); run 8's part saves and restarts with lines in flight three ways.
   Both are printing checks that must pass (`sim mowzie` exits 1 otherwise, and a test runs it).
   Where run 10 still falls short of MOWZIE.md §7: no line is held (Rule U's holds, the Frostmaw's
   spawn wait: Java's, deferred by MZB-164, so the fake plugin applies every line in the tick it
@@ -502,18 +503,18 @@ under its own heading.
   census leaves four ghosts, and four members are written off. A ghost is a slot that is a body at
   home with no body in the world and no record on its way to the engine; three censuses over two
   days write it off, and a draw first rescues it (its set-out finds nothing to do and books the body
-  gone). A record only a holder has is no cover in the emulation: it is journaled again at a session
-  start, and books then only while its epoch is the latest a census named (MZB-169); a census since
-  reads the world and writes off by its own table. The plan also has a holder journal its record
-  when its chunk loads, which a camp coming in does: a footprint holder's record that arrives at
-  camp-in, before the new census, still carries the latest epoch and books (Java sends the census
-  only after every footprint holder has journaled, MZB-174); one that arrives after a census of a
-  later epoch is of an older epoch and books nothing, so for it the table is what counts. An answer lost with no restart after it, which the chaos run
-  does, is the emulation being harder than the plugin: a real answer is lost at a crash, and the
-  restart after it journals the holders again. The chaos run ends with `settle` and asserts that the
+  gone). A record only a holder has is cover where the plugin journals holders again
+  (`holders_again`, MZB-175): the emulated holders journal at a session start and at each
+  camp-in, before the census, as the real ones do when their chunks load and as MZB-174 makes the
+  census wait for. A footprint holder's record that arrives at camp-in, before the new census,
+  still carries the latest epoch and books (MZB-169); one that arrives after a census of a later
+  epoch is of an older epoch and books nothing, and for it the table is what counts. An answer
+  lost with no restart after it, which the chaos run does, is repaired at the next camp-in by the
+  holders. The chaos run ends with `settle` and asserts that the
   engine's write-offs are exactly the ghosts the run made and that none is left (`CampRun::track`
-  finds them by effect after each step of a run); `lost_members`, which the assertion used, was an
-  upper bound that any loss passed, and is gone. Tests:
+  finds them by effect after each step of a run), and (MZB-175) that nothing is written off where
+  holders journal again; `lost_members`, which the assertion used, was an upper bound that any
+  loss passed, and is gone. Tests:
   `a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none` (four against none, each
   equal to its ghosts), `a_body_whose_death_is_on_its_way_is_no_ghost`,
   `answers_split_into_records_leave_the_books_as_whole_ones_do` and
@@ -652,6 +653,35 @@ under its own heading.
   engine cannot tell that holder's record from one of a superseded census, which is why it books
   nothing rather than guess (MZB-169). For M5: wait for the holders in the census's footprint;
   a holder outside it is not waited for, and is the cost above.
+
+- **MZB-175** (run 10's exact ghost count had no teeth; the fake plugin follows MZB-174): the review
+  (P2-2) found that putting the engine back to booking by state (MZB-168) or skipping by op
+  (MZB-169) left `sim mowzie` at exit 0: holders journaled only at a restart, so in the chaos run a
+  lost answer was a ghost the exact count simply counted, whatever the engine did with the records.
+  Four changes. (1) With `holders_again` the emulated footprint holders journal their records again
+  at each camp-in, before the census (`journal_holders_of`, at the census's own tick, the records
+  queued first), as MZB-174 says the census waits for; the restart still journals them all. (2)
+  `CampRun::track` counts a record a holder still has (a line, or a death) as cover where holders
+  journal again: the member is no ghost, since the next camp-in or restart books it. (3) The chaos
+  run, in the camp tests and in run 10, asserts `camp_written_off == 0` where `holders_again` is on,
+  and keeps the equality with the ghosts gone for the seeds where it is off. (4) Run 10 gains three
+  scripted cases with exact outcomes, the grove of nine whose raid's four set-out answers are lost:
+  the records land after the party is home (whole, and one line to a record), and the records are
+  journaled again at the next camp-in with no restart; each ends with no member written off. Tests:
+  `holders_journal_their_records_as_the_camp_comes_in_before_its_census` and
+  `a_death_only_a_marker_carries_is_no_ghost_where_holders_journal_again`. What each guard catches,
+  measured by putting it back (one run of the camp tests and of `sim mowzie` each): booking by state
+  (408d4a07's rule): 5 camp tests (the chaos test at seed 7: 3 written off, the late set-out answer,
+  the camp-in case, a superseded epoch, one `should_panic`) and `sim mowzie` exit 1 on the three
+  scripted cases (4 written off each); skipping by op (a record of an op already seen books
+  nothing): 3 camp tests (both split-answer tests and the chaos test) and `sim mowzie` exit 1 on the
+  one-line-to-a-record case and on the chaos (6 camps, the first three with 3, 3 and 1 members
+  written off); the fake without camp-in journaling: 3 camp tests and `sim mowzie` exit 1 on the
+  camp-in case (4 written off); the fake without the cover rule: one camp test, and `sim mowzie`
+  exit 0, since its chaos seeds meet no death only a marker carries. The sim's chaos camps alone (64
+  from `--seed`) do not meet the by-state case, which the reviewer's own 44 holders-on runs did (9
+  written off by state, 17 by op, 0 with the fix): the scripted cases are what make `sim mowzie`
+  fail for it. A fork (reported): none; this is the reviewer's plan.
 
 ## M5 Camp reconciler, Java
 

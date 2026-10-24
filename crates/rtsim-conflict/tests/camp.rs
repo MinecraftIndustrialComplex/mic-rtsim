@@ -2234,6 +2234,14 @@ fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
                 u64::from(r.ghosts_gone),
                 "{culture} seed {seed}: members written off against ghosts"
             );
+            // Holders journal their records again at camp-in and at a session start: no member is
+            // lost to a lost answer or death (MZB-174), whatever the lines' order and split.
+            if r.plugin.holders_again {
+                assert_eq!(
+                    r.c.stats.camp_written_off, 0,
+                    "{culture} seed {seed}: a member written off with the holders journaling again"
+                );
+            }
             ghosts += r.ghosts_gone;
         }
     }
@@ -2284,6 +2292,109 @@ fn a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none() {
         assert_eq!(
             r.plugin.holders.len(),
             if holders_again { 0 } else { 4 },
+            "holders again: {holders_again}"
+        );
+    }
+}
+
+/// The census waits for the footprint's holders (MZB-174): a set-out answer lost with no restart
+/// is still on the markers of the bodies, journaled again as the camp comes in, before the census,
+/// and booked by the set-out it carries: the four slots, body with the books never told, are owed
+/// and spawned. Without the holders the party's return leaves four ghosts and four members are
+/// written off.
+#[test]
+fn holders_journal_their_records_as_the_camp_comes_in_before_its_census() {
+    for holders_again in [false, true] {
+        let mut r = grove(74, 9);
+        r.plugin.holders_again = holders_again;
+        come_in(&mut r);
+        r.plugin.lose_answers = 1;
+        let p = r.raid().unwrap();
+        let end = r.c.parties[p].until;
+        r.run(end + 10);
+        assert_eq!(applied(&r, boundary::ACTION_SET_OUT), 4);
+        assert_eq!(
+            r.plugin.holders.len(),
+            4,
+            "the answer is lost, the records are not"
+        );
+        r.run(day(8.0));
+        assert!(war_parties(&r).is_empty(), "the party is home");
+        assert_eq!(counts(&r), [9, 0, 0, 0, 0], "the books were never told");
+        assert_eq!(
+            world_bodies(&r),
+            5,
+            "four bodies the books think are at home"
+        );
+        // The camp goes out and comes in: the records first, the census after.
+        r.camp_out();
+        let to = r.c.now() + 3;
+        r.run(to);
+        r.camp_in();
+        let to = r.c.now() + 3;
+        r.run(to);
+        assert_eq!(
+            world_bodies(&r),
+            if holders_again { 9 } else { 5 },
+            "the census spawned the four the records made owed: holders again: {holders_again}"
+        );
+        r.settle();
+        ok(&mut r);
+        assert_eq!(
+            r.c.stats.camp_written_off,
+            if holders_again { 0 } else { 4 },
+            "holders again: {holders_again}"
+        );
+        assert_eq!(r.c.stats.camp_written_off, u64::from(r.ghosts_gone));
+        assert!(r.ghosts.is_empty());
+        assert_eq!(
+            r.plugin.holders.len(),
+            if holders_again { 0 } else { 4 },
+            "holders again: {holders_again}"
+        );
+    }
+}
+
+/// A body killed at home whose death never reached the engine (it was in the journal's tail) is
+/// no ghost while its marker carries the record and the holders journal again: the next camp-in
+/// books the death before the census, and no member is written off. Without the holders the slot
+/// is a ghost, and three censuses write it off.
+#[test]
+fn a_death_only_a_marker_carries_is_no_ghost_where_holders_journal_again() {
+    for holders_again in [false, true] {
+        let mut r = grove(75, 9);
+        r.plugin.holders_again = holders_again;
+        come_in(&mut r);
+        let b = r.plugin.camps[&r.key].bodies[0];
+        let at = r.c.now() + 5;
+        assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at));
+        r.plugin.drop_queued();
+        assert_eq!(r.plugin.death_holders.len(), 1, "the marker has the record");
+        let to = r.c.now() + 10;
+        r.run(to);
+        assert_eq!(
+            r.ghosts.len(),
+            if holders_again { 0 } else { 1 },
+            "holders again: {holders_again}"
+        );
+        assert_eq!(r.c.stats.camp_deaths, 0, "the engine was never told");
+        r.camp_out();
+        let to = r.c.now() + 3;
+        r.run(to);
+        come_in(&mut r);
+        assert_eq!(
+            r.c.stats.camp_deaths,
+            u64::from(holders_again),
+            "booked as the camp came in, before its census: holders again: {holders_again}"
+        );
+        r.settle();
+        ok(&mut r);
+        assert!(r.ghosts.is_empty());
+        let (lost, ghosts) = (r.c.stats.camp_written_off, u64::from(r.ghosts_gone));
+        assert_eq!(lost, ghosts, "holders again: {holders_again}");
+        assert_eq!(
+            lost,
+            if holders_again { 0 } else { 1 },
             "holders again: {holders_again}"
         );
     }

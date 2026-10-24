@@ -1257,6 +1257,96 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
         ),
     );
 
+    // The crash table's gap: a raid's four set-out answers are in the journal's tail when the
+    // session ends, and the party is home before the holders' records reach the engine (their
+    // chunks load days later). Booked by the action each carries (not by the state the slots have
+    // by then, nor by a line in flight, which the restart voided), the four slots are owed and
+    // spawned, and no member is lost; whole or one line to a record (booked by (op, line), not
+    // by op).
+    for split in [0usize, 1] {
+        let mut r = grove_run(70, 9);
+        r.plugin.holders_again = true;
+        r.plugin.split_answers = split;
+        come_in(&mut r);
+        r.plugin.answer_ticks = at_day(30.0).0;
+        // A camp whose answers were not booked cannot field the raid: the check then fails.
+        let raid = r.raid();
+        let end = raid.map_or(r.c.now(), |p| r.c.parties[p].until);
+        r.run(end + 10);
+        let (set_outs, records) = (applied(&r, ACTION_SET_OUT), r.plugin.holders.len());
+        r.plugin.answer_ticks = at_day(12.0).0;
+        r.restart();
+        r.plugin.answer_ticks = 1;
+        r.run(at_day(8.0));
+        let home = war_parties(&r) == 0 && slot_counts(&r) == [9, 0, 0, 0, 0];
+        r.run(at_day(14.0));
+        let owed = slot_counts(&r)[1];
+        r.settle();
+        check(
+            &mut out,
+            if split == 0 {
+                "a raid's lost set-out answers are booked from the holders, no member lost"
+            } else {
+                "the same, journaled again one line to a record, each booked, no member lost"
+            },
+            set_outs == 4
+                && records == 4
+                && home
+                && owed == 4
+                && r.c.stats.camp_written_off == 0
+                && r.ghosts_gone == 0
+                && r.ghosts.is_empty()
+                && r.plugin.holders.is_empty()
+                && slot_counts(&r).iter().sum::<u32>() == 9
+                && world_bodies(&r) == slot_counts(&r)[0] as usize
+                && holds(&mut r),
+            format!(
+                "{set_outs} set-outs, {records} records on the markers; party home with its \
+                 slots body: {home}; the records land: {owed} owed; {} written off, {:?}, {} \
+                 bodies, {} war parties out",
+                r.c.stats.camp_written_off,
+                slot_counts(&r),
+                world_bodies(&r),
+                war_parties(&r)
+            ),
+        );
+    }
+
+    // The census waits for the footprint's holders: a set-out answer lost with no restart is
+    // still on the markers, journaled again as the camp comes in, before its census, and booked
+    // by its action: the four slots are owed and spawned at that census.
+    let mut r = grove_run(74, 9);
+    r.plugin.holders_again = true;
+    come_in(&mut r);
+    r.plugin.lose_answers = 1;
+    let raid = r.raid();
+    let end = raid.map_or(r.c.now(), |p| r.c.parties[p].until);
+    r.run(end + 10);
+    let (set_outs, records) = (applied(&r, ACTION_SET_OUT), r.plugin.holders.len());
+    r.run(at_day(8.0));
+    let home = war_parties(&r) == 0 && slot_counts(&r) == [9, 0, 0, 0, 0] && world_bodies(&r) == 5;
+    out_and_in(&mut r);
+    let spawned = world_bodies(&r);
+    r.settle();
+    check(
+        &mut out,
+        "holders journal their records as the camp comes in, before its census: no member lost",
+        set_outs == 4
+            && records == 4
+            && home
+            && spawned == 9
+            && r.c.stats.camp_written_off == 0
+            && r.ghosts_gone == 0
+            && r.ghosts.is_empty()
+            && r.plugin.holders.is_empty()
+            && holds(&mut r),
+        format!(
+            "{set_outs} set-outs, {records} records on the markers; party home, books never told, \
+             5 bodies: {home}; {spawned} bodies after the census; {} written off",
+            r.c.stats.camp_written_off
+        ),
+    );
+
     // Chaos: every event kind at random times, both cultures, many seeds.
     let mut tally: BTreeMap<&'static str, u32> = BTreeMap::new();
     let (mut runs, mut bad) = (0u32, Vec::new());
@@ -1284,13 +1374,19 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
                 bad.push(format!("{culture} seed {k}, at the end: {f}"));
             }
             // The write-offs are exactly the ghosts: members the world lost with nothing left to
-            // tell the books.
-            if !r.ghosts.is_empty() || r.c.stats.camp_written_off != u64::from(r.ghosts_gone) {
+            // tell the books; and none at all when holders journal their records again (at
+            // camp-in and at a session start, MZB-174), whatever the lines' order and split.
+            if !r.ghosts.is_empty()
+                || r.c.stats.camp_written_off != u64::from(r.ghosts_gone)
+                || (r.plugin.holders_again && r.c.stats.camp_written_off != 0)
+            {
                 bad.push(format!(
-                    "{culture} seed {k}: {} members written off, {} ghosts gone, {} left",
+                    "{culture} seed {k}: {} members written off, {} ghosts gone, {} left, \
+                     holders journaling again: {}",
                     r.c.stats.camp_written_off,
                     r.ghosts_gone,
-                    r.ghosts.len()
+                    r.ghosts.len(),
+                    r.plugin.holders_again
                 ));
             }
             for (_, e) in &r.events {
@@ -1322,7 +1418,8 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     check(
         &mut out,
         "chaos holds I1 to I5 after every event (I6 is by construction), every member lost \
-         unseen is written off and no other, no draw passes its bound",
+         unseen is written off and no other, none at all where holders journal again, no draw \
+         passes its bound",
         bad.is_empty(),
         if bad.is_empty() {
             format!(
