@@ -360,6 +360,12 @@ pub(crate) enum Ev {
         faction: u32,
         stamp: u32,
     },
+    /// A renewal culture's wait has run out: its camp gains a member (`Camp::arrival`, MZB-255).
+    /// Booked whether the camp is in or out.
+    Arrival {
+        faction: u32,
+        stamp: u32,
+    },
 }
 
 /// Counters for the CLI, tests and the bench.
@@ -416,6 +422,10 @@ pub struct ConflictStats {
     pub camp_answers: u64,
     pub camp_deaths: u64,
     pub camp_written_off: u64,
+    /// Members a renewal culture's wait brought to its camp, and members lost in a way that
+    /// bumps its pressure (EQUILIBRIUM.md §2.2, M6).
+    pub arrivals: u64,
+    pub renewal_losses: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -889,6 +899,7 @@ impl Conflict {
                 Ev::Ambush { .. } => "ambush",
                 Ev::Plunder { .. } => "plunder",
                 Ev::Refill { .. } => "refill",
+                Ev::Arrival { .. } => "arrival",
             };
             *m.entry(k).or_default() += 1;
         }
@@ -4501,6 +4512,7 @@ impl Conflict {
                 self.plunder(w, faction, at);
             }
             Ev::Refill { faction, stamp } => self.camp_refill(faction, stamp, at),
+            Ev::Arrival { faction, stamp } => self.camp_arrival(faction, stamp, at),
         }
     }
 
