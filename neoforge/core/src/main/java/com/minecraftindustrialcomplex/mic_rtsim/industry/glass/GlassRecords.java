@@ -22,10 +22,14 @@ public final class GlassRecords {
     public static final int IND_GRAPH_END = 0x004C;
     /** A probed buffer's contents in a sweep; not counted in the sweep's records. */
     public static final int IND_PROBE_SAMPLE = 0x004D;
+    /** What was counted at a count set's (mover, store) pairs in a sweep; not counted in the sweep's records. */
+    public static final int IND_COUNT_SAMPLE = 0x004F;
     /** Journaled: a district chunk started or stopped block-ticking. */
     public static final int IND_CHUNK_TICKING = 0x040B;
     /** Command: buffers to add to a district's sweeps. */
     public static final int IND_PROBE_SET = 0x8406;
+    /** Command: the (mover, store) pairs whose moves Java counts for a district. */
+    public static final int IND_COUNT_SET = 0x8408;
 
     /** {@code Option<u32>} index on the wire: none. */
     public static final int NONE = 0xFFFF_FFFF;
@@ -199,6 +203,39 @@ public final class GlassRecords {
 
         public static int size(int n) {
             return pad8(NODES + 4 * n);
+        }
+    }
+
+    /** IND_COUNT_SAMPLE, aux = n entries (one per pair and good; a pair that counted nothing has good NONE). */
+    public static final class CountSample {
+        // 8 i64 gameTime, 16 u64 district
+        public static final int SWEEP = 24;     // u32
+        public static final int COMPILE = 28;   // u32
+        public static final int ENTRIES = 32;   // n x Count40
+        /**
+         * Count40: u32 mover node, u32 store node, u32 good (NONE), u32 entries (how many entries the entry's
+         * (mover, store) pair has in all, over every record of the sweep), i64 since, i64 in, i64 out.
+         */
+        public static final int ENTRY = 40;
+        public static final int E_MOVER = 0, E_STORE = 4, E_GOOD = 8, E_ENTRIES = 12, E_SINCE = 16, E_IN = 24, E_OUT = 32;
+
+        public static int size(int n) {
+            return ENTRIES + ENTRY * n;
+        }
+    }
+
+    /** IND_COUNT_SET (command: 8 cmdSeq), aux = n pairs. */
+    public static final class CountSet {
+        public static final int DISTRICT = 16;  // u64
+        public static final int COMPILE = 24;   // u32
+        // 28 reserved
+        public static final int PAIRS = 32;     // n x Pair8
+        /** Pair8: u32 mover node, u32 store node (the named compile's node numbers). */
+        public static final int PAIR = 8;
+        public static final int P_MOVER = 0, P_STORE = 4;
+
+        public static int size(int n) {
+            return pad8(PAIRS + PAIR * n);
         }
     }
 

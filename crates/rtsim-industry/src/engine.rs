@@ -1127,6 +1127,11 @@ impl Engine {
                 dist.defence.keep_chunks(&dist.chunks);
             }
         }
+        // A compile, a sweep's cut or a station's ports changed a district's units: Java counts
+        // the pairs at their counted stores (SECTIONS.md §4.2).
+        for set in self.glass.take_count_sets() {
+            self.out.push(Cmd::CountSet(set));
+        }
     }
 
     fn district_mut(&mut self, d: DistrictId) -> &mut District {
@@ -1208,6 +1213,7 @@ impl Engine {
             .get(&g.district())
             .map(|d| crate::glass::check::View {
                 revision: d.revision,
+                sweep: d.last_sweep,
                 inventories: &d.inventories,
                 ports: &d.ports,
             });
@@ -1272,6 +1278,7 @@ impl Engine {
         {
             let view = crate::glass::check::View {
                 revision: dist.revision,
+                sweep: e.sweep,
                 inventories: &dist.inventories,
                 ports: &dist.ports,
             };
@@ -5315,6 +5322,7 @@ mod persist_impls {
                         match crate::glass::page::read_district_page(
                             &bytes,
                             tun.glass.sections_max,
+                            tun.glass.counted_stores_max,
                         )? {
                             crate::glass::page::PageRead::Kept(dg) => {
                                 glass.insert(DistrictId(k.id()), *dg);
