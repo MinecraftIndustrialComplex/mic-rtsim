@@ -72,7 +72,8 @@ pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 pub mod camp;
 
 pub use camp::{
-    Answered, CHIEF_SLOT, Camp, Heir, Line, Placing, Retired, Slot, SlotState, TRADED_CAP, Throne,
+    Answered, CHIEF_SLOT, Camp, Chest, Heir, Line, Placing, Retired, STACK_ITEMS, Slot, SlotState,
+    TRADED_CAP, Throne,
 };
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
@@ -435,6 +436,11 @@ pub struct ConflictStats {
     /// bumps its pressure (EQUILIBRIUM.md §2.2, M6).
     pub arrivals: u64,
     pub renewal_losses: u64,
+    /// The grove's tribute stacks put in its chest (MZB-423), the hunts a raid left owed (MZB-424)
+    /// and the animals they killed (HUNT_APPLIED's `killed`).
+    pub tribute_stacks: u64,
+    pub hunts_owed: u64,
+    pub hunts_killed: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -725,6 +731,10 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
+    /// The tribute stacks sent to haven chests and not yet answered, by faction (MZB-423): at most
+    /// one for each camp. Saved in the meta page, so the link never walks the factions' rows for
+    /// them.
+    pub placing: Vec<(u32, Placing)>,
     /// Between a session's start and the replay having caught up (`replay_done`): the bodies the
     /// pages held in Minecraft are kept as recalled stacks for the replayed records to count
     /// (MZB-138), and a CAMP_CENSUS then only marks its camp out, its bodies not being the world
@@ -835,6 +845,7 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
+            placing: Vec::new(),
             replaying: false,
             obs_seq: 0,
             durable_obs_seq: 0,
@@ -2466,9 +2477,11 @@ impl Conflict {
             return false;
         };
         let node = self.factions[f as usize].node;
-        for (g, a) in w.stock_from_players(node, goods, at) {
+        let stocked = w.stock_from_players(node, goods, at);
+        for (&g, &a) in &stocked {
             add(&mut self.ledger.tribute, g, a);
         }
+        self.owe_tribute(w, f, &stocked, at);
         let settlers = self.settlers(w);
         // The envoy it was paid to names the demand; at the camp, the payer's own, then the
         // settlers'.
@@ -2517,9 +2530,11 @@ impl Conflict {
             return;
         };
         let node = self.factions[f as usize].node;
-        for (g, a) in w.stock_from_players(node, goods, at) {
+        let stocked = w.stock_from_players(node, goods, at);
+        for (&g, &a) in &stocked {
             add(&mut self.ledger.gifts, g, a);
         }
+        self.owe_tribute(w, f, &stocked, at);
         self.gift_value(w, f, giver, goods, at);
     }
 
@@ -2565,12 +2580,18 @@ impl Conflict {
         at: Tick,
     ) {
         let m = w.market(self.factions[f as usize].node);
+        let tribute = self.tribute_good(w, f);
         let mut coins = 0.0;
         for (&g, &a) in goods {
+            let price = m.price(g);
             let per = if w.goods.is_currency(g) {
                 1.0
+            } else if price == 0 && g == tribute {
+                // The market has no price for the tribute good: the culture's own is worth what
+                // it asks per coin (MZB-416), so 567 gold nuggets are 63 coins.
+                1.0 / self.tribute_per_coin(w, f, g).max(f64::MIN_POSITIVE)
             } else {
-                m.price(g) as f64 / PRICE_ONE as f64
+                price as f64 / PRICE_ONE as f64
             };
             coins += per * a as f64 / MILLI as f64;
         }
@@ -5068,17 +5089,11 @@ impl Conflict {
     }
 
     /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the rail
-    /// meter's and the grove's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES,
-    /// CAMP_DEATH) are built (M4), the chief's CHIEF_STATE with M6.
+    /// meter's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES, CAMP_DEATH) are built
+    /// (M4), the chief's CHIEF_STATE with M6, the grove's (TRADED, CHIEF_PAID, HAVEN_CHEST) with
+    /// M9.
     pub fn later(o: &Obs) -> bool {
-        matches!(
-            o,
-            Obs::HavenChest(_)
-                | Obs::RailPass(_)
-                | Obs::TrainPassed(_)
-                | Obs::Traded(_)
-                | Obs::ChiefPaid(_)
-        )
+        matches!(o, Obs::RailPass(_) | Obs::TrainPassed(_))
     }
 
     /// A record from the plugin, at its game time.
@@ -5099,11 +5114,10 @@ impl Conflict {
             Obs::State(_) | Obs::Materialized(_) => {}
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
-            Obs::HavenChest(_)
-            | Obs::RailPass(_)
-            | Obs::TrainPassed(_)
-            | Obs::Traded(_)
-            | Obs::ChiefPaid(_) => {}
+            Obs::RailPass(_) | Obs::TrainPassed(_) => {}
+            Obs::HavenChest(h) => self.haven_chest(w, h, at),
+            Obs::Traded(t) => self.trade_booked(w, t, at),
+            Obs::ChiefPaid(c) => self.chief_paid(w, c, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
             Obs::CampCensus(c) => self.camp_census(c, at),

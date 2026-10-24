@@ -863,13 +863,13 @@ fn an_unchanged_difficulty_changes_nothing() {
     assert_eq!(r.c.peaceful_since, Tick(10), "the span starts at the first");
 }
 
-/// MZB-23 (review): a record whose engine half comes later spends its op id, as rtsim-jni does.
+/// MZB-23 (review): a record's op id is spent as rtsim-jni spends it, a deferred one too. The
+/// camp records got their engine half in M4 (MZB-150) and the grove's tribute records in M9, so
+/// what is left deferred is the rail's, which carry no op id.
 #[test]
-fn a_deferred_record_spends_its_op_id() {
+fn a_booked_record_spends_its_op_id() {
     let mut r = Run::new(42, quiet_goblins());
     let op = 0xABCD;
-    // The camp records got their engine half in M4 (MZB-150); the tribute's ChiefPaid is a later
-    // slice's.
     let paid = || {
         Obs::ChiefPaid(boundary::ChiefPaid {
             faction: synth::CAMP,
@@ -881,7 +881,8 @@ fn a_deferred_record_spends_its_op_id() {
             items: Vec::new(),
         })
     };
-    assert!(Conflict::later(&paid()));
+    assert!(!Conflict::later(&paid()));
+    assert!(paid().op().is_some_and(|o| o == op));
     r.ingest(paid(), Tick(5));
     assert!(r.c.op_applied(op), "spent");
     let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();

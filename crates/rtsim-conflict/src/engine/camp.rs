@@ -45,6 +45,10 @@ pub const WRITE_OFF_MISSES: u8 = 3;
 pub const CHIEF_SLOT: u32 = u32::MAX;
 /// The players a chief's trade memory keeps (PLACEHOLDER, MZB-420): the census's own cap.
 pub const TRADED_CAP: usize = boundary::MAX_ENTRIES;
+/// The most items one tribute transfer carries: a stack (MZB-446).
+pub const STACK_ITEMS: i64 = 64;
+/// The slot space of the tribute transfers' op ids (`rtsim_world::ribbits::identity_op`).
+const TRIBUTE_SLOT: u64 = 0x4d5a_0009 << 32;
 
 /// A slot's state (MOWZIE.md §4.9's table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,8 +164,22 @@ pub struct Heir {
 pub struct Placing {
     pub op: u64,
     pub good: u32,
-    /// Milli-units.
+    /// Milli-units, whole items (at most one stack).
     pub amount: i64,
+    /// The chest it goes to, as HAVEN_CHEST named it (Java's dimension id): kept here so a transfer
+    /// rewritten after a restart still knows where.
+    pub dimension: u32,
+    pub pos: (i32, i32, i32),
+}
+
+/// The haven chest the plugin chose for a camp (HAVEN_CHEST, MZB-422): unsaved, latest wins, and
+/// forgotten at CAMP_OUT and at a session start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chest {
+    pub dimension: u32,
+    pub pos: (i32, i32, i32),
+    /// Its empty slots.
+    pub free: u32,
 }
 
 /// A camp's ledger.
@@ -202,8 +220,10 @@ pub struct Camp {
     pub traded: Vec<(u64, u64)>,
     /// Tribute booked and not yet in a chest: (good, milli-units), by good (MZB-423).
     pub owed_tribute: Vec<(u32, i64)>,
-    /// The transfer to the chest in flight.
-    pub placing: Option<Placing>,
+    /// Stacks sent to the chest so far: the next one's op id derives from it (MZB-423).
+    pub stacks: u32,
+    /// The chest the plugin chose, while the camp is in (unsaved).
+    pub chest: Option<Chest>,
     /// The MASK line in flight: its reconcile's op and its index there (MZB-403). It names no
     /// slot, so no slot's line stands for it.
     pub mask: Option<(u64, u32)>,
@@ -430,6 +450,12 @@ fn chief_body_record(key: u64, camp: &Camp) -> Cmd {
         flags: 0,
         traded: camp.traded.clone(),
     })
+}
+
+/// The op id of a camp's `n`th tribute transfer: the core's namespace, derived from the camp and
+/// the count so a rewritten transfer is the same op (MZB-423).
+fn tribute_op(key: u64, n: u32) -> u64 {
+    rtsim_world::ribbits::identity_op(key, TRIBUTE_SLOT | u64::from(n))
 }
 
 /// A CAMP_RECONCILE's op id: the engine's allocator byte over 56 bits derived from the camp, the
@@ -1637,6 +1663,192 @@ impl Conflict {
         self.camp_heir(f, at);
     }
 
+    // ---- tribute, trade and the chest (MZB-416 to MZB-423) -----------------------------------
+
+    /// A masked trade with a grove's minion (TRADED, MZB-417): the gold nuggets on either side are
+    /// worth `nuggets / tribute_per_coin` coins, which soften the trader's feud at a tenth of a
+    /// gift's rate ([`Conflict::traded`]).
+    pub(super) fn trade_booked(&mut self, w: &mut World, t: &boundary::Traded, at: Tick) {
+        let Some(&f) = self.by_key.get(&t.faction) else {
+            return;
+        };
+        let good = self.tribute_good(w, f);
+        let per = self.tribute_per_coin(w, f, good);
+        if per <= 0.0 {
+            return;
+        }
+        let trader = self.actor_of_uuid(w, t.player);
+        self.traded(w, t.faction, trader, f64::from(t.nuggets) / per, at);
+    }
+
+    /// A player's first payment to an Umvuthi body (CHIEF_PAID, MZB-418): booked as tribute through
+    /// [`Conflict::pay_tribute`], and the payer joins the trade memory only when the slot and
+    /// generation are the live chief's (Body). A stray Umvuthi's payment (`PAID_STRAY`) is tribute
+    /// with no memory.
+    pub(super) fn chief_paid(&mut self, w: &mut World, c: &boundary::ChiefPaid, at: Tick) {
+        let Some(&f) = self.by_key.get(&c.faction) else {
+            return;
+        };
+        if c.flags & boundary::PAID_STRAY == 0
+            && c.slot == CHIEF_SLOT
+            && let Some(camp) = self.camp_mut(f)
+            && camp
+                .index(c.slot, c.generation)
+                .is_some_and(|i| camp.slots[i].state == SlotState::Body)
+        {
+            camp.remember(c.player);
+        }
+        let goods = self.goods_of(w, &c.items);
+        if goods.is_empty() {
+            return;
+        }
+        let payer = self.actor_of_uuid(w, c.player);
+        self.pay_tribute(w, c.faction, payer, None, &goods, at);
+    }
+
+    /// Tribute or a gift the grove took in is owed to its chest (MZB-423): only its tribute good,
+    /// since another item's stack may exceed its limit and the transfer fails above it (MZB-446).
+    /// Then the next stack is sent if the chest is known.
+    pub(super) fn owe_tribute(
+        &mut self,
+        w: &mut World,
+        f: u32,
+        stocked: &BTreeMap<GoodId, Amount>,
+        at: Tick,
+    ) {
+        if self.culture(f).def.chief_body.is_none() {
+            return;
+        }
+        let good = self.tribute_good(w, f);
+        let Some(&a) = stocked.get(&good).filter(|a| **a > 0) else {
+            return;
+        };
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        let g = u32::from(good.0);
+        match camp.owed_tribute.binary_search_by_key(&g, |e| e.0) {
+            Ok(i) => camp.owed_tribute[i].1 += a,
+            Err(i) => camp.owed_tribute.insert(i, (g, a)),
+        }
+        self.place_tribute(w, f, at);
+    }
+
+    /// HAVEN_CHEST (MZB-422): the chest the plugin chose for a grove, latest wins. Unsaved.
+    pub(super) fn haven_chest(&mut self, w: &mut World, h: &boundary::HavenChest, at: Tick) {
+        let Some(&f) = self.by_key.get(&h.faction) else {
+            return;
+        };
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        camp.chest = Some(Chest {
+            dimension: h.dimension,
+            pos: h.pos,
+            free: h.free,
+        });
+        self.place_tribute(w, f, at);
+    }
+
+    /// Sends the next stack of the tribute a grove owes its chest (MZB-423): while the camp is in,
+    /// its chest is known with room, and nothing is being placed, one good leaves the books, the
+    /// least of what is owed, what the faction's stock holds and one stack. It is a TRANSFER_TO_
+    /// CONTAINER the link writes through its outbox ([`Conflict::placings`]), booked as leaving to
+    /// the players until it is answered.
+    pub(super) fn place_tribute(&mut self, w: &mut World, f: u32, at: Tick) {
+        let node = self.factions[f as usize].node;
+        let key = self.factions[f as usize].key;
+        if self.placing.iter().any(|(g, _)| *g == f) {
+            return;
+        }
+        let Some(camp) = self.camp(f).filter(|c| c.is_in()) else {
+            return;
+        };
+        let Some(chest) = camp.chest.filter(|c| c.free > 0) else {
+            return;
+        };
+        let m = w.market(node);
+        let pick = camp.owed_tribute.iter().find_map(|&(g, owed)| {
+            let good = GoodId(u16::try_from(g).ok()?);
+            let held = m.lines.get(good.index())?.stock;
+            let n = owed.min(held).min(STACK_ITEMS * MILLI) / MILLI * MILLI;
+            (n >= MILLI).then_some((good, n))
+        });
+        let Some((good, n)) = pick else {
+            return;
+        };
+        let taken = w.stock_to_players(node, &BTreeMap::from([(good, n)]), at);
+        if taken.get(&good).copied() != Some(n) {
+            return;
+        }
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        let op = tribute_op(key, camp.stacks);
+        camp.stacks += 1;
+        // A stack may fill a slot: the chest has one less until the plugin says otherwise.
+        camp.chest = Some(Chest {
+            free: chest.free - 1,
+            ..chest
+        });
+        self.placing.push((
+            f,
+            Placing {
+                op,
+                good: u32::from(good.0),
+                amount: n,
+                dimension: chest.dimension,
+                pos: chest.pos,
+            },
+        ));
+    }
+
+    /// The tribute stacks sent to chests and not yet answered, by op id (MZB-423).
+    pub fn placings(&self) -> impl Iterator<Item = (u64, Placing)> + '_ {
+        self.placing.iter().map(|(_, p)| (p.op, *p))
+    }
+
+    /// Takes the stack `op` out of those in flight: its faction and what it was.
+    fn unplace(&mut self, op: u64) -> Option<(u32, Placing)> {
+        let i = self.placing.iter().position(|(_, p)| p.op == op)?;
+        Some(self.placing.remove(i))
+    }
+
+    /// The plugin put a stack in its chest (APPLIED or DUPLICATE_OP): the amount is no longer owed,
+    /// and the next stack goes. False for an op that is not a tribute stack.
+    pub fn tribute_placed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+        let Some((f, p)) = self.unplace(op) else {
+            return false;
+        };
+        if let Some(camp) = self.camp_mut(f)
+            && let Ok(i) = camp.owed_tribute.binary_search_by_key(&p.good, |e| e.0)
+        {
+            camp.owed_tribute[i].1 -= p.amount;
+            if camp.owed_tribute[i].1 <= 0 {
+                camp.owed_tribute.remove(i);
+            }
+        }
+        self.stats.tribute_stacks += 1;
+        self.place_tribute(w, f, at);
+        true
+    }
+
+    /// The plugin could not put a stack in its chest (FAILED): the goods go back to the faction's
+    /// stock, the tribute is still owed, and the chest is forgotten until the plugin names one
+    /// again.
+    pub fn tribute_failed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+        let Some((f, p)) = self.unplace(op) else {
+            return false;
+        };
+        let node = self.factions[f as usize].node;
+        if let Some(camp) = self.camp_mut(f) {
+            camp.chest = None;
+        }
+        let good = GoodId(u16::try_from(p.good).unwrap_or(0));
+        w.stock_from_players(node, &BTreeMap::from([(good, p.amount)]), at);
+        true
+    }
+
     // ---- CAMP_OUT --------------------------------------------------------------------------
 
     /// A footprint chunk dropped below FULL: the camp is out, and the lines of the epoch that ended
@@ -1655,6 +1867,7 @@ impl Conflict {
         camp.epoch = 0;
         camp.refill = camp.refill.wrapping_add(1);
         camp.refill_at = None;
+        camp.chest = None;
         camp.void();
         self.unblock(f, at);
     }
@@ -1667,6 +1880,7 @@ impl Conflict {
             camp.epoch = 0;
             camp.refill = camp.refill.wrapping_add(1);
             camp.refill_at = None;
+            camp.chest = None;
             camp.void();
         }
         let now = self.now;
