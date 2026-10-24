@@ -792,6 +792,151 @@ fn a_chief_killed_leading_a_band_is_the_slot_dying_away_and_the_band_comes_home_
     );
 }
 
+/// A grove whose Umvuthi leads an Invasion with a player near its body, so that its set-out (a take)
+/// is held; the chief falls away, the next census answers the held set-out stale, reports the body
+/// that still stands and draws the engine's REMOVE of it, which the player holds too. The grove
+/// (quiet) and the chief's generation, dead with its heir waiting.
+fn dead_chiefs_body_with_a_held_removal() -> (CampRun, u32) {
+    let mut r = quiet_grove(8);
+    let (p, a) = led_invasion(&mut r);
+    // A player stands near the chief's body from the start: its set-out (a take) is held.
+    let now = r.c.now();
+    r.plugin.hold_chief(r.key, true, false, now);
+    let until = r.c.parties[p].until;
+    r.run(until + 50);
+    let chief_lines = |r: &CampRun, action: u8| {
+        r.plugin
+            .applied
+            .iter()
+            .filter(|l| l.line.action == action && l.line.slot == CHIEF_SLOT)
+            .map(|l| l.outcome)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        chief_lines(&r, boundary::ACTION_SET_OUT),
+        Vec::<u8>::new(),
+        "the chief's set-out waits on the player: no answer, no limit"
+    );
+    assert_eq!(chief_bodies(&r).len(), 1, "its body stands");
+    // The chief falls away. The next census reports its body, after answering the held set-out
+    // stale; the engine orders the removal of the body of a slot it booked dead.
+    let at = r.c.now() + 1;
+    r.c.chief_killed_by(&mut r.w, p, None, boundary::BY_PLAYER, None, at);
+    r.run(at + 5);
+    assert_eq!(chief(&r), Some((SlotState::Dead, a)), "the slot is dead");
+    r.camp_in();
+    let to = r.c.now() + 20;
+    r.run(to);
+    assert_eq!(
+        chief_lines(&r, boundary::ACTION_SET_OUT),
+        vec![boundary::LINE_STALE],
+        "the census answered the held set-out stale"
+    );
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_REMOVE),
+        1,
+        "the engine orders the dead chief's body removed"
+    );
+    assert_eq!(
+        chief_lines(&r, boundary::ACTION_REMOVE),
+        Vec::<u8>::new(),
+        "held: not applied, not answered"
+    );
+    assert_eq!(chief_bodies(&r).len(), 1, "the body is still reported");
+    assert_eq!(chief(&r), Some((SlotState::Dead, a)), "and its slot dead");
+    (r, a)
+}
+
+/// Emulator divergence (c), MZB-613: Java holds a chief's TAKE, REMOVE or SET_OUT while a player is
+/// near its body, with no time limit, and answers it stale at each census or the camp's out; the
+/// body stays in the world, so the next census reports it. A heir seated over that body (the pair's
+/// L_A names its generation) is not held by the player's nearness, only by a fight, and the removal
+/// held on the body is answered stale in the same batch as the pair's DONE, before it. The books
+/// end with the new chief alone.
+#[test]
+fn a_removal_held_on_the_dead_chiefs_body_is_answered_stale_in_the_batch_of_the_pair_that_sits_over_it()
+ {
+    let (mut r, a) = dead_chiefs_body_with_a_held_removal();
+    // The heir is due: the pair sits over the body, the removal is stale first.
+    let applied = r.plugin.applied.len();
+    r.run(heir_due(&r) + 100);
+    let seat = r.plugin.applied[applied..]
+        .iter()
+        .find(|l| l.line.action == boundary::ACTION_SEAT_HEIR)
+        .expect("the pair was applied")
+        .at;
+    let batch: Vec<(u8, u8)> = r.plugin.applied[applied..]
+        .iter()
+        .filter(|l| l.at == seat)
+        .map(|l| (l.line.action, l.outcome))
+        .collect();
+    assert_eq!(
+        batch,
+        vec![
+            (boundary::ACTION_REMOVE, boundary::LINE_STALE),
+            (boundary::ACTION_MASK, boundary::LINE_DONE),
+            (boundary::ACTION_SEAT_HEIR, boundary::LINE_DONE),
+        ],
+        "the removal's STALE, then the pair's two DONEs, in one tick"
+    );
+    let (state, b) = chief(&r).expect("the heir sits");
+    assert_eq!(state, SlotState::Body);
+    assert_ne!(b, a, "another generation");
+    let bodies = chief_bodies(&r);
+    assert_eq!(bodies.len(), 1, "the old body is gone, the new one stands");
+    assert_eq!(bodies[0].generation, b);
+    ok(&mut r);
+}
+
+/// Emulator divergence (c): a pair seated over a chief body in a fight waits on the fight, with no
+/// limit (`HOLD_MAX` does not apply), and goes when the fight is over, a player near the throne or
+/// the body notwithstanding. Another chief body of the camp (a second body, another generation)
+/// stays when the heir sits (review P2-3: only the L_A generation's body is replaced).
+#[test]
+fn a_pair_over_a_chief_in_a_fight_waits_on_the_fight_alone_and_leaves_a_second_body_standing() {
+    let (mut r, a) = dead_chiefs_body_with_a_held_removal();
+    let pairs = lines_of(&r, boundary::ACTION_SEAT_HEIR);
+    // A second chief body of another generation stands too.
+    let second = r.plugin.camp_tagged_body(r.key, 1, CHIEF_SLOT, 777);
+    for body in &mut r.plugin.camp_world(r.key).bodies {
+        if body.uuid == second {
+            body.chief = true;
+        }
+    }
+    let now = r.c.now();
+    r.plugin.hold_chief(r.key, true, true, now);
+    r.plugin.watch_throne(r.key, true, now);
+    r.run(heir_due(&r) + 3 * synth::HOLD_MAX);
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_SEAT_HEIR),
+        pairs + 1,
+        "the pair went out"
+    );
+    assert_eq!(
+        chief(&r),
+        Some((SlotState::Dead, a)),
+        "and waits on the fight, past HOLD_MAX"
+    );
+    assert_eq!(chief_bodies(&r).len(), 2, "both old bodies stand");
+    // The fight ends; the players still stand near the body and the throne, which hold neither
+    // the pair over an old body nor (for the throne) anything else now.
+    let now = r.c.now();
+    r.plugin.hold_chief(r.key, true, false, now);
+    r.run(now + 10);
+    let (state, b) = chief(&r).expect("the heir sits");
+    assert_eq!(state, SlotState::Body);
+    assert_ne!(b, a);
+    let mut gens: Vec<u32> = chief_bodies(&r).iter().map(|c| c.generation).collect();
+    gens.sort_unstable();
+    let mut want = vec![777, b];
+    want.sort_unstable();
+    assert_eq!(
+        gens, want,
+        "the old chief's body was replaced, the second stays"
+    );
+    assert!(r.failures.is_empty(), "{:#?}", r.failures);
+}
+
 /// MZB-295, MZB-412: a crash between the CHIEF_KILLED and the DEMATERIALIZED does not bring the
 /// chief home: the slot is dead before the band's hand-back, saved so, and the replay finds no
 /// chief to return.

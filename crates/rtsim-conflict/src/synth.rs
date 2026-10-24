@@ -265,6 +265,15 @@ pub struct CampBody {
     /// A player stands near it: a MASK takes the warrior farthest from every player, so a body
     /// with none near goes first, and one near a player only when every warrior at home is.
     pub near: bool,
+    /// A chief body a player is within 160 blocks of, or has as a target (`holdRemoval`, MZB-433):
+    /// a TAKE, REMOVE or SET_OUT of it waits, with no time limit, until the player leaves
+    /// ([`FakeConflict::hold_chief`]); a census or the camp's out answers it stale, and so does a
+    /// heir seated over the body.
+    pub hold: bool,
+    /// A chief body in a fight a player began (`inFight`, MZB-410): a pair seated over it waits,
+    /// with no time limit, until the fight is over ([`FakeConflict::hold_chief`]). It holds the
+    /// body's removal too, as a player targeting it does.
+    pub fight: bool,
 }
 
 /// A camp as the plugin sees it (MOWZIE.md §4.9, emulated): its epoch while it is in (0 while it
@@ -283,14 +292,28 @@ pub struct CampWorld {
 /// How long a chief SPAWN or SEAT_HEIR waits on a player near the throne (`HOLD_MAX`, MZB-433).
 pub const HOLD_MAX: u64 = 6_000;
 
-/// The lines of a reconcile the plugin holds on `holdSpawn`, with the reconcile they belong to and
-/// the tick they arrived.
+/// What held lines wait on (Rule U, MZB-433, as Java's `Camps` holds them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hold {
+    /// A player near the throne (`holdSpawn`): a chief SPAWN, or the pair of a plain seat. At most
+    /// `HOLD_MAX` ticks.
+    Throne,
+    /// The old chief in a fight a player began (`inFight`): the pair seated over it. No time limit.
+    Fight,
+    /// A player near a chief body or targeted by it (`holdRemoval`): its TAKE, REMOVE or SET_OUT.
+    /// No time limit; a census, the camp's out or the heir seated over the body answers it stale.
+    Removal,
+}
+
+/// The lines of a reconcile the plugin holds, with the reconcile they belong to, the tick they
+/// arrived and what they wait on.
 #[derive(Clone, Debug)]
 struct HeldLines {
     faction: u64,
     epoch: u64,
     op: u64,
     since: Tick,
+    kind: Hold,
     lines: Vec<(u32, boundary::ReconcileLine)>,
 }
 
@@ -377,9 +400,9 @@ pub struct FakeConflict {
     /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
     /// counts, at the recall, first stacks first (0: none; MZB-131).
     pub walk_off_deaths: u32,
-    /// The chief lines waiting on a player near the throne (`holdSpawn`): applied when the player
-    /// leaves ([`FakeConflict::watch_throne`]) or `HOLD_MAX` ticks after they arrived, answered
-    /// stale at the camp's out.
+    /// The chief lines waiting on a player (`holdSpawn`, `inFight`, `holdRemoval`): applied when the
+    /// player leaves ([`FakeConflict::watch_throne`], [`FakeConflict::hold_chief`]) or, for the
+    /// throne's, `HOLD_MAX` ticks after they arrived; answered stale at a census or the camp's out.
     held: Vec<HeldLines>,
 }
 
@@ -388,13 +411,13 @@ fn warrior_at_home(b: &CampBody) -> bool {
     b.generation != 0 && !b.chief && !b.elsewhere
 }
 
-/// A line that waits on `holdSpawn` (MZB-433): a chief's SPAWN, the heir's SEAT_HEIR and the MASK
-/// that goes with it, which Java does after the heir is made.
-fn waits_on_throne(l: &boundary::ReconcileLine) -> bool {
-    match l.action {
-        boundary::ACTION_SEAT_HEIR | boundary::ACTION_MASK => true,
-        boundary::ACTION_SPAWN => l.flags & boundary::LINE_CHIEF != 0,
-        _ => false,
+/// Whether a TAKE, REMOVE or SET_OUT line names this body: a REMOVE with no generation by its
+/// UUID, the others by slot and generation.
+fn names(l: &boundary::ReconcileLine, b: &CampBody) -> bool {
+    if l.action == boundary::ACTION_REMOVE && l.generation == 0 {
+        (b.uuid.0, b.uuid.1) == (l.a, l.b)
+    } else {
+        l.generation != 0 && b.slot == l.slot && b.generation == l.generation
     }
 }
 
@@ -455,7 +478,11 @@ impl FakeConflict {
     }
 
     pub fn next_due(&self) -> Option<Tick> {
-        let held = self.held.iter().map(|h| h.since + HOLD_MAX);
+        let held = self
+            .held
+            .iter()
+            .filter(|h| h.kind == Hold::Throne)
+            .map(|h| h.since + HOLD_MAX);
         self.queue.iter().map(|e| e.0).chain(held).min()
     }
 
@@ -802,6 +829,8 @@ impl FakeConflict {
             chief: false,
             crystal: false,
             near: false,
+            hold: false,
+            fight: false,
         });
         uuid
     }
@@ -814,6 +843,12 @@ impl FakeConflict {
 
     /// [`FakeConflict::camp_in`] with the census's flags (`CENSUS_*`).
     pub fn camp_in_with(&mut self, faction: u64, flags: u32, at: Tick) -> u64 {
+        // A recount ends the epoch the waiting lines belong to: they are answered stale before the
+        // census, in the journal's order (Java's `staleHeld`).
+        let before = Tick(at.0.saturating_sub(self.answer_ticks));
+        for h in self.take_held(Some(faction), None) {
+            self.apply_lines(h.faction, h.epoch, h.op, false, h.lines, before);
+        }
         // The census waits until every holder in the footprint has journaled its record again: the
         // records reach the engine first, carrying the epoch that is still the latest (MZB-174).
         if self.holders_again {
@@ -878,7 +913,7 @@ impl FakeConflict {
         let epoch = std::mem::take(&mut camp.epoch);
         self.push(at, Obs::CampOut(boundary::CampOut { faction, epoch }));
         // An epoch's end answers the lines still held stale (MZB-433).
-        for h in self.take_held(Some(faction)) {
+        for h in self.take_held(Some(faction), None) {
             self.apply_lines(h.faction, h.epoch, h.op, false, h.lines, at);
         }
     }
@@ -888,31 +923,128 @@ impl FakeConflict {
     pub fn watch_throne(&mut self, faction: u64, watched: bool, at: Tick) {
         self.camp_world(faction).watched = watched;
         if !watched {
-            for h in self.take_held(Some(faction)) {
-                self.apply_held(h, at);
-            }
+            self.replay_held(faction, at);
         }
     }
 
-    /// The held lines of `faction` (every camp's with `None`), taken out of the plugin.
-    fn take_held(&mut self, faction: Option<u64>) -> Vec<HeldLines> {
-        let (taken, kept) = std::mem::take(&mut self.held)
-            .into_iter()
-            .partition(|h| faction.is_none_or(|f| f == h.faction));
+    /// A player comes within 160 blocks of the camp's chief body or targets it (`hold`, Java's
+    /// `holdRemoval`), fights it (`fight`, `inFight`, which holds its removal too), or leaves. The
+    /// chief lines held on the body go at `at` when what held them is over: a removal when `hold`
+    /// and `fight` are both off, a pair seated over it when `fight` is.
+    pub fn hold_chief(&mut self, faction: u64, hold: bool, fight: bool, at: Tick) {
+        for b in &mut self.camp_world(faction).bodies {
+            if b.chief {
+                b.hold = hold;
+                b.fight = fight;
+            }
+        }
+        self.replay_held(faction, at);
+    }
+
+    /// What each of `lines` waits on, if it does (the camp being in at their epoch): the throne
+    /// for a chief SPAWN or the pair of a plain seat (a player within 160 blocks of it); for the
+    /// pair seated over the old chief's body, that body in a fight; for a TAKE, REMOVE or SET_OUT
+    /// of a chief body, a player near it or targeting it.
+    fn waits(&self, faction: u64, lines: &[boundary::ReconcileLine]) -> Vec<Option<Hold>> {
+        use boundary::{
+            ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
+        };
+        let Some(camp) = self.camps.get(&faction) else {
+            return vec![None; lines.len()];
+        };
+        // The old chief a pair sits over (MZB-410): the body of the generation L_A names.
+        let old = lines
+            .iter()
+            .find(|l| l.action == ACTION_SEAT_HEIR && l.a != 0)
+            .and_then(|l| {
+                camp.bodies.iter().find(|b| {
+                    b.chief && !b.elsewhere && b.slot == l.slot && u64::from(b.generation) == l.a
+                })
+            });
+        lines
+            .iter()
+            .map(|l| match l.action {
+                ACTION_SEAT_HEIR | ACTION_MASK => match old {
+                    Some(b) => b.fight.then_some(Hold::Fight),
+                    None => camp.watched.then_some(Hold::Throne),
+                },
+                ACTION_SPAWN if l.flags & boundary::LINE_CHIEF != 0 => {
+                    camp.watched.then_some(Hold::Throne)
+                }
+                ACTION_TAKE | ACTION_REMOVE | ACTION_SET_OUT => camp
+                    .bodies
+                    .iter()
+                    .find(|b| names(l, b))
+                    .filter(|b| b.chief && (b.hold || b.fight))
+                    .map(|_| Hold::Removal),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The held lines of `faction` that no longer wait go at `at`, the rest stay under what they
+    /// wait on now (a pair whose old chief is gone waits on the throne, as Java's `pairNow`
+    /// decides it again each tick).
+    fn replay_held(&mut self, faction: u64, at: Tick) {
+        let mut go = Vec::new();
+        for mut h in self.take_held(Some(faction), None) {
+            let lines: Vec<boundary::ReconcileLine> = h.lines.iter().map(|l| l.1).collect();
+            match self.waits(faction, &lines).into_iter().flatten().next() {
+                Some(kind) => {
+                    h.kind = kind;
+                    self.held.push(h);
+                }
+                None => go.push(h),
+            }
+        }
+        for h in go {
+            self.apply_held(h, at);
+        }
+    }
+
+    /// The held lines of `faction` (every camp's with `None`) waiting on `kind` (anything with
+    /// `None`), taken out of the plugin.
+    fn take_held(&mut self, faction: Option<u64>, kind: Option<Hold>) -> Vec<HeldLines> {
+        let (taken, kept) = std::mem::take(&mut self.held).into_iter().partition(|h| {
+            faction.is_none_or(|f| f == h.faction) && kind.is_none_or(|k| k == h.kind)
+        });
         self.held = kept;
         taken
     }
 
-    /// The lines whose `HOLD_MAX` is up by `to` go, each at its own deadline.
+    /// The throne's lines whose `HOLD_MAX` is up by `to` go, each at its own deadline. A removal
+    /// and a pair over a fighting chief have no limit.
     fn release_held(&mut self, to: Tick) {
         let (mut over, kept): (Vec<HeldLines>, Vec<HeldLines>) = std::mem::take(&mut self.held)
             .into_iter()
-            .partition(|h| h.since + HOLD_MAX <= to);
+            .partition(|h| h.kind == Hold::Throne && h.since + HOLD_MAX <= to);
         self.held = kept;
         over.sort_by_key(|h| h.since);
         for h in over {
             let at = h.since + HOLD_MAX;
             self.apply_held(h, at);
+        }
+    }
+
+    /// The lines held on `old` (removals of the chief body a seat in place replaces), answered
+    /// stale at `at`; the held lines that name another body stay.
+    fn stale_removals(&mut self, faction: u64, old: &CampBody, at: Tick) {
+        let mut stale = Vec::new();
+        for mut h in self.take_held(Some(faction), Some(Hold::Removal)) {
+            let (mine, rest): (Vec<_>, Vec<_>) =
+                h.lines.iter().copied().partition(|(_, l)| names(l, old));
+            if !rest.is_empty() {
+                let mut kept = h.clone();
+                kept.lines = rest;
+                self.held.push(kept);
+            }
+            if !mine.is_empty() {
+                h.lines = mine;
+                stale.push(h);
+            }
+        }
+        for h in stale {
+            self.apply_lines(h.faction, h.epoch, h.op, false, h.lines, at);
         }
     }
 
@@ -983,6 +1115,8 @@ impl FakeConflict {
             self.death_holders.push(death);
         }
         self.push(at, Obs::CampDeath(death));
+        // Lines held on the body that died find nothing (Java plays them again each tick).
+        self.replay_held(faction, at);
         true
     }
 
@@ -1022,28 +1156,38 @@ impl FakeConflict {
 
     /// One CAMP_RECONCILE: applied while the camp is in at its epoch, every line in the tick it
     /// arrives, else every line answered stale and nothing applied; answered with CAMP_BODIES
-    /// (§4.9, *Orders and answers*). With a player near the throne the chief's SPAWN and the heir's
-    /// pair wait (`holdSpawn`, MZB-433) and are answered when they go.
+    /// (§4.9, *Orders and answers*). With a player near, the lines Rule U holds wait (MZB-433):
+    /// see [`Hold`] and `waits`; they are answered when they go.
     fn reconcile(&mut self, r: &boundary::CampReconcile, at: Tick) {
         let live = self
             .camps
             .get(&r.faction)
             .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
-        let watched = live && self.camps.get(&r.faction).is_some_and(|c| c.watched);
-        let (later, now): (Vec<_>, Vec<_>) = r
-            .lines
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(i, l)| (i as u32, l))
-            .partition(|(_, l)| watched && waits_on_throne(l));
-        if !later.is_empty() {
+        let waits = if live {
+            self.waits(r.faction, &r.lines)
+        } else {
+            vec![None; r.lines.len()]
+        };
+        let mut now = Vec::new();
+        let mut later: Vec<(Hold, Vec<(u32, boundary::ReconcileLine)>)> = Vec::new();
+        for (i, (l, w)) in r.lines.iter().copied().zip(waits).enumerate() {
+            let i = i as u32;
+            match w {
+                None => now.push((i, l)),
+                Some(kind) => match later.iter_mut().find(|k| k.0 == kind) {
+                    Some(k) => k.1.push((i, l)),
+                    None => later.push((kind, vec![(i, l)])),
+                },
+            }
+        }
+        for (kind, lines) in later {
             self.held.push(HeldLines {
                 faction: r.faction,
                 epoch: r.epoch,
                 op: r.op,
                 since: at,
-                lines: later,
+                kind,
+                lines,
             });
         }
         self.apply_lines(r.faction, r.epoch, r.op, live, now, at);
@@ -1066,6 +1210,31 @@ impl FakeConflict {
         // The warrior to mask must be at home, and the heir's body not stand yet.
         let pair = lines.iter().any(|(_, l)| l.action == boundary::ACTION_MASK);
         let pair_ok = !pair || (live && self.pair_possible(faction, &lines));
+        // The old chief's body a seat in place replaces (MZB-410): the removals held on it are
+        // moot, and answered stale first, in the batch of the pair's answers (Java's `staleHeldOf`).
+        let sits_over: Vec<CampBody> = if pair_ok && live {
+            let camp = self.camp_world(faction);
+            lines
+                .iter()
+                .filter(|(_, l)| l.action == boundary::ACTION_SEAT_HEIR && l.a != 0)
+                .filter_map(|(_, l)| {
+                    camp.bodies
+                        .iter()
+                        .find(|b| {
+                            b.chief
+                                && !b.elsewhere
+                                && b.slot == l.slot
+                                && u64::from(b.generation) == l.a
+                        })
+                        .copied()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for old in sits_over {
+            self.stale_removals(faction, &old, at);
+        }
         let mut answers = Vec::new();
         for (index, l) in &lines {
             let mut taken = None;
@@ -1246,16 +1415,21 @@ impl FakeConflict {
                     chief: l.flags & boundary::LINE_CHIEF != 0,
                     crystal: l.flags & boundary::LINE_CRYSTAL != 0,
                     near: false,
+                    hold: false,
+                    fight: false,
                 });
                 LINE_DONE
             }
             ACTION_SEAT_HEIR => {
-                // The heir takes the throne: the chief's body is the one of this generation. A
-                // chief body of another generation, dead away or not, is replaced (MZB-410).
+                // The heir takes the throne: the chief's body is the one of this generation. It sits
+                // over the old chief's body, the one of the generation L_A names (MZB-410); any
+                // other chief body of the camp stays, a second body or the engine's own chief that
+                // the engine's lines deal with (review P2-3).
                 if held.is_some() {
                     return LINE_NOTHING;
                 }
-                camp.bodies.retain(|b| b.slot != l.slot);
+                camp.bodies
+                    .retain(|b| !(b.slot == l.slot && l.a != 0 && u64::from(b.generation) == l.a));
                 camp.bodies.push(CampBody {
                     uuid,
                     body: l.body,
@@ -1265,6 +1439,8 @@ impl FakeConflict {
                     chief: true,
                     crystal: l.flags & boundary::LINE_CRYSTAL != 0,
                     near: false,
+                    hold: false,
+                    fight: false,
                 });
                 LINE_DONE
             }
@@ -1738,7 +1914,7 @@ impl CampRun {
         // The journal's tail is lost; what the holders carry is not.
         self.plugin.drop_queued();
         // What the plugin held is in its memory, which a session's end clears.
-        self.plugin.take_held(None);
+        self.plugin.take_held(None, None);
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }
