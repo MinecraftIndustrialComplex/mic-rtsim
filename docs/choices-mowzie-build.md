@@ -3197,11 +3197,15 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
 
   The 50-leg figure over the 24-leg one is 1.00. `sim mowzie` passes every check; only its
   check names and details changed.
-- **MZB-383** (note for Java review C, the sampler): a station inside the circle, or within one sample
-  past its edge, makes TRAIN_ARRIVED come before that leg's RAIL_PASS (the pass is reported when the
-  train leaves the circle, the arrival when it stops), so the pass is held past the arrival it belongs
-  to and credited to the next leg's line. The sampler's GameTest should cover a station that close, or
-  the choice should accept the misattribution. **Resolved by MZB-387: accepted, not covered.**
+- **MZB-383** (note for Java review C, the sampler): a station inside the circle, or within the margin
+  (MZB-390) and a sample past its edge, makes TRAIN_ARRIVED come before that leg's RAIL_PASS (the pass is
+  reported when the train leaves the circle plus margin, the arrival when it stops), so the pass is held
+  past the arrival it belongs to and credited to the next leg's line. Two things this understated, which
+  Opus review C found: a Frostmaw's `territory_radius` is 200 (`cultures/frostmaw.json`), a circle a
+  camp's own station can sit in, so it is not a corner case; and a terminus inside the circle makes one
+  pass per round trip, not one per leg (the train is inside from the outbound arrival to the return), as
+  well as crediting the wrong line. The sampler's GameTest should cover a station that close, or the
+  choice should accept the misattribution. **Resolved by MZB-387: accepted, not covered.**
 - **MZB-384** (the factions bench pair): not rerun. MZB-376 changes the encoding of a meter (a varint)
   and the in-memory `RailMeter` (8 bytes), and MZB-349 adds a stats byte; no `FactionRow`, `Feud`,
   `Focus` or source layout moved (the `size_of` pins of MZB-347 pass), and the `factions` sweeps have no
@@ -3227,7 +3231,10 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
     also trip on loses its segment and open passes, and the sampler warns once per server run and goes on.
   - The state is dropped (open passes lost, not sent) when no territory minds the rail or the engine side is
     not up, and when the server stops (`ServerStoppedEvent`, with the counters). A pass open then is a
-    pass the engine never hears of, which is the cheap side of UR-1 (MZB-326): nothing is saved.
+    pass the engine never hears of, which is the cheap side of UR-1 (MZB-326): nothing is saved. A train
+    still inside the circle when the engine comes back (or the server starts) gets a fresh pass at its
+    first sample, with `entry` the time of that sample and not the time it came in: a cut-short entry, never
+    a doubled pass, because the dropped one was never sent. The exit is the true one.
   - A segment that clips a circle keeps the nearer of its two ends as the pass's point, and a pass is kept
     until a sample is beyond the radius plus the margin (MZB-390, which replaced "while the new sample is
     inside the circle"): a train through a circle narrower than 128 blocks that is sampled on each side
@@ -3235,8 +3242,12 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
   - A train that left Create's list closes its passes at its last sample's time, at the next rebucket.
   - The sampler's `samples` and `passes` are public counters, and `tracked()` and `clear()` are for the
     bench and the GameTests.
-  - **MZB-383 is accepted, not covered.** A station inside the circle, or within one sample past its edge,
-    sends TRAIN_ARRIVED before that leg's RAIL_PASS, and the pass is credited to the next leg's line. The
+  - **MZB-383 is accepted, not covered.** A station inside the circle, or within the margin (MZB-390) and a
+    sample past its edge, sends TRAIN_ARRIVED before that leg's RAIL_PASS, and the pass is credited to the
+    next leg's line. A Frostmaw's `territory_radius` is 200, so a terminus inside the circle is common:
+    such a train makes one pass per round trip (it is inside from the outbound arrival to the return, and
+    the pass opens on entry and ends beyond the margin on the way out), not one per leg, as well as
+    crediting the wrong line. Both are accepted with it. The
     synthetic graphs of test 11 hold no station, and test 10's real train runs with no territory. M8's
     `TrainSampler.arrived` (MZB-366 below) is where a flush of the train's open passes at its stop would
     go, if the misattribution is judged to matter: it knows the train and the moment it stops. Not built
