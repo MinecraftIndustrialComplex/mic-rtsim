@@ -4,6 +4,7 @@
 
 mod bench;
 mod export;
+mod glass;
 mod lines;
 mod run;
 mod sim;
@@ -118,7 +119,11 @@ usage:
       Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.
   rtsim-cli lines <world> [--json]
       The industry engine's learned train lines (trips, mean travel ticks, cargo per trip) and
-      each district's station exchange rules, from the world's confirmed save (read only).";
+      each district's station exchange rules, from the world's confirmed save (read only).
+  rtsim-cli glass <world> [district] [--json | --graph]
+      Each district's glass box state (its compile, what replays it, its last and passed
+      windows, its ticking chunks) from the confirmed save (read only); --graph adds the
+      compile's records.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -459,6 +464,7 @@ fn main() -> ExitCode {
         ["export", rest @ ..] => export::cli(rest),
         ["view", rest @ ..] => view::cli(rest),
         ["lines", rest @ ..] => lines::cli(rest),
+        ["glass", rest @ ..] => glass::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS

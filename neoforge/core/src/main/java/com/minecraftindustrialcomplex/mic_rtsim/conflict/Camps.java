@@ -11,6 +11,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ChunkHolder;
+import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
@@ -70,6 +71,16 @@ public final class Camps {
     public static final int FULL = 33;
     /** The level a chunk with no holder is read as (beyond every ticket). */
     public static final int NO_HOLDER = 46;
+
+    /**
+     * A ticket level as the camps keep it (MZB-596): every level above {@link ChunkLevel#MAX_LEVEL} is an
+     * unloaded chunk and reads as {@link #NO_HOLDER}, whichever way it was reached: the event posts
+     * {@code UNLOADED_LEVEL} (MAX_LEVEL + 1) when the last ticket goes, C2ME's NEW status is 45, and a holder
+     * the chunk map no longer has is null. So the event and the poll agree where the chunk is gone.
+     */
+    static int norm(int level) {
+        return level > ChunkLevel.MAX_LEVEL ? NO_HOLDER : level;
+    }
     /** The longest a held spawn waits (MOWZIE.md §7 test 5; PLACEHOLDER). */
     public static final int HOLD_MAX = 6_000;
     /** The census's body cap (the record's u16 size, MZB-169's twin). */
@@ -214,6 +225,9 @@ public final class Camps {
     /** A tagged body's death, journaled at the end of the tick once certain (or at the next reconcile). */
     private record Dying(LivingEntity body, int by, UUID killer) {}
 
+    /** A chief's CHIEF_STATE waiting to be written: its flags and health (MZB-274). */
+    private record ChiefState(int flags, float health) {}
+
     private final ConflictBridge bridge;
     private final List<CampKind> kinds = new ArrayList<>();
     private final Map<Long, Site> sites = new LinkedHashMap<>();
@@ -225,9 +239,13 @@ public final class Camps {
     /** The camps by the tick of {@link #POLL_PERIOD} their levels are polled in (MZB-290). */
     private final List<List<Site>> pollSlots = new ArrayList<>(POLL_PERIOD);
     private int declared;
+    /** The camps whose kind looks for strays (a stray radius above zero), by dimension (MZB-595). */
+    private final Map<ResourceKey<Level>, List<Site>> strayers = new HashMap<>();
     private final List<Held> held = new ArrayList<>();
     private final List<SetOut> setOuts = new ArrayList<>();
     private final Map<UUID, Dying> dying = new LinkedHashMap<>();
+    /** CHIEF_STATE records not yet written, by faction, the latest of each (MZB-274). */
+    private final Map<Long, ChiefState> chiefStatesPending = new LinkedHashMap<>();
     private boolean off;
 
     // Counters for logs and the GameTests (this session).
@@ -235,6 +253,8 @@ public final class Camps {
             deaths, carried, markers, heldSpawns, recounts, strayWatches, strays;
     /** Camps polled, and the footprint chunks whose level the poll (or a play-time check) found moved (MZB-290). */
     public long polls, pollChanges;
+    /** CHIEF_STATE records written, and reports queued (a later one for the same faction replaces the first; MZB-287). */
+    public long chiefStates, chiefStatesQueued;
 
     /**
      * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
@@ -263,14 +283,17 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
         polls = pollChanges = 0;
+        chiefStates = chiefStatesQueued = 0;
     }
 
     /** The session ends: deaths seen are journaled; nothing else (the next session starts every camp out). */
     void sessionStopping(long now) {
+        flushChiefStates(now);
         settleDeaths(now);
     }
 
@@ -278,6 +301,7 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
     }
 
     /** The server stopped: nothing of its world outlives it. */
@@ -285,6 +309,7 @@ public final class Camps {
         sites.clear();
         for (List<Site> slot : pollSlots)
             slot.clear();
+        strayers.clear();
         declared = 0;
         ticketEventsSilentUntil = 0;
         byChunk.clear();
@@ -293,6 +318,7 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
         off = false;
     }
 
@@ -300,6 +326,7 @@ public final class Camps {
     void switchedOff(long now) {
         if (off)
             return;
+        flushChiefStates(now); // while the camps still count as live
         off = true;
         settleDeaths(now);
         for (SetOut so : setOuts)
@@ -345,13 +372,15 @@ public final class Camps {
         Long2ObjectOpenHashMap<List<Site>> m = byChunk.computeIfAbsent(level.dimension(), k -> new Long2ObjectOpenHashMap<>());
         for (int i = 0; i < c.chunks.length; i++) {
             ChunkHolder h = map.mic_rtsim$updating(c.chunks[i]);
-            c.levels[i] = h == null ? NO_HOLDER : Math.min(h.getTicketLevel(), NO_HOLDER);
+            c.levels[i] = h == null ? NO_HOLDER : norm(h.getTicketLevel());
             m.computeIfAbsent(c.chunks[i], k -> new ArrayList<>(1)).add(c);
         }
         c.pollSlot = declared++ % POLL_PERIOD;
         pollSlots.get(c.pollSlot).add(c);
+        if (kind.strayRadius(c) > 0)
+            strayers.computeIfAbsent(c.dimension, k -> new ArrayList<>(2)).add(c);
         bridge.putCamp(c);
-        Set<Entity> loaded = index.get(key);
+        Set<Entity> loaded = live(key);
         if (loaded != null)
             for (Entity e : loaded)
                 if (e instanceof Mob mob && e.level().dimension().equals(c.dimension))
@@ -383,7 +412,7 @@ public final class Camps {
         for (Site c : l) {
             for (int i = 0; i < c.chunks.length; i++)
                 if (c.chunks[i] == chunk)
-                    c.levels[i] = Math.min(newLevel, NO_HOLDER);
+                    c.levels[i] = norm(newLevel);
             attention.add(c);
         }
     }
@@ -404,7 +433,7 @@ public final class Camps {
         // A body that changed dimension is not its camp's to keep: its copy in the other dimension is not indexed (MZB-240).
         if (c != null && !c.dimension.equals(e.level().dimension()))
             return;
-        index.computeIfAbsent(m.faction(), k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(e);
+        indexAdd(e, m.faction());
         if (c == null)
             return;
         if (e instanceof Mob mob)
@@ -421,14 +450,20 @@ public final class Camps {
      * An untagged body of a kind that watches for strays joined a level (MZB-232): a camp of that kind within
      * the kind's stray radius with a free slot is to look for it, so its next census lists it (and the engine
      * adopts it into the slot). A camp that is out looks at its next census anyway; one with no free slot
-     * leaves the body alone: it is the jar's, outside the books.
+     * leaves the body alone: it is the jar's, outside the books. A puppet is no stray, and only the camps
+     * of the entity's dimension whose kind looks for strays are walked (MZB-595).
      */
     private void strayJoined(Entity e) {
-        if (!(e instanceof Mob))
+        // A puppet (the bridge's, tagged) is the engine's own body, never a stray (MZB-595).
+        if (!(e instanceof Mob) || RtsimAttachments.isTagged(e))
             return;
-        for (Site c : sites.values()) {
+        List<Site> l = strayers.get(e.level().dimension());
+        if (l == null)
+            return;
+        for (int i = 0; i < l.size(); i++) {
+            Site c = l.get(i);
             double r = c.kind.strayRadius(c);
-            if (r <= 0 || !c.dimension.equals(e.level().dimension()) || !c.kind.isBody(e) || !e.isAlive())
+            if (!c.kind.isBody(e) || !e.isAlive())
                 continue;
             if (e.position().distanceToSqr(c.spot) > r * r || freeSlots(c) <= 0)
                 continue;
@@ -447,18 +482,20 @@ public final class Camps {
         if (slots == Integer.MAX_VALUE)
             return slots;
         int used = 0;
-        Set<Entity> s = index.get(c.faction);
+        Set<Entity> s = live(c.faction);
         if (s != null)
             for (Entity e : s)
-                if (e.isAlive() && !e.isRemoved())
+                if (e.isAlive())
                     used++;
         return Math.max(0, slots - used);
     }
 
     /**
-     * EntityLeaveLevelEvent. A body leaves the index when it is removed (unloaded with its chunk, discarded,
-     * changed dimension); one that only went hidden with its chunk, still alive, is kept, since its
-     * re-promotion posts no join (MZB-231). A body discarded by anything but the reconciler (which takes the
+     * EntityLeaveLevelEvent. A body leaves the index when it is removed (discarded, changed dimension); one that
+     * only went hidden with its chunk, still alive, is kept, since its re-promotion posts no join (MZB-231).
+     * The unload that follows a hidden chunk posts no leave at all, so a body whose chunk unloaded stays in
+     * the index as a removed object until something prunes it (MZB-590: {@link #live}, the poll and
+     * {@link #indexAdd}). A body discarded by anything but the reconciler (which takes the
      * tag off first) is gone from its camp: CAMP_DEATH, killer kind none (§4.9).
      */
     void onLeave(Entity e) {
@@ -483,7 +520,29 @@ public final class Camps {
     }
 
     private void indexAdd(Entity e, long faction) {
-        index.computeIfAbsent(faction, k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(e);
+        Set<Entity> s = index.get(faction);
+        if (s == null)
+            index.put(faction, s = Collections.newSetFromMap(new IdentityHashMap<>()));
+        else
+            s.removeIf(Entity::isRemoved); // a faction nobody declared is pruned only here (MZB-590)
+        s.add(e);
+    }
+
+    /**
+     * A faction's indexed bodies with the removed ones dropped, or null with none (MZB-590): vanilla posts no
+     * leave event when a chunk unloads, so a body whose chunk went is still in its set, as a removed object.
+     * Every reader of the index but {@link #held} (the GameTests' raw view) goes through this.
+     */
+    private Set<Entity> live(long faction) {
+        Set<Entity> s = index.get(faction);
+        if (s == null)
+            return null;
+        s.removeIf(Entity::isRemoved);
+        if (s.isEmpty()) {
+            index.remove(faction);
+            return null;
+        }
+        return s;
     }
 
     /** Takes a body's tag off (out of the index first): it is the camp's no more. */
@@ -521,7 +580,7 @@ public final class Camps {
         return found;
     }
 
-    /** The loaded bodies a camp holds (GameTests). */
+    /** The bodies in a camp's index as they are, removed ones not yet pruned included (GameTests; MZB-590). */
     public List<Entity> held(long faction) {
         Set<Entity> s = index.get(faction);
         return s == null ? List.of() : List.copyOf(s);
@@ -539,6 +598,7 @@ public final class Camps {
             off = false;
             attention.addAll(sites.values()); // switched back on: every camp is looked at again
         }
+        flushChiefStates(now); // before the deaths settled below: a robbed chief's state precedes its CAMP_DEATH
         poll(now);
         settleDeaths(now);
         resolveSetOuts(now);
@@ -571,6 +631,7 @@ public final class Camps {
         List<Site> slot = pollSlots.get((int) Math.floorMod(now, (long) POLL_PERIOD));
         for (int i = 0; i < slot.size(); i++) {
             Site c = slot.get(i);
+            live(c.faction); // bodies whose chunk unloaded post no leave: dropped here (MZB-590)
             ServerLevel level = bridge.level(c.dimension);
             if (level == null)
                 continue;
@@ -583,15 +644,16 @@ public final class Camps {
     /**
      * A camp's footprint levels read from the chunk map now, through {@code getUpdatingChunkIfPresent}, the
      * method both vanilla's chunk map and C2ME's answer (C2ME's holder derives {@code getTicketLevel} from
-     * its backing holder's target status; no holder is {@link #NO_HOLDER}). Levels past {@link #NO_HOLDER}
-     * read as it, so the event's and the poll's agree. True when any moved.
+     * its backing holder's target status; no holder is {@link #NO_HOLDER}). Every level of an unloaded chunk
+     * reads as {@link #NO_HOLDER} ({@link #norm}), so the event's and the poll's agree where the chunk is
+     * gone. True when any moved.
      */
     private boolean refreshLevels(ServerLevel level, Site c) {
         ChunkMapInvoker map = (ChunkMapInvoker) level.getChunkSource().chunkMap;
         boolean moved = false;
         for (int i = 0; i < c.chunks.length; i++) {
             ChunkHolder h = map.mic_rtsim$updating(c.chunks[i]);
-            int l = h == null ? NO_HOLDER : Math.min(h.getTicketLevel(), NO_HOLDER);
+            int l = h == null ? NO_HOLDER : norm(h.getTicketLevel());
             if (l != c.levels[i]) {
                 c.levels[i] = l;
                 moved = true;
@@ -723,12 +785,12 @@ public final class Camps {
         }
         // What the chief is read from: the footprint's entities, the camp's bodies loaded elsewhere and the strays found wide.
         List<Entity> view = new ArrayList<>(inside);
-        Set<Entity> mine = index.get(c.faction);
+        Set<Entity> mine = live(c.faction);
         if (mine != null) {
             for (Entity e : mine) {
                 if (bodies.size() >= CENSUS_CAP)
                     break;
-                if (insideSet.contains(e) || !e.isAlive() || e.isRemoved() || !e.level().dimension().equals(c.dimension))
+                if (insideSet.contains(e) || !e.isAlive() || !e.level().dimension().equals(c.dimension))
                     continue;
                 CampMember m = RtsimAttachments.campMember(e);
                 int flags = ConflictRecords.CampCensus.BODY_ELSEWHERE | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
@@ -1129,6 +1191,11 @@ public final class Camps {
                 answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
                 continue;
             }
+            if (level.getDifficulty() == Difficulty.PEACEFUL) {
+                // no new body appears on Peaceful (MZB-234); decided before the budget is spent (MZB-599)
+                answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
+                continue;
+            }
             boolean wait = now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
             if (wait || !bridge.session().spendSpawnBudget(1)) {
                 held.add(h);
@@ -1200,9 +1267,8 @@ public final class Camps {
     void onDeath(LivingEntity dead, DamageSource source) {
         if (RtsimAttachments.campMember(dead) == null || RtsimAttachments.isTagged(dead))
             return;
-        Entity killer = source.getEntity();
-        int by = ConflictBridge.byKind(killer);
-        dying.putIfAbsent(dead.getUUID(), new Dying(dead, by, by == ConflictRecords.BY_PLAYER ? killer.getUUID() : null));
+        ConflictBridge.Credit credit = ConflictBridge.credit(dead, source); // MZB-261: vanilla's kill credit
+        dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer()));
     }
 
     void settleDeaths(long now) {
@@ -1258,6 +1324,60 @@ public final class Camps {
         untag(e);
         s.carryOnCampHolder(mk, records, r.getLong(Obs.OBS_SEQ));
         deaths++;
+        if (chief) // news only: nothing reaches a player's chat, action bar or title (MZB-275)
+            ConflictNews.post(ConflictNews.Event.CHIEF_KILLED, m.faction(), killer);
+    }
+
+    // ---- a chief's state ------------------------------------------------------------------------
+
+    /**
+     * A plugin saw a chief at home change its crystal (the Frostmaw's steal, MZB-274): CHIEF_STATE with
+     * {@code flags} (1 holds the crystal) and the body's health, for the faction of a camp's own chief body
+     * or of a chief puppet; anything else is ignored. Queued by faction, the latest of each, and written at
+     * the start of the next tick, before any death settled in it. Peaceful sends it too (the steal happens
+     * there).
+     */
+    public void chiefState(LivingEntity body, int flags) {
+        if (!live())
+            return;
+        long faction = 0L;
+        CampMember m = RtsimAttachments.campMember(body);
+        if (m != null && !RtsimAttachments.isTagged(body)) {
+            Site c = sites.get(m.faction());
+            CampKind kind = c != null ? c.kind : kindOf(body);
+            if (kind != null && kind.isChief(body))
+                faction = m.faction();
+        } else {
+            faction = bridge.chiefPuppetFaction(body);
+        }
+        if (faction == 0L)
+            return;
+        chiefStatesPending.put(faction, new ChiefState(flags, body.getHealth()));
+        chiefStatesQueued++;
+    }
+
+    /** Writes the queued CHIEF_STATE records; one that finds no room stays for the next tick. */
+    private void flushChiefStates(long now) {
+        if (chiefStatesPending.isEmpty() || !live())
+            return;
+        RtsimSession s = bridge.session();
+        Iterator<Map.Entry<Long, ChiefState>> it = chiefStatesPending.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, ChiefState> e = it.next();
+            int at = s.boundary().direct(ConflictRecords.CHIEF_STATE, ConflictRecords.ChiefState.SIZE, e.getValue().flags(), now);
+            if (at < 0)
+                return; // dropped for space: the rest wait for the next tick
+            ByteBuffer b = s.boundary().openBuffer();
+            b.putLong(at + ConflictRecords.ChiefState.FACTION, e.getKey());
+            b.putFloat(at + ConflictRecords.ChiefState.HEALTH, e.getValue().health());
+            chiefStates++;
+            it.remove();
+        }
+    }
+
+    /** Reports queued and not yet written (GameTests). */
+    public int chiefStatesPending() {
+        return chiefStatesPending.size();
     }
 
     private CampKind kindOf(Entity e) {

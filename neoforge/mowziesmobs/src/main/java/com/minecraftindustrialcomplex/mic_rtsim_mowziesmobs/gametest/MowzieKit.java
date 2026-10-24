@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.bobmowzie.mowziesmobs.server.item.ItemHandler;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
@@ -25,13 +26,19 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
@@ -40,6 +47,7 @@ import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
+import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
@@ -67,6 +75,7 @@ public final class MowzieKit {
     public static final String TEST_GROVE = "mic_rtsim_mowziesmobs:test_grove";
     public static final String FROSTMAW = MicRtsimMowziesMobs.FROSTMAW;
     public static final String WARRIOR = MicRtsimMowziesMobs.WARRIOR;
+    public static final String RAPTOR = MicRtsimMowziesMobs.RAPTOR;
 
     // ---- the end of every tick ------------------------------------------------------------------
 
@@ -127,6 +136,36 @@ public final class MowzieKit {
         LEAVES.put(e.getUUID(), n);
         ConflictKit.onEnd(helper, () -> LEAVES.remove(e.getUUID()));
         return n;
+    }
+
+    // ---- the ticket event ---------------------------------------------------------------------
+
+    private record TicketWatch(ServerLevel level, Set<Long> chunks, int[] count) {}
+
+    private static final List<TicketWatch> TICKET_WATCHES = new CopyOnWriteArrayList<>();
+
+    static {
+        // Registered once; costs a list walk per event only while a test watches (the list is empty otherwise).
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, ChunkTicketLevelUpdatedEvent.class, e -> {
+            for (TicketWatch w : TICKET_WATCHES)
+                if (w.level() == e.getLevel() && w.chunks().contains(e.getChunkPos()))
+                    w.count()[0]++;
+        });
+    }
+
+    /**
+     * Counts the {@code ChunkTicketLevelUpdatedEvent}s of the given chunks from now on (until the test ends):
+     * zero where the chunk system never posts it (C2ME, MZB-249), which a test that asserts what the event
+     * path alone shows (a camp seen waiting) uses to know whether it can.
+     */
+    public static int[] watchTicketEvents(GameTestHelper helper, Iterable<ChunkPos> chunks) {
+        Set<Long> set = new LinkedHashSet<>();
+        for (ChunkPos p : chunks)
+            set.add(p.toLong());
+        TicketWatch w = new TicketWatch(helper.getLevel(), set, new int[1]);
+        TICKET_WATCHES.add(w);
+        ConflictKit.onEnd(helper, () -> TICKET_WATCHES.remove(w));
+        return w.count();
     }
 
     // ---- a test's far place ---------------------------------------------------------------------
@@ -412,6 +451,54 @@ public final class MowzieKit {
             e.setHealth(0f);
             e.die(source);
         }
+    }
+
+    // ---- a thief of the crystal (MZB-281) -------------------------------------------------------
+
+    /** Where a sleeping Frostmaw's ice crystal is, as {@code EntityFrostmaw.tick} works it out (a thief must stand within 1.8 blocks of it). */
+    public static Vec3 crystalPoint(EntityFrostmaw f) {
+        return new Vec3(1.6, 0.4, 1.8).yRot((float) Math.toRadians(-f.getYRot() - 90.0f)).add(f.position());
+    }
+
+    /**
+     * A thief of a Frostmaw's crystal: a mock {@code Player} (not a {@code ServerPlayer}) of the given game
+     * mode, added with {@code addFreshEntity} so that the jar's {@code getPlayersNearby} (the entity manager,
+     * not {@code level.players()}) finds it, and kept at the crystal's point at the end of every tick until the
+     * Frostmaw has lost its crystal. {@code invisible} gives it the invisibility effect (a bare
+     * {@code setInvisible} is undone by the entity's first tick); {@code fullInventory} puts one dirt in each of
+     * the 36 main slots (the jar's {@code isInventoryFull} asks only whether a slot is empty). It holds no chunk
+     * ticket and is no target of any goal ({@code NearestAttackableTargetGoal} reads {@code players()}).
+     * Discarded when the test ends. UNVERIFIED on a running server: a fallback is {@code FakePlayers.addSeen}
+     * (MZB-281).
+     */
+    public static Player thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
+        ServerLevel level = helper.getLevel();
+        Player p = helper.makeMockPlayer(mode);
+        Vec3 at = crystalPoint(f);
+        p.moveTo(at.x, at.y, at.z);
+        if (fullInventory)
+            for (int i = 0; i < 36; i++)
+                p.getInventory().setItem(i, new ItemStack(Items.DIRT));
+        check("the thief is added", level.addFreshEntity(p));
+        if (invisible)
+            p.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY, MobEffectInstance.INFINITE_DURATION, 0, false, false));
+        everyTick(helper, () -> {
+            if (!p.isRemoved() && !f.isRemoved() && f.getHasCrystal()) {
+                Vec3 c = crystalPoint(f);
+                p.moveTo(c.x, c.y, c.z);
+            }
+        });
+        ConflictKit.onEnd(helper, p::discard);
+        return p;
+    }
+
+    /** How many ice crystals a player's main inventory holds. */
+    public static int crystals(Player p) {
+        int n = 0;
+        for (ItemStack s : p.getInventory().items)
+            if (s.is(ItemHandler.ICE_CRYSTAL.get()))
+                n += s.getCount();
+        return n;
     }
 
     // ---- tags -----------------------------------------------------------------------------------
