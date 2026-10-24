@@ -1047,7 +1047,9 @@ public final class SectionsChunkLoadGameTests {
      * turns at 16 RPM, so A's millstone and, through A's published rows, B's grind at a quarter of the speed.
      * Brought back, each district's reconcile takes off the wheat its replay ground: at the loaded speed up to
      * the burner's out tick and at the passive speed after it, within 3 + 5%, and apart from a line that
-     * stopped at the out tick and from one that ran on at the loaded speed.
+     * stopped at the out tick and from one that ran on at the loaded speed. Then, loaded, a burner with no fuel
+     * takes the lit one's place, and Create's own engine turns at the passive 16 RPM the replays used, B's
+     * millstone at the same ratio.
      */
     @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 24000)
     public static void aBoilerOnAChainDrivesTheNextDistrict(GameTestHelper helper) {
@@ -1316,6 +1318,18 @@ public final class SectionsChunkLoadGameTests {
                                     expect, tol, stopped, ranOn));
                     }
                     check("the replays grind at the boiler's speed, then at the passive speed: " + failed, failed.isEmpty());
+                    // The loaded control for the passive speed the replays ran at: a burner with a blaze and no fuel
+                    // in place of the lit one (its fuel did not burn away: a chunk that does not tick burns none).
+                    GlassCorpusKit.set(helper, burner, Blocks.AIR.defaultBlockState());
+                    SteamHelpers.burner(helper, burner);
+                })
+                .thenWaitUntil(() -> {
+                    float sp = speedOf(level, shaft), b = speedOf(level, millB), want = Math.abs(rpm[1] * 16f / rpm[2]);
+                    check("loaded, Create runs the engine on passive heat: the shaft at " + sp + " RPM, B's millstone at " + b + " (want 16, " + want + ")",
+                            Math.abs(sp) == 16f && Math.abs(Math.abs(b) - want) < 1e-3f);
+                })
+                .thenExecute(() -> {
+                    record(t, "loaded, passive heat: the shaft, A's and B's millstones", speedOf(level, shaft) + ", " + speedOf(level, millA) + ", " + speedOf(level, millB));
                     end.run();
                 })
                 .thenSucceed();

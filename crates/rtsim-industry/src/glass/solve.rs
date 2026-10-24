@@ -2090,9 +2090,11 @@ impl<'a> Solver<'a> {
             } else {
                 true
             };
-            if lit {
-                heat += ed.param.max(1);
+            if lit && ed.param > 0 {
+                heat += ed.param;
             } else {
+                // Out, or lit at no heat (a creative burner set below FADING): passive heat either
+                // way, as `BoilerHeaters.blazeBurner` gives 0 for anything below FADING.
                 out = true;
             }
         }

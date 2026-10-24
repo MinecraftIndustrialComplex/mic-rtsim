@@ -51,7 +51,7 @@ scripts that made them.
 | A kinetic network shared by districts | each district's compile decides its driver from its own engines only (`CreateCompile.java:413` to `:418`, `:452`); districts disagree | a **shared network** in Rust: every district reports its own part from its own compile, the network's state is decided over all parts, and the districts on it replay in one cluster (§2.6) |
 | The unit that learns, replays and goes stale | the district | the **section**: a working line between stores; the district stays the unit of loading, ports, the black box and the checksum (§3) |
 | An edit | drops the district's open window and stops its glass replay until a window passes or Java recompiles (`glass/mod.rs:313` to `:332`) | stales the sections whose node box holds the edit and drops the district's open window; the recompile keeps every section whose build did not change (§3.6) |
-| A replay that cannot go on | the district goes to the black box (`glass_mode`, `engine.rs:1597`, `dg.fallback.is_some()`) | the sections the failure names freeze, and the replay goes on over the rest from the tick of the failure; the black box takes the district only when no section replays (§3.5) |
+| A replay that cannot go on | the district goes to the black box (`glass_mode` in `engine.rs`, `dg.fallback.is_some()`) | the sections the failure names freeze, and the replay goes on over the rest from the tick of the failure; the black box takes the district only when no section replays (§3.5) |
 | Measurement | one window per district per good | one window per section per good, plus the district's own window as the checksum; flows into stores shared by sections are counted at Create's movers (§4) |
 | Chunk loading | the compile, Create's chain conveyors and Create's network recount read through `Level.getBlockEntity`, which loads chunks and pulls an away district into a partial load | the compile reads through `getChunkNow`, and mixins keep Create's chain and network lookups from loading a chunk (§2.8, slice S1) |
 | Saved state | `IndustryData` format 2; glass page `IGL1` | `IndustryData` format 3 (package stores) then 4 (join pairs); glass page `IGL2`, `IGL3`, `IGL4` then `IGL5` (sections, the judging units' windows, the station joins, then the counted stores' bases, inside the district's page); package store pages; a loud reset on load (§5, §6) |
@@ -420,10 +420,10 @@ Inside a district nothing changes here (Q1 is about sections).
   its boiler (the least row over a running cycle, SC151), none while that boiler is gated, frozen, or
   its district does not replay on glass (SC152); a fixed source its one row. A loaded district's rows
   are its check solve's. When an owner's rows change at a tick, each replaying reader's cluster settles
-  to that tick and its parts on the network re-run on the new input, for up to 8 rounds a tick; a
-  reader whose input still changes after that falls back as oscillating. G2-16's rule (a power link
-  sends its districts to the black box, `engine.rs:1594` to `:1595`, its doc at `:1577` to `:1580`)
-  does not apply: both sides model the network. A black-box district on a shared network runs its box
+  to that tick and its parts on the network re-run on the new input, for up to 8 rounds a tick;
+  after that a reader whose input changes again, having taken one in round 8 or later, falls back as
+  oscillating, and the others still take theirs. G2-16's rule (a power link sends its districts to
+  the black box: the `dist.links` arm of `glass_mode` in `engine.rs`, and its doc) does not apply: both sides model the network. A black-box district on a shared network runs its box
   as today, ungated by the network, and gives the network no driven rows (§14).
 - **Loaded districts.** A loaded district's network is Create's. Its check solves read the other
   parts' rows from their last solves (the live view), so its windows are judged on the whole network.
@@ -613,7 +613,7 @@ part of it. A network's load on the section is §3.6's domain check, not the fin
 - **A fallback freezes the sections it names, and the replay goes on over the rest** (SEC-1: each
   section replays on its own). A replay falls back when the regime has no fixed point, oscillates, sticks
   at a breakpoint or meets a stop it does not model (`Fallback`, `replay.rs:68`). Today a fallback ends
-  the district's glass replay and sends the district to the black box (`glass_mode`, `engine.rs:1597`,
+  the district's glass replay and sends the district to the black box (`glass_mode` in `engine.rs`,
   `dg.fallback.is_some()`; the module doc, `replay.rs:30` to `:32`). With sections, the replay counts,
   per section, the watches that fired, the processes that blocked and the flags that did not settle
   since the last outside event (new). The sections those name freeze (their nodes gated off), and the
@@ -934,7 +934,7 @@ No migration code (no backward compatibility before release; G2-85). On load:
 - **Shared networks** (choice SC153). Each district replays in its own cluster, never merged by a
   network. A change in an owner's published rows settles each replaying reader's cluster to that tick
   and re-runs the reader's parts: one settle and one re-solve per reader per change, at most 8 rounds
-  a tick (`NET_ROUNDS`), then the readers still changing fall back as oscillating. The registry is
+  a tick (`NET_ROUNDS`); after that a reader that changes again falls back as oscillating. The registry is
   rebuilt (a union-find over the parts' source positions, linear in sources) at a compile accepted or
   dropped, a district removed and a restore, and is never saved. A network with parts in more
   districts than `industry.clusterDistrictsMax` is past the cap: its parts run decoupled (each bounds
@@ -1398,7 +1398,7 @@ The options below stay as the record of what was offered.
 | SC151 | While a replay's cycle runs, a part publishes for each driven source the least row over the cycle's marks (least by speed, then capacity; none when a mark has none); outside a cycle, its running regime's row | a cycle repeats, so readers following each mark would re-run at every mark and never settle; the least row is the safe side. Cost: where an owner's boiler level changes within its cycle (a burner a controller lights and puts out), its readers run on the cycle's slowest row all trip, slower than the average Create would give. Option (a) of two, decided by the coordinator (reversible); (b), following each mark, may never settle |
 | SC152 | Refines SC28 for shared networks: an away owner that is frozen, gated (its unit does not replay) or not replaying on glass (the black box, none) gives its network no driven rows, as if its boilers were cold; its fixed sources always count, at their one row; a loaded owner gives its check solve's rows. Inside a district a gated boiler still stops its whole domain (SC68) | the safe side: nothing runs on an engine the sim does not trust; a fixed source (a creative motor, a water wheel) needs no model |
 | SC153 | Slice S5-2: a crossing network is a SHARED part in each district's compile (§2.6), its parts joined in Rust by shared source positions (`glass/net.rs`, derived from the compiled graphs, never saved), in each part's frame through the network's anchor. A coupled network's part solves with what the rest gives (`NetInput` per domain, in the regime and its key). One cluster per district: an owner's change settles each reader to that tick and re-runs its parts, up to `NET_ROUNDS` (8) rounds a tick, then oscillating. An incomplete network or one past `industry.clusterDistrictsMax` parts runs decoupled: each part at its compile row, its members bounded (why `SHARED_NETWORK`, 20). After each rebuild the domain check runs across districts (§3.6): a unit whose passed capacity is below its own stress plus the others' at that speed goes stale. Glass pages go to IGL7 (the regimes' and replays' network inputs and published rows); an IGL6 page is read as dropped | one cluster per district keeps the costs S4 bounds and needs no merge for a network (plan review, fix 3); a part per compile keeps each compile reading only its own chunks (S1); positions identify a network where Create's id changes when another source takes over; no compatibility before a release |
-| SC154 | A boiler with water and size but no heat (its burners out: a blaze burner below FADING) is passive, as Create's `BoilerData.isPassive`: its engines run at an efficiency of 1/8 shared by its engines (16 RPM, 128 SU per RPM over the engine count). Each driven source has a 20th row (selector 19, `PASSIVE_SELECTOR`), which the solve takes when every heater under the boiler is out and it has water and size; Java's current row is 19 when Create's boiler is passive | Create keeps a line turning slowly on a passive boiler (`BoilerHeaters.blazeBurner` gives passive heat below FADING); without the row, a burner out stopped the line in the model. Limits: heaters Create counts as passive by tag (a campfire, lava, magma) are not heaters in the model, so a boiler on them alone is not passive there (§14) |
+| SC154 | A boiler with water and size but no heat (its burners out: a blaze burner below FADING) is passive, as Create's `BoilerData.isPassive`: its engines run at an efficiency of 1/8 shared by its engines (16 RPM, 128 SU per RPM over the engine count). Each driven source has a 20th row (selector 19, `PASSIVE_SELECTOR`), which the solve takes when every heater under the boiler is out and it has water and size; Java's current row is 19 when Create's boiler is passive | Create keeps a line turning slowly on a passive boiler (`BoilerHeaters.blazeBurner` gives passive heat below FADING); without the row, a burner out stopped the line in the model. Limits: heaters Create counts as passive by tag (a campfire, lava, magma) are not heaters in the model, so a boiler on them alone is not passive there: Java's current row says passive (19), the solve says stopped, and the unit's windows can be expected to fail where its counts move (§14) |
 
 ---
 
@@ -1445,7 +1445,12 @@ The options below stay as the record of what was offered.
   - The live view reads the owners' last check solves, so a loaded part's input lags an owner's change
     by up to one sweep.
   - Heaters Create counts as passive by block tag (a campfire, lava, magma) are not heaters in the
-    model: a boiler on them alone is not passive there (SC154).
+    model: a boiler on them alone is not passive there (SC154). Java's current row is Create's
+    (passive), the solve's is stopped: the unit's windows fail where its counts move (it then does
+    not replay), and a unit whose counts do not move passes on a stopped line.
+  - An engine's shaft in another district's chunk than its tank's is tabulated by neither part (the
+    tank's district lists it as foreign, the shaft's district as an engine shaft without its tank):
+    the network is incomplete and both parts run decoupled, bounded.
   - No test drives the oscillation cap (`NET_ROUNDS`); a network that changes at every round is
     reasoned, not shown.
   - A network's status shows only in the engine's industry log, not in `/rtsim district info`.

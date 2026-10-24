@@ -661,6 +661,16 @@ fn a_boiler_whose_burner_is_out_runs_its_engines_on_passive_heat() {
     let s = run(&g, &rg);
     assert_eq!(s.src_row, vec![Some(0)]);
     assert_eq!(s.dom_level, vec![None]);
+    // Lit at no heat (a creative burner set below FADING: its heat edge's param is 0): passive
+    // too, as Create has it, not level 1.
+    let (mut g, rg, _) = steam(40, 0);
+    passive(&mut g);
+    for e in g.edges.iter_mut().filter(|e| e.kind == EdgeKind::Heat) {
+        e.param = 0;
+    }
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(3)]);
+    assert_eq!(s.dom_level, vec![Some(0)]);
 }
 
 #[test]
