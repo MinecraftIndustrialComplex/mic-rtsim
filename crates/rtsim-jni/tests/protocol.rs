@@ -5483,10 +5483,14 @@ mod conflict {
     /// players, so that it changes nothing they do.
     const GRANTED: u64 = 0x0001_0000_0000_00A1;
 
+    /// The dragons' lair a TRIBUTE_START during the replay names: far from the camp too.
+    const TRIBUTE_LAIR: u64 = 0x0000_0EEE_0000_0EEE;
+
     /// [`a_fight_kept_in_the_pages_across_a_replay`], with `given` (a test's order that runs the
     /// clock to the hand-over's time, RP-33) given in the replay's first hand-over, so that the
     /// engine takes it at the next step while it still replays. A works grant's village is
-    /// adopted before the save. The order's effect is there once the replay has ended.
+    /// adopted before the save; a works raid's and a tribute's is given works and a purse there
+    /// too, and a tribute's lair is found. The order's effect is there once the replay has ended.
     fn a_fight_kept_in_the_pages_with(
         name: &str,
         capacity: Option<usize>,
@@ -5494,7 +5498,12 @@ mod conflict {
         given: Option<Order>,
     ) {
         let (dir, e, mut j) = camp_with(name, mask);
-        if let Some(Order::WorksGrant { village, .. }) = &given {
+        if let Some(
+            Order::WorksGrant { village, .. }
+            | Order::WorksRaid { village, .. }
+            | Order::TributeStart { village, .. },
+        ) = &given
+        {
             j.adopt(
                 *village,
                 "minecraft:village_plains",
@@ -5503,6 +5512,35 @@ mod conflict {
                 -4_000,
                 -4_000,
             );
+            j.idle();
+        }
+        if let Some(Order::WorksRaid { village, .. } | Order::TributeStart { village, .. }) = &given
+        {
+            // Works and a purse: a raid has golems to buy, a tribute coin to pay. The catalog is
+            // read before the grant is taken (a step takes its orders first).
+            j.work_catalog(&test_works());
+            j.idle();
+            e.order(vec![Order::WorksGrant {
+                village: *village,
+                amount: 1_000_000,
+            }])
+            .unwrap();
+            j.idle();
+        }
+        if let Some(Order::TributeStart { lair, .. }) = &given {
+            use rtsim_ecology::boundary as db;
+            let home = (-6_000, 100, -6_000);
+            let dimension = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            j.dragon_obs(&db::Obs::LairFound(db::LairFound {
+                lair: *lair,
+                late: false,
+                dimension,
+                species: rtsim_ecology::species::Species::Fire,
+                kind: rtsim_ecology::dragon::LairKind::Roost,
+                min: (home.0 - 30, 60, home.2 - 30),
+                max: (home.0 + 30, 140, home.2 + 30),
+                home,
+            }));
             j.idle();
         }
         // The player sees the band leave the camp too: only the fight's waves are fought. A
@@ -5648,6 +5686,17 @@ mod conflict {
             Some(Order::HerdFound { .. }) => {
                 assert_eq!(e.herd_agents().len(), 1, "a herd founded")
             }
+            Some(Order::WorksRaid { village, .. }) => {
+                let threat = e.with_dragons(|_, w| {
+                    w.node_of_key(village)
+                        .and_then(|n| w.works_of(n))
+                        .and_then(|s| s.threat_at)
+                });
+                assert!(threat.is_some(), "the village raided");
+            }
+            Some(Order::TributeStart { .. }) => {
+                assert_eq!(e.dragons_tribute()[0], 1, "the tribute paid")
+            }
             _ => {}
         }
         drop(j);
@@ -5700,6 +5749,31 @@ mod conflict {
         let long = Some(wire::MIN_CAPACITY);
         let mask = MODULES | rtsim_jni::engine::MODULE_HERDS;
         a_fight_kept_in_the_pages_with("conflict-rp33-herd", long, mask, Some(order));
+    }
+
+    /// The same with a works raid (the re-review's item 5), which runs the phase 1 world to the
+    /// hand-over's time as a grant does.
+    #[test]
+    fn a_works_raid_while_replaying_undoes_no_casualty() {
+        let order = Order::WorksRaid {
+            village: GRANTED,
+            tribute: false,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        a_fight_kept_in_the_pages_with("conflict-rp33-raid", long, MODULES, Some(order));
+    }
+
+    /// The same with a TRIBUTE_START (the re-review's item 5), which runs the dragons and the
+    /// phase 1 world to the hand-over's time, the dragons on.
+    #[test]
+    fn a_tribute_start_while_replaying_undoes_no_casualty() {
+        let order = Order::TributeStart {
+            village: GRANTED,
+            lair: TRIBUTE_LAIR,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        let mask = MODULES | rtsim_jni::engine::MODULE_HERDS;
+        a_fight_kept_in_the_pages_with("conflict-rp33-tribute", long, mask, Some(order));
     }
 
     /// Control: the same replay in one hand-over.
