@@ -1946,7 +1946,7 @@ impl Conflict {
     /// several records (a holder's, journaled again, and held lines answered later). Only the
     /// latest census's epoch is answered: an older epoch's answers are superseded by that census,
     /// which read the world after the lines were applied.
-    pub(super) fn camp_bodies(&mut self, b: &CampBodies, at: Tick) {
+    pub(super) fn camp_bodies(&mut self, w: &mut World, b: &CampBodies, at: Tick) {
         let Some(&f) = self.by_key.get(&b.faction) else {
             return;
         };
@@ -1965,6 +1965,7 @@ impl Conflict {
         let is_in = camp.is_in();
         let mut heir_changed = false;
         let mut pair_cleared = false;
+        let mut masked_away = Vec::new();
         for a in &b.lines {
             // The heir's pair names no slot the engine keeps a line on (MZB-403, MZB-409).
             if a.action == ACTION_MASK || a.action == ACTION_SEAT_HEIR {
@@ -1986,7 +1987,7 @@ impl Conflict {
                 }
                 self.stats.camp_answers += 1;
                 if a.action == ACTION_MASK {
-                    self.masked(&mut camp, f, a, at);
+                    masked_away.extend(self.masked(&mut camp, f, a, at));
                 } else if self.seated(&mut camp, f, a) {
                     heir_changed = true;
                 }
@@ -2095,6 +2096,12 @@ impl Conflict {
             }
         }
         self.factions[f as usize].camp = Some(camp);
+        // A warrior masked after its party set out (review P3-5) is that party's loss, booked with
+        // the camp back in the faction, as a member dying at its camp is (`camp_death`).
+        for (party, body) in masked_away {
+            self.pool_shift(f, 0.0, at);
+            self.member_died(w, party, body, at);
+        }
         self.send_lines(f, lines, at);
         if cleared > 0 || heir_changed {
             // A pair that seated no one is ordered again an hour on, not by this very answer.
@@ -2111,22 +2118,36 @@ impl Conflict {
 
     /// MASK answered done: the warrior the plugin took is the chief to be, so its member leaves
     /// the pool (MZB-409). The slot is freed all the same when a line of its own is in flight; that
-    /// line's late answer finds a retired generation. A warrior the books have away lost its body
-    /// as a take does, and keeps its place in the party.
-    fn masked(&mut self, camp: &mut Camp, f: u32, a: &boundary::LineAnswer, at: Tick) {
+    /// line's late answer finds a retired generation. The Java side masks only a warrior at home
+    /// that has not set out (M9b). A slot the books have set out anyway (a party mustered since
+    /// the pair was ordered, its body still in the camp) is that party's loss, as a member of it
+    /// dying at its camp is: the slot is freed, and the party and the faction's count of warriors
+    /// away lose the unit, which the caller books once the camp is back in the faction (review
+    /// P3-5, MZB-445). That party and the body's id are returned.
+    fn masked(
+        &mut self,
+        camp: &mut Camp,
+        f: u32,
+        a: &boundary::LineAnswer,
+        at: Tick,
+    ) -> Option<(Handle<Party>, u32)> {
         if a.generation == 0 || a.slot == CHIEF_SLOT {
-            return;
+            return None;
         }
-        let Some(i) = camp.index(a.slot, a.generation) else {
-            return;
-        };
+        let i = camp.index(a.slot, a.generation)?;
         match camp.slots[i].state {
             SlotState::Body | SlotState::Owed => {
                 camp.free(i, false);
                 self.pool_shift(f, -1.0, at);
+                None
             }
-            SlotState::Left => camp.slots[i].state = SlotState::Gone,
-            SlotState::Gone | SlotState::Dead => {}
+            SlotState::Left => {
+                let (party, body) = (camp.slots[i].party, camp.slots[i].body);
+                camp.free(i, false);
+                Some((party, body))
+            }
+            // Its body was taken: there is none at the camp to mask.
+            SlotState::Gone | SlotState::Dead => None,
         }
     }
 
@@ -2422,6 +2443,12 @@ impl Conflict {
         let left = x.units[k].1;
         if let Some(s) = x.spawned.iter_mut().find(|s| s.0 == u) {
             s.1 = s.1.min(left);
+        }
+        // The bodies a replay keeps for an epoch no more than the unit's count either.
+        for (_, stacks) in &mut x.recalled {
+            if let Some(s) = stacks.iter_mut().find(|s| s.0 == u) {
+                s.1 = s.1.min(left);
+            }
         }
         let x = &mut self.factions[f as usize];
         x.away = x.away.saturating_sub(1);

@@ -2764,8 +2764,18 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     under the heir's stamp, and its `unblock` does not look at the heir.
   - A camp found without its Umvuthi whose wait an untagged one cancels resets its pressure to none: the
     cap's pressure was a stand-in, as if the camp had never been found empty.
-  - A MASK answered for a warrior the books have `Left` is booked as a take: the slot goes `Gone` and keeps
-    its place in the party.
+  - A MASK answered for a warrior the books have `Left` was booked as a take, the slot going `Gone` and
+    keeping its place in the party. (Amended at review, P3-5: that left the grove one warrior over, the
+    band still counting a unit whose body the heir now was.) The MASK of M9b names only a warrior whose slot
+    is home and not set out (see M9b's notes), but a raid can muster it between the pair's order and its
+    answer. The engine then books the party's loss, as a member dying at its camp is (`member_died`): the
+    slot is freed, not retired at a death (the body is the heir's, not to be removed), the party loses a
+    unit and so does the faction's count away, `casualties` counts one, and the recalled stacks a replay
+    keeps are clamped to the unit's count as the spawned stack is. A band left with no one ends as
+    `casualties` ends it. The unit leaves the party, not the pool: the pool refills into the room it
+    leaves, as for any casualty. A MASK for a `Gone` slot (its body was taken, so none is at the camp to
+    mask) books nothing, as before. The answer is booked after the camp is back in the faction
+    (`camp_bodies` returns the party, as `camp_death` books it).
   - An unanswered pair is void at CAMP_OUT and at a session start with the other lines.
   - `seated` seats only the heir that waits (amended at review, P3-1): an answer whose generation is not
     `heir_generation` while an heir waits changes nothing. A holder's copy of an old SEAT_HEIR, booked by
@@ -2989,7 +2999,7 @@ the line dispatch's `chiefLines` gate and the raptor stand-in (MZB-428).
 - The mixin config `mic_rtsim_mowziesmobs.mixins.json`: required true, minVersion 0.8, JAVA_21,
   defaultRequire 1, no refmap. M6 adds `EntityFrostmawMixin`; M9 adds `EntityUmvuthiMixin`,
   `ContainerUmvuthanaTradeSlotResultMixin` and `ContainerUmvuthanaTradeAccessor`.
-- rtsim-jni's `observe_latest` arm (CHIEF_STATE and HAVEN_CHEST).
+- rtsim-jni's `observe_latest` arm (CHIEF_STATE; HAVEN_CHEST is journaled since review, MZB-446).
 - `Camps.killer` (MZB-432).
 - The one `fightStrength` plugin (MZB-435).
 - The page bump (MZB-437).
@@ -3029,11 +3039,12 @@ Two fixes for M6:
   - `send_hunts(at)` at session start and on a new hunt; `hunt_applied`.
 - `rtsim-world`: `World::stock_to_players(i, goods, at)`, the mirror of `stock_from_players`.
 - `boundary.rs`: `ACTION_MASK` = 8, OWED_HUNT and HUNT_APPLIED (MZB-425), and the CHIEF_BODY writer. The
-  decoders of CHIEF_PAID, TRADED and HAVEN_CHEST are wired into `Conflict::observe`.
+  decoders of CHIEF_PAID, TRADED and HAVEN_CHEST are wired into `Conflict::observe` (HAVEN_CHEST journaled
+  at 0x0817 since review, MZB-446).
 - `persist.rs`: RTC7 and META 6 (MZB-437), `Ev::CampHeir` on tag 9.
 - rtsim-jni:
   - `TRIBUTE_EQUIVALENTS` in the CHIEF_PAID translation (MZB-419).
-  - `observe_latest` (MZB-422).
+  - `observe_latest` (MZB-422; CHIEF_STATE only since review, HAVEN_CHEST goes through `journaled`).
   - Writers for CHIEF_BODY and OWED_HUNT, and the HUNT_APPLIED decoder.
   - `place_tribute`'s TRANSFER_TO_CONTAINER through `st.outbox.push_with_op`, with COMMAND_RESULT
     completing it (engine.rs 1563 to 1568) and its outcome handed to the conflict as `placed(op, outcome)`.
@@ -3046,7 +3057,7 @@ Two fixes for M6:
 **Java, core** (`neoforge/core/.../mic_rtsim/`):
 - `ConflictRecords`:
   - `CampReconcile.ACTION_MASK` = 8.
-  - Layouts for CHIEF_PAID (0x0814), TRADED (0x0810), HAVEN_CHEST (0x0092), CHIEF_BODY (0x880A),
+  - Layouts for CHIEF_PAID (0x0814), TRADED (0x0810), HAVEN_CHEST (0x0817, review MZB-446), CHIEF_BODY (0x880A),
     OWED_HUNT and HUNT_APPLIED, matching boundary.md byte for byte.
 - `conflict/CampKind`: `default boolean holdRemoval(ServerLevel, Camps.Site, Mob body)` (false) and
   `default void chiefBody(Mob body, ChiefBody memory)` (no-op).
@@ -3255,6 +3266,18 @@ Two fixes for M6:
 
   **Opus review here**, focused on Rule U and the second body: no line applies in a player's sight, and no
   path journals a second body's death.
+
+  **Notes from the M9a review for M9b** (the engine's side is built, MZB-445, MZB-446):
+  - The MASK picks only a warrior whose slot is home and not set out: a body tagged with a slot and a
+    generation, no line of its own in flight, not elsewhere, not near a player. The engine books a MASK that
+    names a set-out warrior as that band's loss (a unit short, never a body home), so a Java that masks one
+    anyway costs the grove a warrior it did not mean to.
+  - A copy of a SEAT_HEIR answer for an older generation changes nothing (`seated`), whenever it comes.
+  - HAVEN_CHEST is sent from the server, never carried by a holder, at a session start and on each change
+    of the chest's position or its free-slot count, at most once a tick for a grove. It is the chest's
+    current state, so a copy changes nothing the next one does not.
+  - CHIEF_KILLED for an Umvuthi puppet that leads a band reaches `chief_killed_by`, which now books the
+    camp's chief slot as dying away (MZB-412).
 - **M9c, bands and the world:**
   1. `registerMaker`, `Slot.extras` and `RaptorMaker`, with Peaceful.
   2. `OwedHunts` and the hunt records.
@@ -3274,7 +3297,8 @@ Two fixes for M6:
   the event.
 - **Direction.** `setDirection` is read only at tick 1: set it before `addFreshEntity`, never after.
 - **Gold gifts.** An unpriced good makes `gift_value` 0. Gold gifts were worth nothing until MZB-416.
-- **Latest-wins kinds.** `observe_state` drops them: HAVEN_CHEST and CHIEF_STATE need `observe_latest`.
+- **Latest-wins kinds.** `observe_state` drops them: CHIEF_STATE needs `observe_latest`. HAVEN_CHEST is
+  journaled since review (0x0817, MZB-446), so it is no latest-wins kind: it replays after a crash.
 - **Gold blocks.** gold_block and gold_ingot are not in the catalogue. Translate them in rtsim-jni, never
   in the engine.
 - **The base.** M4 and M5 are separate branches, so merge M4 in first.

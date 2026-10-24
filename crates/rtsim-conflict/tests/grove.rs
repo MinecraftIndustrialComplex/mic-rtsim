@@ -594,6 +594,77 @@ fn a_late_seat_copy_for_an_old_generation_leaves_the_live_chief_alone() {
     assert_eq!(camp.heir_stamp, stamp, "and the heir's stamp");
 }
 
+/// A MASK answer naming `slot` and `generation`, as a plugin that masked that warrior sends it.
+fn mask_answer(r: &mut CampRun, slot: u32, generation: u32) {
+    let epoch = r.c.camp(r.f).unwrap().seen;
+    let answer = boundary::CampBodies {
+        faction: r.key,
+        epoch,
+        op: 0x3A5C_0000_0000_0001,
+        lines: vec![boundary::LineAnswer {
+            line: 0,
+            slot,
+            generation,
+            action: boundary::ACTION_MASK,
+            outcome: boundary::LINE_DONE,
+        }],
+    };
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut *r.infra, &Obs::CampBodies(answer), at);
+}
+
+/// The warriors a party holds, by its units.
+fn units(r: &CampRun, p: Handle<Party>) -> u32 {
+    r.c.parties[p].units.iter().map(|u| u.1).sum()
+}
+
+/// MZB-445, review P3-5: a MASK answered for a warrior the books have set out (a raid mustered
+/// between the pair's order and its answer) is that band's loss, as one of its members dying at
+/// the camp is: the slot is freed, the band loses the unit and comes home one short, and the
+/// grove's pool and slots still add up. Before, the slot went Gone and the band kept the unit: the
+/// grove ended one warrior over.
+#[test]
+fn a_mask_that_names_a_warrior_that_set_out_is_the_bands_loss() {
+    let mut r = grove(8, 9);
+    come_in(&mut r);
+    let p = r.raid().expect("a raid");
+    let before = units(&r, p);
+    assert!(before > 1, "a band of {before}");
+    let away = r.c.factions[r.f as usize].away;
+    let casualties = r.c.stats.casualties;
+    let (slot, generation) =
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .find(|s| s.party == p && s.state == SlotState::Left && s.id != CHIEF_SLOT)
+            .map(|s| (s.id, s.generation))
+            .expect("a warrior set out");
+    mask_answer(&mut r, slot, generation);
+    let held = |r: &CampRun| {
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .any(|s| s.id == slot && s.generation == generation)
+    };
+    assert!(!held(&r), "the slot is freed");
+    assert_eq!(units(&r, p), before - 1, "the band lost the unit");
+    assert_eq!(
+        r.c.factions[r.f as usize].away,
+        away - 1,
+        "and so did the count away"
+    );
+    assert_eq!(r.c.stats.casualties, casualties + 1);
+    // The same answer again, a holder's copy, books nothing more.
+    mask_answer(&mut r, slot, generation);
+    assert_eq!(units(&r, p), before - 1, "a copy loses no second unit");
+    r.settle();
+    assert!(r.c.parties.get(p).is_none(), "the band came home");
+    assert!(!held(&r));
+    ok(&mut r);
+}
+
 /// The first SEAT_HEIR the engine sent: its op and line.
 fn seat_line(r: &CampRun) -> (u64, u32) {
     orders(r)
