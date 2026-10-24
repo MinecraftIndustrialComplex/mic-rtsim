@@ -73,7 +73,7 @@ pub mod camp;
 pub mod rail;
 
 pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
-pub use rail::{LineCount, Pin, RailMeter, TrackFocus};
+pub use rail::{Held, LineCount, Pin, RailCall, RailMeter, StationEnd, TrackFocus};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
 /// event is booked for it, and `Conflict::unblock` plans it again when one comes.
@@ -400,6 +400,13 @@ pub(crate) enum Ev {
         faction: u32,
         stamp: u32,
     },
+    /// A rail meter's wake: its rate has left the band it was last pushed in, or a day has gone
+    /// since the push (`Conflict::rail_wake`, MZB-306). Wheel tag 10.
+    Rail {
+        faction: u32,
+        actor: ActorId,
+        stamp: u32,
+    },
 }
 
 /// Counters for the CLI, tests and the bench.
@@ -460,6 +467,15 @@ pub struct ConflictStats {
     /// bumps its pressure (EQUILIBRIUM.md §2.2, M6).
     pub arrivals: u64,
     pub renewal_losses: u64,
+    /// The rail meter (MOWZIE.md §4.3, M7): passes counted or held, pushes to the source, wakes
+    /// that ran the gate, passes let go (a day unnamed, or pushed out by a cap), passes for a
+    /// faction unknown or minding no rail, and calls that named a train's line.
+    pub rail_passes: u64,
+    pub rail_pushes: u64,
+    pub rail_wakes: u64,
+    pub rail_let_go: u64,
+    pub rail_unknown: u64,
+    pub rail_calls: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -763,6 +779,13 @@ pub struct Conflict {
     /// answers booked from records at or before it are forgotten, as `Replay` forgets op ids
     /// (docs/boundary.md §2.3, MZB-177). Set by the host, which never lowers it; not state.
     pub durable_obs_seq: u64,
+    /// Rail passes waiting for their train's next arrival to name the line, by train, each train's
+    /// oldest first (resident, saved at the end of `put_resident`, MZB-308).
+    pub(crate) held: BTreeMap<u64, Vec<rail::Held>>,
+    /// Each train that holds a pass, by the exit of its oldest (derived: rebuilt at load).
+    pub(crate) held_oldest: BTreeSet<(Tick, u64)>,
+    /// Passes held in all (derived: counted at load).
+    pub(crate) held_n: usize,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -848,6 +871,9 @@ impl Conflict {
             replaying: false,
             obs_seq: 0,
             durable_obs_seq: 0,
+            held: BTreeMap::new(),
+            held_oldest: BTreeSet::new(),
+            held_n: 0,
         }
     }
 
@@ -934,6 +960,7 @@ impl Conflict {
                 Ev::Plunder { .. } => "plunder",
                 Ev::Refill { .. } => "refill",
                 Ev::Arrival { .. } => "arrival",
+                Ev::Rail { .. } => "rail",
             };
             *m.entry(k).or_default() += 1;
         }
@@ -4738,6 +4765,11 @@ impl Conflict {
             }
             Ev::Refill { faction, stamp } => self.camp_refill(faction, stamp, at),
             Ev::Arrival { faction, stamp } => self.camp_arrival(faction, stamp, at),
+            Ev::Rail {
+                faction,
+                actor,
+                stamp,
+            } => self.rail_wake(w, faction, actor, stamp, at),
         }
     }
 
@@ -5107,17 +5139,14 @@ impl Conflict {
         m
     }
 
-    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the rail
-    /// meter's and the grove's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES,
-    /// CAMP_DEATH) are built (M4), the chief's CHIEF_STATE with M6.
+    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the grove's
+    /// and the lurking party's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES,
+    /// CAMP_DEATH) are built (M4), the chief's CHIEF_STATE with M6, the rail meter's RAIL_PASS
+    /// with M7.
     pub fn later(o: &Obs) -> bool {
         matches!(
             o,
-            Obs::HavenChest(_)
-                | Obs::RailPass(_)
-                | Obs::TrainPassed(_)
-                | Obs::Traded(_)
-                | Obs::ChiefPaid(_)
+            Obs::HavenChest(_) | Obs::TrainPassed(_) | Obs::Traded(_) | Obs::ChiefPaid(_)
         )
     }
 
@@ -5139,11 +5168,8 @@ impl Conflict {
             Obs::State(_) | Obs::Materialized(_) => {}
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
-            Obs::HavenChest(_)
-            | Obs::RailPass(_)
-            | Obs::TrainPassed(_)
-            | Obs::Traded(_)
-            | Obs::ChiefPaid(_) => {}
+            Obs::HavenChest(_) | Obs::TrainPassed(_) | Obs::Traded(_) | Obs::ChiefPaid(_) => {}
+            Obs::RailPass(rp) => self.rail_pass(w, rp, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
             Obs::CampCensus(c) => self.camp_census(c, at),
