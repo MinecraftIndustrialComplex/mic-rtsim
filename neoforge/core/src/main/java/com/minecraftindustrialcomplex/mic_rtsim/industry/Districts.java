@@ -1902,36 +1902,50 @@ public final class Districts {
     }
 
     private District.Inventory describe(ServerLevel level, Candidate c) {
-        if (level.getChunkSource().getChunkNow(c.pos.getX() >> 4, c.pos.getZ() >> 4) == null)
+        return describeInventory(level, c.pos, c.kind);
+    }
+
+    /**
+     * The boundary inventory at {@code pos} as a detection describes it, {@code kind} the candidate's own kind
+     * bits; null when it is in a chunk that is not loaded. Never loads a chunk, nor waits for one (R2-11): a
+     * multiblock with a part in a chunk that is not loaded (a Create vault across a chunk still loading) takes
+     * its shape from its plugin ({@link IndustryPlugin#describe}), not from its capability, which would read
+     * that part. Public for the GameTests.
+     */
+    public static District.Inventory describeInventory(ServerLevel level, BlockPos pos, int kind) {
+        if (level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null)
             return null; // never load a chunk to describe an inventory
-        int kind = c.kind;
         int slots = 0;
         long fluid = 0, energy = 0;
-        if ((kind & IndRecords.Inventory.KIND_PLUGIN) != 0) {
-            // A plugin's own store (a PowerGrid battery): its shape comes from the plugin, not capabilities.
+        boolean whole = StockAccess.loaded(level, pos);
+        if ((kind & IndRecords.Inventory.KIND_PLUGIN) != 0 || !whole) {
+            // A plugin's own store (a PowerGrid battery), or a multiblock with a part not loaded: its shape
+            // comes from the plugin, not capabilities.
             for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
-                long[] shape = plugin.describe(level, c.pos);
+                long[] shape = plugin.describe(level, pos);
                 if (shape != null && shape.length == 4)
-                    return new District.Inventory(0, c.pos, kind | (int) shape[0], (int) shape[1], shape[2], shape[3]);
+                    return new District.Inventory(0, pos, kind | (int) shape[0], (int) shape[1], shape[2], shape[3]);
             }
+            if (!whole)
+                return null; // as an inventory in a chunk that is not loaded
         }
-        IItemHandler items = StockAccess.items(level, c.pos);
+        IItemHandler items = StockAccess.items(level, pos);
         if (items != null) {
             kind |= IndRecords.Inventory.KIND_ITEMS;
             slots = items.getSlots();
         }
-        IFluidHandler fluids = StockAccess.fluids(level, c.pos);
+        IFluidHandler fluids = StockAccess.fluids(level, pos);
         if (fluids != null) {
             kind |= IndRecords.Inventory.KIND_FLUIDS;
             for (int t = 0; t < fluids.getTanks(); t++)
                 fluid += fluids.getTankCapacity(t);
         }
-        IEnergyStorage e = StockAccess.energy(level, c.pos);
+        IEnergyStorage e = StockAccess.energy(level, pos);
         if (e != null) {
             kind |= IndRecords.Inventory.KIND_ENERGY;
             energy = e.getMaxEnergyStored();
         }
-        return new District.Inventory(0, c.pos, kind, slots, fluid, energy);
+        return new District.Inventory(0, pos, kind, slots, fluid, energy);
     }
 
     // ---- test helpers (GameTests) ---------------------------------------------------------------
