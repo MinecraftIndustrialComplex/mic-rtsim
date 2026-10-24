@@ -2182,9 +2182,9 @@ fn casualty_of(band: Handle<Party>, epoch: u32, body: u32) -> Obs {
 
 /// RP-27 (MZB-131, docs/replay-gate.md §5.9): a casualty finds its stack by the record's epoch. A
 /// death on the walk-off of epoch `e` while the band is embodied again at `e + 1` takes from the
-/// recalled stack of `e` and leaves `spawned` whole; one of `e + 1` takes from `spawned`. Before
-/// it the death of `e` was dropped (`party_of` wants the current epoch), and the despawn of `e`
-/// then counted that member as a survivor.
+/// recalled stack of `e` and caps `spawned` at the units left alive (RP-25's cap); one of `e + 1`
+/// takes from `spawned`. Before it the death of `e` was dropped (`party_of` wants the current
+/// epoch), and the despawn of `e` then counted that member as a survivor.
 #[test]
 fn a_walk_off_death_of_an_older_epoch_counts_against_its_own_stack() {
     let mut r = Run::new(36, quiet_goblins());
@@ -2205,8 +2205,9 @@ fn a_walk_off_death_of_an_older_epoch_counts_against_its_own_stack() {
         "against the recalled stack of its epoch"
     );
     assert_eq!(
-        x.spawned[0], first,
-        "and the newer epoch's bodies are whole"
+        x.spawned[0],
+        (first.0, first.1 - 1),
+        "and the newer epoch's bodies are capped at the alive"
     );
     assert_eq!(r.c.stats.casualties, 1);
     r.ingest(casualty_of(band, e + 1, body), at + 1);
@@ -2214,7 +2215,7 @@ fn a_walk_off_death_of_an_older_epoch_counts_against_its_own_stack() {
     assert_eq!(x.alive(), alive - 2);
     assert_eq!(
         x.spawned[0],
-        (first.0, first.1 - 1),
+        (first.0, first.1 - 2),
         "a death of e + 1 takes from spawned"
     );
     assert_eq!(
@@ -2223,6 +2224,47 @@ fn a_walk_off_death_of_an_older_epoch_counts_against_its_own_stack() {
         "and not from e's stack"
     );
     assert_eq!(r.c.stats.casualties, 2);
+}
+
+/// RP-27 (the re-review's item 7): a walk-off death of `e` while the band is embodied again at
+/// `e + 1`, and a plugin that despawns `e + 1` first, holding every body it placed. The cap on
+/// `spawned` keeps the death: `alive - spawned + min(spawned, survivors)` with `spawned` capped
+/// at the alive gives the alive, where the whole `spawned` gave the death back. `e`'s despawn
+/// then counts no more deaths. Control: the bridge's order (ConflictBridge ends `e` before it
+/// materializes `e + 1`), `e` despawned first, whose despawn clamps `spawned` itself.
+#[test]
+fn a_walk_off_death_is_not_undone_when_the_newer_epoch_despawns_first() {
+    for newer_first in [true, false] {
+        let mut r = Run::new(36, quiet_goblins());
+        let (band, e, body) = walking_off_and_embodied_again(&mut r);
+        let alive = r.c.parties[band].alive();
+        let at = r.c.now() + 1;
+        // Java holds every body of `e + 1` it placed, and those of `e` but the one that died.
+        let newer = despawn_with(&r, band, e + 1, 0);
+        let older = despawn_with(&r, band, e, 1);
+        r.ingest(casualty_of(band, e, body), at);
+        assert_eq!(r.c.parties[band].alive(), alive - 1);
+        let (one, two) = if newer_first {
+            (newer, older)
+        } else {
+            (older, newer)
+        };
+        r.ingest(one, at + 1);
+        assert_eq!(
+            r.c.parties[band].alive(),
+            alive - 1,
+            "the first despawn keeps the death, newer first {newer_first}"
+        );
+        r.ingest(two, at + 2);
+        let x = &r.c.parties[band];
+        assert!(!x.embodied && x.recalled.is_empty() && x.spawned.is_empty());
+        assert_eq!(
+            x.alive(),
+            alive - 1,
+            "and so does the second, newer first {newer_first}"
+        );
+        assert_eq!(r.c.stats.casualties, 1);
+    }
 }
 
 /// RP-27's control: deaths of the newer epoch only take from `spawned`, as they did before.

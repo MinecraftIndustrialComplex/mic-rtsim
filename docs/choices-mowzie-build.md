@@ -973,6 +973,12 @@ conservative option at its fork.
   the party by agent, then takes from `spawned` when embodied at the record's epoch, else from the
   recalled stack of that epoch, else counts nothing (a straggler). Rejected: by agent alone (an old
   epoch's death would come off the new stack and count again at the old despawn).
+  Amended (the re-review's item 7): a walk-off death also takes RP-25's cap, `spawned` and every
+  recalled stack of that unit capped at its alive units. Without it `spawned` stayed above the
+  alive, and a plugin that despawned the newer epoch first, holding every body it placed, undid the
+  death (12 placed, a walk-off death, 11 alive; the despawn of 12 gave 12). ConflictBridge ends the
+  old epoch before it materializes the new one, and that despawn clamps `spawned` itself, so the
+  bridge was safe; the cap makes the order not matter.
 - **RP-28** (backstops; §6): `start_fight` and `wave` return at their top while replaying, `wave`
   without scheduling the next; the gate stays the last backstop (RP-4).
 - **RP-29** (an empty replay ends at the arm; §2.1): at the SESSION_START arm's end the replay also

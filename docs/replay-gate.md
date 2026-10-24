@@ -762,6 +762,12 @@ band is embodied again at a newer one is dropped (MZB-131's own case); finding b
 epoch, would take it from the newer epoch's stack and leave the old stack whole for its despawn to
 count again.
 
+A walk-off death takes from its own epoch's stack only, so it then caps `spawned` and every recalled
+stack of that unit at the alive units, as a copy does (§5.7, RP-25; the re-review's item 7). Without
+the cap a despawn of the newer epoch first, with every body it placed, counts the survivors above the
+alive and undoes the death. The bridge despawns the old epoch first, which clamps `spawned` itself;
+the cap makes the order not matter.
+
 ## 6. Sightings wait for the replay end (RP-11)
 
 - **rtsim-jni:** `shared::simulate` returns at its top while replaying, before it takes
@@ -1051,8 +1057,11 @@ And one for each of the other two review items, with its control:
   any buffer, and its replayed casualties count off its kept stack. Control: no crash, the same
   counts. Written after RP-5 and before RP-26, where it fails.
 - **RP-27 (MZB-131):** a band recalled at epoch e and embodied again at e + 1; a casualty of epoch e
-  takes from the recalled stack and leaves `spawned` whole; one of e + 1 takes from `spawned`.
-  Control: casualties of e + 1 only. Written first; fails on main (the e casualty is dropped).
+  takes from the recalled stack and caps `spawned` at the alive (amended by the re-review's item 7;
+  it left `spawned` whole); one of e + 1 takes from `spawned`. Control: casualties of e + 1 only.
+  Written first; fails on main (the e casualty is dropped). With the cap, a second test: e's
+  walk-off death, then e + 1 despawned first with every body placed, keeps the death (failed before
+  the cap: 12 alive, not 11); control, e despawned first.
 
 GameTests: `neoforge/gametest.sh core carryon` (ConflictGameTests, CarryOnConflictGameTests; core
 also runs the herd and phase 1 GameTests that the routing and clock changes touch).
