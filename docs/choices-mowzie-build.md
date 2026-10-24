@@ -1709,6 +1709,110 @@ under its own heading.
     marker check reads the copies too, so a record of another life that was journaled would show.
   - No choice was needed beyond those: a record too large to wrap is journaled plainly (SC129) and a CAMP_BODIES
     of a few dozen lines is far below it; the inert marker of MZB-651 stands.
+  - SEC-1 S4c1 (origin/main 428a3311) was merged after the carryon and C2ME rounds ran at a7e315d1, and those two
+    results stand: S4c1 touches IndRecords, Industry, the create module (Frontier, PackageStores), the journal
+    barrier's industry side and the industry wire, nothing in conflict, camps or the carry path, and the
+    count of MZB-655 in `carryEntries` is on a path no test reaches today (an engine life that changed under a
+    holder that was then taken over). The merge was textually clean (`git status` had no UU); core, create and
+    mowziesmobs ran again on the merged head, since S4c1 voids create's result and the barrier is shared.
+  - The first run of MZB-292 (`./gametest.sh mowziesmobs -Pc2me`, at a7e315d1): Mowzie's Mobs and the pack's C2ME
+    start together on the GameTest server, and 23 of the 27 tests pass. Four fail on what the suite assumed of
+    vanilla's chunk system (the poll is the authority under C2ME, MZB-249 and MZB-290, and the tests were written on
+    vanilla): `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart` ("the old w0 object is removed"),
+    `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent` ("out within a poll period of the release (53
+    ticks)", the limit being `POLL_PERIOD` + 3), `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear` (sent at
+    2941, placed at 9081: 6140 ticks, the limit HOLD_MAX + 40), and
+    `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect` (it logs "no ticket event fired for the den's
+    chunks (C2ME?): the premise does not hold", then "every footprint level reads as no holder (34)", C2ME's
+    holder staying with its target status). Nothing was changed for them: whether the Mowzie suite is meant to
+    hold on C2ME, or only core's barrier tests are, is for a decision.
+
+- **MZB-655** (the S4p merge review's fixes: tests and docs, no engine change; MZB-653 and MZB-654 are reserved for
+  the merge-review fixes carried into M6, so this record leaves that gap):
+  - Two GameTests did not pin MZB-652's generation fix, and now do. `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`
+    ends with a camp taking a holder over: the Frostmaw carries a record under `EARLIER_GEN` (a generation no
+    session has, as a body saved by an earlier session would), a REMOVE order takes the body, the marker that takes
+    its records is released with its chunk and loaded again, and the copies read from `ConflictKit.bodiesCopies` must
+    be exactly one naming `EARLIER_GEN`, the adopt's answer, applied by the engine, every other the session's own and
+    dropped. `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot` unloads and loads the chief's marker the same way after
+    it read the marker's saved data, with the same checks, a dropped CAMP_DEATH copy and one death booked by the den.
+  - Shown to fail on the pre-fix `carry`: in a scratch copy, `RtsimSession.carryOnCampHolder` restamped every entry with
+    `boundary().gen()` behind an environment switch (never committed), and the mowziesmobs project ran on the real
+    engine with and without it. Without the fix the holder test fails at "one copy names the earlier generation": the
+    copies were `[175ada57bab92e3a dropped, 175ada57bab92e3a dropped]`, the session's generation on both. The death test
+    fails earlier, at its saved-data check that was already there ("each with the generation it was journaled in, the
+    earlier one kept"), so its reload leg did not run in that revert; it is the same stamping seen one step later. With
+    the fix the copies are `[123456789abcdef applied, f29f38b92320cd49 dropped]` (holder test) and
+    `[f29f38b92320cd49 dropped, 123456789abcdef applied]` (death test); the generation that is the session's changes
+    per run.
+  - `ConflictKit.campDeaths` looks through `engine.copies(CAMP_DEATH)` as `campBodies` does (`Copy`, `copiesOf` and
+    `bodiesCopies` give the copies with their generations). `carryEntries` counts the entries of another engine life
+    that `PendingRecords.plusEntries` leaves out in `stalePending` (counted, not asserted: a crash in a save path is
+    worse than a counted drop). The death test discards its markers at its end, passed or failed
+    (`MowzieKit.discardRecordMarkers`), since they hold records of a generation a later run's engine never heard.
+    MOWZIE.md's holder paragraph and its (5)-(6) crash row say a holder's copy is judged by its generation and only an
+    applied copy reaches the (op, line) skip.
+  - One jni test, `a_camp_record_a_holder_journals_again_is_judged_by_its_generation`, with three cases: a copy of a
+    record the engine applied is dropped and books nothing even where the camp has forgotten the line (a plain resend of
+    it would book again); a copy of a generation it never heard is booked once, under the copy's own sequence, and a
+    second copy is dropped; a copy journaled in the last session and replayed is applied inside the replay window,
+    so the replayed census after it still orders nothing and its camp is out. The CAMP_DEATH test's message no
+    longer says "by its op id" (M5 removed CAMP_DEATH from `conflict::op_of`: a death is idempotent by the slot's
+    generation).
+
+- **MZB-656** (M5's tests wait on far chunks under load; a stopgap before fix/gametest-flakes lands ChunkWait):
+  - What failed: with the machine's load average near 50 the merged round's mowziesmobs project failed two of
+    M5's own tests on a wait that ran out, `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent`
+    (`Far.ready()`: "chunk true, entities false, ticking false") and `aBodyThatChangesDimensionLeavesItsCampsIndex`
+    ("No sequences finished"). With the `Far.ready()` failure of an earlier round that is three different M5 tests
+    losing a wait on a far chunk's entities, so it is not a flake to accept.
+  - Why: a GameTest's `timeoutTicks` counts ticks, and the server ticks unthrottled, so what bounds a wait in
+    wall time is the sleep of core's `RtsimTests.io` (5 ms while a check fails). A test of 1500 ticks has at
+    most 7.5 s for a far chunk to load, whatever the load.
+  - What was done: only the `timeoutTicks` of the tests that wait on far chunks (all of M5's but
+    `aFloodOfChunkLoadsKeepsTheFindersQueueBoundedAndADroppedDenIsFoundAtItsNextLoad`, which builds its chunks
+    itself and waits on none, left at 400) are 12000, which is 60 s at 5 ms a failing tick. The hold test keeps
+    its 6000 ticks of deliberate hold (`Camps.HOLD_MAX`, quick ticks that sleep nothing) and gets the 12000 on
+    top, 18000. `MowzieKit.Far.ready()` and `unloaded()` and core's `io()` are untouched: fix/gametest-flakes
+    lands right after M5 with ChunkWait (wall-clock chunk waits) and a converter that rewrites `Far` and the
+    tests' waits, and it takes each test's OLD timeout as the bound of its logic waits. The old and new values:
+    - `aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth`: 1500 to 12000
+    - `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt`: 2000 to 12000
+    - `aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief`: 1500 to 12000
+    - `aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus`: 1500 to 12000
+    - `aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot`: 1500 to 12000
+    - `aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken`: 1500 to 12000
+    - `aLineArrivingInTheTickACampGoesOutIsAnsweredStale`: 1500 to 12000
+    - `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale`: 2000 to 12000
+    - `onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome`: 2000 to 12000
+    - `aBodyThatChangesDimensionLeavesItsCampsIndex`: 1500 to 12000
+    - `aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved`: 2000 to 12000
+    - `aRefilledPoolIsSpawnedAtTheNextCensus`: 2500 to 12000
+    - `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear`: 9000 to 18000
+    - `theCensusWaitsForEntitiesOnACampsColdLoad`: 3000 to 12000
+    - `aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent`: 3000 to 12000
+    - `aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut`: 2500 to 12000
+    - `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot`: 4000 to 12000
+    - `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`: 5000 to 12000
+    - `aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake`: 2500 to 12000
+    - `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart`: 3500 to 12000
+    - `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent`: 2500 to 12000
+    - `aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody`: 2000 to 12000
+    - `anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain`: 2500 to 12000
+    - `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers`: 1500 to 12000
+    - `aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount`: 2000 to 12000
+    - `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect`: 2500 to 12000
+  - The dimension test's stall, from its log: the log has no step timestamps, so it cannot name one step for
+    certain. It shows (a) no tick at all for 24 s after the test began (the Far constructor logged at 13:23:14, the
+    next line at 13:23:38), the tick that ran the first step, which forces the Nether chunk and the den's nine
+    chunks, so the stall is most likely a far-chunk load on the server thread, and it costs one tick of the
+    timeout whatever the timeout is; (b) the 1500 ticks used up in 9 s after that, about 6 ms a tick, which is
+    the 5 ms sleep of failing `io` checks, so most ticks were spent in the two far waits (`far.ready()` and the
+    Nether chunk wait), not in the engine round trips (those check without sleeping, so their ticks are quick);
+    (c) every step ran, the last `record` line was logged on the final tick, and only the `thenSucceed` one
+    tick later did not. So the step it stalled on was a far wait, and the test missed by one tick.
+  - The death test's reload leg guards a different mutation than its saved-data check (see the comment in the
+    test), so no extra revert run was made for it.
 
 ### M5 design for the implementer
 

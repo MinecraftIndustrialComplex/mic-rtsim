@@ -111,7 +111,7 @@ public record PendingRecords(long life, List<Entry> entries) {
     /**
      * These records and {@code more}, which keep the generation each was journaled in (a holder taking over
      * another's records), written in engine life {@code life}. Records of another life are left out, as in
-     * {@link #plus}.
+     * {@link #plus}; the session counts them ({@code RtsimSession.stalePending}) where it calls this.
      */
     public PendingRecords plusEntries(long life, List<Entry> more) {
         List<Entry> out = new ArrayList<>(this.life == life ? entries : List.of());

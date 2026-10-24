@@ -4930,8 +4930,9 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// A body killed at the camp is CAMP_DEATH, journaled with its op id: the member is gone from
-    /// its slot and the pool, once, and a second copy of the record (a replay's) books nothing.
+    /// A body killed at the camp is CAMP_DEATH, journaled under its own sequence: the member is gone
+    /// from its slot and the pool, once, and a second copy of the record (a replay's) books nothing,
+    /// because the slot's generation is retired at the first (the death keeps no op id).
     #[test]
     fn a_death_is_booked_through_the_journal_once() {
         let (_dir, e, mut j) = grove("camp-death", 3);
@@ -4951,7 +4952,7 @@ mod conflict {
         assert_eq!(
             e.with_conflict(|c, _| c.stats.camp_deaths),
             1,
-            "once, by its op id"
+            "once: the second copy finds the slot's generation retired"
         );
         let (pool, cap) = e.with_conflict(|c, _| {
             let f = &c.factions[c.faction_of_key(CAMP).unwrap() as usize];
@@ -5081,6 +5082,175 @@ mod conflict {
         );
         assert_eq!(slots(&e), [3, 0, 0, 0, 0], "nothing moves");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A camp's record carried on a holder comes back as a REASSERT (docs/boundary.md section 3.2,
+    /// MZB-652), and the engine judges the copy by the generation that journaled it, not by the
+    /// record's (op, line): a copy of a record it applied is dropped even where the camp has
+    /// forgotten the line; a copy from a generation it never heard is booked once, under the copy's
+    /// own sequence; and a copy journaled in the last session and replayed stays inside the replay
+    /// window, so the replayed census after it still only marks its camp out.
+    #[test]
+    fn a_camp_record_a_holder_journals_again_is_judged_by_its_generation() {
+        use std::sync::atomic::Ordering;
+        /// A generation no engine heard: the one a crash lost with its journal.
+        const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+        let copies = |e: &Engine| {
+            (
+                e.stats.copies_applied.load(Ordering::Acquire),
+                e.stats.copies_dropped.load(Ordering::Acquire),
+            )
+        };
+        let answers = |e: &Engine| e.with_conflict(|c, _| c.stats.camp_answers);
+        let kept = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .unwrap()
+                    .answered
+                    .iter()
+                    .map(|a| (a.line, a.seq))
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The record as a holder kept it: one op's answer, split in lines, journaled by a session
+        // the engine never heard (its sequence is that session's).
+        let held = |j: &Java, o: &O, seq: u64| {
+            let mut b = Vec::new();
+            cb::encode_obs(0, j.game_time, o, &mut b);
+            wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+            b
+        };
+        let answer = |j: &mut Java| {
+            let record = j
+                .conflict_plugin
+                .queued()
+                .into_iter()
+                .find_map(|o| match o {
+                    O::CampBodies(b) => Some(b),
+                    _ => None,
+                })
+                .expect("the answer, on its way");
+            let _ = j.conflict_plugin.drop_queued();
+            record
+        };
+        let part = |record: &cb::CampBodies, lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+
+        // A dropped copy books nothing, and an unknown one is booked once.
+        let (_dir, e, mut j) = grove("camp-copies", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        let record = answer(&mut j);
+        assert_eq!(record.lines.len(), 3);
+        let first = j.conflict_obs(&part(&record, &record.lines[..1]));
+        let original = j.journaled(first).unwrap();
+        let nonce = j.nonce;
+        j.idle();
+        assert_eq!((answers(&e), slots(&e)), (1, [1, 2, 0, 0, 0]));
+        // A save durable through it, and the camp's next answer forgets the line (MZB-177): a plain
+        // resend of the line would book it again, by state (the test above).
+        let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+            panic!()
+        };
+        wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, first);
+        j.idle();
+        j.conflict_obs(&part(&record, &record.lines[2..]));
+        j.idle();
+        assert_eq!((answers(&e), slots(&e)), (2, [2, 1, 0, 0, 0]));
+        assert_eq!(
+            kept(&e).iter().map(|k| k.0).collect::<Vec<_>>(),
+            vec![record.lines[2].line],
+            "line 0 forgotten"
+        );
+        let before = kept(&e);
+        j.reassert(nonce, &original);
+        j.idle();
+        assert_eq!(copies(&e), (0, 1), "a copy of the open generation's record");
+        assert_eq!(
+            answers(&e),
+            2,
+            "dropped: nothing booked, though the line is forgotten"
+        );
+        assert_eq!(slots(&e), [2, 1, 0, 0, 0]);
+        assert_eq!(kept(&e), before);
+
+        // A record of an earlier generation, whose original the crash lost: the copy is all of it.
+        let lost = held(&j, &part(&record, &record.lines[1..2]), 7);
+        let copy = j.reassert(EARLIER_GEN, &lost);
+        j.idle();
+        assert_eq!(copies(&e), (1, 1));
+        assert_eq!((answers(&e), slots(&e)), (3, [3, 0, 0, 0, 0]));
+        assert_eq!(
+            kept(&e).iter().find(|k| k.0 == record.lines[1].line),
+            Some(&(record.lines[1].line, copy)),
+            "booked under the copy's sequence, not the record's own (7)"
+        );
+        j.reassert(EARLIER_GEN, &lost);
+        j.idle();
+        assert_eq!(copies(&e), (1, 2), "the second copy of it is dropped");
+        assert_eq!((answers(&e), slots(&e)), (3, [3, 0, 0, 0, 0]));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A copy the last session journaled, replayed: inside the replay window.
+        let (dir, e, mut j) = grove("camp-copies-replay", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        save(&e, &mut j);
+        camp_in(&mut j);
+        let record = answer(&mut j);
+        let lost = held(&j, &part(&record, &record.lines[..1]), 7);
+        j.reassert(EARLIER_GEN, &lost);
+        // A later census, journaled after the copy: live, it would order a reconcile.
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.camp_out(CAMP, at);
+        j.conflict_flush();
+        j.idle();
+        camp_in(&mut j);
+        assert_eq!(
+            copies(&e),
+            (1, 0),
+            "applied in the session that journaled it"
+        );
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        let _ = plugin.drop_queued();
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.conflict_plugin = plugin;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0], "the pages predate the census");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(copies(&e), (1, 0), "the replay applied the copy, once");
+        assert_eq!(
+            slots(&e),
+            [1, 2, 0, 0, 0],
+            "the copy's line, booked by state"
+        );
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the census after the copy was replayed, not live"
+        );
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "its camp is out"
+        );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 

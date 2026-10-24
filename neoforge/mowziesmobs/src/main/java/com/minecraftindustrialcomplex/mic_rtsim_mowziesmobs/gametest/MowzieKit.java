@@ -658,6 +658,16 @@ public final class MowzieKit {
     // ---- record markers -------------------------------------------------------------------------
 
     /**
+     * Discards the record markers standing in the loaded part of an area. A test that leaves a marker holding a
+     * record of an unknown generation in the reused world has it journaled as a copy, and applied, by the next
+     * run (a copy of a generation the engine never heard is new): so a test discards its markers when it ends.
+     */
+    public static void discardRecordMarkers(ServerLevel level, AABB area) {
+        for (Marker m : level.getEntities(EntityType.MARKER, area, e -> e.getTags().contains(RtsimSession.RECORD_MARKER_TAG)))
+            m.discard();
+    }
+
+    /**
      * Catches the record markers (vanilla markers tagged {@code mic_rtsim.record}) standing in an area, at
      * the end of every tick: the reconciler discards one a tick or two after its acknowledgement, so the
      * NBT it carried is kept here.
