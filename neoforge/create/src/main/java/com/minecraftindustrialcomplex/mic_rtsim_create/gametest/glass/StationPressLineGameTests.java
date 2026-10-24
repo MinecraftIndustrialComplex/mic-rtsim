@@ -8,6 +8,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit;
+import com.simibubi.create.content.trains.entity.Train;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestGenerator;
@@ -45,12 +46,19 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Sta
  * port on top of it, and a bystander line; this runs {@link StationCargoGameTests}' calls against it (its
  * stage machine and its helpers; only the port, the readiness and the verdict are this fixture's).
  *
- * <p>A synthetic train makes a loaded call: it brings {@value StationCargoGameTests#LEARNED} iron ingots, the
- * test moves them into the vault (the interface's and the chute's work), the station's ports are journaled at
- * the train's departure and must be that vault alone. The far site unloads once both units have learned, the
- * train comes back with iron and arrives simulated, and the site loads again. The engine books the cargo on
- * the port's inventory, which lies in the press line's unit: no unit is discarded for it
- * ({@code GlassReport.DISCARDS[8]}, "station cargo"), and the exchange takes iron out of the carriage.
+ * <p>Once both units have learned, a synthetic train makes a loaded call while the press line's unit is a
+ * fifth to three fifths into a window: it brings {@value StationCargoGameTests#LEARNED} iron ingots, the test
+ * moves them into the vault (the interface's and the chute's work), and the station's ports, journaled at the
+ * train's departure, must be that vault alone. The engine books the cargo on the port's inventory, which lies
+ * in the press line's unit, so that window must go on (its ticks never fall back), complete and pass, with the
+ * unit's goods bounded: the compile claims the interface with no node (choice SC95), and a black box there
+ * would leave the unit unbounded, so that unbooked ingots could not fail it. The far site then unloads, the
+ * train comes back with iron and arrives simulated, and the site loads again: no unit is discarded for the
+ * cargo ({@code GlassReport.DISCARDS[8]}, "station cargo"), and the exchange takes iron out of the carriage.
+ *
+ * <p>The negative control, after the verdict: a chest placed beside the interface's chute is a district
+ * inventory in no unit, so the station's ports name the vault and it; another loaded call then names a unit
+ * and none, which must cost the press line's unit its window (a station cargo discard).
  *
  * <p>{@code MIC_SEC1FX_ONLY=station_press_line} selects it among the fixtures.
  */
@@ -64,14 +72,20 @@ public final class StationPressLineGameTests {
     static final int FAR_CHUNKS = StationCargoGameTests.FAR_CHUNKS + 32;
     /** A discard reason of {@code GlassReport.DISCARDS}. */
     static final int STATION_CARGO = 8;
+    /** Where in the press line's open window the loaded call comes: between these ticks into it. */
+    static final int CALL_FROM = GlassReplayGameTests.WINDOW / 5, CALL_TO = 3 * GlassReplayGameTests.WINDOW / 5;
+    /** The negative control's chest: beside the interface's chute, which only moves up and down. */
+    static final BlockPos CONTROL_CHEST = StationPressLineFactory.PORT_CHUTE.east();
+    /** Ticks the negative control gets for its recompile, and then for its discard. */
+    static final int CONTROL_WAIT = 2400;
 
     @GameTestGenerator
     public static Collection<TestFunction> stationPressLine() {
         if (!SectionsFxGameTests.selected(NAME))
             return List.of();
         CorpusFactory f = new StationPressLineFactory();
-        int maxTicks = f.warmupTicks() + 2 * (GlassReplayGameTests.WINDOW + GlassExitGameTests.SLACK) + StationCargoGameTests.AWAY
-                + StationCargoGameTests.RESULT_WAIT + 3 * GlassReplayGameTests.IO_TICKS + 4 * GlassReplayGameTests.SETTLE + 4000;
+        int maxTicks = f.warmupTicks() + 3 * (GlassReplayGameTests.WINDOW + GlassExitGameTests.SLACK) + StationCargoGameTests.AWAY
+                + StationCargoGameTests.RESULT_WAIT + 3 * GlassReplayGameTests.IO_TICKS + 4 * GlassReplayGameTests.SETTLE + 2 * CONTROL_WAIT + 4000;
         return List.of(new TestFunction("sec1fx_" + NAME, "sec1fx." + NAME, SectionsFxGameTests.NAMESPACE + ":" + IndustryKit.YARD,
                 Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true, h -> start(h, f)));
     }
@@ -149,6 +163,7 @@ public final class StationPressLineGameTests {
             case AWAY -> StationCargoGameTests.away(run);
             case RELOAD -> StationCargoGameTests.reload(run);
             case SETTLE -> StationCargoGameTests.settle(run);
+            case CONTROL -> control(run);
             default -> {}
         }
     }
@@ -213,7 +228,6 @@ public final class StationPressLineGameTests {
         run.sinkIdx = vault.index();
         IndustryKit.record(run.test, "district", d + " (" + d.chunks.size() + " chunks, " + d.inventories.size() + " inventories, revision "
                 + d.revision + "), vault inventory " + run.sinkIdx);
-        loadedCall(run);
         run.stage(Stage.RUN);
     }
 
@@ -223,19 +237,26 @@ public final class StationPressLineGameTests {
         run.station = StationCargoGameTests.syntheticStation(level, run.stationPos, "Press Halt");
         run.partner = StationCargoGameTests.syntheticStation(level, run.stationPos.offset(400, 0, 0), "Partner Halt");
         run.train = StationCargoGameTests.syntheticTrain(level, run.helper.absolutePos(new BlockPos(5, 1, 5)));
-        IItemHandler car = run.train.carriages.get(0).storage.getAllItems();
-        ItemHandlerHelper.insertItemStacked(car, new ItemStack(run.cargo, LEARNED), false);
-        run.train.arriveAt(run.station);
-        TrainWatch.dockedForTest(run.train, run.station, level.dimension(), run.psi);
-        int moved = StationCargoGameTests.move(car, StationCargoGameTests.items(level, run.sinkVault), run.cargo, LEARNED);
-        run.train.leaveStation();
-        run.train.navigation.destination = run.partner;
-        run.train.navigation.distanceToDestination = 400;
+        call(run, run.train, "loaded call");
         run.called = true;
-        IndustryKit.record(run.test, "loaded call", "at " + run.now() + ": " + moved + " iron into the vault; train " + CreateIds.of(run.train.id)
+        run.mine.put("calledAt", run.now());
+    }
+
+    /** One loaded call of {@code train} at the station: {@value StationCargoGameTests#LEARNED} iron into the vault. */
+    static void call(Run run, Train train, String what) {
+        ServerLevel level = run.level();
+        IItemHandler car = train.carriages.get(0).storage.getAllItems();
+        ItemHandlerHelper.insertItemStacked(car, new ItemStack(run.cargo, LEARNED), false);
+        train.arriveAt(run.station);
+        TrainWatch.dockedForTest(train, run.station, level.dimension(), run.psi);
+        int moved = StationCargoGameTests.move(car, StationCargoGameTests.items(level, run.sinkVault), run.cargo, LEARNED);
+        train.leaveStation();
+        train.navigation.destination = run.partner;
+        train.navigation.distanceToDestination = 400;
+        IndustryKit.record(run.test, what, "at " + run.now() + ": " + moved + " iron into the vault; train " + CreateIds.of(train.id)
                 + ", station " + CreateIds.of(run.station.id));
         if (moved != LEARNED)
-            StationCargoGameTests.fail(run, "the loaded call moved " + moved + " iron, not " + LEARNED);
+            StationCargoGameTests.fail(run, "the " + what + " moved " + moved + " iron, not " + LEARNED);
     }
 
     /** What the units must show before the far site leaves; the structure's checks run once. */
@@ -261,10 +282,44 @@ public final class StationPressLineGameTests {
         return null;
     }
 
-    /** Checks the station's ports, then runs until both units have learned and unloads the site. */
+    /**
+     * Runs until both units have learned and the press line's unit is in the middle of a window, makes the loaded
+     * call, checks the station's ports, then runs until that window has passed and unloads the site.
+     */
     static void runLoaded(Run run) {
         if (run.stageTicks % GlassReplayGameTests.POLL != 0)
             return;
+        long since = run.now() - run.builtAt;
+        int budget = run.f.warmupTicks() + 2 * (GlassReplayGameTests.WINDOW + GlassExitGameTests.SLACK) + 1200;
+        if (!run.called) {
+            if (!run.judge) {
+                loadedCall(run);
+                return;
+            }
+            if (run.stub && run.stageTicks % GlassReplayGameTests.STUB_REPORT_POLL != 0 && since < budget)
+                return;
+            GlassReport fr = GlassExitKit_report(run);
+            run.last = fr == null ? "far site: no complete compile" : "far site: " + fr.summary() + "; " + fr.replay().summary();
+            String gate = ready(run, fr);
+            GlassReport.Unit line = gate == null ? SectionsFx.unitAt(fr, run.far.absolutePos(StationPressLineFactory.PRESS)) : null;
+            if (gate == null && line == null)
+                gate = "no one unit holds the press: " + SectionsFx.describe(fr);
+            else if (gate == null && (line.windowTicks() < CALL_FROM || line.windowTicks() > CALL_TO))
+                gate = "the press line's unit is " + line.windowTicks() + " ticks into its window, the call comes at " + CALL_FROM + " to " + CALL_TO;
+            if (gate != null) {
+                run.last = "before the call: " + gate;
+                if (since < budget + GlassReplayGameTests.WINDOW)
+                    return;
+                StationCargoGameTests.fail(run, "the units never learned, or no window of the press line's came to the call (" + gate + ")");
+                return;
+            }
+            run.mine.put("w0", line.windowsCompleted());
+            run.mine.put("ticks", line.windowTicks());
+            run.mine.put("discards0", fr.checksum().discards(STATION_CARGO));
+            info(run, "the press line's unit at the call", line.summary());
+            loadedCall(run);
+            return;
+        }
         if (!run.portsSeen) {
             long station = CreateIds.of(run.station.id);
             List<ByteBuffer> ports = IndustryKit.received(IndRecords.IND_STATION_PORTS, IndRecords.StationPorts.STATION, station);
@@ -294,26 +349,51 @@ public final class StationPressLineGameTests {
             }
             run.portsSeen = true;
         }
-        long since = run.now() - run.builtAt;
-        int budget = run.f.warmupTicks() + 2 * (GlassReplayGameTests.WINDOW + GlassExitGameTests.SLACK) + 1200;
         if (!run.judge) {
             if (since < run.f.warmupTicks() + GlassReplayGameTests.WINDOW + 1000)
                 return;
             run.eligibleBy = "not judged: warm-up and one window";
         } else {
-            if (run.stub && run.stageTicks % GlassReplayGameTests.STUB_REPORT_POLL != 0 && since < budget)
+            long calledAt = (Long) run.mine.get("calledAt");
+            long after = run.now() - calledAt;
+            int callBudget = GlassReplayGameTests.WINDOW + GlassExitGameTests.SLACK;
+            if (run.stub && run.stageTicks % GlassReplayGameTests.STUB_REPORT_POLL != 0 && after < callBudget)
                 return;
             GlassReport fr = GlassExitKit_report(run);
             run.last = fr == null ? "far site: no complete compile" : "far site: " + fr.summary() + "; " + fr.replay().summary();
-            String gate = ready(run, fr);
-            if (gate != null) {
-                run.last = "scenario: " + gate;
-                if (since < budget)
+            GlassReport.Unit line = fr == null ? null : SectionsFx.unitAt(fr, run.far.absolutePos(StationPressLineFactory.PRESS));
+            int w0 = (Integer) run.mine.get("w0");
+            long ticks = (Long) run.mine.get("ticks");
+            if (line == null) {
+                if (after < callBudget)
                     return;
-                StationCargoGameTests.fail(run, "the units never learned (" + gate + ")");
+                StationCargoGameTests.fail(run, "no one unit holds the press after the call (" + run.last + ")");
                 return;
             }
-            run.eligibleBy = "both units learned";
+            if (line.windowsCompleted() == w0) {
+                // the window across the call goes on: its ticks never fall back (a discard would start one at 0,
+                // less than the fifth of a window it had at the call, by the next read)
+                if (!check(run, "the press line's window across the call goes on (not discarded)", line.windowTicks() >= ticks,
+                        line.windowTicks() + " ticks into it, " + ticks + " at the last read; " + line.summary())) {
+                    run.stage(Stage.DONE);
+                    return;
+                }
+                run.mine.put("ticks", line.windowTicks());
+                run.last = "the press line's window across the call: " + line.summary();
+                if (after < callBudget)
+                    return;
+                StationCargoGameTests.fail(run, "the press line's window across the call never completed (" + line.summary() + ")");
+                return;
+            }
+            String d = SectionsFx.describe(fr);
+            info(run, "the press line's unit after its window across the call", line.summary() + ", " + after + " ticks after the call");
+            check(run, "the press line's window across the call completes and passes (the cargo booked on the vault)",
+                    line.windowsCompleted() == w0 + 1 && line.verdict() == GlassReport.PASS && line.passed(), line.summary());
+            check(run, "the press line's unit is bounded: no black box at the interface (SC95)", !line.unbounded(), d);
+            long discards = fr.checksum().discards(STATION_CARGO);
+            check(run, "no unit was discarded for the loaded call's cargo", discards == (Long) run.mine.get("discards0"),
+                    discards + " " + GlassReport.DISCARDS[STATION_CARGO] + " discards, " + run.mine.get("discards0") + " before the call");
+            run.eligibleBy = "both units learned, and the press line's window across the call passed";
         }
         ServerLevel level = run.level();
         run.t1 = run.now();
@@ -350,6 +430,77 @@ public final class StationPressLineGameTests {
             check(run, "the exchange unloaded iron from the carriage (at least one, at most " + LEARNED + ")", left >= 0 && left < LEARNED,
                     "the carriage held " + left + " iron after the engine's answer, of " + LEARNED);
         }
-        IndustryKit.record(run.test, run.failures.isEmpty() ? "PASS" : "FAIL", run.failures.isEmpty() ? "the cargo booked on the press line's section" : run.failures);
+        // the negative control: a chest beside the interface's chute, a district inventory no unit holds
+        run.mine.put("controlDiscards0", discards);
+        run.mine.put("controlAt", run.now());
+        BlockPos chest = run.far.absolutePos(CONTROL_CHEST);
+        GlassCorpusKit.chest(run.far, chest);
+        IndustryKit.playerPlaced(run.far, chest);
+        info(run, "negative control", "a chest at " + chest.toShortString() + " beside the interface's chute");
+        run.stage(Stage.CONTROL);
+    }
+
+    /**
+     * The negative control: once the district has recompiled with the chest among its inventories, a loaded call
+     * whose ports name the vault (the press line's unit) and the chest (no unit's) must take the STATION discard
+     * path (its counter goes up). The chest's revision makes the units new, so they may still be warming up and
+     * have no window to drop: the counter, not a dropped window, is what this proves.
+     */
+    static void control(Run run) {
+        if (run.stageTicks % 20 != 0)
+            return;
+        ServerLevel level = run.level();
+        District d = IndustryKit.ind().district(run.fd);
+        if (!run.mine.containsKey("controlTrain")) {
+            GlassReport fr = GlassExitKit_report(run);
+            District.Inventory chest = d == null ? null : d.inventoryAt(Districts.canonicalInventory(level, run.far.absolutePos(CONTROL_CHEST)));
+            boolean compiled = d != null && chest != null && fr != null && fr.checksum().revision() == d.revision && fr.units().size() >= 2;
+            if (!compiled) {
+                run.last = "control: waiting for the recompile with the chest (" + (fr == null ? "no report" : fr.checksum().summary())
+                        + ", district revision " + (d == null ? -1 : d.revision) + ", chest " + chest + ")";
+                if (run.stageTicks > CONTROL_WAIT)
+                    controlFail(run, "the district never recompiled with the control's chest (" + run.last + ")");
+                return;
+            }
+            run.mine.put("controlChest", chest.index());
+            // the vault's index at this revision (inventories sort by position, so it is the same one here)
+            District.Inventory vault = d.inventoryAt(Districts.canonicalInventory(level, run.sinkVault));
+            run.mine.put("controlVault", vault == null ? -1 : vault.index());
+            info(run, "control: recompiled", SectionsFx.describe(fr) + "; chest inventory " + chest.index());
+            Train t = StationCargoGameTests.syntheticTrain(level, run.helper.absolutePos(new BlockPos(5, 1, 5)));
+            run.mine.put("controlTrain", t);
+            run.mine.put("controlCalledAt", run.now());
+            call(run, t, "control call");
+            return;
+        }
+        long calledAt = (Long) run.mine.get("controlCalledAt");
+        long station = CreateIds.of(run.station.id);
+        List<ByteBuffer> ports = IndustryKit.received(IndRecords.IND_STATION_PORTS, IndRecords.StationPorts.STATION, station);
+        TreeSet<Integer> got = new TreeSet<>();
+        if (!ports.isEmpty()) {
+            ByteBuffer p = ports.get(ports.size() - 1);
+            for (int i = 0; i < IndustryKit.aux(p); i++)
+                got.add(p.getInt(IndRecords.StationPorts.INVENTORIES + 4 * i));
+        }
+        Set<Integer> want = Set.of((Integer) run.mine.get("controlVault"), (Integer) run.mine.get("controlChest"));
+        GlassReport fr = GlassExitKit_report(run);
+        long discards = fr == null ? -1 : fr.checksum().discards(STATION_CARGO);
+        long before = (Long) run.mine.get("controlDiscards0");
+        if (!got.equals(want) || discards <= before) {
+            run.last = "control: ports " + got + " (want " + want + "), " + discards + " station cargo discards (" + before + " before)";
+            if (run.now() - calledAt > CONTROL_WAIT)
+                controlFail(run, "the control call's ports never named the vault and the chest, or its cargo discarded nothing (" + run.last + ")");
+            return;
+        }
+        info(run, "control: ports", got + ", " + discards + " station cargo discards (" + before + " before)");
+        check(run, "the negative control: cargo with ports naming a unit's inventory and one of no unit takes the STATION discard", true, run.last);
+        IndustryKit.record(run.test, run.failures.isEmpty() ? "PASS" : "FAIL", run.failures.isEmpty()
+                ? "the cargo booked on the press line's section, and the control discarded" : run.failures);
+        run.stage(Stage.DONE);
+    }
+
+    private static void controlFail(Run run, String why) {
+        check(run, "the negative control", false, why);
+        run.stage(Stage.DONE);
     }
 }

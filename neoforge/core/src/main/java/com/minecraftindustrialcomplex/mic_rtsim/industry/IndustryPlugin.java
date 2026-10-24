@@ -58,6 +58,16 @@ public interface IndustryPlugin {
     default void links(BlockEntity be, Consumer<BlockPos> out) {}
 
     /**
+     * Whether this block entity is a part of a network that a district's compile follows out of its chunks
+     * (SECTIONS.md §3.6, choice SC77: a kinetic part, a chain conveyor). A player placing or breaking one in a
+     * chunk of no district edits each district whose network reaches that chunk; any other block entity there
+     * (a chest, a sign) edits none. The default: no.
+     */
+    default boolean networkPart(BlockEntity be) {
+        return false;
+    }
+
+    /**
      * For a multiblock inventory, the position whose capability is the whole inventory (a vault's or a
      * tank's controller), so it is counted once; null when this plugin does not know the block.
      */
@@ -231,6 +241,18 @@ public interface IndustryPlugin {
     /** This plugin's graph extractor for the glass box's compile (G1), or null. */
     default com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassExtractor glass() {
         return null;
+    }
+
+    // ---- fights (MOWZIE.md §4.13, ledger 19) ---------------------------------------------------
+
+    /**
+     * An attacker's strength in an observed fight (IND_FIGHT's attacker strength), in the engine's unit:
+     * one ordinary mob (a zombie, health x attack 20 x 3). NaN when this plugin does not know the entity;
+     * the first plugin with a finite, non-negative answer wins, and the core counts 1 otherwise. Asked
+     * once per attacker per fight.
+     */
+    default float fightStrength(net.minecraft.world.entity.Entity attacker) {
+        return Float.NaN;
     }
 
     // ---- conditions (I12) -----------------------------------------------------------------------

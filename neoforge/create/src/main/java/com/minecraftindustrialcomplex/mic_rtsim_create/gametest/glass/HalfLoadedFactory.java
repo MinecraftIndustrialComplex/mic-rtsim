@@ -57,6 +57,10 @@ public final class HalfLoadedFactory implements CorpusFactory {
             for (GlassReport.Unit u : far.units())
                 if (!SectionsFx.learned(u))
                     return "a unit has not learned: " + SectionsFx.describe(far);
+            // only line B replays (A stays live while the district is partial)
+            String gate = SectionsFx.replayGate(far, SectionsFx.unitAt(far, run.far.absolutePos(B_MILL)));
+            if (gate != null)
+                return gate;
             if (!structure) {
                 structure = true;
                 GlassReport.Unit a = SectionsFx.unitAt(far, run.far.absolutePos(A_FEED)), b = SectionsFx.unitAt(far, run.far.absolutePos(B_MILL));
@@ -81,8 +85,10 @@ public final class HalfLoadedFactory implements CorpusFactory {
             SectionsFx.info(run, "units while partial", SectionsFx.describe(far));
             SectionsFx.check(run, "the ticking line's unit is not frozen and still has its pass", a != null && a.passed() && !a.frozen(),
                     a == null ? "no unit" : a.summary());
-            SectionsFx.check(run, "the ticking line goes on judging windows (a window open or one more done)",
-                    a != null && aFirst != null && (a.windowTicks() > 0 || a.windowsCompleted() > aFirst.windowsCompleted()),
+            // §9.2: "the ticking line learns and passes": a window of A's completed while partial, and passed (the away
+            // span, GlassReplayGameTests.SPAN, is two and a half windows)
+            SectionsFx.check(run, "the ticking line judges a window while the other is away, and passes it",
+                    a != null && aFirst != null && a.windowsCompleted() > aFirst.windowsCompleted() && a.verdict() == GlassReport.PASS,
                     a == null ? "no unit" : "now " + a.summary() + "; first " + (aFirst == null ? "none" : aFirst.summary()));
             SectionsFx.check(run, "the other line, which passed, replays", b != null && b.mayReplay() && !b.frozen() && !b.stale(),
                     b == null ? "no unit" : b.summary());

@@ -463,38 +463,8 @@ public final class TrainWatch {
         if (level == null || psis.isEmpty())
             return;
         TreeSet<Integer> found = new TreeSet<>();
-        for (BlockPos psi : psis) {
-            Map<BlockPos, Integer> depth = new HashMap<>();
-            ArrayDeque<BlockPos> queue = new ArrayDeque<>();
-            depth.put(psi, 0);
-            queue.add(psi);
-            while (!queue.isEmpty() && depth.size() < PORT_VISITS) {
-                BlockPos p = queue.poll();
-                int k = depth.get(p);
-                for (Direction dir : Direction.values()) {
-                    BlockPos q = p.relative(dir);
-                    if (depth.containsKey(q) || !level.isLoaded(q))
-                        continue;
-                    depth.put(q, k + 1);
-                    Block b = level.getBlockState(q).getBlock();
-                    if (conveys(b)) {
-                        if (k + 1 < PORT_DEPTH)
-                            queue.add(q);
-                        continue;
-                    }
-                    if (k == 0)
-                        continue;
-                    LevelChunk chunk = level.getChunkSource().getChunkNow(q.getX() >> 4, q.getZ() >> 4);
-                    BlockEntity be = chunk == null ? null : chunk.getBlockEntity(q);
-                    if (be == null || be instanceof PortableStorageInterfaceBlockEntity)
-                        continue;
-                    BlockPos canon = Districts.canonicalInventory(level, q);
-                    District.Inventory inv = canon == null ? null : d.inventoryAt(canon);
-                    if (inv != null)
-                        found.add(inv.index());
-                }
-            }
-        }
+        for (BlockPos psi : psis)
+            reached(level, d, psi, found);
         if (found.isEmpty())
             return;
         String key = d.revision + ":" + found;
@@ -509,6 +479,52 @@ public final class TrainWatch {
             r.putInt(IndRecords.StationPorts.INVENTORIES + 4 * i++, inv);
         ind.commit(r);
         portRecords++;
+    }
+
+    /**
+     * The district inventories one interface reaches through conveyance, as {@link #ports} walks (SG32), added to
+     * {@code found}.
+     */
+    static void reached(ServerLevel level, District d, BlockPos psi, Set<Integer> found) {
+        Map<BlockPos, Integer> depth = new HashMap<>();
+        ArrayDeque<BlockPos> queue = new ArrayDeque<>();
+        depth.put(psi, 0);
+        queue.add(psi);
+        while (!queue.isEmpty() && depth.size() < PORT_VISITS) {
+            BlockPos p = queue.poll();
+            int k = depth.get(p);
+            for (Direction dir : Direction.values()) {
+                BlockPos q = p.relative(dir);
+                if (depth.containsKey(q) || !level.isLoaded(q))
+                    continue;
+                depth.put(q, k + 1);
+                Block b = level.getBlockState(q).getBlock();
+                if (conveys(b)) {
+                    if (k + 1 < PORT_DEPTH)
+                        queue.add(q);
+                    continue;
+                }
+                if (k == 0)
+                    continue;
+                LevelChunk chunk = level.getChunkSource().getChunkNow(q.getX() >> 4, q.getZ() >> 4);
+                BlockEntity be = chunk == null ? null : chunk.getBlockEntity(q);
+                if (be == null || be instanceof PortableStorageInterfaceBlockEntity)
+                    continue;
+                BlockPos canon = Districts.canonicalInventory(level, q);
+                District.Inventory inv = canon == null ? null : d.inventoryAt(canon);
+                if (inv != null)
+                    found.add(inv.index());
+            }
+        }
+    }
+
+    /** Whether an interface reaches a district inventory through conveyance (the glass compile's claim, SC95). */
+    public static boolean reachesAnInventory(ServerLevel level, District d, BlockPos psi) {
+        if (level == null)
+            return false;
+        Set<Integer> found = new TreeSet<>();
+        reached(level, d, psi, found);
+        return !found.isEmpty();
     }
 
     /** Blocks that move goods between an interface and a container next to them (SG32). */

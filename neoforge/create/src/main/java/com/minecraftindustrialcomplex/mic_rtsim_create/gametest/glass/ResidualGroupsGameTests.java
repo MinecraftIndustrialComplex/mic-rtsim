@@ -1,6 +1,5 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass;
 
-import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
@@ -15,8 +14,6 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
-import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -48,8 +45,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * <p>The build, in one chunk on the yard's floor: line A is three droppers in a row along x (A1, A2, A3), with
  * a chute from a barrel above into A1 and another into A2, so two edges reach the one group; line B is one
  * dropper fed by a chute from its own barrel, four blocks east of A3; C is a dropper alone, which no edge
- * reaches. Then a player breaks A3: the recompile shrinks group A's extent and hash, unit A starts afresh,
- * and unit B, whose blocks did not change, carries on.
+ * reaches. Then A3 goes, with no player's event (so no edit discards a window and raises a ready tick), and
+ * the test asks for the recompile: it shrinks group A's extent and hash, unit A starts afresh (a later ready
+ * tick, which only a new unit gets here), and unit B, whose blocks did not change, carries on.
  */
 @GameTestHolder(MicRtsimCreate.MODID)
 @PrefixGameTestTemplate(false)
@@ -184,7 +182,8 @@ public final class ResidualGroupsGameTests {
                     record(t, "units", units(r));
                 })
                 .thenExecute(() -> {
-                    NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, a3, level.getBlockState(a3), FakePlayers.editor(level)));
+                    // no BreakEvent: an edit would discard unit A's window and raise its ready tick whether or not the
+                    // recompile made it new; a dropper is no district stock, so the revision stays and the units carry
                     level.removeBlock(a3, false);
                     ind().glass().requestCompile(ind().district(id[0]));
                 })
@@ -205,7 +204,6 @@ public final class ResidualGroupsGameTests {
                 .thenWaitUntil(() -> {
                     if (!natives)
                         return;
-                    // a later compile of the same blocks (a place event's edit) is the same graph
                     GlassReport r = GlassExitKit.report(id[0], null);
                     int now = GlassKit.latest(id[0]).end().compile();
                     check("the engine's report of the latest compile " + now + " (from " + mark[0] + ")", r != null && now >= mark[0] && r.compile() == now);

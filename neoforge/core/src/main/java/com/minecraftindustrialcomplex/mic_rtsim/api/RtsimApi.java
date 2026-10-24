@@ -181,6 +181,36 @@ public final class RtsimApi {
         return s == null || tag == null ? null : s.registry().live(tag, entity.getUUID());
     }
 
+    /**
+     * A plugin found a conflict camp (MOWZIE.md §4.9): FACTION_FOUND goes to the engine when the
+     * conflict module is on. {@code structure} is the structure's id ({@code minecraft:pillager_outpost},
+     * {@code goblinstyranny:goblin_camp}); {@code pos} a block in its start chunk, which keys the faction;
+     * {@code kin} which deaths in its territory are its own (a player's kill of one is the killing
+     * signal); {@code sound} its notices' sound (null: a raid horn); {@code homeBodies} and {@code census}
+     * the census at discovery ({@code ConflictRecords.FactionFound.CENSUS_*}). Returns the faction key,
+     * or 0 with no live session.
+     */
+    public static long reportCamp(net.minecraft.server.level.ServerLevel level, String structure, net.minecraft.core.BlockPos pos,
+                                  java.util.function.Predicate<Entity> kin,
+                                  net.minecraft.core.Holder<net.minecraft.sounds.SoundEvent> sound, boolean late,
+                                  int homeBodies, int census) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reportCamp(level, structure, pos, kin,
+                sound, late, homeBodies, census);
+    }
+
+    /**
+     * A conflict party member carried items off from a container (BAND_LOOTED). False when the entity
+     * is no live member.
+     */
+    public static boolean looted(Entity member, java.util.List<net.minecraft.world.item.ItemStack> items) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.looted(member, items);
+    }
+
+    /** The conflict factions' territories, by dimension and position (read only; M7's train sampler). */
+    public static com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories territories() {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.territories();
+    }
+
     // ---- TALK (TALK.md §2, §4) -----------------------------------------------------------------
 
     /**

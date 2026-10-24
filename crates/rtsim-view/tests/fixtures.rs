@@ -4,11 +4,12 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit e60b767
-//!   (Mowzie M2 merged with main 4bc03a6: the phase 1 world's catalogue has 10 goods,
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 0a5a4c2
+//!   (Mowzie M3 merged with main 89fb716 and CL-D61: the phase 1 world's catalogue has 10 goods,
 //!   `gold_nugget` last; the booked train legs are pages of their own, table 0x4904, ILEG, and the
 //!   industry globals page starts with IGB1 (docs/stress-worlds-results.md 10.10); the conflict's
-//!   pages are RTC4 with meta version 3, each feud's kept notice with its serial and its Envoy
+//!   pages are RTC5 with meta version 4, each party's recalled stacks kept per epoch, each feud's
+//!   kept notice with its serial and its Envoy
 //!   hold, the Peaceful flag and start and the last notice serial, each faction's crystal, the
 //!   destroyed loot and the repeats; a node may be a lair, tag 3; the ships' pages are RTS4, each
 //!   port's blockade state and each laid-up slot's idle spells in a trailing section written only
@@ -25,7 +26,7 @@
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
 //! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
-//!   e60b767 (the same formats; delete `run-gametest/world` before a create run that follows a
+//!   0a5a4c2 (the same formats; delete `run-gametest/world` before a create run that follows a
 //!   stress-generator run, whose clock is ahead of the game). Every module's pages, mostly empty:
 //!   herds, districts with their glass pages and stations draw.
 //!
