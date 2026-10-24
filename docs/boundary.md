@@ -244,7 +244,8 @@ overworld's save event and chains a marker onto NeoForge's SavedData write chain
 smaller of that value and the last sequence the journal's file on disk actually holds
 (`JournalSavedData.writtenThrough`): a write the chunk barrier held, or one that failed, does not
 count (docs/choices-journal-barrier.md JB1). The next hand-over carries the value; the engine may then
-forget op ids applied at or before it.
+forget op ids applied at or before it, and a camp ledger forgets the CAMP_BODIES answers it booked from
+records at or before it (MOWZIE.md §4.9, MZB-177).
 
 **Idempotent events.** TAKEN, DIED and COMMAND_RESULT may arrive more than once (§3.1). The engine
 applies each at most once: by op id while it remembers it, and by state after that (a member that
@@ -1425,8 +1426,10 @@ body mod is verified: it is the contract a plugin would have to meet.
 **Mowzie's Mobs** (2026-10-22: MOWZIE.md §2, §4.12 and ledger 14; slice M1, choices MZB-1 to MZB-49 in
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
-plugin. The engine half of most of the new kinds comes with a later slice (§9.6); until then the
-engine decodes them, counts them as deferred and drops them, and sends none of the new commands.
+plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178); that of the
+rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
+deferred and drops them, and sends none of their commands.
 
 ### 9.1 Kind ranges (reserved)
 
@@ -1469,11 +1472,14 @@ are untouched.
   they never meet phase 1's village cultures (`human`) in the one dictionary (MZB-12).
 - **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
   shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
-  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID; the engine
-  applies each once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). The
-  engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is the
-  engine's, allocator 0x43 in bits 56 to 62 (§2.2) over 56 bits derived from the faction, the epoch
-  and the decision, and CAMP_BODIES carries it back so that an answer is booked once (MOWZIE.md §4.9).
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID; the engine applies
+  each once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). CAMP_DEATH has
+  one in its record, but the engine does not keep it: a death is idempotent by its slot and
+  generation, and a set of every camp death's op id would grow with each death of a farmed grove.
+  The engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is
+  the engine's, allocator 0x43 in bits 56 to 62 (§2.2) over 56 bits derived from the faction, the
+  epoch and the decision, and CAMP_BODIES carries it back with each line's index, so that an
+  answer's line is booked once, by (op, line), while its epoch is the camp's latest (MOWZIE.md §4.9).
 - **Camps** (MOWZIE.md §4.9). A camp's **epoch** is a Java op id (top bit set) that the plugin takes
   each time the camp comes in (CAMP_CENSUS) and ends with CAMP_OUT; CAMP_BODIES, CAMP_RECONCILE and
   a CHIEF_BODY at home carry it. A camp body is known by its **slot and generation**; one found with
@@ -1508,14 +1514,15 @@ are untouched.
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief; u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
-| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u32 outcome: 1 done, 2 nothing to do, 3 stale) | 48 + 16n |
+| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
 All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY and NOTICE_SHOWN today; the rest are
-deferred (§9.6).
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN and the camp records
+(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the rest are deferred
+(§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1571,8 +1578,11 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   every body of the camp's kinds in the footprint (by slot and generation, or a stray by UUID), the
   camp's tagged bodies loaded elsewhere, and for an Umvuthi its throne spot and trade memory; CAMP_OUT
   when a footprint chunk drops below FULL; CAMP_BODIES as the answer to a CAMP_RECONCILE, line by
-  line; CAMP_DEATH once per body UUID, at home or left behind. CAMP_BODIES and CAMP_DEATH are carried
-  on the bodies and markers they changed until acknowledged, and journaled again at load.
+  line, each line with the action of the line it answers; CAMP_DEATH once per body UUID, at home or
+  left behind. CAMP_BODIES and CAMP_DEATH are carried on the bodies and markers they changed until
+  acknowledged, and journaled again at load. One reconcile can therefore have several CAMP_BODIES
+  records (a holder's, journaled again, and held lines answered later), each with its lines'
+  indexes: the engine books each (op, line) once.
 - **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5);
   **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`), with that body's
   slot and generation; **TRADED** a masked trade with the grove's minions; **HAVEN_CHEST** a grove
@@ -1739,12 +1749,21 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
 - **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
-  (M9), RAIL_PASS (M7), TRAIN_PASSED (M8) and the camp records (M4) come later, as do the commands,
-  which the engine does not send yet, and FACTION_FOUND's census (M4). Until then rtsim-jni decodes
-  each, translates its ids, counts it (`ConflictLinkStats::deferred`) and drops it before the shared
-  clock runs for it: no module catches up for a deferred record. One with an op id spends it in
-  the engine, in rtsim-jni as in `Conflict::ingest`, so the same record again is not counted twice
-  (MZB-23).
+  (M9), RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
+  not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
+  (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
+  catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
+  `Conflict::ingest`, so the same record again is not counted twice (MZB-23).
+- **The camp records** (slice M4, MZB-150 to MZB-178) are built, with CAMP_BODIES' lines changed
+  to carry their action (MZB-168). CAMP_CENSUS
+  (a camp that is in, at an epoch), CAMP_OUT, CAMP_BODIES and CAMP_DEATH are ingested by
+  `engine/camp.rs`, and the engine sends CAMP_RECONCILE only to a camp that is in, at most one line
+  in flight per slot, voiding its lines at CAMP_OUT and at a session start and never resending one.
+  A census ingested inside the session's replay window (`Conflict::replaying`, from `session_start`
+  to `replay_done`) only marks its camp out (MZB-159, MZB-178). An answer
+  line is booked by its own action, not by the state its slot has now (a line voided at CAMP_OUT is
+  still answered), once by its (op, line), and only while its epoch is the latest a census named; a
+  CAMP_DEATH by its slot and generation, with no op id kept (MZB-168 to MZB-170).
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
@@ -2097,10 +2116,10 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70, TK71 to TK84)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
-(a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
+(a village, a caravan, a camp, later a ship) knows; the engine answers with the holder's mood, its
 market's shortest and fullest goods, its ports' state and up to four pieces of news, each naming who
 did what to whom and where. TALK.md §9 holds the reasons and the lines Java builds from them; this
 section is the wire. A ribbit's credited talk goes the other way, as TALKED (§13.7).
@@ -2132,14 +2151,20 @@ as every latest-wins kind is). Size 8 + 56n; each ask starts at 8 + 56i:
 | 28 | u32 | dimension (dictionary 1); the engine's frame is its id, so one above 65,535 is refused |
 | 32 | u64 | holder |
 | 40, 44 | i32 | the talker's x, z |
-| 48 | u32 | flags: 1 news, 2 faction facts |
+| 48 | u32 | flags: 1 NEWS, 2 FACTION |
 | 52 | u32 | reserved |
+
+Flag 1 asks for the news (as before). Flag 2 asks for a camp's faction block (§13.3); it means
+something only with holder kind 3, and the engine ignores it for any other holder (TK72). Java sets
+2 for kind 3 and nothing but 1 for the rest, so a village's, a caravan's and a ribbit's ask is the
+same bytes it was.
 
 ### 13.3 TALK_FACTS (0x8A00, aux = news n, at most 4; per session)
 
 The answer to one ask, one tick or more later. No op id, never kept, never resent after a restart:
 its sequence is the session's (`session_seq`), and Java drops an ask's wait when it lands or after
-20 ticks (TK5). Size 48 + 120n:
+20 ticks (TK5). Size 48 + 120n, or 48 + 120n + 48 with the faction block (flag 8); at most
+48 + 4 x 120 + 48 = 576 bytes:
 
 | Offset | Type | Field |
 |---|---|---|
@@ -2152,9 +2177,34 @@ its sequence is the session's (`session_seq`), and Java drops an ask's wait when
 | 40 | u32 | most glutted good (0 none) |
 | 44 | u32 | its stock per target, thousandths |
 | 48 | n x 120 | news, best first |
+| 48 + 120n | 48 | the faction block, only with flag 8 |
 
 Without HOLDER everything after the flags is zero and n is 0 (TK32, TK38). News comes only when the
-ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and come either way.
+ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and come either way. The
+`aux` is the news count only: the block is never counted in it. Flag 8 is set when, and only when, the
+block is there: the engine writes it for an ask with flag 2 about a camp it knows, both encoders set the flag
+exactly when they write the block, and both decoders refuse a record with flag 8 that is too short to hold it
+(TK72).
+
+The **faction block** (48 bytes, offsets from its start, slice 4). It is the camp's own state, and its
+feud against the player who asked (a player the camp has no feud with reads rung 0, signal none and
+grievance 0):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | rung: the feud's step at the asker (0 none, 1 notice, 2 envoy, 3 scouts, 4 raid, 5 invasion, 6 siege; TK77) |
+| 1 | u8 | mood flags: 1 COWED, 2 CHIEF_OUT, 4 NEW_CHIEF, 8 LEAN, 16 STRONG, 32 YOU_KILLED_CHIEF (reserved, never set; TK80) |
+| 2 | u16 | signal: the kind that holds most of the grievance (0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building, as FACTION_NOTICE's `kind`); 0xFFFF none |
+| 4 | f32 | grievance: the projected sum over every kind, at the engine's time |
+| 8 | u32 | cowed ticks left (0 when not cowed; saturating) |
+| 12 | u32 | plunders so far |
+| 16 | 32 | the chief's ref (a §13.3 ref; all zeros for now, reserved for the Mowzie plugin's name line, TK80) |
+
+The moods are worked out in the engine from the conflict's own rows (`rtsim_conflict::view::faction_facts`,
+TK74): COWED while the camp's cowed time is not over, CHIEF_OUT while its war chief is out with a band,
+NEW_CHIEF for ten game days after a succession and never before the first, and while the chief is dead and the heir answers (the succession is lazy, TK75), LEAN under a third of
+the culture's warrior cap and STRONG at the cap, within half a warrior (TK76). A fresh camp starts at its
+cap, so it reads STRONG until a raid costs it.
 
 A **news item** (120 bytes, offsets from its start): 0 u16 report kind, 2 u8 severity, 3 u8 the
 report's flags, 4 u32 talk flags (1 YOU_DID, 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago
@@ -2181,15 +2231,27 @@ when one is class 0 or DEAD, is TK36 and TK37.
   buffer that cannot hold the next answer keeps its ask for the next one.
 - **Read only:** it changes nothing in the world. With phase 1 off an ask is answered at once
   without HOLDER (TK32).
+- **A camp (holder kind 3, slice 4):** the holder is the camp's key, the same u64 as FACTION_FOUND's.
+  It is known while the conflict is on and has a faction of that key, and unknown (no HOLDER) otherwise
+  (TK71). A haven is not a knowledge holder, so the camp's news is its chief's board, else its heir's;
+  a camp with neither answers with HOLDER, sentiment 0 and no news, because it is known and has
+  nothing to tell (TK71). A report whose `whom` is the camp's own actor, its chief, its heir or its haven is
+  TO_US, and one whose `who` is any of them is BY_US (TK73). The conflict is read through `rtsim_conflict::view::faction_facts`
+  and nothing else (TK74).
 - **TALKED** is the one record that does change it, and is journaled: §13.7.
 
 ### 13.5 Test order 40: `TalkReport`
 
 TEST mode only (rtsim-host's fake Java keeps the TALK_FACTS records it is sent, `Java::talk_facts`,
-since slice 3, and the conflict and ports engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+since slice 3). The conflict records few reports on a camp's board so far (`chief_killed` puts a Killing, who the
+killer and whom the chief, on the chief's and the heir's; Robbery and Rescue go on villages' boards), so a test
+puts the rest there. Posts one report on a village's board: village u64, kind u16,
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
 z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
-it does to the knowledge tables, are TK40.
+it does to the knowledge tables, are TK40. A `village` key that is no adopted village but is a camp's files
+the report on the camp's board, its chief's (else its heir's); a camp with neither is refused as an unadopted
+village. A key that is both an adopted village's id and a camp's goes to the village: the village lookup wins
+(TK79).
 
 ### 13.6 What the Java side does with them
 
@@ -2206,8 +2268,13 @@ it does to the knowledge tables, are TK40.
   dragon, lair or ship (the body entity id), dictionary 2 for the goods. The talk reads it as a
   `TalkAnswer`; a talker's candidates see only `api/TalkFacts` (no wire types).
 - **Holders.** A villager (not a child, TK16) of an adopted village asks as holder kind 1 with Java's village id; a wandering
-  trader that is a live `human_caravan` group's member as kind 2 with the group's agent. Kinds 3 and 4 are
+  trader that is a live `human_caravan` group's member as kind 2 with the group's agent. A camp's talker (the
+  Mowzie plugin's) asks as kind 3 with the camp's key; the core sets ask flag 2 for it (`TalkRecords.askFlagsFor`),
+  decodes the block into `TalkRecords.Faction`, and `TalkMoods` reads it (§13.6 below, TK78). Kind 4 is
   not asked by Java yet (TK38).
+- **A camp's moods.** From the block: cowed 4, new chief 3, chief out 3, grudge 3 (the feud is at rung 1 or
+  more), lean 2, strong 1.5, none with an argument. A mood whose topic has no lines in the speaker's voice is
+  skipped, as for every mood; the camp's lines are the lang's (TK78).
 - **Test hooks.** `TalkReport` is `NativeEngine.talkReport(...)` (`NativeCodec.Orders.talkReport`), with
   `NativeEngine.TalkActor` for the (class, a, b) of an actor. `TalkAsks.mute` writes no ask, so the 20
   ticks' timeout closes it. `Refs.force` forces names or descriptions (TK52). The GameTests are

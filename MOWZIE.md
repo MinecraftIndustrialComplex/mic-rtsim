@@ -214,7 +214,8 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    The engine marks a camp in and out (CAMP_CENSUS, CAMP_OUT); reconciles each census by §4.9's table;
    orders a muster's end, a homecoming (a hand-back of a band that comes home in bodies, spawns for one
    that comes home with none) and a refill at a camp that is in, as CAMP_RECONCILE lines with derived
-   op ids; books CAMP_BODIES and CAMP_DEATH by the world fact each reports; and keeps at most one line
+   op ids; books CAMP_BODIES by the action each answer line carries and CAMP_DEATH by its slot and generation;
+   and keeps at most one line
    in flight per slot (draws and picks skip a slot with one), voiding them at an epoch's end and a
    session start. A census never ends a party (§4.16): a party ends through `home` (`engine.rs:3170`:
    survivors to the pool, loot stocked) only at its own last event (`2425`), at its camp, or when its
@@ -463,11 +464,11 @@ checking other branches for the same ids):
 |---|---|---|---|
 | 0x080C | RAIL_PASS | Java to engine | faction, train id, train owner, the sampled point nearest the camp, entry and exit ticks |
 | 0x080D | TRAIN_PASSED | Java to engine | agent, epoch, train id, the nearest carriage's index, watched flag |
-| 0x080E | CAMP_DEATH | Java to engine | faction, body kind, its slot and generation (none for a stray), chief flag, killer kind (a player, a mob, taken by Carry On, none) and UUID, op id; sent once per body UUID (§4.5); carried on a marker where the body was until acknowledged (§4.9) |
+| 0x080E | CAMP_DEATH | Java to engine | faction, body kind, its slot and generation (none for a stray), chief flag, killer kind (a player, a mob, taken by Carry On, none) and UUID, op id (the engine does not keep it: a death is idempotent by slot and generation); sent once per body UUID (§4.5); carried on a marker where the body was until acknowledged (§4.9) |
 | 0x080F | CAMP_CENSUS | Java to engine | faction, a new epoch, the footprint's bodies of the camp's kinds, each by slot and generation or as a stray by UUID; the camp's tagged bodies loaded elsewhere; chief present, crystal held, health; for the Umvuthi, its position and direction (the throne spot, §4.6), and the players it has traded with, with that body's slot and generation (§4.5) |
 | 0x0810 | TRADED | Java to engine | faction, player, gold nuggets that changed hands (the engine values them in coins at the grove market's price, as `Conflict::traded` takes coins), op id |
 | 0x0811 | NOTICE_SHOWN | Java to engine | faction, player, the notice's serial (FACTION_NOTICE carries it) |
-| 0x0812 | CAMP_BODIES | Java to engine | the answer to a CAMP_RECONCILE: faction, epoch, the reconcile's op id, and per line its slot, generation and outcome (done, nothing to do, stale); carried on the bodies and markers it changed until acknowledged (§4.9) |
+| 0x0812 | CAMP_BODIES | Java to engine | the answer to a CAMP_RECONCILE: faction, epoch, the reconcile's op id, and per line its index in the reconcile, slot, generation, the action of the line it answers and outcome (done, nothing to do, stale); one reconcile may have several records, each line booked once by (op, line); carried on the bodies and markers it changed until acknowledged (§4.9) |
 | 0x0813 | CAMP_OUT | Java to engine | faction, the epoch that ended: a footprint chunk dropped below FULL (§4.9) |
 | 0x0814 | CHIEF_PAID | Java to engine | faction, the paid Umvuthi body's slot and generation (none for a stray), player, op id, the items paid; sent by the `rememberTrade` mixin on a player's first payment to that body (§4.5) |
 | 0x0815 | DIFFICULTY (journaled; 0x0093 retired, MZB-17) | Java to engine | the world's difficulty, sent at session start and on change |
@@ -1604,14 +1605,24 @@ camp's next census.
 - Each line names a target state: a spawn does nothing if a body with that slot and generation is
   loaded; a take, set-out or removal does nothing if none is. With the camp in, every footprint body is
   loaded, so applying a line twice changes nothing.
-- Java answers with CAMP_BODIES: per line, done, nothing to do, or stale. The engine books the world
-  fact the answer reports, by state, as it books TAKEN and DIED (`docs/boundary.md:249-252`). *Body
-  gone* (a take, set-out or removal, done or with nothing to do): home, body becomes owed; away, left
-  becomes gone; dead, left is freed. *Body there* (a spawn, done or with nothing to do, or an adoption
-  done): home, owed becomes home, body; away, gone becomes left, reconciled then by its party's phase
-  as at a census. A line for a stray names it by UUID and books nothing for any slot, but an adoption
-  is *body there* for the slot it fills. A replayed answer is then a no-op, and an answer or record for
-  a generation its slot no longer holds books nothing.
+- Java answers with CAMP_BODIES: per line, its index in the reconcile, its slot and generation, the
+  action of the line it answers, and done, nothing to do, or stale; one reconcile may be answered in
+  several records (a holder's record journaled again, a held line answered later). The engine books the
+  world fact each line reports by the action the line carries (not by the line it has in flight, which a
+  CAMP_OUT or a session start voids though Java applied it, nor by what the slot's state implies), then
+  by the slot's state, as it books TAKEN and DIED (`docs/boundary.md:249-252`). *Body gone* (a take,
+  set-out or removal, done or with nothing to do): home, body becomes owed; away, left becomes gone;
+  dead, left is freed. *Body there* (a spawn or hand-back, done or with nothing to do, or an adoption
+  done): home, owed becomes home, body; away, gone becomes left, reconciled then by its party's phase as
+  at a census. An adoption with nothing to do found no stray: the slot stays owed and, at a camp that is
+  in, is spawned. A line for a stray names it by UUID and books nothing for any slot, but an adoption is
+  *body there* for the slot it fills. Each line is booked once, by its (op, line), and only while its
+  epoch is the latest a census of the camp named: a census of a later epoch read the world after Java
+  applied the lines and books by its own table what the answer would have. A copy of an answer is then a
+  no-op, and an answer or record for a generation its slot no longer holds books nothing. Once a world
+  save has made an answer's record durable the engine forgets the answer, and a copy that comes later is
+  booked by its slot's state, as a TAKEN's is (MZB-177). So Java sends a camp's census only after every
+  holder in its footprint has journaled its record again.
 - The engine keeps at most one line in flight per slot, and sends only to camps that are in. On
   CAMP_OUT it marks the camp out and voids that epoch's lines still in flight, which Java answers
   stale. Java applies an epoch's lines before that epoch's CAMP_OUT or the next census, so their
@@ -1631,7 +1642,8 @@ carries its own. A taken, handed-off, removed or killed body leaves a `minecraft
 stood, holding the record: never sent to a client (`EntityType.java:496-498`, `Marker.java:39`) and
 with no tick (`Marker.java:21`). The camp's chunk would not do: its record could be on disk while the
 entity change was not, or the other way round. Whenever a holder loads with its record, Java journals
-the record again with the same op id, which the engine skips if it has it; on the engine's
+the record again with the same op id and line indexes, which the engine skips by (op, line) if it has
+them; on the engine's
 acknowledgement Java drops the record, at once or when the holder next loads, and discards the marker.
 And the `ChunkWriteBarrier` (ledger 22) learns entity chunks: the journal's write waits until the
 entity chunks that a camp record speaks for are on disk, or is held to the next world save, so the
@@ -1647,9 +1659,9 @@ are saved; (6) the engine acknowledges and Java drops the records. A death start
 | A crash | What is on disk | What the next start does |
 |---|---|---|
 | before (2), or between (2) and (3) | nothing changed | the order is void; the camp's next census orders again whatever is still needed |
-| between (3) and (4) | the entity change and its record; no answer in the journal | the holder's record is journaled again when its chunk loads, before the camp's census (a holder in the footprint loads with it), and booked by state; a holder outside the footprint is booked when it loads, and meanwhile the census books the missing body by its table |
-| between (4) and (5) | the answer in the journal | replayed, and booked by state |
-| between (5) and (6) | the answer in the pages too | skipped by op id; a holder's record journaled again is a no-op |
+| between (3) and (4) | the entity change and its record; no answer in the journal | the holder's record is journaled again when its chunk loads, and the camp's census waits until every holder in the footprint has done so; booked by the action it carries. A holder outside the footprint is booked when it loads if no census of a later epoch came first; otherwise that census booked the missing body by its table (left becomes gone; a body at home is missed, and written off at the third miss over two days: a member lost) |
+| between (4) and (5) | the answer in the journal | replayed, and booked by the action it carries |
+| between (5) and (6) | the answer in the pages too | skipped by its (op, line); a holder's record journaled again is a no-op, and after a census of a later epoch books nothing |
 | the journal ahead of an entity chunk | nothing, while the barrier holds the journal's write (it gives up after 3 held saves in a row, logged, `GIVE_UP_ROUNDS`) | without it, or after it gives up: a spawn booked but not on disk is missed three times and written off (a member lost); a take booked whose body is on disk is found, so away, left, then as that row; a death booked whose body is on disk has a generation retired at a death, so the census removes it |
 | the engine's pages ahead of the world save (P29, still open) | a line or death booked that the world lost | as the row above, without the barrier's help |
 | an order in flight at a shutdown | | void; the next census orders it again, so it is never answered late or applied twice |
