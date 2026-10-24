@@ -900,7 +900,8 @@ under its own heading.
   Both are printing checks that must pass (`sim mowzie` exits 1 otherwise, and a test runs it).
   Where run 10 still falls short of MOWZIE.md §7: no line is held (Rule U's holds, the Frostmaw's
   spawn wait: Java's, deferred by MZB-164, so the fake plugin applies every line in the tick it
-  arrives) and no heir is seated, no Umvuthi marches (M10), and a chief's or the Umvuthi's death
+  arrives; since review P3-7 it can hold a chief's SPAWN and the heir's pair on a player at the throne,
+  MZB-445, which run 10 does not set) and no heir is seated, no Umvuthi marches (M10), and a chief's or the Umvuthi's death
   waits for M6 and M9; what it does reach is camps in and out with a player at the edge, musters,
   homecomings with hand-backs, refills, deaths at home, left behind and of strays, answers lost,
   late, replayed and stale, restarts and saves, with the invariants checked after every event.
@@ -2795,11 +2796,31 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     heir was killed. A body tagged with the waiting heir's generation exists only if the world did the seat,
     whether or not the line is still held here.)
   - The emulator plays the pair whole (`synth`, a gap): `FakeConflict` does both lines of a reconcile that
-    carries a MASK, or neither (`pair_possible`): a warrior that is tagged, not the chief, not elsewhere and
-    not near a player, and no body of the seat's slot and generation standing already. If either cannot be
-    done both are answered STALE, as MZB-408 has Java do. Before this the emulator could take a warrior and
-    not seat the heir, which the engine's invariant (every MASK done with its SEAT_HEIR done) rightly called
-    a bug of the emulator.
+    carries a MASK, or neither (`pair_possible`): a warrior that is tagged, not the chief and not elsewhere,
+    and no body of the seat's slot and generation standing already. If either cannot be done both are
+    answered STALE, as MZB-408 has Java do. Before this the emulator could take a warrior and not seat the
+    heir, which the engine's invariant (every MASK done with its SEAT_HEIR done) rightly called a bug of the
+    emulator.
+    (Amended at review, P3-7: the first version also skipped a warrior a player stood near, so that with
+    every warrior near a player the pair was answered STALE, where MZB-408 has Java take the warrior farthest
+    from every player and answer STALE only with none at home. The emulator has no distances, so `mask`
+    takes the last tagged warrior no player stands near and, when every warrior at home has one near, the
+    last tagged one; `near` orders the choice and never refuses the pair. The design's "no line in flight or
+    held" needs nothing in the emulator: a line is applied the tick it arrives, and the only lines held are
+    the chief's, which are never a warrior.)
+  - The emulator plays `holdSpawn` (review P3-7; MZB-433 gives the numbers, 160 blocks and `HOLD_MAX` 6,000
+    ticks). `CampWorld.watched` says a non-spectator player stands within 160 blocks of the throne
+    (`FakeConflict::watch_throne` sets it). While it is set, the lines of a reconcile that wait (a chief
+    SPAWN, SEAT_HEIR and the MASK that goes with it, so the pair stays whole) are held with the tick they
+    arrived and answered when they go: at once when the player leaves, else `HOLD_MAX` ticks after they
+    arrived, and answered STALE if the camp goes out first (an epoch's end) or the plugin's session ends
+    (its memory is lost, as at the camp's out the engine voids the pair). The lines that do not wait are
+    applied and answered on arrival. The engine sees the pair in flight meanwhile and orders nothing again.
+    What the emulator still leaves out of MZB-433 is the other hold, the Umvuthi's removal: a TAKE, REMOVE
+    or SET_OUT-as-take of the chief body waits with no time limit while a player is within 160 blocks of it
+    or has it as a target, and an epoch's end answers it STALE. It hides how the engine behaves with a
+    chief line in flight for a long time (a chief killed away while a remove waits, the crystal's steal
+    while a take waits): the Java GameTest 29 plays it with the real hold.
   - The sim's grove checks, where the design leaves the detail open. Run 5 (`grove_rest`): plunder (livestock
     only, eaten, no village defence; 8 raids ate 240 items), an Invasion led by the chief (fights of strength
     3.8 and 12.6), the grove in and out (6 rounds, its own plunder drive quiet), hunts owed to the cap (2, 4,
