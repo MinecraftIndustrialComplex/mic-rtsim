@@ -619,7 +619,7 @@ the agent is embodied as the last session had it:
     in order, each up to its alive members not yet placed; then `wave` = the record's + 1. One
     difference keeps the count at or under what Java was commanded: the room also counts as placed
     every body of that epoch that died since the party's previous honoured record (an in-memory count
-    while replaying). The live engine decides a wave `wave_interval_ticks` (1,200) after the last,
+    while replaying; restarts: §5.3). The live engine decides a wave `wave_interval_ticks` (1,200) after the last,
     long after it read Java's answer to the last and the deaths before it, but a death journaled
     between its decision and Java's answer was not read; freeing that room could place more than
     Java had. A count below Java's loses nothing that is journaled: a despawn counts the members it
@@ -659,6 +659,20 @@ the map is cleared, so the pages carry it. A floor raised live (a copy after the
 for the agent's next materialize. A restart loses the map; harmless, since no record of one body
 is ever applied to another (RP-8). Each module that has epochs has its own test: an epoch decided
 after the pages and answered in the journal is never decided again after a crash.
+
+**Restarts (the fix round's item 2).** The floors and the fill's deaths (§5.2) are in memory only.
+Outside a replay both are empty, but for a floor raised live: `replay_done` folds every floor into
+its agent's epoch and clears the deaths, and no page is taken while replaying (RP-42). So pages
+never hold an agent that needs either, and a restart rebuilds both from the records it replays.
+Before RP-42 a save at the session's first live record could take pages mid-replay, and a restart
+from them lost both: the next honoured wave of that epoch counted fewer bodies as placed, so its
+fill went above what Java had placed and the next despawn (`alive - spawned + survivors`) lost the
+difference; and an epoch could be decided again (harmless, as above). What remains is a floor raised
+live, by a copy after the replay end: it stays in memory until the agent's next materialize, so
+pages taken in between lack it, and a restart from them may decide that epoch again. A known limit,
+and harmless by RP-8: a copy is an earlier session's record, and Java's later sessions hold no body
+of it (§5.5), so no record of that body comes again to match the new one. Nothing that remains
+counts a death or a member twice.
 
 ### 5.4 The MZB-138 fold goes (RP-10)
 
