@@ -2098,6 +2098,7 @@ fn rich_ledger(r: &mut CampRun) {
                 action: 1 + i as u8,
                 op: 0xAB00 + i as u64,
             }),
+            chief: rtsim_kernel::handle::Handle::from_bits(0x1_0000_0000 + i as u64),
         });
     }
     camp.retired = vec![

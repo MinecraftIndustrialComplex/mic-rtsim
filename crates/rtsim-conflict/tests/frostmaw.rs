@@ -8,9 +8,9 @@
 
 use rtsim_conflict::Step;
 use rtsim_conflict::boundary;
-use rtsim_conflict::culture::SignalKind;
+use rtsim_conflict::culture::{Culture, Cultures, SignalKind};
 use rtsim_conflict::engine::{Party, Signal, SlotState};
-use rtsim_conflict::synth::{CAMP_POS, CampRun, Fight};
+use rtsim_conflict::synth::{CAMP_POS, CampRun, Fight, REFINERY, REFINERY_POS};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
 use rtsim_industry::threat::Threat;
@@ -886,6 +886,239 @@ fn a_chief_killed_away_bumps_the_pressure_unless_a_mob() {
         assert_eq!(r.c.stats.chiefs_killed, 1, "kind {by}");
         assert_eq!(pressure_of(&r), want, "killed by kind {by}");
         assert_eq!(r.c.stats.renewal_losses, want as u64, "kind {by}");
+        // The unit leaves the band with its chief (MZB-295), so the wait is booked from the
+        // record, 12 days after a player's loss and 6 after a mob's.
+        assert!(
+            r.c.parties.get(p).is_none_or(|x| x.alive() == 0),
+            "the chief was the band's one unit, kind {by}"
+        );
+        assert_eq!(r.c.factions[r.f as usize].away, 0, "kind {by}");
+        let wait = if want > 0.0 { 12.0 } else { 6.0 };
+        assert_eq!(arrival_at(&r), Some(at + days(wait)), "kind {by}");
+        assert_eq!(counts(&r), [0, 0, 0, 0, 1], "its slot is dead, kind {by}");
         ok(&mut r);
     }
+}
+
+/// A crash between CHIEF_KILLED and the DEMATERIALIZED that counts the band out (MZB-295): the
+/// replay counts every body never reported alive, and the chief is the band's one unit, so the
+/// dead Frostmaw came home with no arrival booked. The unit leaves with CHIEF_KILLED now: after
+/// the restart its slot is dead, the pressure is bumped, the wait runs from the record, and the
+/// replacement arrives with its crystal.
+#[test]
+fn a_chief_killed_away_stays_dead_across_a_crash_before_the_band_is_counted_out() {
+    let mut r = den(66, 1);
+    r.plugin.fight = Some(Fight {
+        kill_share: 0.0,
+        after: 200,
+        kill_chief: true,
+        only_at_base: false,
+    });
+    come_in(&mut r);
+    r.watch = true;
+    let p = r.raid().expect("a raid goes");
+    r.camp_out();
+    let limit = r.c.now() + days(4.0);
+    // In steps shorter than the 300 ticks the band takes to leave, so its DEMATERIALIZED is still
+    // on its way when the engine has CHIEF_KILLED.
+    while r.c.stats.chiefs_killed == 0 {
+        assert!(r.c.now() < limit, "the chief is killed in time");
+        let to = r.c.now() + 10;
+        r.run(to);
+    }
+    r.watch = false;
+    let died = r.c.now();
+    assert!(
+        r.c.parties.get(p).is_none_or(|x| x.recalled.len() == 1),
+        "the band's bodies are not counted out yet: its DEMATERIALIZED is on its way"
+    );
+    assert!(r.plugin.next_due().is_some(), "and it is queued");
+    r.restart();
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert!(
+        r.c.parties.get(p).is_none_or(|x| x.alive() == 0),
+        "no unit of the band is alive, the chief's included"
+    );
+    assert_eq!(r.c.factions[r.f as usize].away, 0);
+    assert_eq!(counts(&r), [0, 0, 0, 0, 1], "the Frostmaw's slot is dead");
+    assert_eq!(pressure_of(&r), 1.0);
+    let t = arrival_at(&r).expect("the wait is booked from CHIEF_KILLED");
+    assert!(
+        t.0.abs_diff(died.0 + days(12.0)) <= 10,
+        "{t:?} from {died:?}"
+    );
+    ok(&mut r);
+    r.run(t + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert!(crystal_of(&r), "the replacement holds its crystal");
+    ok(&mut r);
+}
+
+/// The census's crystal byte is read off a chief body the books keep (MZB-269): a robbed Frostmaw
+/// killed on a raid while its den is out leaves its body in the den, its slot dead. The arrival
+/// comes with the crystal, and the next census finds that leftover robbed body first: the byte
+/// says no crystal, and M6 first took it for the new Frostmaw's, which was then spawned robbed for
+/// good. The leftover is removed and says nothing of the chief the books keep.
+#[test]
+fn a_new_frostmaw_keeps_its_crystal_when_a_dead_slots_robbed_body_still_stands() {
+    let mut r = den(65, 1);
+    r.plugin.fight = Some(Fight {
+        kill_share: 1.0,
+        after: 200,
+        kill_chief: false,
+        only_at_base: false,
+    });
+    come_in(&mut r);
+    let at = r.c.now() + 1;
+    assert!(r.plugin.steal(r.key, at));
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert!(!crystal_of(&r), "robbed");
+    r.watch = true;
+    r.raid().expect("a raid goes");
+    r.camp_out();
+    r.run(Tick(days(4.0)));
+    r.watch = false;
+    assert_eq!(counts(&r)[4], 1, "its slot is dead, its body still stands");
+    let left = r.plugin.camps[&r.key].bodies[0];
+    assert!(
+        left.chief && !left.crystal,
+        "the leftover is the robbed chief"
+    );
+    let t = arrival_at(&r).expect("a wait is booked");
+    r.run(t + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert!(crystal_of(&r), "an arrival is a new Frostmaw, crystal on");
+    assert_eq!(
+        counts(&r),
+        [0, 1, 0, 0, 1],
+        "owed its body, the dead slot stands"
+    );
+    // A census with the Dead slot's leftover standing.
+    let sent = r.cmds.len();
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert!(
+        crystal_of(&r),
+        "the leftover body of a dead slot says nothing of the crystal"
+    );
+    let lines: Vec<boundary::ReconcileLine> = r.cmds[sent..]
+        .iter()
+        .filter_map(|(_, c)| match c {
+            boundary::Cmd::Reconcile(x) => Some(x.lines.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(
+        lines.iter().any(|l| l.action == boundary::ACTION_REMOVE),
+        "the leftover is removed: {lines:?}"
+    );
+    let spawn: Vec<_> = lines
+        .iter()
+        .filter(|l| l.action == boundary::ACTION_SPAWN)
+        .collect();
+    assert_eq!(spawn.len(), 1, "{lines:?}");
+    assert_eq!(
+        spawn[0].flags,
+        boundary::LINE_CHIEF | boundary::LINE_CRYSTAL,
+        "the new Frostmaw is asked for with its crystal"
+    );
+    let fresh = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .find(|b| b.chief)
+        .expect("a Frostmaw stands in the den");
+    assert!(fresh.crystal, "and it holds it");
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// An arrival sets the crystal only at a chief camp (MZB-256): a renewal culture whose home unit
+/// has no row without the crystal has nothing to hold or lose, and its books are left as they are.
+/// M6 first set `crystal` at every renewal culture's arrival.
+#[test]
+fn an_arrival_gives_a_crystal_only_to_a_chief_camp() {
+    let mut cultures = Cultures::builtin();
+    let i = cultures.index_of("frostmaw").expect("the Frostmaw") as usize;
+    let mut def = cultures.list[i].def.clone();
+    for u in &mut def.units {
+        u.without_crystal = None;
+    }
+    cultures.list[i] = Culture::resolve(def).expect("a Frostmaw with no bare row");
+    let mut r = CampRun::with_cultures(66, cultures, "frostmaw", 0);
+    r.c.factions[r.f as usize].crystal = false;
+    r.run(Tick(1) + days(193.0));
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert!(!crystal_of(&r), "no bare row, no crystal to give");
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert!(!crystal_of(&r));
+    assert!(
+        line_flags(&r).iter().all(|f| f & boundary::LINE_CHIEF == 0),
+        "and it is no chief camp: {:?}",
+        line_flags(&r)
+    );
+    ok(&mut r);
+}
+
+/// A chief body is the chief's only while the faction's chief is the notable its slot was made for
+/// (MZB-296). The Frostmaw dies of age in the books and something else (a feud's wake) runs the
+/// succession before the plugin's CAMP_DEATH for the old body arrives: the kill is stale, booked
+/// as an ordinary member lost (the pressure, the wait), and the chief that took over stands. M6's
+/// rule compared the chief before and after the record's own `ensure_chief`, so this order felled
+/// the new chief.
+#[test]
+fn a_late_kill_of_the_old_chiefs_body_leaves_the_new_chief_standing() {
+    let mut r = den(67, 1);
+    come_in(&mut r);
+    let old = r.c.factions[r.f as usize].chief;
+    let at = r.c.now() + 10;
+    r.w.knowledge.die(old, at);
+    let before = r.c.stats.successions;
+    // Another feud's wake asks for the chief, and the succession runs.
+    let settlers = r.c.settlers(&mut r.w);
+    r.c.signal(
+        &mut r.w,
+        Signal {
+            faction: Some(r.key),
+            kind: SignalKind::Killing,
+            amount: 7.0,
+            actor: settlers,
+            pos: REFINERY_POS,
+            district: Some(REFINERY),
+        },
+        at + 5,
+    );
+    let limit = at + 6 * TICKS_PER_DAY;
+    while r.c.stats.successions == before && r.c.now() < limit {
+        let to = r.c.now() + 600;
+        r.run(to);
+    }
+    assert_eq!(r.c.stats.successions, before + 1, "the heir took over");
+    let new = r.c.factions[r.f as usize].chief;
+    assert_ne!(new, old);
+    let cowed = r.c.factions[r.f as usize].cowed_until;
+    // The old chief's body, still in the den, is killed at last.
+    let died = kill_the_frostmaw(&mut r, boundary::BY_PLAYER);
+    assert_eq!(
+        r.c.stats.chiefs_killed, 0,
+        "no fall: the body is the old chief's"
+    );
+    assert_eq!(r.c.stats.successions, before + 1, "no second succession");
+    assert_eq!(
+        r.c.factions[r.f as usize].chief, new,
+        "the new chief stands"
+    );
+    assert!(r.w.knowledge.notable(new).is_some());
+    assert_eq!(
+        r.c.factions[r.f as usize].cowed_until, cowed,
+        "and is not cowed by it"
+    );
+    assert_eq!(pressure_of(&r), 1.0, "a member lost all the same");
+    assert_eq!(arrival_at(&r), Some(died + days(12.0)));
+    assert_eq!(counts(&r), [0, 0, 0, 0, 0]);
+    ok(&mut r);
 }

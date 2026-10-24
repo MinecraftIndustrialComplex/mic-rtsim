@@ -1852,6 +1852,9 @@ The tests:
   a new Frostmaw holds its crystal), `stats.arrivals` + 1 and a note; if the camp is in, `spawn_lines` and
   `send_lines` at once (EQUILIBRIUM item 8: a camp that never unloads gets its arrival when the wait
   ends); last `unblock`. An out den gets its SPAWN from its next census, as any Owed slot does.
+  Amended at review: the crystal is set true only at a chief camp (`chief_camp(f)`: the home unit has a row
+  without the crystal, `bare[u] != u`); a renewal culture without such a row leaves `crystal` as the books
+  have it (test `an_arrival_gives_a_crystal_only_to_a_chief_camp`; it fails with the gate removed).
 - **MZB-257** (a den found empty waits the cap): `camp_found(f, bodies, census, at)` takes FACTION_FOUND's
   census byte. With `CENSUS_CHIEF` it sets the faction's crystal from `CENSUS_CRYSTAL`. For a renewal
   culture the pressure starts at `Pressure::at_cap(rule, day)` when `bodies == 0` (EQUILIBRIUM item 6:
@@ -1895,6 +1898,9 @@ The tests:
   `renewal_bump(f, 1, at)` when `renewal_cause` is Player. The public `chief_killed(w, p, killer, at)`
   stays for its callers and passes BY_PLAYER with a killer, BY_NONE without; the CHIEF_KILLED ingest
   passes `ck.by`.
+  Amended at review: `a_chief_killed_away_bumps_the_pressure_unless_a_mob` also checks the wait that is
+  booked (12 days after a player's kill, 6 after a mob's) and that the unit leaves the band (the band gone or
+  empty, `away` 0, the slot counts `[0, 0, 0, 0, 1]`). The unit's removal is MZB-295's.
 - **MZB-264** (a chief killed at the camp): `chief_killed_at_camp(w, f, killer, at)`: `ensure_chief`; the
   parties carrying the chief flag are collected first (`succeed` clears the flag, MZB-139); the fall at the
   faction's position; only the killer's own feud steps down (MOWZIE.md "Kills": a third player's kill at the
@@ -1921,6 +1927,19 @@ The tests:
   `CENSUS_CHIEF`, sets the crystal from `CENSUS_CRYSTAL` before `let flags = self.line_flags(f)`, so the
   lines of that census already ask for the right body. This also mends a CHIEF_STATE lost in a crash: it is
   latest-wins, not journaled.
+  Amended at review: the byte is applied after the slots are matched, and only when the census holds a body
+  flagged `BODY_CHIEF` that the books keep (a matched Body or Left slot, or an adopted stray). Java's
+  `DenKind.chief()` takes any chief-kind body in the footprint, including the leftover body of a Dead slot,
+  and M6's first form let that body (a robbed Frostmaw that set out while its den was out and died away)
+  flip a new Frostmaw's crystal off before the SPAWN went out, so it was made robbed for good. With no kept
+  chief body in the census the crystal stays as the books have it; the `LINE_CHIEF` lines of that census
+  (generation not 0) are given the flags again once it is known. The synth's census bodies carry
+  `BODY_CHIEF` for a chief body, as Java's `isChief` does. Test
+  `a_new_frostmaw_keeps_its_crystal_when_a_dead_slots_robbed_body_still_stands`: the scenario above, ending
+  with one REMOVE for the leftover and one SPAWN with `LINE_CHIEF | LINE_CRYSTAL` (it fails with the old
+  rule); it is also the census-after-an-arrival-with-a-Dead-body-standing test. Residual: with two chief
+  bodies standing at once (a leftover and the fresh Frostmaw, for the one census that removes the leftover)
+  the byte is the one Java found first, and the engine cannot tell which body it came from.
 - **MZB-270** (CHIEF_STATE in rtsim-jni): `observe_state` decodes `Obs::ChiefState`, counts
   `ConflictLinkStats::chief_states`, and gives it to the conflict's ingest at the conflict's own time
   (`c.now()`, so no module catches up for it), through the same `with_infra` hand-over as the journaled
@@ -1930,6 +1949,8 @@ The tests:
   The conflict's page tag RTC6 becomes RTC7 and META 5 becomes 6. No migration (no backward compatibility
   before release): the fixtures are made again at landing (rtsim-view's data and hashes, rtsim-host's
   `gametest_worlds`).
+  Amended at review: each camp slot also writes its chief (`Slot.chief`, 8 bytes after the slot's line, the
+  slots' `len_prefix` 25 to 33), MZB-296. Still RTC7 and META 6, since M6's bump has not landed.
 - **MZB-272** (the synth, the emulated plugin): `kill_chief` takes one unit off the chief's stack in
   `Body.members` (the first stack's body), so the dead chief no longer comes back as a survivor; `camp_kill`
   sets `DEATH_CHIEF` for a body made from a `LINE_CHIEF` line; `CampBody` gains `chief` and `crystal`; a
@@ -2055,12 +2076,33 @@ The tests:
   abstract wipe-out (`lose_units`) bumps before `party_lost` for the same reason; `camp_death` bumps
   before its slot is freed. A boss whose chief fell away is not stepped down twice: `step_down` leaves a
   feud at or below Notice alone.
+  Amended at review: CHIEF_KILLED also takes the unit off the band. `chief_killed_by` gained
+  `epoch: Option<u32>` (the record's epoch; `None` for the public `chief_killed`) and calls
+  `chief_unit_lost(p, epoch, at)` after `renewal_bump`. For a boss band only (`renewal.boss`; another
+  culture's chief is an extra body outside the units, MZB-109, so its unit count is not the chief's) it takes
+  the first unit with a count off `units`, off the `recalled` stack of that epoch when the band is not
+  embodied and holds it, else off `spawned`, then `stats.casualties` + 1 and `party_lost(p, 1, at)`, with no
+  second bump. The DEMATERIALIZED that follows cannot take the chief off twice: `units`, `spawned` and
+  `recalled` are all down, and one for a band already removed is ignored. Before this a crash between
+  CHIEF_KILLED and DEMATERIALIZED had `replay_done` count the dead body as never reported alive and bring the
+  Frostmaw home with no arrival booked (it dates from M4). Test
+  `a_chief_killed_away_stays_dead_across_a_crash_before_the_band_is_counted_out`: after `restart()` the band
+  has no Frostmaw, `away` is 0, the pressure is 1 and the arrival stands at the death plus 12 days.
 - **MZB-296** (a chief the books already buried, built): `chief_killed_at_camp` compares the faction's chief
   before and after `ensure_chief`; a succession `ensure_chief` ran means the body that died was the old
   chief's (dead of age), so the kill is stale and nothing falls, as the away path's stale rule has it
   (MZB-146). The camp's pressure is still `camp_death`'s, since the body was a member lost. `camp_death`
   runs the fall for a Body or Owed slot after it is freed, for a Left or Gone slot before `member_died`,
   and never for a Dead slot.
+  Amended at review: the before/after comparison was order-dependent (when something else ran `ensure_chief`
+  first, the late kill of the old body felled the new chief). `Slot.chief` now holds the faction's chief
+  when `camp_alloc` made the slot, saved in RTC7 (MZB-271), `camp_death` reads it from the slot, and
+  `chief_killed_at_camp(w, f, body_of, killer, at)` runs `ensure_chief` and falls the chief only if
+  `factions[f].chief == body_of`; otherwise the body is only an ordinary member lost. Test
+  `a_late_kill_of_the_old_chiefs_body_leaves_the_new_chief_standing`: an age death and a succession by
+  another path, then the late kill of the old body, and the new chief stands (it fails with the stamp check
+  removed). Only the camp path needed this: the away path's stale rule is the party's `chief`
+  flag, which `succeed` clears (MZB-139).
 - **MZB-297** (the synth marks the chief, built; MZB-272): `CampRun::new` marks the first body of a camp
   whose home unit has a row without its crystal (`bare[u] != u`) as the chief with its crystal on it, and
   gives the FACTION_FOUND record `CENSUS_CHIEF | CENSUS_CRYSTAL` for it; a body the plugin spawns takes
@@ -2073,15 +2115,20 @@ The tests:
   later slices' records now counts it apart from `deferred`. The synth's census carries the chief byte from
   the world (a chief body in the camp, its crystal flag), `FakeConflict::steal` clears the body's crystal and
   sends the record, and `CampRun::robbed` finds a den with its chief already robbed.
-- **MZB-299** (the heir's grudge is about 62.5, not 2.5; run 7 (b), built): `succeed()` hands the heir
-  grievance of -sentiment times `heir_grudge_factor` (0.5), and a witnessed Killing report is -125 (MZB-36),
-  so the heir's grudge against a player who killed the chief at the den is about 62.5, four times the
-  Frostmaw's Notice threshold (15.6), not the "about 2.5, under Notice" that MOWZIE.md (lines 647 and 2117)
-  and run 7 (b) of the design say. What keeps B's feud under Notice is that the faction is cowed after the
-  fall (`cowed_until`), not the size of the grudge. Run 7 (b) asserts the engine's value (62.5 within 2,
-  above Notice's threshold, the feud still at no step, the faction cowed). MOWZIE.md is left as it is, for the
-  lead to correct at landing. The regenerated `sim-conflict.json` also moved (survivors 20 to 19 and 8 to 7)
-  because of MZB-272's synth fix: the dead chief is no longer counted a survivor.
+- **MZB-299** (the heir's grudge is about 62.5, not 2.5; run 7 (b) and (c), built): `succeed()` hands the
+  heir grievance of -sentiment times `heir_grudge_factor` (0.5), and a witnessed Killing report is -125
+  (MZB-36), so the heir's grudge against a player who killed the chief is about 62.5, four times the
+  Frostmaw's Notice threshold (15.6), not the "about 2.5, under Notice" that MOWZIE.md and run 7 (b) of the
+  design said (the 2.5 dates from before MZB-36, when the report was -5). What keeps B's feud under Notice at
+  first is that the faction is cowed after the fall (`cowed_until`), not the size of the grudge. Ruled at
+  review: the engine's value is right. Run 7 (b) asserts it (62.5 within 2, above Notice's threshold, the
+  feud still at no step, the faction cowed) and then runs past `cowed_until` an hour at a time: B's feud
+  reaches Notice and no higher (one Notice climbed, none from Envoy up), and decays away about 6 days
+  after the window. Run 7 (c) does the same for C, who also gets the kill's report (Notice and no higher, gone
+  about 9 days after the window). MOWZIE.md is corrected at both places (the third player's kill, and the
+  walkthrough's "plus about 62.5"); CONFLICT-LIFE.md is left alone. The regenerated `sim-conflict.json` also
+  moved (survivors 20 to 19 and 8 to 7) because of MZB-272's synth fix: the dead chief is no longer counted a
+  survivor.
 
 ### M6 design for the implementer
 
@@ -2278,8 +2325,10 @@ CHIEF_STATE that flips the crystal and a census that corrects it.
 - **Run 7, the kills** (dispatched from `main`):
   - (a) The feud's player kills the chief on a raid: Raid steps down to Notice.
   - (b) A third player B kills it on A's raid: A's feud steps to Notice; B gets the Killing report, the heir
-    a witness, and B's feud stays under Notice (MOWZIE.md: about 2.5; built as about 62.5, MZB-299).
-  - (c) A player C with no feud kills it at the camp: A unchanged, C not raised by the step-down.
+    a witness, and B's feud stays under Notice while the faction is cowed, then gets one Notice and decays
+    (MOWZIE.md said about 2.5; built as about 62.5, MZB-299).
+  - (c) A player C with no feud kills it at the camp: A unchanged, C not raised by the step-down, one Notice
+    after the cowed window.
   - (d) The feud's player kills it at the camp: A steps down.
   - (e) A chief body Left at home is killed there: its party routs and the heir succeeds.
   - (f) An abstract wipe-out on a district: the chief falls with no killer, the party's feud steps down and

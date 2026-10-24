@@ -2071,6 +2071,37 @@ fn bands_home(r: &mut CampRun) -> bool {
     war_parties(r) == 0
 }
 
+/// Runs on past the cowed window an hour at a time, watching one player's feud: the highest rung
+/// it reaches, the days after the window ends that it takes to fall back to nothing (`None` if it
+/// has not within 30 days), and the rungs the faction climbed meanwhile (`stats.escalations`, any
+/// feud: a roar is a Notice, a raid goes out at Raid).
+fn feud_past_the_cowed_window(
+    r: &mut CampRun,
+    who: ActorId,
+) -> (Step, Option<f64>, [u64; Step::COUNT]) {
+    let end = r.c.factions[r.f as usize].cowed_until;
+    let before = r.c.stats.escalations;
+    let mut t = r.c.now();
+    let mut most = step_of(r, who).unwrap_or(Step::None);
+    let limit = end.0 + at_day(30.0).0;
+    let mut gone = None;
+    while t.0 < limit {
+        t += HOUR;
+        r.run(t);
+        let s = step_of(r, who).unwrap_or(Step::None);
+        most = most.max(s);
+        if t > end && s == Step::None && most > Step::None {
+            gone = Some((t.0 - end.0) as f64 / TICKS_PER_DAY as f64);
+            break;
+        }
+    }
+    let mut climbed = [0; Step::COUNT];
+    for (i, c) in climbed.iter_mut().enumerate() {
+        *c = r.c.stats.escalations[i] - before[i];
+    }
+    (most, gone, climbed)
+}
+
 /// Run 7: which feud steps down when the Frostmaw, a camp's chief, falls (MOWZIE.md §4.2 *Kills*,
 /// MZB-262 to 266, 285), and run 1's tail: cowed, the heir, the body 12 days after a first kill.
 fn den_kills(slice: &'static str) -> RunOut {
@@ -2135,6 +2166,22 @@ fn den_kills(slice: &'static str) -> RunOut {
             view.map(|v| v.step)
         ),
     );
+    // The window ends: B's grievance stands above Notice and below Envoy, so the heir roars once
+    // (a Notice, no raid), and the grudge then decays away on its own.
+    let (most, gone, climbed) = feud_past_the_cowed_window(&mut r, b);
+    check(
+        &mut out,
+        "once the cowed window ends B's feud reaches Notice and no higher, and decays away",
+        most == Step::Notice
+            && gone.is_some()
+            && climbed[Step::Notice.index()] == 1
+            && climbed[Step::Envoy.index()..].iter().all(|&n| n == 0)
+            && holds(&mut r),
+        format!(
+            "B's feud peaked at {most:?}, back to nothing {gone:?} days after the window; rungs \
+             climbed meanwhile {climbed:?}"
+        ),
+    );
 
     // (c) A player with no feud kills it at the camp: A's feud stays, and C is raised to nothing.
     let mut r = den_run(712, 1);
@@ -2153,6 +2200,20 @@ fn den_kills(slice: &'static str) -> RunOut {
             && cs.is_none_or(|s| s < Step::Notice)
             && holds(&mut r),
         format!("A's feud at {a:?}, C's at {cs:?}"),
+    );
+    // The window ends: C, reported by the same kill, gets one Notice at most, and it decays away.
+    let (most, gone, climbed) = feud_past_the_cowed_window(&mut r, c);
+    check(
+        &mut out,
+        "once the cowed window ends C's feud reaches Notice and no higher, and decays away",
+        most == Step::Notice
+            && gone.is_some()
+            && climbed[Step::Envoy.index()..].iter().all(|&n| n == 0)
+            && holds(&mut r),
+        format!(
+            "C's feud peaked at {most:?}, back to nothing {gone:?} days after the window; rungs \
+             climbed meanwhile {climbed:?}"
+        ),
     );
 
     // (d) The feud's player kills it at the camp: A's feud steps down.

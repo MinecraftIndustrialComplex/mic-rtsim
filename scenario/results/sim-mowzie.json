@@ -782,7 +782,7 @@
         {
           "name": "a save and load mid-wait arrives on the same tick, to the same books",
           "ok": true,
-          "detail": "state 017d0f00f989c1a2 against 017d0f00f989c1a2, then [1, 0, 0, 0, 0]"
+          "detail": "state e0b1ba87de518de9 against e0b1ba87de518de9, then [1, 0, 0, 0, 0]"
         }
       ],
       "rungs": [],
@@ -805,9 +805,19 @@
           "detail": "A's feud at Some(Notice); the new chief feels against B: true; B's feud at Some(None) with grievance 62.5 (-125 at 0.5 a point; Notice at 15.6), cowed true"
         },
         {
+          "name": "once the cowed window ends B's feud reaches Notice and no higher, and decays away",
+          "ok": true,
+          "detail": "B's feud peaked at Notice, back to nothing Some(5.969708333333333) days after the window; rungs climbed meanwhile [0, 1, 0, 0, 0, 0, 0]"
+        },
+        {
           "name": "a player with no feud kills it at the camp: A's feud stands, C is raised to nothing",
           "ok": true,
           "detail": "A's feud at Some(Raid), C's at Some(None)"
+        },
+        {
+          "name": "once the cowed window ends C's feud reaches Notice and no higher, and decays away",
+          "ok": true,
+          "detail": "C's feud peaked at Notice, back to nothing Some(9.0835) days after the window; rungs climbed meanwhile [0, 1, 0, 0, 0, 0, 0]"
         },
         {
           "name": "the feud's player kills it at the camp: A's feud steps down to Notice",
@@ -842,17 +852,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 9e8daa394e7b1fbd against 9e8daa394e7b1fbd, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state 94d75cc395ee0897 against 94d75cc395ee0897, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state cbf02a568eee289f against cbf02a568eee289f, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state d99953d42bccc971 against d99953d42bccc971, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state 8eec7263d8b24849 against 8eec7263d8b24849, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state dd3b0008289825eb against dd3b0008289825eb, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
