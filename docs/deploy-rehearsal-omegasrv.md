@@ -1162,3 +1162,6 @@ client mod set, a GPU on a shared laptop and the heavy lock, a project of its ow
 as in round 1: a player login (inventories, ender chests, Cobblemon, a player aboard a Sable ship),
 puppets, TALK, the far view, ports with players, and the host's own load. The first login after each
 step of the runbook is the check.
+
+The optional pair of the July pack beside today's (`campaign2.sh july`) was not run either: round 1
+measured the July pack, and nothing round 2 found in today's pack needed it again.
