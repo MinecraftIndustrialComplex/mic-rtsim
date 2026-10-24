@@ -5776,14 +5776,16 @@ mod conflict {
         a_fight_kept_in_the_pages_with("conflict-rp33-tribute", long, mask, Some(order));
     }
 
-    /// Control: the same replay in one hand-over.
+    /// A second case: the same replay in one hand-over. It does not isolate RP-24: before
+    /// df53fe38 it failed too, on RP-26's anchor (the arm's leave of the players' areas). The
+    /// control is the no-crash variant below.
     #[test]
     fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_one_hand_over_replay() {
         let one = Some(ONE_HAND_OVER);
         a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-one", one, MODULES);
     }
 
-    /// Control: no crash.
+    /// Control: no crash, the session that goes on.
     #[test]
     fn a_fight_kept_in_the_pages_pools_what_is_left_without_a_crash() {
         a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None, MODULES);
