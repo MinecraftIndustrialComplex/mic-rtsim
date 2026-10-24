@@ -58,6 +58,11 @@ public final class GraphBuilder {
     /** Why the district is not compilable (a REASON code), or 0. */
     int notCompilable;
     String notCompilableWhy;
+    /**
+     * World reads an extractor stopped at a chunk that is not loaded rather than load it (SECTIONS.md §2.8,
+     * slice S1): shown by {@code /rtsim district graph}.
+     */
+    public int unloadedStops;
 
     GraphBuilder(Industry ind, ServerLevel level, District district) {
         this.ind = ind;

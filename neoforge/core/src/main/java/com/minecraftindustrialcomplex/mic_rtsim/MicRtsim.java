@@ -34,6 +34,8 @@ public final class MicRtsim {
         com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed.register();
         // The vanilla herd adapter (docs/boundary.md §8): vanilla is built in, so the core registers it.
         com.minecraftindustrialcomplex.mic_rtsim.herd.HerdEvents.register();
+        // The conflict bridge (docs/boundary.md §9), played by vanilla bodies: built in, inert with no faction.
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictEvents.register(modBus);
         // TALK (TALK.md): the gesture, the service, and the villager and wandering trader talkers.
         com.minecraftindustrialcomplex.mic_rtsim.talk.TalkEvents.register();
         // The habitat sampler (docs/boundary.md §10): the engine's world model, built in as vanilla is.

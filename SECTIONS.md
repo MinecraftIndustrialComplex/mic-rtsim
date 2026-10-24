@@ -358,14 +358,39 @@ advert. Slice S1 removes them, before anything splits:
   which does not tick, so no routing changes. A hand-off to it is refused as to a full conveyor:
   returning null at 296 would skip the test at 297 and let the package travel, so the mixin refuses the
   hand-off itself. An arriving package stays at the end of its connection, as Create keeps one whose
-  target is not a conveyor. What a reversal does is UNVERIFIED, and its GameTest decides whether line
-  175 needs the same hold. `ChainConveyorFrogportTarget.canAcceptPackagesFor` (:110) answers false for a
-  conveyor whose chunk does not tick.
+  target is not a conveyor. On a reversal, Create moves each package travelling toward a connected
+  conveyor into that conveyor's list, mirrored, so that it travels back (line 175); with the far
+  conveyor not looked up, the package stays in this conveyor's list, goes on to the end of the
+  connection and waits there, and joins the far loop once the far chunk ticks: it keeps going where it
+  was sent (`aPackageIntoAChunkThatDoesNotTick`). `ChainConveyorFrogportTarget.canAcceptPackagesFor`
+  (:110) answers false for a conveyor whose chunk does not tick, and a frogport whose conveyor reversed
+  does not move itself to a far end that does not tick (PATCHES.md row 52).
 - **Create's network recount.** `KineticNetwork.calculateCapacity` and `calculateStress` (the lookups at
   lines 139 and 155) skip a listed block entity whose chunk is not loaded and keep it as Create last saw
   it. A contract test compares the answer with Create's own with that chunk loaded.
+- **Rotation** (found while building S1). `RotationPropagator` follows a chain conveyor's connections
+  and a large cog's diagonals (`addPropagationLocations`) with no loaded test, so a speed change, an
+  added source or a removed one on a chain into an away district loaded the far conveyor's chunk. It
+  stops at a chunk that is not loaded now (SC36, PATCHES.md row 55), and the far part keeps its last
+  speed. When that chunk loads, Create's attach breaks a block whose speed no longer matches its
+  neighbour's (it already does this to a shaft across a chunk border whose source changed meanwhile);
+  the stale re-sync gives the part its source's speed instead (SC37, row 56). A chunk that dropped below
+  FULL and stayed in memory comes back with no load and no attach; it is re-synced at its promotion
+  instead (SC45, row 58), with any network update held back while it was away (row 54). A chunk that
+  loads FULL and does not tick (level 33) attaches nothing either: it is noted at its load and re-synced
+  at its first FULL report, and every block entity the re-sync lists again before its first tick, in that
+  chunk or a FULL one around it, first joins its network as its first tick would (SC73).
+- **The ring around a ticking chunk** (found in the GameTests). A chunk that block-ticks (level 32 or
+  less) keeps its eight neighbours FULL (33) and the ring past them at 34: in memory, not FULL, so
+  `getChunkNow` answers null, `Level.isLoaded` false, and its block entities do not exist (a chunk read
+  from disk at 34 has none until it is promoted). A district two chunks from a ticking one is therefore
+  away, and every guard above keys on FULL or ticking, never on the holder. A chunk that drops from FULL
+  to 34 or below (up to 44) fires no `ChunkEvent.Unload`, and one promoted back fires no `Load` and
+  attaches nothing (its block entities are the same objects): the index counts it loaded throughout,
+  nothing ticks it meanwhile, as vanilla leaves it, and the stale re-sync runs at its promotion (SC45).
 - **The test.** An away district on a package store, and one on a shared network, each stay away for
-  200 ticks (past two adverts) with no `IND_CHUNK_LOADED`.
+  200 ticks (past two adverts) with no `IND_CHUNK_LOADED`, and no chunk of theirs becomes FULL
+  (`SectionsChunkLoadGameTests`).
 
 ---
 
@@ -803,7 +828,9 @@ inside the yard, as `CreateSeedGameTests`' chain helper does.
 |---|---|---|
 | `aCompileLoadsNoChunk` | a district beside an unloaded chunk holding the network root, a conveyor and a frogport's neighbour | the compile leaves the chunk unloaded (§2.8) |
 | `anAwayDistrictOnAChainStaysAway`, `anAwayDistrictOnASharedNetworkStaysAway` | a loaded factory and an away one on one chain, then on one shaft network, with packages moving and the boiler's level changing | 200 ticks with no `IND_CHUNK_LOADED` for the away district (§2.8) |
-| `aNetworkRecountKeepsAnUnloadedSource` | a network whose source's chunk is unloaded, then a recount (a member added) | no chunk load; the capacity equals Create's with that chunk loaded (the contract test of §2.8) |
+| `aNetworkRecountKeepsAnUnloadedSource` | a network whose source's chunk is unloaded, then a recount (a member added); loaded and unloaded again, then another recount | no chunk load; the capacity equals Create's with that chunk loaded (the contract test of §2.8); one listed object per position after the second visit |
+| `aDemotedChunkComesBackInStep` (built in S1) | an away chunk held in memory below FULL while its source's speed changes, then FULL again | no load; the part takes its source's speed and the network update held back (§2.8, SC45) |
+| `aChunkLoadedFullComesBackInStep` (built in S1) | two away chunks on a chain, unloaded while its source reverses and taken out of the network as a restart leaves them, then loaded FULL and not ticking, the far one first | both take the source's speed at the near one's load, every part joins its network once (the unloaded share drops by exactly their share), and nothing breaks when the chunks tick (§2.8, SC73) |
 | `twoFactoriesSideBySideStayTwo` | two press lines in neighbouring chunks, nothing between them | two districts (today one) |
 | `aVaultAcrossABorderJoinsItsChunks` | a packager in one chunk under an item vault whose controller is in the next | one district (J3) |
 | `diagonalCogsAcrossABorderJoin` | a large cog meshing diagonally with a small cog across a border | one district (J4) |
@@ -878,7 +905,7 @@ repeated on the laptop copy after each slice. That check stays local; nothing fr
 
 | Slice | What | Tests | Depends on |
 |---|---|---|---|
-| **S1** | No chunk loads (§2.8): every compile read through `getChunkNow`, members filtered; mixins on Create's chain lookups (lines 161, 175, 248, 296 to 297 of `ChainConveyorBlockEntity.tick`; `canAcceptPackagesFor` :110) and network recount (`calculateCapacity`, `calculateStress`). The driver: a network whose members lie in more than one district, or in chunks of no district, is marked in every district on it as today's unstable domains are (`CreateCompile.java:487`, `:641`: its members are bounded, their rates learned), the boiler's district included, so no district replays a driver or a load it cannot see. `/rtsim district graph` (compile and members); `rtsim-cli glass` | `aCompileLoadsNoChunk`, `anAwayDistrictOnAChainStaysAway`, `anAwayDistrictOnASharedNetworkStaysAway`, `aNetworkRecountKeepsAnUnloadedSource`, `aPackageIntoAChunkThatDoesNotTick` (its first half), `aBoilerOnAChainDrivesTheNextDistrict` (driver part), the CLI on a GameTest world | nothing |
+| **S1** | No chunk loads (§2.8): every compile read through `getChunkNow`, members filtered; mixins on Create's chain lookups (lines 161, 175, 248, 296 to 297 of `ChainConveyorBlockEntity.tick`; `canAcceptPackagesFor` :110) and network recount (`calculateCapacity`, `calculateStress`, `sync`, `remove`); built: also rotation propagation and the stale re-sync, the frogport's far end and the exports to ports (PATCHES.md rows 50 to 59). The driver: a network whose members lie in more than one district, or in chunks of no district, is marked in every district on it as today's unstable domains are (`CreateCompile.java:487`, `:641`: its members are bounded, their rates learned), the boiler's district included, so no district replays a driver or a load it cannot see. `/rtsim district graph` (compile and members); `rtsim-cli glass` | `aCompileLoadsNoChunk`, `anAwayDistrictOnAChainStaysAway`, `anAwayDistrictOnASharedNetworkStaysAway`, `aNetworkRecountKeepsAnUnloadedSource`, `aPackageIntoAChunkThatDoesNotTick` (its first half), `aDemotedChunkComesBackInStep`, `aChunkLoadedFullComesBackInStep`, `aBoilerOnAChainDrivesTheNextDistrict` (driver part), the CLI on a GameTest world | nothing |
 | **S2** | Sections in the engine: cut, residual groups (Java), fold, state, fingerprints, per-section windows, liveness and discards, the verdict rule, judging groups from the compile, staleness by box, edits between districts and the domain check, per-section freeze with the rebuild at the fallback's tick, `IGL2` with the per-district drop; train cargo through `IND_STATION_PORTS` | §9.3, `BeltIntoPressFactory`, `SharedBoilerTwoLinesFactory`, `FrozenNeighbourFactory`, `StationPressLineFactory`, `HalfLoadedFactory`, `HopperAtASharedVaultFactory` | nothing: sections inside today's districts already pay off |
 | **S3** | Counting at the movers (Q3): `IND_COUNT_SET`, `IND_COUNT_SAMPLE`, the mover mixins, judging groups by residue | `VaultBetweenMixersFactory`, `ResidueAtASharedVaultFactory`, `BasinIntoASharedVaultFactory` | S2 |
 | **S4** | Package stores (Q4): `IndustryData` format 3 with the drop and the engine reset (§6), the store record and identity, `CHAIN_OUT` and `CHAIN_IN` at the frogports of package stores, no `CHAIN` edges on them, pools per destination with routing, room and the census, and the both-away replay on the first cluster that couples districts (a pool shared between them); then the frontier (Q5): routes kept, the hold, `CHAIN_HELD`, drawn keys and their removal | `aChainInsideOneDistrictStaysEdges`, `aChainBetweenTwoFactoriesLeavesThemTwo`, `twoFrogportsOfOneDistrictOnASharedChain`, `aPlayerTakesAPackageOffTheChain`, then `aRouteToAnAwayFrogportIsKept`, `aHeldPackageDrawnIsRemovedOnce`, the store's engine tests | S1. Useful before S6: chains between districts that are apart today are counted nowhere since DS-10 |
@@ -1089,13 +1116,26 @@ The options below stay as the record of what was offered.
 | SC31 | Judging groups judge on one row with the shared store interior; they form from the compile (an uncounted modelled mover, a store past the cap), per window (a residue) and for cargo | the only row that balances when a move is not counted |
 | SC32 | Count points: funnels and other `InvManipulationBehaviour` users, chutes, arms, basins, frogports, packagers, pipes; not hoppers, the drill's shortcut or other mods | Create's movers at stores; the rest make judging groups |
 | SC33 | Past `industry.clusterDistrictsMax`, a shared network falls back to S1's rule and a package store moves nothing while an end is away, logged and shown | bounded cost, never silent |
+| SC34 | Slice S1's guards: a chain conveyor and a frogport look only at conveyors and ports in chunks that tick (`shouldTickBlocksAt` and `LevelChunk.isTicking`, the two tests a block entity's ticker makes, PATCHES.md row 59); rotation, the network recount and the compile read only chunks that are FULL (`getChunkNow`) | a FULL chunk that does not tick holds its block entities, and reading them loads nothing; a package handed into one stops there (§14) |
+| SC35 | Create's `ChainConveyorBlockEntity.destroy` (a conveyor broken) stays unguarded; `removeInvalidConnections` and `notifyConnectedToValidate` keep Create's own `isLoaded` test | a break is a player's act, once, and the far end must drop its connection; the validations already ask |
+| SC36 | Rotation stops at a chunk that is not loaded, chain connections and large cog diagonals included; the far part keeps its last speed until its chunk loads | Create's own rule for a shaft across a chunk border, applied to the links Create forgot |
+| SC37 | The stale re-sync (PATCHES.md rows 56 and 58): at a block entity's first attach, a source in another loaded chunk that gives it another speed or network makes it wait one tick, then Create's `propagateMissingSource` on it and `propagateNewSource` from the source; a chunk that comes back FULL without loading, or loads FULL and does not tick, gets the same at its promotion (SC45, SC73) | Create breaks the block otherwise; the tick lets the loaded chunk's block entities join their network first; it also mends the break Create does at a shaft across a chunk border |
+| SC38 | `/rtsim district graph <id>` lives in its own class (`GlassGraphCommand`), writes JSON to the server's `debug/` folder, and reads only the last compile and the index | the dump of §1 as an operator command; nothing is compiled or loaded to answer it |
+| SC39 | `rtsim-cli glass` takes a district id, not a name | ids are what the paged state holds; names can repeat |
+| SC40 | The compile reads a FULL chunk that does not tick as it is, and stops at one that is not FULL: an item dropped or thrown into a chunk that is not loaded goes to the sink, a crafter grid that reaches one is not modelled, and every stop is counted (`unloadedStops`) | a ticking district's eight neighbours are FULL, so stops happen only on long walks; a stop never invents a spill |
+| SC41 | The frogport's far-end guard (PATCHES.md row 52) is checked by the launch only | a test would need a port in a ticking chunk whose conveyor reverses while the far end is away; the guard is one null answer Create already handles |
+| SC42 | S1's GameTests build the away state with no forced chunk and a radius-1 ticket on A (A ticks, its ring is FULL, B two chunks away is at level 34 and never FULL); a creative motor stands in for boiler levels except in one boiler test, which fills its boiler through the tank's fluid capability; one batch per test | the away state of a district two chunks from the loaded one; a motor's speed changes on demand; the chunk load counts and the re-sync counter are server-wide, so no two of these tests run at once |
+| SC43 | A pipe walk that meets a chunk that is not loaded stops there and bounds its pump | the far ends are not known, and a stop must never read as a spill |
+| SC44 | A network is crossing when a listed source or member lies outside the district, or a listed member inside links out of it (a face across the district's border, a chain connection, a large cog's diagonal) to a chunk that is not loaded or to a kinetic block entity of the same network; with its root unlisted its ratios are taken from the lowest loaded listed member that turns | structural: Create's own count of members it has not seen (`unloadedMembers`) is wrong both ways (it is a saved number, decremented with a clamp, and reset by whichever member's save starts the network), and a link into a chunk that is not loaded may reach members that never loaded this session; the root's own speed is not held. `aCompileLoadsNoChunk` takes the away part out of the network, as a restart leaves it |
+| SC45 | A chunk reported below FULL is noted until it unloads; when it is reported FULL or more again it is queued and re-synced (`StaleKinetics.chunkFull`) at the next server tick's start or end, not inside the promotion. Chunks that never left FULL are not queued; chunks loaded anew are, since SC73 | the promotion runs inside the chunk system's own task queue, and a propagation there could re-enter it; a promotion by several levels at once reports only its last status. Left open: the chunk is readable and ticks from its promotion, and the report of it runs later, from the main thread's task queue, so for up to one tick its block entities run before the re-sync; a source that changes in that tick, or Create's periodic validation falling in it, meets the stale part, and Create's own rule applies to it. A promotion reported for a chunk that a demotion has taken below FULL since leaves it noted |
+| SC46 | `Loaded.capability` answers null for a Create multiblock (a vault, a tank) with any chunk of its box not loaded, the box taken from its controller (the least corner: `getHeight` along the main axis, `getWidth` across) | a vault's controller builds its handler from every member through `Level.getBlockEntity`, which loads; a tank's does not, so for a tank this is stricter than needed, and a tank across an away chunk reads as away |
+| SC73 | A chunk loaded anew (`ChunkEvent.Load` on the server thread) is noted as a demoted one is and re-synced at its first FULL report (SC45); `StaleKinetics.chunkFull` takes every kinetic block entity, attached or not. A block entity that has not joined its network (before Create's `initialize`) joins it as its first tick would (`KineticJoin`: `initFromTE` if not yet, then `addSilently`) wherever Create lists it again or takes it out first: at `removeSource` and `setSpeed`, before the speed the join reads changes, at a `setNetwork` to another network, at `remove`, a server-side `read` and `clearKineticInformation`, a generator at `updateGeneratedRotation`, and a powered shaft at its engine's `update` and `remove`, before they change its fields. A join at `clearKineticInformation` outside a `read` that listed the part leaves the network again at once (one already a member stays, as in Create). A join during a `sync` of its network takes its share out of the unloaded share and lists it once the sync ends, unless it left by then, and the network then recounts at once (at a tick when the sync or a change threw); every such change runs even when one throws, and a change that threw recounts the network. Nothing joins off the server (a client, a ponder scene) | in a FULL chunk that does not tick (level 33, around every ticking chunk) nothing attaches, so row 56's re-sync never ran there and a compile read the stale speeds; the re-sync's `add` would leave a part that had not joined counted in the unloaded share too, and its frontier reaches such parts in every FULL chunk around, so a join of the re-synced chunk alone missed some; a removal or a generator's update (a steam engine updates its shaft two blocks away) would leave or list such parts likewise; `sync` iterates `members`, and a part an `onSpeedChanged` changes there must not enter it; a `networkDirty` mark set after a sync is cleared by the tick that ran it; `clearKineticInformation` (a `setBlock` to another axis outside Create's `switchToBlockState`, as `/setblock` gives it) forgets the network without taking the part out. Left open: a generator other than a powered shaft whose generated speed changes before its first tick (a water wheel's flow, a hand crank a deployer turns, a creative motor a computer sets) has its share taken out at its new speed, not the one the network counted (clamped at 0), and so does a `/data` merge that changes a generator's own fields read before Create's `read` (a hand crank's, a windmill bearing's); an addon generator's update during a sync of its own network ends it with Create's own ConcurrentModificationException; if C2ME posts `ChunkEvent.Load` off the server thread, its loads are not noted, and a chunk it loads FULL is re-synced only at its first attach, once it ticks |
 
 ---
 
 ## 14. Risks and unverified points
 
-- **UNVERIFIED, each the first GameTest of its slice:** what a chain reversal does at line 175 with
-  the far conveyor not looked up (§2.8, S1); whether Create saves its routing tables, which decides how
+- **UNVERIFIED, each the first GameTest of its slice:** whether Create saves its routing tables, which decides how
   much the kept routes do after a restart (§2.5, S4); and that a network's loaded half keeps its speed
   when its source's chunk unloads with S1's guard on (§2.6, S5). Each slice follows what its test
   shows.
@@ -1105,6 +1145,16 @@ The options below stay as the record of what was offered.
   with the guard it keeps the old one. The contract tests compare both with Create's answer with the
   chunk loaded, and the mixins are listed in PATCHES.md, so a Create update that moves these lines
   fails a test rather than a world.
+- **A part of a network that comes back stale** (§2.8): Create breaks it at the attach when its speed no
+  longer matches. S1 makes this more common (rotation no longer reaches an away chain conveyor), and the
+  re-sync (SC37) mends it at the first attach after the load, which also mends Create's own break at a
+  shaft across a chunk border, and at the promotion of a chunk that comes back FULL without loading
+  (SC45; one tick's window is left open there). With C2ME, which the pack runs and the GameTests do not,
+  the chunk system is C2ME's: its status reports reach the same hook from the main thread, with
+  demotions late too, and this path is untested there; if it posts chunk loads off the server thread, a
+  chunk it loads FULL is re-synced only at its first attach, once it ticks (SC73). A part that comes back with its source's chunk not loaded is left to
+  Create, which is how it was before S1. The re-sync calls Create's private propagation steps
+  (PATCHES.md row 56), which a Create update can move: the mixin then fails the launch.
 - **The kept routes reach into Create's routing table** (an accessor for a private method, a public
   record). A Create update can break them; the contract test catches it, and Q5 (b) is the fallback.
 - **A loaded half of a shared network runs on Create's last view of an away source** (§2.6): if the
