@@ -203,8 +203,13 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
 }
 
 /// The simulate point, after the modules ran to the hand-over's time: each reported player's
-/// area kept or booked anew and routed; players gone stale leave.
+/// area kept or booked anew and routed; players gone stale leave. Nothing while replaying.
 pub(super) fn simulate(st: &mut State) {
+    // Sightings wait for the replay end (docs/replay-gate.md §6, RP-11): the positions are kept,
+    // the latest per player, and routed in the step the replay ends.
+    if st.replaying {
+        return;
+    }
     let pending = std::mem::take(&mut st.shared.pending);
     let gt = st.game_time;
     if !any_viewer(st) {
