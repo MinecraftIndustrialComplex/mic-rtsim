@@ -281,9 +281,15 @@ impl Sections {
 
     /// The sections of `g` with the shared stores its movers can be counted at counted (§4.2), at
     /// most `counted_max` of them (`glass.countedStoresMax`), the lowest positions first: what a
-    /// compile is cut into.
+    /// compile is cut into. A graph on a moving frame (`end.frame != 0`) counts no store: Java neither
+    /// takes a count set for one nor samples it (`num.frame != 0`), so a counted store there could never
+    /// be covered, and its units would be discarded at every sweep instead of judged with the store
+    /// shared (choice SC122).
     pub fn compute_counted(g: &Graph, max: usize, counted_max: usize) -> Sections {
         Sections::compute_picking(g, max, |ctx, shared| {
+            if g.end.frame != 0 {
+                return Vec::new();
+            }
             let mut c: Vec<(BlockPos, u32)> = shared
                 .iter()
                 .filter(|&&h| countable(g, h, &ctx.edges_at[h as usize]))
@@ -1211,6 +1217,22 @@ mod tests {
             Sections::compute_counted(&g, 64, 256).cut_keys(),
             Sections::compute_counted(&g, 64, 1).cut_keys()
         );
+    }
+
+    /// A graph on a moving frame has no counted store (choice SC122): Java never samples one, so the
+    /// store stays shared and the lines at it are one judging group, as in S2; `cut_counted` agrees.
+    #[test]
+    fn a_moving_frame_counts_no_store() {
+        let (b, [_, _, _, _, vault, _, _]) = vault_between_two_lines();
+        let mut g = b.graph();
+        assert_eq!(Sections::compute_counted(&g, 64, 256).counted, vec![vault]);
+        g.end.frame = 7;
+        let s = Sections::compute_counted(&g, 64, 256);
+        assert!(s.counted.is_empty());
+        assert_eq!(s.group_of, vec![0, 0]);
+        let cut = Sections::cut_counted(&g, 2, 64, 256);
+        assert!(cut.counted.is_empty());
+        assert_eq!(s.cut_keys(), Sections::compute(&g, 64).cut_keys());
     }
 
     #[test]

@@ -617,8 +617,9 @@ Recommended: **count at the movers**.
   0x004D is, choice GB3), in the numbers of the latest compile whose END it sent (SC90). A pair's counts
   are taken at the moment the sampler reads the store's inventory in that sweep, so a count and the stock
   it explains belong to one instant, and a store the sweep did not read sends nothing (SC88). A set is
-  ignored when its compile is not Java's latest complete one or sits on a moving frame (the engine's
-  outbox sends it again, SC89); a set that names a pair keeps its counters, one that leaves it out drops
+  ignored when its compile is not Java's latest complete one (the engine's outbox sends it again,
+  SC89); a district on a moving frame (a Sable contraption) has no counted store, so the engine sends
+  none and its shared stores keep their S2 judging group (SC122); a set that names a pair keeps its counters, one that leaves it out drops
   them, and an empty set drops the district's. The mover's position names its node, so the unit is
   known with no face mapping; movers at one block (a packager's two nodes) share its counts, each
   direction taken once (SC94).
@@ -1228,6 +1229,7 @@ The options below stay as the record of what was offered.
 | SC95 | The Create compile claims each portable storage interface with no node (§4.4) when its conveying walk (`TrainWatch.reached`, the walk of `IND_STATION_PORTS`) reaches a district inventory; one that reaches none stays residual | it exposes a docked train's storage, whose change is the station's cargo, booked through `IND_STATION_PORTS`; left to the residual, the mover beside it reached a black box, so every station-fed unit was unbounded and unbooked cargo could not fail its window. An interface that reaches no inventory (onto a belt into a machine) has no port to book its cargo on: claimed, what it fed would rise against a prediction of none and fail every window, so it keeps the black box |
 | SC96 | The section fixtures (§9.2, `SectionsFxGameTests`) are opt-in: `./gametest.sh create -Psec1fx` adds their namespace to the create run | each is a full corpus cycle of several windows; on by default they lengthen every create run on the shared heavy lock, for every session |
 | SC120 | A basin that pours through a funnel into a store is counted at the funnel: `BasinBlockEntityMixin` finds no item handler at the spout block, takes the block's `InvManipulationBehaviour` and counts (funnel position, `getTarget().getConnectedPos()`), the pair the engine names from the funnel's adjacency edge (`CreateCompile.funnelEdges`). The basin's own pair is kept for a spout block that offers an item handler. `BasinThroughFunnelFactory` (`sec1fx_basin_funnel_vault`) is the basin line of `BasinIntoASharedVaultFactory` with an andesite funnel facing up on the vault where that fixture has the chute | review B1 found the pour uncounted (the basin skips the behaviour's own count point), leaving residue at the vault and false failures at the line that draws from it; counting under the funnel is what the engine's pair asks for and needs no engine change |
+| SC122 | A district on a moving frame (`end.frame != 0`) has no counted stores: `Sections::compute_counted` returns none, so every cut (`cut_counted`, the page's and the check's) judges its shared stores as in S2, one group per shared store | Java ignores a count set on a moving frame and never samples one (`num.frame != 0`), so a store counted there had no cover, its units were discarded at every sweep and never judged (a regression against S2, where the district was judged), and the engine resent a set Java ignored at every END resend. Doing it in `compute_counted` keeps the units, the page and the persisted cut on the same rule |
 
 ---
 
