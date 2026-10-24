@@ -73,9 +73,14 @@ const REPLAY: SystemId = SystemId::named("industry.replay");
 /// midnight; gameTime and dayTime drift apart when players sleep, INDUSTRY.md §0).
 pub const NIGHT_ATTACK_TICK: u64 = 18_000;
 
-/// An IND_WRITE_CHAIN's answer is taken as lost after this many `chain_write_ticks` (a crash
-/// between the command and its result), and the frogport may be written again (choice SC113).
+/// An IND_WRITE_CHAIN unanswered this many `chain_write_ticks` after the engine handed it on (a
+/// crash between the command and its result) no longer holds the frogport's next write (choice
+/// SC113).
 const WRITE_ANSWER_PERIODS: u64 = 10;
+
+/// An unanswered IND_WRITE_CHAIN is forgotten this many `chain_write_ticks` after it was handed on:
+/// a `CHAIN_IN` of it later is judged by the frogport's mark (choice SC113).
+const WRITE_FORGET_PERIODS: u64 = 100;
 
 /// The magnitudes of an archive "district changed" row: why the learned district went stale.
 const STALE_REVISION: i64 = 1;
@@ -209,6 +214,8 @@ pub struct Stats {
     /// Written `CHAIN_IN` records taken already, journaled again by a chunk saved before the
     /// engine acknowledged them (choice SC113): dropped. Not saved, as SG58.
     pub chain_writes_again: u64,
+    /// IND_WRITE_CHAIN commands forgotten unanswered (choice SC113). Not saved, as SG58.
+    pub chain_writes_unanswered: u64,
     /// Goods replays sent toward the frogports of a store removed with no store to take them
     /// (UR-1 allows it). Not saved, as SG58.
     pub chain_owed_lost: u64,
@@ -686,7 +693,20 @@ impl Engine {
 
     /// Commands for the Java side, in order.
     pub fn drain_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.out)
+        let out = std::mem::take(&mut self.out);
+        // A write's answer may be taken as lost only once it has left the engine (choice SC113).
+        for c in &out {
+            if let Cmd::WriteChain(w) = c
+                && self
+                    .stores
+                    .get(&w.store)
+                    .is_some_and(|s| s.writing_at(w.op).is_some())
+                && let Some(s) = self.stores.get_mut(&w.store)
+            {
+                s.write_drained(w.op, self.now);
+            }
+        }
+        out
     }
 
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the
@@ -1949,13 +1969,19 @@ impl Engine {
                 continue;
             }
             again = true;
+            let forget = period * WRITE_FORGET_PERIODS;
+            if s.writes_to_forget(pos, at, forget)
+                && let Some(s) = self.stores.get_mut(&st)
+            {
+                self.stats.chain_writes_unanswered += s.forget_writes(pos, at, forget);
+            }
+            let s = &self.stores[&st];
             if s.write_pending(pos, at, period * WRITE_ANSWER_PERIODS) {
                 continue;
             }
             let batch = s.batch.get(&pos).cloned().unwrap_or_default();
             let mut goods: BTreeSet<Good> = owed.iter().map(|(g, _)| g).collect();
             goods.extend(pools.iter().map(|p| p.0));
-            let mut sent = Vec::new();
             for g in goods {
                 let held = pools.iter().find(|p| p.0 == g).map(|p| p.1);
                 let in_pool = match held {
@@ -1993,12 +2019,9 @@ impl Engine {
                 c.set_op(op);
                 self.out.push(c);
                 self.stats.chain_writes += 1;
-                sent.push(op);
-            }
-            if !sent.is_empty()
-                && let Some(s) = self.stores.get_mut(&st)
-            {
-                s.sent_writes(pos, at, sent);
+                if let Some(s) = self.stores.get_mut(&st) {
+                    self.stats.chain_writes_unanswered += s.sent_write(pos, op);
+                }
             }
         }
         if again {
@@ -2008,19 +2031,19 @@ impl Engine {
         }
     }
 
-    /// What a write put into a frogport (a `CHAIN_IN` with an op): taken from the pool a cluster
-    /// holds toward it, then from what the store owes it, and marked (choice SC113).
-    fn chain_written(&mut self, at: Tick, recorded: Tick, p: &ChainPackage) {
-        let Some(pos) = self
-            .stores
-            .get(&p.store)
-            .and_then(|s| s.frogports.get(p.frogport as usize))
-            .map(|f| f.pos)
-        else {
-            return;
-        };
-        for (g, n) in p.goods.iter() {
-            let key = PoolKey::Chain(p.store, pos, g);
+    /// What a write put into frogport `pos` of store `st` (a `CHAIN_IN` of `op`): taken from the
+    /// pool a cluster holds toward it, then from what the store owes it, and marked (choice SC113).
+    fn chain_written(
+        &mut self,
+        at: Tick,
+        recorded: Tick,
+        st: StoreId,
+        pos: BlockPos,
+        goods: &GoodVec,
+        op: OpId,
+    ) {
+        for (g, n) in goods.iter() {
+            let key = PoolKey::Chain(st, pos, g);
             let mut rest = n;
             if let Some(h) = self.cluster_with_pool(key) {
                 let took = self
@@ -2031,16 +2054,44 @@ impl Engine {
                 rest -= took;
             }
             if rest > 0
-                && let Some(s) = self.stores.get_mut(&p.store)
+                && let Some(s) = self.stores.get_mut(&st)
             {
                 s.add_owed(pos, g, -rest);
             }
         }
-        if let Some(s) = self.stores.get_mut(&p.store)
-            && let Some(op) = p.op
-        {
+        if let Some(s) = self.stores.get_mut(&st) {
             s.take_written(pos, recorded, op);
         }
+    }
+
+    /// The store and frogport a written `CHAIN_IN` of `op` is taken at, or None when it was taken
+    /// already (choice SC113). The answer to a write the engine waits for is taken at the frogport
+    /// the write named. Any other (a record a chunk journaled again, or the answer to a write
+    /// forgotten) is judged by the mark at the frogport's position, in the record's store or the
+    /// store that lists it now.
+    fn written_where(
+        &mut self,
+        recorded: Tick,
+        p: &ChainPackage,
+        op: OpId,
+    ) -> Option<(StoreId, BlockPos)> {
+        if let Some(found) = self
+            .stores
+            .iter()
+            .find_map(|(id, s)| s.writing_at(op).map(|pos| (*id, pos)))
+        {
+            return Some(found);
+        }
+        let lists = |s: &crate::stores::PackageStore| s.index_of(p.pos).is_some();
+        let st = match self.stores.get(&p.store) {
+            Some(s) if lists(s) => p.store,
+            _ => *self.stores.iter().find(|(_, s)| lists(s))?.0,
+        };
+        if self.stores[&st].written_again(p.pos, recorded, op) {
+            self.stats.chain_writes_again += 1;
+            return None;
+        }
+        Some((st, p.pos))
     }
 
     /// Events and pushes after anything touched cluster `h` at `at`.
@@ -3313,7 +3364,7 @@ impl Engine {
         if let Some(id) = self
             .stores
             .iter()
-            .find(|(_, s)| s.writing.values().any(|w| w.ops.contains(&op)))
+            .find(|(_, s)| s.writing_at(op).is_some())
             .map(|(id, _)| *id)
         {
             if let Some(s) = self.stores.get_mut(&id) {
@@ -3644,18 +3695,17 @@ impl Engine {
     /// frogport they resolve to, when a district has it, and in at its own frogport. What the
     /// engine wrote (a `CHAIN_IN` with an op) is no link: it leaves the pool or debt it came from.
     fn chain_package(&mut self, at: Tick, recorded: Tick, p: &ChainPackage) {
-        let written = p.op.is_some() && p.direction == ChainDirection::In;
-        // A write taken already, journaled again from a chunk saved before its acknowledgement.
-        if written
-            && let Some(op) = p.op
-            && let Some(s) = self.stores.get(&p.store)
-            && s.frogports
-                .get(p.frogport as usize)
-                .is_some_and(|f| s.written_again(f.pos, recorded, op))
-        {
-            self.stats.chain_writes_again += 1;
-            return;
-        }
+        let written = match p.op {
+            Some(op) if p.direction == ChainDirection::In => {
+                // None: a write taken already, journaled again from a chunk saved before its
+                // acknowledgement, or one into a frogport no store lists.
+                let Some(at_port) = self.written_where(recorded, p, op) else {
+                    return;
+                };
+                Some((at_port, op))
+            }
+            _ => None,
+        };
         let mut to = None;
         match self.stores.get_mut(&p.store) {
             Some(s) => {
@@ -3671,9 +3721,10 @@ impl Engine {
             }
             None => self.stats.store_records_unknown += 1,
         }
-        if written {
-            self.chain_written(at, recorded, p);
+        if let Some(((st, pos), op)) = written {
+            self.chain_written(at, recorded, st, pos, &p.goods, op);
         }
+        let written = written.is_some();
         let (Some(district), Some(inventory)) = (p.district, p.inventory) else {
             return;
         };
@@ -4949,6 +5000,7 @@ mod persist_impls {
                 chain_writes: 0,
                 chain_writes_failed: 0,
                 chain_writes_again: 0,
+                chain_writes_unanswered: 0,
                 chain_owed_lost: 0,
                 chain_pools_lost: 0,
             })

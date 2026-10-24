@@ -337,6 +337,9 @@ pub struct ChainPackage {
     pub direction: ChainDirection,
     /// The frogport's index in the store's last IND_PACKAGE_STORE.
     pub frogport: u32,
+    /// The frogport's position: a record a chunk journals again names its frogport by it, whatever
+    /// the store's frogports became meanwhile (choice SC113).
+    pub pos: BlockPos,
     /// The frogport Java resolved the package's route to (for `In`, the frogport itself); None:
     /// no frogport matches its address, and it circles.
     pub destination: Option<u32>,

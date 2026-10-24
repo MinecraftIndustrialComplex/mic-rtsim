@@ -78,6 +78,7 @@ fn chain(d: DistrictId, direction: ChainDirection, packages: u32, op: Option<u64
         inventory: Some(PORT),
         direction,
         frogport: if d == MINE { 0 } else { 1 },
+        pos: frog(d),
         destination: Some(1),
         packages,
         address: 0,
@@ -244,6 +245,7 @@ fn written(e: &mut Engine, at: u64, w: &WriteChain) {
             inventory: Some(w.inventory),
             direction: ChainDirection::In,
             frogport: w.frogport,
+            pos: w.pos,
             destination: Some(w.frogport),
             packages: w.count,
             address: 0,
@@ -450,12 +452,11 @@ fn a_written_chain_in_journaled_again_later_is_taken_once() {
     let mut e = pair(Tunables::default());
     away(&mut e, MINE, 100);
     e.advance_to(Tick(20_100));
-    // The mill's frogport is full: every write fits nothing, and the next may go.
+    // The mill's frogport is full: the write fits nothing. One long step sends one write, which
+    // holds the next until its answer.
     let failed = writes(&mut e);
-    assert!(!failed.is_empty());
-    // Earlier writes' answers were taken as lost when the next went; the last is the store's.
-    let last = failed.last().expect("a write").op;
-    assert!(e.command_failed(Tick(20_100), last));
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(e.command_failed(Tick(20_100), failed[0].op));
     assert_eq!(e.stats.chain_writes_failed, 1);
     // The mine loads: the pool goes back to the store, owed to the mill's frogport.
     live(&mut e, MINE, 20_100);
@@ -480,20 +481,184 @@ fn a_written_chain_in_journaled_again_later_is_taken_once() {
     e.check_books().expect("books");
 }
 
-/// Without an answer (a crash between the command and its result, or a catch-up that runs ahead
-/// of Java), a frogport is written again only once the answer is taken as lost: one write in ten
-/// periods, not one a period.
+/// Without an answer (a crash between the command and its result), a frogport is written again only
+/// once the answer is taken as lost, ten periods after the engine handed the write on; a write still
+/// in the engine's outbox always holds the next, so one long step sends one (choice SC113).
 #[test]
 fn an_unanswered_write_holds_the_next_until_its_answer_is_lost() {
     let mut e = pair(Tunables::default());
+    let period = Tunables::default().replay.chain_write_ticks;
     away(&mut e, MINE, 100);
     // One step of 20,000 ticks; the first whole package is there after about 1,300.
     e.advance_to(Tick(20_100));
-    let n = writes(&mut e).len();
-    assert!(
-        (8..=11).contains(&n),
-        "a write a period would be about 94: {n}"
+    let first = writes(&mut e);
+    assert_eq!(first.len(), 1, "one write a step: {first:?}");
+    // Handed on at 20,100 and never answered: nothing for ten periods, then one more.
+    e.advance_to(Tick(20_100 + 10 * period - 1));
+    assert!(writes(&mut e).is_empty());
+    e.advance_to(Tick(20_100 + 11 * period));
+    let next = writes(&mut e);
+    assert_eq!(next.len(), 1, "{next:?}");
+    assert_ne!(next[0].op, first[0].op);
+    assert_eq!(e.stats.chain_writes_unanswered, 0);
+    // Drained a period at a time and never answered: a write each ten periods, each kept until a
+    // hundred periods after it went.
+    let mut t = 20_100 + 11 * period;
+    let mut n = 2;
+    while t < 20_100 + 105 * period {
+        t += period;
+        e.advance_to(Tick(t));
+        n += writes(&mut e).len();
+    }
+    assert!((9..=12).contains(&n), "{n}");
+    assert!(e.stats.chain_writes_unanswered >= 1);
+    let kept = e.stores()[&S].writing[&frog(MILL)].len();
+    assert!(kept <= rtsim_industry::stores::WRITES_KEPT, "{kept}");
+    // The first write's answer arrives at last: judged by the mark, which is empty, so taken.
+    let counted = e.stores()[&S].counts.written;
+    written(&mut e, t, &first[0]);
+    assert_eq!(
+        e.stores()[&S].counts.written,
+        counted + u64::from(first[0].count)
     );
+}
+
+/// After a crash the world's clock goes back to its last save, while a frogport's chunk saved at its
+/// unload carries a written `CHAIN_IN` of the lost stretch, recorded later than what Java records
+/// next (choice SC113). That record is taken once, and the next write, applied at an earlier game
+/// time, is taken too: the answer to a write the engine waits for is never judged by the mark.
+#[test]
+fn a_write_after_a_crash_is_taken_though_a_lost_record_is_later() {
+    let mut e = pair(Tunables::default());
+    away(&mut e, MINE, 100);
+    e.advance_to(Tick(20_100));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(20_100), x.op);
+    }
+    live(&mut e, MINE, 20_100);
+    let o0 = owed(&e);
+    assert!(o0 >= 3 * BATCH, "{o0}");
+    // The frogport's chunk journals a write of the lost stretch, its op forgotten, at 23,000.
+    let lost = ChainPackage {
+        store: S,
+        district: Some(MILL),
+        inventory: Some(PORT),
+        direction: ChainDirection::In,
+        frogport: 1,
+        pos: frog(MILL),
+        destination: Some(1),
+        packages: 1,
+        address: 0,
+        op: Some(rtsim_kernel::journal::OpId((0x49 << 56) | 0xabc)),
+        goods: GoodVec::from_pairs([(IRON, BATCH)]),
+    };
+    send(&mut e, 23_000, Obs::ChainPackage(lost.clone()));
+    assert_eq!(owed(&e), o0 - BATCH, "the lost stretch's write is taken");
+    send(&mut e, 23_000, Obs::ChainPackage(lost));
+    assert_eq!(owed(&e), o0 - BATCH, "once");
+    assert_eq!(e.stats.chain_writes_again, 1);
+    e.advance_to(Tick(23_400));
+    let w = writes(&mut e);
+    assert_eq!(w.len(), 1, "{w:?}");
+    let o1 = owed(&e);
+    let counted = e.stores()[&S].counts.written;
+    // Java writes it at its own game time, before the lost record's.
+    written(&mut e, 20_500, &w[0]);
+    let taken = counted + u64::from(w[0].count);
+    assert_eq!(
+        e.stores()[&S].counts.written,
+        taken,
+        "the new write is taken"
+    );
+    assert_eq!(owed(&e), (o1 - iron(&w)).max(0));
+    assert_eq!(e.stats.chain_writes_again, 1);
+    // Journaled again later, it is judged by the mark: taken already.
+    written(&mut e, 20_500, &w[0]);
+    assert_eq!(e.stores()[&S].counts.written, taken);
+    assert_eq!(owed(&e), (o1 - iron(&w)).max(0));
+    assert_eq!(e.stats.chain_writes_again, 2);
+    e.check_books().expect("books");
+}
+
+/// A store declared again with a frogport added before the mill's shifts the mill's index; a
+/// written record journaled again with the old index names the frogport by position as well, so the
+/// mark still drops it (choice SC113).
+#[test]
+fn a_written_record_journaled_again_after_a_redeclare_is_taken_once() {
+    let mut e = pair(Tunables::default());
+    away(&mut e, MINE, 100);
+    e.advance_to(Tick(20_100));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(20_100), x.op);
+    }
+    live(&mut e, MINE, 20_100);
+    e.advance_to(Tick(20_400));
+    let w = writes(&mut e);
+    assert_eq!(w.len(), 1, "{w:?}");
+    written(&mut e, 20_400, &w[0]);
+    let counted = e.stores()[&S].counts.written;
+    let ports = e.district(MILL).expect("mill").ports.get(IRON);
+    let mut d = store();
+    d.frogports.insert(
+        1,
+        StoreFrogport {
+            district: None,
+            inventory: None,
+            star: false,
+            pos: BlockPos::new(15, 64, 0),
+            conveyor: BlockPos::new(16, 64, 0),
+            from: None,
+        },
+    );
+    d.hops = vec![1, 2, 1];
+    send(&mut e, 25_000, Obs::PackageStore(d));
+    // Much later the mill's chunk journals the record again, with its old index 1.
+    e.advance_to(Tick(30_000));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(30_000), x.op);
+    }
+    let o = owed(&e);
+    written(&mut e, 20_400, &w[0]);
+    assert_eq!(e.stats.chain_writes_again, 1);
+    assert_eq!(e.stores()[&S].counts.written, counted);
+    assert_eq!(e.district(MILL).expect("mill").ports.get(IRON), ports);
+    assert_eq!(owed(&e), o);
+}
+
+/// A frogport's mark and its unanswered writes are saved with the store: after a restore the record
+/// journaled again is dropped, and the answer to the write in flight is taken.
+#[test]
+fn write_marks_and_unanswered_writes_survive_a_restore() {
+    let mut e = pair(Tunables::default());
+    e.set_page_check(true);
+    away(&mut e, MINE, 100);
+    e.advance_to(Tick(20_100));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(20_100), x.op);
+    }
+    live(&mut e, MINE, 20_100);
+    e.advance_to(Tick(20_400));
+    let w = writes(&mut e);
+    assert_eq!(w.len(), 1, "{w:?}");
+    written(&mut e, 20_400, &w[0]);
+    e.advance_to(Tick(20_700));
+    let pending = writes(&mut e);
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert!(!e.stores()[&S].marks.is_empty());
+    assert!(!e.stores()[&S].writing.is_empty());
+    let c = e.save_changed();
+    let mut back = Engine::restore(c.put, Tunables::default()).expect("restore");
+    assert_eq!(back.stores(), e.stores());
+    let o = back.stores()[&S].owed_to(frog(MILL)).get(IRON);
+    written(&mut back, 20_400, &w[0]);
+    assert_eq!(back.stats.chain_writes_again, 1);
+    assert_eq!(back.stores()[&S].owed_to(frog(MILL)).get(IRON), o);
+    written(&mut back, 20_700, &pending[0]);
+    assert_eq!(
+        back.stores()[&S].owed_to(frog(MILL)).get(IRON),
+        o - iron(&pending)
+    );
+    assert!(back.stores()[&S].writing.is_empty());
 }
 
 /// A split moves the importer's frogport to another store while a cluster holds the pool toward

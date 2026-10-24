@@ -115,7 +115,7 @@ public final class WriteChains {
         f.setChanged();
         District d = ind.districtAt(level, pos);
         District.Inventory inv = d == null ? null : d.inventoryAt(pos);
-        ByteBuffer in = PackageStores.journalChain(ind, s, index, d, inv, IndRecords.ChainPackage.CHAIN_IN, index, done, filter, goods, opId);
+        ByteBuffer in = PackageStores.journalChain(ind, s, index, pos, d, inv, IndRecords.ChainPackage.CHAIN_IN, index, done, filter, goods, opId);
         ind.commandResultInChunk(chunk, cmdSeq, opId, Obs.CommandResult.APPLIED, List.of(in));
         return true;
     }

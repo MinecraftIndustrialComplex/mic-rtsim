@@ -118,7 +118,7 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0415 | IND_STATION_PORTS | n inventories | 24 u64 station, 32 u64 district, 40 n × u32 inventory (indices of the district's current revision); at a loaded call's departure, when the set changed (choice SG32) | (40 + 4n) rounded up to 8 |
 | 0x0416 | IND_TRAIN_UNWATCHED | 0 | 24 u64 train, 32 u64 station; a watched train called at a station outside every district: the engine ends its leg (choice SG50) | 40 |
 | 0x0418 | IND_PACKAGE_STORE | n frogports | 24 u64 store, 32 u32 dim, 36 u32 zero, 40 u64 into (0 none), 48 n × Frogport48 in position order, then the hops between their conveyors as the upper triangle row by row ((0,1), (0,2) .. (1,2) ..), u16 each, 0xFFFF where the walk did not reach; padded to 8. n = 0: the store is gone and what it held joins `into` (SECTIONS.md §2.5) | 48 + 48n + 2·n(n-1)/2, rounded up to 8 |
-| 0x0419 | IND_CHAIN_PACKAGE | n entries | 24 u64 store, 32 u64 district (0 none), 40 u32 inventory (0xFFFFFFFF none), 44 u32 direction (3 chain out, 4 chain in; 5 kept for the frontier's chain held), 48 u32 frogport (index in the store's last IND_PACKAGE_STORE), 52 u32 destination (a frogport index, 0xFFFFFFFF no route; chain in: the frogport itself), 56 u32 packages, 60 u32 address (NAME), 64 u64 opId (0 none; a chain in that an IND_WRITE_CHAIN wrote: that command's op id, SC113), 72 u64 zero, 80 n × Entry16; a package store's frogport put packages on its chain or took them off (choice SC97) | 80 + 16n |
+| 0x0419 | IND_CHAIN_PACKAGE | n entries | 24 u64 store, 32 u64 district (0 none), 40 u32 inventory (0xFFFFFFFF none), 44 u32 direction (3 chain out, 4 chain in; 5 kept for the frontier's chain held), 48 u32 frogport (index in the store's last IND_PACKAGE_STORE), 52 u32 destination (a frogport index, 0xFFFFFFFF no route; chain in: the frogport itself), 56 u32 packages, 60 u32 address (NAME), 64 u64 opId (0 none; a chain in that an IND_WRITE_CHAIN wrote: that command's op id, SC113), 72 i32 x, 76 i32 y, 80 i32 z (the frogport's position, SC113), 84 u32 zero, 88 n × Entry16; a package store's frogport put packages on its chain or took them off (choice SC97) | 88 + 16n |
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
@@ -334,7 +334,8 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   Create is catching lands there). Java journals one IND_CHAIN_PACKAGE `CHAIN_IN` with the command's
   op id at 64 for what it wrote, then the COMMAND_RESULT; the chunk carries both until the engine
   acknowledges them, and the engine takes the `CHAIN_IN` once: by op id while Replay remembers it,
-  by the store's mark of the frogport's last written record after. Nothing written (the frogport is
+  as the answer to a write it still waits for (at that write's frogport), and else by the store's
+  mark of the last written record at the frogport's position (72 to 80). Nothing written (the frogport is
   not loaded, has no slot to spare, or takes no packages) is FAILED, with no record; the engine still
   owes it and writes again later.
 

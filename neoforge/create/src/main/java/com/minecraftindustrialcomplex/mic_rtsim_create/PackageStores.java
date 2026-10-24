@@ -730,7 +730,7 @@ public final class PackageStores {
             int destination = direction == IndRecords.ChainPackage.CHAIN_OUT ? routeFromPort(s, index, address) : index;
             Industry.GoodsCounter goods = ind.counter();
             ind.countStack(box, box.getCount(), goods);
-            journalChain(ind, s, index, d, inv, direction, destination, box.getCount(), address, goods, 0);
+            journalChain(ind, s, index, pos, d, inv, direction, destination, box.getCount(), address, goods, 0);
             ps.records++;
         } catch (RuntimeException e) {
             if (!warned) {
@@ -744,10 +744,10 @@ public final class PackageStores {
 
     /**
      * Journals and commits one IND_CHAIN_PACKAGE: {@code packages} packages with {@code goods} in all at the
-     * store's frogport {@code index}. {@code opId}: 0 for what Create moved, the engine's op for what an
+     * store's frogport {@code index}, at {@code pos}. {@code opId}: 0 for what Create moved, the engine's op for what an
      * IND_WRITE_CHAIN wrote ({@link WriteChains}). Returns the committed record.
      */
-    static ByteBuffer journalChain(Industry ind, Store s, int index, District d, District.Inventory inv, int direction, int destination,
+    static ByteBuffer journalChain(Industry ind, Store s, int index, BlockPos pos, District d, District.Inventory inv, int direction, int destination,
             int packages, String address, Industry.GoodsCounter goods, long opId) {
         int[] ids = goods.nonZeroIds();
         ByteBuffer r = ind.journal(IndRecords.IND_CHAIN_PACKAGE, IndRecords.ChainPackage.size(ids.length), ids.length);
@@ -760,7 +760,10 @@ public final class PackageStores {
         r.putInt(IndRecords.ChainPackage.PACKAGES, packages);
         r.putInt(IndRecords.ChainPackage.ADDRESS, ind.nameId(address));
         r.putLong(IndRecords.ChainPackage.OP_ID, opId);
-        r.putLong(IndRecords.ChainPackage.OP_ID + 8, 0);
+        r.putInt(IndRecords.ChainPackage.X, pos.getX());
+        r.putInt(IndRecords.ChainPackage.Y, pos.getY());
+        r.putInt(IndRecords.ChainPackage.Z, pos.getZ());
+        r.putInt(IndRecords.ChainPackage.Z + 4, 0);
         for (int i = 0; i < ids.length; i++) {
             int at = IndRecords.ChainPackage.ENTRIES + i * IndRecords.ENTRY16;
             r.putInt(at, ids[i]);
