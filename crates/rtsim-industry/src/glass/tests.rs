@@ -6858,6 +6858,79 @@ mod replay_path {
             assert_eq!(all_open(&g), vec![false; 3]);
         }
 
+        /// A train stands at one station: its arrival at another, left by a restart while it stood
+        /// there (no departure came), never maps a later call's cargo (review M1). The stale station
+        /// has the lower id, which the cargo's lookup took first before the arrival dropped it.
+        #[test]
+        fn a_calls_cargo_maps_through_the_station_the_train_stands_at() {
+            use crate::ids::{StationId, TrainId};
+            use crate::obs::{CargoFrom, PortKind, PortTransfer, StationPorts, TrainCall};
+            let (b, _) = three_lines();
+            let mut s = setup(&b, 6);
+            for k in 1..=15u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[
+                        &[(BRASS, 100_000 - m)],
+                        &[(SHEET, m)],
+                        &[(ORE, 100_000 - m)],
+                        &[(CRUSHED, m)],
+                        &[(ZINC, 100_000 - m)],
+                        &[(COPPER, m)],
+                    ],
+                );
+            }
+            let train = TrainId(77);
+            let (old, now) = (
+                StationId(0x5eed_0000_0000_0001),
+                StationId(0x5eed_0000_0000_0002),
+            );
+            for (t, station, inv) in [(1510, old, 5u32), (1520, now, 1u32)] {
+                s.push(at(
+                    t,
+                    Obs::TrainArrived(TrainCall {
+                        train,
+                        station,
+                        district: D,
+                        simulated: false,
+                        cargo_from: CargoFrom::Approach,
+                        carriages: Vec::new(),
+                    }),
+                ));
+                s.push(at(
+                    t + 1,
+                    Obs::StationPorts(StationPorts {
+                        station,
+                        district: D,
+                        inventories: vec![inv],
+                    }),
+                ));
+            }
+            let cargo = GoodVec::from_pairs([(SHEET, -40)]);
+            s.push(at(
+                1530,
+                Obs::Port(PortTransfer {
+                    district: D,
+                    kind: PortKind::TrainCargo,
+                    inventory: None,
+                    counterpart: train.0,
+                    op: None,
+                    goods: cargo.clone(),
+                }),
+            ));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(c.ports_at.get(&1), Some(&cargo));
+            assert!(!c.ports_at.contains_key(&5));
+        }
+
         /// Through the engine: a loaded call's ports, sent before its cargo (SC75), join A and B;
         /// the cargo, with no inventory, maps through the station the train stands at to their
         /// unit's port; the station's `Other` discard reaches that unit and the district's window;
