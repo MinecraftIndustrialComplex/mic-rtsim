@@ -660,6 +660,24 @@ fn a_train_passed_rolls_and_robs() {
             && e.what == format!("falls on train 7 by the track: {items} items")),
         "the note says by the track"
     );
+    // The Frostmaw's loot is destroyed where it is taken (ledger 10): the whole of it is in the
+    // ledger's destroyed share and the band carries none home.
+    let taken = i128::from(items) * 1_000;
+    assert_eq!(l.c.ledger.from_players.values().sum::<i128>(), taken);
+    assert_eq!(
+        l.c.ledger.destroyed_from_players.values().sum::<i128>(),
+        taken,
+        "the robbed items are destroyed"
+    );
+    assert_eq!(
+        l.c.ledger.destroyed_from_players, l.c.ledger.from_players,
+        "all of it, good by good"
+    );
+    assert!(
+        l.c.parties[l.p].from_players.is_empty(),
+        "the band carries nothing home: {:?}",
+        l.c.parties[l.p].from_players
+    );
     l.c.check(&l.w).expect("books");
 
     // A miss: the roll is the only thing between a pass and a threat.
