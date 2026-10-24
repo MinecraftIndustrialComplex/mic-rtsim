@@ -224,6 +224,38 @@ fn a_chief_killed_in_a_fight_is_fell_news_and_the_rout_raid_news() {
     assert!(r.w.knowledge.knows(chief, id));
 }
 
+/// The player kills the war chief while the band is still on the road (CL-D61 routs it there):
+/// the raid was beaten off before it arrived, a Raid report, BEATEN, against the feud's player,
+/// beside the Fell.
+#[test]
+fn a_chief_killed_on_the_road_is_a_beaten_raid() {
+    let (mut r, band) = chief_in_a_fight(9);
+    r.c.parties[band].phase = Phase::Out;
+    let at = Tick::from_days(1) + 100;
+    let (fa, _, _) = r.camp();
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.news(ReportKind::Fell).len(), 1, "the chief fell");
+    let raids = r.news(ReportKind::Raid);
+    assert_eq!(raids.len(), 1, "the road rout is one raid report");
+    let (id, rep) = raids[0];
+    assert_eq!((rep.who, rep.whom), (fa, r.p), "against the feud's player");
+    assert_eq!(rep.severity, raid::BEATEN);
+    let (_, chief, _) = r.camp();
+    assert!(r.w.knowledge.knows(chief, id), "the new chief knows it");
+}
+
+/// A band whose chief is killed while it still musters at its camp had set out on nobody: the
+/// Fell, but no Raid report.
+#[test]
+fn a_chief_killed_while_mustering_is_no_raid() {
+    let (mut r, band) = chief_in_a_fight(9);
+    r.c.parties[band].phase = Phase::Mustering;
+    let at = Tick::from_days(1) + 100;
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.news(ReportKind::Fell).len(), 1, "the chief fell");
+    assert!(r.news(ReportKind::Raid).is_empty(), "no raid yet");
+}
+
 /// A chief dead of age is Fell news, DIED, when the conflict next wakes and the heir succeeds
 /// (succession is lazy).
 #[test]
