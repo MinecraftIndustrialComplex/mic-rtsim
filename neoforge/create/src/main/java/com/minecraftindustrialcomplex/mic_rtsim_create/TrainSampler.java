@@ -162,10 +162,7 @@ public final class TrainSampler {
                 // A train in a state Create's own tick would also trip on: forget its segment, say so once
                 s.has = false;
                 s.open.clear();
-                if (!warned) {
-                    warned = true;
-                    MicRtsimCreate.LOGGER.warn("mic_rtsim_create: the train sampler skipped a train it could not read", e);
-                }
+                warn(e);
             }
             if (timer != null)
                 timer.accept(System.nanoTime() - t0);
@@ -173,7 +170,18 @@ public final class TrainSampler {
         }
     }
 
-    /** Files each train in its bucket, and closes the passes of the trains gone since the last pass. */
+    /** Says once per server run that the sampler skipped something it could not read (MZB-387). */
+    private static void warn(RuntimeException e) {
+        if (!warned) {
+            warned = true;
+            MicRtsimCreate.LOGGER.warn("mic_rtsim_create: the train sampler skipped a train it could not read", e);
+        }
+    }
+
+    /**
+     * Files each train in its bucket, and closes the passes of the trains gone since the last pass. Nothing
+     * throws out of it: a gone train whose passes cannot be sent loses them (MZB-387), and the rest go on.
+     */
     private static void rebucket() {
         for (List<State> b : BUCKETS)
             b.clear();
@@ -190,7 +198,12 @@ public final class TrainSampler {
             if (s.seen)
                 s.seen = false;
             else {
-                closeAll(s, s.tick);
+                try {
+                    closeAll(s, s.tick);
+                } catch (RuntimeException e) {
+                    s.open.clear();
+                    warn(e);
+                }
                 it.remove();
             }
         }
