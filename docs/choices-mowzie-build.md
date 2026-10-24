@@ -1390,3 +1390,20 @@ conservative option at its fork.
   of what Java journaled for it does (this rule), short of the switched-off case above. The
   rtsim-jni generation-0 fold has no jni-level test of a newer epoch: the fixture's copies are of
   the pages' own epoch; the engine half is the sweep's Copy path.
+- **RP-58** (a fighting band is embodied again by its next commanded wave; fixes6 item 5; live on
+  main since 283b1254): when Java refused a watched fight's first wave, the `BAND_SPAWN_REJECTED`
+  arm left the band unembodied with nothing placed, and nothing set `embodied` again, as
+  `spawn_wave` never sets it. The later waves Java placed were in Minecraft by the books
+  (`spawned`) but their `BAND_CASUALTIES` found no band in view (`casualties` asks `embodied` and
+  the epoch) and counted nothing, and the fight's end recalled nothing (`go_home` recalls only an
+  embodied band). The fix, my call: `wave` sets `embodied` when it commands a wave (the wave
+  counter moved). Not at the wave's `BAND_MATERIALIZED`: the live engine reads none
+  (`materialized` acts only while replaying), and embodiment is set at command time everywhere
+  else (`start_fight`, `seen`), so a record-time rule would need a new live path. Failing first,
+  live, mowzie_records' `a_fight_whose_first_wave_was_refused_counts_its_later_waves_deaths` (a
+  raid band's fight with only its wave 0 refused, the plugin killing a quarter of each later wave
+  at the base): the plugin reported 3 deaths of epoch 2, the engine counted 0 and the band's alive
+  did not move; now 3, alive down by 3, and the fight's end recalls epoch 2. One commit, d092dafd,
+  code and test only, no dependency on the replay gate: it cherry-picks cleanly onto origin/main
+  (428a3311), where the test fails without the fix with the same values and rtsim-conflict and
+  rtsim-jni pass with it. The sims are unchanged.
