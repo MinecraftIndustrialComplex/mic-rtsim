@@ -798,12 +798,15 @@ impl Conflict {
     /// A change of a camp's room or lines: every feud waiting on it is planned again, and a camp
     /// that is in books its next refill.
     pub(super) fn unblock(&mut self, f: u32, at: Tick) {
-        self.unblock_lines(f, at);
         // A grove that stays in gets its heir as soon as the wait is over and a warrior is home
         // (MOWZIE.md 4.10): a due tick with no warrior is looked at again at each change of the
         // camp's lines. It returns at once unless the heir is due, the camp is in and no pair is
-        // in flight.
-        self.camp_heir(f, at);
+        // in flight. The heir goes first: an order of the pair ends with `unblock_lines`
+        // itself (the feuds that waited for it), so the lines are looked at here only when none
+        // was ordered.
+        if !self.camp_heir(f, at) {
+            self.unblock_lines(f, at);
+        }
     }
 
     /// `unblock` without a look at the heir.
@@ -2388,12 +2391,13 @@ impl Conflict {
     /// (MZB-612: its warriors are left, with no SET_OUT sent yet, and the plugin cannot tell them
     /// from the ones at home, so a MASK could take one as that band's loss); the camp is looked at
     /// again at each census, each due tick and the end of each muster (`camp_set_out`, `home`).
-    pub(super) fn camp_heir(&mut self, f: u32, at: Tick) {
+    /// Whether the pair was ordered (the lines were looked at again then, `unblock_lines`).
+    pub(super) fn camp_heir(&mut self, f: u32, at: Tick) -> bool {
         let Some(camp) = self.camp(f).filter(|c| c.is_in()) else {
-            return;
+            return false;
         };
         if !camp.heir.is_some_and(|h| h.due <= at) || camp.mask.is_some() || camp.seat.is_some() {
-            return;
+            return false;
         }
         let mustering = camp.slots.iter().any(|s| {
             s.state == SlotState::Left
@@ -2404,13 +2408,13 @@ impl Conflict {
                     .is_some_and(|x| x.phase == Phase::Mustering)
         });
         if mustering {
-            return;
+            return false;
         }
         let warrior_home = camp
             .members()
             .any(|s| s.state == SlotState::Body && s.line.is_none());
         let Some(chief_kind) = self.chief_body_id(f).filter(|_| warrior_home) else {
-            return;
+            return false;
         };
         let key = self.factions[f as usize].key;
         let generation = camp.heir_generation(key).expect("an heir");
@@ -2441,6 +2445,7 @@ impl Conflict {
         // The pair is in flight, so a war party may muster again (MZB-616): the feuds that waited
         // for the heir are planned again, and the plunder drive tries at its next gap.
         self.unblock_lines(f, at);
+        true
     }
 
     /// Whether the camp's heir goes before any new war party (MZB-616): the heir is due, the camp
