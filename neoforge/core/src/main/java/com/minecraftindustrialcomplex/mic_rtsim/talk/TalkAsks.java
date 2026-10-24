@@ -122,7 +122,7 @@ public final class TalkAsks implements SessionPlugin {
         long id = nextId++;
         open.put(id, new Open(id, session.gameTime(), level.dimension(), holder,
                 player.getUUID().getMostSignificantBits(), player.getUUID().getLeastSignificantBits(),
-                talker.getBlockX(), talker.getBlockZ(), TalkRecords.ASK_NEWS, done));
+                talker.getBlockX(), talker.getBlockZ(), TalkRecords.askFlagsFor(holder.kind()), done));
         asked++;
         return true;
     }
