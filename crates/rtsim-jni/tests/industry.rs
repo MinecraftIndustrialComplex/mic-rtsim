@@ -1473,6 +1473,7 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
         obs: Obs::PackageStore(StoreDecl {
             store,
             dim: 0,
+            epoch: 0,
             into: None,
             frogports: vec![port(9_000), port(9_020)],
             hops: vec![1],
@@ -1492,6 +1493,7 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
             packages: 2,
             address: 0,
             op: op.map(rtsim_kernel::journal::OpId),
+            key: None,
             goods: GoodVec::from_pairs([(Good(1), 128)]),
         }),
     };
