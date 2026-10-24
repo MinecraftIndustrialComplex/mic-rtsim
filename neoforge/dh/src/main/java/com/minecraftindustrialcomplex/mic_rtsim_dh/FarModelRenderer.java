@@ -63,8 +63,9 @@ import org.lwjgl.opengl.GL30;
  *       the band inside them. Each kind is held to the tier's count ({@link FarDetail#dragons},
  *       {@link FarDetail#feedObjects}), nearest first by horizontal distance as the boxes rank theirs, a dragon
  *       reaching as far as its boxes do; a dragon still drawn as a box takes its place in that count here, and a
- *       model in {@link FarDragonView}'s, so in DH's pass the models and the boxes together keep to it. The
- *       band's boxes have no count of their own, so there only the models keep to it.</li>
+ *       model in {@link FarDragonView}'s, so in DH's pass the models and the boxes together keep to it. In the
+ *       band {@link FarBandRenderer} counts its dragon boxes with the models, in the same order (DHT69), so
+ *       there too they keep to it together.</li>
  *   <li><b>Live</b>: the nearest {@link #LIVE_DRAGONS} dragons within {@link #LIVE_DISTANCE} blocks are drawn by
  *       their own renderer each frame (smooth wings), the rest from baked frames. In DH's vanilla fade, where
  *       both passes draw, both render it live: one pose placed once a frame and rendered twice at the same time

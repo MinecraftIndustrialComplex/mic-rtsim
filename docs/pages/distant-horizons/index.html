@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- The media lives outside git, in this page's staging folder (mic-media/pages/distant-horizons): copy this file there and deploy from that folder. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -181,12 +182,26 @@ summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
 details[open] summary::before { content: "\25BE"; }
 details ul { font-size: 15.5px; color: var(--muted); }
 footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+
+/* round 2 media */
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; margin: 14px 0 10px; align-items: start; }
+.sheets { display: grid; gap: 18px; margin: 14px 0 10px; }
+figure { margin: 0; }
+figure video, figure img { width: 100%; height: auto; display: block; border-radius: 4px; background: var(--card); }
+figcaption { font-size: 15px; color: var(--muted); margin-top: 8px; line-height: 1.45; max-width: 46em; }
+figure.small { max-width: 480px; margin: 6px 0 14px; }
+.tag { display: inline-block; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-right: 6px; vertical-align: 1px; }
+.tag.after { color: var(--stop-ink); background: var(--stop-bg); border-color: var(--stop-line); }
+table.r2 th:first-child { width: 26%; }
+table.r2 th:nth-child(2) { width: 21%; }
+table.r2 .v { margin-bottom: 0; white-space: nowrap; }
 </style>
 </head>
 <body>
 
 <nav class="top" data-ss-react="off">
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#round2">Round 2</a>
   <a href="#built">Built</a>
   <a href="#bench">Measured</a>
   <a href="#foryou">Approved</a>
@@ -203,13 +218,13 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Trains and dragons now move in Distant Horizons, on rtsim's own feed at 24 to 32 times less bandwidth than Create's</h1>
-  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on two worlds we generated ourselves are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>. You were unhappy with the box look it shows, so it was replaced: since 23 October trains are drawn as the carriages players built and dragons as their real Ice and Fire models, with boxes only as a fallback (<a href="#gallery">below</a>). The real models and the hand-over fixes are filmed before and after on <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23">the morning page of 23 October</a>. Windmills, war and airships are still estimates.</p>
+  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on two worlds we generated ourselves are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>. You were unhappy with the box look it shows, so it was replaced: since 23 October trains are drawn as the carriages players built and dragons as their real Ice and Fire models, with boxes only as a fallback (<a href="#gallery">below</a>). The real models and the hand-over fixes are filmed before and after on <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23">the morning page of 23 October</a>. Round 2 landed later that day (642a3a68): a dragon's age in the far route, as you answered, and an arrival hold, so a far dragon keeps its size and no longer unfolds as its real body takes over (<a href="#round2">below</a>). Windmills, war and airships are still estimates.</p>
   <p class="lead" data-ss-id="lead">Distant Horizons, which the pack now ships at 3.3.3, lets a mod draw coloured boxes at any distance and move them every frame. The one hard limit is that boxes cannot rotate, so anything that turns (sails, wings, a ship changing course) is a flipbook of a few poses that swap. Trains and dragons are built, and since 23 October they get past that limit: they are drawn as real models inside Distant Horizons' own picture. Windmills, war and airships come next.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-bw"><div class="n">1.3 to 1.7 <small>KB/s</small></div><div class="t">for 50 trains on rtsim's feed, against 41.3 KB/s on Create's own sync</div></div>
     <div class="tile" data-ss-id="kpi-frame"><div class="n">2.7 <small>ms</small></div><div class="t">of a 12.5 ms frame at the heaviest load: 64 dragons and 50 trains on HIGH</div></div>
     <div class="tile" data-ss-id="kpi-doable"><div class="n">2 <small>of 6</small></div><div class="t">things you asked for are built: trains and dragons, now drawn as their real models</div></div>
-    <div class="tile" data-ss-id="kpi-decide"><div class="n">0</div><div class="t">questions wait for you: a dragon's age goes into the far route, as you answered (<a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23#models-choices">morning page</a>); the formats are approved and the jar ships with mic-rtsim</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">0</div><div class="t">questions wait for you: a dragon's age is in the far route now, as you answered (<a href="#round2">round 2</a>); the formats are approved and the jar ships with mic-rtsim</div></div>
   </div>
   <div class="box limits" data-ss-id="limits">
     <h3>Three limits to know up front</h3>
@@ -220,6 +235,64 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </ul>
   </div>
 </header>
+
+<section id="round2" data-ss-id="round2" data-ss-section>
+  <h2 data-ss-id="r2-h">Round 2, 23 October: a far dragon keeps its size and arrives already flying</h2>
+  <p data-ss-id="r2-p">Landed on mic-rtsim main at <code>642a3a68</code> (choices DHT67 to DHT70). It builds your answer, "Add the age field" (DH-7), and the two choices made that morning: the arrival hold and a cap on far dragons. Filmed on a world we generated ourselves: one stage 4 fire dragon, 76 days old, flies in on the engine's route, and its real body takes over 114 blocks from the camera, or 149, inside Distant Horizons' fade.</p>
+  <div class="tiles" data-ss-id="r2-tiles">
+    <div class="tile" data-ss-id="r2-kpi-size"><div class="n">12.80</div><div class="t">the size of far model and body in every frame, with the age. Without it the far model was 16.10, 26% larger</div></div>
+    <div class="tile" data-ss-id="r2-kpi-hold"><div class="n">0.25 <small>s</small></div><div class="t">the far model holds, 246 to 257 ms, while the new body settles unseen. No mixin</div></div>
+    <div class="tile" data-ss-id="r2-kpi-cap"><div class="n">64 <small>on HIGH</small></div><div class="t">far dragons at most, nearest first; 24 on MEDIUM and 8 on LOW</div></div>
+    <div class="tile" data-ss-id="r2-kpi-tests"><div class="n">108 <small>of 108</small></div><div class="t">core GameTests pass; Ice and Fire 29 of 29, Create 189 of 189, on fresh worlds</div></div>
+  </div>
+
+  <h3 data-ss-id="r2-status-h">What round 2 did, and what is left</h3>
+  <table class="stack r2" data-ss-id="r2-status">
+    <thead><tr><th>Item</th><th>State</th><th>What you would see</th></tr></thead>
+    <tbody>
+      <tr data-ss-id="r2-age"><td>A dragon's age in the far route (DH-7, your answer)</td><td data-label="State"><span class="v now">Done</span></td><td data-label="What you would see">Without it, a far dragon was drawn at its stage's middle age, 87 days, so 26% larger than its body (render size 16.10 against 12.80), and it shrank at the swap. Now the route carries the age, and far model and body are both 12.80 in every frame.</td></tr>
+      <tr data-ss-id="r2-hold"><td>The arrival hold</td><td data-label="State"><span class="v now">Done, no mixin</span></td><td data-label="What you would see">A new body starts its animation from Ice and Fire's rest pose, wings flat and legs down. Now the far model holds for about 5 ticks (246 to 257 ms) while the body's first renders are hidden through GeckoLib's own cancelable render event, so its animation settles unseen. Every take without the hold shows the rest pose and the wings unfolding. With it, the visual review found no unfold, no double draw and no gap in any of the 8 arrivals, at 114 and 149 blocks.</td></tr>
+      <tr data-ss-id="r2-cap"><td>A cap on far dragons for each detail level</td><td data-label="State"><span class="v now">Done</span></td><td data-label="What you would see">8 on LOW, 24 on MEDIUM, 64 on HIGH, nearest first, now in the near band too, where box dragons had no cap. On LOW a flock shows its 8 nearest.</td></tr>
+      <tr data-ss-id="r2-reset"><td>Changing render distance</td><td data-label="State"><span class="v now">Done</span></td><td data-label="What you would see">Models are no longer blanked and baked again, which showed seconds of boxes after an options change. What no train or dragon asks for again within 2 seconds is freed (2&nbsp;s is a placeholder).</td></tr>
+      <tr data-ss-id="r2-dht44"><td>A fast dragon's double image (DHT44)</td><td data-label="State"><span class="v notyet">Open</span></td><td data-label="What you would see">Seen in 2 of 8 earlier takes: as a dragon set off fast from a hover, its far model ran away from it, two images for up to 0.8&nbsp;s. Round 2 found no clear cause, so it stays open.</td></tr>
+      <tr data-ss-id="r2-snap"><td>The wing snap at the swap</td><td data-label="State"><span class="v plugin">Being fixed, round 3</span></td><td data-label="What you would see">In 4 of 8 takes the wings jumped from fully down to fully up in one frame, because the body's wingbeat always starts wings up, while the far model's is wherever its own beat is (<a href="#r2-wingsnap">below</a>).</td></tr>
+      <tr data-ss-id="r2-tags"><td>A name tag, leash or shadow during the hold</td><td data-label="State"><span class="v plugin">Being fixed, round 3</span></td><td data-label="What you would see">The event hides only the model, so for that quarter second a named dragon's tag, a leash, or its shadow within 16 blocks shows without the body.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 data-ss-id="r2-film-h">Before and after: the size and the unfold</h3>
+  <p data-ss-id="r2-film-p">Each clip is 5 seconds of play at half speed, zoomed in, with the body taking over 114 blocks from the camera. They were filmed in two sessions at two places, so the scenery differs; the dragon, its distance and the zoom are the same.</p>
+  <div class="pair" data-ss-id="r2-clips">
+    <figure data-ss-id="r2-v-before">
+      <video controls loop muted playsinline preload="metadata" poster="media/r2-before-poster.jpg" width="1280" height="720"><source src="media/r2-before.mp4" type="video/mp4"></video>
+      <figcaption><span class="tag">Before</span>No age, no hold. The far model flies in a quarter larger than the dragon; then the real body appears smaller, wings flat and legs down, and unfolds.</figcaption>
+    </figure>
+    <figure data-ss-id="r2-v-after">
+      <video controls loop muted playsinline preload="metadata" poster="media/r2-after-poster.jpg" width="1280" height="720"><source src="media/r2-after.mp4" type="video/mp4"></video>
+      <figcaption><span class="tag after">After</span>The age and the hold. One dragon of one size in every frame; the body takes over already flying.</figcaption>
+    </figure>
+  </div>
+  <div class="sheets" data-ss-id="r2-sheets">
+    <figure data-ss-id="r2-s-before"><a href="media/r2-sheet-before.jpg"><img src="media/r2-sheet-before.jpg" width="2000" height="562" loading="lazy" alt="Eighteen frames of the hand-over before the fix: a large red dragon with wings down in the first eight, then a smaller dragon with wings flat and legs hanging, its wings rising over the next frames"></a><figcaption><span class="tag">Before</span>Every frame across the swap, a thirtieth of a second apart: the far model to 48.033, the real body from 48.067, smaller and in its rest pose, unfolding over a quarter second.</figcaption></figure>
+    <figure data-ss-id="r2-s-after"><a href="media/r2-sheet-after.jpg"><img src="media/r2-sheet-after.jpg" width="2000" height="564" loading="lazy" alt="Eighteen frames of the hand-over after the fix: the red dragon stays the same size throughout and is flying in every frame"></a><figcaption><span class="tag after">After</span>The far model to 41.433, the body from 41.467: the same size, and flying from its first frame.</figcaption></figure>
+  </div>
+
+  <h3 id="r2-wingsnap" data-ss-id="r2-snap-h">Left for round 3: the wing snap</h3>
+  <figure data-ss-id="r2-snap-fig"><a href="media/r2-wingsnap.jpg"><img src="media/r2-wingsnap.jpg" width="1930" height="267" loading="lazy" alt="Four frames at 149 blocks: the dragon with its wings fully down in the first two, then with its wings fully up in the next two"></a><figcaption><span class="tag after">After</span>At 149 blocks, inside the fade: the far model's wings fully down at 41.367, the body's fully up at 41.400. The size and the flight hold; only the wingbeat jumps. Being fixed in round 3, so the body's wingbeat starts where the far model's is.</figcaption></figure>
+
+  <h3 data-ss-id="r2-more-h">The dragon cap, and a change of render distance</h3>
+  <div class="pair" data-ss-id="r2-more">
+    <figure data-ss-id="r2-bandcap-fig"><a href="media/r2-bandcap.jpg"><img src="media/r2-bandcap.jpg" width="1600" height="900" loading="lazy" alt="Looking down on a crowd of dragons of every species and colour over grassland: red, blue, black, green, purple, white and pale blue"></a><figcaption><span class="tag after">After</span>30 dragons in the near band on MEDIUM: the 24 nearest drawn, all as models, none as boxes; 6 left out.</figcaption></figure>
+    <figure data-ss-id="r2-reset-fig"><a href="media/r2-reset.jpg"><img src="media/r2-reset.jpg" width="1400" height="1456" loading="lazy" alt="The same view three times: before the change, with dragons over a forest; half a second after, with the ground blocky while Distant Horizons reloads it and the dragons still drawn; and 5 seconds after, with the ground back and the dragons still there"></a><figcaption><span class="tag after">After</span>Distant Horizons' render distance from 160 to 150 chunks, with 12 far dragons ahead: 11 or 12 drawn at every sample over 5 seconds, none waiting for a model. The blocky ground at 0.5 s is Distant Horizons reloading its own terrain.</figcaption></figure>
+  </div>
+
+  <div class="box" data-ss-id="r2-chroma">
+    <h3>A red trace after the swap is the recording, not a second dragon</h3>
+    <p>In the first session's clips a red tint stayed under the body for about 4 frames after the far model went, and read as a second dragon. It is the video's colour compression: it is only in the colour, none of it in the brightness. The second session recorded full colour, and the visual review reads the faint trace left in one take as the recording too; in the code, nothing draws the far model once the hold ends.</p>
+    <figure class="small" data-ss-id="r2-chroma-fig"><img src="media/r2-chroma.jpg" width="800" height="240" loading="lazy" alt="The same frame twice in grey: left, its brightness, showing one dragon; right, its red colour difference, with a pale smear by the dragon"><figcaption>One frame split in two: the brightness (left) shows one dragon; the red colour plane (right) holds the smear.</figcaption></figure>
+  </div>
+  <p class="cap" data-ss-id="r2-tests">Tests on 642a3a68: core GameTests 108 of 108, Ice and Fire 29 of 29, Create 189 of 189, each on a fresh world. Filmed in a private window of our own at 1920 by 1080, render distance 10, MEDIUM.</p>
+</section>
 
 <section id="built" data-ss-id="built" data-ss-section>
   <h2 data-ss-id="built-h">Built on 22 October: trains, the feed and dragons</h2>
@@ -323,7 +396,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
   <div class="box" data-ss-id="dh-placeholders">
     <h3>Set by eye, to confirm when you see them</h3>
-    <p>Each is a placeholder you may change at any time: the hold of 2 sweeps before an object goes; a hunt circling at 0.5 blocks a tick, spiralling onto its circle over 40 ticks; the budgets of 8, 24 or 64 dragons and 48, 128 or 320 objects; and the dragon colours, stage lengths of 3, 6, 10, 14 and 20 blocks, a wingspan of 1.4 lengths and a wingbeat of 4 frames of 5 ticks.</p>
+    <p>Each is a placeholder you may change at any time: the hold of 2 sweeps before an object goes; a hunt circling at 0.5 blocks a tick, spiralling onto its circle over 40 ticks; the budgets of 8, 24 or 64 dragons and 48, 128 or 320 objects; the 2 seconds a change of render distance keeps models; and the dragon colours, stage lengths of 3, 6, 10, 14 and 20 blocks, a wingspan of 1.4 lengths and a wingbeat of 4 frames of 5 ticks.</p>
   </div>
 </section>
 
@@ -343,7 +416,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </ul>
     <p><strong>One change from the plan (DHT65):</strong> far dragons are poses baked from the real 3D model, not flat pictures, which look better at the same cost.</p>
     <p><strong>DHT47, the overnight choice, is kept,</strong> as a copy of the dragon's body drawn in Distant Horizons' own pass, so the body keeps its colour inside the fade and the far model takes over where it leaves. Hiding the body there instead was tried and left out: the swap jumped.</p>
-    <p><strong>Two choices made, to be built, which you can overrule,</strong> and <strong>one question you answered</strong>: "Add the age field". A dragon's age goes into the far route, so it does not change size at the hand-over. All three are queued for the far view's next round of fixes: on <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23#models-choices">the morning page</a>.</p>
+    <p><strong>Two choices made, which you can overrule,</strong> and <strong>one question you answered</strong>: "Add the age field". All three are built in round 2 (<a href="#round2">above</a>): the far route carries a dragon's age, a new body is held back while the far model stands in, and far dragons keep their cap in the near band too. The choices are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23#models-choices">the morning page</a>.</p>
   </div>
   <div class="box" data-ss-id="gallery-fix">
     <h3>Seen in the footage: hand-over glitches <span class="done-tag">Fixed and filmed</span></h3>
@@ -577,13 +650,14 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li>Prior art: LOD Entity Rendering, SeeU, Separate Sable Render Distance, Valkyrien Skies issue 1300, and DH's API example.</li>
     <li>Your answers: <code>DECISIONS.md</code> DH-1 to DH-5 (1476624), and for phase 2, "Approve, ship with rtsim" of 22 October, recorded as DH-2 phase 2 and DH-2 pack (027b4c0c). Your rules: I18; <code>PLAN.md</code> §4.10; MZ-15 and MZ-16 for the Mowzie band.</li>
     <li>What was built and measured: <code>docs/choices-dh-trains.md</code> (phase 1, DHT1 to DHT24, measured), <code>docs/choices-dh-feed.md</code> (phase 2, DHT25 to DHT39, bench round 3 and "For Ben"), and <code>docs/boundary.md</code> §12 for the wire formats, on mic-rtsim main at ca5b3eb.</li>
+    <li>Round 2: <code>docs/choices-dh-feed.md</code>, "Round two (DH-7)", DHT67 to DHT70, and its measured section "Round two", on mic-rtsim main at 642a3a68; your answer in <code>DECISIONS.md</code> DH-7.</li>
   </ul>
 </details>
 
 </main>
 
 <footer data-ss-react="off">
-  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb), your approval, the gallery and your verdict on its look; and 23 October for the real models and your answer on a dragon's age. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb), your approval, the gallery and your verdict on its look; and 23 October for the real models, your answer on a dragon's age, and round 2 (642a3a68): the age, the arrival hold and the dragon cap, filmed before and after. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
 </footer>
 </body>
 </html>

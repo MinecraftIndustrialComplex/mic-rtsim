@@ -157,6 +157,22 @@ fn bars(j: &Java, ids: &Ids) -> i64 {
         .sum()
 }
 
+/// Ticks the world, a lockstep each, until the pages hold every observation through `through`
+/// (a save asked for with `request_save`). Panics after 60 s of wall clock instead of spinning
+/// for ever: a hung test binary holds the shared cargo lock.
+fn mc_tick_until_durable(j: &mut Java, through: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while j.e.durable_obs_seq() < through {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pages never became durable: waited 60 s for durable_obs_seq to reach the \
+             requested save; durable_obs_seq {}, requested through {through}",
+            j.e.durable_obs_seq()
+        );
+        j.mc_tick();
+    }
+}
+
 fn industry<R>(e: &Engine, f: impl FnOnce(&Industry) -> R) -> R {
     e.with_industry(|ie, _| f(ie))
 }
@@ -379,9 +395,7 @@ fn crash_run(crash: Crash) {
     let msave = j.mc().saved();
     let through = j.next_obs - 1;
     j.e.request_save(through);
-    while j.e.durable_obs_seq() < through {
-        j.mc_tick();
-    }
+    mc_tick_until_durable(&mut j, through);
     assert_eq!(
         j.e.durable_obs_seq(),
         through,
@@ -845,9 +859,7 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
     let through = j.next_obs - 1;
     assert!(jsave.last_applied_cmd < held_seq);
     j.e.request_save(through);
-    while j.e.durable_obs_seq() < through {
-        j.mc_tick();
-    }
+    mc_tick_until_durable(&mut j, through);
     assert!(
         j.e.with_industry(|_, l| l.outbox) >= 1,
         "the delta waits in the outbox"
@@ -909,9 +921,7 @@ fn pages_behind_the_world_save_rederive_the_same_reconcile() {
     j.mc_run_until(day(2.5));
     let through = j.next_obs - 1;
     j.e.request_save(through);
-    while j.e.durable_obs_seq() < through {
-        j.mc_tick();
-    }
+    mc_tick_until_durable(&mut j, through);
     j.mc_run_until(day(3.0) + 100);
     assert!(!reconciles(&j).is_empty(), "applied before the world save");
     let ops = |j: &Java| -> Vec<u64> {
@@ -975,9 +985,7 @@ fn failed_carriage(crash: bool) {
         assert!(j.mc().t < day(5.0), "a station exchange");
     }
     let (seq, _op, through) = j.failed_carriage.unwrap();
-    while j.e.durable_obs_seq() < through {
-        j.mc_tick();
-    }
+    mc_tick_until_durable(&mut j, through);
     assert_eq!(j.e.durable_obs_seq(), through);
     if crash {
         // The world saves now: its journal holds the FAILED answer, lastAppliedCmdSeq >= seq.
@@ -1158,9 +1166,7 @@ fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
     let msave = j.mc().saved();
     let through = j.next_obs - 1;
     j.e.request_save(through);
-    while j.e.durable_obs_seq() < through {
-        j.mc_tick();
-    }
+    mc_tick_until_durable(&mut j, through);
     let gt = j.game_time;
     // The player comes back: the raid lands in the reconcile.
     at_mill(&mut j, true);
