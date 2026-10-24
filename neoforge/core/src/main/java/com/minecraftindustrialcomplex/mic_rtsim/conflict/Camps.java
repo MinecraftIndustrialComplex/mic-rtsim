@@ -47,8 +47,10 @@ import java.util.UUID;
  * the jar's own bodies and answers each (CAMP_BODIES), and reports the deaths and takes of the bodies a
  * camp holds (CAMP_DEATH). Owned by {@link ConflictBridge}; server thread only.
  *
- * <p><b>In and out.</b> Each footprint chunk's ticket level is read once at declaration and then
- * followed through {@code ChunkTicketLevelUpdatedEvent}. At the end of a tick a camp whose chunks moved
+ * <p><b>In and out.</b> Each footprint chunk's ticket level is read at declaration and then followed: by
+ * a poll, the authority (every {@link #POLL_PERIOD} ticks, each camp in its own slot of them, MZB-290),
+ * and by {@code ChunkTicketLevelUpdatedEvent} as an early hint where it fires (vanilla; C2ME's chunk
+ * system replaces the method that posts it, MZB-249). At the end of a tick a camp whose chunks moved
  * (or that waits for its entities) is looked at once: a chunk above FULL (33), or one whose entities are
  * not in ({@code areEntitiesLoaded}), is out (CAMP_OUT with the epoch that ended, if it was in); all FULL
  * with their entities in, and out, it comes in: a new epoch (a fresh Java op id), every holder in the
@@ -72,6 +74,11 @@ public final class Camps {
     public static final int HOLD_MAX = 6_000;
     /** The census's body cap (the record's u16 size, MZB-169's twin). */
     public static final int CENSUS_CAP = 1024;
+    /**
+     * The poll of the footprint levels (MZB-290): a camp's chunks are read every this many ticks, the camp in
+     * the slot of its declaration order mod this, so one tick reads a twentieth of the camps. PLACEHOLDER.
+     */
+    public static final int POLL_PERIOD = 20;
 
     // ---- a camp ---------------------------------------------------------------------------------
 
@@ -92,6 +99,8 @@ public final class Camps {
         public final double radius, halfHeight;
         final long[] chunks;
         final int[] levels;
+        /** The tick (mod {@link #POLL_PERIOD}) this camp's levels are read in. */
+        int pollSlot;
         /** The epoch a census opened; 0 while out. */
         long epoch;
         boolean waiting, recount, reported;
@@ -213,6 +222,9 @@ public final class Camps {
     private final Map<Long, Set<Entity>> index = new HashMap<>();
     /** Camps to look at at the end of the tick: their chunks moved, they wait for entities, or recount. */
     private final Set<Site> attention = new LinkedHashSet<>();
+    /** The camps by the tick of {@link #POLL_PERIOD} their levels are polled in (MZB-290). */
+    private final List<List<Site>> pollSlots = new ArrayList<>(POLL_PERIOD);
+    private int declared;
     private final List<Held> held = new ArrayList<>();
     private final List<SetOut> setOuts = new ArrayList<>();
     private final Map<UUID, Dying> dying = new LinkedHashMap<>();
@@ -221,9 +233,20 @@ public final class Camps {
     // Counters for logs and the GameTests (this session).
     public long censuses, outs, reconciles, lines, staleLines, spawned, adopted, taken, removed, handedOff, handedBack,
             deaths, carried, markers, heldSpawns, recounts, strayWatches, strays;
+    /** Camps polled, and the footprint chunks whose level the poll (or a play-time check) found moved (MZB-290). */
+    public long polls, pollChanges;
+
+    /**
+     * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
+     * ignored, as on a server whose chunk system never posts it (C2ME, MZB-249); the poll alone follows the
+     * levels. A time, not a switch, so a test that fails leaves it off for a bounded while.
+     */
+    public volatile long ticketEventsSilentUntil;
 
     Camps(ConflictBridge bridge) {
         this.bridge = bridge;
+        for (int i = 0; i < POLL_PERIOD; i++)
+            pollSlots.add(new ArrayList<>(2));
     }
 
     // ---- lifecycle ------------------------------------------------------------------------------
@@ -243,6 +266,7 @@ public final class Camps {
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
+        polls = pollChanges = 0;
     }
 
     /** The session ends: deaths seen are journaled; nothing else (the next session starts every camp out). */
@@ -259,6 +283,10 @@ public final class Camps {
     /** The server stopped: nothing of its world outlives it. */
     void clear() {
         sites.clear();
+        for (List<Site> slot : pollSlots)
+            slot.clear();
+        declared = 0;
+        ticketEventsSilentUntil = 0;
         byChunk.clear();
         index.clear();
         attention.clear();
@@ -317,9 +345,11 @@ public final class Camps {
         Long2ObjectOpenHashMap<List<Site>> m = byChunk.computeIfAbsent(level.dimension(), k -> new Long2ObjectOpenHashMap<>());
         for (int i = 0; i < c.chunks.length; i++) {
             ChunkHolder h = map.mic_rtsim$updating(c.chunks[i]);
-            c.levels[i] = h == null ? NO_HOLDER : h.getTicketLevel();
+            c.levels[i] = h == null ? NO_HOLDER : Math.min(h.getTicketLevel(), NO_HOLDER);
             m.computeIfAbsent(c.chunks[i], k -> new ArrayList<>(1)).add(c);
         }
+        c.pollSlot = declared++ % POLL_PERIOD;
+        pollSlots.get(c.pollSlot).add(c);
         bridge.putCamp(c);
         Set<Entity> loaded = index.get(key);
         if (loaded != null)
@@ -338,8 +368,14 @@ public final class Camps {
         return List.copyOf(sites.values());
     }
 
-    /** ChunkTicketLevelUpdatedEvent: a footprint chunk's level moved; its camps are looked at at the end of the tick. */
+    /**
+     * ChunkTicketLevelUpdatedEvent: a footprint chunk's level moved; its camps are looked at at the end of the
+     * tick. An early hint only (MZB-290): the event is not posted at all where C2ME runs the chunk system
+     * (MZB-249), and the poll ({@link #poll}) is what keeps the levels true.
+     */
     void onTicket(ServerLevel level, long chunk, int newLevel) {
+        if (level.getGameTime() < ticketEventsSilentUntil)
+            return;
         Long2ObjectOpenHashMap<List<Site>> m = byChunk.get(level.dimension());
         List<Site> l = m == null ? null : m.get(chunk);
         if (l == null)
@@ -347,7 +383,7 @@ public final class Camps {
         for (Site c : l) {
             for (int i = 0; i < c.chunks.length; i++)
                 if (c.chunks[i] == chunk)
-                    c.levels[i] = newLevel;
+                    c.levels[i] = Math.min(newLevel, NO_HOLDER);
             attention.add(c);
         }
     }
@@ -503,6 +539,7 @@ public final class Camps {
             off = false;
             attention.addAll(sites.values()); // switched back on: every camp is looked at again
         }
+        poll(now);
         settleDeaths(now);
         resolveSetOuts(now);
         if (!held.isEmpty())
@@ -522,6 +559,46 @@ public final class Camps {
         }
         if (again != null)
             attention.addAll(again);
+    }
+
+    /**
+     * The levels of this tick's slot of camps, read from the chunk map (MZB-290): a camp whose chunks moved is
+     * looked at at the end of this tick, whether or not the event said so. Correct with the event off, and
+     * with it on finds nothing the event did not (a change it finds is only a correction). A camp costs one
+     * lookup per footprint chunk (5 to 21) every {@link #POLL_PERIOD} ticks, a twentieth of the camps a tick.
+     */
+    private void poll(long now) {
+        List<Site> slot = pollSlots.get((int) Math.floorMod(now, (long) POLL_PERIOD));
+        for (int i = 0; i < slot.size(); i++) {
+            Site c = slot.get(i);
+            ServerLevel level = bridge.level(c.dimension);
+            if (level == null)
+                continue;
+            polls++;
+            if (refreshLevels(level, c))
+                attention.add(c);
+        }
+    }
+
+    /**
+     * A camp's footprint levels read from the chunk map now, through {@code getUpdatingChunkIfPresent}, the
+     * method both vanilla's chunk map and C2ME's answer (C2ME's holder derives {@code getTicketLevel} from
+     * its backing holder's target status; no holder is {@link #NO_HOLDER}). Levels past {@link #NO_HOLDER}
+     * read as it, so the event's and the poll's agree. True when any moved.
+     */
+    private boolean refreshLevels(ServerLevel level, Site c) {
+        ChunkMapInvoker map = (ChunkMapInvoker) level.getChunkSource().chunkMap;
+        boolean moved = false;
+        for (int i = 0; i < c.chunks.length; i++) {
+            ChunkHolder h = map.mic_rtsim$updating(c.chunks[i]);
+            int l = h == null ? NO_HOLDER : Math.min(h.getTicketLevel(), NO_HOLDER);
+            if (l != c.levels[i]) {
+                c.levels[i] = l;
+                moved = true;
+                pollChanges++;
+            }
+        }
+        return moved;
     }
 
     /** One camp: out, waiting, or in. True when it is to be looked at again next tick (it waits for entities). */
@@ -716,6 +793,10 @@ public final class Camps {
      * stale like a line for a camp that is out.
      */
     private boolean playable(ServerLevel level, Site c) {
+        // The levels as they are now, not as the last poll or event left them (MZB-290): a line is played at
+        // once, so it cannot wait for the next poll.
+        if (refreshLevels(level, c))
+            attention.add(c);
         for (int l : c.levels)
             if (l > FULL)
                 return false;

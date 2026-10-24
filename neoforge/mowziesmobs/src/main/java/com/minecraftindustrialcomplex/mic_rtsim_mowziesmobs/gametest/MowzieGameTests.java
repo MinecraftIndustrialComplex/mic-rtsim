@@ -54,7 +54,10 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.pieces.PiecesContainer;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.Rotation;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.level.ChunkEvent;
@@ -1904,6 +1907,171 @@ public final class MowzieGameTests {
                     record(test, "elsewhere", "w0 counted ELSEWHERE twice; the reload from disk made a recount and no CAMP_OUT");
                 })
                 .thenSucceed();
+    }
+
+    // ---- MZB-249, MZB-290: the poll alone --------------------------------------------------------
+
+    /**
+     * A camp follows its chunks through the level poll alone (MZB-290), as on a server where C2ME runs the
+     * chunk system and no {@code ChunkTicketLevelUpdatedEvent} is ever posted (MZB-249). The reconciler is
+     * told to ignore the event for 1,500 ticks. A den counted; its chunks released: CAMP_OUT within a poll
+     * period, found by the poll (the change counter moves, which it would not if the event had moved the
+     * levels first); the chunks unloaded and forced again: census 2 within a poll period of the chunks
+     * being ready, a new epoch.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_poll", skyAccess = true)
+    public static void aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent(GameTestHelper helper) {
+        String test = "aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        Camps camps = MowzieKit.camps();
+        long[] t = new long[5]; // released, out seen, forced again, chunks ready, in seen
+        long[] n = new long[3]; // polls and level changes before the release; level changes before the reload
+        long[] epoch = new long[1];
+
+        helper.startSequence()
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    camps.ticketEventsSilentUntil = level.getGameTime() + 1_500;
+                    ConflictKit.onEnd(helper, () -> camps.ticketEventsSilentUntil = 0);
+                    den.lay().declare();
+                    MowzieKit.everyTick(helper, () -> {
+                        long now = level.getGameTime();
+                        Camps.Site s = den.site();
+                        if (t[0] != 0 && t[1] == 0 && !s.in())
+                            t[1] = now;
+                        if (t[2] != 0 && t[3] == 0) {
+                            boolean ready = true;
+                            for (ChunkPos p : s.footprintChunks())
+                                ready &= level.hasChunk(p.x, p.z) && level.areEntitiesLoaded(p.toLong());
+                            if (ready)
+                                t[3] = now;
+                        }
+                        if (t[3] != 0 && t[4] == 0 && s.in())
+                            t[4] = now;
+                    });
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> {
+                    epoch[0] = MowzieKit.epoch(MowzieKit.census(den.faction, 1));
+                    n[0] = camps.polls;
+                    n[1] = camps.pollChanges;
+                    t[0] = level.getGameTime();
+                    den.release();
+                })
+                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenExecute(() -> {
+                    check("out within a poll period of the release (" + (t[1] - t[0]) + " ticks)",
+                            t[1] != 0 && t[1] - t[0] <= Camps.POLL_PERIOD + 3);
+                    check("the camp is out", !den.site().in());
+                    check("the poll counted camps (" + (camps.polls - n[0]) + ")", camps.polls > n[0]);
+                    check("the poll found the levels moved (" + (camps.pollChanges - n[1]) + " chunks), not the event", camps.pollChanges > n[1]);
+                    record(test, "out", (t[1] - t[0]) + " ticks after the release, " + (camps.pollChanges - n[1]) + " chunk levels found by the poll");
+                })
+                .thenWaitUntil(io(() -> {
+                    for (ChunkPos p : den.site().footprintChunks())
+                        check("chunk (" + p.x + ", " + p.z + ") is unloaded", !level.hasChunk(p.x, p.z));
+                }))
+                .thenExecute(() -> {
+                    n[2] = camps.pollChanges;
+                    t[2] = level.getGameTime();
+                    den.force();
+                })
+                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenExecute(() -> {
+                    check("in within a poll period of the chunks being ready (" + (t[4] - t[3]) + " ticks)",
+                            t[3] != 0 && t[4] != 0 && t[4] - t[3] <= Camps.POLL_PERIOD + 3);
+                    check("the poll found the levels moved again (" + (camps.pollChanges - n[2]) + " chunks)", camps.pollChanges > n[2]);
+                    check("a new epoch", MowzieKit.epoch(MowzieKit.census(den.faction, 2)) != epoch[0]);
+                    check("one CAMP_OUT in all", ConflictKit.campOuts(den.faction).size() == 1);
+                    record(test, "in", (t[4] - t[3]) + " ticks after the chunks were ready, " + (camps.pollChanges - n[2]) + " chunk levels found by the poll");
+                })
+                .thenSucceed();
+    }
+
+    // ---- P3-5: a grove with no free place --------------------------------------------------------
+
+    /**
+     * A grove with no free place for a warrior answers a SPAWN STALE and makes no body (MZB-243): the kind
+     * tries 20 places, each checked for collision and liquid, as the jar does. A leaf block over every
+     * column within 24 blocks of the centre, at the height a new warrior would stand (leaves are no part of
+     * the NO_LEAVES height map the kind reads, so each place would put the body inside one): the kind finds
+     * no place, a SPAWN is STALE with no spawn counted and no warrior in the area, with no player near and
+     * with one 60 blocks away (the near ring and the far edge both tried). With the leaves cleared the same
+     * line is DONE, the warrior in the open: the stale answer was not final.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_no_room", skyAccess = true)
+    public static void aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody(GameTestHelper helper) {
+        String test = "aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove grove = new Grove(far, far.k, far.z0);
+        Camps camps = MowzieKit.camps();
+        long[] op = new long[3];
+        long[] spawned = new long[1];
+        int[] y = new int[1];
+        ServerPlayer[] player = new ServerPlayer[1];
+
+        helper.startSequence()
+                .thenExecute(() -> grove.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> grove.lay().declare())
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenExecute(() -> {
+                    y[0] = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(grove.spot.x), (int) Math.floor(grove.spot.z));
+                    leaves(level, grove, y[0], true);
+                    check("the leaves do not move the height map", level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                            (int) Math.floor(grove.spot.x) + 5, (int) Math.floor(grove.spot.z) - 7) == y[0]);
+                    spawned[0] = camps.spawned;
+                    check("the kind finds no place", GroveKind.INSTANCE.spawnAt(level, grove.site(), MowzieKit.WARRIOR, 0) == null);
+                    op[0] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("the SPAWN with no player near", ConflictKit.outcomes(grove.faction, op[0]), STALE);
+                    noBody(level, grove, camps, spawned[0]);
+                    player[0] = FakePlayers.add(level, grove.spot.add(60, 1, 0), "mowzie-no-room");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    check("the kind finds no place with the player near", GroveKind.INSTANCE.spawnAt(level, grove.site(), MowzieKit.WARRIOR, 0) == null);
+                    op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("the SPAWN with a player 60 blocks east", ConflictKit.outcomes(grove.faction, op[1]), STALE);
+                    noBody(level, grove, camps, spawned[0]);
+                    FakePlayers.remove(player[0]);
+                    leaves(level, grove, y[0], false);
+                    op[2] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[2], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("the same SPAWN with the leaves cleared", ConflictKit.outcomes(grove.faction, op[2]), DONE);
+                    List<Entity> h = MowzieKit.held(grove.faction, 1, 1);
+                    check("one warrior, in slot 1 (" + h.size() + ")", h.size() == 1 && camps.spawned == spawned[0] + 1);
+                    check("standing in the open", level.noCollision(h.get(0)));
+                    record(test, "no room", "STALE twice with no body, DONE once the leaves were cleared");
+                })
+                .thenSucceed();
+    }
+
+    /** A leaf block (persistent, so it does not decay) at {@code y} over every column within 24 blocks of the grove's centre, or air. */
+    private static void leaves(ServerLevel level, Grove g, int y, boolean on) {
+        BlockState state = on
+                ? Blocks.OAK_LEAVES.defaultBlockState().setValue(LeavesBlock.PERSISTENT, true)
+                : Blocks.AIR.defaultBlockState();
+        int cx = (int) Math.floor(g.spot.x), cz = (int) Math.floor(g.spot.z);
+        for (int x = cx - 24; x <= cx + 24; x++)
+            for (int z = cz - 24; z <= cz + 24; z++)
+                level.setBlock(new BlockPos(x, y, z), state, 2);
+    }
+
+    /** No spawn was counted, slot 1 has no body, and no warrior stands anywhere in the grove's area. */
+    private static void noBody(ServerLevel level, Grove g, Camps camps, long spawned) {
+        check("no spawn was counted", camps.spawned == spawned);
+        check("slot 1 has no body", MowzieKit.held(g.faction, 1, 1).isEmpty());
+        check("no warrior stands in the area", level.getEntitiesOfClass(EntityUmvuthanaMinion.class, g.area()).isEmpty());
     }
 
     // @@NEXT@@
