@@ -3478,7 +3478,7 @@ mod conflict {
     use rtsim_conflict::engine::{Party, Phase, Target};
     use rtsim_conflict::{Step, synth};
     use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT};
-    use rtsim_kernel::clock::TICKS_PER_DAY;
+    use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
     use rtsim_settle::Pos;
@@ -5350,6 +5350,174 @@ mod conflict {
         assert!(!recalled, "nothing kept once the replay has caught up");
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- the replay gate (docs/replay-gate.md, fix/replay-push) ----------------------------
+
+    /// A buffer that holds a whole long replay in one hand-over.
+    const ONE_HAND_OVER: usize = 1024 * 1024;
+
+    /// Filler a replay must read through: `count` casualties of a band the engine never had (64
+    /// bytes each, so about a thousand fill a minimum-size buffer). 4,000 span four hand-overs.
+    fn fillers(j: &mut Java, count: usize) {
+        for _ in 0..count {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: 0,
+                epoch: 0,
+                by: cb::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+            }));
+        }
+    }
+
+    /// The camp's pool of warriors at home, and when it was last changed; and the pool at a
+    /// fixed time after every test's events (its closed form, so a band pooled earlier or later
+    /// gives the same number there).
+    fn pool(e: &Engine) -> (f64, u64, f64) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let x = &c.factions[f as usize];
+            (x.pool, x.pool_at.0, c.pool_at(f, Tick(60_000)))
+        })
+    }
+
+    /// The replay ends this engine ran, and the last one's hand-overs and records.
+    fn replay_counts(e: &Engine) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        (
+            e.stats.replays_ended.load(Acquire),
+            e.stats.replay_handovers.load(Acquire),
+            e.stats.replay_records.load(Acquire),
+        )
+    }
+
+    /// RP-24 (the review's amendment c): a watched fight kept in the pages (Fighting at the save),
+    /// its casualties journaled behind 4,000 fillers, and its end, its walk home and its arrival
+    /// (`home()`, which pools the party) all after them, inside the replayed window, on a short
+    /// route home (100 blocks). The session that goes on pools what is left of the band; after a
+    /// crash the replay must leave the same pool. `capacity`: the next session's buffer (`None`,
+    /// no crash).
+    fn a_fight_kept_in_the_pages_across_a_replay(name: &str, capacity: Option<usize>) {
+        let (dir, e, mut j) = camp(name);
+        // The player sees the band leave the camp too: only the fight's waves are fought. A
+        // quarter falls, short of a rout: the fight ends sooner, not at once.
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 8, "a band with members to lose: {n}");
+        // A pool well below its cap, so that it shows the band coming home.
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp") as usize;
+            let now = c.now();
+            c.factions[f].pool = 10.0;
+            c.factions[f].pool_at = now;
+        });
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        let fight_at = j.game_time;
+        assert_eq!(books(&e, p).0, n, "no one has fallen yet");
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        fillers(&mut j, 4_000);
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= fight_at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        assert_eq!(
+            party(&e, p).map(|x| x.0),
+            Some(Phase::Fighting),
+            "not routed"
+        );
+        let casualties_at = j.game_time;
+        advance_until(&mut j, 100, 2 * DAY, "the band home", |j| {
+            party(&j.e, p).is_none()
+        });
+        assert!(
+            j.game_time > casualties_at + 1_000,
+            "the fight's end, the walk and the arrival come after the casualties"
+        );
+        // Past where the fight would have ended without its losses, and the walk after it.
+        let home_at = j.game_time;
+        advance_until(&mut j, 100, DAY, "past the unshortened fight's walk home", |j| {
+            j.game_time >= home_at + 2_000
+        });
+        let gt = j.game_time;
+        let live = pool(&e);
+        let cap = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp") as usize;
+            f64::from(c.cultures.get(c.factions[f].culture).def.pool_cap)
+        });
+        assert!(
+            live.2 + 1.0 < cap,
+            "the pool is not at its cap, so it shows the band: {live:?} of {cap}"
+        );
+        let Some(capacity) = capacity else {
+            j.idle();
+            assert_eq!(pool(&e), live, "the session that went on");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return;
+        };
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        assert!(
+            bytes > 3 * wire::MIN_CAPACITY && bytes < capacity.max(5 * wire::MIN_CAPACITY),
+            "the replay's records: {bytes} bytes"
+        );
+
+        let (e, j) = reopen_with(&dir, saved, gt, capacity);
+        let (ended, hand_overs, _) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        if capacity == wire::MIN_CAPACITY {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        } else {
+            assert_eq!(hand_overs, 1, "a replay of one hand-over");
+        }
+        assert!(party(&e, p).is_none(), "the band is home");
+        let after = pool(&e);
+        assert_eq!(
+            after.2, live.2,
+            "the pool after the replay counts the band as the session that went on did ({n} out, \
+             {lost} lost): {after:?}, live {live:?}"
+        );
+        assert_eq!(
+            after, live,
+            "and the band came home when it did in the session that went on"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_long_replay() {
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long", Some(wire::MIN_CAPACITY));
+    }
+
+    /// Control: the same replay in one hand-over.
+    #[test]
+    fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_one_hand_over_replay() {
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-one", Some(ONE_HAND_OVER));
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_fight_kept_in_the_pages_pools_what_is_left_without_a_crash() {
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None);
     }
 }
 
