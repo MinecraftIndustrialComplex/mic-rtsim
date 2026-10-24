@@ -43,6 +43,10 @@ final class IndustryEvents {
         return CHUNK_LOADS.get();
     }
 
+    /** R2-11: set while a detection step runs; the first chunk load meanwhile keeps its stack (what made the server thread load it). */
+    static volatile boolean watchLoads;
+    static volatile Throwable loadInDetection;
+
     static void register() {
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(IndustryEvents::onChunkLoad);
@@ -84,6 +88,8 @@ final class IndustryEvents {
         if (event.getLevel().isClientSide() || !(event.getChunk() instanceof LevelChunk chunk) || !(event.getLevel() instanceof ServerLevel level))
             return;
         CHUNK_LOADS.incrementAndGet();
+        if (watchLoads && loadInDetection == null)
+            loadInDetection = new Throwable("a chunk loaded inside a district detection step (R2-11)");
         Industry ind = IndustryApi.current();
         if (ind == null)
             return;
