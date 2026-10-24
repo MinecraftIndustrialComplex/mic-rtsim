@@ -3463,10 +3463,30 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - A hit calls `ambush` for `tp.train`. That is I24's attack (source Boss, strength 41.7, carry 64, cap
     10%, the industry's cooldown of 24,000 ticks per train per class, the loot destroyed).
   - When it took more than 0 items, the engine sends `Cmd::TrainRobbed { faction: key, train }`.
+  - Amendment (built, step 2): `ingest` passes `train_passed` the record's time as `at.max(now)`, and the
+    roll's stream slot takes that tick. The stale test is written as the design's: stale when the party
+    is gone, is not lurking, or `tp.epoch > party.epoch` (a watch bumps the party's epoch past the one
+    the spot carried, so an earlier epoch still counts). A Peaceful world never reaches the roll (its
+    bands are home, so the pass is stale), and `ambush`'s own `peace_held` arm stays as it was for the
+    on-the-way caller.
 - **MZB-356** (ambush): `ambush` (3150) returns the items it took and takes the note's wording: "on the way"
   for the on-the-way caller, "by the track" for a lurk. Its Peaceful arm (`peace_held`) is unchanged.
+  - Amendment (built, step 2): `ambush` is `pub(crate)` and takes the wording as `how: &str`; it returns 0
+    for Peaceful, for no hit and for loot that maps to no good of the world's (those go to
+    `ledger.unmapped`, as before), so only a robbery of something sends TRAIN_ROBBED.
 - **MZB-357** (persistence): nothing new. A lurk is derived from the party's phase, kind and target, and
   Track has been persisted since M7. The pages stay at M7's format.
+  - Amendment (built, step 2): the four new stats (`lurks`, `lurks_ended`, `passes`, `passes_watched`) are
+    appended to the saved stats list. That list is length-prefixed and read with `unwrap_or(0)`, so a page
+    written before them reads zeros and no reader breaks; the page layout is M7's, and a save is four
+    varints longer. Every state hash moves for that reason alone (stats are hashed with the state), so
+    `sim conflict` and `sim mowzie` regenerate with only their state hashes and the new stat fields
+    different.
+  - Amendment (built, steps 1 and 2): the Rust tests are `crates/rtsim-conflict/tests/lurk.rs`. The
+    design's `a_recall_does_not_end_a_lurk` and `a_lurk_goes_on_through_a_watched_fight` are one test
+    (`a_fight_at_the_track_is_still_a_lurk_and_a_session_turns_it_back_to_waiting`, the phase forced:
+    MZB-351's amendment). The cooldown test runs the real industry engine through `IndustryLink` with two
+    booked legs, so the 24,000 ticks per train per class are the industry's own.
 - **MZB-358** (news): an ambush makes no news. An unwatched one has no witness (CL-D61). A watched one is
   seen in the world by its watcher, and the engine books no first-hand report for it, as it books none for
   a puppet's blows. The owner learns from the short train and the roar (MZB-366). A rout of a lurking party

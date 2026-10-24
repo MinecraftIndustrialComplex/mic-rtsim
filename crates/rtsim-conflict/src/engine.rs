@@ -518,9 +518,12 @@ pub struct ConflictStats {
     /// Rail wakes that found no meter or another stamp, popped and dropped (also in `stale`).
     pub rail_stale: u64,
     /// The lurk (MOWZIE.md §4.4, M8): lurks begun at a track (an AMBUSH_SPOT sent) and ended
-    /// (its REMOVED sent).
+    /// (its REMOVED sent), and the trains that passed one (TRAIN_PASSED taken), those of them
+    /// watched by a player.
     pub lurks: u64,
     pub lurks_ended: u64,
+    pub passes: u64,
+    pub passes_watched: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -3307,18 +3310,22 @@ impl Conflict {
 
     /// A war band falls on a train it crosses (C16, I24): one threat per class of unit, each with
     /// that class's count, strength and carry (MOWZIE.md ledger 9, MZB-53), as district raids
-    /// send them. One ambush however many classes took something.
-    fn ambush(
+    /// send them. One ambush however many classes took something. Returns the items it took
+    /// (0 when Peaceful holds it, nothing was robbed, or what was is not a good of the world's);
+    /// `how` is the note's wording: "on the way" for a band that crosses the train on its march,
+    /// "by the track" for one that lies in wait there (MZB-356).
+    pub(crate) fn ambush(
         &mut self,
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
         train: u64,
         at: Tick,
         w: &mut World,
-    ) {
+        how: &str,
+    ) -> i64 {
         if self.peaceful {
             self.stats.peace_held += 1;
-            return;
+            return 0;
         }
         let f = self.parties[p].faction;
         let source = self.culture(f).def.source.threat();
@@ -3354,7 +3361,7 @@ impl Conflict {
             got += self.take_industry_loot(w, infra, p, &loot);
         }
         if !hit {
-            return;
+            return 0;
         }
         self.stats.ambushes += 1;
         let (x, z) = self.party_pos(p, at);
@@ -3372,8 +3379,9 @@ impl Conflict {
             at,
             Some(f),
             "ambush",
-            format!("falls on train {train} on the way: {got} items"),
+            format!("falls on train {train} {how}: {got} items"),
         );
+        got
     }
 
     /// Goods `a` (thousandths) of `g` taken from players by party `p`: carried home, or destroyed
@@ -4801,7 +4809,7 @@ impl Conflict {
                 if self.parties.get(party).is_none_or(|x| x.plan != plan) {
                     return;
                 }
-                self.ambush(infra, party, train, at, w);
+                self.ambush(infra, party, train, at, w, "on the way");
             }
             Ev::Plunder { faction, stamp } => {
                 if self.factions[faction as usize].plunder_stamp != stamp {
@@ -5187,15 +5195,12 @@ impl Conflict {
         m
     }
 
-    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the grove's
-    /// and the lurking party's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES,
-    /// CAMP_DEATH) are built (M4), the chief's CHIEF_STATE with M6, the rail meter's RAIL_PASS
-    /// with M7.
+    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the grove's.
+    /// The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES, CAMP_DEATH) are built (M4), the
+    /// chief's CHIEF_STATE with M6, the rail meter's RAIL_PASS with M7, the lurk's TRAIN_PASSED
+    /// with M8.
     pub fn later(o: &Obs) -> bool {
-        matches!(
-            o,
-            Obs::HavenChest(_) | Obs::TrainPassed(_) | Obs::Traded(_) | Obs::ChiefPaid(_)
-        )
+        matches!(o, Obs::HavenChest(_) | Obs::Traded(_) | Obs::ChiefPaid(_))
     }
 
     /// A record from the plugin, at its game time.
@@ -5216,8 +5221,9 @@ impl Conflict {
             Obs::State(_) | Obs::Materialized(_) => {}
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
-            Obs::HavenChest(_) | Obs::TrainPassed(_) | Obs::Traded(_) | Obs::ChiefPaid(_) => {}
+            Obs::HavenChest(_) | Obs::Traded(_) | Obs::ChiefPaid(_) => {}
             Obs::RailPass(rp) => self.rail_pass(w, rp, at),
+            Obs::TrainPassed(tp) => self.train_passed(w, infra, tp, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
             Obs::CampCensus(c) => self.camp_census(c, at),

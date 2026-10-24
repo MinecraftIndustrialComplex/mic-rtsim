@@ -840,4 +840,46 @@ impl Conflict {
             .collect();
         self.outbox.extend(lurks);
     }
+
+    /// A TRAIN_PASSED (MZB-355): a train passed a lurking band's track point. The party is the
+    /// record's agent; it must exist, lurk, and not be of an older epoch than the table's
+    /// (`start_fight` and `seen` bump the party's epoch, so the record's is older than the party's
+    /// after a watch: stale only when it is later), else the record is counted stale. The roll
+    /// does not care whether a player watched: a watched line loses what an unwatched one would
+    /// (P28). A hit is I24's attack on the train; when it took anything, the plugin is told the
+    /// train was robbed.
+    pub fn train_passed(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        tp: &boundary::TrainPassed,
+        at: Tick,
+    ) {
+        let Some(p) = Party::of_agent(tp.agent).filter(|p| self.parties.contains(*p)) else {
+            self.stats.stale += 1;
+            return;
+        };
+        if !self.lurking(p) || tp.epoch > self.parties[p].epoch {
+            self.stats.stale += 1;
+            return;
+        }
+        self.stats.passes += 1;
+        if tp.flags & boundary::PASSED_WATCHED != 0 {
+            self.stats.passes_watched += 1;
+        }
+        let roll = StreamKey::new(self.seed, SYS_AMBUSH, p.to_bits())
+            .slot(tp.train ^ at.0.rotate_left(32))
+            .below(1000);
+        if (roll as u32) >= self.tun.ambush_milli {
+            return;
+        }
+        let got = self.ambush(infra, p, tp.train, at, w, "by the track");
+        if got > 0 {
+            let faction = self.factions[self.parties[p].faction as usize].key;
+            self.outbox.push(Cmd::TrainRobbed(boundary::TrainRobbed {
+                faction,
+                train: tp.train,
+            }));
+        }
+    }
 }
