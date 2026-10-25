@@ -1260,6 +1260,19 @@ impl Conflict {
         }
     }
 
+    /// Builds the unsaved [`Conflict::march_due`] list from the saved flags, in handle order,
+    /// once the parties are read (a load, a paged open; MZB-453).
+    pub(crate) fn rebuild_march_due(&mut self) {
+        let mut due: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.march_due)
+            .map(|(h, _)| h)
+            .collect();
+        due.sort();
+        self.march_due = due;
+    }
+
     /// The party's BAND_MARCH as it stands (MOWZIE.md §4.16, MZB-452), carrying `march_rev` as the
     /// caller has set it. `ended`: the party has ended (`home` removed its row).
     pub(crate) fn march_record(&self, p: Handle<Party>, ended: bool) -> boundary::BandMarch {
