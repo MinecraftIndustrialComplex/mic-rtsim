@@ -1102,6 +1102,21 @@ public final class MowzieGameTests {
         return MowzieKit.removed(level, objects);
     }
 
+    /**
+     * The same for every object of the arrays, read at each poll: the arrays are made when the sequence is built
+     * and filled by its steps (MZB-673).
+     */
+    @SuppressWarnings("unchecked")
+    private static Runnable gone(ServerLevel level, Entity[]... arrays) {
+        List<Supplier<Entity>> objects = new ArrayList<>();
+        for (Entity[] a : arrays)
+            for (int i = 0; i < a.length; i++) {
+                int k = i;
+                objects.add(() -> a[k]);
+            }
+        return MowzieKit.removed(level, objects.toArray(new Supplier[0]));
+    }
+
     // ---- 3: a member comes home -------------------------------------------------------------------
 
     /**
@@ -2416,7 +2431,8 @@ public final class MowzieGameTests {
      * A band of two raptor units materialized at a grove: both puppets stand and are the jar's raptors
      * ({@code EntityUmvuthanaRaptor}); after 40 ticks the area holds 8 followers and every one carries the
      * band's tag, none stands untagged, and each raptor's pack is 4 (the followers found their leader). A
-     * recall that times out takes the raptors and every follower out of the world.
+     * recall that times out takes the raptors and every follower out of the world: the wait reads each object's
+     * own {@code isRemoved()}, as the recall walks them out of the grove's area before it removes them (MZB-673).
      */
     @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_raptor_standin", skyAccess = true)
     public static void anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers(GameTestHelper helper) {
@@ -2426,6 +2442,8 @@ public final class MowzieGameTests {
         Grove grove = new Grove(far, far.k, far.z0);
         long[] agent = new long[1];
         Mob[][] puppet = new Mob[1][];
+        // The two raptors and their 8 followers, taken before the recall (MZB-673).
+        Entity[] taken = new Entity[10];
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
@@ -2450,15 +2468,22 @@ public final class MowzieGameTests {
                     }
                     for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
                         check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
+                    // The recall walks them toward spot.x - 200, out of the area before they go: the wait is on
+                    // the objects, not on the area (MZB-673).
+                    taken[0] = puppet[0][0];
+                    taken[1] = puppet[0][1];
+                    for (int i = 0; i < 8; i++)
+                        taken[2 + i] = followers.get(i);
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, grove.spot.x - 200, grove.spot.z);
                 })
-                .thenWaitUntil(() -> {
-                    check("no raptor stands after the recall",
-                            level.getEntitiesOfClass(EntityUmvuthanaRaptor.class, grove.area()).stream().noneMatch(e -> !e.isRemoved()));
-                    check("no follower stands after the recall",
-                            level.getEntitiesOfClass(EntityUmvuthanaFollowerToRaptor.class, grove.area()).stream().noneMatch(e -> !e.isRemoved()));
+                .thenWaitUntil(gone(level, taken))
+                .thenExecute(() -> {
+                    // The recall discards them: none was saved with a chunk instead (MZB-673).
+                    for (Entity e : taken)
+                        check("each is discarded by the recall (" + e.getRemovalReason() + ")",
+                                e.getRemovalReason() == Entity.RemovalReason.DISCARDED);
+                    record(test, "raptor", "two raptors, 8 tagged followers, none untagged, all discarded by the recall");
                 })
-                .thenExecute(() -> record(test, "raptor", "two raptors, 8 tagged followers, none untagged, all gone with the recall"))
                 .thenSucceed();
     }
 
