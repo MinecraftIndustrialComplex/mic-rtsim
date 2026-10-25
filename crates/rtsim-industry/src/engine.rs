@@ -1191,11 +1191,10 @@ impl Engine {
                 chunk,
                 applied_epoch,
             } => {
-                let dist = self.district_mut(*district);
-                dist.loaded_chunks.insert(*chunk);
-                // The world holds this epoch: the chunk's next round takes one past it (RP-57's
-                // floor, RP-259).
-                dist.raise_chunk_epoch(*chunk, *applied_epoch);
+                // The applied epoch raises no floor (RP-259): a round decided again after a crash
+                // must meet the epoch the chunk holds, so that Java refuses it; one past it would
+                // be applied a second time.
+                self.district_mut(*district).loaded_chunks.insert(*chunk);
                 self.chain_chunk_loaded(*district, Some(*chunk), at);
                 // It leaves the replay once the tick's records are in (I7).
                 self.mark(*district);
@@ -3541,10 +3540,8 @@ impl Engine {
         let Some(dist) = self.districts.get_mut(&r.district) else {
             return;
         };
-        // The world applied this epoch on the chunk, whether the engine waits for it or not (a
-        // round the replay did not decide again, RP-271's merged rounds): the chunk's next round
-        // takes one past it (RP-57's floor, RP-259).
-        dist.raise_chunk_epoch(r.chunk, r.epoch);
+        // The result's epoch raises no floor either (RP-259): a round the replay decides after
+        // the result's record must meet it.
         let Some(chunk) = dist.pending_ops.remove(&r.op) else {
             // Already applied: a replayed or repeated result changes nothing (A9).
             self.stats.duplicate_results += 1;

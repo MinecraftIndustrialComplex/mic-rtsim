@@ -25,7 +25,7 @@
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
 //! (F27).
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use rtsim_conflict::engine::StationEnd;
@@ -115,9 +115,9 @@ pub struct IndustryStats {
     pub save_pages: u64,
     pub save_bytes: u64,
     pub save_deleted: u64,
-    /// Commands not written because Java answered their op while the session's replay ran
+    /// Commands not written because Java answered their op FAILED while the session's replay ran
     /// (docs/choices-mowzie-build.md RP-259): the replay decided them again, or the link page
-    /// held them unwritten.
+    /// held them unwritten. Taken back, as the answer does.
     pub answered_unsent: u64,
 }
 
@@ -149,12 +149,13 @@ pub(super) struct Link {
     threats: Vec<Threat>,
     /// Steps the front command has waited for a Java dictionary name (W21).
     name_waits: u32,
-    /// Java's answers to industry commands heard while the session's replay ran: (op, status).
-    /// A command not written yet under one of these ops is never written ([`unsent_answered`],
-    /// RP-259): Java keeps only the ops it applied, and only until the engine acknowledges the
-    /// answer, so a copy of a command it answered FAILED, or APPLIED and then forgot, would be
-    /// applied again. In memory only: emptied at the first drain after the replay end.
-    heard: BTreeMap<OpId, u32>,
+    /// The ops of industry commands Java answered FAILED, heard while the session's replay ran. A
+    /// command not written yet under one of them is never written ([`unsent_answered`], RP-259):
+    /// Java keeps only the ops it applied, so a copy of a command it answered FAILED would be
+    /// applied. An APPLIED answer is not kept: a copy under its op is written, and Java's guards
+    /// answer it DUPLICATE (the applied-op set; T2's ring for a train's). In memory only: emptied at
+    /// the first drain after the replay end.
+    heard: BTreeSet<OpId>,
     /// The engine was made new at this start (no pages): its seed is committed at once (W20).
     pub(super) fresh: bool,
     pub(super) stats: IndustryStats,
@@ -211,7 +212,7 @@ impl Link {
             session_start_at: None,
             threats: Vec::new(),
             name_waits: 0,
-            heard: BTreeMap::new(),
+            heard: BTreeSet::new(),
             fresh: false,
             stats: IndustryStats::default(),
         }
@@ -648,13 +649,17 @@ fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationE
     }
 }
 
-/// An industry record of the session's replay, admitted or refused by op id: Java's answer to an
-/// industry command is kept for the replay end ([`Link::heard`], RP-259). The core calls this
-/// before [`journaled`] and [`answered_again`], whatever the module switch.
+/// An industry record of the session's replay, admitted or refused by op id: Java's FAILED answer
+/// to an industry command is kept for the replay end ([`Link::heard`], RP-259). The core calls
+/// this before [`journaled`] and [`answered_again`], whatever the module switch.
 pub(super) fn heard(st: &mut State, rec: &Rec<'_>) {
-    if st.replaying && rec.kind == obs::COMMAND_RESULT && rec.size() >= obs::command_result::SIZE {
+    if st.replaying
+        && rec.kind == obs::COMMAND_RESULT
+        && rec.aux == obs::command_result::FAILED
+        && rec.size() >= obs::command_result::SIZE
+    {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
-        st.industry.heard.insert(op, rec.aux);
+        st.industry.heard.insert(op);
     }
 }
 
@@ -842,15 +847,17 @@ pub(super) fn simulate(st: &mut State) {
 }
 
 /// The first drain after the replay end: every command not written yet whose op Java answered
-/// while the replay ran ([`Link::heard`]) leaves the queue unsent (RP-259). These are the commands
-/// the replayed records and the held step decided again under a live op (RP-272), and the ones
-/// the link page held unwritten that the crashed session wrote after its save. Java keeps only
-/// the ops it applied, until the engine acknowledges the answer: a copy of one it answered FAILED
-/// would be applied (the world never had it), and one of an APPLIED it forgot would be applied a
-/// second time. An answer FAILED takes the command back now, as Java's answer does
-/// ([`command_result`]; the engine's books are idempotent there, so a command the answer already
-/// took back is not taken twice). An APPLIED or DUPLICATE leaves the books as the decision made
-/// them: the application's own records (a carriage result, a written chain package) settle them.
+/// FAILED while the replay ran ([`Link::heard`]) leaves the queue unsent, and is taken back now,
+/// as Java's answer does ([`command_result`]; the engine's books are idempotent there, so a
+/// command the answer already took back is not taken twice) (RP-259). These are the commands the
+/// replayed records and the held step decided again under a live op (RP-272), and the ones the
+/// link page held unwritten that the crashed session wrote after its save. Java keeps only the
+/// ops it applied: a copy of one it answered FAILED would be applied, though the world never had
+/// it. A copy of one it answered APPLIED is written, on purpose: Java's applied-op set answers it
+/// DUPLICATE, and a train's ring (T2, RP-196) answers it DUPLICATE while its answer is not durable
+/// and applies it when the restored train never had it (J4). Dropping it would leave a restored
+/// train without an exchange the replayed carriage result booked. The application's own records
+/// (a carriage result, a written chain package) settle its books.
 ///
 /// Nothing later needs the answers: every op one of them names was decided at or before the
 /// answer's game time, which is at or before the world save's, so at or before this session's
@@ -865,14 +872,12 @@ fn unsent_answered(l: &mut Link) {
     let now = l.engine.now();
     let queued = std::mem::take(&mut l.queue);
     for c in queued {
-        let Some((op, status)) = c.op().and_then(|op| Some((op, *heard.get(&op)?))) else {
+        let Some(op) = c.op().filter(|op| heard.contains(op)) else {
             l.queue.push_back(c);
             continue;
         };
         l.stats.answered_unsent += 1;
-        if status == obs::command_result::FAILED {
-            l.engine.command_failed(now, op);
-        }
+        l.engine.command_failed(now, op);
     }
 }
 
@@ -1456,7 +1461,8 @@ mod tests {
     /// FAILED before its save, and the replay hears that answer before its wake decides the write
     /// again (a COMMAND_RESULT runs no `fire_until`). Java keeps only the ops it applied, so a copy
     /// written after the replay end would be written into the frogport. The first drain after the
-    /// end leaves it unsent, with the copy of an op answered APPLIED, and writes the rest.
+    /// end leaves it unsent and writes the rest, the copy of an op answered APPLIED among them
+    /// (Java answers that DUPLICATE; the lead's narrowing of the review's fix).
     #[test]
     fn a_command_heard_answered_while_replaying_is_never_written() {
         use rtsim_industry::cmd::WriteChain;
@@ -1476,15 +1482,18 @@ mod tests {
             })
         };
         // Heard first, decided after: the order the replay gives a chain write.
-        l.heard.insert(op(5), obs::command_result::FAILED);
-        l.heard.insert(op(6), obs::command_result::APPLIED);
+        l.heard.insert(op(5));
         l.queue.push_back(chain(5));
         l.queue.push_back(chain(7));
         l.queue.push_back(chain(6));
         unsent_answered(&mut l);
         let left: Vec<OpId> = l.queue.iter().filter_map(Cmd::op).collect();
-        assert_eq!(left, vec![op(7)], "only the command Java never answered");
-        assert_eq!(l.stats.answered_unsent, 2);
+        assert_eq!(
+            left,
+            vec![op(7), op(6)],
+            "every command but the one Java answered FAILED"
+        );
+        assert_eq!(l.stats.answered_unsent, 1);
         assert!(
             l.heard.is_empty(),
             "memory only, emptied at the first drain"

@@ -317,9 +317,10 @@ pub struct District {
     /// (docs/choices-mowzie-build.md RP-259). Java guards a chunk's reconciles by the epoch its
     /// attachment holds for the district (Reconciler.java `apply`), per chunk, so a counter per
     /// district let two rounds on two chunks that a crash's replay decides in the other order swap
-    /// epochs, and the second chunk take an epoch above the one it applied live. Raised to every
-    /// epoch Java names for the chunk (IND_CHUNK_LOADED's applied epoch, IND_RECONCILE_RESULT's;
-    /// RP-57): a round after a crash never takes an epoch the world holds already.
+    /// epochs, and the second chunk take an epoch above the one it applied live. Only the
+    /// engine's own rounds move it: an epoch Java names (IND_CHUNK_LOADED's, IND_RECONCILE_RESULT's)
+    /// raises no floor, since a round decided again after a crash must meet the epoch the chunk
+    /// holds to be refused, and one past it would be applied twice.
     pub chunk_epochs: BTreeMap<ChunkPos, u32>,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
     pub pending_ops: BTreeMap<OpId, ChunkPos>,
@@ -474,13 +475,6 @@ impl District {
         let e = self.chunk_epochs.entry(chunk).or_insert(0);
         *e += 1;
         *e
-    }
-
-    /// Java names `epoch` for `chunk` (applied, or answered): the chunk's next reconcile takes
-    /// one past it at least (RP-57's floor, per chunk; RP-259).
-    pub fn raise_chunk_epoch(&mut self, chunk: ChunkPos, epoch: u32) {
-        let e = self.chunk_epochs.entry(chunk).or_insert(0);
-        *e = (*e).max(epoch);
     }
 
     pub fn push_report(&mut self, r: ReconcileReport) {
