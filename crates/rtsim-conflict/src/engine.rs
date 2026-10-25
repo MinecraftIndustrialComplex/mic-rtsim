@@ -6379,6 +6379,11 @@ impl Conflict {
             // A RAIL_PASS has no op id and Java never copies one (docs/replay-gate.md §4.4): a
             // copy, were one ever sent, would count its leg twice, so it is dropped (RP-104).
             Obs::RailPass(_) => {}
+            // A HAVEN_CHEST has no op id and no holder carries one (docs/replay-gate.md §4.4): it
+            // is the chest's state, latest wins, so a copy, were one ever sent, could only put an
+            // older chest or free count over a newer one. Dropped, as RP-104 drops RAIL_PASS
+            // (RP-130).
+            Obs::HavenChest(_) => {}
             _ => self.ingest(w, infra, o, at),
         }
     }

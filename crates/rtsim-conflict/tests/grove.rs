@@ -1782,6 +1782,23 @@ fn the_census_places_the_tribute_a_chest_named_while_the_camp_was_out_waited_for
     ok(&mut r);
 }
 
+/// RP-130 (the M9 merge): Java never copies a HAVEN_CHEST (no op id, no holder carries one), so a
+/// copy, were one sent, names no chest, where the same record live names it.
+#[test]
+fn a_copy_of_a_haven_chest_names_no_chest() {
+    let (mut r, _) = tribute_run(26);
+    r.camp_out();
+    let to = r.c.now() + 5;
+    r.run(to);
+    let (at, key) = (r.c.now(), r.key);
+    r.c.ingest_copy(&mut r.w, &mut *r.infra, &chest_record(key, 27), at);
+    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "a copy is dropped");
+    // The control: the same record live.
+    chest(&mut r, 27);
+    assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.free), Some(27));
+    ok(&mut r);
+}
+
 /// MZB-446 (review P3-3): HAVEN_CHEST is journaled, so a crash that loses the tail of the session
 /// (a payment, the chest, the stack the engine decided at the chest) replays both records, and
 /// the stack decided again is the same op with the same amount: the plugin's DUPLICATE_OP answer
