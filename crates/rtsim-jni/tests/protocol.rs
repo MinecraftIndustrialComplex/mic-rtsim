@@ -6354,8 +6354,10 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
 
-        // With the module off, DIFFICULTY is ignored like every journaled record (U10): the
-        // plugin sends it again at the next session start. Switched on, the next one applies.
+        // With the module off, DIFFICULTY is heard like every journaled record and kept (RP-292,
+        // docs/replay-gate.md 9.7): not applied while off, applied at the switch-on, before the
+        // conflict decides anything. Before RP-292 it was ignored, and the conflict ran on the
+        // difficulty of before until the plugin's next session start sent it again.
         let dir = tmpdir("conflict-peaceful-off");
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -6364,13 +6366,16 @@ mod conflict {
         let (_, before) = e.conflict_stats();
         difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
         let (_, link) = e.conflict_stats();
-        assert_eq!(link.ignored, before.ignored + 1, "ignored while off");
+        assert_eq!(link.ignored, before.ignored + 1, "kept while off");
         assert!(!e.with_conflict(|c, _| c.peaceful), "not applied while off");
         j.modules(MODULES);
         j.idle();
-        assert!(!e.with_conflict(|c, _| c.peaceful), "nor when switched on");
-        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
-        assert!(e.with_conflict(|c, _| c.peaceful), "the next one applies");
+        assert!(
+            e.with_conflict(|c, _| c.peaceful),
+            "applied at the switch-on"
+        );
+        difficulty(&mut j, cb::DIFFICULTY_NORMAL);
+        assert!(!e.with_conflict(|c, _| c.peaceful), "the next one applies");
         // The retired latest-wins id is read as nothing.
         let mut b = vec![0u8; 16];
         b[0..2].copy_from_slice(&0x0093u16.to_le_bytes());

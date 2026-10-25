@@ -382,6 +382,12 @@ struct State {
     /// The generation nonce of the copy (REASSERT) being dispatched, `None` otherwise (RP-8).
     /// Set by `reasserted()` around its dispatch (on the copy's Apply, RP-50), cleared after.
     applying_copy: Option<u64>,
+    /// A SESSION_START came and Java's DICTs that follow it may not all have (RP-292): `world`'s
+    /// dictionary is empty from the session start until they do. A module holding records kept
+    /// while it was switched off (the dragons, the herds, the conflict) waits for it before its
+    /// reset applies them, since they name Java's ids. Cleared by the first record that is not a
+    /// DICT (`observe`). Not saved.
+    dict_wait: bool,
     /// How far the shared clock may run while replaying (§3.6, RP-24): the world's present at
     /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
     replay_clock: Tick,
@@ -457,6 +463,7 @@ impl State {
             session_first: 1,
             replaying: false,
             applying_copy: None,
+            dict_wait: false,
             replay_clock: Tick::ZERO,
             replay_handovers: 0,
             replay_records: 0,
@@ -1638,6 +1645,14 @@ impl Engine {
 
     fn observe(self: &Arc<Self>, st: &mut State, h: u64, rec: &Rec<'_>) {
         let b = rec.bytes;
+        if st.dict_wait && rec.kind != obs::SESSION_START && rec.kind != obs::DICT {
+            // The session's DICTs are in (the preamble writes them right after SESSION_START):
+            // the modules' resets that waited with kept records run before this record (RP-292).
+            st.dict_wait = false;
+            dragons::dict_ready(st);
+            herds::dict_ready(st);
+            conflict::dict_ready(st);
+        }
         match rec.kind {
             obs::SESSION_START if rec.size() >= obs::session_start::SIZE => {
                 let last_applied = wire::u64_at(b, obs::session_start::LAST_APPLIED_CMD_SEQ);
@@ -1650,6 +1665,7 @@ impl Engine {
                 // is held at the world's present until the replayed records move it (§3.6).
                 st.replaying = true;
                 st.applying_copy = None;
+                st.dict_wait = true;
                 st.replay_clock = st.phase1.world.now();
                 st.replay_handovers = 0;
                 st.replay_records = 0;

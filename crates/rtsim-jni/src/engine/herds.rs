@@ -49,7 +49,7 @@ use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::rows::PageSource;
 use rtsim_space::WorldHandle;
 
-use super::paging::{self, Live, Pager};
+use super::paging::{self, Kept, Live, Pager};
 use super::{State, log_error, log_info, log_warn, phase1, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
@@ -98,8 +98,12 @@ pub(super) struct Link {
     /// The last load read back herds whose state hash is not the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
-    /// Records ignored: the herds were switched off.
+    /// Records heard while the herds were switched off: not applied then, kept for the switch-on
+    /// ([`Link::kept`]).
     pub(super) ignored: u64,
+    /// The records heard while switched off, applied at the switch-on (RP-292, docs/replay-gate.md
+    /// 9.7): saved beside the meta page (`paging::kept_key`).
+    pub(super) kept: Kept,
     pub(super) commands_written: u64,
     /// Latest-wins HERD_GROUP_STATE records seen.
     pub(super) group_states: u64,
@@ -153,6 +157,7 @@ impl Link {
             restore_diverged: None,
             records: 0,
             ignored: 0,
+            kept: Kept::default(),
             commands_written: 0,
             group_states: 0,
         }
@@ -179,10 +184,18 @@ impl Link {
         let unreadable = |why: &str| when_pages_unreadable(why, source, budget, world);
         match source.read(KEY_HERDS) {
             Err(e) => return unreadable(&format!("cannot read the herds' meta page: {e}")),
-            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+            Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_HERDS) => {
                 return unreadable("herd pages without their meta page");
             }
-            Ok(None) => return Ok(Link::fresh(source, budget, world)),
+            Ok(None) => {
+                // Switched off before their first save, they may have kept records all the same.
+                let mut l = Link::fresh(source, budget, world);
+                l.kept = match Kept::load(&**source, KEY_HERDS) {
+                    Ok(k) => k,
+                    Err(e) => return unreadable(&e),
+                };
+                return Ok(l);
+            }
             Ok(Some(_)) => {}
         }
         if !world_restored {
@@ -210,10 +223,15 @@ impl Link {
             engine.pending_events(),
             hash.map_or(String::new(), |h| format!(", state {h:016x}"))
         ));
+        let kept = match Kept::load(&**source, KEY_HERDS) {
+            Ok(k) => k,
+            Err(e) => return unreadable(&e),
+        };
         let mut l = Link::empty(world);
         l.engine = engine;
         l.from_pages = true;
         l.restore_diverged = diverged;
+        l.kept = kept;
         Ok(l)
     }
 
@@ -265,9 +283,19 @@ pub(super) fn found(st: &mut State, n: NewHerd, at: Tick) {
     shared::introduce_herds(st);
 }
 
-/// Whether the herds run: switched on and in the world.
+/// Whether the herds run: switched on and in the world, and not waiting with kept records for
+/// Java's dictionary ([`kept_waiting`]).
 pub(super) fn running(st: &State) -> bool {
-    st.herds.enabled && st.herds.active()
+    st.herds.enabled && st.herds.active() && !kept_waiting(st)
+}
+
+/// The herds hold records kept while switched off, and a session start has not had Java's DICTs
+/// yet (`State::dict_wait`): their reset waits for the first record after the DICTs
+/// ([`dict_ready`]), as the dragons' and the conflict's do (the herds' records name no
+/// dictionary id, but one rule for the three keeps the order of the resets), and the herds do not
+/// run meanwhile.
+fn kept_waiting(st: &State) -> bool {
+    st.dict_wait && !st.herds.kept.is_empty()
 }
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
@@ -284,7 +312,8 @@ pub(super) fn replay_end(st: &mut State) {
 
 /// [`replay_end`] at `at` (at least the engine's present).
 fn end_replay(st: &mut State, at: Tick) {
-    if !st.herds.replay_end_due || !running(st) {
+    // Switched on is enough: a reset that applied kept records runs with no herd too.
+    if !st.herds.replay_end_due || !st.herds.enabled || kept_waiting(st) {
         return;
     }
     st.herds.replay_end_due = false;
@@ -348,19 +377,58 @@ fn set_enabled(st: &mut State, on: bool) {
 /// group, and its replay end is due. With no replay running (a switch-on, a first herd in the
 /// middle of a session) that end runs at once: the bodies of before a switch-off are gone, every
 /// group is abstract again, and the legs the herds booked for players go.
+///
+/// Records kept while off (RP-292) make it due with no herd too, and are applied in it
+/// ([`apply_kept`]).
 fn reset_if_due(st: &mut State) {
-    if st.herds.reset_due && running(st) {
+    let l = &st.herds;
+    if l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st) {
         st.herds.reset_due = false;
         let from_pages = st.herds.from_pages;
         st.herds.engine.begin_replay(from_pages);
         st.herds.replay_end_due = true;
         st.phase1.taint();
         take_commands(st);
+        apply_kept(st);
         if !st.replaying {
             let at = shared::hand_over_target(st);
             end_replay(st, at);
         }
     }
+}
+
+/// A session start's first record after Java's DICTs (`State::dict_wait`): a reset that waited
+/// with kept records runs now.
+pub(super) fn dict_ready(st: &mut State) {
+    reset_if_due(st);
+}
+
+/// The records heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in the reset,
+/// after `begin_replay` and before the replay end, where a restart's replay of the same records
+/// applies them: oldest first, each as it came (a copy as a copy), each after its own catch-up
+/// (`shared::catch_up`), so the herds' events due before it fire first, and at its own tick on the
+/// herds' clock (`ingest` holds it no later than their present, not the world's). A sheep a player
+/// killed or took in the switch's tick is dead before the replay end makes its group abstract.
+fn apply_kept(st: &mut State) {
+    let kept = st.herds.kept.take();
+    if kept.is_empty() {
+        return;
+    }
+    let outer = st.applying_copy;
+    for (copy, bytes) in &kept {
+        let rec = Rec {
+            kind: wire::u16_at(bytes, wire::R_KIND),
+            aux: wire::u32_at(bytes, wire::R_AUX),
+            bytes,
+        };
+        st.applying_copy = *copy;
+        apply(st, &rec);
+    }
+    st.applying_copy = outer;
+    log_info(&format!(
+        "the herds applied {} records heard while they were switched off",
+        kept.len()
+    ));
 }
 
 /// A record that is not journaled: MODULES and HERD_GROUP_STATE. PLAYER positions go to the
@@ -404,22 +472,32 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A herd record `Replay` admitted. Switched off, the herds ignore it (U10), but not the epoch it
-/// names: every record that decodes raises the engine's epoch floor first, switched on or off, with
-/// a herd or none (docs/replay-gate.md §5.3, RP-81), so that a switch-on later in the session, a
-/// first herd, or a restart never decides an epoch a record already used. A record that does not
-/// decode names nothing the engine can read: it raises no floor, and is skipped with a warning as
-/// before.
+/// A herd record `Replay` admitted. Switched off, the herds keep it for the switch-on (RP-292,
+/// docs/replay-gate.md 9.7: the switch gates only new decisions; every record of what already
+/// happened is heard), saved with their pages, and take the epoch it names at once: every record
+/// that decodes raises the engine's epoch floor first, switched on or off, with a herd or none
+/// (docs/replay-gate.md §5.3, RP-81), so that a switch-on later in the session, a first herd, or a
+/// restart never decides an epoch a record already used. A record that does not decode names
+/// nothing the engine can read: it raises no floor, and is skipped with a warning as before.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    if !st.herds.enabled {
+        if let Ok((_, _, _, o)) = &boundary::decode_obs(rec.bytes) {
+            st.herds.engine.fold_epoch(o);
+        }
+        st.herds.ignored += 1;
+        st.herds.kept.push(st.applying_copy, rec.bytes);
+        return;
+    }
+    apply(st, rec);
+}
+
+/// A herd record applied: as it comes with the herds on, or kept while off ([`apply_kept`]).
+fn apply(st: &mut State, rec: &Rec<'_>) {
     let decoded = boundary::decode_obs(rec.bytes);
-    // Whether the herds are off, or on with no herd yet (their replay begins at the first one,
-    // and the engine folds only while its replay runs), or running.
+    // Whether the herds are on with no herd yet (their replay begins at the first one, and the
+    // engine folds only while its replay runs), or running.
     if let Ok((_, _, _, o)) = &decoded {
         st.herds.engine.fold_epoch(o);
-    }
-    if !st.herds.enabled {
-        st.herds.ignored += 1;
-        return;
     }
     let o = match decoded {
         Ok((_, _, _, o)) => o,
@@ -680,7 +758,7 @@ pub(super) fn save(
         take_commands(st);
     }
     let l = &mut st.herds;
-    let out = paging::save(
+    let mut out = paging::save(
         &mut l.engine,
         &mut l.pager,
         l.enabled,
@@ -691,6 +769,7 @@ pub(super) fn save(
     if out.0.is_some() {
         l.dropped_pages = false;
     }
+    l.kept.save(KEY_HERDS, batch, &mut out.1);
     out
 }
 

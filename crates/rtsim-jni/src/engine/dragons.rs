@@ -49,7 +49,7 @@ use rtsim_kernel::journal::OpId;
 use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::rows::PageSource;
 
-use super::paging::{self, Live, Pager};
+use super::paging::{self, Kept, Live, Pager};
 use super::{State, TransferCmd, log_error, log_info, shared};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
@@ -107,8 +107,12 @@ pub(super) struct Link {
     /// The last load read back dragons whose state hash is not the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
-    /// Records ignored while the dragons were switched off.
+    /// Records heard while the dragons were switched off: not applied then, kept for the switch-on
+    /// ([`Link::kept`]).
     pub(super) ignored: u64,
+    /// The records heard while switched off, applied at the switch-on (RP-292, docs/replay-gate.md
+    /// 9.7): saved beside the meta page (`paging::kept_key`).
+    pub(super) kept: Kept,
     pub(super) commands_written: u64,
     /// FAR_LEG records not written yet (per session; docs/boundary.md §12).
     far: VecDeque<FarLeg>,
@@ -156,6 +160,7 @@ impl Link {
             restore_diverged: None,
             records: 0,
             ignored: 0,
+            kept: Kept::default(),
             commands_written: 0,
             far: VecDeque::new(),
             far_written: 0,
@@ -182,10 +187,18 @@ impl Link {
         let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
         match source.read(KEY_DRAGONS) {
             Err(e) => return unreadable(&format!("cannot read the dragons' meta page: {e}")),
-            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+            Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_DRAGONS) => {
                 return unreadable("dragon pages without their meta page");
             }
-            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(None) => {
+                // Switched off before their first save, they may have kept records all the same.
+                let mut l = Link::fresh(source, budget);
+                l.kept = match Kept::load(&**source, KEY_DRAGONS) {
+                    Ok(k) => k,
+                    Err(e) => return unreadable(&e),
+                };
+                return Ok(l);
+            }
             Ok(Some(_)) => {}
         }
         if !world_restored {
@@ -217,10 +230,15 @@ impl Link {
             engine.pending_events(),
             hash.map_or(String::new(), |h| format!(", state {h:016x}"))
         ));
+        let kept = match Kept::load(&**source, KEY_DRAGONS) {
+            Ok(k) => k,
+            Err(e) => return unreadable(&e),
+        };
         let mut l = Link::empty();
         l.engine = engine;
         l.restore_diverged = diverged;
         l.from_pages = true;
+        l.kept = kept;
         Ok(l)
     }
 
@@ -234,9 +252,18 @@ impl Link {
     }
 }
 
-/// Whether the dragons run: switched on and in the world.
+/// Whether the dragons run: switched on and in the world, and not waiting with kept records for
+/// Java's dictionary ([`kept_waiting`]).
 pub(super) fn running(st: &State) -> bool {
-    st.dragons.enabled && st.dragons.active()
+    st.dragons.enabled && st.dragons.active() && !kept_waiting(st)
+}
+
+/// The dragons hold records kept while switched off, and a session start has not had Java's
+/// dictionary yet (`State::dict_wait`): the records name its ids (a lair's structure, an untagged
+/// body's species, a robbed hoard's items), so the reset that applies them waits for the first
+/// record after the DICTs ([`dict_ready`]), and the dragons do not run meanwhile.
+fn kept_waiting(st: &State) -> bool {
+    st.dict_wait && !st.dragons.kept.is_empty()
 }
 
 // ---- dictionaries -----------------------------------------------------------------------------------
@@ -339,11 +366,19 @@ fn set_enabled(st: &mut State, on: bool) {
 
 /// The session's reset, once the dragons run (docs/replay-gate.md §3.2): their engine's replay
 /// begins (`begin_replay`, told whether it came back from its pages, RP-31) and its end is due.
-/// With no replay running (a switch-on) that end runs at once, at the hand-over's time.
+/// With no replay running (a switch-on) that end runs at once, at the hand-over's time. Records
+/// kept while off make it due with no dragon or lair too: they are applied in it (RP-292).
 fn reset_if_due(st: &mut State) {
-    if st.dragons.reset_due && running(st) {
+    let l = &st.dragons;
+    if l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st) {
         reset(st);
     }
+}
+
+/// A session start's first record after Java's DICTs (`State::dict_wait`): a reset that waited
+/// with kept records runs now.
+pub(super) fn dict_ready(st: &mut State) {
+    reset_if_due(st);
 }
 
 /// [`reset_if_due`] for the dragons as they are: a record reaches an engine nothing has made
@@ -355,10 +390,40 @@ fn reset(st: &mut State) {
     st.dragons.replay_end_due = true;
     st.phase1.taint();
     take_commands(st);
+    apply_kept(st);
     if !st.replaying {
         let at = shared::hand_over_target(st);
         end_replay(st, at);
     }
+}
+
+/// The records heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in the reset,
+/// after `begin_replay` and before the replay end, where a restart's replay of the same records
+/// applies them: oldest first, each as it came (a copy as a copy), each after its own catch-up
+/// (`shared::catch_up`), so the dragons' events due before it fire first. Each goes in at its own
+/// tick as far as the world allows: the dragons share the phase 1 world, which ran on while they
+/// were off, and a record is booked no earlier than the world's present (`ingest`); a dragon a
+/// player killed or tamed in the window is dead before the replay end could resume it.
+fn apply_kept(st: &mut State) {
+    let kept = st.dragons.kept.take();
+    if kept.is_empty() {
+        return;
+    }
+    let outer = st.applying_copy;
+    for (copy, bytes) in &kept {
+        let rec = Rec {
+            kind: wire::u16_at(bytes, wire::R_KIND),
+            aux: wire::u32_at(bytes, wire::R_AUX),
+            bytes,
+        };
+        st.applying_copy = *copy;
+        apply(st, &rec);
+    }
+    st.applying_copy = outer;
+    log_info(&format!(
+        "the dragons applied {} records heard while they were switched off",
+        kept.len()
+    ));
 }
 
 /// The dragons' replay end at `clock`: bodies of an earlier session (or of before a switch-off)
@@ -423,11 +488,14 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A dragon record `Replay` admitted. Switched off, the dragons ignore it (U10).
+/// A dragon record `Replay` admitted. Switched off, the dragons keep it for the switch-on
+/// (RP-292, docs/replay-gate.md 9.7: the switch gates only new decisions; every record of what
+/// already happened is heard), saved with their pages.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.dragons.enabled {
         st.dragons.ignored += 1;
-        // Ignored, but the epoch it names is taken all the same (docs/replay-gate.md §5.3, RP-57,
+        st.dragons.kept.push(st.applying_copy, rec.bytes);
+        // The epoch it names is taken at once all the same (docs/replay-gate.md §5.3, RP-57,
         // RP-75): the dragons' next body, once they run again, is above it.
         let dict = java_species(st);
         if let Ok((_, _, _, o)) = boundary::decode_obs(rec.bytes, &dict) {
@@ -435,6 +503,11 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
         return;
     }
+    apply(st, rec);
+}
+
+/// A dragon record applied: as it comes with the dragons on, or kept while off ([`apply_kept`]).
+fn apply(st: &mut State, rec: &Rec<'_>) {
     // Everything before it happens first: the ships, the dragons and the world, in time order.
     shared::catch_up(st, rec);
     let dict = java_species(st);
@@ -886,7 +959,7 @@ pub(super) fn save(
         take_commands(st);
     }
     let l = &mut st.dragons;
-    let out = paging::save(
+    let mut out = paging::save(
         &mut l.engine,
         &mut l.pager,
         l.enabled,
@@ -897,6 +970,7 @@ pub(super) fn save(
     if out.0.is_some() {
         l.dropped_pages = false;
     }
+    l.kept.save(KEY_DRAGONS, batch, &mut out.1);
     out
 }
 
