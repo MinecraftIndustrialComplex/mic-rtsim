@@ -1073,8 +1073,9 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 return;
             };
             if defs != st.phase1.world.works_catalog {
-                // Taken while switched off too, at the frozen clock (as HOUSE_PLACED, PR13): the
-                // catalogue is sent once a session.
+                // Latest state, not a record of what happened (RP-300 leaves it alone): the whole
+                // catalogue, sent once a session and not journaled, so a replay never brings it
+                // back at another tick. Taken while switched off too, at the frozen clock.
                 if st.phase1.enabled {
                     input_now(st, Input::Works { defs });
                 } else {
@@ -3575,6 +3576,190 @@ mod tests {
         assert!(
             st.phase1.outbox.iter().any(|(_, op, _)| *op == 0x77),
             "the held command goes out once phase 1 is on"
+        );
+    }
+
+    /// A human village's Join for the tests that book inputs by hand.
+    fn join_of(key: u64, x: i32) -> Input {
+        Input::Join {
+            key,
+            culture: 0,
+            frame: 1,
+            x,
+            z: 0,
+            pop: 20,
+            resources: catalog::resources("minecraft:village_plains", Culture::Human)
+                .into_iter()
+                .map(|(r, a)| (r.0, a))
+                .collect(),
+        }
+    }
+
+    /// RP-300: the inputs kept while phase 1 is off are in the saved meta, in order, with their own
+    /// ticks. A crash while it is off brings them back; a save with none reads back with none.
+    #[test]
+    fn the_kept_inputs_come_back_from_a_save_in_order() {
+        let mut l = Link::empty();
+        l.kept = vec![
+            Logged {
+                at: 1_000,
+                input: Input::Rob {
+                    caravan: 7,
+                    player: (1, 2),
+                    goods: vec![(3, 4 * MILLI)],
+                },
+            },
+            Logged {
+                at: 1_000,
+                input: Input::UnmarkBase {
+                    key: 9,
+                    player: (1, 2),
+                },
+            },
+            Logged {
+                at: 5_000,
+                input: Input::MemberHeld {
+                    caravan: 7,
+                    member: 1,
+                    player: (0, 0),
+                    killed: true,
+                    held: vec![(3, MILLI)],
+                },
+            },
+        ];
+        let back = reload(&l, "kept");
+        assert_eq!(back.kept, l.kept, "the same inputs at the same ticks");
+        assert_eq!(back.kept_len(), 3);
+        assert!(reload(&Link::empty(), "kept-none").kept.is_empty());
+    }
+
+    /// RP-300: kept inputs are applied in time order (equal ticks in the order heard), each at its
+    /// own tick after the world has run to it, never at the frozen clock; nothing moves while
+    /// phase 1 is off and no viewer module runs the clock.
+    #[test]
+    fn kept_inputs_drain_in_time_order_each_at_its_own_tick() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        assert!(!st.phase1.enabled);
+        // Heard out of order, two at one tick.
+        book(&mut st, join_of(3, 600), 3_000);
+        book(&mut st, join_of(1, 0), 1_000);
+        book(&mut st, join_of(2, 300), 2_000);
+        book(&mut st, Input::Population { key: 2, pop: 30 }, 2_000);
+        let ats: Vec<u64> = st.phase1.kept.iter().map(|k| k.at).collect();
+        assert_eq!(ats, [1_000, 2_000, 2_000, 3_000], "time order");
+        assert!(
+            matches!(st.phase1.kept[1].input, Input::Join { key: 2, .. })
+                && matches!(st.phase1.kept[2].input, Input::Population { key: 2, .. }),
+            "equal ticks keep the order they were heard in"
+        );
+        // Off with no viewer: a drain moves nothing.
+        drain_kept(&mut st, None);
+        assert_eq!(st.phase1.kept.len(), 4);
+        assert_eq!(st.phase1.world.now().0, 0);
+        // On again: all four, in order, the world at the last one's tick.
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.kept.is_empty());
+        let log: Vec<(u64, u64)> = st
+            .phase1
+            .log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Join { key, .. } | Input::Population { key, .. } => Some((l.at, key)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(log, [(1_000, 1), (2_000, 2), (2_000, 2), (3_000, 3)]);
+        assert_eq!(st.phase1.world.now().0, 3_000);
+        assert_eq!(st.phase1.nodes.len(), 3);
+    }
+
+    /// RP-300: with phase 1 off and a viewer module running the shared clock, `run_to` applies the
+    /// kept inputs it passes (each at its tick) and leaves the later ones.
+    #[test]
+    fn a_run_to_with_a_viewer_running_drains_the_inputs_it_passes() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.herds.enabled = true;
+        st.herds.engine.add_herd(
+            rtsim_ecology::herds::NewHerd {
+                name: "flock".into(),
+                species: rtsim_ecology::herds::HerdSpecies::Sheep,
+                frame: 1,
+                pos: (0, 0),
+                count: 12,
+                seed: Some(1),
+            },
+            Tick(0),
+        );
+        assert!(shared::any_viewer(&st), "the herds run the clock");
+        book(&mut st, join_of(2, 300), 9_000);
+        book(&mut st, join_of(1, 0), 2_000);
+        shared::run_to(&mut st, Tick(5_000));
+        assert!(!st.phase1.enabled);
+        assert_eq!(st.phase1.nodes.len(), 1, "the one before 5_000 is in");
+        assert!(st.phase1.nodes.contains_key(&1));
+        assert_eq!(st.phase1.kept.len(), 1, "the one after waits");
+        assert_eq!(st.phase1.kept[0].at, 9_000);
+        let at = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 1, .. }))
+            .map(|l| l.at);
+        assert_eq!(at, Some(2_000), "at its own tick, not the frozen clock");
+        assert_eq!(
+            st.herds.engine.now().0,
+            5_000,
+            "the viewer ran to the target"
+        );
+        assert!(st.phase1.world.now().0 >= 2_000);
+        shared::run_to(&mut st, Tick(10_000));
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.nodes.len(), 2);
+    }
+
+    /// RP-300: a base marked while phase 1 is off is kept at its own tick and is a node (a place the
+    /// world's records may name) once it is on again; a record naming it while it is only kept is
+    /// about a node, not about nothing.
+    #[test]
+    fn a_base_marked_while_off_is_a_node_once_it_is_on_again() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        let marked = record(obs::BASE, obs::base::SIZE, obs::base::MARKED, |b| {
+            wire::put_u64(b, obs::OBS_SEQ, 1);
+            wire::put_i64(b, obs::GAME_TIME, 4_000);
+            wire::put_u64(b, obs::base::BASE, 0xBA5E);
+            wire::put_u32(b, obs::base::DIM, 1);
+            wire::put_f64(b, obs::base::X, 600.0);
+            wire::put_f64(b, obs::base::Z, 100.0);
+            wire::put_u64(b, obs::base::PLAYER_MOST, 5);
+            wire::put_u64(b, obs::base::PLAYER_LEAST, 6);
+        });
+        journaled(
+            &mut st,
+            &Rec {
+                kind: obs::BASE,
+                aux: obs::base::MARKED,
+                bytes: &marked,
+            },
+        );
+        assert!(!st.phase1.nodes.contains_key(&0xBA5E), "not applied yet");
+        assert_eq!(st.phase1.kept.len(), 1);
+        assert_eq!(st.phase1.kept[0].at, 4_000);
+        assert!(
+            known(&st.phase1, 0xBA5E),
+            "a record naming it is about a node"
+        );
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.kept.is_empty());
+        assert!(st.phase1.nodes.contains_key(&0xBA5E));
+        assert!(
+            st.phase1
+                .log
+                .iter()
+                .any(|l| l.at == 4_000 && matches!(l.input, Input::MarkBase { key: 0xBA5E, .. })),
+            "at its own tick"
         );
     }
 
