@@ -4494,6 +4494,14 @@ mod conflict {
     const PLAYER2: (u64, u64) = (0x2222_0000_0000_0002, 0x9999_0000_0000_0009);
     const DAY: i64 = TICKS_PER_DAY as i64;
 
+    /// A fresh Java op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death,
+    /// so none repeats another's op.
+    fn next_casualty_op() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        wire::JAVA_OP_BIT | (N.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
     /// Moves game time on in steps of `step` ticks until `done`, journaling the fake plugin's
     /// answers at each step; fails after `limit` ticks.
     fn advance_until(
@@ -5717,9 +5725,11 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the chief's, the rail's,
-    /// the tribute's; the camp's came with M4) is decoded, counted as deferred and dropped; one with
-    /// an op id spends it, so the same record again is not counted twice.
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the rail's, the
+    /// tribute's; the camp's came with M4 and the chief's state with M6) is decoded, counted as
+    /// deferred and dropped; one with an op id spends it, so the same record again is not counted
+    /// twice. CHIEF_STATE is counted as its own and given to the engine (a camp with no bodies
+    /// to count ignores it).
     #[test]
     fn later_slices_records_are_counted_and_dropped() {
         let (_dir, e, mut j) = camp("conflict-deferred");
@@ -5743,7 +5753,8 @@ mod conflict {
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let (_, link) = e.conflict_stats();
-        assert_eq!((link.deferred, link.ignored), (2, 0), "{link:?}");
+        assert_eq!((link.deferred, link.ignored), (1, 0), "{link:?}");
+        assert_eq!(link.chief_states, 1, "{link:?}");
         assert!(
             e.with_conflict(|c, _| c.op_applied((1 << 63) | 0xDEAD)),
             "the engine spent the op id, as Conflict::ingest does (MZB-23)"
@@ -5773,6 +5784,52 @@ mod conflict {
         strays: u16,
         pages_first: bool,
     ) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        camp_of(
+            name,
+            "mowziesmobs:umvuthana_grove",
+            WARRIOR,
+            strays,
+            0,
+            pages_first,
+        )
+    }
+
+    /// The Frostmaw's body, as Java names it.
+    const FROSTMAW: &str = "mic_rtsim:conflict/frostmaw/frostmaw";
+
+    /// A den (FACTION_FOUND with the Frostmaw's structure) with `strays` Frostmaws standing in it;
+    /// the first is its chief, crystal on it, as the census byte says.
+    fn den(name: &str, strays: u16) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        let census = if strays > 0 {
+            (cb::CENSUS_CHIEF | cb::CENSUS_CRYSTAL) as u8
+        } else {
+            0
+        };
+        let (dir, e, mut j) = camp_of(
+            name,
+            "mowziesmobs:frostmaw_spawn",
+            FROSTMAW,
+            strays,
+            census,
+            false,
+        );
+        if let Some(b) = j.conflict_plugin.camp_world(CAMP).bodies.first_mut() {
+            b.chief = true;
+            b.crystal = true;
+        }
+        (dir, e, j)
+    }
+
+    /// A camp of `structure` with `strays` of `body` standing in it and the census byte `census`,
+    /// the pages saved before the camp is found when `pages_first`.
+    fn camp_of(
+        name: &str,
+        structure: &str,
+        body: &str,
+        strays: u16,
+        census: u8,
+        pages_first: bool,
+    ) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
         let dir = tmpdir(name);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -5783,8 +5840,8 @@ mod conflict {
         j.conflict_plugin = synth::FakeConflict::new(PLAYER);
         let _ = e.conflict_log(true);
         j.idle();
-        let structure = j.dict_id(wire::DICT_STRUCTURE, "mowziesmobs:umvuthana_grove");
-        let body = j.dict_id(wire::DICT_BODY, WARRIOR);
+        let structure = j.dict_id(wire::DICT_STRUCTURE, structure);
+        let body = j.dict_id(wire::DICT_BODY, body);
         for _ in 0..strays {
             j.conflict_plugin.camp_stray(CAMP, body);
         }
@@ -5798,7 +5855,7 @@ mod conflict {
             structure,
             pos: (CAMP_AT.0, 64, CAMP_AT.1),
             home_bodies: strays,
-            census: 0,
+            census,
         }));
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -5841,6 +5898,105 @@ mod conflict {
     /// Waits (the answers journaled as the plugin sends them) until `done`.
     fn camp_until(j: &mut Java, what: &str, mut done: impl FnMut(&mut Java) -> bool) {
         advance_until(j, 50, 2 * DAY, what, |j| done(j));
+    }
+
+    /// M6: CHIEF_STATE is a latest-wins record, not journaled, given to the engine at its own time
+    /// (MZB-270): a steal sends the crystal off and the faction's follows. A record the engine lost
+    /// (a crash before the next census) is mended by the den's census, whose chief byte is the
+    /// world's own word (MZB-269), and the lines of that census ask for the right body.
+    #[test]
+    fn a_chief_state_reaches_the_engine_and_the_census_corrects_it() {
+        let (_dir, e, mut j) = den("chief-state", 1);
+        let crystal = |e: &Engine| {
+            e.with_conflict(|c, _| c.factions[c.faction_of_key(CAMP).unwrap() as usize].crystal)
+        };
+        assert!(crystal(&e), "found with its chief and its crystal");
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        assert!(j.conflict_plugin.steal(CAMP, at));
+        j.conflict_flush();
+        j.idle();
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.chief_states, 1, "{link:?}");
+        assert!(!crystal(&e), "the steal's CHIEF_STATE");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        // The engine loses it, and the census says the chief stands robbed.
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.factions[f as usize].crystal = true;
+        });
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoption answered", |_| {
+            slots(&e) == [1, 0, 0, 0, 0]
+        });
+        assert!(!crystal(&e), "the census corrected it");
+        let orders = reconciles(&j);
+        assert!(!orders.is_empty());
+        assert!(
+            orders
+                .iter()
+                .flat_map(|r| r.lines.iter())
+                .all(|l| l.flags & cb::LINE_CRYSTAL == 0 && l.flags & cb::LINE_CHIEF != 0),
+            "the chief, robbed: {orders:?}"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-100: a CHIEF_STATE that arrives while the host replays, before the replayed FACTION_FOUND
+    /// has put the faction in the world, is held for the replay end (the engine's own replay begins
+    /// only once the conflict runs, so its hold did not cover this). It used to find its faction
+    /// unknown and be dropped, and the FACTION_FOUND's census byte then put the crystal back. The
+    /// pages hold no camp (`pages_first`) or the camp already (the control): the chief robbed of its
+    /// crystal either way once the replay is over.
+    #[test]
+    fn a_chief_state_before_the_replayed_faction_found_is_applied_at_the_replay_end() {
+        for pages_first in [true, false] {
+            let name = format!("chief-state-replay-{pages_first}");
+            let (dir, e, mut j) = camp_of(
+                &name,
+                "mowziesmobs:frostmaw_spawn",
+                FROSTMAW,
+                1,
+                (cb::CENSUS_CHIEF | cb::CENSUS_CRYSTAL) as u8,
+                pages_first,
+            );
+            if !pages_first {
+                save(&e, &mut j);
+            }
+            let gt = j.game_time;
+            let saved = j.crash();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.game_time = gt;
+            assert_eq!(e.conflict_restore_check(), (None, false));
+            // The steal's record, live, ahead of the journal the session replays.
+            j.conflict_obs(&O::ChiefState(cb::ChiefState {
+                faction: CAMP,
+                flags: 0,
+                health: 100.0,
+            }));
+            let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+            for _ in 0..64 {
+                j.idle();
+                if j.sent_obs >= last {
+                    break;
+                }
+            }
+            assert!(j.sent_obs >= last, "the whole journal handed over");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let crystal = e.with_conflict(|c, _| {
+                c.factions[c.faction_of_key(CAMP).expect("the camp is found") as usize].crystal
+            });
+            assert!(
+                !crystal,
+                "pages_first {pages_first}: the replay's census byte put the crystal back"
+            );
+            let (_, link) = e.conflict_stats();
+            assert_eq!(link.chief_states, 1, "{link:?}");
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
     }
 
     /// MOWZIE.md §4.9 through the journal: a census (CAMP_CENSUS) is journaled, the engine orders
@@ -6463,6 +6619,7 @@ mod conflict {
                 body,
                 count,
                 killer,
+                op: next_casualty_op(),
             }));
         }
         j.idle();
@@ -6936,6 +7093,94 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// MZB-589 (the coordinator's regression test, end to end): a member's BAND_CASUALTIES that
+    /// Java journaled on an entity is committed again by the reassert (the same bytes under a new
+    /// OBS_SEQ) when the holder was unloaded at its ack, which comes about one autosave later.
+    /// By then a WORLD_SAVED past the first copy has made the replay forget its ops, so the
+    /// second copy used to pass for a new death and took a second unit off the band. The party's
+    /// own list of the casualties it counted skips it; a second member's record, with its own op,
+    /// still counts.
+    #[test]
+    fn a_casualty_committed_again_after_a_world_save_counts_once() {
+        let (_dir, e, mut j) = camp("conflict-casualty-reassert");
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let epoch = books(&e, p).1;
+        let body = cmds(&j)
+            .find_map(|c| match c {
+                C::Materialize(m) if m.agent == Party::agent(p) => {
+                    m.members.iter().find(|s| s.count > 0).map(|s| s.body)
+                }
+                _ => None,
+            })
+            .expect("the raid's materialize");
+        let casualty = |op| {
+            O::Casualties(cb::BandCasualties {
+                agent: Party::agent(p),
+                epoch,
+                by: cb::BY_MOB,
+                body,
+                count: 1,
+                killer: (0, 0),
+                op,
+            })
+        };
+        let first = casualty(next_casualty_op());
+        let first_seq = j.conflict_obs(&first);
+        j.idle();
+        j.idle();
+        assert_eq!(books(&e, p).0, n - 1, "the first copy counted");
+        // A world save past it: the replay forgets the ops it knew up to there.
+        let durable = j.next_obs - 1;
+        {
+            let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+                panic!("room for WORLD_SAVED")
+            };
+            wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, durable);
+        }
+        j.idle();
+        // The reassert: the same record, a new sequence.
+        let again = j.conflict_obs(&first);
+        assert!(again > durable, "after the save");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(books(&e, p).0, n - 1, "the copy took no second unit");
+        assert_eq!(e.with_conflict(|c, _| c.stats.casualties), 1, "one death");
+        // The same record as a holder's REASSERT (the path a carried record takes, through the
+        // engine's `ingest_copy`), journaled by a generation this engine never heard: applied as
+        // a copy, and the party's own list still skips it.
+        let applied = |e: &Engine| {
+            e.stats
+                .copies_applied
+                .load(std::sync::atomic::Ordering::Acquire)
+        };
+        let before = applied(&e);
+        let original = j.journaled(first_seq).unwrap();
+        j.reassert(0x0E41_11E4_0000_0002, &original);
+        j.idle();
+        j.idle();
+        assert_eq!(applied(&e), before + 1, "the copy took the REASSERT path");
+        assert_eq!(books(&e, p).0, n - 1, "the REASSERT took no second unit");
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            1,
+            "still one death"
+        );
+        // Another member's death is its own op.
+        j.conflict_obs(&casualty(next_casualty_op()));
+        j.idle();
+        j.idle();
+        assert_eq!(books(&e, p).0, n - 2, "a second member's record counts");
+        assert_eq!(e.with_conflict(|c, _| c.stats.casualties), 2);
+    }
+
     /// MZB-138: a raid in view at a save, fought after it (the scripted player kills half of it)
     /// and then a crash with no despawn journaled: the replayed casualties are counted once, the
     /// members who died stay dead, and the rest count as alive as they always did.
@@ -7001,8 +7246,8 @@ mod conflict {
         advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
             !recalls(j, from, p).is_empty()
         });
-        // Filler a replay must read through: casualties of a band the engine never had (64 bytes
-        // each, so about a thousand fill a minimum-size buffer), journaled before the despawn.
+        // Filler a replay must read through: casualties of a band the engine never had (72 bytes
+        // each, so about 900 fill a minimum-size buffer), journaled before the despawn.
         let first = j.world_save().next_obs;
         for _ in 0..1_500 {
             j.conflict_obs(&O::Casualties(cb::BandCasualties {
@@ -7012,6 +7257,7 @@ mod conflict {
                 body: 0,
                 count: 1,
                 killer: (0, 0),
+                op: next_casualty_op(),
             }));
         }
         let recalled_at = j.game_time;
@@ -7050,8 +7296,8 @@ mod conflict {
     /// A buffer that holds a whole long replay in one hand-over.
     const ONE_HAND_OVER: usize = 1024 * 1024;
 
-    /// Filler a replay must read through: `count` casualties of a band the engine never had (64
-    /// bytes each, so about a thousand fill a minimum-size buffer). 4,000 span four hand-overs.
+    /// Filler a replay must read through: `count` casualties of a band the engine never had (72
+    /// bytes each, so about 900 fill a minimum-size buffer). 4,000 span four hand-overs or more.
     fn fillers(j: &mut Java, count: usize) {
         for _ in 0..count {
             j.conflict_obs(&O::Casualties(cb::BandCasualties {
@@ -7061,6 +7307,7 @@ mod conflict {
                 body: 0,
                 count: 1,
                 killer: (0, 0),
+                op: next_casualty_op(),
             }));
         }
     }
@@ -8909,7 +9156,8 @@ mod conflict {
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
 
-        let e = engine(&dir, 256 * 1024);
+        // The whole tail in one hand-over: 4,000 fillers of 72 bytes pass 256 KiB (MZB-589).
+        let e = engine(&dir, ONE_HAND_OVER);
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
         j.game_time = gt;
@@ -9316,7 +9564,8 @@ mod conflict {
         let tail = saved.journal.iter().filter(|(s, _)| *s > pages).count() as u64;
 
         // S2: the same pages, S0's tail and S1's records replayed whole.
-        let e = engine(&dir, 256 * 1024);
+        // The whole tail in one hand-over: 4,000 fillers of 72 bytes pass 256 KiB (MZB-589).
+        let e = engine(&dir, ONE_HAND_OVER);
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
         j.game_time = gt;

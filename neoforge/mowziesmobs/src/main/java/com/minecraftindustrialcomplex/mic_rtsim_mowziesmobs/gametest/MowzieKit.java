@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.bobmowzie.mowziesmobs.server.item.ItemHandler;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
@@ -10,7 +11,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.GroveKind;
@@ -24,17 +28,25 @@ import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.entity.Visibility;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -46,6 +58,7 @@ import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -54,6 +67,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 
@@ -274,8 +288,10 @@ public final class MowzieKit {
 
     /**
      * Has the engine save its pages at its next step, so the command header after it acknowledges what it holds and
-     * the holders drop their pending records (a record marker with none is discarded). A GameTest server never
-     * reaches the periodic save, and nothing else makes the engine acknowledge.
+     * the holders drop their pending records (a record marker with none is discarded). A GameTest server saves
+     * everything every 6,000 ticks (MinecraftServer.tickServer; the entity manager's autoSave then unloads every
+     * HIDDEN chunk, so C2ME's dropped unloads clear there too, MZB-664): a run under 6,000 ticks never reaches it, and
+     * nothing else makes the engine acknowledge.
      */
     public static void acknowledge() {
         ScriptedEngine engine = RtsimTests.engine();
@@ -284,16 +300,75 @@ public final class MowzieKit {
     }
 
     /**
-     * Inside {@code thenWaitUntil}: the chunk is unloaded (not just hidden: a hidden chunk forced again is
-     * promoted with no join), and none of the entities is in the level. After this a forced chunk reads its
-     * entities from disk, and each joins as a new object.
+     * Inside {@code thenWaitUntil}: the chunk is unloaded and each entity object is saved and unloaded with it
+     * ({@link #removed}). After this a forced chunk reads its entities from disk, and each joins as a new object.
      */
-    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, UUID... ids) {
+    @SafeVarargs
+    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, Supplier<? extends Entity>... objects) {
+        Runnable removed = removed(level, objects);
         return RtsimTests.io(() -> {
+            removed.run();
             check("chunk (" + cx + ", " + cz + ") is unloaded", !level.hasChunk(cx, cz));
-            for (UUID id : ids)
-                check("entity " + id + " is unloaded", level.getEntity(id) == null);
         });
+    }
+
+    /** Ticks into a {@link #removed} wait after which an object alive in a HIDDEN chunk has its unload queued again. */
+    public static final int REQUEUE_AFTER = 40;
+
+    /**
+     * Inside {@code thenWaitUntil}: every entity object is removed. For a body whose chunk went out that is saved
+     * and unloaded: vanilla's {@code storeChunkSections} writes the chunk's entities, then removes each object
+     * ({@code UNLOADED_TO_CHUNK}), and a forced chunk reads them from disk as new objects. Neither a null
+     * {@code getEntity} nor {@code !hasChunk} says that: under C2ME a re-force inside the hide window tracks the
+     * same object again with no join (MZB-662). The objects are read at each poll: a sequence's arguments are
+     * evaluated when it is built, before its {@code thenExecute} steps fill the test's arrays (a UUID read then is
+     * null, and {@code getEntity(null)} is null, so the UUID waits this replaces passed at once).
+     *
+     * <p>C2ME's {@code processUnloads} can drop a chunk's entity unload (MZB-664): the object then stays alive in
+     * a HIDDEN chunk until the next autosave, up to 6,000 ticks. When an object is still alive
+     * {@link #REQUEUE_AFTER} ticks into the wait, its chunk reads HIDDEN and is not queued to unload, the wait
+     * queues it again through MZB-660's accessor (vanilla's own retry: a chunk whose entities could not be
+     * stored yet stays queued) and logs it, once per chunk each {@link #REQUEUE_AFTER} ticks.
+     */
+    @SafeVarargs
+    public static Runnable removed(ServerLevel level, Supplier<? extends Entity>... objects) {
+        long[] since = {-1};
+        Map<Long, Long> requeuedAt = new HashMap<>();
+        return RtsimTests.io(() -> {
+            long now = level.getGameTime();
+            if (since[0] < 0)
+                since[0] = now;
+            List<Entity> es = new ArrayList<>(objects.length);
+            for (Supplier<? extends Entity> s : objects) {
+                Entity e = s.get();
+                check("the entity object is known", e != null);
+                es.add(e);
+            }
+            if (now - since[0] >= REQUEUE_AFTER)
+                for (Entity e : es)
+                    if (!e.isRemoved())
+                        requeueDroppedUnload(level, e, now, requeuedAt);
+            for (Entity e : es)
+                check("entity " + e.getUUID() + " is saved and unloaded (alive " + e.isAlive() + ", removal " + e.getRemovalReason()
+                        + ", chunk " + e.chunkPosition() + ")", e.isRemoved());
+        });
+    }
+
+    /** The retry of a dropped entity unload, for {@link #removed} (MZB-664). */
+    private static void requeueDroppedUnload(ServerLevel level, Entity e, long now, Map<Long, Long> requeuedAt) {
+        ChunkPos cp = e.chunkPosition();
+        long key = cp.toLong();
+        Long last = requeuedAt.get(key);
+        if (last != null && now - last < REQUEUE_AFTER)
+            return;
+        var manager = (EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+        // The map's default is HIDDEN: an absent chunk reads hidden, as vanilla's processUnloads reads it.
+        if (manager.mic_rtsim$chunkVisibility().get(key) != Visibility.HIDDEN || manager.mic_rtsim$chunksToUnload().contains(key))
+            return;
+        manager.mic_rtsim$chunksToUnload().add(key);
+        requeuedAt.put(key, now);
+        LogUtils.getLogger().warn("[gametest] entity {} is alive in the HIDDEN chunk {} with no unload queued, {} ticks into the wait: "
+                + "C2ME dropped its entity unload, queued again (MZB-664)", e.getUUID(), cp, REQUEUE_AFTER);
     }
 
     // ---- test camps -----------------------------------------------------------------------------
@@ -547,6 +622,67 @@ public final class MowzieKit {
             e.setHealth(0f);
             e.die(source);
         }
+    }
+
+    // ---- a thief of the crystal (MZB-281) -------------------------------------------------------
+
+    /** Where a sleeping Frostmaw's ice crystal is, as {@code EntityFrostmaw.tick} works it out (a thief must stand within 1.8 blocks of it). */
+    public static Vec3 crystalPoint(EntityFrostmaw f) {
+        return new Vec3(1.6, 0.4, 1.8).yRot((float) Math.toRadians(-f.getYRot() - 90.0f)).add(f.position());
+    }
+
+    /**
+     * A thief of a Frostmaw's crystal: a {@link FakePlayers#addSeen} server player of the given game mode
+     * (review C; M6 first used {@code helper.makeMockPlayer} added with {@code addFreshEntity}). It is in the
+     * entity manager, so that the jar's {@code getPlayersNearby} finds it, and in {@code level.players()},
+     * so that the goals' {@code NearestAttackableTargetGoal} reads it as a real player is read: a thief that
+     * is no target would make "the Frostmaw sleeps on" hold for a reason a real player does not share.
+     * It is kept at the crystal's point at the end of every tick until the Frostmaw has lost its crystal.
+     * {@code invisible} gives it the invisibility effect (a bare {@code setInvisible} is undone by the entity's
+     * first tick); {@code fullInventory} puts one dirt in each of the 36 main slots (the jar's
+     * {@code isInventoryFull} asks only whether a slot is empty). Removed when the test ends. Being a player it
+     * loads chunks round itself, so the far place is never released while it stands. UNVERIFIED on a running
+     * server (compiled only): a player joined this way may log or fail where a login would not (MZB-281).
+     */
+    public static ServerPlayer thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
+        ServerLevel level = helper.getLevel();
+        Vec3 at = crystalPoint(f);
+        ServerPlayer p = FakePlayers.addSeen(level, at, "mowzie-thief");
+        p.setGameMode(mode);
+        // A target the Frostmaw may strike, not a casualty whose death cuts the test short. Not invulnerable:
+        // vanilla's canBeSeenAsEnemy is false for an invulnerable entity, so no targeting goal would take it
+        // and the jar's wake (which needs a target) could never fire. Resistance V takes every hit that does
+        // not bypass resistance, and the health is topped up each tick for the rest.
+        p.addEffect(new MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, MobEffectInstance.INFINITE_DURATION, 4, false, false));
+        if (fullInventory)
+            for (int i = 0; i < 36; i++)
+                p.getInventory().setItem(i, new ItemStack(Items.DIRT));
+        if (invisible) {
+            p.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY, MobEffectInstance.INFINITE_DURATION, 0, false, false));
+            p.setInvisible(true);
+        }
+        everyTick(helper, () -> {
+            if (!p.isRemoved() && p.getHealth() < p.getMaxHealth())
+                p.setHealth(p.getMaxHealth());
+            if (!p.isRemoved() && !f.isRemoved() && f.getHasCrystal()) {
+                Vec3 c = crystalPoint(f);
+                p.moveTo(c.x, c.y, c.z);
+            }
+        });
+        ConflictKit.onEnd(helper, () -> {
+            if (!p.isRemoved())
+                FakePlayers.removeSeen(p);
+        });
+        return p;
+    }
+
+    /** How many ice crystals a player's main inventory holds. */
+    public static int crystals(Player p) {
+        int n = 0;
+        for (ItemStack s : p.getInventory().items)
+            if (s.is(ItemHandler.ICE_CRYSTAL.get()))
+                n += s.getCount();
+        return n;
     }
 
     // ---- tags -----------------------------------------------------------------------------------

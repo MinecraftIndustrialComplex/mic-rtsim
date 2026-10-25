@@ -5,6 +5,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -117,6 +119,14 @@ public final class Camps {
         boolean waiting, recount, reported;
         /** A body of the kind joined beyond the footprint: the next census looks wide for strays (MZB-232). */
         boolean strayWatch;
+        /** The tick a census began being held for a hidden stray chunk (-1 when not held), and the tick of the last scan for one. */
+        long holdSince = -1, holdScan;
+        /**
+         * The strays the last census listed, by UUID (MZB-661): a REMOVE or ADOPT of a stray whose chunk went
+         * hidden after the census finds it here, as the index finds a tagged body. Rebuilt by each census,
+         * emptied when the camp goes out; at most the census cap.
+         */
+        final Map<UUID, Entity> strayBodies = new HashMap<>();
         final boolean late;
         public int censuses, outs;
 
@@ -188,6 +198,11 @@ public final class Camps {
             return waiting;
         }
 
+        /** Whether a recount is waiting for the next look (GameTests). */
+        public boolean recountPending() {
+            return recount;
+        }
+
         public List<ChunkPos> footprintChunks() {
             List<ChunkPos> out = new ArrayList<>(chunks.length);
             for (long c : chunks)
@@ -225,6 +240,9 @@ public final class Camps {
     /** A tagged body's death, journaled at the end of the tick once certain (or at the next reconcile). */
     private record Dying(LivingEntity body, int by, UUID killer) {}
 
+    /** A chief's CHIEF_STATE waiting to be written: its flags and health (MZB-274). */
+    private record ChiefState(int flags, float health) {}
+
     private final ConflictBridge bridge;
     private final List<CampKind> kinds = new ArrayList<>();
     private final Map<Long, Site> sites = new LinkedHashMap<>();
@@ -241,6 +259,8 @@ public final class Camps {
     private final List<Held> held = new ArrayList<>();
     private final List<SetOut> setOuts = new ArrayList<>();
     private final Map<UUID, Dying> dying = new LinkedHashMap<>();
+    /** CHIEF_STATE records not yet written, by faction, the latest of each (MZB-274). */
+    private final Map<Long, ChiefState> chiefStatesPending = new LinkedHashMap<>();
     private boolean off;
 
     // Counters for logs and the GameTests (this session).
@@ -248,6 +268,8 @@ public final class Camps {
             deaths, carried, markers, heldSpawns, recounts, strayWatches, strays;
     /** Camps polled, and the footprint chunks whose level the poll (or a play-time check) found moved (MZB-290). */
     public long polls, pollChanges;
+    /** CHIEF_STATE records written, and reports queued (a later one for the same faction replaces the first; MZB-287). */
+    public long chiefStates, chiefStatesQueued;
 
     /**
      * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
@@ -271,19 +293,24 @@ public final class Camps {
             c.reported = false;
             c.waiting = false;
             c.recount = false;
+            c.strayBodies.clear();
+            c.holdSince = -1;
             attention.add(c);
         }
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
         polls = pollChanges = 0;
+        chiefStates = chiefStatesQueued = 0;
     }
 
     /** The session ends: deaths seen are journaled; nothing else (the next session starts every camp out). */
     void sessionStopping(long now) {
+        flushChiefStates(now);
         settleDeaths(now);
     }
 
@@ -291,6 +318,7 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
     }
 
     /** The server stopped: nothing of its world outlives it. */
@@ -307,6 +335,7 @@ public final class Camps {
         held.clear();
         setOuts.clear();
         dying.clear();
+        chiefStatesPending.clear();
         off = false;
     }
 
@@ -314,6 +343,7 @@ public final class Camps {
     void switchedOff(long now) {
         if (off)
             return;
+        flushChiefStates(now); // while the camps still count as live
         off = true;
         settleDeaths(now);
         for (SetOut so : setOuts)
@@ -585,6 +615,7 @@ public final class Camps {
             off = false;
             attention.addAll(sites.values()); // switched back on: every camp is looked at again
         }
+        flushChiefStates(now); // before the deaths settled below: a robbed chief's state precedes its CAMP_DEATH
         poll(now);
         settleDeaths(now);
         resolveSetOuts(now);
@@ -664,18 +695,71 @@ public final class Camps {
             }
         }
         for (long ch : c.chunks) {
-            if (!level.areEntitiesLoaded(ch)) {
-                // Its entities went with a drop below FULL that came back, or are not in yet (§4.9).
+            if (!entitiesIn(level, ch)) {
+                // Its entities went with a drop below FULL that came back, or are not in yet, or are in but
+                // hidden (MZB-660) (§4.9).
                 if (c.in())
                     out(c, now);
                 c.waiting = true;
                 return true;
             }
         }
+        if ((!c.in() || c.recount) && strayHold(level, c, now)) {
+            // A chunk inside the stray radius is hidden with its entities loaded (MZB-660): a census now would
+            // not list a stray there, clear the watch, and the engine would SPAWN a second body beside it. The
+            // census waits for the chunk to show (or to unload); a camp that is in stays in meanwhile.
+            c.waiting = !c.in();
+            return true;
+        }
         c.waiting = false;
         if (!c.in() || c.recount)
             census(level, c, now);
         c.recount = false;
+        return false;
+    }
+
+    /**
+     * {@link #strayChunkHidden}, kept as a hold: never a census past a hidden stray (a double body is worse than
+     * a late den), but once a hold is {@link #HOLD_MAX} ticks old (saving is off, so nothing makes the chunk
+     * show) the scan runs once every 100 ticks instead of each tick (MZB-660).
+     */
+    private boolean strayHold(ServerLevel level, Site c, long now) {
+        if (c.holdSince >= 0 && now - c.holdSince >= HOLD_MAX && now - c.holdScan < 100)
+            return true;
+        c.holdScan = now;
+        if (!strayChunkHidden(level, c)) {
+            c.holdSince = -1;
+            return false;
+        }
+        if (c.holdSince < 0)
+            c.holdSince = now;
+        return true;
+    }
+
+    /**
+     * Whether the next census would look wide for strays and a chunk in that radius has its entities loaded
+     * but is not accessible (MZB-660). A chunk with no entities loaded cannot hold a stray the census could
+     * list, and one that is accessible is seen by {@code getEntities}.
+     */
+    private boolean strayChunkHidden(ServerLevel level, Site c) {
+        double r = c.kind.strayRadius(c);
+        if (r <= 0 || !(c.strayWatch || c.late && !c.reported) || freeSlots(c) <= 0)
+            return false;
+        int x0 = Mth.floor(c.spot.x - r) >> 4, x1 = Mth.floor(c.spot.x + r) >> 4;
+        int z0 = Mth.floor(c.spot.z - r) >> 4, z1 = Mth.floor(c.spot.z + r) >> 4;
+        double r2 = r * r;
+        for (int x = x0; x <= x1; x++) {
+            // the chunk's nearest point to the spot: the radius is a circle, the scan a square
+            double dx = Math.max(Math.max(x * 16 - c.spot.x, c.spot.x - (x * 16 + 16)), 0);
+            for (int z = z0; z <= z1; z++) {
+                double dz = Math.max(Math.max(z * 16 - c.spot.z, c.spot.z - (z * 16 + 16)), 0);
+                if (dx * dx + dz * dz > r2)
+                    continue;
+                long ch = ChunkPos.asLong(x, z);
+                if (!entitiesIn(level, ch) && level.areEntitiesLoaded(ch))
+                    return true;
+            }
+        }
         return false;
     }
 
@@ -686,6 +770,7 @@ public final class Camps {
         r.putLong(ConflictRecords.CampOut.EPOCH, c.epoch);
         s.boundary().commit(r);
         staleHeld(c, now);
+        c.strayBodies.clear();
         c.epoch = 0;
         c.outs++;
         outs++;
@@ -730,6 +815,13 @@ public final class Camps {
         return found.size() > free ? found.subList(0, free) : found;
     }
 
+    /** A census body's chief bits: BODY_CHIEF for a chief body, and BODY_CRYSTAL when the crystal is on it (review C). */
+    private static int chiefBits(Site c, Entity e) {
+        if (!c.kind.isChief(e))
+            return 0;
+        return ConflictRecords.CampCensus.BODY_CHIEF | (c.kind.hasCrystal(e) ? ConflictRecords.CampCensus.BODY_CRYSTAL : 0);
+    }
+
     /**
      * A new epoch and its census (CAMP_CENSUS): every holder in the footprint's chunks journals its records
      * first (MZB-174), so an answer of the last epoch reaches the engine while that epoch is still the
@@ -750,6 +842,7 @@ public final class Camps {
             }
         }
         List<CensusBody> bodies = new ArrayList<>();
+        c.strayBodies.clear();
         int home = 0, strayHome = 0;
         for (Entity e : inside) {
             if (bodies.size() >= CENSUS_CAP)
@@ -761,10 +854,11 @@ public final class Camps {
                 continue; // another camp's body that walked in: its own camp counts it elsewhere (MZB-208)
             if (m != null)
                 indexAdd(e, c.faction); // a tagged body standing here is indexed whatever its visibility did (MZB-231)
-            else
+            else {
                 strayHome++;
-            int flags = (m == null ? ConflictRecords.CampCensus.BODY_STRAY : 0)
-                    | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
+                c.strayBodies.put(e.getUUID(), e);
+            }
+            int flags = (m == null ? ConflictRecords.CampCensus.BODY_STRAY : 0) | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m == null ? 0 : m.slot(),
                     m == null ? 0 : m.generation(), e.getUUID()));
             home++;
@@ -779,17 +873,22 @@ public final class Camps {
                 if (insideSet.contains(e) || !e.isAlive() || !e.level().dimension().equals(c.dimension))
                     continue;
                 CampMember m = RtsimAttachments.campMember(e);
-                int flags = ConflictRecords.CampCensus.BODY_ELSEWHERE | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
+                int flags = ConflictRecords.CampCensus.BODY_ELSEWHERE | chiefBits(c, e);
                 bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m.slot(), m.generation(), e.getUUID()));
                 view.add(e);
+                // The camp's size at discovery counts a tagged body loaded away too (MZB-653): after a sim reset a
+                // grove with 4 of its 6 away would else be found at 2 and cap there, and the engine would remove
+                // the 4 as above the cap when they loaded.
+                home++;
             }
         }
         for (Entity e : wideStrays(level, c, insideSet, strayHome)) {
             if (bodies.size() >= CENSUS_CAP)
                 break;
-            int flags = ConflictRecords.CampCensus.BODY_STRAY | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
+            int flags = ConflictRecords.CampCensus.BODY_STRAY | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, 0, 0, e.getUUID()));
             view.add(e);
+            c.strayBodies.put(e.getUUID(), e);
             home++;
             strays++;
         }
@@ -849,9 +948,24 @@ public final class Camps {
             if (l > FULL)
                 return false;
         for (long ch : c.chunks)
-            if (!level.areEntitiesLoaded(ch))
+            if (!entitiesIn(level, ch))
                 return false;
         return true;
+    }
+
+    /**
+     * Whether a footprint chunk's entities are loaded and visible to the level's queries (MZB-660). Under C2ME
+     * a chunk can be HIDDEN while its entities are LOADED: C2ME's {@code processUnloads} drops an unload that
+     * fails with no retry until a save, the entity load that was pending lands afterwards, and the level can
+     * come back to FULL before C2ME's async upgrade makes the chunk TRACKED. A census then misses every
+     * hidden body, and the originals re-track later with no join event: a doubled body. So the gate is
+     * "accessible" (TRACKED or TICKING), not entity-ticking, which would fail at level 33.
+     */
+    private static boolean entitiesIn(ServerLevel level, long ch) {
+        if (!level.areEntitiesLoaded(ch))
+            return false;
+        var manager = (EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+        return manager.mic_rtsim$chunkVisibility().get(ch).isAccessible();
     }
 
     /**
@@ -927,7 +1041,9 @@ public final class Camps {
             return ConflictRecords.CampBodies.NOTHING;
         if (level.getDifficulty() == Difficulty.PEACEFUL)
             return ConflictRecords.CampBodies.STALE;
-        if (mayHold && (c.kind.holdSpawn(level, c, ln.body(), ln.flags()) || !bridge.session().spendSpawnBudget(1))) {
+        // A recount waiting (a stray joined, or a census held for a hidden chunk, MZB-660) holds every SPAWN: the
+        // engine orders one for a slot a stray here is about to fill, and the census that ends the hold stales it.
+        if (mayHold && (c.recount || c.kind.holdSpawn(level, c, ln.body(), ln.flags()) || !bridge.session().spendSpawnBudget(1))) {
             held.add(new Held(c, epoch, op, ln, now));
             heldSpawns++;
             return 0;
@@ -963,7 +1079,7 @@ public final class Camps {
 
     /** ADOPT: the stray named by UUID becomes the slot's body where it stands. */
     private int adopt(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
-        Entity e = byUuid(level, ln.a(), ln.b());
+        Entity e = byUuid(level, c, ln.a(), ln.b());
         if (!(e instanceof Mob mob) || !e.isAlive() || !c.kind.isBody(e) || RtsimAttachments.isTagged(e))
             return ConflictRecords.CampBodies.NOTHING;
         CampMember was = RtsimAttachments.campMember(e);
@@ -984,7 +1100,7 @@ public final class Camps {
     private int takeLine(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
         Entity e;
         if (ln.a() != 0 || ln.b() != 0) {
-            e = byUuid(level, ln.a(), ln.b());
+            e = byUuid(level, c, ln.a(), ln.b());
             if (e != null && (!c.kind.isBody(e) || RtsimAttachments.isTagged(e)))
                 e = null;
             CampMember m = e == null ? null : RtsimAttachments.campMember(e);
@@ -1032,7 +1148,11 @@ public final class Camps {
         bridge.session().ensureReasserted(e);
         PendingRecords old = e.getExistingDataOrNull(RtsimAttachments.PENDING);
         e.removeData(RtsimAttachments.PENDING);
-        return old == null ? List.of() : old.entries();
+        // Records of another engine life are void (RG14): the marker's carry stamps this life, so they must not
+        // ride on (MZB-654; ensureReasserted has dropped them already, this holds if that order ever changes).
+        if (old == null || old.life() != bridge.session().engineLife())
+            return List.of();
+        return old.entries();
     }
 
     /** A record marker at a position (MOWZIE.md §4.9): inert, saved with its entity chunk, never sent to a client. */
@@ -1047,8 +1167,26 @@ public final class Camps {
         return mk;
     }
 
-    private static Entity byUuid(ServerLevel level, long most, long least) {
-        return most == 0 && least == 0 ? null : level.getEntity(new UUID(most, least));
+    /**
+     * The entity a line names by UUID. {@code ServerLevel.getEntity} misses a body whose chunk is hidden, so a
+     * tagged body of the camp's own is looked for in the index too (MZB-661): without it a REMOVE of a hidden
+     * ELSEWHERE body is answered NOTHING and the stray lives on.
+     */
+    private Entity byUuid(ServerLevel level, Site c, long most, long least) {
+        if (most == 0 && least == 0)
+            return null;
+        UUID id = new UUID(most, least);
+        Entity e = level.getEntity(id);
+        if (e != null)
+            return e;
+        Set<Entity> mine = live(c.faction);
+        if (mine != null)
+            for (Entity m : mine)
+                if (m.getUUID().equals(id) && m.level() == level)
+                    return m;
+        // An untagged stray the last census listed, whose chunk went hidden since.
+        Entity stray = c.strayBodies.get(id);
+        return stray != null && !stray.isRemoved() && stray.level() == level ? stray : null;
     }
 
     /**
@@ -1186,7 +1324,8 @@ public final class Camps {
                 answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
                 continue;
             }
-            boolean wait = now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
+            // Past HOLD_MAX too while a recount waits: the census that ends the hold stales the line (MZB-660).
+            boolean wait = c.recount || now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
             if (wait || !bridge.session().spendSpawnBudget(1)) {
                 held.add(h);
                 continue;
@@ -1257,9 +1396,8 @@ public final class Camps {
     void onDeath(LivingEntity dead, DamageSource source) {
         if (RtsimAttachments.campMember(dead) == null || RtsimAttachments.isTagged(dead))
             return;
-        Entity killer = source.getEntity();
-        int by = ConflictBridge.byKind(killer);
-        dying.putIfAbsent(dead.getUUID(), new Dying(dead, by, by == ConflictRecords.BY_PLAYER ? killer.getUUID() : null));
+        ConflictBridge.Credit credit = ConflictBridge.credit(dead, source); // MZB-261: vanilla's kill credit
+        dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer()));
     }
 
     void settleDeaths(long now) {
@@ -1315,6 +1453,60 @@ public final class Camps {
         untag(e);
         s.carryOnCampHolder(mk, records, r.getLong(Obs.OBS_SEQ));
         deaths++;
+        if (chief) // news only: nothing reaches a player's chat, action bar or title (MZB-275)
+            ConflictNews.post(ConflictNews.Event.CHIEF_KILLED, m.faction(), killer);
+    }
+
+    // ---- a chief's state ------------------------------------------------------------------------
+
+    /**
+     * A plugin saw a chief at home change its crystal (the Frostmaw's steal, MZB-274): CHIEF_STATE with
+     * {@code flags} (1 holds the crystal) and the body's health, for the faction of a camp's own chief body
+     * or of a chief puppet; anything else is ignored. Queued by faction, the latest of each, and written at
+     * the start of the next tick, before any death settled in it. Peaceful sends it too (the steal happens
+     * there).
+     */
+    public void chiefState(LivingEntity body, int flags) {
+        if (!live())
+            return;
+        long faction = 0L;
+        CampMember m = RtsimAttachments.campMember(body);
+        if (m != null && !RtsimAttachments.isTagged(body)) {
+            Site c = sites.get(m.faction());
+            CampKind kind = c != null ? c.kind : kindOf(body);
+            if (kind != null && kind.isChief(body))
+                faction = m.faction();
+        } else {
+            faction = bridge.chiefPuppetFaction(body);
+        }
+        if (faction == 0L)
+            return;
+        chiefStatesPending.put(faction, new ChiefState(flags, body.getHealth()));
+        chiefStatesQueued++;
+    }
+
+    /** Writes the queued CHIEF_STATE records; one that finds no room stays for the next tick. */
+    private void flushChiefStates(long now) {
+        if (chiefStatesPending.isEmpty() || !live())
+            return;
+        RtsimSession s = bridge.session();
+        Iterator<Map.Entry<Long, ChiefState>> it = chiefStatesPending.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, ChiefState> e = it.next();
+            int at = s.boundary().direct(ConflictRecords.CHIEF_STATE, ConflictRecords.ChiefState.SIZE, e.getValue().flags(), now);
+            if (at < 0)
+                return; // dropped for space: the rest wait for the next tick
+            ByteBuffer b = s.boundary().openBuffer();
+            b.putLong(at + ConflictRecords.ChiefState.FACTION, e.getKey());
+            b.putFloat(at + ConflictRecords.ChiefState.HEALTH, e.getValue().health());
+            chiefStates++;
+            it.remove();
+        }
+    }
+
+    /** Reports queued and not yet written (GameTests). */
+    public int chiefStatesPending() {
+        return chiefStatesPending.size();
     }
 
     private CampKind kindOf(Entity e) {
