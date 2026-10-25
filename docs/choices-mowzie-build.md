@@ -1470,3 +1470,13 @@ conservative option at its fork.
   quarter of each later wave at the base, replayed from the pages saved 3,000 ticks before):
   replayed (phase, epoch, watched, deaths, alive, raids) = (Home, 2, 1, 0, 12, []) against the
   session that went on's (Home, 2, 1, 6, 6, []). Now as live. The sims are unchanged.
+- **RP-62** (the gap stat at a refused first wave; §6.1; RP-51; RP-54; fixes6 item 3): RP-51's
+  `fight_record_gap_max` took a fight's entry in `fights_unanswered` at its first
+  BAND_MATERIALIZED only, so when Java refused the first wave (RP-51's "a rejected spawn" entry
+  that waits) it measured the next wave's record, a wave interval later, past the slack: a gap the
+  hold never waits for, since a replay's hold reads the refusal as the fight (RP-54). The fix:
+  `fight_answered` takes the entry and measures it at either record, a BAND_MATERIALIZED of that
+  epoch or a BAND_SPAWN_REJECTED of its wave 0; RP-51's text on the rejected spawn holds now only
+  for a crash. Failing first, mowzie_records' `a_refused_first_wave_is_its_fights_first_record`
+  (the checker's case live: a watched raid's arrival whose wave 0 alone is refused): 1201 against
+  a slack of 600; now 1, the plugin answering a tick after the command. The sims are unchanged.

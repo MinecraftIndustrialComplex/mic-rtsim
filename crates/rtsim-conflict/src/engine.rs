@@ -403,7 +403,8 @@ pub struct ConflictStats {
     /// ledger 3).
     pub repeats: u64,
     /// The largest gap, in ticks, between a live watched fight's decision (`start_fight`) and
-    /// its first BAND_MATERIALIZED, which a replay's hold waits for up to
+    /// its first record (a BAND_MATERIALIZED, or its first wave's BAND_SPAWN_REJECTED: RP-62),
+    /// which a replay's hold waits for up to
     /// [`REPLAY_HOLD_SLACK_TICKS`] (docs/replay-gate.md §6.1, RP-48, RP-51). Not saved: this
     /// process's, so the slack can be set from data (rtsim-jni logs each new largest).
     pub fight_record_gap_max: u64,
@@ -5417,6 +5418,9 @@ impl Conflict {
                 self.set_emission(w, key, kind, pos, district, per_day, at);
             }
             Obs::SpawnRejected(r) => {
+                if r.wave == 0 {
+                    self.fight_answered(r.agent, r.epoch, at);
+                }
                 if let Some(p) = self.party_of(r.agent, r.epoch)
                     && r.wave == 0
                 {
@@ -5593,15 +5597,7 @@ impl Conflict {
     /// session: on an engine that came back from its pages it is honoured (§5.2); on a fresh
     /// engine (RP-31) its epoch only raises the party's floor.
     fn materialized(&mut self, w: &mut World, m: &boundary::BandMaterialized, at: Tick) {
-        // A live watched fight's first record: how long it took (RP-51).
-        if let Some(p) = Party::of_agent(m.agent)
-            && let Some(&(epoch, decided)) = self.fights_unanswered.get(&p)
-            && epoch == m.epoch
-        {
-            self.fights_unanswered.remove(&p);
-            let gap = at.0.saturating_sub(decided.0);
-            self.stats.fight_record_gap_max = self.stats.fight_record_gap_max.max(gap);
-        }
+        self.fight_answered(m.agent, m.epoch, at);
         if !self.outbox.replaying() {
             return;
         }
@@ -5611,6 +5607,20 @@ impl Conflict {
         }
         if let Some(p) = Party::of_agent(m.agent).filter(|p| self.parties.contains(*p)) {
             self.honour(w, p, m, at);
+        }
+    }
+
+    /// A live watched fight's first record, Java's answer to its first wave (a BAND_MATERIALIZED,
+    /// or a BAND_SPAWN_REJECTED of wave 0): how long it took from `start_fight`'s decision
+    /// (RP-51). A refused first wave is the answer too, the one a replay's hold reads (RP-54), not
+    /// the next wave's BAND_MATERIALIZED a wave interval later (RP-62).
+    fn fight_answered(&mut self, agent: u64, epoch: u32, at: Tick) {
+        if let Some(p) = Party::of_agent(agent)
+            && self.fights_unanswered.get(&p).is_some_and(|e| e.0 == epoch)
+            && let Some((_, decided)) = self.fights_unanswered.remove(&p)
+        {
+            let gap = at.0.saturating_sub(decided.0);
+            self.stats.fight_record_gap_max = self.stats.fight_record_gap_max.max(gap);
         }
     }
 
