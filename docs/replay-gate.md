@@ -616,6 +616,84 @@ live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mo
   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
 
+**The M8 merge** (feat/mowzie-m8 at 959ada91, M8 on M7's pre-merge 2a80b4f0, merging M7 at 39c819f1,
+then M9 at 7153b7fe, each its own merge commit, a64599d6 and 74dd20ae; RP-150 to RP-153, MZB-690 to
+MZB-692). Main at e75265e7 came in with M7 and M9, which had both merged it, so the third merge had
+nothing to bring. M8 adds no `Cmd` kind: slice C's outbox, new to M8, had AMBUSH_SPOT's and
+TRAIN_ROBBED's rows already, and §4.4's M8 paragraph has the push sites.
+
+The first merge brings slice C, M6 at 6d6c6658 and main (M7's merge, RP-102 to RP-104). Five files
+conflicted:
+
+1. **rtsim-jni engine/conflict.rs:** slice C's `replay_end` replaces M8's `resend_notices_if_due`.
+   M8's queue filter, which dropped AMBUSH_SPOT beside NOTICE at the replay end, becomes the second
+   kind of slice C's debug assertion: the gate drops both while replaying, so none is queued there.
+2. **docs/boundary.md:** the deferred kinds, both sides.
+3. **FrostmawGameTests.java:** both sides' imports and tests, with M7's `RtsimTests.io`.
+4. **sim-conflict.json and sim-mowzie.json:** M7's, regenerated at the end (below).
+
+Three more did not compile on slice C and needed the merge's hand: engine/rail.rs `resend_lurks`
+pushes each AMBUSH_SPOT through the gate (the outbox has no `extend`); tests/lurk.rs's
+BAND_CASUALTIES carries an op (`next_op`, MZB-589) and its restarts call `begin_replay(true)` (the
+fight test then `replay_done`); rtsim-cli sim/mowzie/lurk.rs asserts a trip runs after the replay
+(slice C has no `replaying` to set and restore), and its restart is `begin_replay(true)` then
+`resend_notices`.
+
+The second merge brings M9 (RTC9 / META 8, RP-130 to RP-132, MZB-670 to MZB-672). Five files
+conflicted:
+
+1. **engine.rs:** `raid_district` adds M9's survivor hunts and takes the loot as M9 does. `later` is
+   empty (M8 built TRAIN_PASSED, M9 the grove's kinds), kept for a later slice (MZB-691), and
+   `ingest` runs `rail_pass`, `train_passed`, `haven_chest`, `trade_booked` and `chief_paid`.
+2. **ConflictBridge.java:** M9's owed hunts beside M8's lurks, both cleared at a session's start and
+   failure; `spawn` keeps M8's hold points and M9's extras, and a lurk refused at its placing
+   discards the extras made with its bodies too (MZB-692); the tick runs the owed hunts, then holds
+   on `idle()`, which counts M8's lurks and roars.
+3. **ConflictRecords.java and MicRtsimMowziesMobs.java:** both sides (the record sizes; the
+   Frostmaw's lurker beside the grove's chests and strength).
+4. **docs/boundary.md:** AMBUSH_SPOT's row M8's, CAMP_RECONCILE's M9's (the mask action); the
+   resend paragraph both; no kind deferred.
+
+Beyond the conflicts: persist.rs takes the formats (below); rtsim-jni engine/conflict.rs's module
+doc says no kind is later; protocol.rs's `later_slices_records_are_counted_and_dropped` becomes
+`no_record_is_deferred_and_each_reaches_the_engine` (deferred 0, and its TRAIN_PASSED, for no
+party, reaches `train_passed` and counts stale).
+
+- **Formats:** the merged M8 is RTC10 and META 9 (MZB-690, persist.rs's format history): M9 took
+  RTC9 and META 8 and lands before M8. The magic is `RTCA` (four bytes; A for ten). M8 persists only
+  its five stats (a lurk is derived from the party's phase, kind and target, MZB-357): the stats are
+  M9's three, then M7's seven, then M8's five (lurks, lurks_ended, passes, passes_watched,
+  lurk_robberies). Save and load read the same fields in the same order. No migration.
+- **The eight points:** the gate covers every M8 push (§4.4's M8 paragraph); M8 adds no `Cmd` kind,
+  so the verdict test's sample already has both of its kinds. RP-57's table has TRAIN_PASSED read
+  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass rolls as
+  live against industry's present (RP-151); after two crashes one can be stale while replaying
+  (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
+  the arrive order, M7's `rail_held` and the FactionRow pin need no change (RP-153).
+- **GameTests:** M8's (FrostmawGameTests from `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` on,
+  RailFrostmawGameTests, RailDirectionsGameTests and MowzieGameTests'
+  `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake`) have no wait of either kind: every
+  `List.of` is built inside a `thenExecute` or a poll, every wait is a lambda (`io`, `paced`), and
+  the one `getEntity` check (FrostmawGameTests "the copy joined") is a `thenExecute` check right
+  after `addLegacyChunkEntities`, no unload wait. Nothing to convert.
+- **Sims** (wall_ms, fights_unheld and fight_record_gap_max filtered): sim-conflict against M8 has
+  M6's changes since M8's base (an invasion home with 20 left and a raid with 8; wire bytes 3,104
+  for 3,080, MZB-589's op on three BAND_CASUALTIES), M9's three stats at 0 and the state hashes;
+  against M9 M8's five stats at 0 and the hashes; against M7 both; against main M6's and M7's stats
+  too. The world hash is d450929438383fb2 in all five. sim-mowzie has M8's lurk checks (17 on run 1,
+  6 on run 8) and M9's runs and checks (runs 5, 6 and 12 built, the grove chaos with heirs on run
+  10), all ok. Against M8 its one changed line is M9's plunder at node 4 (0 items spare, not 1);
+  against M9 nothing but M8's checks, stats at 0, slice labels and hashes; against M7 both; against
+  main M6's changes too (blocked on 9 of 16 days, the camp chaos counts), as on every parent. No
+  check of any parent changed its outcome.
+- **Fixtures:** main's, conflict meta page 5, so the five tests that read the conflict's pages fail
+  on META 9 as on the M7 and M9 merges: rtsim-view's
+  `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+  `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 5, this build
+  reads 9"), `every_gametest_save_carries_and_matches_each_modules_hash` and
+  `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
+  `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
+
 ## 3. The flag
 
 ### 3.1 Where it is set and cleared (rtsim-jni)
@@ -862,7 +940,8 @@ Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
 table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
 March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
-M7 (the M7 merge, §2.7) brings none of them and no other push site (below).
+M7 (the M7 merge, §2.7) brings none of them and no other push site (below); M8 (the M8 merge)
+brings AmbushSpot's and TrainRobbed's (below).
 M6 (the M6 merge, §2.7) adds no `Cmd` kind and no push site either. Its routes reach main's:
 - `camp_arrival`, `camp_refill` and the census's crystal mend order lines through `send_lines`,
   which orders only a camp that is in;
@@ -935,6 +1014,33 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   the faction's hunts: a second answer finds no hunt (MZB-449). HAVEN_CHEST has no op id and no
   holder carries one (GroveChests journals it at once); it is the chest's state, latest wins, so
   `ingest_copy` drops a copy, as it drops RAIL_PASS (RP-130).
+
+**M8's lurk (the M8 merge, §2.7; RP-150 to RP-153).** M8 adds no `Cmd` kind: AMBUSH_SPOT and
+TRAIN_ROBBED had their rows above, and the verdict test's sample has both. Its push sites, all
+through `push` and the gate:
+
+- **AMBUSH_SPOT** goes from `lurk_start` (`arrive`'s Track arm, before the wait), from `lurk_end`
+  (`go_home`, the one way a lurk ends, the removal) and from `resend_lurks` (`resend_notices`, after
+  `replay_done`). Queued "drop" and "drop" while replaying: Java's lurk table lives for one session,
+  so a lurk begun or ended by a replayed record is state, and the replay end says every lurk still
+  standing once, at the party's epoch after the floors are lifted. `resend_lurks` drops any
+  AMBUSH_SPOT still in the outbox first, as `resend_notices` drops a NOTICE; with the gate's drops
+  there is none (rtsim-jni's `replay_end` asserts the same of its queue).
+- **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything. Queued "keep" and
+  "drop" while replaying: it is the station's roar (RP-12), lost for a pass replayed.
+- **A robbery's goods** are no `Cmd`: `train_passed` calls `ambush`, whose `infra.raid_train` takes
+  them from industry at industry's present, as M7's `Ev::Ambush` does (industry is not held). A
+  replayed pass rolls as live (RP-151).
+- **The swipe and the roar** are Java's: the swipe is a held lurk puppet's strike when a carriage
+  comes in its reach (`ConflictBridge`'s strike through the `Lurker`), and the roar plays at the
+  station of a train TRAIN_ROBBED names. Neither sends a record the engine acts on.
+- **The hand-off** is main's: a lurking party seen is embodied by BAND_MATERIALIZE through §6's early
+  returns ("never" while replaying), and its puppets stand at the hold point Java finds from the
+  AMBUSH_SPOT. A camp body is handed to a puppet only from this hand-over's SET_OUT lines, which no
+  lurk meets (RP-153).
+- **TRAIN_PASSED** is an observation with no op id and no holder (ConflictBridge journals it at
+  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` reads it as live; a
+  copy is folded and dropped (RP-150).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 

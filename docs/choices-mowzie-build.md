@@ -5313,6 +5313,42 @@ each at its own far base, scripted engine):
 - `resend_lurks` says a lurk once per drain of the queue; once per SESSION is the host's `notices_due`
   flag. A host that calls `resend_notices` twice in a session sends it twice.
 
+### The M8 merge (MZB-690 to MZB-692)
+
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main;
+docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows; RP-150 to RP-153 the
+replay records.
+
+- **MZB-690** (the formats: RTC10 and META 9; the M8 merge): M8 appends its five stats (`lurks`,
+  `lurks_ended`, `passes`, `passes_watched`, `lurk_robberies`) to the saved stats list and kept M7's
+  format, since the list is length-prefixed and an older page reads zeros (MZB-357's amendment). On the
+  merged head M8 lands after M9 (RTC9, META 8), and a layout that changes at all takes a number of its
+  own, as M7's and M9's did: the blob is RTC10 and the meta page 9. The stats are M9's three
+  (`tribute_stacks`, `hunts_owed`, `hunts_killed`), then M7's seven, then M8's five; save and load
+  read the same fields in the same order. No migration: an RTC9 blob or a META 8 page is refused, as
+  every older one is ("meta page version 8, this build reads 9"). The magic is one little-endian
+  `u32` of four bytes and "RTC10" is five, so it is `RTCA` (A for ten, as in hex), written as RTC10 in
+  persist.rs's history; the 'RTC' prefix and one version byte stay, as in RTC2 to RTC9. Not taken: a
+  second magic word, or a version field after the magic (a blob layout change for a number). MZB-357's
+  "the pages stay at M7's format" holds for M8 alone, not on the merged head.
+- **MZB-691** (`Conflict::later` kept, empty; the M8 merge): M8 took TRAIN_PASSED out of `later` and
+  M9 took its grove kinds, so on the merged head `later` names nothing and returns false. It stays, with
+  its call in `ingest` and rtsim-jni's deferred branch, for a later slice's new record (MZB-23).
+  rtsim-jni's later-kinds test becomes
+  `no_record_is_deferred_and_each_reaches_the_engine`: `deferred` is 0, a CHIEF_PAID spends its op id
+  as before, and a TRAIN_PASSED for no party reaches `train_passed` and counts `stale`. Not taken:
+  deleting `later` and the deferred path (a design change for the slice that next needs it, not the
+  merge's).
+- **MZB-692** (a lurk refused at its placing discards the extras too; the M8 merge, ConflictBridge
+  `spawn`): M8 refuses a lurk whose hold point has no standable floor before any camp body is claimed,
+  discarding the bodies already made for the stack and unclaiming the hand-offs (the second re-check's
+  P3). M9 makes extras with a body (a raptor's pack, MZB-428), kept in `madeExtras` and discarded on
+  M9's own failure path. Without the merge's line the refusal left a made body's extras standing with
+  no puppet to follow. The refusal now discards `madeExtras` as M9's failure path does. A Frostmaw has
+  no extras, so no test of either branch reaches it; compiled, not run. The comment over the refusal
+  says, beside M8's "the camp body is still removed", that a grove's take waits while a player is near
+  (Rule U, MZB-433) and a den's goes at once.
+
 ## M9 Umvuthana
 
 M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under "M9b build choices" below.
@@ -8367,7 +8403,7 @@ conservative option at its fork.
 | 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
 | 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
-| 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
 | Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
@@ -8700,6 +8736,73 @@ docs/replay-gate.md §2.7 "The M9 merge" has the conflicts and §4.4 the gate ro
     is for BAND_CASUALTIES only; M9's chief kill paths are CHIEF_KILLED (op id) and CAMP_DEATH on
     the chief slot (slot and generation), and an Umvuthi that leads a party has no stack in it
     (MZB-414), so no chief death goes through `casualty_ops`.
+
+### The M8 merge (RP-150 to RP-153)
+
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main;
+docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows; MZB-690 to MZB-692
+the build records.
+
+- **RP-150** (a copied TRAIN_PASSED; the M8 merge, point 2): TRAIN_PASSED (0x080D) names the lurk's
+  agent and the epoch of the lurk table's entry, with no op id, and no holder carries it:
+  `ConflictBridge.trainPassed` journals it at once. Until the merge it was a later kind: rtsim-jni's
+  later-kind branch sent a copy to `ingest_copy`, which folded its epoch and passed it to `ingest`,
+  where `later` dropped it. With `later` empty (MZB-691) a copy would reach `train_passed` and roll
+  again, at the copy's tick and so in a new slot (`train ^ at.rotate_left(32)`), and could rob the train a second
+  time (I25's cooldown aside). Java never sends one; as RP-104 does for RAIL_PASS, `ingest_copy` no
+  longer trusts that: it folds the copy's epoch (RP-57, as for every kind) and drops the record.
+  Test: tests/lurk.rs `a_copied_train_passed_is_dropped_and_robs_nothing` (a copy at `ambush_milli`
+  1000 counts no pass and no robbery, asks no threat and leaves the band lurking; the control, the
+  same pass ingested, counts (1, 1) and robs train 7; without the arm the copy counts (1, 1), checked
+  and undone).
+- **RP-151** (TRAIN_PASSED while replaying; the M8 merge, points 1 to 3; §4.4's M8 paragraph): with
+  `later` empty a replayed TRAIN_PASSED reaches `train_passed`. `ingest` folds its epoch first
+  (RP-57), then the party must exist, lurk and not be of an older epoch than the record's, else
+  `stale`. A pass that is not stale rolls as live: the same key (seed, `SYS_AMBUSH`, the party) and
+  slot (`train ^ at.rotate_left(32)`), at the record's own game time, which `ingest` runs the engine
+  to (the replay clock, §3.6). A hit runs
+  `ambush`, whose `infra.raid_train` takes the goods from industry at industry's present, as M7's
+  `Ev::Ambush` does while replaying: industry is not held (§3.6, RP-24; decided by the coordinator,
+  2026-10-24). The
+  conflict and industry pages are saved in one batch, so a robbery after the save is in neither and
+  the replay takes it once: lose, never double; I25's per-train cooldown is a second guard. Its
+  TRAIN_ROBBED drops at the gate (the roar is lost, RP-12). The lurk itself is state: `lurk_start` and
+  `lurk_end` run while replaying as live, their AMBUSH_SPOTs drop at the gate, and `resend_lurks`
+  says each lurk still standing at the replay end, at its epoch after the floors (§4.4). No ambush
+  spot is chosen from a pass: the spot is the target's (`Target::Track`), fixed when the raid set out.
+  Nothing is decided while replaying that §5 or §6 would hold: a seen lurk embodies through
+  BAND_MATERIALIZE's early returns, and sightings wait (§6). No change.
+- **RP-152** (a pass stale while replaying after two crashes; the M8 merge, point 2; a residual, not
+  built): `train_passed` compares the record's epoch with the party's, not with the floor, since
+  `ingest`'s fold has put the record's epoch in the floor already (a check on the floor would pass
+  every record). After a crash the party's epoch rises to its floor only at `replay_done`, and the
+  AMBUSH_SPOT `resend_lurks` sends carries that epoch. So with pages at epoch E, records of E+1
+  journaled after them, and a second crash before the next page save, a pass of the second session
+  (epoch E+1, the table's) replayed in the third finds the party at E, paged, and is stale. It
+  robbed live, and the replay robs nothing: lose, never double, one train's roll. The option not
+  taken: read the party's floor as it was before the record's fold (a per-record snapshot in
+  `ingest`), for a case that needs two crashes inside one page interval.
+- **RP-153** (the rest of the eight points; the M8 merge, points 3 to 7; no change):
+  - Point 3, the camp claim. A lurk's puppet takes a camp body only through `Camps.claim`, which
+    matches this hand-over's SET_OUT lines by agent, epoch and body, for a camp that is in at the
+    line's epoch. A lurk begins at the track after the march, so a lurking party is never placed in
+    the hand-over of its own set-out; and no SET_OUT goes while replaying (the Reconcile row's
+    "never", every camp out from `begin_replay`). A set-out no materialize claims, or one a refused
+    lurk unclaims (`spawn`'s hold-point refusal comes before the claim), resolves at the tick's end
+    as a take (`resolveSetOuts`), which waits while a player is near for a kind that holds removals
+    (a grove's, Rule U, MZB-433) and goes at once for a den. MZB-224's hold and M6's recount hold
+    (`c.recount`, `strayHold`) hold SPAWN lines only, and no lurk makes one; MowzieGameTests'
+    `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` pins the refusal.
+  - Point 4 (RP-66). M8's protocol tests drive the lurk through `with_conflict_mut` and the engine's
+    own orders, not `Order::ConflictCommand`, so the wait for the replay end changes none of them.
+  - Point 5 (MZB-589). M8's one BAND_CASUALTIES literal (tests/lurk.rs) carries `op: next_op()`;
+    no M8 test counts hand-overs, so `ONE_HAND_OVER` is not needed.
+  - Point 6. `arrive`'s arm order is M7's (Envoy, Scouts, peaceful, Track, then the hold, §6.1);
+    M8's `lurk_start` is in the Track arm, before the hold, so a lurking arrival is never held, and
+    on Peaceful a band at a track goes home without lurking. M7's `rail_held` (RAIL_PASSes held per
+    train for a line) and M8's lurk do not meet: the lurk has no held state, it is derived from the
+    party's phase, kind and target (MZB-357).
+  - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin (200 + 24 + 8 = 232) stands.
 
 ### Slice H (herds)
 
