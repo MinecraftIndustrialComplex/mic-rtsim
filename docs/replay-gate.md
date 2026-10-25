@@ -471,8 +471,9 @@ What the merge checked:
    and materializes through `ConflictKit` in the middle of a session, after no restart. One ordered
    while a server's start replays waits for the replay end.
 6. **Formats:** M6's RTC7 and META 6 are kept, with no migration (nothing is released). The
-   rtsim-view fixtures hold conflict meta page 5, and the five tests that read them fail until they
-   are regenerated: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
+   rtsim-view fixtures held conflict meta page 5, and the five tests that read them failed until
+   they were regenerated from 1290d0b7 when M6 landed: rtsim-view's
+   `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
    `the_create_gametest_save_draws_every_layer_and_writes_nothing`,
    `every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`,
    and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` (the conflict's pages
@@ -520,15 +521,16 @@ What the merge checked:
    (RailFrostmawGameTests, TrainSamplerGameTests, SamplerBenchGameTests and TerritoriesGameTests)
    drive the engine through `ConflictKit` in the middle of a session, after no restart.
 5. **Formats:** RTC8 and META 7 are kept, with no migration (nothing is released). M9 took the same
-   numbers, so whichever of the two lands second bumps them again. The rtsim-view fixtures, main's
-   (core from c67da61, create from fe87a92 at the second merge), hold conflict meta page 5 (main's
-   RTC6), so the five tests that read the conflict's pages fail until they are regenerated:
-   rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
-   `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 5, this
+   numbers, so whichever of the two lands second bumps them again (M9, which lands after M7, takes
+   RTC9 and META 8). The rtsim-view fixtures on main (core and create from 1290d0b7, M6's) hold
+   conflict meta page 6 (RTC7), so the five tests that read the conflict's pages fail until they are
+   regenerated: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+   `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 6, this
    build reads 7"), `every_gametest_save_carries_and_matches_each_modules_hash` and
    `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
-   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped"). The
-   worktree had no run-gametest worlds left to delete.
+   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped"). Both were
+   regenerated from 32726818 (M7 merged with main a11311aa) before M7 landed: core from a fresh
+   `gametest.sh core` world, create from a `-Psec1fx` run with its world deleted first.
 6. **C2ME** (MZB-662): none of M7's four GameTest classes waits on `getEntity == null` or
    `!hasChunk` as "saved and unloaded". RailFrostmawGameTests forces its chunks and loads them with
    `getChunk`, SamplerBenchGameTests waits on the bench's own state, and the other two wait on
