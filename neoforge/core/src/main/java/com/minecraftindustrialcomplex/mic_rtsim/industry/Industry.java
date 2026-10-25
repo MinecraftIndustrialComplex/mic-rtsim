@@ -381,7 +381,8 @@ public final class Industry {
      * before the journal's leaves a store that holds the op and a journal that does not, and the store's ring then
      * refuses the resend. The ring's entry goes in the same tick as the store's change, so a save of the store has
      * both or neither. Answered APPLIED when a plugin owns the good, FAILED when none does, DUPLICATE_OP on a known
-     * op (a ring hit the journal does not know is stamped with that answer: kept until the journal on disk holds it).
+     * op (a ring hit the journal does not know is stamped with that answer: kept until the journal on disk holds it,
+     * and so is each other store's ring that holds the op, {@link IndustryPlugin#depositRefused}).
      */
     private void depositDelta(ByteBuffer b, int at, int size, int plugin, long cmdSeq) {
         if (size < IndRecords.DepositDelta.SIZE) {
@@ -401,7 +402,17 @@ public final class Industry {
         }
         if (ring != null && ring.contains(opId)) {
             depositRingHits++;
-            ring.add(opId, commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP));
+            DepositWrite refused = new DepositWrite(opId);
+            for (IndustryPlugin p : IndustryApi.PLUGINS) {
+                try {
+                    p.depositRefused(level, cx, cz, good, refused);
+                } catch (RuntimeException e) {
+                    fail("the refused IND_DEPOSIT_DELTA of " + good, e);
+                }
+            }
+            long seq = commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            ring.add(opId, seq);
+            refused.stamp(seq);
             return;
         }
         DepositWrite write = new DepositWrite(opId);
@@ -471,7 +482,7 @@ public final class Industry {
         }
     }
 
-    /** The first plugin's ring for the deposit, or null (a plugin that fails here is reported and skipped). */
+    /** The first plugin's ring for the deposit, or null (a plugin that fails here is reported and the next one asked). */
     private com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing depositRing(ServerLevel level, int cx, int cz, String good) {
         for (IndustryPlugin p : IndustryApi.PLUGINS) {
             try {
@@ -480,7 +491,6 @@ public final class Industry {
                     return r;
             } catch (RuntimeException e) {
                 fail("the applied ops of deposit " + good + " in " + cx + ", " + cz, e);
-                return null;
             }
         }
         return null;
@@ -518,10 +528,26 @@ public final class Industry {
      */
     public void commandResultInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, long cmdSeq, long opId, int status,
             java.util.List<ByteBuffer> with) {
+        resultInChunk(chunk, cmdSeq, opId, status, with, true);
+    }
+
+    /**
+     * An op applied earlier, whose result the engine has not acknowledged, that a block entity in {@code chunk} now
+     * holds the work of without the chunk carrying it: a Create postbox taking its station port's offline buffer
+     * back at its load (docs/choices-journal-barrier.md RP-206). Its APPLIED is journaled again (no command
+     * sequence: the engine reads a COMMAND_RESULT's op and status, and takes a second answer as heard again) and
+     * carried in the chunk until acknowledged, so the chunk refuses a resend of the op whichever file a crash kept.
+     */
+    public void carryAppliedInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
+        resultInChunk(chunk, 0, opId, Obs.CommandResult.APPLIED, java.util.List.of(), false);
+    }
+
+    private void resultInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, long cmdSeq, long opId, int status,
+            java.util.List<ByteBuffer> with, boolean count) {
         ByteBuffer r = boundary.beginJournaled(Obs.COMMAND_RESULT, Obs.CommandResult.SIZE, status, gameTime());
         r.putLong(Obs.CommandResult.CMD_SEQ, cmdSeq);
         r.putLong(Obs.CommandResult.OP_ID, opId);
-        if (status == Obs.CommandResult.APPLIED)
+        if (count && status == Obs.CommandResult.APPLIED)
             commandsApplied++;
         long seq = boundary.commit(r);
         java.util.List<byte[]> carried = new java.util.ArrayList<>(with.size() + 1);
@@ -565,6 +591,14 @@ public final class Industry {
     /** True when {@code chunk} still carries the COMMAND_RESULT of this op id (applied into it, not yet acknowledged). */
     public boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
         return RtsimSession.chunkCarriesOp(chunk, opId);
+    }
+
+    /**
+     * The op ids a chunk's saved data ({@code ChunkStorage.read}'s tag, the chunk not loaded) carries results for, of
+     * this engine life: what {@link #chunkCarriesOp} would find once it loads. Empty when it carries none.
+     */
+    public java.util.Set<Long> opsCarriedInChunkTag(net.minecraft.nbt.CompoundTag chunkTag) {
+        return RtsimSession.opsCarriedInChunkTag(chunkTag, server.registryAccess());
     }
 
     public Conditions conditions() {

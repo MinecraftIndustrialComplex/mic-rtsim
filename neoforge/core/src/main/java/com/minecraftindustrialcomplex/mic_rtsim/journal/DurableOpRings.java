@@ -35,7 +35,9 @@ public final class DurableOpRings {
 
     /**
      * The ring's own tag at its store's save, trimmed by the session's journal first (nothing is dropped without a
-     * session); null when it is empty.
+     * session); null when it is empty. Written whatever the industry module's switch, unlike the train and port
+     * rings (docs/choices-journal-barrier.md RP-204, "The module switch"): a save that dropped it after a switch off
+     * could die before the journal's write, and the op applied before the switch would be applied again.
      */
     public static @Nullable CompoundTag toTag(DurableOpRing ring) {
         RtsimSession s = RtsimSession.current();
@@ -55,11 +57,10 @@ public final class DurableOpRings {
     public static DurableOpRing fromTag(CompoundTag t) {
         long[] ops = t.getLongArray("ops"), seqs = t.getLongArray("seqs");
         if (ops.length != seqs.length) {
-            // Corrupt: keep every op, each pending (a resend is then refused, a loss at worst, never a second draw).
+            // Corrupt: keep every op, each pending. A resend is then refused: an effect left out (for a deposit's draw,
+            // ore the world keeps), never one applied twice.
             MicRtsim.LOGGER.error("[mic_rtsim] a store's applied ops are corrupt ({} ops, {} sequences): each is kept as pending", ops.length, seqs.length);
-            long[] pending = new long[ops.length];
-            java.util.Arrays.fill(pending, DurableOpRing.PENDING);
-            return DurableOpRing.fromDisk(ops, pending, DurableOpRing.DEFAULT_CAP);
+            return DurableOpRing.allPending(ops, DurableOpRing.DEFAULT_CAP);
         }
         return DurableOpRing.fromDisk(ops, seqs, DurableOpRing.DEFAULT_CAP);
     }

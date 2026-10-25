@@ -152,6 +152,9 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     answered it. The dedup is "the store's ring, or the journal".
     - *Trim.* At the store's save, an entry goes once the journal's file on disk holds its answer: the
       journal is then the dedup, and once the engine has acknowledged a result it never sends the op again.
+      For an APPLIED answer that dedup is the journal's applied index. An entry stamped by a DUPLICATE_OP
+      answer is not in that index; its guard is the resend's own command sequence, at or below the
+      journal's last applied one, which `BoundarySession` skips as stale.
     - *Entries read from disk.* Those at or below what the journal's file held at this start go at the first
       trim. Those above it are what a crash between the store's write and the journal's left; their
       sequences are handed out again in this life, so they wait (PENDING) until the engine resends the op,
@@ -161,14 +164,25 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     - *Diesel.* A mixin on CDG's `OilChunksSavedData` save and static load (`OilChunksSavedDataRingMixin`,
       PATCHES.md row 88) keeps one ring in each dimension's `cdg_oil_chunks`; the plugin hands it to
       `Industry.depositDelta` through `IndustryPlugin.depositRing`. A resend the ring refuses and the journal
-      did not know is counted ("deposit deltas refused by a store's ring").
+      did not know is counted ("deposit deltas refused by a store's ring"). A plugin that throws while asked
+      for its ring is reported and the next plugin asked.
+    - *Corrupt.* A ring whose two arrays differ in length keeps every op as PENDING
+      (`DurableOpRing.allPending`): their resends are refused, an effect left out (for a draw, ore the
+      world keeps), never one applied twice.
+    - *The module switch.* The ring is written whatever the industry module's switch, unlike T2's train
+      ring and the port's rings, which a save with the module off leaves out (RP-194). A save that left it
+      out after a switch off could die before the journal's write, and an op applied before the switch
+      would be applied again at its resend. UR-1 does not need the gate: CDG ignores the key at load and
+      its save writes into the fresh tag vanilla's `SavedData.save(File)` makes, NeoForge skips an unknown
+      level attachment, and the ledger is mic_rtsim_destroy's own file. With the module off the entries
+      read from disk stay, trimmed as the journal's file moves, at most 4,096 a store.
   - *Why.* Under JL, B is the only direction for a SavedData pair, and B is exact when the op's dedup is in
     the same file as its effect. "Ring or journal", with the trim by the journal's durable mark, keeps a
     store's ring to about two autosaves of entries however busy the store is; a fixed window sized for
     the busiest store would be a guess. The ring is U's own class: T2's `AppliedOpRing` (create) is a fixed
     window of 256 with no trim, which suits one train, not every Diesel draw of a dimension.
-  - *Tests.* `DurableOpRingTest` (5: the trim, entries from disk, the cap and its overflow count, the trim
-    before the cap, a malformed ring). `aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal`: 4,997,532
+  - *Tests.* `DurableOpRingTest` (6: the trim, entries from disk, the cap and its overflow count, the trim
+    before the cap, a corrupt ring's ops kept until their resends, a malformed ring). `aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal`: 4,997,532
     with JL alone (RP-202), 4,998,766 with the ring.
   - *Left.* An entry the cap pushes out before the journal's file holds it (counted): its op's resend
     would be applied again. A PENDING entry whose op is never resent stays until the cap pushes it out; it
@@ -193,7 +207,9 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     - A flush save (the stop, `/save-all flush`) whose journal write was held tries once more on the server
       thread after every chunk is flushed. Held again, it keeps the older file, logged at error and counted
       ("kept at a flush save"). The stop never waits longer than two of the barrier's waits, and the second
-      try does not count toward a note's give-up.
+      try does not count toward a note's give-up. The world-save marker (WORLD_SAVED) is not queued again
+      for the second try: it reports the older file it found, so the engine hears of the second try's file
+      at the next world save, later than it could (the safe side).
     - The counters, in `/rtsim perf`: held (and in a row, and the last reason), late, the longest wait, kept
       at a flush save, outside a world save (RP-203), ring overflows (RP-204), and the applied ops the
       journal's file is behind the journal, logged once past `BEHIND_WARN` (10,000, PLACEHOLDER). The
@@ -216,8 +232,10 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     file old for as long as it lasts: logged once past 10,000 applied ops behind, and a crash then replays
     from the older file. The fixed rings of 256 (T2's train ring, RP-192, and the port's, RP-206) were
     sized for a hold of at most four autosaves; a hold that lasts hours can push a busy train's or port's
-    op out before the journal's file holds it, and a crash then applies its resend again
-    (`DurableOpRing`'s trim by the journal's mark does not have this limit).
+    op out before the journal's file holds it, and a crash then applies its resend again. `DurableOpRing`
+    (4,096) has the same limit: its trim follows the journal's file, which the hold keeps back, so 4,096
+    ops into one store during the hold push its oldest out, counted as overflows (replay-gate 9.6,
+    residual 6).
 - **RP-206, the station port's rings (PATCHES.md row 87).**
   - *Chosen.* IND_WRITE_PACKAGE's offline buffer is in `create_tracks.dat`, in its port's entry of the
     station's "Ports" list. Each `GlobalPackagePort` keeps two `AppliedOpRing`s of 256 (T2's class,
@@ -229,9 +247,29 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
       so a tracks write that failed while the journal's succeeded is written again, once.
     - A loaded write is refused when the postbox's chunk carries the op, the journal knows it, or the
       buffer's ring holds it (packages written offline, then taken into the postbox at its load). The
-      postbox's ring is not asked here: a world save writes the tracks file before the chunks, so the
-      tracks can hold the ring and the mirror while the postbox's chunk is from before the write, and the
-      resend must then write the package again.
+      postbox's ring is not asked here: the tracks file can hold the ring and the mirror while the
+      postbox's chunk is from before the write, and the resend must then write the package again.
+    - *Which file is newer.* This record first said a world save writes the tracks file before the
+      chunks. That is not the rule (the U-a review's P1): the background saver writes dirty chunks between
+      world saves (`ChunkMap.processUnloads`, up to 20 a tick, 10 s apart per chunk), while
+      `create_tracks.dat` reaches disk only at a world save. Either file can be the newer, and the chunk
+      newer is the usual state for most of an autosave interval. Two hooks cover the chunk newer:
+      - *The restore.* When the postbox loads and Create puts a primed buffer back into it
+        (`StationBlockEntity.attachPackagePort` calling `GlobalPackagePort.restoreOfflineBuffer`;
+        `StationPortRestoreMixin`, PATCHES.md row 87), the postbox's chunk is made to carry each op of the
+        buffer's ring whose answer the engine has not acknowledged (`Industry.carryAppliedInChunk`: the
+        APPLIED journaled again and carried, not counted again). A chunk saved after the restore then
+        refuses the loaded resend of an op whose packages it holds, though the tracks file and the
+        journal are from before the write. Without it the resend wrote the packages a second time.
+      - *The first offline write into a port.* A port whose buffer this life has not seen Create fill
+        from its postbox (`PortMirrorMixin` marks it at the restore of a primed buffer and at Create's
+        save of a postbox into its buffer) holds the industry command stream while it reads the postbox's
+        chunk as saved (`ChunkMap.read`, off the server thread; at most 10 s, then the write goes on as
+        before, logged). The chunk's carried ops go into the postbox's ring, so their resend is refused,
+        and an unprimed buffer takes the chunk's postbox inventory, so the write does not prime a copy
+        older than the chunk. A primed buffer is left alone: it is Create's newer state. Without it the
+        resend primed the tracks file's older mirror, and the restore put it back over the chunk:
+        automation's takes since then undone (a dupe), its puts lost.
     - A write records the op in its path's ring and marks the tracks dirty; the loaded path never primes.
     - Without the mixins (probed once with a station written and read back), the old dedup: the journal's
       applied set, and the chunk for a loaded postbox, with one WARN.
@@ -244,7 +282,12 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     dupe pinned (`withoutTheRingsACrashThatKeptTheBufferAndNotTheJournalWritesAPackageTwice`: two
     packages for one op), `aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce` (written again
     while loaded, refused offline with nothing put in the buffer) and
-    `withIndustryOffAStationSaveDropsThePortRings` (UR-1).
+    `withIndustryOffAStationSaveDropsThePortRings` (UR-1). The chunk newer than the tracks file:
+    `aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce` (the first test that runs Create's
+    `restoreOfflineBuffer`) and `anUnloadedPostboxWhoseChunkOutlivedTheTracksTakesEachPackageOnce` (a
+    synthetic chunk written through `ChunkMap.write`), each with its twin with the chunk checks off
+    (`PortRing.chunkChecksForTest`) pinning the old outcome: two packages for one op, and the stale mirror
+    primed.
   - *Left.*
     - The crash above with the postbox unloaded at the resend: refused by the postbox's ring while the
       package is only in the unprimed mirror, a loss. Priming the mirror would revert the postbox to the
@@ -254,6 +297,16 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     - K3's goods moved out of the postbox's chunk before it saved, and K5 (the PostboxAccess mirror),
       which are not journal-ordered: the coordinator's Create slice.
     - The rings' fixed bound under a long hold (RP-205's Left).
+    - The chunk newer than the tracks file, where the hooks do not reach (replay-gate 9.6, residual 8):
+      a primed buffer whose postbox's chunk is newer (Create's restore overwrites the postbox with the
+      buffer, its own behaviour); the restore with the industry module off or the rings unavailable (no
+      carry); a chunk read that fails or takes over 10 s; a postbox changed in this life while its station
+      did not attach it, after the port's mirror was marked fresh; a chunk saved in the window between
+      the postbox's unload and Create's next save of it into the buffer.
+    - The module switch: the port's rings are left out of a save with the module off (RP-194's rule), so
+      a crash inside the first world save after a switch off, before the journal's write, loses them; an
+      op written before the switch is written again if the module is on at the restart. `DurableOpRing` is
+      written whatever the switch (RP-204). Both classes take one rule at the move to T2's ring rule.
 - **RP-207, Destroy's pollution: one ring per file.**
   - *Chosen.* Level pollution is Destroy's `LEVEL_POLLUTION` level attachment, which NeoForge saves in the
     level's `neoforge_data_attachments`. Its ring is a mic_rtsim level attachment (`mic_rtsim:applied_ops`,
@@ -261,6 +314,10 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     (`mic_rtsim_destroy_pollution`) keeps its own ring, keyed by op and good (`DurableOpRing.keyOf`), for both
     IND_DEPOSIT_DELTA and a reconcile's chunk-pollution deposits: the plugin passes it to the op
     (`IndustryPlugin.DepositOp.keepIn`) and books the delta only when the ring lacks the key.
+    - A resend the level's ring refuses stamps the ledger's entry with the refusal's answer too
+      (`IndustryPlugin.depositRefused`, when the ledger holds the key). Left with its first life's
+      sequence, the entry turned PENDING at the first trim and stayed until the cap pushed it out, counted
+      as an overflow (the U-a review).
   - *Why.* One op changes two files, so a crash can keep either; each file refuses what it already holds.
     For a crash right before the journal's write, with the resend:
 
@@ -270,8 +327,9 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     | Attachments kept, ledger lost | refused by the level's ring | short by the delta | the under-count below |
     | Ledger kept, attachments lost | applied again | the ledger's ring refuses booking it again | exact |
 
-  - *Tests.* destroy `PollutionCrashGameTests` (4): both files kept, the ledger lost, the pollution file
-    lost (one rebooking refused), and a crash right after the journal's write. Each emulates the restart
+  - *Tests.* destroy `PollutionCrashGameTests` (4): both files kept (the ledger's entry stamped with the
+    level ring's refusal), the ledger lost, the pollution file lost (one rebooking refused), and a crash
+    right after the journal's write. Each emulates the restart
     from the files a crash at that instant leaves; all four end at the pollution emitted plus the delta, once.
     Not failing-first: without the rings there is nothing for them to read.
   - *Left.* With the ledger lost, the district's total is short by the delta. The ledger only attributes
@@ -279,8 +337,9 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     engine learns a slightly lower rate; no pollution is created or removed.
 - **RP-208, what slice U leaves, and UR-1.**
   - *Residual list.* Kept in docs/replay-gate.md 9.6: the Windows directory sync (RP-201), given-up notes
-    (RP-205), chunk and entity effects the barrier does not note, the ledger's under-count (RP-207), and
-    ring entries pending a resend that never comes (RP-204). Each item says what it costs and who owns it.
+    (RP-205), chunk and entity effects the barrier does not note, the ledger's under-count (RP-207), ring
+    entries pending a resend that never comes (RP-204), the rings' limits, a re-decided op after its answer
+    was consumed, and a postbox's chunk newer than the tracks file where RP-206's hooks do not reach. Each item says what it costs and who owns it.
   - *UR-1.* Uninstalling mic_rtsim_dieselgenerators: CDG loads `cdg_oil_chunks` with the extra key and drops
     it at its next save. Uninstalling mic_rtsim: NeoForge skips the unknown `mic_rtsim:applied_ops` level
     attachment in `neoforge_data_attachments` with an ERROR log line and loads the rest. The ledger's ring

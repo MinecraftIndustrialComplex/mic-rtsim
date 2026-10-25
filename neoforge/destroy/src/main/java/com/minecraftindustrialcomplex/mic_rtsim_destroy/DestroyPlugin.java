@@ -79,6 +79,13 @@ public final class DestroyPlugin implements IndustryPlugin {
         return type != null && DestroyRegistries.LEVEL_POLLUTION_TYPES.get(type) != null ? level.getData(RtsimAttachments.LEVEL_APPLIED_OPS) : null;
     }
 
+    /** A refused resend of a level type's op: the ledger, which booked it with the pollution, keeps it again. */
+    @Override
+    public void depositRefused(ServerLevel level, int chunkX, int chunkZ, String good, DepositOp op) {
+        if (pollutionType(level, chunkX, chunkZ, good) != null)
+            PollutionLedger.get(level).refused(good, op);
+    }
+
     private static ResourceLocation pollutionType(ServerLevel level, int chunkX, int chunkZ, String good) {
         Industry ind = IndustryApi.current();
         District d = ind == null ? null : ind.districtAt(level.dimension(), ChunkPos.asLong(chunkX, chunkZ));

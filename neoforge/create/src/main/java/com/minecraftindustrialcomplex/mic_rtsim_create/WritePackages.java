@@ -39,8 +39,11 @@ import java.util.List;
  * into the buffer). A loaded postbox is saved with its chunk, so its chunk carries the COMMAND_RESULT until
  * the engine acknowledges it (the pending-record pattern, docs/boundary.md §3.1); a loaded write is refused
  * when the chunk carries the op, the journal knows it or the buffer's ring holds it (packages written offline
- * and taken into the postbox at its load). Without the rings' mixins the dedup is the journal's applied set,
- * and the chunk for a loaded postbox.
+ * and taken into the postbox at its load). The postbox's chunk is saved on its own clock, often before the
+ * tracks file: so the restore of a primed buffer makes the chunk carry the ops it brings in
+ * ({@link PortRing#beforeRestore}), and the first offline write of a server life into a port reads the chunk
+ * as saved, its carried ops and the postbox's inventory, before it primes the buffer ({@link PortRing#refreshed}).
+ * Without the rings' mixins the dedup is the journal's applied set, and the chunk for a loaded postbox.
  * <b>Room:</b> packages go into free slots; what does not fit is logged and counted, and the command is
  * APPLIED if any package was written (the engine keeps its books as written, W10), FAILED if none was.
  */
@@ -93,6 +96,10 @@ public final class WritePackages {
         PostboxBlockEntity postbox = level != null && level.isLoaded(pos) && level.getBlockEntity(pos) instanceof PostboxBlockEntity pb ? pb : null;
         // The port is looked up for a loaded postbox too: its rings are the dedup of both paths.
         GlobalPackagePort port = level == null ? null : port(level, pos);
+        // A port this life does not know to match its postbox, whose chunk is not loaded: the chunk as saved first,
+        // the write held meanwhile (PortRing.refreshed: a crash can leave the tracks file older than the chunk).
+        if (postbox == null && rings && port != null && chunk == null && !PortRing.refreshed(port, level, pos, ind))
+            return false;
         boolean duplicate;
         if (postbox != null)
             duplicate = (chunk != null && ind.chunkCarriesOp(chunk, opId)) || (rings && (ind.opApplied(opId) || PortRing.wroteToBuffer(port, opId)));

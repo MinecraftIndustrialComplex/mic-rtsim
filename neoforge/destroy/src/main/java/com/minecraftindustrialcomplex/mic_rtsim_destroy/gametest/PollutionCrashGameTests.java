@@ -88,7 +88,7 @@ public final class PollutionCrashGameTests {
     @GameTest(template = "yard", batch = "destroy_crash_before_both", timeoutTicks = 2400)
     public static void levelPollutionIsAppliedOnceWhenTheServerDiesRightBeforeTheJournal(GameTestHelper helper) {
         crash(helper, "levelPollutionIsAppliedOnceWhenTheServerDiesRightBeforeTheJournal", false, Kept.BOTH,
-                Obs.CommandResult.DUPLICATE_OP, EMITTED + DELTA, 0);
+                Obs.CommandResult.DUPLICATE_OP, EMITTED + DELTA, 0, 1);
     }
 
     /**
@@ -99,7 +99,7 @@ public final class PollutionCrashGameTests {
     @GameTest(template = "yard", batch = "destroy_crash_before_ledger_lost", timeoutTicks = 2400)
     public static void aLostLedgerUnderCountsAndTheDeltaIsAppliedOnce(GameTestHelper helper) {
         crash(helper, "aLostLedgerUnderCountsAndTheDeltaIsAppliedOnce", false, Kept.ATTACHMENTS_ONLY,
-                Obs.CommandResult.DUPLICATE_OP, EMITTED, 0);
+                Obs.CommandResult.DUPLICATE_OP, EMITTED, 0, 0);
     }
 
     /**
@@ -110,7 +110,7 @@ public final class PollutionCrashGameTests {
     @GameTest(template = "yard", batch = "destroy_crash_before_pollution_lost", timeoutTicks = 2400)
     public static void aLostPollutionFileIsAppliedAgainAndBookedOnce(GameTestHelper helper) {
         crash(helper, "aLostPollutionFileIsAppliedAgainAndBookedOnce", false, Kept.LEDGER_ONLY,
-                Obs.CommandResult.APPLIED, EMITTED + DELTA, 1);
+                Obs.CommandResult.APPLIED, EMITTED + DELTA, 1, 0);
     }
 
     /**
@@ -121,11 +121,11 @@ public final class PollutionCrashGameTests {
     @GameTest(template = "yard", batch = "destroy_crash_after", timeoutTicks = 2400)
     public static void levelPollutionIsOnDiskWhenTheServerDiesRightAfterTheJournal(GameTestHelper helper) {
         crash(helper, "levelPollutionIsOnDiskWhenTheServerDiesRightAfterTheJournal", true, Kept.BOTH,
-                Obs.CommandResult.DUPLICATE_OP, EMITTED + DELTA, 0);
+                Obs.CommandResult.DUPLICATE_OP, EMITTED + DELTA, 0, 0);
     }
 
     private static void crash(GameTestHelper helper, String test, boolean afterJournal, Kept kept, int secondAnswer,
-                              long bookedAfter, long refusedBookings) {
+                              long bookedAfter, long refusedBookings, long restamps) {
         MinecraftServer server = helper.getLevel().getServer();
         ServerLevel level = server.overworld();
         check("the test's level is the overworld", helper.getLevel() == level);
@@ -142,6 +142,7 @@ public final class PollutionCrashGameTests {
         int[] settledGreenhouse = {0};
         int[] saves = {0};
         long[] refused0 = {0};
+        long[] restamped0 = {0};
         long[] booked0 = {0};
         AtomicReference<OnDisk> settled = new AtomicReference<>(), disk = new AtomicReference<>();
         JournalSavedData.BEFORE_WRITE_FOR_TEST.set(null);
@@ -228,6 +229,7 @@ public final class PollutionCrashGameTests {
                     else
                         RtsimSession.current().journal().journal().forgetAppliedForTest(op);
                     refused0[0] = PollutionLedger.rebooksRefused();
+                    restamped0[0] = PollutionLedger.restampedOnRefusal();
                     record(test, "the restart reads", "the attachments file " + (attachments == d.attachments() ? "of the crash" : "settled")
                             + ", the ledger's " + (ledger == d.ledger() ? "of the crash" : "settled") + ": greenhouse "
                             + PollutionHelper.getPollution(level, DestroyPollutionTypes.GREENHOUSE.get()) + ", booked " + booked(level, district[0]));
@@ -245,8 +247,27 @@ public final class PollutionCrashGameTests {
                             settledGreenhouse[0] + DELTA, settledGreenhouse[0] + 2 * DELTA), now == settledGreenhouse[0] + DELTA);
                     check("booked " + booked + ", expected " + bookedAfter, booked == bookedAfter);
                     check("bookings refused " + refused + ", expected " + refusedBookings, refused == refusedBookings);
+                    // A refusal by the level's ring stamps the ledger's entry with the refusal's answer too (P3.3):
+                    // left with the first life's answer, the journal's next save past it would drop it.
+                    long restamped = PollutionLedger.restampedOnRefusal() - restamped0[0];
+                    check("ledger entries stamped again " + restamped + ", expected " + restamps, restamped == restamps);
+                    if (restamps > 0) {
+                        long levelSeq = seqOf(level.getData(RtsimAttachments.LEVEL_APPLIED_OPS.get()), op);
+                        DurableOpRing ledgerRing = ObfuscationReflectionHelper.getPrivateValue(PollutionLedger.class, PollutionLedger.get(level), "ring");
+                        long ledgerSeq = seqOf(ledgerRing, DurableOpRing.keyOf(op, good[0]));
+                        check("the ledger's entry has the refusal's answer " + levelSeq + ", not " + ledgerSeq, ledgerSeq == levelSeq);
+                    }
                 })
                 .thenSucceed();
+    }
+
+    /** The answer's sequence a ring keeps {@code key} with, or -1. */
+    private static long seqOf(DurableOpRing ring, long key) {
+        long[] ops = ring.ops(), seqs = ring.seqs();
+        for (int i = 0; i < ops.length; i++)
+            if (ops[i] == key)
+                return seqs[i];
+        return -1;
     }
 
     /** The district's booked greenhouse in the live ledger. */

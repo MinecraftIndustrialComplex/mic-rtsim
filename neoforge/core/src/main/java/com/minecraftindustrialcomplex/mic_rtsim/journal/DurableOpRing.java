@@ -15,8 +15,11 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p><b>Entries</b> are (op id, sequence of the COMMAND_RESULT that answered it), in the order they came. An entry is
  * needed until the journal on disk holds that result: then the journal is the dedup, and once the engine has
- * acknowledged the result it never sends the op again. So the store's save trims by the durable mark
- * ({@link #trim}): an entry whose result is at or below the sequence the journal's file holds goes.
+ * acknowledged the result it never sends the op again. For an APPLIED answer the journal's dedup is its applied
+ * index; for an entry stamped by a DUPLICATE_OP answer, which that index does not count, it is the resend's own
+ * command sequence, at or below the journal's last applied one, which {@code BoundarySession} skips as stale. So the
+ * store's save trims by the durable mark ({@link #trim}): an entry whose result is at or below the sequence the
+ * journal's file holds goes.
  *
  * <p><b>Entries read from disk</b> carry sequences of the life that wrote them. Those at or below the journal's file
  * as it was read at this start ({@code durableAtLoad}) were held by that file: they go at the first trim. The others
@@ -76,6 +79,16 @@ public final class DurableOpRing {
         while (r.entries.size() > cap)
             r.evictOldest();
         return r;
+    }
+
+    /**
+     * A ring whose file kept its ops and lost their sequences (corrupt): every op waits for its resend, as
+     * {@link #PENDING}. A resend is then refused: an effect left out, never one applied twice.
+     */
+    public static DurableOpRing allPending(long[] ops, int cap) {
+        long[] pending = new long[ops.length];
+        java.util.Arrays.fill(pending, PENDING);
+        return fromDisk(ops, pending, cap);
     }
 
     /**

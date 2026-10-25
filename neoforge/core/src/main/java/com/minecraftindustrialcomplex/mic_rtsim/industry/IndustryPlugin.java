@@ -270,6 +270,15 @@ public interface IndustryPlugin {
         return null;
     }
 
+    /**
+     * An IND_DEPOSIT_DELTA resend of {@code op} that the deposit's ring ({@link #depositRing}) refused, with nothing
+     * written. A plugin whose first write of the op also changed a store in a file of its own keeps the op there again
+     * ({@link DepositOp#keepIn}) when that store's ring holds it, so it is stamped with the refusal's answer like the
+     * deposit's ring. Left with its first answer, the entry would be dropped once the journal passes that sequence,
+     * which after the crash is another record's. Every plugin is asked; the default does nothing.
+     */
+    default void depositRefused(ServerLevel level, int chunkX, int chunkZ, String good, DepositOp op) {}
+
     // ---- damage (C18, I23) and repair (I1) -----------------------------------------------------
 
     /**
