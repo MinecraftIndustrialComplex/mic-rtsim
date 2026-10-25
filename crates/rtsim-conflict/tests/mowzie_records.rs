@@ -3020,6 +3020,10 @@ enum Records {
     /// The band's sighting, decided the tick before its arrival, journaled in the fight's step:
     /// its record at the fight's tick, just before it (RP-56's case B).
     SightingWithTheFight,
+    /// Java refuses the fight's first wave (`every_wave`: and every later one; else they are
+    /// placed), and its journal stalls at that refusal: it and every record after it come later
+    /// than the session that went on had them, the refusal at the held arrival + `at`.
+    Refused { at: u64, every_wave: bool },
 }
 
 /// What [`a_held_arrivals_fight`] came to: the session that went on's arrival and the replay's
@@ -3051,6 +3055,18 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
     });
     let band = raid_band(&mut r);
     r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    // Java places one of the fight's waves, whose bodies loot.
+    let placed = !matches!(
+        records,
+        Records::Refused {
+            every_wave: true,
+            ..
+        }
+    );
+    if let Records::Refused { every_wave, .. } = records {
+        r.refuse = Some(band);
+        r.refuse_wave0_only = !every_wave;
+    }
     let arrival = *r.c.parties[band].times.last().unwrap();
     let mut walls = Walls::default();
     let mut journal = Vec::new();
@@ -3094,7 +3110,7 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
             journal.push((end, o));
         }
     }
-    assert!(looted, "the band fought");
+    assert_eq!(looted, placed, "the band fought, its bodies placed");
     let loot = |c: &Conflict| c.ledger.from_players.values().sum::<i128>();
     let live = Arrival {
         raids: walls.raids.iter().copied().collect(),
@@ -3109,7 +3125,8 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
             matches!(o, Obs::Materialized(m)
                 if m.agent == Party::agent(band) && m.flags & u32::from(boundary::BAND_FIGHT) != 0)
         })
-        .expect("the fight's record");
+        .unwrap_or(journal.len());
+    assert_eq!(fight < journal.len(), placed, "the fight's record");
     let mut late = 0;
     match records {
         Records::FightAt(at) => {
@@ -3117,6 +3134,24 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
                 .checked_sub(journal[fight].0.0)
                 .expect("recorded after its decision");
             for (t, _) in &mut journal[fight..] {
+                *t += late;
+            }
+        }
+        Records::Refused { at, .. } => {
+            let refused = journal
+                .iter()
+                .position(|(_, o)| {
+                    matches!(o, Obs::SpawnRejected(x) if x.agent == Party::agent(band) && x.wave == 0)
+                })
+                .expect("the first wave refused");
+            assert!(
+                refused < fight,
+                "refused before a later wave's record, if any"
+            );
+            late = (arrival.0 + at)
+                .checked_sub(journal[refused].0.0)
+                .expect("recorded after its decision");
+            for (t, _) in &mut journal[refused..] {
                 *t += late;
             }
         }
@@ -3223,6 +3258,42 @@ fn a_held_arrivals_fight_recorded_exactly_at_the_slack_finds_no_hold() {
         3_000,
         Records::FightAt(REPLAY_HOLD_SLACK_TICKS),
     ));
+}
+
+/// fixes6 item 4 (RP-63): a held arrival's fight whose first wave alone Java refused, the
+/// refusal recorded past the hold's slack. The replay resolves the arrival unwatched at the slack
+/// (one abstract raid), and the late refusal finds no hold: it marks the fight's epoch as unheld,
+/// as a late fight record does (RP-56), so that the later waves' casualties and loot count
+/// against nothing. The replay used to mark nothing at the refusal.
+#[test]
+fn a_held_arrivals_refused_first_wave_recorded_after_the_slack_is_no_double() {
+    let h = a_held_arrivals_fight(
+        3_000,
+        Records::Refused {
+            at: REPLAY_HOLD_SLACK_TICKS + 600,
+            every_wave: false,
+        },
+    );
+    assert!(
+        h.live.raids.is_empty() && h.live.watched == 1 && h.live.casualties > 0 && h.live_loot > 0,
+        "{h:?}"
+    );
+    assert_resolved_at_the_slack(&h);
+}
+
+/// fixes6 item 4 (RP-63): as above, every wave refused, so the late refusal is the fight's only
+/// record. It is counted as a fight record that found no hold, once.
+#[test]
+fn a_held_arrivals_fight_refused_whole_and_recorded_after_the_slack_counts_as_unheld() {
+    let h = a_held_arrivals_fight(
+        3_000,
+        Records::Refused {
+            at: REPLAY_HOLD_SLACK_TICKS + 600,
+            every_wave: true,
+        },
+    );
+    assert!(h.live.watched == 1 && h.live_loot == 0, "{h:?}");
+    assert_resolved_at_the_slack(&h);
 }
 
 /// fixes4 item 2 (RP-56, the lead's case B): the band seen the tick before its arrival, the

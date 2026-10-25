@@ -1480,3 +1480,19 @@ conservative option at its fork.
   for a crash. Failing first, mowzie_records' `a_refused_first_wave_is_its_fights_first_record`
   (the checker's case live: a watched raid's arrival whose wave 0 alone is refused): 1201 against
   a slack of 600; now 1, the plugin answering a tick after the command. The sims are unchanged.
+- **RP-63** (a late refused first wave marks its epoch unheld; §6.1; RP-54; RP-56; fixes6 item
+  4): a replayed BAND_SPAWN_REJECTED of a newer epoch's wave 0 that found no hold (at or past the
+  slack, which resolved the arrival unwatched) did nothing, so it was not counted in
+  `fights_unheld`, and nothing kept that epoch's later records from counting. The fix: that arm
+  marks the epoch in `unheld_fights` and counts it once, as `honour` does for a fight's
+  BAND_MATERIALIZED that finds no hold (RP-56). The checker's case (a later accepted wave of that
+  epoch loots) did not double before the fix: every wave of a fight carries BAND_FIGHT, so its
+  BAND_MATERIALIZED marked the epoch at `honour`. The refusal is the fight's only record when Java
+  refused every wave: then the stat missed it. The record carries no flags, so a refused
+  sighting's wave 0 of a newer epoch counts too; a sighting always takes a new epoch, so that one
+  has no bodies, and only the stat moves (the option not taken: a set of the parties whose hold
+  the slack resolved, to tell them apart). Failing first, mowzie_records'
+  `a_held_arrivals_fight_refused_whole_and_recorded_after_the_slack_counts_as_unheld` (every wave
+  refused, the refusal at the slack + 600): `unheld` 0 against 1; the case with the later waves
+  placed, `a_held_arrivals_refused_first_wave_recorded_after_the_slack_is_no_double`, passed
+  before and after (one abstract raid, no loot, counted once). The sims are unchanged.
