@@ -27,13 +27,12 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, RegionPlan, plan_region};
-use rtsim_kernel::clock::Tick;
 use rtsim_kernel::page::{PageKey, PageStore, SaveBatch};
 use rtsim_space::habitat::{DICT_BIOME, HABITAT, HabitatRecord, KNOWN_END, KnownRecord};
 use rtsim_space::sampled::mark;
 use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
 
-use super::{State, herds, log_error, log_info, log_warn, phase1};
+use super::{State, herds, log_error, log_info, log_warn, shared};
 use crate::wire::{self, Rec, RecordWriter};
 
 /// The world model's pages: the meta page in table 0x5700 ('W'), regions in 0x5701.
@@ -272,7 +271,9 @@ pub(super) fn simulate(st: &mut State) {
             st.worldmodel.pending.extend(changed);
         }
     }
-    if st.worldmodel.pending.is_empty() || !herds::enabled(st) {
+    // Nothing is founded while replaying (docs/replay-gate.md §3.6): a founding runs the clock to
+    // the hand-over's time. The regions stay pending and are founded after the replay end.
+    if st.worldmodel.pending.is_empty() || !herds::enabled(st) || st.replaying {
         return;
     }
     let batch: Vec<RegionKey> = st
@@ -305,7 +306,7 @@ pub(super) fn simulate(st: &mut State) {
                 true
             }
             RegionPlan::Found(n) => {
-                let at = Tick(phase1::world_tick(st, st.game_time));
+                let at = shared::hand_over_target(st);
                 herds::found(st, n, at);
                 st.worldmodel.herds_founded += 1;
                 true

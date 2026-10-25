@@ -122,7 +122,8 @@ public final class ConflictRecords {
 
     /** BAND_MATERIALIZED (aux = members spawned). */
     public static final class Materialized {
-        public static final int AGENT = 24, EPOCH = 32, DIM = 36, WAVE = 40, SIZE = 48;
+        /** FLAGS: the BAND_MATERIALIZE's flags, echoed (0 for an envoy's): a fight's wave from a sighting's. */
+        public static final int AGENT = 24, EPOCH = 32, DIM = 36, WAVE = 40, FLAGS = 44, SIZE = 48;
     }
 
     /** BAND_SPAWN_REJECTED (aux = reason: docs/boundary.md §2.3's codes, plus 9 unknown body kind). */
@@ -230,7 +231,8 @@ public final class ConflictRecords {
         public static final int STACK = 16;
         /** Within a stack entry. */
         public static final int S_BODY = 0, S_COUNT = 4, S_FLAGS = 8;
-        public static final int FLAG_HOSTILE = 1, FLAG_CHIEF = 2, FLAG_SURFACE = 4;
+        /** FLAG_FIGHT: a fight's wave, not a sighting's; echoed in BAND_MATERIALIZED. */
+        public static final int FLAG_HOSTILE = 1, FLAG_CHIEF = 2, FLAG_SURFACE = 4, FLAG_FIGHT = 8;
         /** A stack's flags: the war chief is in this stack. */
         public static final int STACK_CHIEF = 1;
 
