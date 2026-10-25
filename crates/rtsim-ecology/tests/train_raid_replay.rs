@@ -14,12 +14,16 @@ use rtsim_ecology::infra::{DistrictIndex, IndustryLink};
 use rtsim_ecology::species::{Gender, Species};
 use rtsim_ecology::synth;
 use rtsim_ecology::tunables::DragonTunables;
+use rtsim_industry::cmd::{CarriageReason, Cmd};
 use rtsim_industry::engine::Engine;
-use rtsim_industry::ids::TrainId;
+use rtsim_industry::ids::{BlockPos, DistrictId, GoodVec, StationId, TrainId};
+use rtsim_industry::obs::{Carriage, Obs, StationDecl, Timed, TrainDeparture};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
 use rtsim_world::{World, WorldConfig};
-use train_raid::{Landed, Order, Raider, across_a_crash, industry, industry_newer};
+use train_raid::{
+    IRON, LOAD, Landed, Order, Raider, across_a_crash, industry, industry_newer, pages, restore,
+};
 
 const SEED: u64 = 19;
 const TRAIN: TrainId = TrainId(7);
@@ -70,9 +74,15 @@ impl Raider for Dragon {
 /// 6,000, a hungry adult leaving A for B at 1,500. The leg is long (100,000 ticks), so that it is
 /// still under way when an industry engine far past the raid meets the dragon again.
 fn dragon() -> (Dragon, Engine) {
+    dragon_with(|_| {})
+}
+
+/// [`dragon`], with `more` done to industry before the dragon flies.
+fn dragon_with(more: impl FnOnce(&mut Engine)) -> (Dragon, Engine) {
     let (mut w, _) = synth::world(SEED);
     let mut d = Dragons::new(SEED, DragonTunables::default(), Tick::ZERO);
     let mut e = industry(SEED, TRAIN, Tick(1_000), 100_000, 6_000);
+    more(&mut e);
     let lair = |d: &mut Dragons, w: &mut World, key: u64, name: &str, z: i32| {
         d.add_lair(
             w,
@@ -190,4 +200,88 @@ fn which_of_javas_saves_landed_decides_once_twice_or_never() {
         // The engine's books hold the re-decided raid's loot whatever Java did.
         assert_eq!(x.restarted.books.stolen.total(), live as i128, "{landed:?}");
     }
+}
+
+/// A second train, `LATER`, on a line at z 4,000 between stations 3 and 4.
+const LATER: TrainId = TrainId(8);
+
+/// Stations 3 and 4 at z 4,000, declared before the dragon flies.
+fn stations(e: &mut Engine) {
+    for (id, x) in [(3u64, -2_000), (4, 2_000)] {
+        e.ingest(&Timed {
+            at: Tick(1),
+            obs: Obs::Station(StationDecl {
+                station: StationId(id),
+                district: None,
+                dim: 0,
+                pos: BlockPos::new(x, 64, 4_000),
+                name: id as u32,
+            }),
+        });
+    }
+}
+
+/// `LATER` leaves station 3 at `at`, laden, for a long leg (a record industry journals and
+/// replays).
+fn depart_later(e: &mut Engine, at: Tick) {
+    e.ingest(&Timed {
+        at,
+        obs: Obs::TrainDeparted(TrainDeparture {
+            train: LATER,
+            station: StationId(3),
+            district: DistrictId(0),
+            destination: Some(StationId(4)),
+            eta_ticks: 100_000,
+            carriages: vec![Carriage {
+                index: 0,
+                item_slots: 27,
+                fluid_capacity: 0,
+                goods: GoodVec::from_pairs([(IRON, LOAD)]),
+            }],
+        }),
+    });
+}
+
+/// The loot deltas industry decided since the last drain: (train, op).
+fn loot(e: &mut Engine) -> Vec<(TrainId, u64)> {
+    e.drain_commands()
+        .into_iter()
+        .filter_map(|c| match c {
+            Cmd::CarriageDelta(d) if d.reason == CarriageReason::Loot => Some((d.train, d.op.0)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The review's repro for the key's stability (RP-181, review P2-B): the dragon scans at `S`, and
+/// `LATER`, which crosses its path sooner, departs after the scan. Live the scan finds only
+/// `TRAIN`. After the crash industry replays its records to Java's present (`LATER`'s departure
+/// among them) before the dragon flies its window again; read as of the scan's decision, the
+/// replayed scan still finds `TRAIN` alone, so the raid is the live one, under the live op.
+/// Before `trains_crossed` read the legs as of `from`, the replay raided `LATER` under an op
+/// Java never saw, and two trains lost goods for one raid.
+#[test]
+fn a_replayed_scan_does_not_see_a_train_that_left_after_the_live_one() {
+    let depart = Tick(1_600);
+    let (mut r, mut e) = dragon_with(stations);
+    let saved = r.save();
+    let at_s = pages(&e);
+    r.run(&mut e, depart);
+    let mut live = loot(&mut e);
+    depart_later(&mut e, depart);
+    r.run(&mut e, C);
+    live.extend(loot(&mut e));
+    assert_eq!(live.len(), 1, "one live raid: {live:?}");
+    assert_eq!(live[0].0, TRAIN, "on the train under way at the scan");
+
+    let mut again = Dragon::restore(&saved);
+    let mut restarted = restore(&at_s);
+    depart_later(&mut restarted, depart);
+    restarted.advance_to(C);
+    again.run(&mut restarted, C);
+    assert_eq!(
+        loot(&mut restarted),
+        live,
+        "the replayed scan finds the live train, and the raid carries the live op"
+    );
 }
