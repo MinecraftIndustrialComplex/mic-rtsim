@@ -8474,6 +8474,17 @@ MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; t
   - MZB-729's saved-copy test, and MZB-466's counter in a GameTest.
   - The existing stack-count assertions the column changes.
 
+### M10c build records (MZB-740 to MZB-749)
+
+What the march's GameTests (M10c) decided. The tests are in `core`'s `MarchGameTests` and `ConflictGameTests`, and
+in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `[gametest]` line.
+
+- **MZB-740** (fork; the branch's base): `feat/mowzie-m10` had no `ChunkWait` and no `tools/chunk_waits.py`; they are
+  on `origin/main` and on `feat/mowzie-m9`. Merging `feat/mowzie-m9` into the branch conflicts in `engine.rs` and
+  `mowzie_records.rs`, files M10c does not own, so that merge was not made (a `UU` in a file not edited is a stop).
+  **`origin/main` (d64f4eb8) was merged instead** (e94585ba): it conflicted only in this file (the design records), where
+  the branch's side was kept. The tests use `ChunkWait`'s two clocks as the brief says.
+
 ## M11 Aloft
 
 (none yet)
