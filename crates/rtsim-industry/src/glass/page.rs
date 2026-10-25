@@ -20,8 +20,9 @@
 //!   (slice S3). A page whose keys are not those its compile cuts into now (a changed
 //!   `glass.sectionsMax` or `glass.countedStoresMax`, or a changed fold), or one of
 //!   the format before sections ([`GLASS_MAGIC_IGL1`]), before unit windows
-//!   ([`GLASS_MAGIC_IGL2`]), before the station discards ([`GLASS_MAGIC_IGL3`]) or before the
-//!   counted stores' window bases ([`GLASS_MAGIC_IGL4`]), drops that district's glass state
+//!   ([`GLASS_MAGIC_IGL2`]), before the station discards ([`GLASS_MAGIC_IGL3`]), before the
+//!   counted stores' window bases ([`GLASS_MAGIC_IGL4`]) or before domain sources
+//!   ([`GLASS_MAGIC_IGL5`]), drops that district's glass state
 //!   alone ([`PageRead::Dropped`]): the district learns again. The judging units are recomputed
 //!   with the sections (a row cap's cut held, `DistrictGlass::sections_cap`), their bounds from
 //!   the solve, and their saved windows are checked against them.
@@ -32,16 +33,21 @@ use super::GlassStats;
 use super::check::DistrictGlass;
 use super::graph::Graph;
 use super::records::{
-    DomainLevel, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe,
-    Member, NodeKind, RateEntry, Term,
+    DomainLevel, DomainSource, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode,
+    GraphRecipe, Member, NodeKind, RateEntry, Term,
 };
 use super::solve::{GoodBound, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-/// The glass page's magic ("IGL5": the glass page with judging units' windows, the station
-/// discards' count and each unit window's base at its counted stores, SECTIONS.md §4.2, §5).
-pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL5");
+/// The glass page's magic ("IGL6": the glass page with judging units' windows, the station
+/// discards' count, each unit window's base at its counted stores, SECTIONS.md §4.2, §5, and
+/// domains with sources and speed rows, slice S5).
+pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL6");
+
+/// The magic of the glass page before domain sources (slice S5): read as a dropped district,
+/// never decoded.
+pub const GLASS_MAGIC_IGL5: u32 = u32::from_le_bytes(*b"IGL5");
 
 /// The magic of the glass page before counted stores (slice S2d): read as a dropped district,
 /// never decoded.
@@ -114,6 +120,11 @@ pub fn read_district_page(b: &[u8], sections_max: usize, counted_max: usize) -> 
     if magic == GLASS_MAGIC_IGL4 {
         return Ok(PageRead::Dropped(
             "a page of the format before counted stores (IGL4)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL5 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before domain sources (IGL5)",
         ));
     }
     if magic != GLASS_MAGIC {
@@ -249,15 +260,24 @@ persist_struct!(Member {
     ratio_den,
     impact
 });
+persist_struct!(DomainSource {
+    driver,
+    levels,
+    current,
+    ratio_num,
+    ratio_den,
+    pos
+});
 persist_struct!(GraphDomain {
     head,
     network,
     current,
-    driver,
     flags,
     live_stress,
     live_capacity,
     levels,
+    sources,
+    foreign,
     members
 });
 persist_struct!(GraphEnd {
@@ -352,6 +372,8 @@ persist_struct!(Solution {
     store_edges,
     edge_goods,
     dom_level,
+    dom_cap,
+    src_row,
     duty,
     fed,
     src_var,

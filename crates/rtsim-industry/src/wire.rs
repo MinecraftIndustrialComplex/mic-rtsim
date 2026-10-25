@@ -16,8 +16,8 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 
 use crate::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    WriteChain, WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, DrawAction,
+    HeldDraw, InvDelta, WriteChain, WritePackage,
 };
 use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId};
@@ -96,6 +96,10 @@ pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 // 0x8406 is IND_PROBE_SET (glass::codec), 0x8408 slice S3's IND_COUNT_SET; 0x8407 is left free.
 pub const IND_WRITE_CHAIN: u16 = 0x8409;
+// 0x840A is left free.
+/// The frontier's held keys the engine draws, has removed or gives back (slice S4c2, choices
+/// SC141 to SC143).
+pub const IND_HELD_DRAW: u16 = 0x840B;
 
 const OBS_KINDS: [u16; 33] = [
     IND_STOCK_SAMPLE,
@@ -133,12 +137,13 @@ const OBS_KINDS: [u16; 33] = [
     IND_SURVEY_BLOCKS,
 ];
 
-const CMD_KINDS: [u16; 5] = [
+const CMD_KINDS: [u16; 6] = [
     IND_CHUNK_RECONCILE,
     IND_CARRIAGE_DELTA,
     IND_DEPOSIT_DELTA,
     IND_WRITE_PACKAGE,
     IND_WRITE_CHAIN,
+    IND_HELD_DRAW,
 ];
 
 /// `Option<u32>` inventory index: none.
@@ -238,12 +243,19 @@ codes!(direction_code, direction_from, Direction, "direction",
     2 => Direction::Out);
 
 // IND_CHAIN_PACKAGE's direction, after IND_PACKAGE's (SECTIONS.md §2.5): 5 and 6 are the
-// frontier's `CHAIN_HELD` and `CHAIN_RELEASED` (slice S4c).
+// frontier's `CHAIN_HELD` and `CHAIN_RELEASED` (slice S4c), 7 its `CHAIN_DRAWN` (slice S4c2).
 codes!(chain_direction_code, chain_direction_from, ChainDirection, "chain_direction",
     3 => ChainDirection::Out,
     4 => ChainDirection::In,
     5 => ChainDirection::Held,
-    6 => ChainDirection::Released);
+    6 => ChainDirection::Released,
+    7 => ChainDirection::Drawn);
+
+// IND_HELD_DRAW's action (slice S4c2).
+codes!(draw_action_code, draw_action_from, DrawAction, "draw_action",
+    0 => DrawAction::Draw,
+    1 => DrawAction::Remove,
+    2 => DrawAction::Return);
 
 codes!(class_code, class_from, ThreatClass, "threat_class",
     0 => ThreatClass::GroundMelee,
@@ -834,10 +846,11 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.finish()
         }
         Obs::HeldList(l) => {
-            let mut w = W::obs(out, IND_HELD_LIST, n32(l.serials.len()), seq, at);
+            let n = l.serials.len() + l.drawn.len();
+            let mut w = W::obs(out, IND_HELD_LIST, n32(n), seq, at);
             w.put_u32(l.epoch);
-            w.zero(4);
-            for &k in &l.serials {
+            w.put_u32(n32(l.drawn.len()));
+            for &k in l.serials.iter().chain(&l.drawn) {
                 w.put_u64(k);
             }
             w.finish()
@@ -1296,9 +1309,14 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
         }
         IND_HELD_LIST => {
             check(kind, size, sized(32, n, 8))?;
+            let m = r.get_u32(28) as usize;
+            if m > n {
+                return Err(WireError::BadSize { kind, size });
+            }
             Obs::HeldList(HeldList {
                 epoch: r.get_u32(24),
-                serials: (0..n).map(|i| r.get_u64(32 + 8 * i)).collect(),
+                serials: (0..n - m).map(|i| r.get_u64(32 + 8 * i)).collect(),
+                drawn: (n - m..n).map(|i| r.get_u64(32 + 8 * i)).collect(),
             })
         }
         IND_STORE_CENSUS => {
@@ -1539,6 +1557,16 @@ pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), Wire
             w.goods(&p.goods);
             w.finish()
         }
+        Cmd::HeldDraw(d) => {
+            let mut w = W::cmd(out, IND_HELD_DRAW, n32(d.serials.len()), cmd_seq);
+            w.put_u64(d.store.0);
+            w.put_u32(d.epoch);
+            w.put_u32(draw_action_code(d.action));
+            for &k in &d.serials {
+                w.put_u64(k);
+            }
+            w.finish()
+        }
     }
 }
 
@@ -1642,6 +1670,15 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
                 address: r.get_u32(48),
                 count: r.get_u32(52),
                 goods: r.goods(56, n),
+            })
+        }
+        IND_HELD_DRAW => {
+            check(kind, size, sized(32, n, 8))?;
+            Cmd::HeldDraw(HeldDraw {
+                store: StoreId(r.get_u64(16)),
+                epoch: r.get_u32(24),
+                action: draw_action_from(kind, r.get_u32(28).into())?,
+                serials: (0..n).map(|i| r.get_u64(32 + 8 * i)).collect(),
             })
         }
         IND_WRITE_CHAIN => {
@@ -2102,11 +2139,13 @@ mod tests {
             }),
             Obs::HeldList(HeldList {
                 epoch: 3,
-                serials: vec![0x1_0000_0002, 7],
+                serials: vec![7, 0x1_0000_0002],
+                drawn: vec![4],
             }),
             Obs::HeldList(HeldList {
                 epoch: 9,
                 serials: Vec::new(),
+                drawn: Vec::new(),
             }),
             Obs::ReconcileResult(ReconcileResult {
                 op: ENGINE_OP,
@@ -2391,6 +2430,20 @@ mod tests {
                 goods: goods3(),
             }),
         ];
+        for action in [DrawAction::Draw, DrawAction::Remove, DrawAction::Return] {
+            v.push(Cmd::HeldDraw(HeldDraw {
+                store: StoreId(0x0A0B_0C0D_0E0F_1011),
+                epoch: 0x8000_0003,
+                action,
+                serials: vec![1, 0x1_0000_0002, u64::MAX >> 1],
+            }));
+        }
+        v.push(Cmd::HeldDraw(HeldDraw {
+            store: StoreId(2),
+            epoch: 5,
+            action: DrawAction::Draw,
+            serials: Vec::new(),
+        }));
         for reason in [CarriageReason::Exchange, CarriageReason::Loot] {
             v.push(Cmd::CarriageDelta(CarriageDelta {
                 op: ENGINE_OP,
@@ -2435,7 +2488,12 @@ mod tests {
                     G::Node(n) => 112 + 24 * n.rates.len(),
                     G::Edge(e) => pad8(72 + 4 * e.filter.len()),
                     G::Recipe(r) => 56 + 24 * (r.inputs.len() + r.outputs.len()),
-                    G::Domain(d) => 72 + 24 * d.levels.len() + 24 * d.members.len(),
+                    G::Domain(d) => {
+                        88 + 24 * d.levels.len()
+                            + 32 * d.sources.len()
+                            + 24 * d.sources.iter().map(|s| s.levels.len()).sum::<usize>()
+                            + 24 * d.members.len()
+                    }
                     G::End(_) => 80,
                     G::ProbeSample(p) => 40 + 16 * p.goods.len(),
                     G::CountSample(c) => 32 + 40 * c.counts.len(),
@@ -2470,7 +2528,7 @@ mod tests {
                 (48 + 48 * n + 2 * (n * n.saturating_sub(1) / 2)).div_ceil(8) * 8
             }
             Obs::ChainPackage(p) => 96 + 16 * p.goods.len(),
-            Obs::HeldList(l) => 32 + 8 * l.serials.len(),
+            Obs::HeldList(l) => 32 + 8 * (l.serials.len() + l.drawn.len()),
             Obs::StoreCensus(c) => 32 + 8 * c.packages.len() + 16 * c.goods.len(),
             Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
@@ -2542,6 +2600,7 @@ mod tests {
             Cmd::ProbeSet(p) => (32 + 4 * p.nodes.len()).div_ceil(8) * 8,
             Cmd::CountSet(c) => 32 + 8 * c.pairs.len(),
             Cmd::WriteChain(c) => 64 + 16 * c.goods.len(),
+            Cmd::HeldDraw(d) => 32 + 8 * d.serials.len(),
         }
     }
 
@@ -2554,6 +2613,7 @@ mod tests {
             Cmd::ProbeSet(_) => 0x8406,
             Cmd::CountSet(_) => 0x8408,
             Cmd::WriteChain(_) => 0x8409,
+            Cmd::HeldDraw(_) => 0x840B,
         }
     }
 

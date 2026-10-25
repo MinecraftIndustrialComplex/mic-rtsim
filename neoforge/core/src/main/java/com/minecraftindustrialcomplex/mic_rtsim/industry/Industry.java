@@ -454,7 +454,7 @@ public final class Industry {
         carried.add(r.array().clone());
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old =
                 chunk.getData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
-        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(engineLife(), boundary.gen(), carried));
+        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, session.carried(old, carried));
         chunk.setUnsaved(true);
         journalDependsOn(chunk);
         ResourceKey<Level> dim = chunk.getLevel().dimension();

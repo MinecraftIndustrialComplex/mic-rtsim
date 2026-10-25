@@ -123,30 +123,58 @@ public final class GlassRecords {
         }
     }
 
-    /** IND_GRAPH_DOMAIN, aux = members. */
+    /**
+     * IND_GRAPH_DOMAIN, aux = members. Body in order: N_LEVELS speed rows (Level24), N_SOURCES sources
+     * (Source32), N_SOURCE_LEVELS source rows (Level24), then the members (Member24).
+     */
     public static final class Domain {
-        public static final int NETWORK = 32;       // u64
-        public static final int N_LEVELS = 40;      // u32
-        public static final int CURRENT = 44;       // u32
-        public static final int DRIVER = 48;        // u32, NONE
-        public static final int FLAGS = 52;         // u32
-        public static final int LIVE_STRESS = 56;   // f64
-        public static final int LIVE_CAPACITY = 64; // f64
-        public static final int LEVELS = 72;        // n x Level24, then members x Member24
-        /** Level24: u32 selector, i32 speedNum, u32 speedDen, u32 reserved, f64 capacity. */
+        public static final int NETWORK = 32;           // u64
+        public static final int N_LEVELS = 40;          // u32: the speed rows
+        public static final int CURRENT = 44;           // u32: the speed row now, NONE when none is
+        // 48 reserved
+        public static final int FLAGS = 52;             // u32
+        public static final int LIVE_STRESS = 56;       // f64
+        public static final int LIVE_CAPACITY = 64;     // f64
+        public static final int N_SOURCES = 72;         // u32
+        public static final int N_SOURCE_LEVELS = 76;   // u32: the sources' rows in all
+        public static final int N_FOREIGN = 80;         // u32: the last N_FOREIGN members are foreign (shared networks); written 0
+        // 84 reserved
+        public static final int LEVELS = 88;            // n x Level24, then sources x Source32, source rows x Level24, members x Member24
+        /**
+         * Level24: u32 selector, i32 speedNum, u32 speedDen, u32 reserved, f64 capacity. A speed row has selector 0
+         * and capacity 0 (the reference's speed); a source row has the boiler level (0 for a fixed source), the
+         * source's own signed speed and its capacity at that speed in SU.
+         */
         public static final int LEVEL = 24;
         public static final int L_SELECTOR = 0, L_SPEED_NUM = 4, L_SPEED_DEN = 8, L_CAPACITY = 16;
+        /**
+         * Source32: u32 driver (the boiler node, NONE), u32 first source row, u32 row count, u32 current (index into
+         * its own rows, NONE when unknown), i32 ratioNum, u32 ratioDen (the source's speed over the reference's;
+         * ratioDen 0: unknown), i64 position ({@code BlockPos.asLong}).
+         */
+        public static final int SOURCE = 32;
+        public static final int S_DRIVER = 0, S_FIRST = 4, S_ROWS = 8, S_CURRENT = 12, S_RATIO_NUM = 16, S_RATIO_DEN = 20, S_POS = 24;
         /** Member24: u32 node (NONE), u32 count, i32 ratioNum, u32 ratioDen, f64 impact. */
         public static final int MEMBER = 24;
         public static final int M_NODE = 0, M_COUNT = 4, M_RATIO_NUM = 8, M_RATIO_DEN = 12, M_IMPACT = 16;
-        public static final int OVERSTRESSED = 1, STRESS_DISABLED = 2;
+        public static final int OVERSTRESSED = 1, STRESS_DISABLED = 2, SHARED = 4;
+        /** Most speed rows a modelled domain has; more and the domain is unstable. */
+        public static final int MAX_SPEED_ROWS = 32;
 
-        public static int size(int levels, int members) {
-            return LEVELS + LEVEL * levels + MEMBER * members;
+        public static int size(int levels, int sources, int sourceLevels, int members) {
+            return LEVELS + LEVEL * levels + SOURCE * sources + LEVEL * sourceLevels + MEMBER * members;
         }
 
-        public static int members(int levels) {
+        public static int sources(int levels) {
             return LEVELS + LEVEL * levels;
+        }
+
+        public static int sourceLevels(int levels, int sources) {
+            return sources(levels) + SOURCE * sources;
+        }
+
+        public static int members(int levels, int sources, int sourceLevels) {
+            return sourceLevels(levels, sources) + LEVEL * sourceLevels;
         }
     }
 

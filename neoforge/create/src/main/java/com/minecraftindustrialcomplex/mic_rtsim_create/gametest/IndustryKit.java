@@ -115,8 +115,9 @@ public final class IndustryKit {
         MicRtsim.LOGGER.info("[gametest] {}: {} = {}", test, what, value);
     }
 
-    /** Test pacing: short sweeps and detection right after an edit. */
+    /** Test pacing: short sweeps and detection right after an edit. Clears test switches a failed test left on. */
     public static void fastConfig() {
+        com.minecraftindustrialcomplex.mic_rtsim_create.Frontier.ignoreReturnsForTest = false;
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
         // The glass box: compiles finish within a tick or two and resend often enough for a short test.

@@ -337,6 +337,10 @@ pub enum ChainDirection {
     /// went, it landed with no `CHAIN_IN` to carry the key, a census did not find it): struck
     /// wherever it is held. No port, no pool (choice SC137).
     Released,
+    /// Java marked a held key drawn at the engine's IND_HELD_DRAW (slice S4c2, choice SC141):
+    /// the far district's replay takes the package's goods, and the frontier refuses the package
+    /// every hand-off until the engine has it removed. No frogport, destination, packages or goods.
+    Drawn,
 }
 
 /// The key the frontier writes into a package it holds (choice SC136): Java's epoch, which every
@@ -374,11 +378,15 @@ pub struct ChainPackage {
 }
 
 /// IND_HELD_LIST (choice SC140): the keys of `epoch` Java's frontier holds, once a session before
-/// any other frontier record of it. The engine strikes every other key of that epoch.
+/// any other frontier record of it. The engine strikes every other key of that epoch, and puts
+/// right each key one side has drawn and the other only held (choice SC143).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldList {
     pub epoch: u32,
+    /// The keys held and not drawn, ascending.
     pub serials: Vec<u64>,
+    /// The keys Java holds drawn (slice S4c2), ascending.
+    pub drawn: Vec<u64>,
 }
 
 /// IND_STORE_CENSUS (SECTIONS.md §2.5): the packages on a package store's conveyors while every
