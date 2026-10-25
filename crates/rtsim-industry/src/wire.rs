@@ -17,16 +17,17 @@ use rtsim_kernel::journal::OpId;
 
 use crate::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    WritePackage,
+    WriteChain, WritePackage,
 };
 use crate::glass;
-use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId};
 use crate::obs::{
-    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
-    DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
-    EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
-    PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
-    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
+    ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, HeldList, InvKind,
+    InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer,
+    ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl,
+    StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use crate::threat::ThreatClass;
 
@@ -44,6 +45,9 @@ pub const IND_DEPOSIT_SAMPLE: u16 = 0x0042;
 pub const IND_WATCHED: u16 = 0x0045;
 /// The Java side's proposal H23 (docs/industry-boundary.md §6.1), read as data (W16).
 pub const IND_APPROACH: u16 = 0x0046;
+// 0x004F is the glass codec's IND_COUNT_SAMPLE (SECTIONS.md §4.2); 0x0050 is left free.
+/// The packages on a package store's conveyors, by destination (SECTIONS.md §2.5).
+pub const IND_STORE_CENSUS: u16 = 0x0051;
 
 // Journaled observations, Java to engine.
 pub const IND_DISTRICT: u16 = 0x0400;
@@ -68,6 +72,14 @@ pub const IND_PACKAGE: u16 = 0x0414;
 pub const IND_STATION_PORTS: u16 = 0x0415;
 /// A train called at a station outside every district: its leg ends there (choice SG50).
 pub const IND_TRAIN_UNWATCHED: u16 = 0x0416;
+// 0x0417 is left free.
+/// A package store: its frogports and the hops between them (SECTIONS.md §2.5, slice S4).
+pub const IND_PACKAGE_STORE: u16 = 0x0418;
+/// Packages onto or off a package store's chain at one of its frogports (SECTIONS.md §2.5).
+pub const IND_CHAIN_PACKAGE: u16 = 0x0419;
+// 0x041A is left free.
+/// The keys Java's frontier holds, once a session (choice SC140): the engine strikes the others.
+pub const IND_HELD_LIST: u16 = 0x041B;
 pub const IND_RECONCILE_RESULT: u16 = 0x0420;
 pub const IND_CARRIAGE_RESULT: u16 = 0x0421;
 pub const IND_SPAWN_SAMPLE: u16 = 0x0430;
@@ -82,13 +94,16 @@ pub const IND_CARRIAGE_DELTA: u16 = 0x8401;
 pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
+// 0x8406 is IND_PROBE_SET (glass::codec), 0x8408 slice S3's IND_COUNT_SET; 0x8407 is left free.
+pub const IND_WRITE_CHAIN: u16 = 0x8409;
 
-const OBS_KINDS: [u16; 29] = [
+const OBS_KINDS: [u16; 33] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
     IND_WATCHED,
     IND_APPROACH,
+    IND_STORE_CENSUS,
     IND_DISTRICT,
     IND_DISTRICT_CHUNKS,
     IND_INVENTORY,
@@ -107,6 +122,9 @@ const OBS_KINDS: [u16; 29] = [
     IND_PACKAGE,
     IND_STATION_PORTS,
     IND_TRAIN_UNWATCHED,
+    IND_PACKAGE_STORE,
+    IND_CHAIN_PACKAGE,
+    IND_HELD_LIST,
     IND_RECONCILE_RESULT,
     IND_CARRIAGE_RESULT,
     IND_SPAWN_SAMPLE,
@@ -115,11 +133,12 @@ const OBS_KINDS: [u16; 29] = [
     IND_SURVEY_BLOCKS,
 ];
 
-const CMD_KINDS: [u16; 4] = [
+const CMD_KINDS: [u16; 5] = [
     IND_CHUNK_RECONCILE,
     IND_CARRIAGE_DELTA,
     IND_DEPOSIT_DELTA,
     IND_WRITE_PACKAGE,
+    IND_WRITE_CHAIN,
 ];
 
 /// `Option<u32>` inventory index: none.
@@ -217,6 +236,14 @@ codes!(port_code, port_from, PortKind, "port_kind",
 codes!(direction_code, direction_from, Direction, "direction",
     1 => Direction::In,
     2 => Direction::Out);
+
+// IND_CHAIN_PACKAGE's direction, after IND_PACKAGE's (SECTIONS.md §2.5): 5 and 6 are the
+// frontier's `CHAIN_HELD` and `CHAIN_RELEASED` (slice S4c).
+codes!(chain_direction_code, chain_direction_from, ChainDirection, "chain_direction",
+    3 => ChainDirection::Out,
+    4 => ChainDirection::In,
+    5 => ChainDirection::Held,
+    6 => ChainDirection::Released);
 
 codes!(class_code, class_from, ThreatClass, "threat_class",
     0 => ThreatClass::GroundMelee,
@@ -473,6 +500,12 @@ impl R<'_> {
     }
 }
 
+/// Entries in the upper triangle of `n` points (IND_PACKAGE_STORE's hops), saturating like
+/// [`sized`].
+pub(crate) fn triangle(n: usize) -> usize {
+    n.saturating_mul(n.saturating_sub(1)) / 2
+}
+
 /// `fixed + n * each`, saturating, so a hostile count never wraps to a matching size.
 pub(crate) fn sized(fixed: usize, n: usize, each: usize) -> usize {
     fixed.saturating_add(n.saturating_mul(each))
@@ -651,9 +684,14 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.zero(4);
             w.finish()
         }
-        Obs::Discard { district, reason } => {
+        Obs::Discard {
+            district,
+            reason,
+            station,
+        } => {
             let mut w = W::obs(out, IND_DISCARD, discard_code(*reason), seq, at);
             w.put_u64(district.0);
+            w.put_u64(station.map_or(0, |s| s.0));
             w.finish()
         }
         Obs::LoadState {
@@ -750,6 +788,73 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u64(p.district.0);
             for &i in &p.inventories {
                 w.put_u32(i);
+            }
+            w.finish()
+        }
+        Obs::PackageStore(d) => {
+            let mut w = W::obs(out, IND_PACKAGE_STORE, n32(d.frogports.len()), seq, at);
+            w.put_u64(d.store.0);
+            w.put_u32(d.dim);
+            w.put_u32(d.epoch);
+            w.put_u64(d.into.map_or(0, |s| s.0));
+            for f in &d.frogports {
+                w.put_u64(f.district.map_or(0, |x| x.0));
+                w.put_u32(index_or_none(f.inventory));
+                w.put_u32(u32::from(f.star));
+                w.pos3(f.pos);
+                w.pos3(f.conveyor);
+                w.put_u64(f.from.map_or(0, |s| s.0));
+            }
+            if d.hops.len() != triangle(d.frogports.len()) {
+                return Err(WireError::BadSize {
+                    kind: IND_PACKAGE_STORE,
+                    size: d.hops.len(),
+                });
+            }
+            for &h in &d.hops {
+                w.put_u16(h);
+            }
+            w.finish()
+        }
+        Obs::ChainPackage(p) => {
+            let mut w = W::obs(out, IND_CHAIN_PACKAGE, n32(p.goods.len()), seq, at);
+            w.put_u64(p.store.0);
+            w.put_u64(p.district.map_or(0, |x| x.0));
+            w.put_u32(index_or_none(p.inventory));
+            w.put_u32(chain_direction_code(p.direction));
+            w.put_u32(p.frogport);
+            w.put_u32(index_or_none(p.destination));
+            w.put_u32(p.packages);
+            w.put_u32(p.address);
+            w.put_u64(op_or_none(p.op));
+            w.pos3(p.pos);
+            w.put_u32(p.key.map_or(0, |k| k.epoch));
+            w.put_u64(p.key.map_or(0, |k| k.serial));
+            w.goods(&p.goods);
+            w.finish()
+        }
+        Obs::HeldList(l) => {
+            let mut w = W::obs(out, IND_HELD_LIST, n32(l.serials.len()), seq, at);
+            w.put_u32(l.epoch);
+            w.zero(4);
+            for &k in &l.serials {
+                w.put_u64(k);
+            }
+            w.finish()
+        }
+        Obs::StoreCensus(c) => {
+            let mut w = W::obs(out, IND_STORE_CENSUS, n32(c.goods.len()), seq, at);
+            w.put_u64(c.store.0);
+            w.put_u32(n32(c.packages.len()));
+            w.zero(4);
+            for &(d, n) in &c.packages {
+                w.put_u32(index_or_none(d));
+                w.put_u32(n);
+            }
+            for &(d, g, a) in &c.goods {
+                w.put_u32(g.0);
+                w.put_u32(index_or_none(d));
+                w.put_i64(a);
             }
             w.finish()
         }
@@ -1024,10 +1129,12 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             }
         }
         IND_DISCARD => {
-            check(kind, size, 32)?;
+            check(kind, size, 40)?;
+            let station = r.get_u64(32);
             Obs::Discard {
                 district: r.district(24),
                 reason: discard_from(kind, aux.into())?,
+                station: (station != 0).then_some(StationId(station)),
             }
         }
         IND_LOAD_STATE => {
@@ -1131,6 +1238,94 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 station: StationId(r.get_u64(24)),
                 district: r.district(32),
                 inventories: (0..n).map(|i| r.get_u32(40 + 4 * i)).collect(),
+            })
+        }
+        IND_PACKAGE_STORE => {
+            let want = sized(sized(48, n, 48), triangle(n), 2)
+                .div_ceil(8)
+                .saturating_mul(8);
+            check(kind, size, want)?;
+            let hops_at = 48 + 48 * n;
+            let into = r.get_u64(40);
+            Obs::PackageStore(StoreDecl {
+                store: StoreId(r.get_u64(24)),
+                dim: r.get_u32(32),
+                epoch: r.get_u32(36),
+                into: (into != 0).then_some(StoreId(into)),
+                frogports: (0..n)
+                    .map(|i| {
+                        let o = 48 + 48 * i;
+                        let d = r.get_u64(o);
+                        let from = r.get_u64(o + 40);
+                        StoreFrogport {
+                            district: (d != 0).then_some(DistrictId(d)),
+                            inventory: none_if_unset(r.get_u32(o + 8)),
+                            star: r.get_u32(o + 12) & 1 != 0,
+                            pos: r.pos3(o + 16),
+                            conveyor: r.pos3(o + 28),
+                            from: (from != 0).then_some(StoreId(from)),
+                        }
+                    })
+                    .collect(),
+                hops: (0..triangle(n))
+                    .map(|i| r.get_u16(hops_at + 2 * i))
+                    .collect(),
+            })
+        }
+        IND_CHAIN_PACKAGE => {
+            check(kind, size, sized(96, n, 16))?;
+            let d = r.get_u64(32);
+            let epoch = r.get_u32(84);
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(r.get_u64(24)),
+                district: (d != 0).then_some(DistrictId(d)),
+                inventory: none_if_unset(r.get_u32(40)),
+                direction: chain_direction_from(kind, r.get_u32(44).into())?,
+                frogport: r.get_u32(48),
+                destination: none_if_unset(r.get_u32(52)),
+                packages: r.get_u32(56),
+                address: r.get_u32(60),
+                op: none_if_zero(r.get_u64(64)),
+                pos: r.pos3(72),
+                key: (epoch != 0).then(|| HeldKey {
+                    epoch,
+                    serial: r.get_u64(88),
+                }),
+                goods: r.goods(96, n),
+            })
+        }
+        IND_HELD_LIST => {
+            check(kind, size, sized(32, n, 8))?;
+            Obs::HeldList(HeldList {
+                epoch: r.get_u32(24),
+                serials: (0..n).map(|i| r.get_u64(32 + 8 * i)).collect(),
+            })
+        }
+        IND_STORE_CENSUS => {
+            if size < 32 {
+                return Err(WireError::BadSize { kind, size });
+            }
+            let m = r.get_u32(24) as usize;
+            check(kind, size, sized(sized(32, m, 8), n, 16))?;
+            let goods_at = 32 + 8 * m;
+            Obs::StoreCensus(StoreCensus {
+                store: StoreId(r.get_u64(16)),
+                packages: (0..m)
+                    .map(|i| {
+                        let o = 32 + 8 * i;
+                        (none_if_unset(r.get_u32(o)), r.get_u32(o + 4))
+                    })
+                    .collect(),
+                goods: (0..n)
+                    .map(|i| {
+                        let o = goods_at + 16 * i;
+                        (
+                            none_if_unset(r.get_u32(o + 4)),
+                            Good(r.get_u32(o)),
+                            r.get_i64(o + 8),
+                        )
+                    })
+                    .collect(),
             })
         }
         IND_PACKAGE => {
@@ -1274,6 +1469,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
 pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), WireError> {
     match cmd {
         Cmd::ProbeSet(p) => glass::codec::encode_probe_set(cmd_seq, p, out),
+        Cmd::CountSet(c) => glass::codec::encode_count_set(cmd_seq, c, out),
         Cmd::ChunkReconcile(c) => {
             let mut w = W::cmd(out, IND_CHUNK_RECONCILE, n32(c.deltas.len()), cmd_seq);
             w.put_u64(c.op.0);
@@ -1331,6 +1527,18 @@ pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), Wire
             w.goods(&p.goods);
             w.finish()
         }
+        Cmd::WriteChain(p) => {
+            let mut w = W::cmd(out, IND_WRITE_CHAIN, n32(p.goods.len()), cmd_seq);
+            w.put_u64(p.op.0);
+            w.put_u64(p.store.0);
+            w.put_u64(p.district.0);
+            w.put_u32(p.inventory);
+            w.put_u32(p.frogport);
+            w.pos3(p.pos);
+            w.put_u32(p.count);
+            w.goods(&p.goods);
+            w.finish()
+        }
     }
 }
 
@@ -1344,6 +1552,11 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
         let (kind, aux, rec) = header(rec)?;
         let (seq, p) = glass::codec::decode_probe_set(kind, aux, rec)?;
         return Ok(Some((seq, Cmd::ProbeSet(p))));
+    }
+    if R(rec).get_u16(0) == glass::codec::IND_COUNT_SET {
+        let (kind, aux, rec) = header(rec)?;
+        let (seq, c) = glass::codec::decode_count_set(kind, aux, rec)?;
+        return Ok(Some((seq, Cmd::CountSet(c))));
     }
     if !CMD_KINDS.contains(&R(rec).get_u16(0)) {
         return Ok(None);
@@ -1429,6 +1642,19 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
                 address: r.get_u32(48),
                 count: r.get_u32(52),
                 goods: r.goods(56, n),
+            })
+        }
+        IND_WRITE_CHAIN => {
+            check(kind, size, sized(64, n, 16))?;
+            Cmd::WriteChain(WriteChain {
+                op: OpId(r.get_u64(16)),
+                store: StoreId(r.get_u64(24)),
+                district: r.district(32),
+                inventory: r.get_u32(40),
+                frogport: r.get_u32(44),
+                pos: r.pos3(48),
+                count: r.get_u32(60),
+                goods: r.goods(64, n),
             })
         }
         _ => return Ok(None),
@@ -1560,6 +1786,20 @@ mod tests {
                 district: d,
                 watched: false,
             },
+            Obs::StoreCensus(StoreCensus {
+                store: StoreId(9),
+                packages: vec![(Some(2), 3), (None, 1)],
+                goods: vec![
+                    (Some(2), Good(4), 192),
+                    (Some(2), Good(7), 5),
+                    (None, Good(4), 64),
+                ],
+            }),
+            Obs::StoreCensus(StoreCensus {
+                store: StoreId(10),
+                packages: vec![],
+                goods: vec![],
+            }),
             Obs::Approach {
                 district: d,
                 distance: 180,
@@ -1757,6 +1997,117 @@ mod tests {
                 op: None,
                 goods: goods1(),
             }),
+            Obs::PackageStore(StoreDecl {
+                store: StoreId(9),
+                dim: 1,
+                epoch: 3,
+                into: None,
+                frogports: vec![
+                    StoreFrogport {
+                        district: Some(d),
+                        inventory: Some(4),
+                        star: false,
+                        pos: BlockPos::new(1, 64, -3),
+                        conveyor: BlockPos::new(1, 66, -3),
+                        from: None,
+                    },
+                    StoreFrogport {
+                        district: None,
+                        inventory: None,
+                        star: true,
+                        pos: BlockPos::new(-40, 70, 12),
+                        conveyor: BlockPos::new(-41, 72, 12),
+                        from: Some(StoreId(3)),
+                    },
+                    StoreFrogport {
+                        district: Some(DistrictId(77)),
+                        inventory: Some(0),
+                        star: false,
+                        pos: BlockPos::new(90, 63, 5),
+                        conveyor: BlockPos::new(90, 65, 6),
+                        from: None,
+                    },
+                ],
+                hops: vec![4, 7, 3],
+            }),
+            Obs::PackageStore(StoreDecl {
+                store: StoreId(10),
+                dim: 0,
+                epoch: 0,
+                into: Some(StoreId(9)),
+                frogports: vec![],
+                hops: vec![],
+            }),
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(9),
+                district: Some(d),
+                inventory: Some(4),
+                direction: ChainDirection::Out,
+                frogport: 0,
+                pos: BlockPos::new(-12, 64, 30),
+                destination: Some(2),
+                packages: 1,
+                address: 57,
+                op: None,
+                key: None,
+                goods: goods3(),
+            }),
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(9),
+                district: None,
+                inventory: None,
+                direction: ChainDirection::Held,
+                frogport: 2,
+                pos: BlockPos::new(30, 70, -2),
+                destination: Some(2),
+                packages: 1,
+                address: 57,
+                op: None,
+                key: Some(HeldKey {
+                    epoch: 3,
+                    serial: 0x1_0000_0002,
+                }),
+                goods: goods3(),
+            }),
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(9),
+                district: None,
+                inventory: None,
+                direction: ChainDirection::Released,
+                frogport: u32::MAX,
+                pos: BlockPos::new(30, 70, -2),
+                destination: None,
+                packages: 0,
+                address: 0,
+                op: None,
+                key: Some(HeldKey {
+                    epoch: 3,
+                    serial: 0x1_0000_0002,
+                }),
+                goods: GoodVec::new(),
+            }),
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(9),
+                district: None,
+                inventory: None,
+                direction: ChainDirection::In,
+                frogport: 1,
+                pos: BlockPos::new(5, -3, -7),
+                destination: None,
+                packages: 2,
+                address: 0,
+                op: Some(ENGINE_OP),
+                key: None,
+                goods: goods1(),
+            }),
+            Obs::HeldList(HeldList {
+                epoch: 3,
+                serials: vec![0x1_0000_0002, 7],
+            }),
+            Obs::HeldList(HeldList {
+                epoch: 9,
+                serials: Vec::new(),
+            }),
             Obs::ReconcileResult(ReconcileResult {
                 op: ENGINE_OP,
                 district: d,
@@ -1909,6 +2260,12 @@ mod tests {
             v.push(Obs::Discard {
                 district: d,
                 reason,
+                station: None,
+            });
+            v.push(Obs::Discard {
+                district: d,
+                reason,
+                station: Some(StationId(0x5eed_0000_0000_0001)),
             });
         }
         for state in [LoadState::Unloaded, LoadState::Partial, LoadState::Live] {
@@ -2023,6 +2380,16 @@ mod tests {
                 count: 4,
                 goods: goods3(),
             }),
+            Cmd::WriteChain(WriteChain {
+                op: ENGINE_OP,
+                store: StoreId(0x0102_0304_0506_0708),
+                district: d,
+                inventory: 7,
+                frogport: 3,
+                pos: BlockPos::new(-11, 70, 12),
+                count: 18,
+                goods: goods3(),
+            }),
         ];
         for reason in [CarriageReason::Exchange, CarriageReason::Loot] {
             v.push(Cmd::CarriageDelta(CarriageDelta {
@@ -2071,6 +2438,7 @@ mod tests {
                     G::Domain(d) => 72 + 24 * d.levels.len() + 24 * d.members.len(),
                     G::End(_) => 80,
                     G::ProbeSample(p) => 40 + 16 * p.goods.len(),
+                    G::CountSample(c) => 32 + 40 * c.counts.len(),
                     G::ChunkTicking(_) => 48,
                 }
             }
@@ -2085,7 +2453,7 @@ mod tests {
             Obs::DistrictRemoved { .. } => 32,
             Obs::PowerLink { .. } => 40,
             Obs::Edit { .. } => 64,
-            Obs::Discard { .. } => 32,
+            Obs::Discard { .. } => 40,
             Obs::LoadState { .. } => 40,
             Obs::ChunkLoaded { .. } => 48,
             Obs::ChunkUnloaded { .. } => 48,
@@ -2097,6 +2465,13 @@ mod tests {
             Obs::Station(_) => 64,
             Obs::Package(p) => 56 + 16 * p.goods.len(),
             Obs::StationPorts(p) => (40 + 4 * p.inventories.len()).div_ceil(8) * 8,
+            Obs::PackageStore(d) => {
+                let n = d.frogports.len();
+                (48 + 48 * n + 2 * (n * n.saturating_sub(1) / 2)).div_ceil(8) * 8
+            }
+            Obs::ChainPackage(p) => 96 + 16 * p.goods.len(),
+            Obs::HeldList(l) => 32 + 8 * l.serials.len(),
+            Obs::StoreCensus(c) => 32 + 8 * c.packages.len() + 16 * c.goods.len(),
             Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
             Obs::SpawnSample(_) => 64,
@@ -2117,6 +2492,7 @@ mod tests {
                     G::Domain(_) => 0x004B,
                     G::End(_) => 0x004C,
                     G::ProbeSample(_) => 0x004D,
+                    G::CountSample(_) => 0x004F,
                     G::ChunkTicking(_) => 0x040B,
                 }
             }
@@ -2143,6 +2519,10 @@ mod tests {
             Obs::Station(_) => 0x0413,
             Obs::Package(_) => 0x0414,
             Obs::StationPorts(_) => 0x0415,
+            Obs::PackageStore(_) => 0x0418,
+            Obs::ChainPackage(_) => 0x0419,
+            Obs::HeldList(_) => 0x041B,
+            Obs::StoreCensus(_) => 0x0051,
             Obs::ReconcileResult(_) => 0x0420,
             Obs::CarriageResult(_) => 0x0421,
             Obs::SpawnSample(_) => 0x0430,
@@ -2160,6 +2540,8 @@ mod tests {
             Cmd::DepositDelta(_) => 48,
             Cmd::WritePackage(c) => 56 + 16 * c.goods.len(),
             Cmd::ProbeSet(p) => (32 + 4 * p.nodes.len()).div_ceil(8) * 8,
+            Cmd::CountSet(c) => 32 + 8 * c.pairs.len(),
+            Cmd::WriteChain(c) => 64 + 16 * c.goods.len(),
         }
     }
 
@@ -2170,6 +2552,8 @@ mod tests {
             Cmd::DepositDelta(_) => 0x8403,
             Cmd::WritePackage(_) => 0x8404,
             Cmd::ProbeSet(_) => 0x8406,
+            Cmd::CountSet(_) => 0x8408,
+            Cmd::WriteChain(_) => 0x8409,
         }
     }
 

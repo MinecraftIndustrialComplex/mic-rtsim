@@ -26,6 +26,10 @@ public final class BoundarySession {
     private final SessionStart start;
     /** The last journal sequence before this session; entries up to it are a replay. */
     private final long replayUpTo;
+    /** This session's generation (docs/boundary.md §3.2): its JOURNAL_GEN's nonce, random and never 0. */
+    private final long gen;
+    /** Copies too large to wrap, journaled again plainly ({@link #reassert}). */
+    private long plainRecommits;
 
     private long sentObsSeq;
     private int dictSent;
@@ -67,7 +71,25 @@ public final class BoundarySession {
         this.observationsLost = observationsLost(start.pagesObsSeq(), journalFirstAtStart, worldNextAtStart);
         journal.reserveBeyond(start.pagesObsSeq());
         this.replayUpTo = journal.nextObsSeq() - 1;
+        // The session's first record names its generation (the engine's session_first is its sequence).
+        this.gen = newGen();
+        ByteBuffer g = journal.begin(Obs.JOURNAL_GEN, Obs.JournalGen.SIZE, 0, gameTime);
+        g.putLong(Obs.JournalGen.GEN, gen);
+        journal.commit(g);
         this.handover = new Handover(engine);
+    }
+
+    private static long newGen() {
+        long g;
+        do {
+            g = new java.security.SecureRandom().nextLong();
+        } while (g == 0);
+        return g;
+    }
+
+    /** This session's generation: the nonce a holder keeps with each record it carries from this session. */
+    public long gen() {
+        return gen;
     }
 
     public Engine engine() {
@@ -119,6 +141,32 @@ public final class BoundarySession {
     /** Journals a record again under a new sequence ({@link Journal#recommit}). */
     public long recommit(byte[] recordBytes) {
         return journal.recommit(recordBytes);
+    }
+
+    /**
+     * Journals a copy of a record a chunk or entity carried (REASSERT, docs/boundary.md §3.2): {@code original}
+     * as first journaled, in generation {@code gen}. The engine applies it only when its state lacks the
+     * record, so a holder that loads again before the acknowledgement, or after the engine forgot the op
+     * id, applies nothing twice, and a record a crash lost applies once. A record too large to wrap is
+     * journaled again plainly, as before generations (counted: {@link #plainRecommits}). Returns the copy's
+     * sequence.
+     */
+    public long reassert(long gen, byte[] original) {
+        int size = Obs.Reassert.INNER + original.length;
+        if (Layout.align(size) > Layout.MAX_RECORD) {
+            plainRecommits++;
+            return recommit(original);
+        }
+        long gameTime = ByteBuffer.wrap(original).order(Layout.ORDER).getLong(Obs.GAME_TIME);
+        ByteBuffer r = journal.begin(Obs.REASSERT, size, 0, gameTime);
+        r.putLong(Obs.Reassert.GEN, gen);
+        r.put(Obs.Reassert.INNER, original);
+        return journal.commit(r);
+    }
+
+    /** Copies journaled plainly because the copy would not fit a record ({@link #reassert}). */
+    public long plainRecommits() {
+        return plainRecommits;
     }
 
     public void setModuleMask(int mask) {

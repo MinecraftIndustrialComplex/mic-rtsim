@@ -9,7 +9,7 @@
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 
-use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId};
 use crate::threat::ThreatClass;
 
 /// Why a district cannot be learned (INDUSTRY.md §6). The operator's debug output shows the reason in words.
@@ -266,6 +266,132 @@ pub struct PackageEvent {
     pub goods: GoodVec,
 }
 
+/// One frogport of a package store, as IND_PACKAGE_STORE lists it (SECTIONS.md §2.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreFrogport {
+    /// None for a frogport in no district (a player's own).
+    pub district: Option<DistrictId>,
+    /// Its district inventory, None when it has none.
+    pub inventory: Option<u32>,
+    /// Its address filter is `*`: Create routes to it only when nothing else matches.
+    pub star: bool,
+    /// The frogport, which names it across records (pools follow it).
+    pub pos: BlockPos,
+    /// The chain conveyor it serves.
+    pub conveyor: BlockPos,
+    /// The store it belonged to before this record (a split or a merge): what that store owed
+    /// it comes with it. None when new or unchanged.
+    pub from: Option<StoreId>,
+}
+
+/// IND_PACKAGE_STORE (SECTIONS.md §2.5, slice S4): a package store as Java's last walk saw it.
+/// No frogports: the store is gone, and what it held joins `into` when that is given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreDecl {
+    pub store: StoreId,
+    pub dim: u32,
+    /// The frontier's epoch (choice SC136): Java's keys on held packages name it, and a declaration
+    /// of a later one means Java dropped the keys of the earlier (an engine reset, a re-enable).
+    pub epoch: u32,
+    pub into: Option<StoreId>,
+    pub frogports: Vec<StoreFrogport>,
+    /// Hops along the chain between the frogports' conveyors, the upper triangle row by row
+    /// (`(0,1), (0,2) .. (0,n-1), (1,2) ..`): n (n - 1) / 2 entries.
+    pub hops: Vec<u16>,
+}
+
+impl StoreDecl {
+    /// Hops between frogports `i` and `j` (0 for one frogport), None out of range.
+    pub fn hops_between(&self, i: usize, j: usize) -> Option<u16> {
+        hops_between(&self.hops, self.frogports.len(), i, j)
+    }
+}
+
+/// Hops between `i` and `j` in an upper triangle of `n` points.
+pub fn hops_between(hops: &[u16], n: usize, i: usize, j: usize) -> Option<u16> {
+    if i >= n || j >= n {
+        return None;
+    }
+    if i == j {
+        return Some(0);
+    }
+    let (a, b) = if i < j { (i, j) } else { (j, i) };
+    // Row a starts after rows 0..a, of n-1, n-2, .. entries.
+    let row = a * (2 * n - a - 1) / 2;
+    hops.get(row + (b - a - 1)).copied()
+}
+
+/// Which way a package crossed a package store's frogport (IND_CHAIN_PACKAGE).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainDirection {
+    /// From the frogport onto the chain (`ChainConveyorFrogportTarget.export`).
+    Out,
+    /// From the chain into the frogport (`FrogportBlockEntity.tick`'s insert).
+    In,
+    /// The frontier holds the package on a boundary conveyor, its hand-off toward a frogport whose
+    /// chunk does not tick refused (SECTIONS.md §2.5, slice S4c). No port: its `Out` was booked.
+    /// A key held already is told again: it moved to another store or destination, or a new
+    /// session tells it once (choice SC137).
+    Held,
+    /// The key left the world or Java no longer holds it (a player took the package, its conveyor
+    /// went, it landed with no `CHAIN_IN` to carry the key, a census did not find it): struck
+    /// wherever it is held. No port, no pool (choice SC137).
+    Released,
+}
+
+/// The key the frontier writes into a package it holds (choice SC136): Java's epoch, which every
+/// engine reset changes, and a serial unique in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HeldKey {
+    pub epoch: u32,
+    pub serial: u64,
+}
+
+/// IND_CHAIN_PACKAGE (SECTIONS.md §2.5): packages that left a package store's frogport onto the
+/// chain or landed in one. A port of the frogport's district when it has one, never a link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainPackage {
+    pub store: StoreId,
+    pub district: Option<DistrictId>,
+    pub inventory: Option<u32>,
+    pub direction: ChainDirection,
+    /// The frogport's index in the store's last IND_PACKAGE_STORE (`Held`: the destination's).
+    pub frogport: u32,
+    /// The frogport's position: a record a chunk journals again names its frogport by it, whatever
+    /// the store's frogports became meanwhile (choice SC113). `Held`: the boundary conveyor's.
+    pub pos: BlockPos,
+    /// The frogport Java resolved the package's route to (for `In`, the frogport itself); None:
+    /// no frogport matches its address, and it circles.
+    pub destination: Option<u32>,
+    pub packages: u32,
+    /// NAME dictionary entry of the package's address.
+    pub address: u32,
+    pub op: Option<OpId>,
+    /// `Held`: the key Java wrote into the package; `In`: the key of a package Java held keyed;
+    /// `Released`: the key struck.
+    pub key: Option<HeldKey>,
+    pub goods: GoodVec,
+}
+
+/// IND_HELD_LIST (choice SC140): the keys of `epoch` Java's frontier holds, once a session before
+/// any other frontier record of it. The engine strikes every other key of that epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldList {
+    pub epoch: u32,
+    pub serials: Vec<u64>,
+}
+
+/// IND_STORE_CENSUS (SECTIONS.md §2.5): the packages on a package store's conveyors while every
+/// chunk of it ticks, by the frogport their address resolves to from where they are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreCensus {
+    pub store: StoreId,
+    /// Per destination (None: no route), its packages. Destinations not listed hold none.
+    pub packages: Vec<(Option<u32>, u32)>,
+    /// Per destination, the goods inside them.
+    pub goods: Vec<(Option<u32>, Good, i64)>,
+}
+
 /// Which plugin owns a deposit (I11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum DepositPluginId {
@@ -482,6 +608,9 @@ pub enum Obs {
     Discard {
         district: DistrictId,
         reason: DiscardReason,
+        /// The station whose call made it, for `Other` from a train (SECTIONS.md §3.6): its last
+        /// `IND_STATION_PORTS` names the units it discards. None for every other discard.
+        station: Option<StationId>,
     },
     LoadState {
         district: DistrictId,
@@ -514,6 +643,10 @@ pub enum Obs {
     Station(StationDecl),
     Package(PackageEvent),
     StationPorts(StationPorts),
+    PackageStore(StoreDecl),
+    ChainPackage(ChainPackage),
+    HeldList(HeldList),
+    StoreCensus(StoreCensus),
     ReconcileResult(ReconcileResult),
     CarriageResult(CarriageResult),
     SpawnSample(SpawnSample),
@@ -552,6 +685,7 @@ impl Obs {
                 | Obs::DepositSample(_)
                 | Obs::Watched { .. }
                 | Obs::Approach { .. }
+                | Obs::StoreCensus(_)
         )
     }
 }

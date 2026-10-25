@@ -549,6 +549,56 @@ public final class RescanBudgetGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * The time limit (R2-11): a tick's share of a detection stops at the first chunk past {@code rescanSliceMicros}, however
+     * much of the block entity budget is left. At 1 us every tick looks at one chunk, so four chunks of a machine and 30
+     * block entities each, well inside the default budget of 256, take at least four ticks; the district is what a
+     * one-call detection finds (same chunks, same seeds), and no chunk loaded while it looked.
+     */
+    @GameTest(template = YARD, batch = "rescan_budget_11", timeoutTicks = 600)
+    public static void aTickStopsAtTheTimeLimitAndDetectsTheSame(GameTestHelper helper) {
+        String t = "aTickStopsAtTheTimeLimitAndDetectsTheSame";
+        fastConfig();
+        forgetAll(helper);
+        ServerLevel level = helper.getLevel();
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, 1);
+        BlockPos[] ms = new BlockPos[4];
+        long[] spread = new long[6]; // slices, longest looked, longest item, chunk loads, chunks, seeds
+        helper.startSequence()
+                .thenExecute(() -> {
+                    for (int i = 0; i < 4; i++)
+                        ms[i] = fill(helper, i % 2, i / 2, true);
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, ms[0]);
+                    check("the district is detected", !ind().districts().rescanning() && d != null && d.chunks.size() == 4);
+                })
+                .thenExecute(() -> {
+                    Districts ds = ind().districts();
+                    District d = districtAt(helper, ms[0]);
+                    spread[0] = ds.lastRescanSlices();
+                    spread[1] = ds.lastRescanLongestLooked();
+                    spread[2] = ds.lastRescanLongestItem();
+                    spread[3] = ds.lastRescanChunkLoads();
+                    spread[4] = d.chunks.size();
+                    spread[5] = d.seeds();
+                    record(t, "ticks / longest tick looked / longest chunk looked / longest chunk (us)", spread[0] + " / " + spread[1] + " / "
+                            + spread[2] + " / " + ds.lastRescanLongestItemNanos() / 1000);
+                    record(t, "last detection", ds.lastRescanCold());
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, null);
+                    check("one chunk a tick: four ticks at least, got " + spread[0], spread[0] >= 4);
+                    check("no tick looked at more than one chunk: " + spread[1] + " > " + spread[2], spread[1] <= spread[2]);
+                    check("no chunk loaded while the detection looked: " + spread[3], spread[3] == 0);
+                    ds.rescanNow(level);
+                    District again = districtAt(helper, ms[0]);
+                    check("a one-call detection finds the same district: " + again.chunks.size() + " chunks, " + again.seeds() + " seeds",
+                            again.chunks.size() == spread[4] && again.seeds() == spread[5] && again.chunks.size() == 4 && again.seeds() == 4);
+                    for (BlockPos m : ms)
+                        check("every machine is in it", districtAt(helper, m) == again);
+                })
+                .thenSucceed();
+    }
+
     /** A failed test leaves its budget behind: the next batch starts from the fast configuration the other tests assume. */
     @AfterBatch(batch = "rescan_budget_1")
     public static void resetAfter1(ServerLevel level) {
@@ -595,8 +645,14 @@ public final class RescanBudgetGameTests {
         reset();
     }
 
+    @AfterBatch(batch = "rescan_budget_11")
+    public static void resetAfter11(ServerLevel level) {
+        reset();
+    }
+
     private static void reset() {
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, null);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
     }
 }

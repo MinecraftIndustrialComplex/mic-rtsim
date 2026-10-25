@@ -1,5 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarLook;
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarLooks;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
 import net.minecraft.client.Minecraft;
@@ -51,7 +53,8 @@ final class FarHide {
     /**
      * True when the client has the real thing: its source said so (Create's map, or the server's REAL record,
      * sent as the entity joins its level), or the client's level has the entity the server named for it, near
-     * where the mover is, and, for a dragon, vanilla draws its body ({@link #bodyDrawn}).
+     * where the mover is, and, for a dragon, vanilla draws its body ({@link #bodyDrawn}) and its look does not hold
+     * it back ({@link #held}).
      */
     static boolean entityPresent(FarMover m, ClientLevel level, double x, double y, double z, Vec3 cam) {
         if (m.real())
@@ -59,7 +62,22 @@ final class FarHide {
         Entity e = named(m, level, x, y, z);
         if (e == null)
             return false;
-        return m.kind() != FarKind.DRAGON || bodyDrawn(e, cam.x, cam.y, cam.z);
+        return m.kind() != FarKind.DRAGON || bodyDrawn(e, cam.x, cam.y, cam.z) && !held(m, e);
+    }
+
+    /**
+     * Whether the look of {@code m}'s kind holds its body {@code e} back this frame (docs/choices-dh-feed.md
+     * DHT68): vanilla does not draw it, so the far model stands in for it and nothing is copied of it.
+     */
+    private static boolean held(FarMover m, Entity e) {
+        FarLook look = FarLooks.of(m.kind());
+        if (look == null)
+            return false;
+        try {
+            return look.holds(e);
+        } catch (RuntimeException | LinkageError x) {
+            return false;
+        }
     }
 
     /**
@@ -95,7 +113,7 @@ final class FarHide {
         if (m.kind() != FarKind.DRAGON)
             return null;
         Entity e = named(m, level, x, y, z);
-        if (e == null || !bodyDrawn(e, cam.x, cam.y, cam.z))
+        if (e == null || !bodyDrawn(e, cam.x, cam.y, cam.z) || held(m, e))
             return null;
         double dx = e.getX() - cam.x, dy = e.getY() - cam.y, dz = e.getZ() - cam.z;
         return HandOverRule.bodyCopied(loaded(level, e.getX(), e.getZ()), Math.sqrt(dx * dx + dy * dy + dz * dz),

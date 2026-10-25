@@ -20,7 +20,9 @@ import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MowzieCamps;
 import com.mojang.logging.LogUtils;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -241,9 +243,10 @@ public final class MowzieKit {
             return RtsimTests.io(() -> {
                 for (long c : forced) {
                     int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking",
-                            level.hasChunk(cx, cz) && level.areEntitiesLoaded(c)
-                                    && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8)));
+                    boolean chunk = level.hasChunk(cx, cz), entities = level.areEntitiesLoaded(c);
+                    boolean ticking = chunk && entities && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8));
+                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking (chunk " + chunk + ", entities " + entities
+                            + ", ticking " + ticking + ")", ticking);
                 }
             });
         }
@@ -256,7 +259,16 @@ public final class MowzieKit {
 
     /** A stone floor over the area at its highest surface, three blocks of air above; the stone's y (bodies stand at y + 1). */
     public static int platform(ServerLevel level, int x0, int x1, int z0, int z1) {
-        int top = level.getMinBuildHeight();
+        return platform(level, x0, x1, z0, z1, level.getMinBuildHeight());
+    }
+
+    /**
+     * As above, with the floor at {@code minTop} at the lowest. The jar's fire pit makes no warrior on ground at
+     * y 0 or below ({@code FirepitPiece.postProcess}: {@code bPos.getY() <= 0}), and the GameTest world's ground is
+     * at y -61, so a test that runs the real piece lays its floor higher.
+     */
+    public static int platform(ServerLevel level, int x0, int x1, int z0, int z1, int minTop) {
+        int top = minTop;
         for (int x = x0; x <= x1; x++)
             for (int z = z0; z <= z1; z++)
                 top = Math.max(top, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z));
@@ -267,6 +279,30 @@ public final class MowzieKit {
                     level.setBlock(new BlockPos(x, top + y, z), Blocks.AIR.defaultBlockState(), 2);
             }
         return top;
+    }
+
+    /**
+     * Has the engine save its pages at its next step, so the command header after it acknowledges what it holds and
+     * the holders drop their pending records (a record marker with none is discarded). A GameTest server never
+     * reaches the periodic save, and nothing else makes the engine acknowledge.
+     */
+    public static void acknowledge() {
+        ScriptedEngine engine = RtsimTests.engine();
+        engine.awaitIdle();
+        engine.requestSaveAtNextStep();
+    }
+
+    /**
+     * Inside {@code thenWaitUntil}: the chunk is unloaded (not just hidden: a hidden chunk forced again is
+     * promoted with no join), and none of the entities is in the level. After this a forced chunk reads its
+     * entities from disk, and each joins as a new object.
+     */
+    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, UUID... ids) {
+        return RtsimTests.io(() -> {
+            check("chunk (" + cx + ", " + cz + ") is unloaded", !level.hasChunk(cx, cz));
+            for (UUID id : ids)
+                check("entity " + id + " is unloaded", level.getEntity(id) == null);
+        });
     }
 
     // ---- test camps -----------------------------------------------------------------------------
@@ -280,6 +316,65 @@ public final class MowzieKit {
         if (s == null)
             throw new IllegalStateException("no camp " + Long.toHexString(faction));
         return s;
+    }
+
+    // ---- a sequence that reports an unexpected exception as a failure ------------------------------
+
+    /**
+     * {@code helper.startSequence()} whose steps turn any exception that is no assertion into a failed assertion
+     * (MZB-599). Vanilla's sequence catches only {@code GameTestAssertException} from a step: any other
+     * exception (a null spot, an index out of range, a state a test did not expect) reaches the server's tick
+     * loop and crashes the whole GameTest server, so every test after it goes unrun. Here the exception is
+     * logged (the stack once per site) and fails that test with its type and message, as a wait's last
+     * assertion does when it times out.
+     */
+    public static Seq seq(GameTestHelper helper) {
+        return new Seq(helper.startSequence());
+    }
+
+    /** The steps a Mowzie test uses, each guarded (MZB-599). */
+    public static final class Seq {
+        private final GameTestSequence s;
+
+        private Seq(GameTestSequence s) {
+            this.s = s;
+        }
+
+        public Seq thenExecute(Runnable step) {
+            s.thenExecute(guard(step));
+            return this;
+        }
+
+        public Seq thenWaitUntil(Runnable step) {
+            s.thenWaitUntil(guard(step));
+            return this;
+        }
+
+        public Seq thenIdle(int ticks) {
+            s.thenIdle(ticks);
+            return this;
+        }
+
+        public void thenSucceed() {
+            s.thenSucceed();
+        }
+    }
+
+    private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
+
+    private static Runnable guard(Runnable step) {
+        return () -> {
+            try {
+                step.run();
+            } catch (GameTestAssertException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                StackTraceElement[] t = e.getStackTrace();
+                if (REPORTED.add(e.getClass().getName() + "@" + (t.length == 0 ? "" : t[0].toString())))
+                    LogUtils.getLogger().error("[gametest] a step threw {}", e.toString(), e);
+                throw new GameTestAssertException("unexpected " + e);
+            }
+        };
     }
 
     /** A grove at the middle of a chunk (MZB-218's round 25 blocks, 21 footprint chunks), declared with no fire pit piece. */
@@ -307,6 +402,12 @@ public final class MowzieKit {
             return this;
         }
 
+        /** As {@link #lay()} with the floor at {@code minTop} at the lowest (the jar's fire pit needs ground above y 0). */
+        public Grove lay(int minTop) {
+            platform(far.level, cx * 16 + 8 - 30, cx * 16 + 8 + 30, cz * 16 + 8 - 30, cz * 16 + 8 + 30, minTop);
+            return this;
+        }
+
         public Grove declare() {
             ServerLevel level = far.level;
             int x = cx * 16 + 8, z = cz * 16 + 8;
@@ -325,12 +426,14 @@ public final class MowzieKit {
 
         /** A point {@code dx}, {@code dz} from the centre, at standing height. */
         public Vec3 at(double dx, double dz) {
-            double x = spot.x + dx, z = spot.z + dz;
+            double x = (spot == null ? cx * 16 + 8.5 : spot.x) + dx, z = (spot == null ? cz * 16 + 8.5 : spot.z) + dz;
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
+        /** 64 blocks square round the centre; it does not read {@code spot}, so it works before the grove is declared. */
         public AABB area() {
-            return new AABB(spot.x - 32, far.level.getMinBuildHeight(), spot.z - 32, spot.x + 32, far.level.getMaxBuildHeight(), spot.z + 32);
+            double x = cx * 16 + 8.5, z = cz * 16 + 8.5;
+            return new AABB(x - 32, far.level.getMinBuildHeight(), z - 32, x + 32, far.level.getMaxBuildHeight(), z + 32);
         }
     }
 
@@ -402,9 +505,9 @@ public final class MowzieKit {
             return MowzieKit.site(faction);
         }
 
-        /** A point {@code dx}, {@code dz} from the spot, at standing height. */
+        /** A point {@code dx}, {@code dz} from the spot (the chunk's middle block before the den is declared), at standing height. */
         public Vec3 at(double dx, double dz) {
-            double x = spot.x + dx, z = spot.z + dz;
+            double x = (spot == null ? cx * 16 + 8 : spot.x) + dx, z = (spot == null ? cz * 16 + 8 : spot.z) + dz;
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
@@ -623,6 +726,16 @@ public final class MowzieKit {
     }
 
     // ---- record markers -------------------------------------------------------------------------
+
+    /**
+     * Discards the record markers standing in the loaded part of an area. A test that leaves a marker holding a
+     * record of an unknown generation in the reused world has it journaled as a copy, and applied, by the next
+     * run (a copy of a generation the engine never heard is new): so a test discards its markers when it ends.
+     */
+    public static void discardRecordMarkers(ServerLevel level, AABB area) {
+        for (Marker m : level.getEntities(EntityType.MARKER, area, e -> e.getTags().contains(RtsimSession.RECORD_MARKER_TAG)))
+            m.discard();
+    }
 
     /**
      * Catches the record markers (vanilla markers tagged {@code mic_rtsim.record}) standing in an area, at

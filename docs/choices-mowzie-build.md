@@ -1581,6 +1581,51 @@ M6's branch); M12 skips it.
   - `MowzieCamps.dropped` is an `AtomicInteger` (`dropped.get()` in the GameTest): `onChunkLoad` increments it
     where the queue beside it, already concurrent, is filled, and a chunk load is not promised to be on the
     server thread under every chunk system; the other counters are the drain's, on the server thread.
+  - The first GameTest round (`target/m5-gt1.log`) crashed the Mowzie server in the
+    fifth test: `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt` read `Grove.area()` before the grove
+    was declared, and `area()` read the not yet set `spot` (a NullPointerException). Vanilla's sequence catches
+    only `GameTestAssertException` from a step, so any other exception reaches the tick loop and takes down
+    the whole GameTest server, and 21 tests went unrun. Two fixes in the kit: `Grove.area()` reads the chunk
+    centre (the same point the spot is declared at) and no longer needs `spot`; and `MowzieKit.seq(helper)`
+    replaces `helper.startSequence()` in every Mowzie test, guarding each step so that an exception that is no
+    assertion is logged (its stack once per site) and fails that test as `unexpected <exception>`, the way a
+    wait's last assertion is reported when it times out. A GameTest-only helper in the plugin (D4); the other
+    projects' tests are untouched.
+  - The second round (`target/m5-gt1-mowzie.log`) ran all 27 Mowzie tests: 20 passed and 7 failed, every one
+    read as a fault of the test and none of the product code (the Nether and the reload cases are read from the
+    code and the log, and the next round confirms them). (1) The fire pit test: the jar's `FirepitPiece.postProcess`
+    makes no warrior on ground at y 0 or below (`bPos.getY() <= 0`) and the GameTest world's ground is at y -61,
+    so the real piece made none; the test lays its floor at y 63 (`MowzieKit.platform` and `Grove.lay` take a
+    minimum height). (2) and (6) Two tests waited for a record marker or a holder's pending records to be
+    acknowledged, which only a saved engine page does, and a GameTest server never reaches the periodic save:
+    `MowzieKit.acknowledge()` asks the engine to save at its next step, as core's pending-record tests do.
+    (3) and (6) A chunk released and forced again was taken to have been reloaded from disk once its
+    entity was gone from `level.getEntity`, but a chunk whose ticket dropped is only hidden then, and a hidden
+    chunk forced again is promoted with no join: the tests now wait for the chunk itself to be unloaded and the
+    old object removed (`MowzieKit.unloadedWithout`). (4) The Nether chunk's load runs on other threads and the
+    wait was not an `io` wait, so on a busy machine it timed out in about two seconds of real time; it is an
+    `io` wait now and names what it saw. (5) The check that the Frostmaw "stands" after a line went stale in
+    the tick its footprint went down read the entity after the chunks had unloaded; it now checks that the
+    Frostmaw was not taken (not discarded) and is still tagged. (7) `Den.at` and `Grove.at` read `spot` before
+    the camp was declared; they use the chunk's middle until then.
+  - The third round (`target/m5-gt2-mowzie.log`): 24 of 27 passed. Two failures were `Far.ready()` timing out on a
+    chunk's load with its entities (the load flake of the other projects' rounds; the message now says which of
+    chunk, entities and ticking was missing), and the hold-max test, whose 7,000 ticks left 1,000 for the
+    setup around a 6,000 tick hold (`Camps.HOLD_MAX`): its timeout is 9,000.
+  - A body hidden and tracked again (read from NeoForge 21.1.249's patched `ServerLevel.EntityCallbacks`:
+    `onTrackingEnd` posts `EntityLeaveLevelEvent` with no removal reason, `onTrackingStart` posts no
+    `EntityJoinLevelEvent`; only `addEntity` does, on a load or a spawn) stays in the books: `Camps.onLeave`
+    returns at once for a body with no removal reason, so it keeps its index entry and is never written off; a
+    footprint body's chunk going down is CAMP_OUT and coming back is a census that lists it again, and an
+    elsewhere body is listed by every census as long as its object is alive; one that then unloads leaves the
+    index at the next prune and comes back with a join from disk and a recount (the one gap is a record
+    carrier hidden when its acknowledgement comes, which keeps its records until the next session, MZB-241).
+  - The fourth round (`target/m5-gt4.log`, Carry On's first run): 3 of 4 passed. The camp pickup test failed
+    at its first census (it listed no body, expected the one stray): the test's vindicator stands in a far
+    chunk with no player within 128 blocks, and a non-persistent monster there is discarded by
+    `checkDespawn` on its first tick, before the census. A fault of the test: it now calls
+    `setPersistenceRequired()` on the stray (`Camps` sets it on every body it makes; an adopted stray keeps the
+    jar's own persistence, MZB-210, so a real stray far from every player is the jar's concern). No product change.
   - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
     and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
   - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
@@ -1589,6 +1634,208 @@ M6's branch); M12 skips it.
     again by their own join events (MZB-590), a body that left with its chunk comes back with it, and the
     census that would have followed has nothing a later one does not carry. Not tested (a test would race the
     period).
+
+- **MZB-650** (main's a95bd2a2 merged into M5: the merge and the formats):
+  - One conflict, `RtsimSession`, both sides kept: this branch's `asserted` set and `ensureReasserted` /
+    `reasserted(holder)` beside main's `stalePending` and chunk `reassert`. The one change main's `PendingRecords`
+    `{life, records}` forced elsewhere: `dropPendingWhenAcked` keeps what is left with `p.with(...)` (the holder's
+    life stays) where it built a one-argument record, and the two Mowzie tests that hand-made a holder's records
+    stamp the session's `engineLife()`.
+  - Formats. Main did not touch the conflict crate's pages: its fixtures say RTC5 with meta version 4. M4's
+    pages stay RTC6 with meta version 5, above them (the camp ledger is in meta 5). Main's own new numbers are
+    IGL5 (the glass page), IDS4, `IndustryData` format 3, the package stores' IST2 in table 0x4906 and
+    `rtsim/bridge-life.txt`; its new record kinds (0x004F, 0x0051, 0x0418, 0x0419, 0x8408, 0x8409) do not meet
+    the camp records (0x080F and its neighbours). The rtsim-view fixtures were taken as main has them for the
+    merge and are regenerated once at the end (the lead's order).
+- **MZB-651** (RG13 and RG14 against the camp ledger; docs/choices-reinstall-guard.md):
+  - RG13 (a chunk's applied reconcile epoch carries the engine life) has nothing to carry here: a camp's epoch
+    is a journal op id kept in memory (`Site.epoch`), no chunk or entity stores one. The journal outlives a sim
+    reset (RG5), so op ids never repeat across lives, and a CAMP_RECONCILE of an earlier life matches no live
+    `Site.epoch` and is answered STALE (the stale-line test). The old engine's own pending orders sit in its pages,
+    which the reset moved aside (RG6), so none is replayed.
+    What the world does store is a body's `CampMember` (faction, slot, generation), engine identity. A new life's
+    slots take generations from `derive_gen` (camp.rs), which hashes the camp, the slot and the tick the member was
+    recruited or adopted, so they do not repeat an old life's and a body tagged by the old engine is not mistaken
+    for a member of the new engine's slot (a one in 2^32 collision aside).
+  - RG14 (pending records carry the engine life): every holder M5 adds takes part. A body or marker takes records
+    only through `RtsimSession.carry` and `carryOnCampHolder`, which stamp `engineLife` with `PendingRecords.plus`;
+    `Camps.takeRecords` and `answer` call `ensureReasserted` first, so records of another life are dropped
+    there (`stalePending`), never put on the marker a body leaves. A holder of another life in a camp's footprint
+    loses its records at the census, not journaled: `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus` has a third
+    holder now, a marker whose record is the adopt's bytes under another op id, in the previous engine life: after the
+    census the stale count is up by one and a CAMP_BODIES of that op id never reached the engine.
+  - Engine side: the old engine's unacknowledged journal tail still reaches the new engine (RG14 "not
+    covered"). The engine looks every camp record's faction up in its own books (`by_key`) and an answer's epoch in
+    its camp's seen epochs, so a record of a camp it never founded books nothing; the new Rust test
+    `camp_records_of_a_camp_this_engine_never_founded_book_nothing` feeds a census, an answer, a death and an out
+    for a stranger and checks the stats, the camp's ledger and the orders unchanged. A replayed census only marks its camp out
+    (`a_replayed_census_only_marks_its_camp_out`) and a superseded epoch's answer books nothing, as before.
+  - Left as it is: a record marker whose records were all of another life stays in the world, empty (a vanilla
+    `Marker` tagged `mic_rtsim.record`). A discard would be safe where it would be made: `reassert(Entity)` never runs
+    inside the join event (`BridgeEvents` queues loaded holders and drains them at `ServerTickEvent.Post`). The marker
+    is kept because it does not tick and is never sent to a client, it saves small and nothing reads it, and its
+    number is bounded by the record markers alive at a reset. A later discard would be
+    `dropPendingWhenAcked(holder, 0)` after `removeData` in the stale branch of `reassert(Entity)`; not taken. An
+    admin can clear them with `/kill @e[type=minecraft:marker,tag=mic_rtsim.record]`. The GameTest discards its own.
+
+- **MZB-652** (main's f361a6f1 merged into M5: SEC-1 S4p, carried records as copies judged by generation;
+  docs/boundary.md section 3.2, DECISIONS.md SEC-1 S4p):
+  - The merge had no textual conflict. What S4p's `PendingRecords` forced: it is `{life, entries}` now, an entry
+    being a record with the generation that journaled it. `with` is gone (`filter` keeps what is left, so
+    MZB-650's `p.with(...)` in `dropPendingWhenAcked` is `p.filter(...)`, still by identity), `plus` takes the
+    generation (`plus(life, gen, records)`, so MZB-651's stamp is that), and `records()` is derived. The Mowzie
+    tests that hand-make a holder's records build entries with the session's generation. The formats: S4p added
+    JOURNAL_GEN 0x0130 and REASSERT 0x0131, the jni engine's meta version 2 and its page table 2 (the closed
+    generations, magic RTJG). The conflict crate is untouched by it: RTC6 with meta version 5 stays above main's
+    RTC5 and 4, and the camp records (0x080F and its neighbours) do not meet the new kinds.
+  - How a camp record carried on a holder is judged. It is carried with the generation of the session that
+    journaled it. When the holder loads (`BridgeEvents`' drain) or its camp's census reaches it first
+    (`ensureReasserted`, MZB-174), the session journals a copy of each, REASSERT(gen, record whole), once per
+    holder and session. The engine admits the REASSERT by its own sequence like any record, then judges the copy
+    by (gen, the record's own sequence): dropped when the generation admitted that sequence, which is the usual
+    case (the pages hold the record, or it was this session's own); applied once, as the record itself under the
+    copy's sequence, when a crash lost it or no page holds its generation. An applied copy then meets the camp
+    engine's own rules as the record would have: a camp it never founded books nothing, an answer for an epoch
+    it has not seen books nothing, an engine op id already heard is a no-op (MZB-651). A REASSERT journaled in an
+    earlier session and replayed now is a replay record (its sequence is below the session's first); a live one
+    after the replay end is not; `conflict::journaled` reads the copy under the REASSERT's sequence, so the
+    notices' "replay is over" test sees it on the right side. The order
+    that MZB-174 gave is unchanged: the copy is journaled before the census, so an answer that is new still
+    reaches the engine before the census whose epoch would make it stale, and one the engine has is dropped
+    without effect. The kept JOURNAL_GEN that goes first (`Journal.pinnedGen`) and the generation blocks are the
+    journal's and the engine's, nothing camp specific.
+  - A fault the check found, in this branch's code: a marker that takes over a body's records (`removeWithMarker`,
+    for the TAKE and REMOVE lines and the SET_OUT paths, and `death`) put them through `carry`, which stamps the current session's
+    generation on every record it is given, the body's earlier ones included. A copy is judged by (gen, s), s the
+    record's own sequence: a record of an earlier session under this session's generation has s below that
+    generation's last sequence (the open generation takes a copy as new only past it, a closed one the same), so
+    the copy is dropped even when the earlier session's pages lost the record, and the record is lost for good,
+    the loss S4p exists to prevent. Fixed: the records travel as `PendingRecords.Entry` (generation and bytes).
+    `Camps.takeRecords` returns entries, `Moved` and `answer`'s `before` hold them, `carryOnCampHolder` takes them
+    and `RtsimSession.carryEntries` keeps each one's generation (`PendingRecords.plusEntries`); only a record
+    journaled now gets this session's (`boundary().gen()`). `carry` for the other callers (a record journaled in
+    this session) is unchanged in effect. A test: `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot` gives the
+    Frostmaw a record of a generation no session has, kills it, and reads the marker's saved pending: three
+    entries, generations now, earlier, now.
+  - Readers look through REASSERT: `ConflictKit.campBodies` lists the copies (applied or dropped) with the
+    originals, by sequence, as it did the re-journaled records before; `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`
+    now also checks that both copies were dropped (this session's generation admitted the record), and its stale
+    marker check reads the copies too, so a record of another life that was journaled would show.
+  - No choice was needed beyond those: a record too large to wrap is journaled plainly (SC129) and a CAMP_BODIES
+    of a few dozen lines is far below it; the inert marker of MZB-651 stands.
+  - SEC-1 S4c1 (origin/main 428a3311) was merged after the carryon and C2ME rounds ran at a7e315d1, and those two
+    results stand: S4c1 touches IndRecords, Industry, the create module (Frontier, PackageStores), the journal
+    barrier's industry side and the industry wire, nothing in conflict, camps or the carry path, and the
+    count of MZB-655 in `carryEntries` is on a path no test reaches today (an engine life that changed under a
+    holder that was then taken over). The merge was textually clean (`git status` had no UU); core, create and
+    mowziesmobs ran again on the merged head, since S4c1 voids create's result and the barrier is shared.
+  - The first run of MZB-292 (`./gametest.sh mowziesmobs -Pc2me`, at a7e315d1): Mowzie's Mobs and the pack's C2ME
+    start together on the GameTest server, and 23 of the 27 tests pass. Four fail on what the suite assumed of
+    vanilla's chunk system (the poll is the authority under C2ME, MZB-249 and MZB-290, and the tests were written on
+    vanilla): `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart` ("the old w0 object is removed"),
+    `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent` ("out within a poll period of the release (53
+    ticks)", the limit being `POLL_PERIOD` + 3), `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear` (sent at
+    2941, placed at 9081: 6140 ticks, the limit HOLD_MAX + 40), and
+    `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect` (it logs "no ticket event fired for the den's
+    chunks (C2ME?): the premise does not hold", then "every footprint level reads as no holder (34)", C2ME's
+    holder staying with its target status). Nothing was changed for them: whether the Mowzie suite is meant to
+    hold on C2ME, or only core's barrier tests are, is for a decision.
+
+- **MZB-655** (the S4p merge review's fixes: tests and docs, no engine change; MZB-653 and MZB-654 are reserved for
+  the merge-review fixes carried into M6, so this record leaves that gap):
+  - Two GameTests did not pin MZB-652's generation fix, and now do. `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`
+    ends with a camp taking a holder over: the Frostmaw carries a record under `EARLIER_GEN` (a generation no
+    session has, as a body saved by an earlier session would), a REMOVE order takes the body, the marker that takes
+    its records is released with its chunk and loaded again, and the copies read from `ConflictKit.bodiesCopies` must
+    be exactly one naming `EARLIER_GEN`, the adopt's answer, applied by the engine, every other the session's own and
+    dropped. `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot` unloads and loads the chief's marker the same way after
+    it read the marker's saved data, with the same checks, a dropped CAMP_DEATH copy and one death booked by the den.
+  - Shown to fail on the pre-fix `carry`: in a scratch copy, `RtsimSession.carryOnCampHolder` restamped every entry with
+    `boundary().gen()` behind an environment switch (never committed), and the mowziesmobs project ran on the real
+    engine with and without it. Without the fix the holder test fails at "one copy names the earlier generation": the
+    copies were `[175ada57bab92e3a dropped, 175ada57bab92e3a dropped]`, the session's generation on both. The death test
+    fails earlier, at its saved-data check that was already there ("each with the generation it was journaled in, the
+    earlier one kept"), so its reload leg did not run in that revert; it is the same stamping seen one step later. With
+    the fix the copies are `[123456789abcdef applied, f29f38b92320cd49 dropped]` (holder test) and
+    `[f29f38b92320cd49 dropped, 123456789abcdef applied]` (death test); the generation that is the session's changes
+    per run.
+  - `ConflictKit.campDeaths` looks through `engine.copies(CAMP_DEATH)` as `campBodies` does (`Copy`, `copiesOf` and
+    `bodiesCopies` give the copies with their generations). `carryEntries` counts the entries of another engine life
+    that `PendingRecords.plusEntries` leaves out in `stalePending` (counted, not asserted: a crash in a save path is
+    worse than a counted drop). The death test discards its markers at its end, passed or failed
+    (`MowzieKit.discardRecordMarkers`), since they hold records of a generation a later run's engine never heard.
+    MOWZIE.md's holder paragraph and its (5)-(6) crash row say a holder's copy is judged by its generation and only an
+    applied copy reaches the (op, line) skip.
+  - One jni test, `a_camp_record_a_holder_journals_again_is_judged_by_its_generation`, with three cases: a copy of a
+    record the engine applied is dropped and books nothing even where the camp has forgotten the line (a plain resend of
+    it would book again); a copy of a generation it never heard is booked once, under the copy's own sequence, and a
+    second copy is dropped; a copy journaled in the last session and replayed is applied inside the replay window,
+    so the replayed census after it still orders nothing and its camp is out. The CAMP_DEATH test's message no
+    longer says "by its op id" (M5 removed CAMP_DEATH from `conflict::op_of`: a death is idempotent by the slot's
+    generation).
+
+- **MZB-656** (M5's tests wait on far chunks under load; a stopgap before fix/gametest-flakes lands ChunkWait):
+  - What failed: with the machine's load average near 50 the merged round's mowziesmobs project failed two of
+    M5's own tests on a wait that ran out, `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent`
+    (`Far.ready()`: "chunk true, entities false, ticking false") and `aBodyThatChangesDimensionLeavesItsCampsIndex`
+    ("No sequences finished"). With the `Far.ready()` failure of an earlier round that is three different M5 tests
+    losing a wait on a far chunk's entities, so it is not a flake to accept.
+  - Why: a GameTest's `timeoutTicks` counts ticks, and the server ticks unthrottled, so what bounds a wait in
+    wall time is the sleep of core's `RtsimTests.io` (5 ms while a check fails). A test of 1500 ticks has at
+    most 7.5 s for a far chunk to load, whatever the load.
+  - What was done: only the `timeoutTicks` of the tests that wait on far chunks (all of M5's but
+    `aFloodOfChunkLoadsKeepsTheFindersQueueBoundedAndADroppedDenIsFoundAtItsNextLoad`, which builds its chunks
+    itself and waits on none, left at 400) are 12000, which is 60 s at 5 ms a failing tick. The hold test keeps
+    its 6000 ticks of deliberate hold (`Camps.HOLD_MAX`, quick ticks that sleep nothing) and gets the 12000 on
+    top, 18000. `MowzieKit.Far.ready()` and `unloaded()` and core's `io()` are untouched: fix/gametest-flakes
+    lands right after M5 with ChunkWait (wall-clock chunk waits) and a converter that rewrites `Far` and the
+    tests' waits, and it takes each test's OLD timeout as the bound of its logic waits. The old and new values:
+    - `aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth`: 1500 to 12000
+    - `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt`: 2000 to 12000
+    - `aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief`: 1500 to 12000
+    - `aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus`: 1500 to 12000
+    - `aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot`: 1500 to 12000
+    - `aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken`: 1500 to 12000
+    - `aLineArrivingInTheTickACampGoesOutIsAnsweredStale`: 1500 to 12000
+    - `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale`: 2000 to 12000
+    - `onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome`: 2000 to 12000
+    - `aBodyThatChangesDimensionLeavesItsCampsIndex`: 1500 to 12000
+    - `aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved`: 2000 to 12000
+    - `aRefilledPoolIsSpawnedAtTheNextCensus`: 2500 to 12000
+    - `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear`: 9000 to 18000
+    - `theCensusWaitsForEntitiesOnACampsColdLoad`: 3000 to 12000
+    - `aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent`: 3000 to 12000
+    - `aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut`: 2500 to 12000
+    - `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot`: 4000 to 12000
+    - `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`: 5000 to 12000
+    - `aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake`: 2500 to 12000
+    - `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart`: 3500 to 12000
+    - `aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent`: 2500 to 12000
+    - `aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody`: 2000 to 12000
+    - `anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain`: 2500 to 12000
+    - `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers`: 1500 to 12000
+    - `aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount`: 2000 to 12000
+    - `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect`: 2500 to 12000
+  - The dimension test's stall, from its log: the log has no step timestamps, so it cannot name one step for
+    certain. It shows (a) no tick at all for 24 s after the test began (the Far constructor logged at 13:23:14, the
+    next line at 13:23:38), the tick that ran the first step, which forces the Nether chunk and the den's nine
+    chunks, so the stall is most likely a far-chunk load on the server thread, and it costs one tick of the
+    timeout whatever the timeout is; (b) the 1500 ticks used up in 9 s after that, about 6 ms a tick, which is
+    the 5 ms sleep of failing `io` checks, so most ticks were spent in the two far waits (`far.ready()` and the
+    Nether chunk wait), not in the engine round trips (those check without sleeping, so their ticks are quick);
+    (c) every step ran, the last `record` line was logged on the final tick, and only the `thenSucceed` one
+    tick later did not. So the step it stalled on was a far wait, and the test missed by one tick.
+  - The death test's reload leg guards a different mutation than its saved-data check (see the comment in the
+    test), so no extra revert run was made for it.
+  - The round at 37a34e40 (`./gametest.sh core create mowziesmobs`, one invocation, the three projects' worlds
+    deleted first, load average 40 to 60): mowziesmobs passed 27 of 27, the two tests that ran out of ticks
+    and the two generation tests of MZB-655 among them. core passed
+    116 of 117, and its llama crash test passed. create passed 207 of 208. The two failures are load flakes of
+    main's tests, accepted and not rerun: core `aBigDetectionsLongestTickIsBelowTheOneCallTime` ("spread over
+    several ticks, got 2"; its one call took 4.0 to 5.8 ms where docs/stress-worlds-results.md gives 1.3 to 1.5
+    on a quiet machine) and create `aSweepReportsBoundaryStockAndTheLiveFlag` (timeoutTicks 600, its last wait
+    "a sweep with an unloaded chunk is not live" ran out; neither the test nor the sweep was touched by S4c1, and
+    it passed in the chain's round at a7e315d1).
 
 ### M5 design for the implementer
 
@@ -2557,6 +2804,848 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
   no recall toward its camp: the homecoming of MZB-211 starts from a HAND_BACK. M10 owns this case (found in
   the M5 review, P2-7); until then such a party stays where the engine left it.
+  M10 closes it: `home` recalls such a party toward its camp (MZB-463), and Java sends home every band a
+  HAND_BACK names, whatever the line's outcome (MZB-464).
+- **MZB-450** (base, reads and ids):
+  - The implementation branch `feat/mowzie-m10` starts from the finished `feat/mowzie-m9` (M9a, M9b and
+    M9c, each reviewed), with `feat/mowzie-m6` merged in. M10 needs two things from M6: `FakePlayers.addSeen`
+    (a mock player the chunk map sees, so its chunks tick) and the party-scoped op ids of MZB-589.
+  - Merge `main` too if M7 or another slice has landed there. After the merges, delete every project's
+    `run-gametest/world`: pages from a newer build stop older builds starting.
+  - This design read these heads; line numbers below are those copies':
+    - `feat/mowzie-m9` at 7521375d to 6125fcce. It is still moving, so re-check every line number;
+    - `feat/mowzie-m6` at c803fc14;
+    - `main` at 65f90ee9.
+  - Ids: MZB-450 to MZB-499, of which this slice uses MZB-450 to MZB-484.
+- **MZB-451** (BAND_MARCH goes when what it says changes; ledger 23):
+  - A new `Conflict::march_changed(p)` sets the party's saved `march_due` flag. If the flag was clear, it
+    also pushes `p` onto `Conflict.march_due: Vec<Handle<Party>>`, which is unsaved and rebuilt from the
+    flags at load.
+  - Each caller marks where the state the record reads has changed:
+    - `send_party`: a new party, Mustering;
+    - `party_event`'s Mustering arm: the muster ends, Out;
+    - `wait`, `start_fight` and `go_home`: the phase and the waypoints;
+    - `home`, when it keeps the row (Waiting with loot);
+    - `party_lost` (camp.rs), whenever `lost > 0`. The mark goes before its `is_war` return, so every unit
+      loss of every kind marks: `lose_units`, BAND_DEMATERIALIZED, `casualties` and `chief_unit_lost` all end
+      there;
+    - `member_died` (camp.rs): a unit left behind dies at the camp;
+    - `succeed`'s loop over the parties the chief led, and `chief_killed_by`: `chief` goes false;
+    - `player_left`, when it turns Fighting to Waiting;
+    - `session_start`, for every party. Java's map is per session (MOWZIE.md §4.16);
+    - `start_segment`, only for a long route (MZB-455).
+  - A segment's advance sends nothing. The waypoints carry their times, so Java's position needs no new
+    record (MZB-454).
+  - `take_commands` builds the records:
+    1. It sorts `march_due` by handle.
+    2. For each party still live with its flag set, it clears the flag, adds 1 to `march_rev` and pushes
+       `Cmd::March(self.march_record(p, false))`.
+    3. It calls `enforce_budget` after every `FACTIONS_PER_PAGE` records, as `session_start` pages territory.
+    4. The rest of the outbox follows unchanged. So the march records come first.
+  - A record carries the state as of the take, so several changes in one step make one record.
+  - A `home` that removes the row builds its record itself (MZB-463). It pushes `march_record(p, true)` onto
+    the outbox after `camp_home`'s lines and any recall, clears the flag, then calls `parties.remove(p)`. The
+    outbox keeps its order, so Java has the hand-back lines before the end.
+- **MZB-452** (the record's fields, built by `march_record(p, ended)`):
+  - `agent` is `Party::agent(p)`; `revision` is the party's `march_rev`; `dimension` is `u32::from(frame)`;
+    `faction` is the faction's key.
+  - `culture` is the faction's culture index plus 1 (rtsim-jni's culture dictionary id). `kind` is
+    `kind as u8`, as BAND_MATERIALIZE's purpose is.
+  - `phase` is set by a match, not a cast: Mustering 1, Out 2, Waiting 3, Fighting 4, Home 5.
+  - `flags`:
+    - MARCH_CHIEF when `chief`;
+    - MARCH_ENDED when `ended`, or when `alive() == 0 && !chief`;
+    - MARCH_JOINT never, since no joint march exists. `partner` is 0.
+  - `muster_end` is `until` while Mustering, else 0.
+  - `units`: alive counts by body id (`body_id` of each unit's body). Unit rows that share a body are summed,
+    zero counts are left out, and the list is sorted by body id.
+  - `waypoints` are (x, z, tick) in the route's chart:
+    - Mustering: the whole route with its times;
+    - Out and Home: `route[seg..]` with `times[seg..]`;
+    - Waiting and Fighting: one waypoint, `(route.last(), until)`.
+  - The encoder cuts lists past MAX_ENTRIES (1024), as today.
+- **MZB-453** (saved state and the format):
+  - `Party` gains three fields: `march_rev: u32`, `march_due: bool` and `unseen_due: Tick` (MZB-458). They are
+    appended at the end of `put_party` and `get_party` (persist.rs).
+  - The outbox is saved (persist.rs 1296), and so is `march_due`. A mark made before a save therefore
+    survives a crash after it.
+  - The save is the next RTC and META after M9's. Fixtures and their hashes are regenerated, with no
+    migration (nothing is released).
+- **MZB-454** (one position rule on both sides; test 34): a new `BandMarch::chart_pos(&self, t: i64) ->
+  Option<(i32, i32)>` in boundary.rs, with its Java twin `MarchPath.chartAt(long t)`:
+  - none with no waypoint; phase 1, the first; phases 3 and 4, the last.
+  - Phases 2 and 5: take `s`, the largest index at most `w - 2` whose tick is at most `t` (0 when there is
+    none). Then apply `party_chart_pos`'s arithmetic to segment `s`:
+    - `a` when `t1 <= t0` or `t <= t0`;
+    - `b` when `t >= t1`;
+    - else `fr = (t - t0) as f64 / (t1 - t0) as f64`, and per axis
+      `(f64::from(a.0) + (f64::from(b.0) - f64::from(a.0)) * fr) as i32`. This truncates toward zero, as
+      Java's `(int)` does.
+  - For every tick the engine evaluates, this equals `party_chart_pos`: the engine's `seg` is the segment
+    whose start has passed. `party_pos` is its canonical form.
+  - Java's `MarchPath.at(long t, LevelTopology topo)` folds it as Rust's `canonical_i32` folds a cell: the
+    block centre, `topo.fold(x + 0.5, z + 0.5)`, floored. Folding the corner would land on the neighbouring
+    block under a half-turn. `RtsimSession.topology(level)` gives the level's topology.
+- **MZB-455** (a route longer than a record holds): stateless. `start_segment` marks the party when
+  `route.len() - seg >= MAX_ENTRIES`. So while the rest of the route does not fit, each segment start sends
+  a new window of 1,024 waypoints, and the last window sent holds the whole rest. No route is that long
+  today; the rule keeps the record honest if one is.
+- **MZB-456** (the walk home in bodies; ledger 23):
+  - `go_home` takes `here = party_chart_pos(p, at)`, not `party_pos`. The route is in the chart, and a
+    canonical `here` among chart waypoints would send the walk across the world after a seam.
+  - It walks when all of these hold:
+    - the party is `embodied`;
+    - the reason is RECALL_DONE, RECALL_BORED or RECALL_ROUTED;
+    - `spawned` holds at least one member;
+    - the party is no envoy, and the world is not Peaceful.
+  - Otherwise it recalls toward the camp as today: SETTLED, PASSING and PLAYER_LEFT, an envoy, and Peaceful,
+    where no war body stands.
+  - A walking band keeps `epoch`, `spawned` and `seen_by`. After the new route, the mark, `book_leg` and the
+    schedule, `go_home` calls `steer_segment(w, p, at)`.
+  - `steer_segment` is factored out of `start_segment` unchanged:
+    - a segment that crosses an edge_stop seam is recalled (RECALL_PASSING toward the segment's end);
+    - else BAND_STEER to the segment's end, with STEER_ATTACK only on a war band's last segment Out, then
+      `book_unseen`.
+
+    `start_segment` calls it, so each later segment home steers too.
+- **MZB-457** (met on the way home, and the column's heading):
+  - `seen` no longer skips Home. It still skips an embodied party, Mustering, Fighting, and Peaceful's war
+    bands and envoys.
+  - After the wave, it steers for both Out and Home (today, Out only): BAND_STEER to `route[s + 1]`, arriving
+    at `times[s + 1]`, flags 0.
+  - `spawn_wave` with no arc sends the march's heading as the bearing; today it sends 0. A new
+    `march_bearing(p, centre)` computes it, where `centre` is the image that `spawn_wave` already places the
+    band at:
+    - Out and Home, with `s = seg.min(len - 2)`: from `centre` to `toward(centre, route[s + 1])`. When that
+      is zero, from `toward(centre, route[s])` to `centre`;
+    - Waiting: from `toward(centre, route[len - 2])` to `centre`, the way it came;
+    - otherwise, or for a zero vector: 0.
+  - Degrees are taken as `start_fight` takes them, `(dz as f64).atan2(dx as f64).to_degrees() as f32`, from
+    +x toward +z (boundary.md's BAND_MATERIALIZE).
+- **MZB-458** (re-binding when the watcher walks off; ledger 23, test 29's re-bind clauses):
+  - `inside_now(p, c, r, at) -> Option<f64>` gives the squared distance from the party's chart position to
+    the image of `c` nearest it, when that is within `r`. `exit_time` uses it for its first test, so the two
+    never disagree.
+  - `rebind_to(w, p, at) -> Option<ActorId>` looks at the players in the party's frame, reported within
+    `player_stale_ticks` and inside `view_radius + party_radius + 16` (192, `book_unseen`'s circle). It
+    returns the least by (squared distance, ActorId).
+  - `unseen(w, p, epoch, at)` gains the world. It acts only for an embodied party at that epoch, Out or Home,
+    with `at == unseen_due`:
+    - if `rebind_to` finds a player, `seen_by` becomes that player (the same one when it followed) and
+      `book_unseen(w, p, at, at + 1)` runs;
+    - if not, RECALL_PASSING toward `route[seg + 1]`, as today.
+  - `book_unseen(w, p, at, not_before)` covers Out and Home. It books at `t.max(not_before)` and sets
+    `unseen_due` to that tick. Its existing callers pass `at`. Only the latest booking acts; earlier ones find
+    `unseen_due` moved.
+- **MZB-459** (the watcher logs out; the private `player_left`): for each party that is embodied and seen by
+  that player:
+  - a siege is recalled with RECALL_PLAYER_LEFT, and its fight turns to waiting, as today;
+  - any other party turns Fighting to Waiting (marked). Then `rebind_to`, at `self.now`, finds a player to
+    take it over. If nobody is found, it is recalled as today.
+- **MZB-460** (arriving watched from afar): this is `arrive`'s war arm when no watcher is at the target. An
+  embodied party that is no siege, and for which `rebind_to` finds a player, is re-bound and not recalled.
+  It resolves abstractly, with its losses falling through `lose_units` (MZB-462), and `go_home(RECALL_DONE)`
+  walks it home. A siege is recalled as today.
+- **MZB-461** (a band that walks into its fight): `start_fight` on an embodied party keeps `epoch`, `spawned`
+  and `wave` and sets `seen_by`. It pushes BAND_STEER with STEER_ATTACK toward `route.last()`, with `arrive`
+  0 (at its speed). The arc's `spawn_wave` then sends only the members not yet in Minecraft, since it already
+  counts them. A party that is not embodied starts as today.
+- **MZB-462** (`lose_units` keeps `spawned`; ledger 23): while the party is embodied, after the loss each
+  `spawned` entry is clamped to its unit's count.
+  - `recalled` is not clamped. A recalled stack is an older epoch's bodies, counted by their own
+    BAND_DEMATERIALIZED (MZB-131), and clamping it would hide deaths in Minecraft.
+  - The puppets the books no longer hold are Java's to trim (MZB-473).
+- **MZB-463** (the end at home; closes the M5 review's P2-7): `camp_home` returns whether it handled the
+  band's bodies: true when it sent a HAND_BACK line or recalled.
+  - `home` recalls an embodied party with RECALL_DONE toward the camp when nothing handled it. That covers a
+    party all Left, a faction with no camp ledger, and a `camp_home` that sent no hand-back line.
+  - Then it sends the ENDED record (MZB-451).
+- **MZB-464** (Java's homecoming on every HAND_BACK; amends MZB-211): `Camps.reconcile` puts a party in
+  `homecoming` for each HAND_BACK line whose party the bridge holds at the line's epoch, whatever the line's
+  outcome. That includes a camp that is not in, a STALE line and a failed `addFreshEntity`.
+  - Each such party gets `homeAt`, toward the site's spot, or toward its own front stack when the bridge has
+    no site.
+  - Today a failed hand-back leaves the band's puppets standing for good, since the engine has ended the
+    party and sends nothing more.
+- **MZB-465** (a raptor pack comes home as a spawn): a camp slot's body is the camp's home body, the warrior.
+  So a HAND_BACK line for a raptor unit finds no warrior puppet and plays as a SPAWN at the far edge
+  (MZB-213, MZB-214), while the pack walks off through `homeAt`. `camp_home` is unchanged (test 32's raptor
+  clause).
+- **MZB-466** (the race at home; decided by the coordinator on 2026-10-24, not Ben, since it is reversible): a puppet may be killed
+  in the tick or two between the engine's `home` and its HAND_BACK line.
+  - Its BAND_CASUALTIES is for an ended party, so it books nothing and sends no Killing signal.
+  - Its slot's line then finds no puppet, and the body spawns at the edge.
+  - Accept it. Keeping the party until Java answers each line would change how every party ends.
+  - The coordinator added two conditions:
+    - **A counter:** `stats.unbooked_home_deaths`, plus a debug log line naming the party and the slot. It counts
+      each BAND_CASUALTIES (and CHIEF_KILLED) that names a party already ended by `home` before its HAND_BACK line
+      is answered, so the rate shows in GameTests and soaks. Java logs the matching case on its side too: a death
+      of a puppet whose party has a HAND_BACK in flight.
+    - **A test:** the unbooked death costs at most that one body and does not cascade. Afterwards the faction's
+      party count, its pool, the camp's slots and the audit sums agree. No other party, slot or later band is
+      touched. A second copy of the same casualty changes nothing.
+  - If the counter shows the race is common, revisit it by keeping a party until every line is answered.
+- **MZB-467** (idempotency): M10 adds or changes no holder-carried record and no op id.
+  - BAND_MARCH is an engine command, latest-wins by revision within a session, and the engine sends every
+    party again at a session start. Java sends nothing back for it.
+  - The trim, the walk-in and the clamp journal nothing.
+  - A trimmed member is no survivor in a later BAND_DEMATERIALIZED, whose format and keys (agent and epoch)
+    are unchanged.
+  - Nothing enters `applied_ops`.
+- **MZB-468** (Java's march map):
+  - New: `ConflictRecords.BAND_MARCH = 0x880B` and `ConflictRecords.March` (layout in the design below).
+    `conflict/MarchPath` is an immutable decoded record, with its bodies resolved through the names at
+    accept.
+  - `ConflictBridge` keeps a `Long2ObjectOpenHashMap<MarchPath>` and a `LongOpenHashSet` of ended agents:
+    - a record replaces the held path only with a higher revision;
+    - ENDED removes the path, adds the agent to the ended set and trims nothing;
+    - an ended agent's later records are dropped;
+    - both clear in `sessionStarted` and `switchedOff`.
+  - `public MarchPath march(long agent)` reads it, for ConflictKit and for M11. M10 adds no far-view source.
+- **MZB-469** (the column; ledger 25, test 34):
+  - Every materialize splits an entry into stacks of one row each: up to two members, at `lateral(g,
+    rowSize)`, back 0. These are ledger 25's groups: a row of two, a pack, the chief alone.
+  - A body whose maker says `pack()` (the raptor) gets one stack per member.
+  - The chief (MZB-109's extra body) is a flagged stack of its own, at the rear of its entry's rows.
+  - `Stack` gains `back` and `side`. Its offset from the head is `-h * back + r * side`, with
+    `r = (-hz, hx)`.
+  - At radius 0, met on the march:
+    - the heading comes from the bearing (MZB-457), and the head is at the arc centre;
+    - rows stand one behind the other, `ROW` (1.5) apart, in the record's order;
+    - packs alternate at side `±PACK_SIDE` (3.0, PLACEHOLDER), `PACK_ROW` (6.0, PLACEHOLDER) back per pair;
+    - the chief comes last.
+  - On an arc (a fight), each entry keeps its arc point as today. Its rows stand back from that point, ROW
+    apart, and its side keeps the entry's spread, `(i - (m - 1) / 2) * STACK_SPACING`.
+- **MZB-470** (turns): `steer` turns the column.
+  - The head is the front non-GONE stack's anchor less its offset.
+  - The new heading runs from the head to the steer point.
+  - Each stack's offset is recomputed from its `back` and `side`, and it walks to the point plus its offset.
+  - A recall's walk keeps the offsets it has.
+- **MZB-471** (pending stacks hold at their column place; ledger 25): unchanged from M3. A pending stack's
+  place is its walk's anchor plus its offsets, so it moves with its column. It is tested only when a chunk it
+  waits on changes or its place moves into another chunk.
+- **MZB-472** (the stop: walk-in and clamp; ledger 25, CL-D35):
+  - A band is stopped while the bridge holds a march for it in phase 3 or 4.
+  - The square: a player's entity-ticking chunks lie within Chebyshev distance `s` of its chunk, where `s` is
+    the server's simulation distance. One chunk inside the edge, that is chunks `pcx - s + 1` to
+    `pcx + s - 1`: blocks `16 * (pcx - s + 1)` to `16 * (pcx + s) - 1`, and the same in z.
+  - The player is the nearest non-spectator player in the band's level to the stack's place, within 256
+    blocks of the head. With none, neither the walk-in nor the clamp runs.
+  - The head is `MarchPath.chartAt(now)`, in the frame the bridge's anchors are in (MZB-479). On a flat world
+    it equals `at`. When a TP slice maps images in the bridge, the head becomes `at`.
+  - Walk-in, in M3's pass over pending stacks, on the stop's beat: the tick a record puts the band in the
+    stop, then every 20 ticks (PLACEHOLDER, the clamp's). A pending stack of a stopped band whose place lies
+    outside the square:
+    1. On the segment from its place to the head, the first point inside the square is its new anchor. If
+       the segment never enters the square, the anchor is the head clamped into it.
+    2. The stack is re-anchored there (`ax`, `az`, `t0 = now`) and walks on toward its old end, clamped into
+       the square.
+    3. It is marked dirty (its place moved) and counted in `walkIns`.
+    4. It is placed only if `entitiesTickAt` says every chunk it needs ticks, as for any stack: the square
+       only picks the point.
+  - Clamp, every 20 ticks (PLACEHOLDER): a placed stack of a stopped band whose walk end lies outside its
+    square has the end clamped into the square, and walks on from where it stands. So it holds one chunk
+    inside the edge while it walks toward the fight.
+  - Both end when a record leaves the stop. The next BAND_STEER, the walk home's, then puts every stack back
+    in its column.
+- **MZB-473** (the trim; ledger 23; it ends MZB-164's left-behind puppet):
+  - When a record with a higher revision arrives for a band the bridge holds, and it is not ENDED, the band
+    is marked `trimDue`. The trim runs at the end of that tick, and every 20 ticks with the clamp while still
+    due.
+  - Per body:
+    - `living` counts the band's slots that are alive, not the chief and not removing, over its non-GONE
+      stacks, placed and pending;
+    - `want` is the record's count for that body (0 when absent).
+  - While `living > want`, it cuts one slot: first the rearmost pending stack's last slot; then, among placed
+    stacks, the rearmost slot with no player within OUT_OF_VIEW (64) of its entity.
+  - The chief's slot is cut the same way when the record lacks MARCH_CHIEF.
+  - A cut is `despawn(sl)`, with its extras (MZB-428), then `sl.alive = false`. It is counted in `trimmed`
+    and journals nothing.
+  - When every slot left to cut is in sight, the trim waits with `trimDue` still set, so no puppet vanishes
+    in front of a player.
+  - Why: the books lose members no player saw go (an ambush; a raid resolved while watched from afar,
+    MZB-460; a unit left behind that dies at the camp, MZB-164).
+  - Until the trim, a killed puppet may be one the books have already lost. Its casualty is capped at the
+    unit's count (`casualties`, engine.rs 5573), the approximation MZB-164 records.
+- **MZB-474** (no hooks): M10 adds no mixin and no event hook.
+  - D4: the column, the stop and the trim live in the core's ConflictBridge, and the plugin only says which
+    bodies are packs.
+  - D3: no new entity type. The column is made of the puppets the makers already make.
+  - UR-1: nothing is saved in the world. The march map is memory, cleared each session. Trimmed and
+    walked-in puppets carry no new data.
+- **MZB-475** (D1, with about 20 bands loaded):
+  - A record costs one decode and one map put: about 400 bytes for 20 waypoints and one body, and a few dozen
+    records over a band's life.
+  - Pending tests are unchanged from M3 (per changed chunk). Rows make more stacks, though: a band of 9 is
+    about 6 stacks instead of 2, so there are more chunk sets, each still read once a tick per chunk, not
+    per member.
+  - The stop runs every 20 ticks, per stopped band, over its stacks times the level's players for the
+    nearest: hundreds of distance tests a second at 20 bands.
+  - The trim runs on a new record, then every 20 ticks only while due.
+  - Nothing runs per member per tick.
+- **MZB-476** (FakeConflict, synth.rs):
+  - It keeps the latest march per agent by revision, drops it on ENDED, and clamps the held body's members to
+    the record's counts (the trim).
+  - It plays MZB-464: a HAND_BACK line whose party it holds at the line's epoch ends that body. The body is
+    removed, and a BAND_DEMATERIALIZED (reason 1, its survivors) is pushed after `leave_ticks`; it books
+    nothing for an ended party.
+  - Steers stay ignored, since it models no positions.
+- **MZB-477** (test 34's vectors), each phase Out, checked in Rust against `party_pos` and in Java against
+  the same numbers (the folded results were run through `canonical_i32` for this design):
+  - flat: route (0, 0), (100, 37), (100, -50) at ticks 1000, 1100, 1200. At 999, 1050, 1100, 1150 and 1300
+    the positions are (0, 0), (50, 18), (100, 37), (100, -6) and (100, -50). The -6 is truncation toward
+    zero, not floor.
+  - x-wrap, x0 0, period 64: route (50, 0), (90, 10) at ticks 0, 40. At 20 the chart point (70, 5) folds to
+    (6, 5); at 40, (90, 10) folds to (26, 10).
+  - Guyou, `guyou(64, false)` (the seams glued, not stopped): route (10, 20), (10, 50) at ticks 0, 30, across
+    the south seam, which turns the band. At 10 it is (10, 30). At 20 the chart point (10, 40) folds to
+    (-11, 23), and at 30 (10, 50) folds to (-11, 13). The point (-10, 24) would be the corner's fold, the
+    trap MZB-454 names.
+- **MZB-478** (where each test's half lives):
+  - The engine's decisions are tested in Rust.
+  - GameTests run on scripted commands (ConflictKit), as M3's do.
+  - Test 28 is in two halves:
+    - an rtsim-jni protocol test: `order_party`, no BAND_MARCH from the takes, the Invasion reaching its
+      target, and pool plus away within the cap;
+    - a plugin GameTest: a camp TAKE leaves the column's puppets alone, and the throne take is held under
+      M9's Rule U.
+- **MZB-479** (the seam gap; recorded for a TP slice): ConflictBridge has no TP11 image mapping. BAND_STEER and
+  BAND_MATERIALIZE points reach it in the engine's chart, and it walks to them as they are. Test 34's
+  positions are checked across seams as numbers, but its moving form runs on a flat world.
+- **MZB-480** (the M11 seam):
+  - `chief_stack` stays false for the grove. The walk test counts `spawned`.
+  - The column puts a flagged chief stack at the rear, ready for M11's Umvuthi.
+  - `MarchPath` exposes MARCH_CHIEF, and `march(agent)` is the read M11's aloft will use.
+  - M10 designs nothing of the aloft, CHIEF_BODY's travel or the chief's hand-back.
+- **MZB-481** (M3's stack test becomes test 33's core): with one stack per row, the counts in
+  `aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange` change. It is rewritten as test 33's core
+  clauses, not kept beside it.
+- **MZB-482** (boundary.md amended):
+  - §9.5: bands on their way home are materialized.
+  - BAND_MARCH's `musterEndTick` is 0 after the band sets out.
+  - The revision is per session.
+  - BAND_MATERIALIZE's bearing at radius 0 is the march's heading.
+  - The note at the BAND_MARCH layout says when the record goes (MZB-451).
+- **MZB-483** (the M3 interim rule ends): M3's "until M10, a stack is placed at BAND_MATERIALIZE's position,
+  not in a column" is replaced by MZB-469 to MZB-472.
+- **MZB-484** (no M10 push while the session's replay catches up): under rtsim-jni, `take_commands` moves the
+  whole outbox into the JNI queue after every ingest, so the engine's `outbox.retain` filters never see a
+  command pushed while `replaying`. Each M10 push is therefore gated where it is made:
+  - **BAND_MARCH.** `take_commands` builds no march record while `self.replaying`. It leaves `march_due` and
+    the flags as they are. `home` pushes its ENDED record only when not replaying, though the flag and the
+    row go either way.
+    - `session_start` marked every party, so the first take after `replay_done` sends each one once.
+    - Java's map (cleared at the session start) never holds a party's mid-replay state, and it never hears of
+      a party that ended during the replay.
+  - **Embodied branches.** Each M10 branch that acts on an embodied party adds `!self.replaying` to its test,
+    and while replaying falls back to today's path:
+    - go_home's walk (MZB-456), and so steer_segment's steer home;
+    - start_fight's walk-in (MZB-461);
+    - the re-binds in `unseen`, `player_left` and `arrive` (MZB-458 to MZB-460).
+  - **seen.** `seen` skips a Home party while replaying, as it skips every Home party today (MZB-457).
+  - **Why the gates are needed for now.** While replaying, a party is embodied only through main's `seen()`,
+    which has no `replaying` gate (an audit found it; the coordinator is fixing it, and M10 does not). The
+    gates keep M10 from adding pushes to that hole, and they do nothing once it is fixed.
+  - **Ungated, by design.**
+    - `march_bearing` changes a field of BAND_MATERIALIZE's existing push, so it adds no push.
+    - `lose_units`' clamp (MZB-462) pushes nothing, and it keeps the books true whatever made the party
+      embodied.
+    - Java's walk-in, clamp, trim and pending stacks send nothing to the engine.
+  - **Tests.** M10's tests keep every live player out of a band's view until `replay_done`, so they do not
+    hit main's `seen()`.
+  - **boundary.md.** Its BAND_MARCH note says that none goes until the session's replay has caught up.
+
+### M10 design for the implementer
+
+**Where it stands.** Designed only; no code. Branch `design/mowzie-m10` (this doc). The implementation
+branch `feat/mowzie-m10` starts as MZB-450 says. Compile as M9 does, in this worktree's own target dir. The
+Rust is `nice -n 10 nix develop .# -c cargo test -p rtsim-conflict -p rtsim-jni -p rtsim-cli` from the repo
+root.
+
+Line numbers below are `feat/mowzie-m9` at 6125fcce, where engine.rs, camp.rs, boundary.rs, persist.rs and
+synth.rs are unchanged since 65e780ee. Re-check them after the merges.
+
+**Jar facts.** Mowzie's Mobs 1.21.1-1.8.2 was read with cfr in `target/m10-mowzie-cfr`. Vanilla 1.21.1 was
+read from NeoForm's decompile output (`~/.gradle/caches/neoformruntime/intermediate_results/decompile_*`),
+extracted to `target/m10-vanilla`.
+
+*Mowzie*
+- `EntityHandler` (130 to 134 of the cfr output):
+  - `UMVUTHANA_MINION` is sized from `MaskType.FEAR`, `UMVUTHANA_RAPTOR` from `MaskType.FURY`, and
+    `UMVUTHANA_FOLLOWER_TO_RAPTOR` from `MaskType.FEAR`. Each has `clientTrackingRange(8)` (128 blocks) and
+    `setUpdateInterval(1)`.
+  - `UMVUTHI` is `sized(1.5f, 3.2f).clientTrackingRange(10)`; `FROSTMAW` is `sized(4.0f, 4.0f)
+    .clientTrackingRange(10)`.
+- So a column's warriors and raptors reach every client within 128 blocks, and the trim's 64 (OUT_OF_VIEW) is
+  inside that.
+
+*Vanilla: the ticking square (MZB-472)*
+- `ChunkLevel` 10 to 12: FULL 33, BLOCK_TICKING 32, ENTITY_TICKING 31 (`byStatus`, 55).
+- The view distance loads chunks. `DistanceManager.PLAYER_TICKET_LEVEL` (40) is ENTITY_TICKING, and
+  `PlayerTicketTracker` (464 to 550) puts that ticket on each chunk within the view distance.
+- The simulation distance ticks them:
+  - `DistanceManager.addPlayer` (230 to 237) adds a PLAYER ticket to `tickingTicketsTracker` at
+    `getPlayerTicketLevel()`, which is `max(0, 31 - simulationDistance)` (252 to 253).
+  - `inEntityTickingRange` (256) holds when that tracker's level is at most 31.
+  - `ChunkTracker` (44 to 52, 71 to 72) adds one level for each step to any of the 8 neighbours.
+  - So a player's entity-ticking chunks lie within Chebyshev distance `s` of its chunk, while `s` is no more
+    than the view distance.
+- The simulation distance is server-wide:
+  - `PlayerList.getSimulationDistance()` (775);
+  - `PlayerList.setSimulationDistance` (888) sets every level, through `ServerChunkCache.setSimulationDistance`
+    (490) and `DistanceManager.updateSimulationDistance` (273).
+- A player holds these tickets only once the chunk map tracks it. The chain:
+  1. `ServerLevel.addNewPlayer`, then `addPlayer`, then `entityManager.addNewEntity` (890 to 904);
+  2. `onTrackingStart` (1698 to 1701), then `getChunkSource().addEntity`;
+  3. `ChunkMap.addEntity` (1110 to 1123), then `updatePlayerStatus(player, true)` (996 to 1003);
+  4. `distanceManager.addPlayer`, unless `skipPlayer` (a spectator, when spectators do not generate chunks).
+- Consequences:
+  - M6's `FakePlayers.addSeen` player makes chunks tick; a `FakePlayers.add` player does not.
+  - UNVERIFIED: whether `onTrackingStart` runs at once for a player whose chunk is not loaded. Test 33 forces
+    the player's chunk first.
+- `Entity.shouldRenderAtSqrDistance` (1692 to 1700): a client draws an entity out to `bbSize × 64 ×
+  viewScale` blocks.
+
+**Contradictions with MOWZIE.md and other slices:**
+1. **Line numbers only.** MOWZIE.md cites `EntityHandler` 94 and 97 for the tracking ranges; in this cfr
+   output they are 130 to 134. The values agree.
+2. **Groups.** Ledger 25 wants a row of two, a pack and the chief alone. M3 makes one stack per entry
+   (MZB-469).
+3. **The bearing.** `spawn_wave` sends bearing 0 at radius 0, so a band met on the march faces +x (MZB-457).
+4. **A failed hand-back.** MZB-211's homecoming starts only from a HAND_BACK that is done. A STALE or failed
+   one leaves the puppets standing for good (MZB-464).
+5. **§9.5.** boundary.md says bands on their way home are not materialized. M10 materializes them (MZB-482).
+6. **The seam.** boundary.md gives BAND_STEER and BAND_MATERIALIZE points in the chart, and ConflictBridge
+   maps no images (MZB-479).
+7. **Test 29.** MZB-440 gives test 29's re-bind clauses to M11. Their engine half (`rebind_to`, `unseen`,
+   `player_left`, `arrive`) is M10's, in Rust tests and run 11. The GameTest clauses stay with M11.
+8. **Replay.** Main's `seen()` pushes while `replaying`. M10 neither fixes it nor depends on the fix
+   (MZB-484).
+
+**What earlier slices must provide** (keep these as they are):
+- M6: `FakePlayers.addSeen` and `removeSeen`, and MZB-589's party-scoped op ids.
+- M9:
+  - M9c's `ConflictBodies.registerMaker`, `Maker`, `Slot.extras` and `RaptorMaker` (MZB-428, MZB-429). They
+    are not built at 6125fcce.
+  - M9b's Rule U holds (`holdRemoval`), which test 28's throne take uses.
+  - CHIEF_BODY and the `chief_stack` gate.
+- M3 and M5:
+  - `Stack` with its pending watch (`entitiesTickAt`, the chunk sets, `dirty`);
+  - `homeAt` and `startRecall`;
+  - `Camps.reconcile`'s homecoming map;
+  - the cap in `casualties`.
+
+**Engine** (rtsim-conflict; rtsim-jni needs no change):
+- `engine.rs`, the state:
+  - `Party` gains `march_rev: u32`, `march_due: bool` and `unseen_due: Tick` (MZB-453).
+  - `Conflict` gains `march_due: Vec<Handle<Party>>`. It is not saved; `load` rebuilds it from the flags, in
+    handle order.
+  - New: `march_changed(&mut self, p)` (MZB-451) and `march_record(&self, p, ended: bool) ->
+    boundary::BandMarch` (MZB-452).
+- `engine.rs`, the records:
+  - `take_commands` (970): the march records come first, built only when not `replaying` (MZB-451, MZB-484).
+    It calls `enforce_budget` after every `FACTIONS_PER_PAGE` of them.
+  - The marks:
+    - `send_party` (2755); `party_event`'s Mustering arm (2964); `wait` (3439);
+    - `start_fight` (4203); `go_home` (3985); `home` (4046), when it keeps the row;
+    - `succeed`'s loop (1342) and `chief_killed_by` (5691);
+    - the private `player_left` (6180);
+    - `session_start` (4932), for every party;
+    - `start_segment` (3041), for a long route only (MZB-455).
+  - `home` pushes the ENDED record after its lines and any recall and before `parties.remove`, only when not
+    `replaying`.
+- `engine.rs`, the walk home:
+  - `go_home` (3985): `here` is `party_chart_pos` (901). The walk rule gains `!replaying` (MZB-456,
+    MZB-484). Then it calls `steer_segment`.
+  - `steer_segment(&mut self, w: &World, p, at)` is factored out of `start_segment` (3041) unchanged, and
+    `start_segment` calls it.
+  - `seen` (4720): Home, unless `replaying`; the steer covers both Out and Home (MZB-457).
+  - New: `march_bearing(&self, p, centre: (i32, i32)) -> f32`, called by `spawn_wave` (4262) when there is
+    no arc.
+- `engine.rs`, re-binding (each gated by `!replaying`, MZB-484):
+  - New: `inside_now(&self, p, c, r, at) -> Option<f64>`. `exit_time` (3137) uses it for its first test.
+  - New: `rebind_to(&self, w: &World, p, at) -> Option<ActorId>`.
+  - `unseen(&mut self, w, p, epoch, at)` (4817). Its wheel arm (4877) passes `w`.
+  - `book_unseen(&mut self, w, p, at, not_before)` (3174) also books Home. Its callers pass `at`.
+  - The private `player_left` (6180) (MZB-459) and `arrive`'s war arm (3367) (MZB-460).
+  - `start_fight` (4203) on an embodied party (MZB-461).
+- `engine.rs`, the books:
+  - `lose_units` (3814) clamps `spawned` (MZB-462).
+  - `home` (4046) falls back to a recall when `camp_home` returns false (MZB-463).
+- `engine/camp.rs`:
+  - `party_lost` (1158) marks before its `is_war` return;
+  - `member_died` (2426) marks;
+  - `camp_home` (1193) returns `bool`.
+- `boundary.rs`: `BandMarch::chart_pos(&self, t: i64) -> Option<(i32, i32)>` (the struct is at 767), with a
+  unit test of MZB-477's flat vector.
+- `persist.rs`:
+  - the three fields at the end of `put_party` (735) and `get_party` (775);
+  - `MAGIC` and `META_VERSION` move to the next after M9's;
+  - fixtures and hashes are regenerated, with no migration.
+- `synth.rs` (`FakeConflict`, 322), MZB-476:
+  - The `Cmd::March` arm (742) keeps the latest march per agent by revision, drops it on ENDED, and clamps the
+    held body's members (keyed by body id, as `Materialize` keys them) to the record's counts.
+  - `reconcile` (1027) ends a held body for each HAND_BACK line at the body's epoch (`l.a`, `l.b`), whatever
+    the line's outcome, with BAND_DEMATERIALIZED (reason 1) after `leave_ticks`.
+- rtsim-jni: its `Cmd::March` arms (engine/conflict.rs 952, 1031, 1087) already map the dimension, culture and
+  bodies, and shift the ticks.
+
+**Java, core** (`neoforge/core/.../mic_rtsim/`):
+- `ConflictRecords`:
+  - `BAND_MARCH = 0x880B`. Its `minSize` case is `March.UNIT_LIST`.
+  - `March`: `AGENT = 16, REVISION = 24, DIM = 28, FACTION = 32, CULTURE = 40, KIND = 44, PHASE = 45,
+    FLAGS = 46, PARTNER = 48, MUSTER_END = 56, UNITS = 64, UNIT_LIST = 72`.
+  - Each unit is `UNIT = 8` bytes (`U_BODY 0`, `U_COUNT 4`); each waypoint is `WAYPOINT = 16` (`W_X 0`,
+    `W_Z 4`, `W_TICK 8`).
+  - `FLAG_CHIEF 1`, `FLAG_ENDED 2`, `FLAG_JOINT 4`; phases `MUSTERING 1` to `HOME 5`.
+  - `static int size(int k, int w)` returns `UNIT_LIST + UNIT * k + WAYPOINT * w`.
+- `conflict/MarchPath` (new, final, immutable):
+  - fields: agent, revision, dimension, faction, culture (a name or null), kind, phase, flags, `muster_end`,
+    the units as body name to count (an `Object2IntOpenHashMap<String>`), and the waypoints as `int[] xs,
+    zs; long[] ticks`;
+  - `chief()`, `ended()`, `stopped()` (phase 3 or 4);
+  - `int[] chartAt(long t)` (MZB-454; null with no waypoint);
+  - `int[] at(long t, LevelTopology topo)`: `topo.fold(x + 0.5, z + 0.5)`, each part floored.
+- `ConflictBridge`, the map (MZB-468):
+  - Fields: `Long2ObjectOpenHashMap<MarchPath> marches` and `LongOpenHashSet ended`. Counters:
+    `marchRecords`, `trimmed`, `walkIns` and `clamps`.
+  - `accept` (641): `case ConflictRecords.BAND_MARCH -> march(b, at, size, aux, names, now);`.
+  - `private void march(ByteBuffer b, int at, int size, int w, EngineNames names, long now)`:
+    1. When `March.size(k, w) > size`, it counts `malformed` and stops.
+    2. It drops the record when the agent is in `ended`, or when the held path's revision is not lower.
+    3. ENDED removes the path and adds the agent to `ended`.
+    4. Otherwise it decodes the record (bodies through `names`) and puts it. When `byAgent` holds the band:
+       `p.trimDue = p.trimNow = true`, and `p.stopBeat = true` if the new path is stopped and the old one was
+       not.
+  - `public MarchPath march(long agent)`.
+  - `sessionStarted` (504) and `switchedOff` (1380) clear both.
+- `ConflictBridge`, the column (MZB-469), in `materialize` (838). It replaces the per-entry loop (918 to 945).
+  - `Party` gains `hdx, hdz`, the column's heading, plus `trimDue`, `trimNow` and `stopBeat`. `Stack` gains
+    `back`, `side` and `chief`. `Slot.back` stays the slot's own place within its stack.
+  - The heading: at radius 0 it is `(cos, sin)` of the record's bearing. On an arc it runs from the centroid to
+    the target, as today.
+  - Pseudo-code:
+    ```
+    cursor = 0
+    for each entry i (record order):
+      base  = radius == 0 ? (cx, cz) : at0[i]
+      side0 = radius == 0 ? 0 : (i - (m - 1) / 2.0) * STACK_SPACING
+      c     = radius == 0 ? cursor : 0
+      if maker(body).pack():
+        member j: a stack of 1, back c + PACK_ROW * (j / 2), side side0 + (j even ? PACK_SIDE : -PACK_SIDE)
+        c += PACK_ROW * ceil(n / 2)
+      else:
+        row r: a stack of min(2, n - 2r) slots at lateral(g, rowSize), slot back 0; stack back c, side side0
+        c += ROW per row
+      if the entry has the chief: a stack of the chief slot alone, chief = true, back c, side side0; c += ROW
+      if radius == 0: cursor = c
+    each stack: off = -h * back + r * side, with r = (-hdz, hdx)
+      anchor = radius == 0 ? base + off : base - h * back
+      walk(target + off)
+    ```
+  - `PACK_SIDE = 3.0` and `PACK_ROW = 6.0` are both PLACEHOLDER.
+- `ConflictBridge`, turns (MZB-470), in `steer` (980):
+  1. The front stack is the non-GONE one with the least `back`, ties to the lower index.
+  2. The head is the front stack's `anchor(now)` less its offset.
+  3. `(hdx, hdz)` becomes the unit vector from the head to `(x, z)`; it is kept when the length is under
+     1e-6.
+  4. Each non-GONE stack's `offX, offZ` is recomputed from its `back` and `side`, and it walks to `(x + offX,
+     z + offZ)`.
+  - `startRecall` (1024) is unchanged: a recall's walk keeps its offsets.
+- `ConflictBridge`, the stop (MZB-472), in `endOfTick` (1332):
+  - The beat is `now % STOP_BEAT == 0` (20, PLACEHOLDER), or `p.stopBeat`.
+  - In the pending loop, before `tryPlace`: on the beat, `walkIn(p, st, level, now)` for a stopped band.
+  - After the loop, on the beat: `clamp(p, level, now)` for each stopped band. Then `stopBeat` is cleared.
+  - `square(ServerPlayer pl)` returns blocks `16 * (pcx - s + 1)` to `16 * (pcx + s) - 1` in x, and the same
+    in z, with `s = server.getPlayerList().getSimulationDistance()`.
+  - `nearest(level, x, z, head)` is the nearest non-spectator player to `(x, z)` that is within 256 blocks of
+    the head.
+  - `walkIn`:
+    1. The entry point is the first point inside the square on the segment from the stack's place to the
+       head (clipped as Liang-Barsky does), or else the head clamped into the square.
+    2. It sets `ax, az` there and `t0 = now`, then calls `walk` toward the old end clamped into the square.
+    3. It sets `dirty = true` and adds 1 to `walkIns`.
+  - `clamp`: a PLACED stack whose `(ex, ez)` lies outside its player's square walks from where it stands to the
+    end clamped to `[min + 0.5, max + 0.5]`. It adds 1 to `clamps`.
+- `ConflictBridge`, the trim (MZB-473), in `endOfTick` after the stop, for each band with `trimNow`, or with
+  `trimDue` on the beat:
+  1. For each body name among the band's live non-chief slots:
+     - `living` counts slots that are `alive && !chief && !removing`, over the non-GONE stacks;
+     - `want` is `path.units.getInt(name)`.
+  2. While `living > want`, it cuts the slot `pick(p, name)` returns:
+     - first, the last live slot of the rearmost PENDING stack;
+     - else, the rearmost live slot of a PLACED stack (by stack `back`, then stack index, then slot index,
+       each highest first) with no non-spectator player within OUT_OF_VIEW of its entity;
+     - else null, which ends the loop and leaves the band blocked.
+  3. Without `FLAG_CHIEF`, the chief's slot is cut by the same rule.
+  4. `cut(sl)`:
+     - `despawn(sl)` (1202), with its extras; then `sl.alive = false`; adds 1 to `trimmed`;
+     - a stack left with no live slot is unwatched and set GONE.
+  5. `trimDue` is set to `blocked`, and `trimNow` to false.
+  6. It journals nothing (MZB-467).
+- `Camps.reconcile` (941 to 1009), MZB-464:
+  - Before the dispatch, each HAND_BACK line whose `bridge.party(ln.a())` is at epoch `(int) ln.b()` puts that
+    party in `homecoming`, whether the camp is in or not.
+  - The loop at 1008 calls `homeAt(p, spot)`. With no site spot it uses the band's front stack's anchor.
+- `gametest/ConflictKit`:
+  - New: `march(MarchSpec)`. `MarchSpec` holds agent, revision, dimension, faction, kind, phase, flags,
+    `muster_end`, units as name to count, and waypoints as `long[] {x, z, tick}`.
+  - New: `trimmed()`, `walkIns()` and `clamps()` reads.
+  - `Band.bearing` exists already.
+
+**Java, plugin** (`neoforge/mowziesmobs/.../mic_rtsim_mowziesmobs/`):
+- `ConflictBodies.Maker` (core, M9c) gains `default boolean pack() { return false; }`. It stays a functional
+  interface. `RaptorMaker` overrides it to return true.
+- No mixin and no event hook (MZB-474).
+- D3: no new entity type. D4: the column, stop and trim are core's; the plugin only says which body is a pack.
+- UR-1: nothing new is saved in the world or on an entity. The march map is memory, cleared each session.
+- D1 (MZB-475):
+  - A record costs one decode and one map put.
+  - The stop runs on the 20-tick beat, per stopped band, over its stacks and the level's players.
+  - The trim runs on a record, then on the beat only while due.
+  - Pending tests are as M3's, per changed chunk.
+  - Nothing runs per member per tick.
+
+**GameTests** (one batch per test, each on its own far base, MZB-247; scripted through ConflictKit, MZB-478):
+
+22. The march cases of `theCampReconcilerKeepsItsInvariants`: `aBandSetsOutAndComesHomeInPlainView`
+    (MowzieGameTests). It is the "in plain view" clause in its moving form; the reload clause's "its party
+    marches on" is test 28's.
+    - Setup: a test grove that is in, with 4 adopted warriors. A `FakePlayers.add` player stands 150 blocks
+      from the grove's spot.
+    - `together`: SET_OUT for slots 0 to 3 to agent A, then BAND_MATERIALIZE A with 3 warriors and 1 raptor
+      (the maker).
+    - Assert: three puppets stand where bodies stood, with health, mask and weapon kept. The only body to go
+      is the warrior the raptor stands for, the one farthest from the player.
+    - BAND_STEER A 40 blocks out, then back to within 6 blocks of the spot (the walk home: no BAND_RECALL is
+      sent). When the head is there, HAND_BACK lines for the 4 slots go.
+    - Assert, with a per-tick record of the band's and camp's entities within 128 blocks of the player:
+      - no entity appears or vanishes there, except a puppet swapped for its body at the same place in the
+        same tick;
+      - each warrior is a tagged body where its puppet stood (within 0.01), restricted to the centre;
+      - the raptor slot spawns at the far edge, more than 128 blocks from the player (MZB-465);
+      - the pack walks off through `homeAt` and despawns out of view, with BAND_DEMATERIALIZED reason 1.
+28. `aGroveThatComesInTakesWhatItsMarchLeft`, the GameTest half (MowzieGameTests):
+    - Setup: a test grove with 3 adopted warriors and an adopted Umvuthi chief.
+    - An Invasion, agent A, is materialized 40 blocks from the grove (2 warriors, `FLAG_CHIEF`, the chief's
+      own stack), with its `march` (phase OUT).
+    - The grove goes out and comes in, with a `FakePlayers.add` player 20 blocks from the throne. TAKE lines
+      for the 3 warriors and the throne body (LINE_CHIEF) follow.
+    - Assert, with the player there:
+      - the warriors are taken at once, and the throne take is held (Rule U);
+      - A's puppets keep their count, and nothing is journaled for A.
+    - Remove the player: the throne take is DONE the next tick.
+    - Again with no player: every take is DONE in one tick, and A is untouched.
+32. `aBandWalksHomeInViewAndIsHandedBack` (MowzieGameTests):
+    - Setup: a test grove that is in, and a band (3 warriors, 1 raptor) 60 blocks out at epoch e, with a
+      player 30 blocks from it. BAND_STEER toward the spot; HAND_BACK lines as its head arrives.
+    - Assert:
+      - each warrior is a tagged body at its puppet's place, with mask and weapon, restricted to the centre;
+      - the raptor slot is a SPAWN at the far edge while the pack walks off;
+      - no BAND_RECALL was needed.
+    - The grove out: BAND_RECALL; the puppets walk off and despawn out of view. Then a census and SPAWN lines
+      spawn them.
+    - MZB-464: the grove released before the HAND_BACK lines, so the lines are STALE. The band still walks
+      toward the spot and despawns out of view, with BAND_DEMATERIALIZED reason 1. A line at epoch e + 1
+      leaves the band alone.
+    - The Umvuthi-on-its-throne clause is M11's (MZB-480).
+33. `aColumnAppearsInsideTheTickingArea` (ConflictGameTests, core, batch `conflict_column`, alone because
+    the simulation distance is server-wide). It replaces M3's stack test (MZB-481).
+    - Setup:
+      - Save `getSimulationDistance()` and `getViewDistance()`, and restore them in `ConflictKit.onEnd`.
+      - Set the simulation distance to 8, and the view distance to at least 9 (UNVERIFIED that 8 suffices).
+      - Force the player's chunk, then `FakePlayers.addSeen` at a far base. Remove it with `removeSeen` before
+        releasing.
+    - The player stands on its chunk's west column, so at 8 the ticking edge is 143 blocks east of it and
+      the square's edge is 127.
+    - A band of 3 warrior rows and the chief comes in at radius 0 and bearing 180 (heading -x, toward the
+      player). Its head starts 170 blocks east of the player, on the player's z, and it walks at 0.1 blocks a
+      tick to a target 60 blocks east.
+    - Assert:
+      - the stacks appear one by one, front first, each in the tick its last member is inside;
+      - BAND_MATERIALIZED is never NOT_TICKING;
+      - the placed stacks stay placed.
+    - Each stack's distance from the player as it appears is logged against 128 to 144.
+    - Steer the band back to 200 blocks east: its stacks return to pending as they leave. Steer it in again:
+      they come again, each with `placings` 2.
+    - The pending-test count: `tests` rises only when a watched chunk changes or a place moves chunks
+      (`moves`).
+    - A recall: BAND_DEMATERIALIZED lists every living member, placed or pending.
+    - Again at simulation distance 10 (view distance 11): logged against 160 to 176.
+    - The stop, at 8:
+      - A band of 6 rows and the chief has its target 140 blocks east, inside the ticking area and outside the
+        square. It arrives from the east, so its rear stacks' places (to about 149) lie beyond 143. A `march`
+        puts it in phase WAITING.
+      - Those stacks walk in (`walkIns`) and are placed once. They hold within the square while they walk
+        toward the target (`clamps`).
+      - None is taken back and placed again while the player stands still. One can be killed, which gives
+        BAND_CASUALTIES.
+      - A phase HOME `march` and a BAND_STEER home: each stack walks back to its column place.
+    - With the target 150 blocks east (outside the ticking area at 8), the stacks hold within the square.
+    - A trim: a `march` that lowers the warriors by 2 cuts the rearmost 2 in the same tick (`trimmed` 2) and
+      journals nothing. The band stands about 130 blocks from the player, out of view.
+      - Again with a second `FakePlayers.add` player 10 blocks from the rear stacks: nothing is cut while it
+        stands there.
+      - Remove it: the cut follows on the next beat.
+    - An envoy (ENVOY_MATERIALIZE) appears as one group.
+    - Carry On and `discard()` stay in M3's tests, which are re-run.
+34. `theMarchRecordMatchesTheBodies` (ConflictGameTests and a JUnit `MarchPathTest`):
+    - JUnit, under `neoforge/core/src/test/java/...` beside `TopologyRecordsTest`: MZB-477's three vectors
+      through `chartAt` and `at`, with `LevelTopology.xWrap(0, 64, ...)` and `guyou(64, false, ...)`.
+    - GameTest:
+      - The layout: a `march` with 2 units and 3 waypoints round-trips into `bridge().march(agent)`.
+      - A lower revision is dropped; ENDED drops the path and later records.
+      - A band met on the march (BAND_MATERIALIZE at radius 0 with the march's bearing) stands as its column:
+        rows two abreast, 1.5 blocks apart, the chief at the rear, and the front stack's head within 0.5 of
+        `march.at(now)`.
+      - The moving form: on the flat GameTest world, at 0.02 blocks a tick, in short walks to a steered
+        restriction centre. Log the column's head against `march.at(now)` every 20 ticks (UNVERIFIED how it
+        reads).
+- Re-run, after the row split: `aRaidPartyIsSteeredLosesMembersAndIsRecalled` and
+  `aChiefWhoseStackHasNoUnitsLeftStillComes` (ConflictGameTests), and Carry On's
+  `CarryOnConflictGameTests`. Fix stack counts, never the rule.
+
+**Rust tests:**
+- `rtsim-conflict`: a new `tests/mowzie_march.rs`, with `mowzie_records.rs`'s `Run` harness.
+  - Records:
+    - each mark makes one record per take, with `march_rev` rising by 1 and several changes in one step
+      making one record;
+    - the march records come before the rest of the outbox;
+    - a session start sends every party, but only after `replay_done`. `take_commands` while replaying builds
+      none, and keeps the flags;
+    - `home` sends the hand-back lines, then ENDED; while replaying it sends no ENDED.
+  - Positions:
+    - MZB-477's flat vector through `chart_pos` and `party_pos`;
+    - the x-wrap and Guyou vectors through `set_topologies` and `party_pos`.
+  - The walk:
+    - routed, bored and done while embodied: BAND_STEER and no BAND_RECALL;
+    - settled, Peaceful, an envoy, `spawned` empty and `replaying`: a recall, as today;
+    - each later segment home steers;
+    - an edge_stop seam is recalled.
+  - Met on the way home: a Home party is materialized with the march's bearing; while replaying it is not.
+  - Re-binding:
+    - the watcher walks off with a second player 180 blocks off: re-bound, not recalled;
+    - the watcher follows at 180: the same player;
+    - nobody: RECALL_PASSING;
+    - an `Unseen` superseded by a later booking does nothing (`unseen_due`);
+    - a booking at the same tick lands at `at + 1`.
+  - `player_left`: a fight turns to waiting, with a second player 100 blocks off, and keeps its bodies; a
+    siege is recalled.
+  - `arrive` with the player 170 blocks from the target: re-bound, resolved abstractly, walked home; with
+    the player 150 blocks off, a fight.
+  - `start_fight` on an embodied band: STEER_ATTACK, the same epoch, and a wave of only the members not yet
+    spawned.
+  - `lose_units`: `spawned` clamped and `recalled` not. 6 warriors with 3 lost leave `spawned` 3.
+  - `home`'s fallback: a party all Left, a faction with no camp ledger, and a `camp_home` with no hand-back
+    line are each recalled (P2-7).
+  - Save and load keep `march_rev`, `march_due` and `unseen_due`, and rebuild the list.
+- `rtsim-jni` protocol tests, in `tests/protocol.rs`'s conflict module beside
+  `casualties_journaled_after_a_save_of_a_band_in_view_are_counted_by_the_replay` (5711). Each keeps live
+  players out of the band's view until the replay has caught up (MZB-484).
+  - A session start sends BAND_MARCH for every party once the replay has caught up, with the counts the
+    replayed casualties left.
+  - A restart between a walk-home casualty and its record: the replay counts the casualty once, and the next
+    record carries it.
+  - `lose_units` across a restart: 6 warriors with 3 killed while resolved abstractly leave 3 after the
+    recall, not 0.
+  - Test 28's engine half: `order_party` an Invasion; the grove out at its muster's end comes in; the takes
+    send no BAND_MARCH (the revision is unchanged); the Invasion reaches its target; a raid and a refill
+    meanwhile leave pool plus away at or under the cap.
+  - No crash or reassert copy is needed, since M10 adds no holder-carried record (MZB-467).
+
+**Sim runs** (`rtsim-cli sim mowzie`; `RUNS` and `main`'s dispatch in `crates/rtsim-cli/src/sim/mowzie.rs`):
+- **Run 11** (`invasion_marches`; `RUNS` keeps "M10, M11", so M11 can add the chief's travel). Players are
+  moved through `World::set_player_pos` (rtsim-world interest.rs 121). It must show:
+  - an Invasion with its chief from a grove that is out and from one that is in, at 12.6;
+  - killed away: the rout, the feud on Scouts, the heir at 12 days;
+  - a grove that comes in while it is out takes its throne body, and the Invasion goes on;
+  - the held throne body and the seat at the wait's end, and the seat waiting for a fight's end;
+  - the re-binds (walked off, logged out, followed), with no recall;
+  - the arrival with the only player 170 blocks off: abstract, then walked home;
+  - a fight that loses its watcher with a second player near keeps its bodies;
+  - the abstract dead counted once at the recall.
+- **Run 13** (`march_record`):
+  - It steps runs 1, 5, 10 and 11 by 20 ticks. For each party unchanged across a step (plan and
+    `march_rev`), it checks `chart_pos` against `party_chart_pos` at every tick of the step. For the rest, it
+    checks at the step's end.
+  - A record follows each change of route, phase or count.
+  - No census ends a party.
+  - On an x-wrapped world, a band that crosses the seam and then routs gets a `go_home` route starting at
+    `party_chart_pos`: no lap at its front, and a first segment as long as its walk.
+  - On a glued world, `canonical_point(x + 0.5, z + 0.5)` floored equals `party_pos` at every tick across the
+    seam.
+
+**Work split** (each sub-slice is committed and tested on its own):
+- **M10a, engine:**
+  1. The merges and the world delete (MZB-450).
+  2. `boundary.rs` `chart_pos` and its test.
+  3. The `Party` fields, `march_changed`, `march_record` and the marks.
+  4. `take_commands` and `home`'s ENDED, with the replay gate.
+  5. `persist.rs`, then the regenerated fixtures.
+  6. `party_chart_pos` in `go_home`, `steer_segment` and the walk rule.
+  7. `seen` and `march_bearing`.
+  8. `inside_now`, `rebind_to`, `unseen_due`, `book_unseen`, `unseen`, `player_left` and `arrive`.
+  9. `start_fight` on an embodied band.
+  10. `lose_units`' clamp, then `camp_home -> bool` and `home`'s fallback.
+  11. `FakeConflict`.
+  12. `mowzie_march.rs` and the protocol tests, including MZB-466's counter and its no-cascade test.
+  13. Runs 11 and 13.
+  14. The boundary.md amendments (MZB-482, MZB-484).
+
+  **Opus review here**, focused on:
+  - the books: `spawned`, `recalled` and the casualties' cap across a restart;
+  - the re-bind loops: no `Unseen` storm, and no recall lost;
+  - the replay gates.
+- **M10b, Java:**
+  1. `ConflictRecords.March` and `MarchPath`, with `MarchPathTest`.
+  2. The march map and `march`.
+  3. The column in `materialize`, and `Maker.pack()` with RaptorMaker's override.
+  4. The turns in `steer`.
+  5. The stop: `square`, `nearest`, `walkIn` and `clamp`.
+  6. The trim.
+  7. `Camps.reconcile`'s homecoming.
+  8. The ConflictKit helpers.
+
+  **Opus review here**, focused on:
+  - D1: no per-member work per tick;
+  - placement: no stack placed outside ticking chunks, and none flickering at the edge;
+  - the trim never cutting in sight.
+- **M10c, GameTests:**
+  1. 33, then the re-runs of M3's tests.
+  2. 34.
+  3. 32.
+  4. 28's half.
+  5. 22's march cases.
+
+  **Opus review at the end**, of M10 whole against MOWZIE.md §4.16, ledgers 23 and 25, and tests 22, 28,
+  32 to 34.
+
+**No open question.** The coordinator decided MZB-466 (the race at home) on 2026-10-24: it is accepted, with a
+counter and a no-cascade test.
+
+**Traps.**
+- **The cell fold.** Java folds the block centre, `(x + 0.5, z + 0.5)`. Folding the corner lands on the
+  neighbouring block under a half-turn: (-10, 24) instead of (-11, 23).
+- **Truncation.** `party_chart_pos` truncates toward zero: (100, -6), not (100, -7).
+- **Replay.** Under rtsim-jni every push while `replaying` reaches Java; the outbox filters never see it. Gate
+  at the push (MZB-484).
+- **The simulation distance is server-wide.** Test 33 runs in its own batch and restores it, and the view
+  distance, in `onEnd`.
+- **Ticket players.** A `FakePlayers.add` player ticks nothing; use `addSeen`, with its chunk forced first.
+- **A tick floor.** `exit_time` can return the current tick, so an `Unseen` re-booked at `at` would loop. The
+  booking uses `not_before = at + 1`.
+- **Unseen storms.** Without `unseen_due`, each re-bind adds an event and the old ones all fire.
+- **The saved outbox.** The outbox is saved, so `march_due` must be too. An unsaved flag loses a mark made
+  before a crash.
+- **ENDED trims nothing.** The hand-back or the recall ends the band. A trim on ENDED would cut puppets that
+  are about to be handed back.
+- **The seam gap.** The bridge's points are in the chart (MZB-479). Use `chartAt` for the head, and keep test
+  34's moving form on a flat world.
+- **The base moves.** `feat/mowzie-m9` is still moving, and M9c's maker is not built yet. Re-check every line
+  number above.
+- **MOWZIE.md** is at the repo root, not in docs/.
+- **The command count.** `take_commands` returns more commands now. Tests that count them, or index into
+  them, need the march records filtered out.
 
 ## M11 Aloft
 

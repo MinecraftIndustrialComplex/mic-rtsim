@@ -158,6 +158,22 @@ pub struct GoodBound {
     pub why: (u32, u32),
 }
 
+/// A goods edge into or out of a store, as the solve ran it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StoreEdge {
+    pub edge: u32,
+    pub good: Good,
+    /// Its L flow, per tick.
+    pub flow: f64,
+    /// Into the store (else out of it).
+    pub into: bool,
+    /// The class of the component on its other side (`report::class`): a section's class for a
+    /// good is the worst of its own store edges', as the district's is of all of them.
+    pub class: u32,
+    /// Why (`report::why` and its node or edge).
+    pub why: (u32, u32),
+}
+
 /// A solve's result.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Solution {
@@ -171,8 +187,8 @@ pub struct Solution {
     pub saturated: Vec<bool>,
     /// Per edge: the flow L used, all goods (f64), for localization.
     pub edge_flow: Vec<f64>,
-    /// Read-store edges with their good and L flow: (edge, good, flow, into the store).
-    pub store_edges: Vec<(u32, Good, f64, bool)>,
+    /// Read-store edges with their good and L flow, and the class of the side they reach.
+    pub store_edges: Vec<StoreEdge>,
     /// Every goods edge's exact L flow per good, nonzero only, by edge then good: what the glass
     /// replay books per store and across a partial load's cut (G2).
     pub edge_goods: Vec<(u32, Good, Q)>,
@@ -183,6 +199,12 @@ pub struct Solution {
     /// Per node: the share of a heater's burn its fuel under L pays for, `min(1, Σ fuel × burnTicks)`
     /// (its remaining burn falls by `1 - fed` per tick while lit).
     pub fed: Vec<f64>,
+    /// Stochastic sources' variance per good they emit: (node, good, λ E[X²]), by node then good
+    /// (SECTIONS.md §4.1: a section's variance is its own nodes').
+    pub src_var: Vec<(u32, Good, f64)>,
+    /// Machines' chance outputs: (node, good, roll variance, what the node made of the good under
+    /// L), by node then good; the share reaching the stores nets the roll (GB111).
+    pub roll_var: Vec<(u32, Good, f64, f64)>,
     /// Graph-wide: a black box or port (or a demoted node) exists.
     pub has_unbounded: bool,
     /// LPs run, LPs skipped as too big (`glass.lpVarsMax`) or past the work (`glass.lpWorkMax`),
@@ -2552,7 +2574,14 @@ pub(crate) fn solve_with(
                 b_in[gi] = b_in[gi].max(g.batch_units(from, s.goods[gi]));
                 let k = (inv, s.goods[gi]);
                 per_store.insert(k, per_store.get(&k).copied().unwrap_or(Q::ZERO).add(x));
-                store_edges.push((e, s.goods[gi], x.to_f64(), true));
+                store_edges.push(StoreEdge {
+                    edge: e,
+                    good: s.goods[gi],
+                    flow: x.to_f64(),
+                    into: true,
+                    class: u32::from(comp_taint[out_side(from)]),
+                    why: comp_why[out_side(from)],
+                });
             }
         }
         for &e in g.out_g.of(v) {
@@ -2567,12 +2596,21 @@ pub(crate) fn solve_with(
                 b_out[gi] = b_out[gi].max(g.batch_units(to, s.goods[gi]));
                 let k = (inv, s.goods[gi]);
                 per_store_out.insert(k, per_store_out.get(&k).copied().unwrap_or(Q::ZERO).add(x));
-                store_edges.push((e, s.goods[gi], x.to_f64(), false));
+                store_edges.push(StoreEdge {
+                    edge: e,
+                    good: s.goods[gi],
+                    flow: x.to_f64(),
+                    into: false,
+                    class: u32::from(comp_taint[to as usize]),
+                    why: comp_why[to as usize],
+                });
             }
         }
     }
     // Stochastic sources: λ E[X²] per good they emit.
     let mut var_rate = vec![0.0f64; gn];
+    let mut src_var: Vec<(u32, Good, f64)> = Vec::new();
+    let mut roll_var: Vec<(u32, Good, f64, f64)> = Vec::new();
     for v in 0..n as u32 {
         let node = g.node(v);
         if node.kind != NodeKind::Source
@@ -2601,6 +2639,7 @@ pub(crate) fn solve_with(
         for gi in emitted {
             if lambda.is_finite() {
                 var_rate[gi as usize] += lambda * ex2;
+                src_var.push((v, s.goods[gi as usize], lambda * ex2));
             }
         }
     }
@@ -2620,11 +2659,18 @@ pub(crate) fn solve_with(
             continue;
         }
         // What the node made of each good, chance or not.
+        let mut mine: BTreeMap<u32, Q> = BTreeMap::new();
         for &e in g.out_g.of(v) {
             for sl in s.slots_of(e) {
                 let gi = s.slot_good[sl] as usize;
                 made[gi] = made[gi].add(s.used[sl]);
+                let m = mine.entry(gi as u32).or_insert(Q::ZERO);
+                *m = m.add(s.used[sl]);
             }
+        }
+        for &(gi, x) in &s.chance_var[v as usize] {
+            let m = mine.get(&gi).copied().unwrap_or(Q::ZERO).to_f64();
+            roll_var.push((v, s.goods[gi as usize], x, m));
         }
     }
     for gi in 0..gn {
@@ -2657,6 +2703,8 @@ pub(crate) fn solve_with(
         dom_level: s.dom_level.clone(),
         duty: s.duty.clone(),
         fed: s.fed.iter().map(|q| q.to_f64()).collect(),
+        src_var,
+        roll_var,
         has_unbounded,
         lp_solves: 0,
         lp_skipped: 0,

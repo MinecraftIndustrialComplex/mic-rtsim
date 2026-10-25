@@ -21,8 +21,21 @@
 //!
 //! What to do when a crash leaves the engine's pages *ahead* of the world save is Proposal P29,
 //! still open. [`Replay::reconcile`] only detects it.
+//!
+//! # Generations and copies (SEC-1 S4p, docs/boundary.md §3.2)
+//!
+//! Each session of the bridge is a generation: a random nonce its first record (JOURNAL_GEN)
+//! names, at the session's first sequence. A crash hands the lost stretch's sequences out again,
+//! so a record is known by its generation and sequence together. A chunk or entity that carries a
+//! record journals a copy of it (REASSERT) when it loads; [`Replay::copy_is_new`] judges the copy
+//! by the generation it came from: a sequence at or below the last one admitted in that
+//! generation is in the engine's state already, and so is a copy applied before. Every other copy
+//! is new (a crash's lost stretch, or a generation the pages never saw) and applies once. A
+//! generation is closed by the next one's JOURNAL_GEN and never changes again; nothing is ever
+//! forgotten, as a holder can stay unloaded for any number of sessions. The closed ones are saved
+//! in blocks of [`GEN_BLOCK`] ([`Replay::closed_block`]), apart from the meta page.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::codec::{self, Decode, Encode, Reader, Writer};
 
@@ -91,14 +104,52 @@ pub enum Reconcile {
     },
 }
 
-/// Replay state: what has been applied. Saved with the pages.
+/// One generation of the bridge's journal (a session, docs/boundary.md §3.2): its nonce, the last
+/// sequence admitted in it, and the copies applied while it was open, each the (nonce, sequence)
+/// of the record it copied.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gen {
+    pub nonce: u64,
+    pub last: ObsSeq,
+    pub copies: Vec<(u64, ObsSeq)>,
+}
+
+/// Closed generations per saved block ([`Replay::closed_block`]).
+pub const GEN_BLOCK: usize = 256;
+
+const GEN_MAGIC: u32 = u32::from_le_bytes(*b"RTJG");
+const GEN_VERSION: u16 = 1;
+
+/// Replay state: what has been applied. Saved with the pages: the meta page holds all but the
+/// closed generations, which go in blocks of their own.
+#[derive(Clone, Debug, Default)]
 pub struct Replay {
     applied_through: ObsSeq,
     /// Operation ids applied, with the sequence that applied them, oldest first.
     ops: VecDeque<(ObsSeq, OpId)>,
     op_index: HashMap<OpId, ObsSeq>,
+    /// The generation admitting now; None before the first JOURNAL_GEN.
+    open: Option<Gen>,
+    /// Closed generations, oldest first: frozen.
+    closed: Vec<Gen>,
+    /// Each closed generation's last admitted sequence, by nonce.
+    last_of: HashMap<u64, ObsSeq>,
+    /// Every copy applied, open and closed generations', by the record it copied.
+    copied: HashSet<(u64, ObsSeq)>,
+    /// Closed generations the meta page counted that are not loaded yet.
+    closed_expected: usize,
 }
+
+impl PartialEq for Replay {
+    fn eq(&self, o: &Self) -> bool {
+        self.applied_through == o.applied_through
+            && self.ops == o.ops
+            && self.open == o.open
+            && self.closed == o.closed
+    }
+}
+
+impl Eq for Replay {}
 
 impl Replay {
     pub fn new(applied_through: ObsSeq) -> Self {
@@ -125,6 +176,9 @@ impl Replay {
             return Verdict::Gap { expected, got: seq };
         }
         self.applied_through = seq;
+        if let Some(g) = &mut self.open {
+            g.last = seq;
+        }
         if let Some(op) = op {
             if self.op_index.contains_key(&op) {
                 return Verdict::DuplicateOp;
@@ -133,6 +187,136 @@ impl Replay {
             self.ops.push_back((seq, op));
         }
         Verdict::Apply
+    }
+
+    /// A JOURNAL_GEN: [`Replay::admit`]'s order, and on [`Verdict::Apply`] generation `nonce`
+    /// opens at `seq`, closing the one before. The closed one keeps the last sequence it admitted:
+    /// this record is the new one's.
+    pub fn admit_gen(&mut self, seq: ObsSeq, nonce: u64) -> Verdict {
+        if seq <= self.applied_through {
+            return Verdict::AlreadyApplied;
+        }
+        let expected = ObsSeq(self.applied_through.0 + 1);
+        if seq != expected {
+            return Verdict::Gap { expected, got: seq };
+        }
+        self.applied_through = seq;
+        self.begin_gen(nonce, seq);
+        Verdict::Apply
+    }
+
+    /// Opens generation `nonce` with `last` as its last admitted sequence, closing the open one.
+    pub fn begin_gen(&mut self, nonce: u64, last: ObsSeq) {
+        if let Some(g) = self.open.take() {
+            self.last_of.insert(g.nonce, g.last);
+            self.closed.push(g);
+        }
+        self.open = Some(Gen {
+            nonce,
+            last,
+            copies: Vec::new(),
+        });
+    }
+
+    /// The generation admitting now.
+    pub fn open_gen(&self) -> Option<&Gen> {
+        self.open.as_ref()
+    }
+
+    /// Whether a copy of the record at `seq` of generation `nonce` (REASSERT) brings anything the
+    /// engine's state lacks. Not when the generation admitted that sequence (it is open, or closed
+    /// with a later last sequence), nor when a copy of it applied before. Nonce 0 (a record no
+    /// generation names) is always new.
+    pub fn copy_is_new(&self, nonce: u64, seq: ObsSeq) -> bool {
+        if nonce == 0 {
+            return true;
+        }
+        if self.copied.contains(&(nonce, seq)) {
+            return false;
+        }
+        let last = match &self.open {
+            Some(g) if g.nonce == nonce => Some(g.last),
+            _ => self.last_of.get(&nonce).copied(),
+        };
+        last.is_none_or(|l| seq > l)
+    }
+
+    /// A copy [`Replay::copy_is_new`] let through, carried by the record admitted at `at`: it is
+    /// recorded (so a later copy of the same record is not new), then its operation id is checked
+    /// as [`Replay::admit`] would.
+    pub fn admit_copy(&mut self, nonce: u64, of: ObsSeq, at: ObsSeq, op: Option<OpId>) -> Verdict {
+        if nonce != 0
+            && self.copied.insert((nonce, of))
+            && let Some(g) = &mut self.open
+        {
+            g.copies.push((nonce, of));
+        }
+        if let Some(op) = op {
+            if self.op_index.contains_key(&op) {
+                return Verdict::DuplicateOp;
+            }
+            self.op_index.insert(op, at);
+            self.ops.push_back((at, op));
+        }
+        Verdict::Apply
+    }
+
+    /// How many generations are closed.
+    pub fn closed_len(&self) -> usize {
+        self.closed.len()
+    }
+
+    /// How many closed generations the meta page counted ([`Replay::load_closed_block`] loads them).
+    pub fn closed_expected(&self) -> usize {
+        self.closed_expected
+    }
+
+    /// Block `k` of the closed generations: those from `k * GEN_BLOCK`, at most [`GEN_BLOCK`].
+    pub fn closed_block(&self, k: usize) -> Vec<u8> {
+        let from = (k * GEN_BLOCK).min(self.closed.len());
+        let to = (from + GEN_BLOCK).min(self.closed.len());
+        let mut w = Writer::with_capacity(16 + (to - from) * 24);
+        w.u32(GEN_MAGIC);
+        w.u16(GEN_VERSION);
+        w.var_u64((to - from) as u64);
+        for g in &self.closed[from..to] {
+            encode_gen(g, &mut w);
+        }
+        w.into_bytes()
+    }
+
+    /// Loads the next block of closed generations (block `closed_len() / GEN_BLOCK`).
+    pub fn load_closed_block(&mut self, b: &[u8]) -> codec::Result<()> {
+        if !self.closed.len().is_multiple_of(GEN_BLOCK) {
+            return Err(codec::CodecError::Invalid(
+                "a block of closed generations after a partial one".into(),
+            ));
+        }
+        let mut r = Reader::new(b);
+        if r.u32()? != GEN_MAGIC {
+            return Err(codec::CodecError::Invalid(
+                "not a block of journal generations".into(),
+            ));
+        }
+        let v = r.u16()?;
+        if v != GEN_VERSION {
+            return Err(codec::CodecError::Invalid(format!(
+                "journal generations version {v}, this build reads {GEN_VERSION}"
+            )));
+        }
+        let n = r.len_prefix(10)?;
+        if n > GEN_BLOCK {
+            return Err(codec::CodecError::Invalid(format!(
+                "{n} generations in one block"
+            )));
+        }
+        for _ in 0..n {
+            let g = decode_gen(&mut r)?;
+            self.last_of.insert(g.nonce, g.last);
+            self.copied.extend(g.copies.iter().copied());
+            self.closed.push(g);
+        }
+        r.finish()
     }
 
     /// Forgets operation ids applied at or before `seq`. Call it when no world save that could
@@ -183,6 +367,32 @@ impl Replay {
     }
 }
 
+fn encode_gen(g: &Gen, w: &mut Writer) {
+    w.u64(g.nonce);
+    w.var_u64(g.last.0);
+    w.var_u64(g.copies.len() as u64);
+    for (nonce, seq) in &g.copies {
+        w.u64(*nonce);
+        w.var_u64(seq.0);
+    }
+}
+
+fn decode_gen(r: &mut Reader<'_>) -> codec::Result<Gen> {
+    let nonce = r.u64()?;
+    let last = ObsSeq(r.var_u64()?);
+    let n = r.len_prefix(9)?;
+    let mut copies = Vec::with_capacity(n);
+    for _ in 0..n {
+        copies.push((r.u64()?, ObsSeq(r.var_u64()?)));
+    }
+    Ok(Gen {
+        nonce,
+        last,
+        copies,
+    })
+}
+
+/// The meta page's part: everything but the closed generations, which it counts.
 impl Encode for Replay {
     fn encode(&self, w: &mut Writer) {
         w.u64(self.applied_through.0);
@@ -191,6 +401,14 @@ impl Encode for Replay {
             w.var_u64(s.0);
             w.u64(op.0);
         }
+        match &self.open {
+            Some(g) => {
+                w.bool(true);
+                encode_gen(g, w);
+            }
+            None => w.bool(false),
+        }
+        w.var_u64(self.closed.len() as u64);
     }
 }
 
@@ -204,6 +422,13 @@ impl Decode for Replay {
             out.op_index.insert(op, s);
             out.ops.push_back((s, op));
         }
+        if r.bool()? {
+            let g = decode_gen(r)?;
+            out.copied.extend(g.copies.iter().copied());
+            out.open = Some(g);
+        }
+        out.closed_expected = usize::try_from(r.var_u64()?)
+            .map_err(|_| codec::CodecError::Invalid("closed generations count".into()))?;
         Ok(out)
     }
 }
@@ -454,6 +679,147 @@ mod tests {
         assert!(r.knows_op(OpId::bridge(3)));
         r.skip_to(ObsSeq(2)); // never backwards
         assert_eq!(r.applied_through(), ObsSeq(14));
+    }
+
+    /// Saves and loads as rtsim-jni does: the meta part, then the closed blocks it counts.
+    fn reloaded(r: &Replay) -> Replay {
+        let mut out = Replay::from_bytes(&r.to_bytes()).unwrap();
+        for k in 0..out.closed_expected().div_ceil(GEN_BLOCK) {
+            out.load_closed_block(&r.closed_block(k)).unwrap();
+        }
+        assert_eq!(out.closed_len(), out.closed_expected());
+        out
+    }
+
+    #[test]
+    fn copies_are_judged_by_their_generation() {
+        let (a, b, c) = (0xA, 0xB, 0xC);
+        let mut r = Replay::new(ObsSeq(0));
+        assert!(r.copy_is_new(a, ObsSeq(1)), "nothing known");
+        assert_eq!(r.admit_gen(ObsSeq(1), a), Verdict::Apply);
+        assert_eq!(r.admit_gen(ObsSeq(1), a), Verdict::AlreadyApplied);
+        r.admit(ObsSeq(2), None);
+        r.admit(ObsSeq(3), Some(OpId::bridge(1)));
+        assert_eq!(
+            r.open_gen().map(|g| (g.nonce, g.last)),
+            Some((a, ObsSeq(3)))
+        );
+        assert!(
+            !r.copy_is_new(a, ObsSeq(2)),
+            "admitted in the open generation"
+        );
+        assert!(r.copy_is_new(a, ObsSeq(4)), "not yet");
+        // A crash lost 4 and 5 of a; the next session takes them again as b's.
+        assert_eq!(r.admit_gen(ObsSeq(4), b), Verdict::Apply);
+        r.admit(ObsSeq(5), None);
+        assert!(!r.copy_is_new(a, ObsSeq(3)));
+        assert!(r.copy_is_new(a, ObsSeq(4)), "a's lost stretch");
+        assert!(r.copy_is_new(a, ObsSeq(5)), "b took 5, a's 5 is lost");
+        assert!(!r.copy_is_new(b, ObsSeq(5)));
+        // A copy of a's lost 5 applies once, carried by 6.
+        assert_eq!(r.admit(ObsSeq(6), None), Verdict::Apply);
+        assert_eq!(r.admit_copy(a, ObsSeq(5), ObsSeq(6), None), Verdict::Apply);
+        assert!(!r.copy_is_new(a, ObsSeq(5)), "a second copy of it");
+        // A generation the pages never saw (case b): applies once, by the copies set.
+        assert!(r.copy_is_new(c, ObsSeq(9)));
+        r.admit(ObsSeq(7), None);
+        assert_eq!(r.admit_copy(c, ObsSeq(9), ObsSeq(7), None), Verdict::Apply);
+        assert!(!r.copy_is_new(c, ObsSeq(9)));
+        assert!(r.copy_is_new(c, ObsSeq(10)));
+        // A copy whose op id is known is recorded and answered by op.
+        r.admit(ObsSeq(8), None);
+        assert_eq!(
+            r.admit_copy(c, ObsSeq(10), ObsSeq(8), Some(OpId::bridge(1))),
+            Verdict::DuplicateOp
+        );
+        assert!(!r.copy_is_new(c, ObsSeq(10)));
+        // Nonce 0 names no generation: always new, never recorded.
+        r.admit(ObsSeq(9), None);
+        assert_eq!(r.admit_copy(0, ObsSeq(2), ObsSeq(9), None), Verdict::Apply);
+        assert!(r.copy_is_new(0, ObsSeq(2)));
+        // All of it survives a save, the open generation's copies included.
+        let back = reloaded(&r);
+        assert_eq!(back, r);
+        for (n, q) in [
+            (a, 3),
+            (a, 4),
+            (a, 5),
+            (b, 5),
+            (b, 10),
+            (c, 9),
+            (c, 10),
+            (c, 11),
+            (0, 2),
+        ] {
+            assert_eq!(
+                back.copy_is_new(n, ObsSeq(q)),
+                r.copy_is_new(n, ObsSeq(q)),
+                "({n:#x}, {q})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_generation_older_than_any_bound_is_still_judged() {
+        let mut r = Replay::new(ObsSeq(0));
+        // Ten years of daily restarts, a few records each.
+        let sessions = 3650u64;
+        for g in 1..=sessions {
+            let at = r.applied_through().0 + 1;
+            assert_eq!(r.admit_gen(ObsSeq(at), g), Verdict::Apply);
+            r.admit(ObsSeq(at + 1), None);
+            r.admit(ObsSeq(at + 2), None);
+        }
+        assert_eq!(r.closed_len(), sessions as usize - 1);
+        let back = reloaded(&r);
+        assert_eq!(back, r);
+        // The first session's records (1 is its JOURNAL_GEN, 2 and 3 its own).
+        assert!(!back.copy_is_new(1, ObsSeq(2)));
+        assert!(!back.copy_is_new(1, ObsSeq(3)));
+        assert!(back.copy_is_new(1, ObsSeq(4)), "past what it admitted");
+        let bytes: usize = (0..r.closed_len().div_ceil(GEN_BLOCK))
+            .map(|k| r.closed_block(k).len())
+            .sum();
+        assert!(
+            bytes < 16 * sessions as usize,
+            "{bytes} bytes for {sessions} sessions"
+        );
+        assert!(
+            r.to_bytes().len() < 64,
+            "the meta part does not grow with them"
+        );
+    }
+
+    #[test]
+    fn closed_blocks_load_in_order_or_not_at_all() {
+        let mut r = Replay::new(ObsSeq(0));
+        for g in 1..=GEN_BLOCK as u64 + 2 {
+            let at = r.applied_through().0 + 1;
+            r.admit_gen(ObsSeq(at), g);
+        }
+        let mut back = Replay::from_bytes(&r.to_bytes()).unwrap();
+        back.load_closed_block(&r.closed_block(1)).unwrap();
+        assert_eq!(back.closed_len(), 1, "the partial last block");
+        assert!(
+            back.load_closed_block(&r.closed_block(0)).is_err(),
+            "nothing after a partial block"
+        );
+        let mut junk = r.closed_block(0);
+        junk[0] ^= 1;
+        assert!(Replay::new(ObsSeq(0)).load_closed_block(&junk).is_err());
+        let mut long = r.closed_block(1);
+        long.push(0);
+        assert!(Replay::new(ObsSeq(0)).load_closed_block(&long).is_err());
+    }
+
+    #[test]
+    fn a_skipped_gap_does_not_extend_the_open_generation() {
+        let mut r = Replay::new(ObsSeq(0));
+        r.admit_gen(ObsSeq(1), 5);
+        r.admit(ObsSeq(2), None);
+        r.skip_to(ObsSeq(9));
+        assert_eq!(r.open_gen().map(|g| g.last), Some(ObsSeq(2)));
+        assert!(r.copy_is_new(5, ObsSeq(4)));
     }
 
     impl Encode for u32 {
