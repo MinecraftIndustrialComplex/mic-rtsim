@@ -5992,6 +5992,27 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   The first look planned the feuds before the pair was ordered, but a feud wakes at an event after the handler
   returns, so it found the pair in flight either way.
 
+### The M9 merge (MZB-670 to MZB-672)
+
+- **MZB-670** (FACTION_FOUND's home count after the M6 merge; MZB-401 with MZB-653): M6 counts a
+  tagged body loaded away from the footprint in `home` (`Camps.census`'s ELSEWHERE loop, MZB-653),
+  so that a grove found after a sim reset with bodies away caps at its size; M9 counts in `home`
+  only the pool's bodies (`CampKind.pooled`), since a grove's chief slot is outside the pool and
+  the cap is the pool's (MZB-401). The merge keeps both: the ELSEWHERE `home++` is under
+  `pooled(e)`, as M9's inside and wide-stray counts are. An Umvuthi loaded away is listed
+  ELSEWHERE and not counted, as one inside is not. The only reading that keeps M9's cap and M6's
+  fix; no format change. Not run (no GameTest); M6's
+  `aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll` uses Umvuthana bodies only, so
+  its "home 3" is unchanged by the wrap.
+- **MZB-672** (M7's resident size pin over M9's faction row): tests/rail.rs
+  `a_world_with_no_rail_keeps_base_layout_but_for_pointers` pins `FactionRow` at 200 + 8 (f6321fa5's
+  row and M7's one rail pointer, MZB-313, MZB-314). M9's `Faction.hunts` (MZB-449), an empty Vec
+  when no hunt is owed, adds 24 bytes to every faction row whether or not the world has rail, so the
+  merged row is 232 and the pin read 232 against 208. The pin is now 200 + 24 + 8: the test's claim
+  (a world with no rail pays one pointer for M7) still holds, and the 24 are M9's base. M9 itself
+  pinned no size. Not taken: boxing `hunts` as M7 boxed its meters; a design change for M9's owner,
+  not the merge's.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
@@ -7426,7 +7447,7 @@ conservative option at its fork.
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
 | 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
-| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102) |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
 | Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
 | Herds (HERD_*) | the herds' own | Built by slice H: RP-81 (every kind that names an epoch folds, `Obs::group_epoch`), RP-84 (the session's handle bound). |
@@ -7690,6 +7711,73 @@ conservative option at its fork.
   longer trusts that: `ingest_copy` drops a RAIL_PASS. Test: tests/rail.rs
   `a_copy_of_a_rail_pass_counts_nothing` (the copy counts and holds nothing; the control, the same
   pass live, is counted and held; without the arm the copy counts 1).
+
+### The M9 merge (RP-130 to RP-132)
+
+M9 (feat/mowzie-m9 at 2f3941d0) merged M6 at 1290d0b7 (788820c9), M7 at 39c819f1 (56c55d8d) and main;
+docs/replay-gate.md §2.7 "The M9 merge" has the conflicts and §4.4 the gate rows.
+
+- **RP-130** (a copied HAVEN_CHEST; the M9 merge, point 2): HAVEN_CHEST (0x0817, journaled since M9)
+  names a faction, the grove's chest and its free slots, with no op id, and no holder carries it:
+  `GroveChests` journals it when the chest loads or changes (§4.4). It is the chest's state, latest
+  wins. `ingest_copy` sent every kind it did not name to `ingest`, so a copy, were one ever sent,
+  could put an older chest or free count over a newer one, and a tribute stack would go to it. Java
+  never sends one; as RP-104 does for RAIL_PASS, `ingest_copy` no longer trusts that and drops a
+  HAVEN_CHEST. M9's other kinds need no arm: TRADED and CHIEF_PAID carry Java's op ids (`Obs::op`,
+  the engine's `first_time`), so a copy of one booked is skipped; HUNT_APPLIED is booked by the
+  state of the faction's hunts (MZB-449), so a copy of a spent answer finds no hunt. None names an
+  epoch (RP-57's table, "After the M9 merge"). Test: tests/grove.rs
+  `a_copy_of_a_haven_chest_names_no_chest` (the copy leaves the camp with no chest; the control, the
+  same record live, names it with 27 free; without the arm the copy names the chest, checked and
+  undone).
+- **RP-131** (OWED_HUNT through the gate; the M9 merge, point 1; §7.4; MZB-449): M9's one new `Cmd`
+  kind gets its row, "drop" queued and "drop" while replaying. A hunt is the faction's state, saved
+  with it: a raid replayed owes its hunt again into the books as live, and the plugin already had
+  the command, so nothing is sent while replaying; once the replay has caught up `resend_notices`
+  sends every hunt still held (a journaled HUNT_APPLIED having cleared its own). Built as §7.4 asked:
+  M9's two TEMPORARY guards (`owe_hunt` and `hunt_applied` pushed nothing while `replaying`) are
+  deleted, both pushes go through `push` and the gate, and the re-send is kept.
+  - Queued "drop" is a change from M9's own `session_start`, which kept a queued OWED_HUNT (its
+    filter dropped agent kinds, Territory, Notice and Reconcile only): the replay end sends every
+    hunt held, so a queued copy would only have gone twice. The plugin keeps the latest command per
+    (faction, district) and ignores an op it has applied, so the twice was harmless; the drop is
+    the cleaner of the two.
+  - M9 had deleted its own two OwedHunt `outbox.retain` filters at its re-check (MZB-449 R1), so the
+    merge had none left to delete. At the first merge commit I had added `Cmd::OwedHunt` to
+    `resend_notices`'s retain beside main's NOTICE; reverted at the audit: with the queued and
+    replaying "drop" no OWED_HUNT is in the outbox at the replay end, so the filter was dead, and
+    §7.4 keeps main's NOTICE filter alone.
+  - Tests: outbox.rs `every_command_kind_has_its_replay_verdicts` gains the row (13 kinds; the sample holds two
+    OwedHunts, so `dropped` is 8), and its check against the old `session_start` filter excepts
+    OwedHunt, the one kind the gate and that filter disagree on. The behaviour is held by M9's own
+    tests, unchanged and passing on the merged head: grove.rs
+    `a_hunt_owed_while_replaying_goes_once_when_the_replay_is_over`,
+    `a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over`,
+    `a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session`, and protocol.rs's five
+    `replayed_hunt` cases and `an_owed_hunt_is_written_and_spent_by_its_answer_once`.
+- **RP-132** (M9's decisions while replaying, the rest of the eight points; the M9 merge, points 3
+  to 6; no change):
+  - Point 3. A tribute priced while replaying (TRADED, CHIEF_PAID) is booked as live through
+    `pay_tribute`; its stack is placed only for a camp that is in (`place_tribute`, `is_in`), and
+    `begin_replay` puts every camp out (`camp_session_start`) while a replayed census only marks
+    its camp out, so no stack and no CAMP_RECONCILE line is decided while replaying. The heir is
+    seated only for a camp that is in (`camp_heir`). The chief's slot: CHIEF_STATE is held while
+    replaying and applied at the replay end (RP-100), and M9 changes neither `chief_state` nor the
+    hold; M9 reads the crystal and the line flags only for a camp that is in, so after the replay
+    end has applied the held states. CAMP_DEATH on the chief slot (`chief_death`) is idempotent by
+    slot and generation, and CHIEF_KILLED by its op (`chief_killed_by`), replayed or live.
+  - Point 4 (RP-66). M9 has no Rust test that orders a conflict command across a restart, and its
+    GameTests do not restart the engine, so there is nothing to change.
+  - Point 5 (MZB-589). The fillers of protocol.rs's `replayed_hunt` (1,500 BAND_CASUALTIES) now
+    carry `op: next_casualty_op()`; at 72 bytes each the replay still overflows one hand-over
+    (`MIN_CAPACITY`), which is the case the test is for. No M9 test counts hand-overs, so
+    `ONE_HAND_OVER` is not needed. Java reads BAND_CASUALTIES by its named offsets only.
+  - Point 6. `arrive()` is M6's at 58a5551a in M9, unchanged, so the merged arm order is M7's
+    (Envoy, Scouts, peaceful, Track, then the hold, §6.1). M9's grove arrivals add no arm: a hunt
+    is owed in `resolve`, after the hold arm, from a raid on an unwatched district. `casualty_ops`
+    is for BAND_CASUALTIES only; M9's chief kill paths are CHIEF_KILLED (op id) and CAMP_DEATH on
+    the chief slot (slot and generation), and an Umvuthi that leads a party has no stack in it
+    (MZB-414), so no chief death goes through `casualty_ops`.
 
 ### Slice H (herds)
 
