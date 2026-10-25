@@ -72,9 +72,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
-import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -203,12 +203,25 @@ public final class UmvuthanaWorldGameTests {
             }
     }
 
-    /** Inside {@code thenWaitUntil}: no entity of the ids is in the level (its chunk is unloaded). */
-    private static Runnable gone(ServerLevel level, List<UUID> ids) {
-        return io(() -> {
-            for (UUID id : ids)
-                check("entity " + id + " is unloaded", level.getEntity(id) == null);
-        });
+    /**
+     * Inside {@code thenWaitUntil}: each entity object is saved and unloaded with its chunk, read at each poll
+     * ({@link MowzieKit#removed}: under C2ME a null {@code getEntity} is not a save, MZB-662).
+     */
+    @SafeVarargs
+    private static Runnable gone(ServerLevel level, Supplier<? extends Entity>... objects) {
+        return MowzieKit.removed(level, objects);
+    }
+
+    /** The same for every object of the arrays, read at each poll: they are filled after the sequence is built. */
+    @SuppressWarnings("unchecked")
+    private static Runnable gone(ServerLevel level, Entity[]... arrays) {
+        List<Supplier<Entity>> objects = new ArrayList<>();
+        for (Entity[] a : arrays)
+            for (int i = 0; i < a.length; i++) {
+                int k = i;
+                objects.add(() -> a[k]);
+            }
+        return MowzieKit.removed(level, objects.toArray(new Supplier[0]));
     }
 
     private static boolean alive(ServerLevel level, UUID id) {
@@ -733,7 +746,7 @@ public final class UmvuthanaWorldGameTests {
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", !ConflictKit.campOuts(g.faction).isEmpty()))
-                .thenWaitUntil(gone(level, List.of(id[0])))
+                .thenWaitUntil(gone(level, () -> u[0]))
                 .thenExecute(() -> far.force(g.cx, g.cz))
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -789,6 +802,7 @@ public final class UmvuthanaWorldGameTests {
                 .thenExecute(() -> {
                     Entity e = level.getEntity(id[0]);
                     check("the Umvuthi is loaded again, tagged", e instanceof EntityUmvuthi && MowzieKit.tag(e) != null);
+                    check("a new object: the old one was saved and unloaded, not tracked again (MZB-662)", e != u[0]);
                     transfers[0] = chests.transfers;
                     paidEverCheck(g, 1);
                     check("the second payer is a stranger to the Umvuthi", !((EntityUmvuthi) e).hasTradedWith(payer[1]));
@@ -990,6 +1004,8 @@ public final class UmvuthanaWorldGameTests {
         // The eligible prey, nearest first, then the ineligible.
         double[][] eligible = {{3, 0}, {0, -5}, {-7, 0}, {0, 9}, {-8, -8}, {14, 0}, {0, -17}};
         UUID[] prey = new UUID[eligible.length], no = new UUID[5];
+        // The objects the unload waits wait on (MZB-662): as made, then as loaded again before the second release.
+        Entity[] preyMade = new Entity[eligible.length], noMade = new Entity[5], noLoaded = new Entity[5];
         long[] received0 = new long[1], ignored0 = new long[1], applied0 = new long[1], killed0 = new long[1];
         int[] held0 = new int[1];
         int cxBlock = st.cx * 16 + 8, czBlock = st.cz * 16 + 8, radius = 30;
@@ -1001,7 +1017,8 @@ public final class UmvuthanaWorldGameTests {
                     st.lay();
                     for (int i = 0; i < eligible.length; i++) {
                         Vec3 at = st.at(eligible[i][0], eligible[i][1]);
-                        prey[i] = (i == 3 ? animal(level, EntityType.SHEEP, at) : animal(level, EntityType.COW, at)).getUUID();
+                        preyMade[i] = i == 3 ? animal(level, EntityType.SHEEP, at) : animal(level, EntityType.COW, at);
+                        prey[i] = preyMade[i].getUUID();
                     }
                     Cow named = animal(level, EntityType.COW, st.at(1, -1));
                     named.setCustomName(net.minecraft.network.chat.Component.literal("Daisy"));
@@ -1029,14 +1046,16 @@ public final class UmvuthanaWorldGameTests {
                     leash(level, outer, st.at(28, 0));
                     check("the outer sheep is in a chunk the middle 3 x 3 does not hold",
                             (outer.blockPosition().getX() >> 4) == st.cx + 2 && (outer.blockPosition().getZ() >> 4) == st.cz);
-                    no[0] = named.getUUID();
-                    no[1] = owned.getUUID();
-                    no[2] = tame.getUUID();
-                    no[3] = leashed.getUUID();
-                    no[4] = outer.getUUID();
+                    noMade[0] = named;
+                    noMade[1] = owned;
+                    noMade[2] = tame;
+                    noMade[3] = leashed;
+                    noMade[4] = outer;
+                    for (int i = 0; i < no.length; i++)
+                        no[i] = noMade[i].getUUID();
                     st.far.releaseRect(st.cx - 2, st.cz - 2, st.cx + 2, st.cz + 2);
                 })
-                .thenWaitUntil(gone(level, java.util.stream.Stream.concat(java.util.Arrays.stream(prey), java.util.Arrays.stream(no)).toList()))
+                .thenWaitUntil(gone(level, preyMade, noMade))
                 .thenExecute(() -> {
                     received0[0] = hunts.received;
                     ignored0[0] = hunts.ignored;
@@ -1107,9 +1126,13 @@ public final class UmvuthanaWorldGameTests {
                 .thenExecute(() -> {
                     check("it killed its count, 1 (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 7);
                     check("the 17-block cow is dead", !alive(level, prey[6]));
+                    for (int i = 0; i < no.length; i++) {
+                        noLoaded[i] = level.getEntity(no[i]);
+                        check("the ineligible " + no[i] + " is loaded before the release", noLoaded[i] != null);
+                    }
                     st.far.releaseRect(st.cx - 2, st.cz - 2, st.cx + 2, st.cz + 2); // the fourth meets the district as it loads
                 })
-                .thenWaitUntil(gone(level, List.of(no)))
+                .thenWaitUntil(gone(level, noLoaded))
                 .thenExecute(() -> {
                     received0[0] = hunts.received;
                     ConflictKit.owedHunt(faction, district, op4, 0, dim, 10, cxBlock, czBlock, radius, 0);
