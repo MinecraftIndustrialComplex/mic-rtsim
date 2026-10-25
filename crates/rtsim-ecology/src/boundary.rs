@@ -1703,7 +1703,10 @@ mod tests {
         assert_eq!(buf.len(), 40);
         assert_eq!(c.size(), 40);
         let u32_at = |at: usize| u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
-        assert_eq!(u64::from_le_bytes(buf[16..24].try_into().unwrap()), 0x0001_0000_0000_0007);
+        assert_eq!(
+            u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            0x0001_0000_0000_0007
+        );
         assert_eq!((u32_at(24), u32_at(28), u32_at(32)), (3, 3, 0xA1B2_C3D4));
         assert_eq!(u32_at(36), 0, "the last four bytes stay reserved");
         let (_, _, back) = decode_cmd(&buf, &dict).unwrap();

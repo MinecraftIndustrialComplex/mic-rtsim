@@ -394,6 +394,52 @@ public final class NestGameTests {
     }
 
     /**
+     * NEST_RENEW is applied once per serial (docs/replay-gate.md §7.1, RP-14): Java's half of the replay gate's direction
+     * B, where the Nests were saved with a renewal applied and the engine decides it again. Serial 1 owes two worms and
+     * they are placed. The same serial again (the renewal decided again) owes nothing and is counted as a repeat; so
+     * does a lower one (serial 0). A higher serial owes its count. The engine's restore from older pages is not
+     * modelled: this scripts the command the restored engine sends, with the serial it would carry.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_renew")
+    public static void aRenewalDecidedAgainIsNotOwedTwice(GameTestHelper helper) {
+        String test = "aRenewalDecidedAgainIsNotOwedTwice";
+        Site s = new Site(helper, 1);
+        long id = s.nest();
+        long[] repeated = new long[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenExecute(() -> {
+                    s.build();
+                    DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 2, 1))
+                .thenWaitUntil(() -> check("two worms (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)", s.worms(id).size() == 2))
+                .thenExecute(() -> {
+                    repeated[0] = nests().renewsRepeated;
+                    check("the serial is 1 (" + nests().nest(id).serial + ")", nests().nest(id).serial == 1);
+                    DragonKit.nestRenew(id, s.dim, 1, 2, 1);
+                    DragonKit.nestRenew(id, s.dim, 1, 2, 0);
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id);
+                    check("still two worms (" + s.worms(id).size() + ")", s.worms(id).size() == 2);
+                    check("nothing owed (" + n.owed + ")", n.owed == 0);
+                    check("both counted as repeats (" + (nests().renewsRepeated - repeated[0]) + ")", nests().renewsRepeated - repeated[0] == 2);
+                    check("the serial stays 1 (" + n.serial + ")", n.serial == 1);
+                    DragonKit.nestRenew(id, s.dim, 1, 1, 2);
+                })
+                .thenWaitUntil(() -> check("a third worm for serial 2 (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)",
+                        s.worms(id).size() == 3))
+                .thenExecute(() -> {
+                    check("the serial is 2 (" + nests().nest(id).serial + ")", nests().nest(id).serial == 2);
+                    record(test, "serials", "1 (two worms placed), 1 and 0 again (two repeats, none owed), 2 (a third worm)");
+                })
+                .thenSucceed();
+    }
+
+    /**
      * The boss rule on a nest worm's death: a player's kill is NEST_LOSS Player with the player; a wild
      * mob's is Predator; a death with no killer (a /kill) counts as a player's, with no player. A natural
      * worm's death sends nothing.
