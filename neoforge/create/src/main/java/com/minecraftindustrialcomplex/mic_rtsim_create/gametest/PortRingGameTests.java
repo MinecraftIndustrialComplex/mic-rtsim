@@ -221,11 +221,12 @@ public final class PortRingGameTests {
                     placeStation(helper, 28);
                     level.setBlock(postbox, block("create:white_postbox").defaultBlockState(), 3);
                     level.setBlock(chest, Blocks.CHEST.defaultBlockState(), 3);
-                    playerPlaced(helper, chest);
-                    playerPlaced(helper, postbox);
+                    // Create's kit: a chest and a postbox seed no district alone (DS-10), so it adds the marker machine.
+                    IndustryKit.playerPlaced(helper, chest);
+                    IndustryKit.playerPlaced(helper, postbox);
                 })
                 .thenWaitUntil(() -> {
-                    District d = districtAt(helper, postbox);
+                    District d = IndustryKit.districtAt(helper, postbox);
                     check("the postbox's district", d != null && d.inventoryAt(postbox) != null);
                     id[0] = d.id;
                     st[0] = joined(helper, stationPos);
