@@ -1448,6 +1448,319 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- phase 1 switched off (RP-300) ------------------------------------------------------------------
+
+/// The rule (docs/choices-journal-barrier.md RP-300): the switch gates only new decisions; every
+/// record of what already happened is heard; a record applied while off goes in at its own tick,
+/// never at the frozen clock. The engine acknowledges each journaled record it admits whatever a
+/// module's switch, and Java then drops what refused a repeat (the journal's applied index, a
+/// chunk's carried copy), so a record phase 1 ignored while off was lost for good: a caravan the
+/// player robbed or traded with between the switch-off and the despawn kept, in the sim's row, the
+/// goods the player now has.
+mod p1_off {
+    use super::*;
+
+    pub const OFF: u32 = 0b0111;
+    pub const ON: u32 = 0b1111;
+    pub const CARAVAN_TRADES: usize = 3;
+    pub const ROBBERIES: usize = 5;
+    pub const REPORTS: usize = 6;
+
+    /// Waits for the engine to finish the last step Java submitted.
+    pub fn step_done(e: &Engine, j: &Java) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while e.stats_array()[1] < j.submitted {
+            assert!(
+                Instant::now() < deadline,
+                "step {} never finished",
+                j.submitted
+            );
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+
+    /// MODULES to `mask` handed over and heard by the engine (a step that writes the puppets'
+    /// despawns); then `window` journals its records, and only then does Java apply what that step
+    /// wrote, so the despawn's answer (DEMATERIALIZED) comes after the window's records, as it does
+    /// in game, where a despawn takes a tick or more to be carried out.
+    pub fn switch_then(e: &Engine, j: &mut Java, mask: u32, window: impl FnOnce(&mut Java)) {
+        j.modules(mask);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !j.hand_over() {
+            assert!(Instant::now() < deadline, "no submit possible");
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        step_done(e, j);
+        j.game_time += 1;
+        window(j);
+        j.apply_commands();
+        j.game_time += 1;
+    }
+
+    /// A MEMBER_STATE: what member `member`'s chest held when the bridge captured it.
+    pub fn member_state(j: &mut Java, agent: u64, epoch: u32, member: u32, items: &[(&str, i32)]) {
+        use obs::member_state as k;
+        let ids: Vec<u32> = items
+            .iter()
+            .map(|(n, _)| j.dict_id(wire::DICT_ITEM, n))
+            .collect();
+        let body = j.dict_id(wire::DICT_BODY, "minecraft:llama");
+        j.journal(obs::MEMBER_STATE, k::size(items.len()), member, |r| {
+            wire::put_u64(r, k::AGENT, agent);
+            wire::put_u32(r, k::EPOCH, epoch);
+            wire::put_u32(r, k::BODY_KIND, body);
+            wire::put_u32(r, k::ITEM_COUNT, items.len() as u32);
+            for (i, ((_, n), id)) in items.iter().zip(&ids).enumerate() {
+                let it = k::ITEMS + i * obs::item::SIZE;
+                wire::put_u32(r, it + obs::item::SLOT, i as u32);
+                wire::put_u32(r, it + obs::item::ITEM, *id);
+                wire::put_i32(r, it + obs::item::COUNT, *n);
+            }
+        });
+    }
+
+    /// A stack to rob: (member, item, how many), preferring a good that is not a coin.
+    pub fn stack_to_rob(cargo: &[(u32, String, i32)]) -> (u32, String, i32) {
+        let (m, i, n) = cargo
+            .iter()
+            .find(|(_, i, _)| i != EMERALD)
+            .unwrap_or(&cargo[0]);
+        (*m, i.clone(), (*n).min(3))
+    }
+
+    /// Member `member`'s chest after `taken` of `item` left it.
+    pub fn chest_after(
+        cargo: &[(u32, String, i32)],
+        member: u32,
+        item: &str,
+        taken: i32,
+    ) -> Vec<(String, i32)> {
+        let mut left = taken;
+        cargo
+            .iter()
+            .filter(|(m, _, _)| *m == member)
+            .map(|(_, i, n)| {
+                let cut = if i == item { left.min(*n) } else { 0 };
+                left -= cut;
+                (i.clone(), n - cut)
+            })
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
+    /// The first selling offer of `agent`'s merchant offers: (cost item, count, result item, count).
+    pub fn selling_offer(j: &Java, agent: u64) -> Option<(String, i32, String, i32)> {
+        use cmd::merchant_offers as k;
+        let offers = j.p1_of(cmd::MERCHANT_OFFERS);
+        let o = offers
+            .iter()
+            .rfind(|o| wire::u64_at(o, k::AGENT) == agent)?;
+        (0..wire::u32_at(o, wire::R_AUX) as usize)
+            .map(|i| k::OFFERS + i * k::OFFER)
+            .find(|&p| wire::u32_at(o, p + k::O_FLAGS) == k::O_FLAG_SELLS)
+            .map(|p| {
+                (
+                    j.cmd_name(wire::DICT_ITEM, wire::u32_at(o, p + k::O_COST_A_ITEM)),
+                    wire::i32_at(o, p + k::O_COST_A_COUNT),
+                    j.cmd_name(wire::DICT_ITEM, wire::u32_at(o, p + k::O_RESULT_ITEM)),
+                    wire::i32_at(o, p + k::O_RESULT_COUNT),
+                )
+            })
+    }
+
+    /// A session with a caravan embodied as `agent`.
+    pub fn caravan_session(
+        tag: &str,
+        agent: u64,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<Engine>,
+        Java,
+        Vec<(u32, String, i32)>,
+    ) {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        let cargo = phase1_caravan(&e, &mut j, agent);
+        assert!(!cargo.is_empty());
+        (dir, e, j, cargo)
+    }
+
+    /// Switches on again and lets the engine hear it and catch up.
+    pub fn switch_on(j: &mut Java) {
+        j.modules(ON);
+        j.idle();
+        j.idle();
+    }
+}
+
+/// Control for the tests below: a window with no record in it. The despawn answer comes with the
+/// chest as the bridge captured it, and the sim's row agrees: no capture mismatch, nothing booked.
+#[test]
+fn a_quiet_window_of_phase1_off_changes_nothing_and_the_capture_matches() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-quiet", agent);
+    let member = cargo[0].0;
+    switch_then(&e, &mut j, OFF, |j| {
+        let chest = chest_after(&cargo, member, "", 0);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+    });
+    j.idle();
+    j.idle();
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(p1_stat(&e, ROBBERIES), 0);
+    assert_eq!(
+        e.phase1_state().2,
+        0,
+        "the capture matches the sim's row when nothing happened in the window"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T1. A caravan the player robs between the switch-off and the despawn: the robbery is a record
+/// of what already happened, and Java will not send it again (the engine acknowledged it). It is
+/// booked once, when phase 1 is on again, and the capture check at the despawn does not call the
+/// row (which does not hold the robbery yet) a mismatch.
+#[test]
+fn a_robbery_heard_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-rob", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7c01);
+        let chest = chest_after(&cargo, member, &item, n);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+    });
+    let frozen = e.clocks()[2];
+    j.idle();
+    j.idle();
+    assert_eq!(
+        e.clocks()[2],
+        frozen,
+        "phase 1's world does not run while it is off, the robbery heard or not"
+    );
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, ROBBERIES),
+        1,
+        "the robbery heard in the window is booked, once"
+    );
+    assert_eq!(e.phase1_state().2, 0);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T1b (item 6). The despawn's capture of a caravan whose robbery is still kept (not yet in the
+/// sim's row) is not a mismatch: the row will hold the robbery once it is booked, and the check
+/// at that time compares the same chest.
+#[test]
+fn a_despawn_capture_with_a_kept_robbery_is_not_a_false_mismatch() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-capture", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7c02);
+        let chest = chest_after(&cargo, member, &item, n);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(
+        e.phase1_state().2,
+        0,
+        "no false capture mismatch: the row has not heard the robbery yet"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T2. A trade with the caravan in the window is booked when phase 1 is on again: the goods the
+/// player now has leave the sim's row, the coin it paid joins it.
+#[test]
+fn a_trade_heard_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, _cargo) = caravan_session("p1off-trade", agent);
+    let Some((cost, cn, result, rn)) = selling_offer(&j, agent) else {
+        eprintln!("the caravan offers nothing to sell: nothing to test");
+        return;
+    };
+    switch_then(&e, &mut j, OFF, |j| {
+        let op = wire::JAVA_OP_BIT | 0x7c11;
+        j.trade_with(
+            agent,
+            1,
+            obs::trade::MERCHANT_SELLS,
+            (&cost, cn),
+            (&result, rn),
+            op,
+        );
+        // The same trade again under the same op id (a chunk-carried resend): still once.
+        j.trade_with(
+            agent,
+            1,
+            obs::trade::MERCHANT_SELLS,
+            (&cost, cn),
+            (&result, rn),
+            op,
+        );
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, CARAVAN_TRADES), 0, "nothing applied while off");
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, CARAVAN_TRADES),
+        1,
+        "the trade heard in the window is booked, once"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T3. A member taken in the window (TAKEN) leaves the sim's row with what its chest held, once
+/// phase 1 is on again.
+#[test]
+fn a_member_taken_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-taken", agent);
+    let member = cargo[0].0;
+    switch_then(&e, &mut j, OFF, |j| {
+        let chest: Vec<(&str, i32)> = cargo
+            .iter()
+            .filter(|(m, _, _)| *m == member)
+            .map(|(_, i, n)| (i.as_str(), *n))
+            .collect();
+        member_state(j, agent, 1, member, &chest);
+        j.journal(obs::TAKEN, obs::taken::SIZE, 1, |r| {
+            wire::put_u64(r, obs::taken::AGENT, agent);
+            wire::put_u32(r, obs::taken::EPOCH, 1);
+            wire::put_u32(r, obs::taken::MEMBER, member);
+            wire::put_u64(r, obs::taken::PLAYER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::taken::PLAYER_LEAST, PLAYER.1);
+            wire::put_u64(r, obs::taken::OP_ID, wire::JAVA_OP_BIT | 0x7c21);
+        });
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, REPORTS), 0, "nothing applied while off");
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, REPORTS),
+        1,
+        "the taken member heard in the window is booked, once"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 // ---- TALK (docs/boundary.md §13) -------------------------------------------------------------------
 
 mod talk {
