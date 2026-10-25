@@ -21,6 +21,10 @@
 //!   again moves to where the record puts it. A keyed `CHAIN_IN` or a `CHAIN_RELEASED` strikes its
 //!   key wherever it is held, and a declaration of another epoch drops the keys of the one before
 //!   (Java dropped them). A census leaves them: Java releases what it does not find.
+//! - **The draw** (slice S4c2): a held package whose key Java marked drawn (`CHAIN_DRAWN`) moves
+//!   to [`PackageStore::drawn`] and out of the pools, its goods given to the far district's replay;
+//!   it stays in the world, refused every hand-off, until the engine has it removed (choices SC141
+//!   and SC142). A drawn key that leaves another way goes back into the pools (SC143).
 //! - **Pages**: one per store (`STORE_TABLE`, id = the store id), starting with [`STORE_MAGIC`].
 //!
 //! The pools above are the world's packages: no replay draws them, and nothing is written from
@@ -40,7 +44,7 @@ use crate::obs::{ChainDirection, ChainPackage, HeldKey, StoreCensus, StoreDecl};
 use crate::persist::{Persist, persist_struct};
 
 /// A store page starts with this, so a page of another format fails by name.
-pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST3");
+pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST4");
 
 /// Packages and the goods inside them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -123,6 +127,14 @@ pub struct StoreCounts {
     pub held_released: u64,
     /// Packages whose key Java's held list did not name (IND_HELD_LIST, choice SC140).
     pub held_unlisted: u64,
+    /// Packages drawn (`CHAIN_DRAWN` of a key held, choice SC141).
+    pub drawn: u64,
+    /// Drawn packages removed (`CHAIN_RELEASED` of a drawn key: the engine's removal, or Java
+    /// found the package gone).
+    pub drawn_removed: u64,
+    /// Drawn packages back in the pools, their key left another way: it landed, Java's held list
+    /// did not name it, or a declaration of another epoch dropped it (choice SC143).
+    pub drawn_back: u64,
 }
 
 /// What a district's replay needs of a package store for one of its chain links (slice S4b).
@@ -182,6 +194,10 @@ pub struct PackageStore {
     /// The packages the frontier holds toward each frogport (by position), oldest first: they are
     /// in the world, booked in [`PackageStore::pools`] like any other (choice SC137).
     pub on_hold: BTreeMap<BlockPos, Vec<Held>>,
+    /// The held packages Java marked drawn toward each frogport (by position), oldest first: their
+    /// goods went to the replay of the frogport's district, so the pools no longer count them, and
+    /// they stay in the world, refused, until the engine has them removed (choices SC141, SC142).
+    pub drawn: BTreeMap<BlockPos, Vec<Held>>,
 }
 
 /// One package the frontier holds on a boundary conveyor (`CHAIN_HELD`, choice SC137).
@@ -194,6 +210,8 @@ pub struct Held {
     pub at: BlockPos,
     /// The record's own game time.
     pub since: Tick,
+    /// Drawn: the district whose replay took its goods (choice SC141). None while only held.
+    pub by: Option<DistrictId>,
 }
 
 /// One write the engine sent toward a frogport that Java has not answered yet (choice SC113).
@@ -287,7 +305,9 @@ impl PackageStore {
         let j = self.index_of(to)?;
         self.frogports[j].district?;
         let hops = i64::from(self.hops_between(i, j)?);
-        let held = self.pools.get(j).map_or(0, |p| p.packages as i64);
+        // Drawn packages are no pool's but wait on the chain too.
+        let drawn: u64 = self.drawn_toward(to).iter().map(|h| h.packages).sum();
+        let held = self.pools.get(j).map_or(0, |p| p.packages as i64) + drawn as i64;
         let farthest = (0..self.frogports.len())
             .filter_map(|k| self.hops_between(j, k))
             .max()
@@ -325,6 +345,7 @@ impl PackageStore {
             writing: self.writing.remove(&pos),
             mark: self.marks.remove(&pos),
             held: self.on_hold.remove(&pos).unwrap_or_default(),
+            drawn: self.drawn.remove(&pos).unwrap_or_default(),
         }
     }
 
@@ -349,41 +370,81 @@ impl PackageStore {
             self.marks.entry(pos).or_default().merge(&m);
         }
         self.add_held(pos, t.held);
+        self.add_drawn(pos, t.drawn);
     }
 
     /// Adds held packages toward `pos` (another store's), keeping the oldest first and each key once.
     fn add_held(&mut self, pos: BlockPos, held: Vec<Held>) {
-        if held.is_empty() {
-            return;
-        }
-        let e = self.on_hold.entry(pos).or_default();
-        for h in held {
-            if !e.iter().any(|x| x.key == h.key) {
-                e.push(h);
-            }
-        }
-        e.sort_by_key(|h| (h.since, h.key));
+        add_keyed(&mut self.on_hold, pos, held);
     }
 
-    /// Whether the store holds a package with `key`.
+    /// Adds drawn packages toward `pos` (another store's), as [`PackageStore::add_held`].
+    fn add_drawn(&mut self, pos: BlockPos, drawn: Vec<Held>) {
+        add_keyed(&mut self.drawn, pos, drawn);
+    }
+
+    /// Whether the store holds a package with `key` (held, not drawn).
     pub fn holds(&self, key: HeldKey) -> bool {
         self.on_hold.values().flatten().any(|h| h.key == key)
     }
 
+    /// Whether the store holds a package with `key` drawn.
+    pub fn holds_drawn(&self, key: HeldKey) -> bool {
+        self.drawn.values().flatten().any(|h| h.key == key)
+    }
+
+    /// Drawn packages toward the frogport at `pos`.
+    pub fn drawn_toward(&self, pos: BlockPos) -> &[Held] {
+        self.drawn.get(&pos).map_or(&[], |l| l.as_slice())
+    }
+
+    /// Java marked `key` drawn (`CHAIN_DRAWN`, choice SC141) for the replay of district `by`: the
+    /// held package moves to the drawn ones and out of its frogport's pool. Returns the frogport
+    /// and the package; None when the store does not hold the key (drawn already, or struck).
+    pub fn draw(&mut self, key: HeldKey, by: DistrictId) -> Option<(BlockPos, Held)> {
+        let (pos, mut h) = take_keyed(&mut self.on_hold, key)?;
+        h.by = Some(by);
+        let pool = match self.index_of(pos) {
+            Some(i) => &mut self.pools[i],
+            None => self.left.entry(pos).or_default(),
+        };
+        pool.take(h.packages, &h.goods);
+        if self.left.get(&pos).is_some_and(Pool::is_empty) {
+            self.left.remove(&pos);
+        }
+        self.counts.drawn += h.packages;
+        add_keyed(&mut self.drawn, pos, vec![h.clone()]);
+        Some((pos, h))
+    }
+
+    /// Strikes the drawn package with `key`; returns its frogport and the package.
+    pub fn strike_drawn(&mut self, key: HeldKey) -> Option<(BlockPos, Held)> {
+        take_keyed(&mut self.drawn, key)
+    }
+
+    /// A drawn package the engine gives back (its replay is gone): held again, in its place, and
+    /// back in its frogport's pool (choice SC143). Returns it.
+    pub fn undraw(&mut self, key: HeldKey) -> Option<Held> {
+        let (pos, mut h) = take_keyed(&mut self.drawn, key)?;
+        self.drawn_back(pos, &h);
+        h.by = None;
+        add_keyed(&mut self.on_hold, pos, vec![h.clone()]);
+        Some(h)
+    }
+
+    /// A drawn package whose key left another way is the world's again: back into its frogport's
+    /// pool (choice SC143).
+    pub fn drawn_back(&mut self, pos: BlockPos, h: &Held) {
+        match self.index_of(pos) {
+            Some(i) => self.pools[i].add(h.packages, &h.goods),
+            None => self.left.entry(pos).or_default().add(h.packages, &h.goods),
+        }
+        self.counts.drawn_back += h.packages;
+    }
+
     /// Strikes the package with `key` from the held ones (it landed); returns it.
     pub fn strike(&mut self, key: HeldKey) -> Option<Held> {
-        let pos = *self
-            .on_hold
-            .iter()
-            .find(|(_, l)| l.iter().any(|h| h.key == key))?
-            .0;
-        let l = self.on_hold.get_mut(&pos).expect("found");
-        let i = l.iter().position(|h| h.key == key).expect("found");
-        let h = l.remove(i);
-        if l.is_empty() {
-            self.on_hold.remove(&pos);
-        }
-        Some(h)
+        take_keyed(&mut self.on_hold, key).map(|(_, h)| h)
     }
 
     /// Packages held toward the frogport at `pos`.
@@ -552,6 +613,8 @@ impl PackageStore {
 
     /// Java's frontier is at `epoch`: keys of any other epoch are dropped (Java no longer holds
     /// them). Epochs are compared for equality only: Java starts them anywhere (choice SC136).
+    /// A drawn key of another epoch goes back into the pools (choice SC143): Java strips it and
+    /// releases its package, which the far replay drew already (a duplicate at worst).
     fn new_epoch(&mut self, epoch: u32) {
         if epoch == self.epoch {
             return;
@@ -561,10 +624,14 @@ impl PackageStore {
             l.retain(|h| h.key.epoch == epoch);
             !l.is_empty()
         });
+        let gone = drain_keyed(&mut self.drawn, |h| h.key.epoch != epoch);
+        for (pos, h) in gone {
+            self.drawn_back(pos, &h);
+        }
     }
 
     /// The frogport a `CHAIN_HELD` holds its package toward, when the declaration has it.
-    fn held_toward_pos(&self, p: &ChainPackage) -> Option<BlockPos> {
+    pub fn held_toward_pos(&self, p: &ChainPackage) -> Option<BlockPos> {
         p.destination
             .and_then(|d| self.frogports.get(d as usize))
             .map(|f| f.pos)
@@ -588,28 +655,27 @@ impl PackageStore {
             && self
                 .on_hold
                 .values()
+                .chain(self.drawn.values())
                 .flatten()
                 .any(|h| h.key.epoch == epoch && !listed.contains(&h.key.serial))
     }
 
     /// Java's frontier listed the keys it holds of `epoch` (IND_HELD_LIST, once a session, choice
-    /// SC140): any other key of that epoch is no package's, and is struck. Returns the packages
-    /// struck. A store of another epoch is left alone: its next declaration drops its keys.
+    /// SC140), drawn or not: any other key of that epoch is no package's, and is struck; a drawn
+    /// one goes back into the pools (choice SC143). Returns the packages struck. A store of
+    /// another epoch is left alone: its next declaration drops its keys.
     pub fn keep_listed(&mut self, epoch: u32, listed: &BTreeSet<u64>) -> u64 {
         if epoch != self.epoch {
             return 0;
         }
-        let mut struck = 0;
-        self.on_hold.retain(|_, l| {
-            l.retain(|h| {
-                let keep = h.key.epoch != epoch || listed.contains(&h.key.serial);
-                if !keep {
-                    struck += h.packages;
-                }
-                keep
-            });
-            !l.is_empty()
-        });
+        let unlisted = |h: &Held| h.key.epoch == epoch && !listed.contains(&h.key.serial);
+        let gone = drain_keyed(&mut self.on_hold, unlisted);
+        let drawn = drain_keyed(&mut self.drawn, unlisted);
+        let mut struck: u64 = gone.iter().map(|(_, h)| h.packages).sum();
+        for (pos, h) in drawn {
+            struck += h.packages;
+            self.drawn_back(pos, &h);
+        }
         self.counts.held_unlisted += struck;
         struck
     }
@@ -646,6 +712,7 @@ impl PackageStore {
                 goods: p.goods.clone(),
                 at: p.pos,
                 since,
+                by: None,
             }],
         );
         true
@@ -663,7 +730,7 @@ impl PackageStore {
         // engine's (`Engine::chain_package`): it strikes the key in whichever store holds it.
         match p.direction {
             ChainDirection::Held => return self.hold(p, recorded, None),
-            ChainDirection::Released => return true,
+            ChainDirection::Released | ChainDirection::Drawn => return true,
             ChainDirection::Out | ChainDirection::In => {}
         }
         // The engine's own write (slice S4b): it came from what replays sent, never from the
@@ -690,9 +757,10 @@ impl PackageStore {
         let counted = self.census_at.is_some_and(|c| recorded <= c);
         if counted {
             let known = match p.direction {
-                ChainDirection::Out | ChainDirection::Held | ChainDirection::Released => {
-                    (p.frogport as usize) < n
-                }
+                ChainDirection::Out
+                | ChainDirection::Held
+                | ChainDirection::Released
+                | ChainDirection::Drawn => (p.frogport as usize) < n,
                 ChainDirection::In => (p.frogport as usize) < self.pools.len(),
             };
             if !known {
@@ -707,7 +775,7 @@ impl PackageStore {
                     }
                 }
                 ChainDirection::In => self.counts.packages_in += packages,
-                ChainDirection::Held | ChainDirection::Released => {}
+                ChainDirection::Held | ChainDirection::Released | ChainDirection::Drawn => {}
             }
             self.counts.in_census += packages;
             return true;
@@ -742,7 +810,7 @@ impl PackageStore {
                 let short = pool.take(packages, &p.goods);
                 self.counts.in_beyond += short.packages;
             }
-            ChainDirection::Held | ChainDirection::Released => {}
+            ChainDirection::Held | ChainDirection::Released | ChainDirection::Drawn => {}
         }
         true
     }
@@ -798,6 +866,7 @@ struct Taken {
     writing: Option<Vec<Sent>>,
     mark: Option<WriteMark>,
     held: Vec<Held>,
+    drawn: Vec<Held>,
 }
 
 /// What [`declare`] did, for the engine's log.
@@ -862,6 +931,9 @@ pub fn declare(
         for (pos, h) in gone.on_hold {
             into.add_held(pos, h);
         }
+        for (pos, h) in gone.drawn {
+            into.add_drawn(pos, h);
+        }
         return Declared::Removed(true);
     }
     // What other stores held for the frogports coming from them.
@@ -913,7 +985,10 @@ persist_struct!(StoreCounts {
     held_stale,
     held_again,
     held_released,
-    held_unlisted
+    held_unlisted,
+    drawn,
+    drawn_removed,
+    drawn_back
 });
 persist_struct!(Sent { op, at });
 persist_struct!(WriteMark { at, ops });
@@ -923,7 +998,8 @@ persist_struct!(Held {
     packages,
     goods,
     at,
-    since
+    since,
+    by
 });
 persist_struct!(PackageStore {
     id,
@@ -942,8 +1018,50 @@ persist_struct!(PackageStore {
     writing,
     marks,
     epoch,
-    on_hold
+    on_hold,
+    drawn
 });
+
+/// Adds keyed packages toward `pos`, keeping the oldest first and each key once.
+fn add_keyed(map: &mut BTreeMap<BlockPos, Vec<Held>>, pos: BlockPos, add: Vec<Held>) {
+    if add.is_empty() {
+        return;
+    }
+    let e = map.entry(pos).or_default();
+    for h in add {
+        if !e.iter().any(|x| x.key == h.key) {
+            e.push(h);
+        }
+    }
+    e.sort_by_key(|h| (h.since, h.key));
+}
+
+/// Takes the package with `key` out of `map`, with its frogport.
+fn take_keyed(map: &mut BTreeMap<BlockPos, Vec<Held>>, key: HeldKey) -> Option<(BlockPos, Held)> {
+    let pos = *map.iter().find(|(_, l)| l.iter().any(|h| h.key == key))?.0;
+    let l = map.get_mut(&pos).expect("found");
+    let i = l.iter().position(|h| h.key == key).expect("found");
+    let h = l.remove(i);
+    if l.is_empty() {
+        map.remove(&pos);
+    }
+    Some((pos, h))
+}
+
+/// Takes every package `out` picks out of `map`, with its frogport.
+fn drain_keyed(
+    map: &mut BTreeMap<BlockPos, Vec<Held>>,
+    out: impl Fn(&Held) -> bool,
+) -> Vec<(BlockPos, Held)> {
+    let mut gone = Vec::new();
+    map.retain(|pos, l| {
+        let (o, keep): (Vec<Held>, Vec<Held>) = std::mem::take(l).into_iter().partition(&out);
+        gone.extend(o.into_iter().map(|h| (*pos, h)));
+        *l = keep;
+        !l.is_empty()
+    });
+    gone
+}
 
 /// A store's page.
 pub fn store_page(s: &PackageStore) -> Vec<u8> {

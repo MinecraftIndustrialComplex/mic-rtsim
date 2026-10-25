@@ -393,6 +393,16 @@ public final class ReinstallGameTests {
                 && Arrays.equals(back.records().get(0), a) && Arrays.equals(back.records().get(1), b)
                 && back.entries().get(0).gen() == 11 && back.entries().get(1).gen() == 12);
         check("records of another life are not carried on", p.plus(7, 13, List.of(a)).records().size() == 1 && p.plus(7, 13, List.of(a)).life() == 7);
+        // A write into a holder that still carries another life's records (a chunk written in the tick it loaded,
+        // before its end-of-tick reassert) drops them and counts them stale, as the reassert would.
+        RtsimSession s = RtsimSession.current();
+        check("a session runs", s != null);
+        long stale = s.stalePending();
+        PendingRecords now = s.carried(PendingRecords.EMPTY.plus(s.engineLife() ^ 1, 11, List.of(a, b)), List.of(a));
+        check("a write over another life's two records counts them stale: " + (s.stalePending() - stale),
+                s.stalePending() == stale + 2 && now.life() == s.engineLife() && now.records().size() == 1);
+        check("a write over this life's records keeps them, nothing stale",
+                s.carried(now, List.of(b)).records().size() == 2 && s.stalePending() == stale + 2);
         net.minecraft.nbt.CompoundTag ungenerated = new net.minecraft.nbt.CompoundTag();
         ungenerated.putLong("life", 0x5eedL);
         ungenerated.put("records", com.mojang.serialization.Codec.BYTE_BUFFER.listOf()

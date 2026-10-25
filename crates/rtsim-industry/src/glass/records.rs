@@ -356,15 +356,99 @@ pub struct GraphRecipe {
     pub name: u32,
 }
 
-/// One kinetic speed level of a domain (Level24): the root source's speed and the domain's
-/// capacity in SU at that level. `selector` is the value of the domain's driver that selects the
-/// level (a boiler's level, 0 to 18), or 0 when the domain has no driver.
+/// One row (Level24). A domain's speed row is a speed of its reference (the frame of its
+/// members' ratios) that its sources can give, with `selector` and `capacity` 0. A source's row
+/// is one of its states: `selector` the boiler level that selects it (0 to 18) for a driven
+/// source, 0 for a fixed one; `speed` its own generated speed, signed; `capacity` its capacity in
+/// SU at that speed.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct DomainLevel {
     pub selector: u32,
     pub speed_num: i32,
     pub speed_den: u32,
     pub capacity: f64,
+}
+
+impl DomainLevel {
+    pub fn speed(&self) -> f64 {
+        f64::from(self.speed_num) / f64::from(self.speed_den.max(1))
+    }
+}
+
+/// One source of a domain (Source32): a Create source block entity (an engine's powered shaft,
+/// a water wheel, a motor). A driven source has a row per level of the boiler that drives it; a
+/// fixed one has one row.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DomainSource {
+    /// The boiler node that selects its row, if any.
+    pub driver: Option<u32>,
+    pub levels: Vec<DomainLevel>,
+    /// Its row at compile (state, not build), if known.
+    pub current: Option<u32>,
+    /// Its speed over the reference's; `ratio_den` 0 when unknown.
+    pub ratio_num: i32,
+    pub ratio_den: u32,
+    /// `BlockPos.asLong` of the source block entity.
+    pub pos: i64,
+}
+
+impl DomainSource {
+    /// Its speed over the reference's, if known.
+    pub fn ratio(&self) -> Option<f64> {
+        (self.ratio_den != 0).then(|| f64::from(self.ratio_num) / f64::from(self.ratio_den))
+    }
+}
+
+impl DomainLevel {
+    /// A domain's speed row at `speed` RPM.
+    pub fn speed_row(speed: i32) -> DomainLevel {
+        DomainLevel {
+            selector: 0,
+            speed_num: speed,
+            speed_den: 1,
+            capacity: 0.0,
+        }
+    }
+}
+
+impl DomainSource {
+    /// A fixed source at `pos` turning at `speed` RPM (ratio 1) with `capacity` SU.
+    pub fn fixed(pos: i64, speed: i32, capacity: f64) -> DomainSource {
+        DomainSource {
+            driver: None,
+            levels: vec![DomainLevel {
+                selector: 0,
+                speed_num: speed,
+                speed_den: 1,
+                capacity,
+            }],
+            current: Some(0),
+            ratio_num: 1,
+            ratio_den: 1,
+            pos,
+        }
+    }
+
+    /// A source `driver` drives at `pos` (ratio 1): rows (selector, speed, capacity), at row
+    /// `current`.
+    pub fn driven(driver: u32, pos: i64, rows: &[(u32, i32, f64)], current: u32) -> DomainSource {
+        DomainSource {
+            driver: Some(driver),
+            levels: rows
+                .iter()
+                .map(|&(selector, speed_num, capacity)| DomainLevel {
+                    selector,
+                    speed_num,
+                    speed_den: 1,
+                    capacity,
+                })
+                .collect(),
+            current: Some(current),
+            ratio_num: 1,
+            ratio_den: 1,
+            pos,
+        }
+    }
 }
 
 /// One member of a domain (Member24): `count` blocks of the same impact and ratio, optionally a
@@ -383,19 +467,36 @@ pub struct Member {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GraphDomain {
     pub head: GraphHead,
-    /// Create's network id (`KineticBlockEntity.network`).
+    /// Create's network id (`KineticBlockEntity.network`): a hint only, it changes when another
+    /// source takes the network over.
     pub network: u64,
-    /// The level in force at compile.
-    pub current: u32,
-    /// The node that selects the level (a boiler), if any.
-    pub driver: Option<u32>,
+    /// The speed row Create ran at at compile (state, not build), if any row is its speed.
+    pub current: Option<u32>,
     /// [`domain_flags`].
     pub flags: u32,
     /// Create's own stress and capacity at compile (`KineticNetwork`), for the compile check.
     pub live_stress: f64,
     pub live_capacity: f64,
+    /// The speed rows, sorted by |speed| (a negative first). A domain without a driven source has
+    /// one: the reference's speed at compile. Node rates index these rows.
     pub levels: Vec<DomainLevel>,
+    /// Sorted by position.
+    pub sources: Vec<DomainSource>,
+    /// The last `foreign` members lie in chunks of no district (a shared network's part, SEC-1 S5).
+    pub foreign: u32,
     pub members: Vec<Member>,
+}
+
+impl GraphDomain {
+    /// The boiler nodes driving its sources, in source order (one may repeat).
+    pub fn drivers(&self) -> impl Iterator<Item = u32> + '_ {
+        self.sources.iter().filter_map(|s| s.driver)
+    }
+
+    /// Whether a boiler drives a source of it: else its speed is its one row's, fixed.
+    pub fn driven(&self) -> bool {
+        self.sources.iter().any(|s| s.driver.is_some())
+    }
 }
 
 pub mod domain_flags {
@@ -403,6 +504,8 @@ pub mod domain_flags {
     pub const OVERSTRESSED: u32 = 1;
     /// Stress is disabled in the server config (never overstressed).
     pub const STRESS_DISABLED: u32 = 2;
+    /// A part of a network that spans districts (SEC-1 S5).
+    pub const SHARED: u32 = 4;
 }
 
 /// IND_GRAPH_END (0x004C): closes a compile. The engine uses the compile only if it received
