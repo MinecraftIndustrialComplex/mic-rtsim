@@ -603,12 +603,12 @@ The **glass box** (GLASSBOX.md, next to be built) adds one layer later: a compil
 and edges, below 1 bpp, from its cold graph pages (§9.2 of GLASSBOX.md) read in the sidecar, and its
 hot regime summary from the tap.
 
-SEC-1 slice S7 (SECTIONS.md §8.3, SC172 to SC176) adds three industry layers and cards:
+SEC-1 slice S7 (SECTIONS.md §8.3, SC172 to SC183) adds three industry layers and cards:
 
 | Layer | Marks | From | Card |
 |---|---|---|---|
-| `industry.sections` | a box a section (the nodes' box grown by a block), coloured by state; drawn below 1 bpp | the glass pages (`DistrictSections::of`, the report's own code), a save only | state, unit, nodes, stores, box, fingerprint, window, worst good, the stores it shares |
-| `industry.stores` | an edge between each pair of a package store's frogports with a known hop count, wider with the packages held | the store pages (`STORE_TABLE`); a save and the live tap | packages held, residue, in and out, a row a frogport (its district linked), goods held |
+| `industry.sections` | a box a section (the nodes' box grown by a block, at most 64 a district), coloured by state; drawn below 1 bpp | the glass pages (`DistrictSections::of`, the report's own code), a save only | state, unit, nodes, stores, box, fingerprint, window, worst good, the stores it shares |
+| `industry.stores` | an edge between each pair of a package store's frogports that follow one another along the chain (at most 16 a store), wider with the packages held | the store pages (`STORE_TABLE`); a save and the live tap | packages held, residue, in and out, a row a frogport (its district linked), goods held |
 | `industry.networks` | an edge from a shared kinetic network's first part to each other part; a ring for one part; red when not coupled | the glass pages' shared domains through the network registry, a save only | status, a row a part (its district linked) |
 
 The district card gains the same: its sections, the stores they share, its package stores and the

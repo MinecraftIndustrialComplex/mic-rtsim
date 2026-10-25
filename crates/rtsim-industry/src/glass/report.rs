@@ -447,12 +447,13 @@ impl Report {
     ///   ticks, 10 windows completed, 11 last verdict, 12 strikes, 13 flags ([`UnitReport`]'s bits:
     ///   passed, stale, may replay, frozen, unbounded), 14 ready at (tick);
     /// - then the sections' count, and per section ([`SECTION_STRIDE`], choice SC165): 0 unit (-1
-    ///   none), 1 judging group, 2 nodes, 3 stores, 4 stores shared with another section, 5 domains,
-    ///   6 flags ([`SectionReport`]'s bits: passed, stale, may replay, frozen, working, has a box,
-    ///   has a low position), 7 state ([`section_state`]), 8 to 10 the box's low corner, 11 to 13 its
-    ///   high corner, 14 to 16 the lowest node position, 17 and 18 the fingerprint's high and low 32
-    ///   bits, 19 last verdict, 20 strikes, 21 windows completed, 22 open window ticks, 23 worst
-    ///   good (-1 none), 24 its measured slope, 25 its predicted, 26 its excess beyond the band;
+    ///   none), 1 judging group, 2 nodes, 3 stores, 4 stores shared with another section, 5
+    ///   domains, 6 flags ([`SectionReport`]'s bits: passed, stale, may replay, frozen, working,
+    ///   has a box, has a low position), 7 state ([`section_state`]), 8 to 10 the box's low
+    ///   corner, 11 to 13 its high corner, 14 to 16 the lowest node position, 17 and 18 the
+    ///   fingerprint's high and low 32 bits, 19 last verdict, 20 strikes, 21 windows completed,
+    ///   22 open window ticks, 23 worst good (-1 none), 24 its measured slope, 25 its predicted,
+    ///   26 its excess beyond the band;
     /// - then the store list: its count, and per entry ([`SECTION_STORE_STRIDE`]) 0 section,
     ///   1 inventory (-1 none), 2 shared (0 or 1), the entries of one section in its store order;
     /// - then the shared stores' count, and per store ([`SHARED_STRIDE`], choice SC168): 0 store

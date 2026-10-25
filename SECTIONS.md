@@ -989,7 +989,8 @@ No migration code (no backward compatibility before release; G2-85). On load:
   and stores (an inventory number each, `*` when another section shares it, `-` for a store with no
   inventory), box, fingerprint, open window, windows done, strikes. The first section of a unit
   names the unit's worst good: the good its last window missed its band by the most, with measured
-  and predicted rates and the excess (SC167). Then one line per store shared by sections: its
+  and predicted rates and the excess (SC167); with no units, the district's worst good is
+  printed once under the header (SC183). Then one line per store shared by sections: its
   sections; held by one unit and judged inside it, or counted at its movers (pairs), whether the
   latest sweep counted it, and its residue per good (SC168). On the stub engine, with no compile,
   or with no complete compile it says so in one line. `/rtsim district info` gains one line:
@@ -1012,24 +1013,29 @@ only through the read-only open, as `rtsim-cli lines` reads train lines (`crates
 `rtsim-cli stores <world> [--json]`: the package stores of a saved world (the `STORE_TABLE` pages),
 read only the same way. Per store: its id and dimension; its frogports (position, district, star);
 the pool toward each frogport and the no-route pool (packages, goods by name); the census residue;
-the packages held at each frogport with their keys; the drawn keys; the counts (SC171). A world with
-no package store says so and exits 0; a bad argument exits 64, a world that does not open exits 1.
+the packages held at each frogport with their keys, and at positions the store dropped; the drawn
+keys; what it `left` and is `owed` per position; the counts (SC171, SC182). A world with no package
+store, or no industry pages, says so and exits 0; a store page that does not read is named and
+skipped; a bad argument exits 64, a world that does not open exits 1.
 
 ### 8.3 Viewer
 
 - The district card (rtsim-view) gains its sections (state, nodes, stores, a link to each), the
   stores they share, the package stores with a frogport in the district and the districts they
-  reach, and the shared networks it is a part of. A section, a package store and a shared network each
-  have a card of their own.
+  reach, and the shared networks it is a part of. A section, a package store and a shared network
+  each have a card of their own, which a click on the store's or network's edge opens.
 - The map gains three layers (VIEWER.md §7): `industry.sections` below 1 block per pixel (a box a
   section, coloured by state, SC172), `industry.stores` (an edge between each pair of a store's
-  frogports whose conveyors have a known hop count, wider with the packages held, SC173) and
-  `industry.networks` (an edge from a network's first part to each other part, SC174).
+  frogports that follow one another along the chain, wider with the packages held, SC173, SC179)
+  and `industry.networks` (an edge from a network's first part to each other part, SC174). A unit
+  of each holds under the 2,000 rows a unit may write: 31 districts of at most 64 sections, 125
+  stores of at most 16 links, 125 networks of at most 16 edges (SC178).
 - A save's glass pages are decoded as the engine decodes them (`read_district_page`), so the viewer
   shows what the server would report from the same pages, less what only a live sweep knows: a
   shared store reads as not counted this sweep, with no residue (SC176). A page the save's format
-  dropped is named in the empty layer's reason. The live tap draws the stores only; sections and
-  networks come from saves.
+  dropped is named in the empty layer's reason; a page that does not read, or panics in the
+  reader, is skipped and named, and at most 4,096 glass pages and 4,096 store pages are read
+  (SC181). The live tap draws the stores only; sections and networks come from saves.
 - Join pairs are not in rtsim's pages (Java's `IndustryData` keeps them), so the viewer cannot draw
   or list them; the card says which districts a district reaches through a store or a network
   instead (SC175).
@@ -1467,6 +1473,13 @@ The options below stay as the record of what was offered.
 | SC174 | The `industry.networks` layer draws a shared kinetic network as an edge from its first part's first kinetic source to each other part's, 3 pixels wide, red with the hatch when the network is not coupled; a network of one part known is a ring on its source. The network's id is its place in the registry, so it holds for one save only | the registry's parts are one per district, joined at the sources they share; the simplest mark that names the network and its parts is a star from one of them |
 | SC175 | The viewer does not draw join pairs; the district card names the districts it reaches through a package store or a shared network | the pairs are in Java's `IndustryData`, not in rtsim's pages, and mic-viewer has no way to read the game's world data; the stores and networks are the joins the engine knows |
 | SC176 | The viewer decodes the glass pages in process with the engine's page reader and builds the sections from them with the report's own code (`DistrictSections::of`), so a card and the command agree; the networks are built from the same pages by the registry (`Nets::build`). A page the save's format dropped, or that does not decode, is left out and the layer's reason names it | one reader for the page; a save from an older build then shows the stores and the rest, and says why the sections are missing |
+| SC177 | A counted store's residue is noted in place on each sampled sweep: `note_residue` compares the pairs' `since` against the stored baseline and the residue against the stored one, and allocates only when either changed; the baseline is an `Option`, so a counted store with no pairs takes one too, and `counted_res` is cleared at a session start. The sweep's residue map (`r`) is still built per sweep, as the units' sums need it | the report is built on request, and a sampled sweep should not allocate for it; the map `r` is the one bounded piece of per-sweep work that stays (a few goods per counted store) | 
+| SC178 | The reach layers bucket by rows: `industry.sections` 31 districts a unit with at most 64 sections drawn each (`SECTION_ROWS`, the glass box's `sections_max`), `industry.stores` 125 stores a unit with at most 16 links drawn each (`STORE_LINKS`), `industry.networks` 125 networks a unit with at most 16 edges each (`NET_EDGES`, `cluster_districts_max`) | a unit may write 2,000 rows (`MAX_ROWS`) and 256 keys a unit broke it; a test builds a full unit past every cap and checks the rows |
+| SC179 | A package store's chain links are the pairs of frogports with a known hop count (Java's `UNKNOWN_HOPS`, 0xFFFF, is none) and no third frogport between them (`hops(i, k) + hops(k, j) == hops(i, j)`), about `n - 1` for a chain; the stores layer draws only those | `hops_between` answers for every pair in range, so the old rule drew all `n (n - 1) / 2` pairs |
+| SC180 | A section shows REPLAYING when its unit is among the running replay's `units_on()`, not when the compile's gate would let it replay now; the unit branch of `section_reports` is explicit (no unit shows the district's own window) | the report says what runs, and a gate that moved since the replay began must not relabel it |
+| SC181 | The viewer reads at most 4,096 glass pages and 4,096 store pages (`Limits.glass_pages`, `Limits.store_pages`), takes each glass page under `catch_unwind`, and names the pages it left out (`glass_unread`, `stores_unread`) in the empty layer's reason instead of failing the whole industry view | one bad page took the stations, lines, trains and glass down with it, and the paged readers are capped | 
+| SC182 | `rtsim-cli stores` lists the held and drawn packages at positions the store no longer lists (`dropped`), prints `left` and `owed` as one line each per position, names an unreadable store page (at most 32 named, the rest counted) and carries on, and exits 0 with a message for a world with no industry pages | `redeclare` keeps `on_hold` and `drawn` at dropped positions; the JSON had `left` and `owed` and the text did not; one bad page hid the listing |
+| SC183 | `/rtsim district sections` prints no "same unit as sN" lines, and with no units prints the district's worst good once under the header | the line repeated the unit's first and the same good on every section |
 
 ---
 
@@ -1598,6 +1611,12 @@ The options below stay as the record of what was offered.
   - mic-viewer's area mark has a legend index and the styles dash, dot and bad only, and an edge
     mark has no label: a section's state is told by colour and edge, its words by the card and the
     legend, and an edge's by its card. A network of one known part is a ring, with no edge.
+  - The reach layers draw at most 64 sections a district, 16 links a store (the first 16 of its
+    chain, in frogport order) and 16 edges a network (its first 16 other parts); a bigger one is
+    drawn partly, and its card still lists all (SC178). A store whose hop table is a tree with an
+    undeclared hub links its leaves pairwise; the cap bounds that.
+  - A store page or a glass page past the 4,096 the viewer reads is not read (SC181); `rtsim-cli
+    stores` names 32 bad pages and counts the rest (SC182).
   - The create GameTest fixture's glass pages are in an older page format (the format drops them),
     so its sections and networks are empty; its six package stores have frogports in no district. A
     fresh GameTest run would give the layers something to draw.

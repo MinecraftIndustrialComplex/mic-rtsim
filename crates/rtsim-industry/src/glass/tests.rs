@@ -7941,7 +7941,8 @@ mod replay_path {
             /// The report names the sections, the counted vault between them and its residue
             /// (SECTIONS.md §8.1): a steady run leaves no residue and both sections passed; a
             /// player taking sheets leaves the residue of what was taken, fails both sections and
-            /// names sheets as each one's worst good. A sweep without a count sample is not counted.
+            /// names sheets as each one's worst good. A sweep without a count sample is not
+            /// counted.
             #[test]
             fn the_report_names_the_sections_the_counted_vault_and_its_residue() {
                 let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
