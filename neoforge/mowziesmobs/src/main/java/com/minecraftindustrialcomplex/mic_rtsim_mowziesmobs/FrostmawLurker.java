@@ -30,7 +30,7 @@ public final class FrostmawLurker implements Lurker {
     /** The swipe hits at this animation tick (AnimationAreaAttackAI damage frame): the body faces the strike until then. */
     public static final int SWIPE_HIT_TICK = 9;
 
-    /** The bearing (yaw) of a strike in progress, by body. */
+    /** The bearing (yaw) of a strike in progress, by body: dropped in {@link #hold} once its swing is past the hit frame. */
     private final Map<Mob, Float> bearings = new WeakHashMap<>();
 
     @Override
@@ -56,6 +56,9 @@ public final class FrostmawLurker implements Lurker {
             f.getNavigation().stop();
             return;
         }
+        // The strike's swing is over (any other animation, or past the hit frame): its bearing must not turn the
+        // Frostmaw's own swipes at a player later (MZB-361)
+        bearings.remove(f);
         if (f.getAnimation() != IAnimatedEntity.NO_ANIMATION) {
             f.getNavigation().stop();
             return;

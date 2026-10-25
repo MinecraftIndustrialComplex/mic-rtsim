@@ -3587,6 +3587,21 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     keeps the strike's bearing in a `WeakHashMap`; it stops its navigation in any animation, so a swipe or a
     roar is not walked out of. Registered in the plugin's constructor as
     `RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker())`.
+  - Amendment (review C, item 3; the GameTest is written and compiled, not run): the strike's bearing was
+    removed only in `release`, so it outlived its swing. `hold` pins the body to it during any plain swipe up
+    to tick 9, which includes the Frostmaw's own swipes at a player (the jar's `AnimationAreaAttackAI.tick`
+    turns the body to its target by up to 30 degrees a tick until the hit frame, and its area attack reads
+    `yBodyRot`): after one strike by a train, every later plain swipe at a player was held to the old
+    carriage's bearing and its 135 degree arc missed the player. Now `hold` removes the bearing as soon as the
+    animation is not a swipe, or is past `SWIPE_HIT_TICK`. A swipe-twice is not pinned and never was.
+    `aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes` (mowziesmobs, batch `frostmaw_lurk_bearing`): a held
+    puppet strikes at a point east of it (yaw -90), the swing ends, a player (1000 health) stands 4 blocks west,
+    and at tick 8 or 9 of the first plain swipe at the player the body's `yBodyRot` is more than 90 degrees from
+    the strike's. Expected on the unfixed code: it stays at -90, and the test fails with "the swipe at the player
+    turned away from the strike's bearing -90.0 (yBodyRot -90.0, 0.0 degrees off it)" (pinned at the hold, or 30
+    degrees on at the worst before it). The 90 degree line is a guess at how far the jar's lookAt gets the body
+    in eight ticks: the 180 degree geometry makes the unfixed code fail by 60 degrees or more, and a fixed body
+    short of it would fail the test falsely; if the round shows that, lower it.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
