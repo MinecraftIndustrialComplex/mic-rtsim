@@ -951,5 +951,239 @@ public final class MarchGameTests {
                 .thenSucceed();
     }
 
+    // ---- test 34: the march record and the bodies --------------------------------------------------
+
+    /**
+     * Test 34 (MOWZIE.md §7, MZB-468, MZB-477, MZB-722; the JUnit half is {@code MarchPathTest}, MZB-720 and MZB-477's three
+     * vectors). Three parts, in forced chunks of a far base:
+     * <ol>
+     * <li>The record's layout and rules, with an agent that has no band: a march of two units and three waypoints reads back
+     * whole (revision, dimension, faction, kind, phase, flags, units, every waypoint); a lower and an equal revision are
+     * dropped ({@code marchStale}) and the held record stays the same object; a higher one replaces it whole; an ENDED one
+     * drops the path and remembers the agent ({@code marchEnds}); a later record of the agent is dropped.</li>
+     * <li>A band met on the march (radius 0, bearing 180) of four warriors and their chief stands as three stacks: back
+     * 0, 1.5 and 3.0, the chief's last, rows of two with the bodies 1.2 blocks apart, the first stack's anchor (the head) in the
+     * block {@code march.at(now)} and the rows 1.5 blocks apart along the heading.</li>
+     * <li>The moving form: the band walks 8 blocks east and 8 south at 0.02 blocks a tick, two steers aligned to the march's
+     * waypoints (400 ticks each). The head (the first stack's anchor) is compared with {@code march.at(now)} every 20 ticks
+     * and logged (it must stay within 1.5 blocks on each axis: the chart is whole blocks). After each steer's walk the stacks'
+     * anchors lie where the turned column puts them (the head, and behind it along the new heading by each stack's back), and the
+     * bodies are within the follow goal's leash of their places. These are positions, not counters.</li>
+     * </ol>
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_march")
+    public static void theMarchRecordMatchesTheBodies(GameTestHelper helper) {
+        String test = "theMarchRecordMatchesTheBodies";
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 2);
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction();
+        long ghost = ConflictKit.newAgent(), agent = ConflictKit.newAgent();
+        Map<String, Integer> two = new LinkedHashMap<>();
+        two.put(WARRIOR, 4);
+        two.put(ARCHER, 2);
+        MarchPath[] held = new MarchPath[1];
+        long[] n = new long[6]; // marchRecords, marchStale, marchEnds before a step; the tick the walk began; spare
+        ConflictKit.Band band = ConflictKit.band(agent, faction, dim);
+        band.arcX = at.x();
+        band.arcZ = at.z();
+        band.bearing = 180f;
+        band.targetX = at.x();
+        band.targetZ = at.z();
+        band.speed = 0f;
+        band.flags = HOSTILE | CHIEF;
+        Map<String, Integer> four = Map.of(WARRIOR, 4);
+
+        // The walk's samples: the head against march.at(now) every 20 ticks.
+        boolean[] sampling = {false};
+        StringBuilder samples = new StringBuilder();
+        double[] worst = new double[1];
+        waits.eachTick(() -> {
+            if (!sampling[0])
+                return;
+            long now = level.getGameTime();
+            ConflictBridge.Party sp = bridge().party(agent);
+            if ((now - n[3]) % 20 != 0 || sp == null)
+                return;
+            MarchPath m = bridge().march(agent);
+            int[] want = m == null ? null : m.at(now, RtsimApi.topology(level));
+            double[] head = sp.stacks().get(0).anchorAt(now);
+            if (want == null)
+                return;
+            double dx = head[0] - (want[0] + 0.5), dz = head[1] - (want[1] + 0.5);
+            worst[0] = Math.max(worst[0], Math.max(Math.abs(dx), Math.abs(dz)));
+            samples.append(now - n[3]).append(": head ").append(xz(head)).append(" want (").append(want[0]).append(", ").append(want[1])
+                    .append(") d (").append(String.format("%.2f, %.2f", dx, dz)).append(")\n");
+        });
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 2)))
+                // ---- 1. the record
+                .thenExecute(() -> {
+                    n[0] = bridge().marchRecords;
+                    long now = level.getGameTime();
+                    n[3] = now;
+                    say(ghost, 5, dim, faction, OUT, MARCH_CHIEF, two, wp(at.x(), at.z(), now), wp(at.x() + 100, at.z() + 37, now + 100),
+                            wp(at.x() + 100, at.z() - 50, now + 200));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the record was read", bridge().marchRecords == n[0] + 1 && bridge().march(ghost) != null)))
+                .thenExecute(() -> {
+                    MarchPath m = bridge().march(ghost);
+                    held[0] = m;
+                    long t0 = n[3];
+                    check("the revision, dimension and faction come back: " + m.revision() + ", " + m.dimension() + ", " + m.faction(),
+                            m.revision() == 5 && dim.equals(m.dimension()) && m.faction() == faction && m.agent() == ghost);
+                    check("the kind, phase and flags come back: " + m.kind() + ", " + m.phase() + ", " + m.flags(),
+                            m.kind() == ConflictRecords.PURPOSE_RAID && m.phase() == OUT && m.flags() == MARCH_CHIEF && m.chief() && !m.ended());
+                    check("two units, with their counts: " + m.units(), m.units().size() == 2 && m.count(WARRIOR) == 4 && m.count(ARCHER) == 2
+                            && m.count("minecraft:pig") == 0);
+                    check("three waypoints", m.waypoints() == 3);
+                    long[][] want = {{(long) Math.floor(at.x()), (long) Math.floor(at.z()), t0}, {(long) Math.floor(at.x() + 100), (long) Math.floor(at.z() + 37), t0 + 100},
+                            {(long) Math.floor(at.x() + 100), (long) Math.floor(at.z() - 50), t0 + 200}};
+                    for (int i = 0; i < 3; i++)
+                        check("waypoint " + i + " is (" + m.waypointX(i) + ", " + m.waypointZ(i) + ") at " + m.waypointTick(i) + ", wanted ("
+                                        + want[i][0] + ", " + want[i][1] + ") at " + want[i][2],
+                                m.waypointX(i) == want[i][0] && m.waypointZ(i) == want[i][1] && m.waypointTick(i) == want[i][2]);
+                    // The route through the record: the ends, a waypoint, the middle (MZB-477's flat vector is MarchPathTest's).
+                    int[] before = m.chartAt(t0 - 5), mid = m.chartAt(t0 + 50), second = m.chartAt(t0 + 100), after = m.chartAt(t0 + 999);
+                    record(test, "route", "before " + before[0] + "," + before[1] + " mid " + mid[0] + "," + mid[1] + " second " + second[0] + ","
+                            + second[1] + " after " + after[0] + "," + after[1]);
+                    check("the route starts at the first waypoint and ends at the last", before[0] == want[0][0] && before[1] == want[0][1]
+                            && after[0] == want[2][0] && after[1] == want[2][1]);
+                    check("it is at the second waypoint at its tick", second[0] == want[1][0] && second[1] == want[1][1]);
+                    check("half way along the first leg it is half way, to a block: (" + mid[0] + ", " + mid[1] + ")",
+                            Math.abs(mid[0] - (want[0][0] + 50)) <= 1 && Math.abs(mid[1] - (want[0][1] + 18)) <= 1);
+                    int[] folded = m.at(t0 + 100, RtsimApi.topology(level));
+                    check("in the flat test level the folded position is the chart's: (" + folded[0] + ", " + folded[1] + ")",
+                            folded[0] == want[1][0] && folded[1] == want[1][1]);
+                    // A lower revision, and the same one: dropped.
+                    n[1] = bridge().marchStale;
+                    say(ghost, 4, dim, faction, WAITING, 0, four, wp(at.x(), at.z(), t0));
+                    say(ghost, 5, dim, faction, WAITING, 0, four, wp(at.x(), at.z(), t0));
+                })
+                .thenWaitUntil(waits.logic(() -> check("both records were dropped (stale " + (bridge().marchStale - n[1]) + ")", bridge().marchStale == n[1] + 2)))
+                .thenExecute(() -> {
+                    check("the held record is the same, whole", bridge().march(ghost) == held[0] && held[0].revision() == 5 && held[0].phase() == OUT);
+                    // A higher revision replaces it whole.
+                    say(ghost, 6, dim, faction, WAITING, 0, four, wp(at.x() + 7, at.z() + 9, n[3]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the newer record replaced the old", bridge().march(ghost) != held[0])))
+                .thenExecute(() -> {
+                    MarchPath m = bridge().march(ghost);
+                    check("the newer record is whole: rev " + m.revision() + ", phase " + m.phase() + ", units " + m.units() + ", waypoints " + m.waypoints(),
+                            m.revision() == 6 && m.phase() == WAITING && !m.chief() && m.units().equals(Map.of(WARRIOR, 4)) && m.waypoints() == 1);
+                    int[] w = m.chartAt(n[3] + 12345);
+                    check("waiting, it stands at its last waypoint: (" + w[0] + ", " + w[1] + ")", w[0] == (int) Math.floor(at.x() + 7) && w[1] == (int) Math.floor(at.z() + 9));
+                    // ENDED drops the path and the agent's later records.
+                    n[2] = bridge().marchEnds;
+                    say(ghost, 7, dim, faction, WAITING, MARCH_CHIEF | MARCH_ENDED, four, wp(at.x(), at.z(), n[3]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the end was counted (" + (bridge().marchEnds - n[2]) + ")", bridge().marchEnds == n[2] + 1)))
+                .thenExecute(() -> {
+                    check("the path is dropped and the agent remembered: path " + bridge().march(ghost) + ", ended " + bridge().marchEnded(ghost),
+                            bridge().march(ghost) == null && bridge().marchEnded(ghost));
+                    n[1] = bridge().marchStale;
+                    say(ghost, 8, dim, faction, OUT, MARCH_CHIEF, two, wp(at.x(), at.z(), n[3]), wp(at.x() + 9, at.z(), n[3] + 9));
+                })
+                .thenWaitUntil(waits.logic(() -> check("a later record of the agent was dropped", bridge().marchStale == n[1] + 1)))
+                .thenExecute(() -> {
+                    check("and holds no path: " + bridge().march(ghost), bridge().march(ghost) == null);
+                    record(test, "record", "layout, stale (lower and equal), replace, ENDED and a later record all as the rules say");
+                    // ---- 2. a band met on the march
+                    long now = level.getGameTime();
+                    n[3] = now;
+                    ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 4, true)));
+                    say(agent, 1, dim, faction, OUT, MARCH_CHIEF, four, wp(at.x(), at.z(), now), wp(at.x(), at.z(), now + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the band appeared", bridge().party(agent) != null && bridge().march(agent) != null);
+                    allStacks(party(agent), PLACED, "the column is placed");
+                }))
+                .thenExecute(() -> {
+                    ConflictBridge.Party p = party(agent);
+                    long now = level.getGameTime();
+                    List<ConflictBridge.Stack> st = p.stacks();
+                    check("three stacks: two rows of two and the chief: " + states(p), st.size() == 3);
+                    double[] backs = {0.0, 1.5, 3.0};
+                    for (int i = 0; i < 3; i++)
+                        check("stack " + i + " is " + backs[i] + " back, not the chief's unless last: back " + st.get(i).back() + ", chief " + st.get(i).chief(),
+                                Math.abs(st.get(i).back() - backs[i]) < 0.01 && st.get(i).chief() == (i == 2));
+                    check("the rows hold two and two and the chief one: " + aliveIn(st.get(0)) + ", " + aliveIn(st.get(1)) + ", " + aliveIn(st.get(2)),
+                            aliveIn(st.get(0)) == 2 && aliveIn(st.get(1)) == 2 && aliveIn(st.get(2)) == 1);
+                    int[] want = bridge().march(agent).at(now, RtsimApi.topology(level));
+                    double[] head = st.get(0).anchorAt(now);
+                    record(test, "head", "the head " + xz(head) + ", march.at(now) (" + want[0] + ", " + want[1] + ")");
+                    check("the head lies in the block march.at(now): head " + xz(head) + ", block (" + want[0] + ", " + want[1] + ")",
+                            (int) Math.floor(head[0]) == want[0] && (int) Math.floor(head[1]) == want[1]);
+                    for (int i = 1; i < 3; i++) {
+                        double[] a = st.get(i).anchorAt(now);
+                        // Bearing 180 heads west: the column lies east of the head.
+                        check("stack " + i + " is " + backs[i] + " blocks behind the head, east of it: anchor " + xz(a) + ", head " + xz(head),
+                                Math.abs(a[0] - head[0] - backs[i]) < 0.05 && Math.abs(a[1] - head[1]) < 0.05);
+                    }
+                    for (int i = 0; i < 2; i++) {
+                        ConflictBridge.Slot a = st.get(i).slots().get(0), b = st.get(i).slots().get(1);
+                        double dx = Math.abs(a.entity().getX() - b.entity().getX()), dz = Math.abs(a.entity().getZ() - b.entity().getZ());
+                        double ax = st.get(i).anchorAt(now)[0];
+                        record(test, "row " + i, "bodies " + String.format("(%.2f, %.2f) and (%.2f, %.2f)", a.entity().getX(), a.entity().getZ(), b.entity().getX(), b.entity().getZ()));
+                        check("row " + i + " stands two abreast, 1.2 blocks apart across the heading: dx " + dx + ", dz " + dz,
+                                dx < 0.35 && Math.abs(dz - 1.2) < 0.35);
+                        check("row " + i + " stands at its anchor's x " + ax + ": body x " + a.entity().getX(), Math.abs(a.entity().getX() - ax) < 0.5);
+                    }
+                    // ---- 3. the walk: east 8 blocks, then south 8, 400 ticks each, 0.02 a tick
+                    n[3] = level.getGameTime();
+                    long t0 = n[3];
+                    say(agent, 2, dim, faction, OUT, MARCH_CHIEF, four, wp(at.x(), at.z(), t0), wp(at.x() + 8, at.z(), t0 + 400),
+                            wp(at.x() + 8, at.z() + 8, t0 + 800));
+                    ConflictKit.steer(agent, 1, 0.02f, at.x() + 8, at.z(), t0 + 400, false);
+                    sampling[0] = true;
+                })
+                .thenWaitUntil(waits.logic(() -> check("the first leg is walked, tick " + (level.getGameTime() - n[3]) + " of 460", level.getGameTime() >= n[3] + 460)))
+                .thenExecute(() -> turned(test, level, agent, n[3] + 460, at.x() + 8, at.z(), 1.0, 0.0, "east"))
+                .thenExecute(() -> ConflictKit.steer(agent, 1, 0.02f, at.x() + 8, at.z() + 8, n[3] + 800, false))
+                .thenWaitUntil(waits.logic(() -> check("the second leg is walked, tick " + (level.getGameTime() - n[3]) + " of 860", level.getGameTime() >= n[3] + 860)))
+                .thenExecute(() -> {
+                    sampling[0] = false;
+                    turned(test, level, agent, n[3] + 860, at.x() + 8, at.z() + 8, 0.0, 1.0, "south");
+                    record(test, "walk", "the head against march.at(now) every 20 ticks, worst deviation " + String.format("%.2f", worst[0]) + ":\n" + samples);
+                    check("the head stayed within 1.5 blocks of march.at(now) on each axis (worst " + String.format("%.2f", worst[0]) + "):\n" + samples,
+                            worst[0] <= 1.5 && samples.length() > 0);
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("recalled", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty())))
+                .thenSucceed();
+    }
+
+    /**
+     * After a leg's walk: the head (the first stack's anchor) is at the leg's end and every other stack lies behind it by its
+     * back along the new heading ({@code hx, hz}), and each body is within the follow goal's leash of its place.
+     */
+    private static void turned(String test, ServerLevel level, long agent, long now, double endX, double endZ, double hx, double hz, String leg) {
+        ConflictBridge.Party p = party(agent);
+        double[] head = p.stacks().get(0).anchorAt(now);
+        check("the head is at the end of the " + leg + " leg (" + xz(new double[] {endX, endZ}) + "): " + xz(head),
+                Math.abs(head[0] - endX) < 0.1 && Math.abs(head[1] - endZ) < 0.1);
+        StringBuilder log = new StringBuilder();
+        for (ConflictBridge.Stack st : p.stacks()) {
+            double[] a = st.anchorAt(now);
+            double along = (a[0] - head[0]) * hx + (a[1] - head[1]) * hz, across = -(a[0] - head[0]) * hz + (a[1] - head[1]) * hx;
+            log.append("stack ").append(st.index).append(" anchor ").append(xz(a)).append(" along ").append(String.format("%.2f", along))
+                    .append(" across ").append(String.format("%.2f", across)).append("; ");
+            check("after the " + leg + " turn stack " + st.index + " is " + st.back() + " behind the head along the heading and level with it: along "
+                    + along + ", across " + across + " (" + log + ")", Math.abs(along + st.back()) < 0.1 && Math.abs(across - st.side()) < 0.1);
+            for (ConflictBridge.Slot sl : st.slots()) {
+                if (!sl.alive() || sl.entity() == null)
+                    continue;
+                double d = Math.hypot(sl.entity().getX() - a[0], sl.entity().getZ() - a[1]);
+                check("a body of stack " + st.index + " is within the leash of its place after the " + leg + " leg: " + String.format("%.2f", d)
+                        + " blocks from the anchor " + xz(a) + ", body (" + String.format("%.2f, %.2f", sl.entity().getX(), sl.entity().getZ()) + ")", d <= 8.0);
+            }
+        }
+        record(test, "turn " + leg, log.toString());
+    }
+
     // @@END@@
 }
