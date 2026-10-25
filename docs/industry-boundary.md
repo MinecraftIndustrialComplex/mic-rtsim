@@ -297,7 +297,9 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
    Deposit goods (class `d`) go to the deposit's plugin (`OreData.extract`, Destroy's
    `chunk_crude_oil`) instead.
 4. Break each destroy entry whose block still has `expectedState`, with `level.destroyBlock(pos,
-   true)`, so its contents drop; skip the others. Never place fire.
+   true)`, so its contents drop; skip the others. Never place fire. The drops are kept out of the level
+   until the chunks the breaks changed are on disk (after step 6), so a drop is never on disk with the
+   block still standing (docs/choices-journal-barrier.md RP-213).
 5. Set the attachment's epoch for this district to `epoch`, in the same tick, so the contents and the
    epoch reach disk together in the chunk's NBT (`neoforge:attachments`).
 6. Journal IND_RECONCILE_RESULT with every entry's requested and applied amount, the positions of

@@ -380,7 +380,9 @@ committed; at the journal's write those still unsaved are saved, the levels' chu
 chunks ahead of its queue, and the journal's write waits on the IO chain for them. If they are not on disk
 in time (or one is still being unloaded), the file is held to the next world save, never written ahead of
 them (`ChunkWriteBarrier`, docs/choices-journal-barrier.md JB1 to JB5; first built as docs/choices-repair.md
-R21 to R24). Entities that carry records are not covered.
+R21 to R24). An entity that carries records is noted by holder, at the chunk it stands in at the
+journal's write (camp bodies and markers, MOWZIE.md ledger 22; residents, docs/choices-journal-barrier.md
+RP-212), and a reconcile's drops join the level only once the chunks its breaks changed are on disk (RP-213).
 
 **Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29). A held or
 failed journal write widens that window to the next world save; WORLD_SAVED no longer reports it, so P29's
