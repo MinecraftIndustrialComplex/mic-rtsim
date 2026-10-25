@@ -1510,7 +1510,7 @@ fn an_insult_answer_keeps_the_scouts_aimed_at_the_demands_target() {
     answer_to(&mut r, &e, boundary::ANSWER_ATTACKED, at + 5);
     assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED]);
     assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 1, "it climbed");
-    let focus = r.c.feud(r.f, r.p).unwrap().focus.unwrap();
+    let focus = r.c.feud(r.f, r.p).unwrap().focus.clone().unwrap();
     assert_eq!(
         focus.district,
         Some(synth::REFINERY),
@@ -1562,12 +1562,13 @@ fn an_insult_answer_on_a_districtless_focus_does_not_point_at_the_camp() {
         r.c.feud(r.f, r.p)
             .unwrap()
             .focus
+            .as_ref()
             .unwrap()
             .district
             .is_none()
     );
     answer_to(&mut r, &e, boundary::ANSWER_ATTACKED, at + 5);
-    let focus = r.c.feud(r.f, r.p).unwrap().focus.unwrap();
+    let focus = r.c.feud(r.f, r.p).unwrap().focus.clone().unwrap();
     assert_ne!(
         focus.pos,
         synth::CAMP_POS,
@@ -1670,7 +1671,7 @@ fn a_blow_from_another_player_is_their_insult_and_leaves_the_demand_alone() {
     let theirs = r.c.feud(r.f, q).expect("the stranger's own feud");
     let g = theirs.g.total_at(at + 100, lambda);
     assert!(g > 0.0, "the insult is held against the stranger: {g}");
-    let focus = theirs.focus.expect("a focus at the envoy's place");
+    let focus = theirs.focus.clone().expect("a focus at the envoy's place");
     assert_eq!(focus.district, None, "against no district");
     assert_ne!(focus.pos, synth::CAMP_POS, "and not at the camp");
     // The player's own blow refuses the demand, as it always did.
@@ -1684,7 +1685,7 @@ fn a_blow_from_another_player_is_their_insult_and_leaves_the_demand_alone() {
     );
     assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED]);
     assert_eq!(
-        r.c.feud(r.f, r.p).unwrap().focus.unwrap().district,
+        r.c.feud(r.f, r.p).unwrap().focus.as_ref().unwrap().district,
         Some(synth::REFINERY),
         "at the demand's district"
     );

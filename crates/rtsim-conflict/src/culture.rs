@@ -37,10 +37,13 @@ pub enum SignalKind {
     Killing = 4,
     /// Blocks placed on the faction's plots.
     Building = 5,
+    /// Trains through the faction's range (MOWZIE.md §4.3, M7): legs a day, measured by the rail
+    /// meter ([`crate::engine::rail`]) and pushed as one source per (faction, actor).
+    Rail = 6,
 }
 
 impl SignalKind {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
     pub const ALL: [SignalKind; SignalKind::COUNT] = [
         SignalKind::Smog,
         SignalKind::Radiation,
@@ -48,6 +51,7 @@ impl SignalKind {
         SignalKind::Mining,
         SignalKind::Killing,
         SignalKind::Building,
+        SignalKind::Rail,
     ];
 
     pub const fn index(self) -> usize {
@@ -66,6 +70,7 @@ impl SignalKind {
             SignalKind::Mining => "mining",
             SignalKind::Killing => "killing",
             SignalKind::Building => "building",
+            SignalKind::Rail => "rail",
         }
     }
 
