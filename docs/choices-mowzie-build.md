@@ -4174,7 +4174,11 @@ mutation of the fix (the list is under RP-99).
   would have kept a copy of an op-id kind such as SHIP_SUNK. It is lost instead, rather than
   repeated (§10): the copy is only the holder's second telling of a record whose original the
   crash may or may not have kept. Without the routing a copy goes through `ingest` and is honoured
-  like the session's own record. Tests: rtsim-jni
+  like the session's own record. The host's HAVEN_FOUND arm joined the haven's node to the world
+  before it called `ingest_copy`, for a copy too; it joins nothing for one now (the re-check's
+  P3.4), since a node no haven of the engine stands behind is a market with no pirates
+  (`a_copy_of_a_haven_found_joins_no_node_to_the_world`, control: the session's own record
+  joins). Tests: rtsim-jni
   `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor` (mid-replay the ship is not
   embodied and keeps its epoch; at the end the floor has folded, and the next body is above it)
   against the control `a_replayed_materialization_is_honoured_on_the_pages_ship` (mid-replay
@@ -4238,8 +4242,8 @@ mutation of the fix (the list is under RP-99).
   live run's. RP-93 bounded the honour (`materialized`) and nothing else; the review found the
   other lookups open. Now one door, `named_ship`, serves them all: while the outbox replays it
   returns a ship only if the engine came from its pages and the handle's index is below
-  `replay_next`, the arena's next index when the session began. Its callers are `ship_of` (State,
-  SpawnRejected, Dematerialized and Damaged, which also check the epoch), `ship_of_op`
+  `replay_next`, the arena's next index when the session began. Its callers are `ship_of` (SpawnRejected,
+  Dematerialized and Damaged, which also check the epoch; State reads no ship), `ship_of_op`
   (SHIP_SUNK, SHIP_CAPTURED, CARGO_LOOTED), both lookups of SHIP_FIGHT, the capturing ship of a
   By::Ship capture and loot, and `doer` (the archive row's doer of a loss). A record that names a
   handle at or above the bound raises the floor (RP-57) and does nothing else: lost, not repeated
@@ -4265,11 +4269,15 @@ mutation of the fix (the list is under RP-99).
   `a_replayed_fight_between_handles_the_replay_allocated_is_lost` (control: pages hold both),
   `a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody` (the tape row's doer is 0,
   control: the pages' pirate is named), `an_epoch_checked_lookup_finds_only_a_ship_the_pages_held`
-  (a ship the replay allocated is at epoch 0 until the replay ends, so no real record, which
-  names epoch 1 and up, finds it by epoch: the bound there is a second wall, and the test goes
-  through it with an epoch 0 report; control: the pages' merchant takes it),
+  (the epoch check is no wall: `lay_up_merchant` and `relaunch_laid_up` bump a merchant the
+  replay allocated during the replay (RP-121), so a real record can name the epoch it then holds;
+  the bound is the only wall, and the test goes through the lookup with an epoch 0 report, the
+  epoch such a ship holds at allocation; control: the pages' merchant takes it),
   `a_second_begin_replay_keeps_the_sessions_bound_and_flag` (with the control of one call),
-  `the_pirates_of_the_first_activating_haven_are_inside_no_bound`, `a_later_replay_takes_its_own_bound`,
+  `the_pirates_of_the_first_activating_haven_are_inside_no_bound`, `a_later_replay_takes_its_own_bound`
+  (an engine API guard only: the host begins one replay per session, after `begin_session` set the
+  bound anew, so the host never reaches a second replay of one engine; its control, a haven found
+  after the later `begin_replay`, is a ship the later replay allocated and takes the floor only),
   and rtsim-jni `a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate`
   and `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` (pages with an empty
   ships engine, the coast found with the haven reported before the ports and after them, the
@@ -4290,6 +4298,13 @@ mutation of the fix (the list is under RP-99).
   of 8 and spends the floor, the relaunch is above the folded top; control: no floor, plain +1)
   and `the_honour_spends_only_a_floor_it_reaches` (a floor of 9 survives an honour at epoch 3, so
   the next body is 10; a floor of 2 is spent, the next is 4).
+  **Residual, recorded and not closed (the re-check's P3.5):** the replay's own clock can lay a
+  ship up (epoch E+1) or relaunch it (E+2) before the replayed record that names that epoch is
+  read. The record's floor is then not kept, the ship already holding the epoch, and a record
+  naming E+2 that arrives after the relaunch (a live SHIP_DAMAGED for the last session's body of
+  that number) passes `ship_of`'s epoch check on the abstract slot and is booked to it. It was
+  possible before this round (the plain +1 had it), it involves one agent's own epochs only (no
+  stranger's ship is booked), and the number is not reused for a body: the next one is above both.
 
 - **RP-122** (the fold comes before every drop, and is keyed on the session's replay; §5.3, §9.5;
   RP-57; review P2.2, P2.3, P2.4): rtsim-jni `journaled` and `observe_state` decode the record and
@@ -4341,7 +4356,7 @@ before; the host-level tests quote the same mutations):
 | --- | --- |
 | `named_ship` without its bound (every by-agent lookup open) | nine tests, among them `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle` ("sunk, pages true: the pirate is not the merchant") |
 | `ship_of_op` unbounded | `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle` (the same message) |
-| `ship_of` unbounded | `an_epoch_checked_lookup_finds_only_a_ship_the_pages_held` ((hull, crew) (100, 5) against (1000, 6)); none before the test's epoch-0 record, the epoch check being a wall of its own |
+| `ship_of` unbounded | `an_epoch_checked_lookup_finds_only_a_ship_the_pages_held` ((hull, crew) (100, 5) against (1000, 6)); none before the test's epoch-0 record: the epoch check is no wall (the blockade bumps a replay-allocated merchant), but the first round's records named epoch 1 on a ship at epoch 0 |
 | the capturing ship's lookups unbounded | `a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost` ("captured: the merchant stays") |
 | Fight's lookups unbounded | `a_replayed_fight_between_handles_the_replay_allocated_is_lost` (fights observed 1 against 0) |
 | `doer` unbounded | `a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody` (the row's doer [4294967308] against [0]); none before the test |
@@ -4352,7 +4367,10 @@ before; the host-level tests quote the same mutations):
 | `ingest_copy` ingests as well | `a_copy_after_the_replay_end_only_moves_the_floor` (the merchant sunk by a post-replay copy), `a_copy_of_a_materialization_embodies_nothing` |
 | `set_epoch` spends any floor | `the_honour_spends_only_a_floor_it_reaches` (floor 9: next 4 against 10) |
 | the blockade bumps a plain +1 | `a_blockade_bump_goes_above_the_epochs_a_replayed_record_named` (above the floor of 7: 1 against 8) |
-| `replay_done` keeps the bound | `a_later_replay_takes_its_own_bound` |
+| `replay_done` keeps the bound | `a_later_replay_takes_its_own_bound` ("joined before the later replay") |
+| `begin_replay` sets the bound wide (`u32::MAX`) | `a_later_replay_takes_its_own_bound`, its control ("joined during the later replay: the honour covers the ships the later replay began with, not the ones it allocates") |
+| the bound widens only on a second call (`begin_replay` takes `meta().1` outright while the outbox replays, else the `min`) | rtsim-jni `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` ("haven first true: the replay's pirate was embodied by a record that named a live ship") and the engine's `a_second_begin_replay_keeps_the_sessions_bound_and_flag`; the first-activating-haven host test passes under it, so the host switch test is the one that pins it at the host (rtsim-jni 13 pass, 1 fails; rtsim-ships replay 22 pass, 1 fails) |
+| a copied HAVEN_FOUND joins its node (the `applying_copy` guard removed, rtsim-jni) | `a_copy_of_a_haven_found_joins_no_node_to_the_world` ("copy true: the haven node is in the world only when the record was the session's", left true, right false); its control, the session's own record, joins it |
 | `journaled` folds after the switch check (rtsim-jni) | `an_epoch_named_before_the_ships_had_a_dock_is_not_reused` (1 against 8) and `an_epoch_named_while_the_ships_were_off_is_not_reused_once_they_are_on` ("ships off true: the next body is numbered 1, and the last session spent 1") |
 | `observe_state` does not fold (rtsim-jni) | `an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused` ("ships off true: the next body is numbered 2, and the state record spent 6"); none before the test |
 | the fold keyed on the engine's replay flag (rtsim-jni) | the three tests above |
@@ -4436,22 +4454,33 @@ Forks taken in the review's fixes round (each can be undone; the lead decides wh
   joins inside the replayed window, its pirate past the pages' ships): realistic orderings rarely
   map the replay's pirate onto a live capturer's handle, so a replay of a real journal would not
   reach the line. The tests say so in their docs.
-- **`ship_of`'s bound is a second wall**, not a first: a ship the replay allocated is at epoch 0
-  until the replay ends, and every real record names epoch 1 or more. The test goes through the
-  wall with an epoch 0 report; a record of epoch 0 is not one the plugin writes.
+- **`ship_of`'s bound is the only wall** (the re-check's P3.2; the first round called it a second
+  wall behind the epoch check, which was wrong): a ship the replay allocated is not at epoch 0
+  until the replay ends, since `lay_up_merchant` and `relaunch_laid_up` bump a replay-allocated
+  merchant during the replay (RP-121), and a real record can name the epoch it then holds. The test
+  goes through the lookup with an epoch 0 report, the epoch such a ship holds at allocation, as
+  the one record it can build without the blockade; a record of epoch 0 is not one the plugin
+  writes.
 - **`coast_raid` is skipped, not held** (P3.5): the raid decided in the replayed window never
   happens in the replay, and nothing retries it (RP-95 has the residual).
 
-Merge notes for the integration (the lead merges S after D and H):
+Merge notes for the integration (S lands after slice H and before D; the merge of origin/main
+8bfd5742 into S is ef7403e5):
 
-- S's `Order::ShipCommand` goes into the union `matches!` of `waits_for_the_replay_end` (and the
-  other `matches!` over held orders at engine.rs ~2538) when S lands after D and H; the audit table
-  says the clock orders are held by D (RP-74), and S adds no clock order of its own.
-- Keep `ships::session_start` before `shared::session_start` in the SESSION_START arm (engine.rs
+- S's `Order::ShipCommand` is in the union `matches!` of `waits_for_the_replay_end` (rtsim-jni
+  engine.rs ~618) and in the comment at the SESSION_START hand-over (~1399) that names the held
+  orders. `write_order`'s list (~2538) already names it. D adds its own orders to the union at its
+  merge; the audit table says the clock orders are held by D (RP-74), and S adds no clock order of
+  its own.
+- `ships::session_start` stays before `shared::session_start` in the SESSION_START arm (engine.rs
   ~1638): the ships take their bound (`begin_session`) from the pages before anything shared reads
   or ingests, and nothing in the order between them replays.
-- H's `Hear` comment says the ships have a `player_left` override. They do not: the `Viewer` impl
-  for `Ships` (engine.rs ~6302) overrides only `owns`, `area_booked` and `crossings`, and
-  `Ships::player_left` is an inherent method that no host code calls on a leave (RP-91's guard
-  test `a_player_leaving_the_arm_ends_no_ship_body` pins it). The comment should say the arm's
-  leave is a no-op for the ships.
+- H's `Hear` and `session_start` comments (rtsim-jni shared.rs) said the ships have a
+  `player_left` override. They do not: the `Viewer` impl for `Ships` (engine.rs ~6302) overrides
+  only `owns`, `area_booked` and `crossings`, and `Ships::player_left` is an inherent method that
+  no host code calls on a leave (RP-91's guard test `a_player_leaving_the_arm_ends_no_ship_body`
+  pins it). The merge corrected both: the arm's leave does nothing to the ships, whose bodies end
+  at the replay end.
+- RP-57's table in this file had one row for "Dragons, ships"; the merge split it as H split the
+  herds' (a dragons row, still without a floor until D, and a ships row pointing at RP-99, RP-97
+  and RP-120 to RP-122).
