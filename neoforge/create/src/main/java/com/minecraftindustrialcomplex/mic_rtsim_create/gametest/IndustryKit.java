@@ -128,6 +128,8 @@ public final class IndustryKit {
     public static void fastConfig() {
         com.minecraftindustrialcomplex.mic_rtsim_create.Frontier.ignoreReturnsForTest = false;
         com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.breakForTest(com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.BreakForTest.NONE);
+        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.holdPrunesForTest(false);
+        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.viewForTest(null);
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
         // The glass box: compiles finish within a tick or two and resend often enough for a short test.
