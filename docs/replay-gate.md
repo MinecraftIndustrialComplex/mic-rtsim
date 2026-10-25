@@ -710,7 +710,9 @@ ahead:
   records, the threats, the clock to the hand-over's time, the commands. The reasons above still
   hold or are answered: industry has no gate and embodies nothing, so the commands its replayed
   records decide wait in its outbox and go after the end, answered DUPLICATE by op where Java
-  applied them (RP-272); the threats and the deferred records are this session's, at its present,
+  applied them (RP-272), and dropped unsent where Java answered them FAILED while the replay ran
+  (Java keeps only the ops it applied; the link keeps those answers in memory until the first drain
+  after the end, RP-259); the threats and the deferred records are this session's, at its present,
   past every replayed record; the module switch sets the session start that runs at the end. Every
   industry op id derives with its decision's own tick, never the clock (RP-270, RP-271). The
   dragons' and pirates' raids still run industry's clock to their own tick when they land while
@@ -1460,7 +1462,10 @@ station exchange loaded twice, a chunk reconciled twice). So every crash test of
 replays at least two hand-overs (fillers after the pages and a `MIN_CAPACITY` reopen), asserts the count
 (`stats.replay_handovers`), and the slice has one test with nine or more; a one-hand-over test stays
 only as a control. Start the reopened harness at the world's present (`Java::open` resets game time to
-1000; `mc_tick` then follows the fake world). This is filed for the dragons' (§9.2), herds' (§9.4),
+1000; `mc_tick` then follows the fake world). Take the crash test's save by call count, not by load:
+tick until the engine has applied the save's `through`, then wait for durability without ticking
+(rtsim-jni tests/industry.rs `mc_tick_until_durable`, RP-259); ticking while the IO lane writes moves
+the world, the journal and the replay with the machine's load. This is filed for the dragons' (§9.2), herds' (§9.4),
 ships' (§9.5) and conflict's crash tests, in their own slices; slice R changed none of their tests.
 
 ### 9.1 Slice C: the flag, the replay end, the clock, conflict

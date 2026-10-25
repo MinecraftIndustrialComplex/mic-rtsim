@@ -7394,7 +7394,8 @@ crates/rtsim-industry/src/engine.rs; the hold: crates/rtsim-jni/src/engine/indus
 the slice's head.
 
 - **RP-270** (every op id derives with the decision's own tick): `Engine::decided` (engine.rs:418; not
-  saved, `new` and `restore` set it to `now`, 578 and 6268) is the tick of the decision the engine makes:
+  saved, `new` and `restore` set it to `now`, 578 and 6268; **amended by RP-259: saved in the globals
+  page after `now`, IGB2, since pages can be taken in the middle of a hand-over**) is the tick of the decision the engine makes:
   `session_start` sets it to its `at` (817), each cluster breakpoint in `fire_until` to its tick (858),
   each wake to its tick (871), `ingest_obs` to the record's own `t.at` once the clock has moved to
   `max(t.at, now)` (918), and `threat_with` to the threat's `t.at` (4984). The sites:
@@ -7427,7 +7428,11 @@ the slice's head.
   (`e.ops`, the pending exchanges and chunks, `e.out`) are written and read by the same build, and
   Java's applied ops (and T2's ring) hold what that build sent. Only a crash on a build before R
   replayed by R could compare the two; nothing is released, so there is no migration. No page, record or
-  wire format changes (`decided` is not saved).
+  wire format changes (`decided` is not saved). Amended by RP-259: two pages change (globals IGB2 for
+  `decided`; district IDS5 for the per-chunk epochs, each pending chunk's round and the package
+  numbers), a DepositDelta also hashes its district, a WritePackage carries one package named by its
+  number at its postbox, address and good (no tick), and a ChunkReconcile carries its chunk's own epoch:
+  those ops move again, within the same unreleased build.
 - **RP-271** (the flush tick, and what triggers the flush): on bc669502 a breakpoint's dirty marks waited
   for the next flush, the step's G live and the next record's tick replayed, which differ in the tick
   the round derived with and in the round itself (the replay stopped at another tick). Each breakpoint
@@ -7468,7 +7473,21 @@ the slice's head.
   (replay_ids.rs): the 445 against 395 round of RP-262 differs in content and id, but both name the same
   chunk at the same epoch, so Java applies the live one and refuses the replay's (a loss of 50 iron),
   and the round decided nothing but chunk reconciles. RP-262's content test stays ignored, with that
-  reason.
+  reason. **Amended by RP-259, the review's table** (the coordinator's question: can two different
+  decisions under one key at one tick share an id in a live run?):
+  - Exchange: no in practice (one call per train per tick).
+  - DepositDelta: yes, two districts on one well written back by one `flush_dirty`; the ordinal told
+    them apart while fewer than 256 derivations lay between. Since RP-259 the district is hashed after
+    the key (`derive_with`). Test: `two_districts_on_one_well_write_back_at_one_tick_and_both_apply`
+    (replay_ids.rs), both applied; it passes on 2a975cc3 too (the ordinal), so it is coverage.
+  - WritePackage: yes as the review saw it (several `after_cluster` calls at one tick emit
+    PackagesReady for one Mail pool). Since RP-259 each package is its own command named by its number,
+    never by its tick, so no two packages share an op at any tick, and a replay that writes the live
+    run's nth package at another tick still meets its op (P1-4: the loss was one-sided, a make).
+  - WriteChain: unlikely: a pending write toward a frogport holds the next (`write_pending`,
+    engine.rs:2333), and its books follow Java's CHAIN_IN records, not the decision.
+
+  RP-275's window rule (amended there) closes the far-apart case for every kind.
 - **RP-273** (a station exchange settles against its own request): `carriage_result` (4036) corrected the
   district's stock by `requested - applied` from the result's entries; it now takes the pending
   exchange's own entries (what this decision booked) minus the result's `applied`. The same when the
@@ -7495,7 +7514,12 @@ the slice's head.
     record (the world rolled back to its save), so holding them puts nothing later than it was;
   - commands decided by replayed records stay in the engine's outbox and go after the end; Java answers
     the ones it applied before the crash DUPLICATE by op (RP-272) and applies the rest once. Industry
-    embodies nothing and has no gate (§4.5's note keeps IndustryCommand ungated);
+    embodies nothing and has no gate (§4.5's note keeps IndustryCommand ungated). **Amended by RP-259:
+    "applies the rest once" was wrong.** Java keeps only the ops it applied, so a copy of an op it
+    answered FAILED before the crash was applied after the end (the review's P1-2: 224 iron made on a
+    train). The link now keeps the FAILED answers it hears while replaying, and the first drain after
+    the end drops their copies unsent and takes them back (`unsent_answered`); a copy of an op answered
+    APPLIED is still written (DUPLICATE, or T2's ring in J4);
   - the module switch: switched on while replaying, `set_enabled` sets the session start to the present
     and it runs at the end; switched off, the threats are dropped at the end as before; `begin_session`
     in `simulate` runs whether on or not, as on bc669502;
@@ -7524,7 +7548,15 @@ the slice's head.
   Where an ordinal can still differ: a (key, tick) decided on one run only (a latest-wins record's
   round, the Approach round, never replayed) or more than 256 derivations between two same-key
   decisions; the replay's decision then takes its twin's op, answered DUPLICATE (a loss), or resent
-  when the twin FAILED (an edge, not driven).
+  when the twin FAILED (an edge, not driven). **Amended by RP-259 (the review's P2-3):** the window
+  could collide in a live run, with no crash: two identical decisions of one tick more than 256
+  derivations apart both took ordinal 0 (`identical_decisions_of_one_tick_never_share_an_op_however_far_apart`,
+  cmd.rs; on 2a975cc3 both 0x4989eddb2487a481). `remember` now never forgets an id of the tick being
+  derived, so the window holds at most 256 or the busiest tick's derivations, whichever is more, and
+  trims back to 256 at the next tick's first derivation; slice T's key tags are counted and forgotten
+  apart. A deposit delta hashes its district. `a_collision_before_a_save_gives_the_same_ordinal_after_a_crash`
+  passes on 2a975cc3 too: it is coverage, not a regression test. The "more than 256 derivations"
+  edge above is closed for decisions of one tick, the only ones an ordinal separates.
 - **RP-276** (crash tests replay over several hand-overs; the default shape): crates/rtsim-jni/tests/industry.rs
   has `REPLAY_FILLERS` (2,000 filler records after the pages), `restart` (reopens on a minimum-size
   buffer with the world's present as game time) and `replayed_over_several` (asserts at least 2 replay
@@ -7539,7 +7571,11 @@ the slice's head.
   (0,0) after the restart (op 5324139976339032470), the vault's bars 5,808 to 5,920, a double the
   one-hand-over shape hid. All pass after. The harness: `mc_tick` sets `game_time` to the fake world's
   time, so `restart` only has to start it there (RP-269). The rule for the other modules' crash tests is
-  docs/replay-gate.md §9's note; their tests are not changed here.
+  docs/replay-gate.md §9's note; their tests are not changed here. **Amended by RP-259 (the review's
+  P3-1):** `mc_tick_until_durable` ticked the world while the IO lane wrote the pages (1 to 67 ticks
+  measured), so a test's world, journal and replay moved with the load; it now ticks until the engine
+  has applied `through` and waits for durability without ticking. `replayed_over_several` names the
+  path of a 0.
 - **RP-277** ((f) explained, and its double): step 1's 9-hand-over fixture applied nothing twice because
   Java answered the new ids another way. The re-derived commands were ChunkReconciles, decided at the
   present (the engine's `now` 72,109) in the 9th replayed hand-over: 0x49d718926bfc814f (-3,849 at chunk
@@ -7572,7 +7608,10 @@ the slice's head.
   or after a latest-wins record the replay lacks) decides at another tick, so its keyed ops are new and
   a ChunkReconcile from an extra round can pass the world's epoch; the Java flag closes the first
   cause. (3) RP-275's ordinal edges. (4) The raids of held modules (RP-274's last check). (5) Loot is
-  T's.
+  T's. Amended by RP-259: (2)'s ChunkReconcile now counts epochs per chunk, so only a replay that makes
+  more rounds on one chunk than the live run did passes that chunk's epoch; (3)'s live same-tick case
+  is closed (RP-275); a WritePackage is named by its number, so its content no longer differs under
+  one op (P1-4).
 
 **Checks.** `cargo test --workspace --no-fail-fast` at 471a65ed: 1,846 passed, 0 failed, 26 ignored
 (RP-262's content test is the slice's one ignore). `cargo clippy -p rtsim-industry -p
@@ -7583,3 +7622,163 @@ slice's built side by side and run to files in /tmp): identical but `wall_ms`, s
 no checked-in result needs regenerating; none of them prints an industry op id, and none replays across
 a crash. The checked-in bench/results/sim-industry.json and scenario/results/sim-ships.json already
 differ from the base's runs (stale before this slice; left alone).
+
+#### The review's fixes (RP-259)
+
+An Opus review of 2a975cc3 said fix first (brief rp-slice-r2-fixes.md). Every fix below starts with a
+test that fails on 2a975cc3, with its numbers, unless it says it is coverage. Lines are at the fixes'
+head. Two pages change format (not released, so no migration; the lead regenerates the fixtures):
+the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4 to IDS5
+(`chunk_epochs`, each pending chunk's `round`, `packages_decided`).
+
+- **RP-259** (the review's findings, each with its test and fix):
+  - **P1-1, `decided` saved.** Pages can be taken in the middle of a hand-over (right before the
+    first record past `through`), after a stale record whose marks wait for the next record, and
+    `restore` set `decided` to `now`, so the replay's next record settled nothing and merged two
+    rounds. `pages_taken_after_a_stale_record_rederive_its_rounds` (replay_ids.rs, the review's
+    fixture) on 2a975cc3: the live DepositDelta 0x4962c4fe7b7be699 against the replayed
+    0x49274e3eaf93756b (both -4,450, applied twice), and chunk (2,0)'s round at epoch 2 live
+    (0x49751b6c400ef275) against epoch 1 replayed (0x4936eee15bcf6a85). The globals page now holds
+    `decided` after `now` (engine.rs:5965 and 6309, IGB2). Passes.
+  - **P1-2, a command answered FAILED live is never written after the replay end.** Java keeps only
+    the ops it applied (Journal.java:221), so a copy of an op it answered FAILED is applied.
+    `an_exchange_answered_failed_live_is_not_applied_after_a_crash` (rtsim-jni tests/industry.rs, 3
+    replay hand-overs) on 2a975cc3: train 1's exchange, failed live by `fail_carriage_deltas`, decided
+    again by the replay under the live op 0x49823c0440e26b17, was sent after the end and applied:
+    world iron (stores, carried, minted, burned) (328, 0, 2,864, 2,536) live against (328, 224, 2,864,
+    2,536) after the restart. The fix: while replaying, the link keeps the ops of every FAILED
+    COMMAND_RESULT it hears (`Link::heard`, rtsim-jni engine/industry.rs:158; `heard` at 659, called
+    by the core before `journaled` and `answered_again`, engine.rs:1926 and 1973), in memory only.
+    The first drain after the replay end (`simulate` 828, `unsent_answered` 874, called at 849 right
+    after `drain_commands`) drops every queued command under one of them unsent and takes it back
+    (`command_failed`, engine.rs:4031, idempotent), then empties the set. `write_resends` (1090) is
+    held while replaying, as `simulate` is. FAILED only, as the build lead narrowed it: a copy of an
+    op answered APPLIED is written on purpose, since Java's applied-op set answers it DUPLICATE and a
+    train's ring (T2, RP-196) applies it when the restored train never had it (J4); dropping it would
+    leave a restored train without an exchange the replayed carriage result booked. Controls: the six
+    op-id crash tests assert the copies are still sent under the live ops, none left unsent. Why
+    nothing past the end needs the set: every op it names was decided at or before its answer's game
+    time, so at or before the world save's and this session's present, and the held step runs the
+    clock to the present before that drain, so every decision the replay could make again is in the
+    queue by then; a later decision has a later tick, so another op. A package is named by its
+    number, not its tick (P1-4): one numbered as a package Java answered FAILED may be decided later
+    and is written, which is no double, since the engine never takes a package back. Kept until the
+    first drain with the module on (a module switched off at the end keeps it, and its drain, for
+    the step it comes on). **The FAILED WriteChain variant:** no crash fixture can reach it, since
+    the fake world answers a WriteChain APPLIED or DUPLICATE only (fake.rs:1427 to 1434); the link
+    unit test `a_command_heard_answered_while_replaying_is_never_written` covers it (the answer heard
+    before the replay's wake decides the write again, as a COMMAND_RESULT runs no `fire_until`), and
+    `command_failed` frees the frogport for it (`write_answered`, stores.rs:547). **SEC-1's option
+    A** (561aae96: `command_result` does `complete(op).or_else(|| unqueue(op))`, `unqueue` also
+    searching `engine.out` through `take_out`): the drop is in `simulate` -> `unsent_answered`
+    (engine/industry.rs:849 and 874) and acts on the copies in `l.queue` at the first drain after
+    the end; A's `unqueue`/`take_out` is in `command_result` (703) and acts on a copy present when
+    the answer is heard. Both can act on one op, never on one copy, and each copy's booking is taken
+    back once: `command_failed` finds nothing the second time (`exchanges.get` None for an exchange,
+    `writing_at` None for a chain write). Different functions, so the merge is A's hunk plus this
+    one. RP-274's "applies the rest once" was wrong (amended there).
+  - **P1-3, one epoch counter per chunk.** Java's guard is per chunk (Reconciler.java:265), the
+    engine's counter was per district, so two chunks' rounds decided in another order by the replay
+    could swap epochs, the second chunk's above what it applied live. Not driven: the hold path
+    merges rather than splits (`hold_wake` 4912 -> `sync_coverage` 1664: while held `want` is empty
+    and the replay is carried, so the wake starts a new replay with no round); a round on one chunk
+    alone at a breakpoint comes from `glass_fallback` (2793 -> `sync_coverage`'s `Part(leaving)`, the
+    glass covering the loaded chunk until the fallback), which needs a glass fixture (none, as
+    RP-261); a trim round (`apply_trims` 3701) is decided at its result's record, ordered the same on
+    both runs. Built anyway, as the brief says: `District::chunk_epochs` (district.rs:324,
+    `next_chunk_epoch` 480), and each pending reconcile keeps its district round
+    (`PendingChunk.round`, 194), which still keys the round's books, reports and trims. Failing first
+    on 2a975cc3 for the counter, not the swap: `the_unloaded_part_of_a_district_keeps_running`
+    (rework.rs) gave the two chunks' first rounds epochs (1, 2); now (1, 1), in two ops. Residual: a
+    replay that makes more rounds on one chunk than the live run did can still take an epoch past
+    the world's (RP-279 (2)).
+  - **P2-1, no RP-57 floors: reversed with evidence.** The review asked for IND_CHUNK_LOADED's
+    `applied_epoch` and IND_RECONCILE_RESULT's `epoch` to raise the counter. Built, the floor failed
+    `a_reconcile_in_a_chunk_saved_ahead_of_the_journal_is_never_applied_twice` (rtsim-jni): the round
+    decided again took epoch 2, and the world made 3,840 bars from 3,841 ore a second time. A chunk
+    reconcile's epoch names its round, and Java refuses a round decided again after a crash because
+    it meets the epoch the chunk holds (a loss, RP-272); a floor puts it past that, applied twice. So
+    neither raises a floor (comments at engine.rs:1197 and 3561). The review's case (the engine
+    below the world, the next new round refused and booked applied by the done path) is a loss,
+    never a double. **Rule 4's table** (each industry kind that names an epoch, and its answer):
+    IND_CHUNK_RECONCILE names the chunk's next epoch, answered DUPLICATE by Java when the chunk's
+    attachment holds it or above or the op is applied; IND_CHUNK_LOADED's applied epoch settles the
+    pending reconciles at or below it as applied and raises no floor; IND_RECONCILE_RESULT's epoch
+    settles its round and raises no floor; the frontier epoch (IND_PACKAGE_STORE's StoreDecl,
+    CHAIN_HELD's HeldList and HeldDraw) is Java's, adopted by the engine (a declaration of another
+    epoch drops the old keys); no other industry kind names one. **Rule 5's test** (an ended epoch is
+    never reused with other content to Java's harm after a crash):
+    `a_round_decided_again_after_a_crash_meets_the_epoch_its_chunk_holds` (the round decided again
+    with other content takes epoch 1 again and is refused: the difference lost) and
+    `a_result_the_engine_does_not_wait_for_raises_no_epoch` (replay_ids.rs). Both pass on 2a975cc3:
+    controls that pin the choice.
+  - **P1-4, a package is named by its number.** Java journals no count for a written package
+    (WritePackages.java:134 to 141 answers APPLIED with no record), so the engine books the packages
+    it decides at the decision. `a_package_written_live_is_never_written_again_by_the_replay`
+    (replay_ids.rs) on 2a975cc3: the live run saw a postbox sample (latest-wins, never replayed) and
+    wrote 10 packages, the replay had room for 9 and wrote its 10th later, at another tick, so under
+    another op (live 0x494561505f07e75d, replayed 0x495a899725beb92b): 11 packages in the world
+    against the 10 booked out of the mail pool. Now each IND_WRITE_PACKAGE carries one package (count
+    1), named by the district's count of packages per postbox, address and good
+    (`District::next_package`, district.rs:488, saved; `IndustryOps::derive_numbered`, cmd.rs:210,
+    with a word no tick reaches in the tick's place): the replay's nth package is the live run's
+    nth, the same content under the same op, answered DUPLICATE whenever it is decided. After: (10,
+    10). **Fork:** the brief's two options were not computable. "Booked as unknown, corrected from
+    the next sample" needs to tell written packages from ones a train took meanwhile, and a postbox
+    sample (every postbox has one: it is a declared inventory, sampled latest-wins) counts only what
+    is there; "the larger of the two counts leaves the pool" needs the live count, which nothing
+    journals. Numbering needs no new record and makes the question moot. WriteChain is not one-sided:
+    its books follow Java's CHAIN_IN records (`chain_written`, engine.rs:2390), journaled, not the
+    decision. Residuals: a district removed and declared again restarts its count (an op Java still
+    remembers is answered DUPLICATE: a loss); a batch-size change racing a crash gives the nth
+    package another batch (the difference only).
+  - **P2-3, the window keeps the tick in hand.** Two identical decisions of one tick more than 256
+    derivations apart both took ordinal 0, one op: `identical_decisions_of_one_tick_never_share_an_op_however_far_apart`
+    (cmd.rs unit test) on 2a975cc3 gave both 0x4989eddb2487a481. `IndustryOps::remember` (cmd.rs:246)
+    never forgets an id of the tick being derived: the window holds at most 256 or the busiest tick's
+    derivations, whichever is more (one tick's decisions, a round per chunk and a write per pool and
+    good, are finite), and the next tick's first derivation trims it back to 256. The pairs are the
+    same bytes (`the_window_keeps_its_page_bytes`): no format change. A deposit delta hashes its
+    district after its key (`derive_with`, cmd.rs:201): two districts on one well in one
+    `flush_dirty` are two keys (`two_districts_on_one_well_write_back_at_one_tick_and_both_apply`,
+    which passes on 2a975cc3 too, the ordinal telling them apart: coverage).
+  - **P3-3, slice T's key tags.** They need their own rule: a burst of derived ids could push a
+    raid's key out, and `knows_key` would let the raid be decided again (a book error, the world
+    answering DUPLICATE). Built on this side: key tags (bit 63) are counted and forgotten apart, 256
+    of them (`a_burst_of_derived_ids_never_pushes_a_key_tag_out`). At T's merge its
+    `keyed_op_ids_come_from_the_key_alone` needs its last block changed: it derives 256 ids and
+    expects the key forgotten, which no longer happens.
+  - **P3-1, the crash tests' shape.** `replayed_over_several` saw 0 hand-overs under load on
+    hold-less engines. Not reproduced here (3 runs of the head and 5 of a hold-less engine under
+    load 13 to 33; a sweep of 0 to 69 extra ticks after the save, 48 of 48 with 3 hand-overs and
+    2,000 to 2,007 records). The load-dependent part found: `mc_tick_until_durable` ticked the world
+    while the IO lane wrote the pages, 1 to 67 ticks measured, so the world, journal and replay moved
+    with the load. It now ticks until the engine has applied `through` (the asked-for save is taken
+    in that step) and waits for durability without ticking (60 s cap). A 0 now names its path (the
+    replay ended at SESSION_START, or the engine failed before its first publish): replay ends,
+    records replayed, pages, journal span, engine error. The industry binary run 5 times under nice
+    19: 27 of 27 each.
+  - **P3-2, the flush gate in `journaled` stays** (engine/industry.rs:604). It is reachable: vanilla
+    saves each level's data (the journal) before level.dat (the game time), so a crash between the
+    two restarts the world below records its journal replays, and a latest-wins record of the
+    session is then stamped below a replayed one; without the gate, `flush` hands it over and runs
+    the session start in the middle of the replay. `a_session_record_stamped_below_a_replayed_one_waits_for_the_replay_end`
+    (unit test) gives (None, 0) without the gate against (Some(10,000), 1). No crash test reaches it:
+    the fake Java saves both at once. The module-off path (option A's included) returns before it, at
+    `journaled`'s `!l.enabled` return (590).
+
+  **Mutation checks** (one site's `decided` replaced by `self.now`, or the hold removed; rtsim-industry's
+  and rtsim-jni's lib and integration tests run; the source restored):
+  - `reconcile_round`'s immediate DepositDeltas (3422; 3395 on 2a975cc3):
+    `stale_records_rederive_their_rounds_deposit_deltas` fails (the live deposit op
+    0x49ef3d7ac3997437 against the replayed 0x493084c28fd26f77, `now` 9,500 against 8,200).
+  - `reconcile_round`'s ChunkReconcile (3448; 3417): `a_stale_record_gives_the_same_command_another_op_id_in_the_replay`
+    (the same content, live 0x492cd7d0fd2f3291 against replayed 0x49be17700102776d) and
+    `stale_records_rederive_their_rounds_deposit_deltas` (both chunks' rounds under other ops) fail.
+  - `train_arrived`'s Exchange (4012; 3976): `a_station_exchange_taken_late_live_is_applied_once_after_a_crash`
+    fails (applied again 1, train 1's iron 224 then 448).
+  - The hold removed (`simulate`'s `st.replaying` return, engine/industry.rs:829):
+    `a_replay_of_several_hand_overs_rederives_the_same_op_ids`,
+    `a_reconcile_applies_once_when_the_world_save_holds_its_result` and
+    `pages_behind_the_world_save_rederive_the_same_reconcile` fail (24 of 27 pass). The exchange
+    tests pass without the hold: RP-270 alone removes that double (RP-274's last paragraph).
