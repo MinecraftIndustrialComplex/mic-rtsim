@@ -1568,16 +1568,17 @@ mod p1_off {
             })
     }
 
-    /// A session with a caravan embodied as `agent`.
-    pub fn caravan_session(
-        tag: &str,
-        agent: u64,
-    ) -> (
+    /// A session with a caravan: its page directory, the engine, Java, and its members' cargo
+    /// (member, item, count).
+    pub type CaravanSession = (
         std::path::PathBuf,
         std::sync::Arc<Engine>,
         Java,
         Vec<(u32, String, i32)>,
-    ) {
+    );
+
+    /// A session with a caravan embodied as `agent`.
+    pub fn caravan_session(tag: &str, agent: u64) -> CaravanSession {
         let dir = tmpdir(tag);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
