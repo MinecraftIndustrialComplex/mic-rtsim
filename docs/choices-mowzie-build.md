@@ -3909,6 +3909,12 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       block of it); one standing on a carriage that Create has not yet told the server of is, as the server
       sees his position. A bystander mob that stands on the carriage (a villager in it) is a rider and the carriage
       waits for it.
+  - Amendment (the second re-check's P3, an armor stand was a rider; compiled, not run): `ridersOf` took any
+    living entity, and an `ArmorStand` is one that collides with a contraption (it is no seat, projectile or hanging
+    entity), so one standing on a carriage drew a strike off the bogey point and a carriage with one was not struck at
+    its bogey when the stand was out of reach. A rider is now a living entity that is alive and a `Mob` or a `Player`
+    (`TrainSampler.rides`), in all three of its sources. Nothing else in vanilla is a living non-mob except the
+    stand; a mod's decoration that extends `Mob` is a mob by every other rule here.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -4116,7 +4122,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       old code from the new. Create's assembler needs the first bogey at the first block past the station, bogeys
       at least 3 apart, and the second in the first's glue group; read from `StationBlockEntity.assemble`, not run.
       - `Line.stand` puts a zombie on the plank in the middle (`MIDDLE`) or the one next to the rear bogey (`REAR`),
-        planks ordered along the way the train goes, at the plank's top plus 0.01, and checks that Create's own
+        planks ordered along the way the train goes, at the plank's top (plus 0.01 before the second re-check), and checks that Create's own
         standing test finds a block of the carriage under it. The zombie is a mob because Create's server
         collision carries mobs and does not carry a player. The drive ramps up to the speed over ten ticks from
         the tick the zombie is put on, so a jolt from rest does not leave it behind; if it still slips, the first
@@ -4134,6 +4140,17 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
         carriage's floor, a second mock player 3 blocks beside it; `TrainSampler.ridersOf` returns the first two
         and not the third. A player is not carried by Create, so the train does not move in this test; the
         moving tests use a mob.
+    - Amendment (the second re-check's P2 and P3s in the riders and standing tests; compiled, not run):
+      - The riders test's mock players fell: a mock player is a plain `Player`, which Create's server collision does
+        not hold up, so it fell through the carriage in the five idle ticks before `ridersOf` was read, and the
+        bystander too. `Line.stand` now gives a player `setNoGravity(true)` and zero motion (the bystander likewise).
+      - A zombie standing on a carriage (the riders test and the `MIDDLE` and `REAR` passes) was `noAi`, which has no
+        travel and so no gravity, and hovered 0.01 above the plank where Create may never have registered it as
+        colliding. `Line.stand` now leaves a mob's AI on with every goal and target goal removed (it walks nowhere
+        and attacks nothing), and puts its feet exactly on the plank's top, so gravity presses it onto the floor as
+        it does a real rider and Create carries it. The seated zombie stays `noAi` (it is a passenger).
+      - The bystander stands level with the floor 1.6 blocks beside the player on it (it was 3.0), 1.1 past the
+        plank's edge, and an armor stand stands on the floor with the player: `ridersOf` returns neither.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
