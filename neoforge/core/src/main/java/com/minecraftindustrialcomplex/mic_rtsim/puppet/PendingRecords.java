@@ -108,6 +108,17 @@ public record PendingRecords(long life, List<Entry> entries) {
         return new PendingRecords(life, List.copyOf(out));
     }
 
+    /**
+     * These records and {@code more}, which keep the generation each was journaled in (a holder taking over
+     * another's records), written in engine life {@code life}. Records of another life are left out, as in
+     * {@link #plus}; the session counts them ({@code RtsimSession.stalePending}) where it calls this.
+     */
+    public PendingRecords plusEntries(long life, List<Entry> more) {
+        List<Entry> out = new ArrayList<>(this.life == life ? entries : List.of());
+        out.addAll(more);
+        return new PendingRecords(life, List.copyOf(out));
+    }
+
     /** The same life with the records {@code keep} accepts (what is left once some were acknowledged). */
     public PendingRecords filter(Predicate<byte[]> keep) {
         List<Entry> out = new ArrayList<>(entries.size());
