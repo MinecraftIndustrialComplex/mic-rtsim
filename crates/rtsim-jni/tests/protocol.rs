@@ -2036,6 +2036,115 @@ mod dragons {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// C1 of slice U (docs/choices-journal-barrier.md, RP-210): a crash in direction B, the
+    /// engine's pages newer than Java's journal, with the lair chest's chunk saved ahead of the
+    /// journal. The stacks were sent and put in the chest after the save; the chunk holds the coin
+    /// and carries their COMMAND_RESULT(APPLIED); the journal lost both. At the restart the outbox
+    /// resends the stacks while the chunk is not loaded. When the chunk loads it REASSERTs the
+    /// APPLIED records, and the plugin reports its chest again. The coin is in the chest once.
+    #[test]
+    fn a_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once() {
+        let dir = tmpdir("tribute-chunk-ahead");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, _, coins, _] = e.dragons_tribute();
+        assert_eq!(paid, 1);
+        let stacks = (coins + 63) / 64;
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let lair_chest = O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        });
+
+        // The chest is reported and the stacks are written; Minecraft has not applied them yet
+        // when the engine's pages are saved, and the journal is saved at the same point.
+        j.hold_commands = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let sent: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        save_durable(&e, &mut j);
+        let saved = j.world_save();
+        let gen1 = j.nonce;
+        // Then Minecraft applies them: the coin goes into the chest, and the chest's chunk
+        // carries their APPLIED records. That chunk is written on unload; the journal is not
+        // saved again before the crash.
+        j.hold_commands = false;
+        let carried = j.apply_held_transfers();
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        let _ = j.crash();
+
+        // The restart: the journal from the save, the chunk from after it.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.containers.insert(chest, coins as i32);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks], "the pages hold them placing");
+        // The outbox resends them at once, while the chest's chunk is not loaded.
+        j.unloaded_transfers = true;
+        j.idle();
+        j.idle();
+        assert_eq!(transfer_ops(&j), sent, "the stacks resent under their op ids");
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "nothing put while the chunk is not loaded"
+        );
+
+        // The chunk loads: its carried records come back as copies of the first session's, and
+        // the plugin's next chest scan reports the chest in it again.
+        j.unloaded_transfers = false;
+        for r in &carried {
+            j.reassert(gen1, r);
+        }
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "the coin is in the chest once"
+        );
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed, once");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// The oil gate through the native engine and the fake plugin (docs/boundary.md §6.8): the
     /// plugin's switches and an oil field open the gate; a player near the field draws a field
     /// flight (a hostile fire dragon on a full reserve, flags 8 and 16) and, the field having no

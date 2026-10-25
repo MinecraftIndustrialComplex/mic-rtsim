@@ -143,6 +143,9 @@ pub struct Java {
     pub hold_commands: bool,
     /// The op ids of transfers read while holding.
     pub held_ops: Vec<u64>,
+    /// The transfers read while holding, whole: (cmdSeq, op id, container, count), for a test
+    /// that applies them later ([`Java::apply_held_transfers`]).
+    pub held_transfers: Vec<(u64, u64, [i32; 3], i32)>,
     /// Leave acknowledgements unapplied (the journal untrimmed): the world save a test takes next
     /// is one the bridge wrote before it read the acknowledgement.
     pub hold_acks: bool,
@@ -157,9 +160,12 @@ pub struct Java {
     /// Answer every new PLACE_HOUSE NOT_FREE (no plot), as HouseBuilder does when its search
     /// finds none.
     pub no_free_plot: bool,
-    /// Answer every new TRANSFER_TO_CONTAINER FAILED (the container's chunk not loaded, or no
-    /// room), as CommandDispatcher does.
+    /// Answer every new TRANSFER_TO_CONTAINER FAILED (no container there, or no room), as
+    /// CommandDispatcher does.
     pub fail_transfers: bool,
+    /// The containers' chunks are not loaded: answer every new TRANSFER_TO_CONTAINER as
+    /// CommandDispatcher answers one whose chunk `getChunkNow` does not hold.
+    pub unloaded_transfers: bool,
     /// Players reported every tick: (UUID, dimension id, position).
     pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
@@ -300,6 +306,7 @@ impl Java {
             stale_commands: 0,
             hold_commands: false,
             held_ops: Vec::new(),
+            held_transfers: Vec::new(),
             hold_acks: false,
             failed_seen: false,
             module_mask: 0,
@@ -307,6 +314,7 @@ impl Java {
             talk_facts: Vec::new(),
             no_free_plot: false,
             fail_transfers: false,
+            unloaded_transfers: false,
             players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
@@ -453,6 +461,28 @@ impl Java {
             .iter()
             .find(|(s, _)| *s == seq)
             .map(|(_, r)| r.clone())
+    }
+
+    /// Applies the transfers read while holding, as CommandDispatcher would have: each goes into
+    /// its container and its COMMAND_RESULT(APPLIED) is journaled. Returns those records' bytes,
+    /// which the containers' chunks carry (`mic_rtsim:pending`) and REASSERT at their next load.
+    pub fn apply_held_transfers(&mut self) -> Vec<Vec<u8>> {
+        let mut carried = Vec::new();
+        for (seq, op, pos, count) in std::mem::take(&mut self.held_transfers) {
+            *self.containers.entry(pos).or_insert(0) += count;
+            let at = self.journal(
+                obs::COMMAND_RESULT,
+                obs::command_result::SIZE,
+                obs::command_result::APPLIED,
+                |r| {
+                    wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    wire::put_u64(r, obs::command_result::OP_ID, op);
+                },
+            );
+            carried.push(self.journaled(at).expect("just journaled"));
+            self.last_applied_cmd = self.last_applied_cmd.max(seq);
+        }
+        carried
     }
 
     pub fn transfer(&mut self, op: u64, from: u64, to: u64, amount: i64) -> u64 {
@@ -656,8 +686,19 @@ impl Java {
                 max_seq = max_seq.max(seq);
                 if self.hold_commands {
                     if rec.kind == cmd::TRANSFER_TO_CONTAINER {
-                        self.held_ops
-                            .push(wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID));
+                        let b = rec.bytes;
+                        let op = wire::u64_at(b, cmd::transfer_to_container::OP_ID);
+                        self.held_ops.push(op);
+                        self.held_transfers.push((
+                            seq,
+                            op,
+                            [
+                                wire::i32_at(b, cmd::transfer_to_container::X),
+                                wire::i32_at(b, cmd::transfer_to_container::Y),
+                                wire::i32_at(b, cmd::transfer_to_container::Z),
+                            ],
+                            wire::i32_at(b, cmd::transfer_to_container::COUNT),
+                        ));
                     }
                     if (0x8400..=0x84FF).contains(&rec.kind)
                         && let Ok(Some((_, c))) = iw::decode_cmd(rec.bytes)
@@ -709,6 +750,9 @@ impl Java {
                         }
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
+                        } else if self.unloaded_transfers {
+                            // CommandDispatcher: the chunk is not loaded.
+                            obs::command_result::FAILED
                         } else if self.fail_transfers {
                             obs::command_result::FAILED
                         } else {
