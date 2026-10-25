@@ -4279,6 +4279,19 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
+  - Amendment (the third check's P3; written and compiled, not run): three test changes. (1)
+    `RailFrostmawGameTests.theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront` (batch
+    `rail_frostmaw_riders_first`; MZB-365's amendment) on a new fixture, `Line.mixed` / `mixedCars` (a short
+    single-bogey carriage in front of a long one with a plank floor), `Line.planks` and `Line.standOn` (the riders
+    test's `stand` is now `planks` and `standOn`). It reads the strike's aim off the puppet's yaw, which the Lurker sets
+    at the strike, and the absence of a strike off `lurkStrikes`; the sampler's sight of the train off TRAIN_PASSED.
+    (2) `FrostmawGameTests.aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker` (batch
+    `frostmaw_lurk_discarded`) drives the leak the killed-puppet test does not reach (MZB-361's third-check
+    correction): a held body discarded without the death path, the memo gone from the Lurker after. The killed-puppet
+    test passes on 86f97f99 (`settleDeaths` released first) and is kept as a guard, its "fails before" claim dropped;
+    the discard test and the module-off test fail there by reading (`FrostmawLurker.tracked` is new). (3) The
+    `trackNear` assertions of `RailDirectionsGameTests` and the curve test of `FrostmawGameTests` take the body's
+    height and the floor-up count (MZB-360's amendment).
 - **MZB-371** (run 1's ambush half):
   - The synth's rail lines also run as booked legs in a FakeWorld industry through `IndustryLink`, so
     `raid_train` finds the leg and its cargo.
