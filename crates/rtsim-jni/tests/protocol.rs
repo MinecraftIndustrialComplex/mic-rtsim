@@ -2640,6 +2640,149 @@ mod dragons {
         assert_eq!(dragons_after_a_death("dragon-died-clean", false), 0);
     }
 
+    /// A lair's own dragon, well fed (it rests in its lair, so a player there sees it whenever
+    /// the dragons run), adopted and embodied. The dragons are switched off, and Java keeps the
+    /// body: it sends no capture at the switch-off. In that window the body dies (`killer_kind`:
+    /// a player's kill, or a taming, which Java reports with no attacker). Then the dragons are
+    /// switched on again with a player at the lair: in this session (`restart` false), or after
+    /// a save that trimmed the death from Java's journal and a clean restart with them on.
+    /// Returns (dragons alive, materializations of that dragon after the switch-on).
+    fn a_dragon_after_a_death_while_off(
+        tag: &str,
+        killer_kind: AttackerKind,
+        restart: bool,
+    ) -> (usize, usize) {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD3, 0x1), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        assert_eq!(summary(&e).0, 1, "one dragon, embodied");
+
+        // Off, and the body dies in the window.
+        j.modules(0b1111);
+        j.idle();
+        let killer = if killer_kind == AttackerKind::Player {
+            PLAYER
+        } else {
+            (0, 0)
+        };
+        j.dragon_obs(&O::Died(db::Died {
+            agent: a.agent,
+            epoch: a.epoch,
+            killer_kind,
+            killer,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.idle();
+        assert!(
+            e.dragons_ignored() >= 1,
+            "the death was not applied while off"
+        );
+        assert_eq!(summary(&e).0, 1, "nothing changes while off");
+
+        let (e, mut j) = if restart {
+            save_durable(&e, &mut j);
+            j.idle();
+            let saved = j.world_save();
+            assert!(
+                !saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == db::DRAGON_DIED),
+                "the save trimmed the death from Java's journal: only the pages can hold it"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            (e, j)
+        } else {
+            j.modules(MODULES);
+            (e, j)
+        };
+        let materialized = j.iaf.len();
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        for _ in 0..600 {
+            j.tick();
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let again = j.iaf[materialized..]
+            .iter()
+            .filter(|(_, c)| matches!(c, D::Materialize(m) if m.agent == a.agent))
+            .count();
+        let alive = summary(&e).0;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (alive, again)
+    }
+
+    /// U-c (RP-292, docs/replay-gate.md 9.7): a dragon a player killed while the dragons were
+    /// switched off stays dead when they are switched on. Before: the death was ignored, the
+    /// switch-on's reset made the dragon abstract and alive, and the player at the lair saw it
+    /// materialize beside its corpse.
+    #[test]
+    fn a_dragon_killed_while_switched_off_stays_dead() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off("dragon-died-off", AttackerKind::Player, false),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the dragons on: the death the pages kept
+    /// is applied when they run again.
+    #[test]
+    fn a_dragon_killed_while_switched_off_stays_dead_after_a_restart() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off("dragon-died-off-restart", AttackerKind::Player, true),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// U-c (RP-292): a dragon tamed while the dragons were switched off (DRAGON_DIED with no
+    /// attacker, `DragonBridge.onTame`) does not come back as a wild one.
+    #[test]
+    fn a_dragon_tamed_while_switched_off_does_not_come_back() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off("dragon-tamed-off", AttackerKind::None, false),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the dragons on.
+    #[test]
+    fn a_dragon_tamed_while_switched_off_does_not_come_back_after_a_restart() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off("dragon-tamed-off-restart", AttackerKind::None, true),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
     // ---- a test's order waits for the replay end (docs/replay-gate.md §4.5, RP-74) ------------
 
     /// The replay ends this engine ran.
@@ -5000,6 +5143,110 @@ mod herds {
             "running again, the page moves on"
         );
     }
+
+    /// A herd of 20 sheep (under the group cap, so every group holds every sheep) in a player's
+    /// view, its group embodied. The ecology module is switched off, and in the switch's tick, as
+    /// `HerdBridge.endOfTick` does, the plugin settles a player's kill and then captures the
+    /// group: both journaled after the MODULES record, which the preamble writes ahead of them.
+    /// Then the herds are switched on again: in this session (`restart` false), or after a save
+    /// that trimmed both from Java's journal and a clean restart with them on. Returns the
+    /// herd's (alive, killed) and whether a group materialized after the switch-on holds the
+    /// killed sheep.
+    fn a_herd_after_a_kill_in_the_switchs_tick(tag: &str, restart: bool) -> (u64, u64, bool) {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 20);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        j.players = vec![(PLAYER, dim, pos)];
+        j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+        j.idle();
+        let m = materializations(&j).remove(0);
+        assert_eq!(m.members.len(), 20, "every sheep in the group");
+
+        j.modules(0b1111);
+        let killed = j.herd_plugin.kill(agent, 1, PLAYER);
+        assert_eq!(killed.len(), 1);
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.herd_plugin.apply(
+            vec![H::Despawn(hb::Despawn {
+                agent,
+                epoch: m.epoch,
+                reason: 1,
+            })],
+            at,
+        );
+        j.herd_flush();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(summary(&e, agent).1, 0, "the kill not applied while off");
+
+        let (e, mut j) = if restart {
+            save(&e, &mut j);
+            j.idle();
+            let saved = j.world_save();
+            assert!(
+                !saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == hb::HERD_KILLED),
+                "the save trimmed the kill from Java's journal: only the pages can hold it"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.players = vec![(PLAYER, dim, pos)];
+            (e, j)
+        } else {
+            j.modules(MODULES);
+            (e, j)
+        };
+        let shown = j.herds.len();
+        j.run_until("the herd in view again", |j| {
+            j.herds[shown.min(j.herds.len())..]
+                .iter()
+                .any(|(_, c)| matches!(c, H::Materialize(m) if m.agent == agent))
+        });
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let again = j.herds[shown..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                H::Materialize(m) if m.agent == agent => Some(m),
+                _ => None,
+            })
+            .any(|m| m.members.iter().any(|b| b.member == killed[0]));
+        let (alive, k, _, _, _) = summary(&e, agent);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (alive, k, again)
+    }
+
+    /// U-c (RP-292, docs/replay-gate.md 9.7): a sheep a player killed in the switch-off's tick
+    /// is dead when the herds are switched on: booked once, never picked for a group again.
+    /// Before: the kill was ignored, and the next group in the player's view held the dead
+    /// sheep.
+    #[test]
+    fn a_herd_animal_killed_in_the_switchs_tick_is_not_picked_again() {
+        assert_eq!(
+            a_herd_after_a_kill_in_the_switchs_tick("herds-kill-off", false),
+            (19, 1, false),
+            "(alive, killed, the dead sheep in a later group)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the herds on.
+    #[test]
+    fn a_herd_animal_killed_in_the_switchs_tick_is_not_picked_again_after_a_restart() {
+        assert_eq!(
+            a_herd_after_a_kill_in_the_switchs_tick("herds-kill-off-restart", true),
+            (19, 1, false),
+            "(alive, killed, the dead sheep in a later group)"
+        );
+    }
 }
 
 /// The conflict engine through the native link (docs/boundary.md §9, choices C2-1 to C2-17 in
@@ -5547,6 +5794,96 @@ mod conflict {
             page(&dir),
             Some(at_switch),
             "running again, the page moves on"
+        );
+    }
+
+    /// The camp's envoy in a player's view. The conflict module is switched off, and in the
+    /// switch's tick, as `ConflictBridge.switchedOff` settles its deaths, the player's kills of
+    /// the whole band are journaled after the MODULES record, which the preamble writes ahead of
+    /// them. Then the conflict is switched on again: in this session (`restart` false), or after a
+    /// save that trimmed the kills from Java's journal and a clean restart with it on, and a day
+    /// passes with the player in the territory. Returns (casualties booked by the switch-on, the
+    /// envoy party's units left, 0 when it is gone, the envoy materialized again).
+    fn a_band_after_a_wipe_in_the_switchs_tick(tag: &str, restart: bool) -> (u64, u32, usize) {
+        let (dir, e, mut j) = camp(tag);
+        let envoy = envoy_in_view(&mut j);
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        j.modules(0b1111);
+        wipe(&mut j, &envoy, cb::BY_PLAYER, PLAYER);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "nothing applied while off"
+        );
+
+        let (e, mut j) = if restart {
+            save(&e, &mut j);
+            j.idle();
+            let saved = j.world_save();
+            assert!(
+                !saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == cb::BAND_CASUALTIES),
+                "the save trimmed the kills from Java's journal: only the pages can hold them"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+            j.players = vec![(PLAYER, dim, base)];
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            (e, j)
+        } else {
+            j.modules(MODULES);
+            (e, j)
+        };
+        let shown = j.conflict.len();
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 600, 2 * DAY, "a day on", |j| j.game_time >= end);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        let units = e.with_conflict(|c, _| {
+            Party::of_agent(envoy.agent)
+                .and_then(|p| c.parties.get(p))
+                .map_or(0, |p| p.units.iter().map(|u| u.1).sum())
+        });
+        let again = j.conflict[shown..]
+            .iter()
+            .filter(|(_, c)| matches!(c, C::Envoy(x) if x.agent == envoy.agent))
+            .count();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (booked, units, again)
+    }
+
+    /// U-c (RP-292, docs/replay-gate.md 9.7): an envoy band a player wiped out in the
+    /// switch-off's tick stays dead when the conflict is switched on: its casualties booked, the
+    /// party gone, never in view again. Before: the kills were ignored, and the band came back
+    /// whole.
+    #[test]
+    fn a_band_wiped_out_in_the_switchs_tick_does_not_return() {
+        let (booked, units, again) =
+            a_band_after_a_wipe_in_the_switchs_tick("conflict-wipe-off", false);
+        assert_eq!(
+            (booked > 0, units, again),
+            (true, 0, 0),
+            "(casualties booked, units left, envoy in view again)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the conflict on.
+    #[test]
+    fn a_band_wiped_out_in_the_switchs_tick_does_not_return_after_a_restart() {
+        let (booked, units, again) =
+            a_band_after_a_wipe_in_the_switchs_tick("conflict-wipe-off-restart", true);
+        assert_eq!(
+            (booked > 0, units, again),
+            (true, 0, 0),
+            "(casualties booked, units left, envoy in view again)"
         );
     }
 
