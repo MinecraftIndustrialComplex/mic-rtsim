@@ -690,7 +690,12 @@ fn the_iron_line_runs_through_the_native_engine() {
 /// holds the scenario's goods as ids 1 to 4 and its block states as 11 to 13 and 21 to 23 (the
 /// harness numbers every kind in one sequence, so it is filled to match).
 fn iron_java(dir: &std::path::Path, cfg: IronLine) -> Java {
-    let e = engine_with(&dir.to_path_buf(), 256 * 1024, |c| {
+    iron_java_with(dir, cfg, 256 * 1024)
+}
+
+/// [`iron_java`] with `capacity` bytes of record area.
+fn iron_java_with(dir: &std::path::Path, cfg: IronLine, capacity: usize) -> Java {
+    let e = engine_with(&dir.to_path_buf(), capacity, |c| {
         c.industry_seed = Some(cfg.seed)
     });
     let mut j = Java::open(e, WorldSave::fresh());
@@ -1836,6 +1841,146 @@ fn exchange_behind_the_save(tag: &str, filler: usize, capacity: usize) -> Exchan
         cargo_live,
         cargo_again,
     }
+}
+
+/// Candidate (e) across a crash (RP-262, RP-278): the train's call reaches the live engine late.
+/// The live engine runs on a minimum-size buffer and 3,000 filler records are journaled the tick
+/// before train 1 calls at the ore coast, so the call waits in Java's journal for the hand-overs
+/// the fillers fill (Java's `drainInto` leaves what does not fit for the next one), and the live
+/// engine, run to each hand-over's time, takes it at a later game time than its own. The pages
+/// stop at day 3, the world saves at 72,900 after the exchange and the crash comes at 73,500, as
+/// in [`exchange_behind_the_save`]; the engine restarts on 1 MiB, so its replay is one hand-over
+/// (candidate f stays out) and takes the call at its own tick. Returns the call's own game time
+/// and the hand-over time the live engine took it at.
+fn stale_exchange_behind_the_save(tag: &str) -> (ExchangeBehind, i64, i64) {
+    use rtsim_industry::wire::IND_TRAIN_ARRIVED;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir(tag);
+    let mut j = iron_java_with(&dir, cfg, wire::MIN_CAPACITY);
+    j.mc_run_until(day(3.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let paged = j.ind_commands.len();
+    j.mc_run_until(Tick(72_799));
+    fillers(&mut j, 3_000);
+    let behind = j.next_obs;
+    // The call, journaled behind the fillers: its own game time, and the time of the hand-over
+    // that carried it (the live engine's clock had reached the hand-over before's).
+    let mut call: Option<(u64, i64)> = None;
+    let mut taken = None;
+    while j.mc().t < Tick(72_900) {
+        j.mc_tick();
+        if call.is_none() {
+            call = j
+                .journal
+                .iter()
+                .find(|(s, r)| *s >= behind && wire::u16_at(r, wire::R_KIND) == IND_TRAIN_ARRIVED)
+                .map(|(s, r)| (*s, wire::i64_at(r, wire::obs::GAME_TIME)));
+        }
+        if let Some((seq, _)) = call
+            && taken.is_none()
+            && j.sent_obs >= seq
+        {
+            taken = Some(j.game_time);
+        }
+    }
+    let (_, stamped) = call.expect("train 1 called after the fillers");
+    let taken = taken.expect("the call was handed over");
+    let before: Vec<u64> = j.ind_commands[paged..]
+        .iter()
+        .filter_map(|c| match &c.2 {
+            Cmd::CarriageDelta(d) => Some(d.op.0),
+            _ => None,
+        })
+        .filter(|op| {
+            j.mc()
+                .applied_ops()
+                .contains(&rtsim_kernel::journal::OpId(*op))
+        })
+        .collect();
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    j.mc_run_until(Tick(73_500));
+    let cargo_live = cargo(&j);
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let saved_ops = mc.applied_ops().clone();
+    let e = engine_with(&dir, 1 << 20, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
+    j.mc_run_until(Tick(73_500));
+    let cargo_again = cargo(&j);
+    let replay_handovers =
+        j.e.stats
+            .replay_handovers
+            .load(std::sync::atomic::Ordering::Acquire);
+    let after: Vec<u64> = j
+        .ind_commands
+        .iter()
+        .filter_map(|c| match &c.2 {
+            Cmd::CarriageDelta(d) => Some(d.op.0),
+            _ => None,
+        })
+        .collect();
+    let applied_again = after
+        .iter()
+        .filter(|op| {
+            let op = rtsim_kernel::journal::OpId(**op);
+            j.mc().applied_ops().contains(&op) && !saved_ops.contains(&op)
+        })
+        .count();
+    eprintln!(
+        "{tag}: the call stamped {stamped}, taken live at {taken}; {replay_handovers} replay \
+         hand-overs; exchanges before the save {before:x?}, sent after the restart {after:x?}; \
+         applied again {applied_again}; cargo at the crash {cargo_live:?}, again {cargo_again:?}"
+    );
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    (
+        ExchangeBehind {
+            before,
+            after,
+            replay_handovers,
+            applied_again,
+            cargo_live,
+            cargo_again,
+        },
+        stamped,
+        taken,
+    )
+}
+
+/// The double of candidate (e) (RP-262, RP-278): live, the call is taken at the hand-over's time,
+/// past its own; replayed in one hand-over, at its own. On bc669502 the exchange's op derived
+/// from the engine's clock, so the replay sent another op and the world loaded the train twice.
+/// Derived from the call's own tick and named by the train (RP-270, RP-272), it is the live op,
+/// answered DUPLICATE.
+#[test]
+fn a_station_exchange_taken_late_live_is_applied_once_after_a_crash() {
+    let (b, stamped, taken) = stale_exchange_behind_the_save("ind-exch-stale");
+    assert!(
+        taken >= stamped + 2,
+        "the live engine's clock was past the call when it took it: stamped {stamped}, taken \
+         at the hand-over of {taken}"
+    );
+    assert_eq!(b.before.len(), 1, "one exchange before the save");
+    assert_eq!(
+        b.replay_handovers, 1,
+        "a replay of one hand-over: (e) alone"
+    );
+    assert_eq!(b.applied_again, 0, "never applied twice");
+    assert_eq!(
+        b.cargo_again, b.cargo_live,
+        "the trains hold what they held"
+    );
+    assert_eq!(b.after, b.before, "re-derived under its op id");
 }
 
 /// The control: the replay of one hand-over takes the train's call at its own tick, re-derives
