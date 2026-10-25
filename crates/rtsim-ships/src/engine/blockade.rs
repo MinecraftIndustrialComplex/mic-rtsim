@@ -1639,9 +1639,10 @@ mod tests {
 
     /// While the last session's journal replays no player is routed to the ships, so the view
     /// rules take every dock as watched (docs/replay-gate.md §6.1, RP-95): a relaunch waits for the
-    /// slot's next stay, and a raid, a refound and a navy assault wait for the players routed after
-    /// the replay end. After it the world's areas answer again. Control: the same engine and
-    /// place with no replay and no area is unwatched.
+    /// slot's next stay, a raid is not made, a refound reschedules itself and an assault waits for
+    /// its next period; the first look after the replay end is judged by the players routed by
+    /// then. After it the world's areas answer again. Control: the same engine and place with no
+    /// replay and no area is unwatched.
     #[test]
     fn a_replaying_engine_takes_every_dock_as_watched() {
         let mut c = quiet_coast(1);

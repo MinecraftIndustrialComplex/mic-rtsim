@@ -1266,6 +1266,50 @@ fn a_replayed_fight_between_handles_the_replay_allocated_is_lost() {
     }
 }
 
+/// The lookups that carry an epoch are bound too (RP-100): a ship the replay allocated is at
+/// epoch 0 until the replay ends, so no real record (epoch 1 and up) finds it by `ship_of`, and the
+/// bound there is a second wall. The test goes through it with the one record that would pass the
+/// epoch check, a report of epoch 0 at the live merchant's handle. Control: the pages hold the
+/// merchant (epoch 0, never embodied) and take the damage and the return.
+#[test]
+fn an_epoch_checked_lookup_finds_only_a_ship_the_pages_held() {
+    let seed = 5;
+    let merchant = Ship::agent(live(seed, false).merchant);
+    let damaged = Obs::Damaged(boundary::Damaged {
+        agent: merchant,
+        epoch: 0,
+        by: By::Player,
+        hull_milli: 100,
+        crew_lost: 1,
+        player: PLAYER,
+        ship: 0,
+    });
+    let returned = Obs::Dematerialized(boundary::Dematerialized {
+        agent: merchant,
+        epoch: 0,
+        reason: 3,
+        dimension: 0,
+        hull_milli: 50,
+        crew: 1,
+        pos: (0.0, 64.0, 0.0),
+    });
+    let row = |s: &Ships, id| s.ship(id).map(|x| (x.hull_milli, x.crew)).unwrap();
+    for (name, o) in [("damaged", damaged), ("returned", returned)] {
+        let (mut l, mut s) = held(seed, true);
+        let before = row(&s, l.merchant);
+        s.ingest(&mut l.w, &o, &l.mask, Tick::ZERO);
+        assert_ne!(row(&s, l.merchant), before, "{name}: control");
+
+        for from_pages in [true, false] {
+            let (mut w, mut s, mask, pirate) = shifted(seed, from_pages);
+            assert_eq!(Ship::agent(pirate), merchant, "the replay's handle 0");
+            let before = row(&s, pirate);
+            s.ingest(&mut w, &o, &mask, Tick::ZERO);
+            assert_eq!(row(&s, pirate), before, "{name}, pages {from_pages}");
+        }
+    }
+}
+
 /// The bound is the session's, taken once (RP-100): a second `begin_replay` inside the replay (the
 /// ships switched off and on) must not cover the ships the replay allocated since, and must not
 /// turn a replay from the pages into one without. The honour (RP-93) lands on the pirate the pages
@@ -1324,7 +1368,7 @@ fn the_pirates_of_the_first_activating_haven_are_inside_no_bound() {
     assert!(s.ship(p).unwrap().embodied, "honoured");
 }
 
-/// A copy after the replay end only raises the floor, whatever its kind (RP-98): the handle it
+/// A copy after the replay end only raises the floor, whatever its kind (RP-97): the handle it
 /// names may be another ship than the earlier session's, and a copy of a sinking or of damage is
 /// lost rather than booked. Control: the same records live land.
 #[test]
@@ -1398,8 +1442,8 @@ fn the_honour_spends_only_a_floor_it_reaches() {
 
 /// A replay after a replay takes its own bound (RP-100): the reset at the replay end lets a later
 /// `begin_replay` of the same engine (a switch-on after a switch-off, in a live session) cover the
-/// ships it holds then, not the session's first bound. Control: without the reset a ship that
-/// joined since is not honoured.
+/// ships it holds then, not the session's first bound. With the first bound kept (the mutation the
+/// records list), the ship that joined since would only raise the floor and stay unembodied.
 #[test]
 fn a_later_replay_takes_its_own_bound() {
     let seed = 5;

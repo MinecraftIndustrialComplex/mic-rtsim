@@ -5483,7 +5483,9 @@ impl Ships {
     fn point_in_view(&self, w: &World, frame: u16, dock: (i32, i32), at: Tick) -> bool {
         // Every dock is watched while the last session's journal replays (docs/replay-gate.md
         // §6.1, RP-95): what a decision that asks would do in view it does not do, and the
-        // ones that decide only unwatched wait for the replay end. No player is routed yet.
+        // ones that decide only unwatched look again at their own next time (a raid is not made,
+        // a refound reschedules, an assault waits for its period, a relaunch for its next stay).
+        // No player is routed yet.
         if self.outbox.replaying() {
             return true;
         }
@@ -5555,7 +5557,7 @@ impl Ships {
     /// RP-8, RP-9, RP-97), called by the host instead of [`Ships::ingest`] while it applies one.
     /// Its body is gone, and the ships carry nothing a copy could add (§5.7): every copy that
     /// names a ship's epoch raises the agent's epoch floor to it, live or replayed (RP-57), and
-    /// no copy does more, whatever its kind (RP-98). The handle a copy names may be another ship
+    /// no copy does more, whatever its kind (RP-97). The handle a copy names may be another ship
     /// than the one the earlier session had (a ship allocated since), and a copy of a sinking or
     /// of loot is lost rather than booked to the wrong body. `w`, `mask` and `at` are those of
     /// [`Ships::ingest`], which the host's call mirrors.
