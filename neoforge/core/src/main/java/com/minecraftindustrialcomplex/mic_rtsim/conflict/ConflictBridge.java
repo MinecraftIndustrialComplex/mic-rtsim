@@ -237,6 +237,11 @@ public final class ConflictBridge implements SessionPlugin {
             return recalling;
         }
 
+        /** M10 (MZB-473): the trim found a member to cut that a player can see, and tries again on the stop's beat (GameTests). */
+        public boolean trimDue() {
+            return trimDue;
+        }
+
         public boolean attack() {
             return attack;
         }
@@ -320,6 +325,25 @@ public final class ConflictBridge implements SessionPlugin {
 
         public StackState state() {
             return state;
+        }
+
+        /** Its place in the column (MZB-469), for GameTests: blocks behind the head, and to its right. */
+        public double back() {
+            return back;
+        }
+
+        public double side() {
+            return side;
+        }
+
+        /** The war chief's stack (the chief alone). */
+        public boolean chief() {
+            return chief;
+        }
+
+        /** Where its anchor is at {@code now}: {x, z} (GameTests). */
+        public double[] anchorAt(long now) {
+            return anchor(now);
         }
 
         public int placings() {
