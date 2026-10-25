@@ -3974,17 +3974,24 @@ impl Engine {
         true
     }
 
-    /// Java answered an industry command DUPLICATE_OP: it had applied the op already. A train's
-    /// loot re-decided under the op Java applied (a raider replaying its window after a crash,
-    /// RP-180) took its goods once, at that first application, so its exchange is dropped with
-    /// the books as the re-decision booked them; no IND_CARRIAGE_RESULT will come for it (RP-182).
-    /// A station exchange is left alone, as before. Returns whether an exchange was dropped.
+    /// Java answered an industry command DUPLICATE_OP: it had applied the op already. Java
+    /// journals an application's IND_CARRIAGE_RESULT in the call that applies it, before its
+    /// APPLIED and so before any DUPLICATE for the op, and the engine reads them in that order:
+    /// an exchange still pending here lost its result with the journal (a crash that kept the
+    /// train's goods and ring and not the journal, J3), and none will come. So the exchange is
+    /// dropped whatever its reason (RP-182, RP-199), with the books as the re-decision booked
+    /// them: a train's loot re-decided under the op Java applied (a raider replaying its window
+    /// after a crash, RP-180) took its goods once, at that first application; a station exchange
+    /// the replay derived again from its arrival moved its goods once, at the live application.
+    /// What that application fell short of the request, if anything, is never booked (RP-199's
+    /// residual). Returns whether an exchange was dropped.
     pub fn command_duplicate(&mut self, op: rtsim_kernel::journal::OpId) -> bool {
-        if !self.exchanges.get(&op).is_some_and(|ex| ex.loot) {
-            return false;
-        }
-        self.exchanges.remove(&op);
-        true
+        self.exchanges.remove(&op).is_some()
+    }
+
+    /// Whether the engine still waits on the IND_CARRIAGE_RESULT of a carriage delta `op`.
+    pub fn exchange_pending(&self, op: rtsim_kernel::journal::OpId) -> bool {
+        self.exchanges.contains_key(&op)
     }
 
     fn carriage_result(&mut self, at: Tick, r: &CarriageResult) {

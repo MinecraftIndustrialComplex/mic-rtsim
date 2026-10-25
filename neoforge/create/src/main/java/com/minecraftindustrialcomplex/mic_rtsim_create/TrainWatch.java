@@ -648,6 +648,19 @@ public final class TrainWatch {
         return ref == null ? null : ref.get();
     }
 
+    /** Every train Create's map holds, then every other train the hooks saw that is still in memory. */
+    static void eachTrain(java.util.function.Consumer<Train> each) {
+        Set<Train> done = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Train t : Create.RAILWAYS.trains.values())
+            if (done.add(t))
+                each.accept(t);
+        for (WeakReference<Train> ref : new ArrayList<>(SEEN.values())) {
+            Train t = ref.get();
+            if (t != null && done.add(t))
+                each.accept(t);
+        }
+    }
+
     /** IND_CARRIAGE_DELTA (§4.3): applied wherever the train is now, through the cargo handlers. */
     static boolean carriageDelta(Industry ind, ByteBuffer b, int at, int size, int n, long cmdSeq) {
         long opId = b.getLong(at + IndRecords.CarriageDelta.OP_ID);
@@ -663,11 +676,16 @@ public final class TrainWatch {
         // barrier, so it can survive without the goods (J4: asked, it answers DUPLICATE on restored goods while
         // the raider is credited again, a dupe) or the goods without it (J3: a double; RP-184). It stays the
         // dedup for a train Create no longer has (nothing is applied to one) and when the ring's mixin did not
-        // apply (RP-193: slice T's dedup, with J3 and J4 as RP-184 lists them).
+        // apply (RP-193: slice T's dedup, with J3 and J4 as RP-184 lists them). An op leaves the ring once the
+        // engine acknowledges its answer, and a ring another session answered is settled first (RP-250, RP-251).
         Train train = train(trainId);
         AppliedOpRing ring = train != null && TrainRing.available(ind.server()) ? TrainRing.of(train) : null;
+        if (ring != null)
+            TrainRing.settle(ring);
         if (ring != null ? ring.contains(opId) : ind.opApplied(opId)) {
-            ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            if (ring != null)
+                TrainRing.answered(ring, opId, seq);
             return true;
         }
         long[][] results = new long[n][4];
@@ -715,9 +733,11 @@ public final class TrainWatch {
         }
         // In the tick the carriage storage changed, so whichever create_tracks.dat holds the goods holds the op.
         if (ring != null)
-            ring.add(opId);
+            TrainRing.applied(train, ring, opId);
         writeCarriageResult(ind, opId, trainId, results);
-        ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        if (ring != null)
+            TrainRing.answered(ring, opId, seq);
         return true;
     }
 
