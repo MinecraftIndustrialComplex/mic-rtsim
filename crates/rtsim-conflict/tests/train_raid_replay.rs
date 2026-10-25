@@ -33,9 +33,10 @@ fn cultures() -> Cultures {
 
 /// Every leg a band walks may meet a train (cultures.rs `an_ambush_is_one_threat_per_class`).
 fn tun() -> ConflictTunables {
-    let mut t = ConflictTunables::default();
-    t.ambush_milli = 1000;
-    t
+    ConflictTunables {
+        ambush_milli: 1000,
+        ..ConflictTunables::default()
+    }
 }
 
 /// A goblin camp and the world it raids from.
