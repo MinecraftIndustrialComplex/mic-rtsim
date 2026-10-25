@@ -298,7 +298,7 @@ public final class CreatePlugin implements IndustryPlugin {
     public void tick(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry, long now) {
         TrainWatch.tick(industry, now);
         PackageStores.of(industry).tick(now);
-        TrainRing.tick();
+        // The train rings' prunes run in their session hook's end of tick, with the module on or off (RP-257).
     }
 
     @Override
