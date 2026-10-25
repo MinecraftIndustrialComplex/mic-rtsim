@@ -7149,7 +7149,7 @@ only (the create plugin, one core test helper); no Rust, wire, page or record ch
 already modelled the ring, `Dedup::Ring`, RP-184). Create facts are from cfr on Create 6.0.10, the jar
 neoforge/create compiles and runs against (`create_packMods`: deep-time/smoke/mic/server/mods/
 create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and `TrainRingGameTests`
-(8 GameTests). The second review (review2, at 7d00b265) and its fixes (RP-199, RP-250 to RP-256) bring
+(8 GameTests). The second review (review2, at 7d00b265) and its fixes (RP-199, RP-250 to RP-257) bring
 them to 14 unit tests and 14 GameTests and add rtsim-jni host tests; since RP-250 the ring is bounded by
 the engine's acknowledgement of each op's answer, not by a count.
 
@@ -7247,6 +7247,9 @@ the engine's acknowledgement of each op's answer, not by a count.
   announce makes every answer this session gave unknown (`TrainRing.announce`, `forgetAnswers`): what
   Java answered while the module was off is not known to have reached the engine's pages. Those ops
   stay until the engine answers them again, or the valve (RP-255).
+  Amended by RP-257: the key is now written whatever the switch says, and the prunes run with the
+  module off; the first paragraph's "a restart with industry off loses the rings" was the hole RP-257
+  closes (the restart's own save need not reach the engine before a crash).
 - **RP-195** (the GameTests; item 5): `TrainRingGameTests` (namespace `mic_rtsim_create`, batches
   `train_ring_1` to `train_ring_8`, one test each; the eighth is RP-198's; since review2 also
   `train_ring_9`, RP-253's, and `train_ring_10` to `train_ring_14`, RP-254's) emulate a crash on a synthetic train of 32 iron
@@ -7366,7 +7369,8 @@ the engine's acknowledgement of each op's answer, not by a count.
   registers `RtsimSession.afterAck(at, ...)`; the session runs it when the engine's acknowledgement (the
   highest sequence its saved pages include, `BoundarySession.applyCommands`'s `onConsumed`) reaches
   `at`, and `TrainRing.tick` (the industry plugin's tick, after the industry's announce in the same
-  tick) removes the op if its answer is still `at` and the ring and the acknowledgement are this
+  tick; since RP-257 the session hook's end of tick, which follows the industry's and runs with the
+  module off) removes the op if its answer is still `at` and the ring and the acknowledgement are this
   session's, then marks Create's tracks dirty. An op answered again since, or made unknown by an
   announce (RP-194), stays. So a ring holds only the ops whose last answers the engine has not saved,
   whatever the window (RP-192's correction), and an idle train's ring empties (review2 P3-5, D1: the
@@ -7387,7 +7391,7 @@ the engine's acknowledgement of each op's answer, not by a count.
   `TrainRing.write` runs inside `Train.write` (the mixin's inject at RETURN), which
   `RailwaySavedData.save` calls for each train while it builds the compound, on the server thread, and
   the same `Train.write` writes the carriage goods (RP-191); the ring changes only on the server thread
-  (`carriageDelta` in the commands' application, the prunes in the plugin tick, the settles at the
+  (`carriageDelta` in the commands' application, the prunes in the session hook's end of tick, the settles at the
   session's start and in `Train.read`), so a compound holds the goods and the ring of one moment. The
   prune never drops an op whose tracks save is older than the engine's durable save: a prune follows a
   durable, requested save of the engine (pressure saves are pending generations, rolled back at start,
@@ -7538,6 +7542,43 @@ the engine's acknowledgement of each op's answer, not by a count.
   leaves the ring on the engine's acknowledgement of its answer; PATCHES.md row 85 has the valve of
   4096 and the session hook, and the attached-data table the `_at` and `_gen` keys. TrainWatch's
   comment at the dedup and TrainRing's class comment say the same.
+- **RP-257** (the module switch never touches saving or loading; the coordinator's rule for every ring,
+  from the SEC-1 lead's hole in RP-206; amends RP-194 and RP-250): the hole on T2 as RP-194 built it:
+  (1) a raid is applied; (2) the industry module is switched off; (3) the next world save writes the
+  train without its ring (RP-194 left the key out with the module off) and the server crashes before
+  the journal's file is written, so the engine never saved past the raid's answer; (4) the restart
+  with the module on re-decides the raid, the train holds the goods after it and no ring, and the op
+  is applied again (a double). RP-194's "no op from before it can be sent again" assumed that
+  restart's own save reached the engine. The rule, for every ring: the switch gates only the applying
+  of new ops (`carriageDelta` runs only from the industry's commands, which only an industry that is
+  on applies). A save writes `mic_rtsim:applied_ops`, `_at` and `_gen` whenever the ring holds an op,
+  whatever the switch says (`TrainRing.write` has no module check; an empty ring still writes no
+  key). A load keeps what it finds (`TrainRing.read` never had one). The prunes on the acknowledgement
+  of `at` continue while the module is off: the drain moved from the industry plugin's tick, which
+  does not run while the module is off (`Industry.endOfTick` returns before its plugins), to the
+  session hook's `endOfTick` (`TrainRing.SessionHook`, for the server's own session only), which
+  `RtsimSession.endOfTick` calls after `industry.endOfTick`, so an announce in the same tick still
+  forgets the answers first. The settle at the session's start is unchanged. Conservative choice kept:
+  the announce when the module comes back on (or the engine lost observations) still makes every
+  answer this session gave unknown (RP-194's second paragraph); an answer acknowledged while the module
+  was off has already left by then, so the cost is the answers still unacknowledged at that moment,
+  which stay until the engine answers them again (RP-255 (1)). UR-1 is unchanged where it matters:
+  with the plugin removed the mixin is gone and Create's `Train.write` drops the key (RP-190), and a
+  train that keeps ring keys while the module is off loads as Create's own. Cost: a train whose
+  answers are unknown when the module goes off keeps those ops in its saves until the module is on and
+  the engine answers them again, or the valve. The SEC-1 lead applies the same rule to its own rings
+  (slice U-a) and records it once in docs/replay-gate.md; this record is T2's part. Test, a GameTest
+  since the switch is the server's config (`RtsimConfig.Test.setModule` with
+  `BridgeEvents.moduleSwitchesChanged`; the unit tests have no Train and the rtsim-jni host's fake
+  world has no Java module switch): `anOpAppliedBeforeTheModuleWentOffIsTakenOnceAfterASaveWithItOffAndACrash`
+  (`train_ring_7`, replacing RP-194's `withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing`): a
+  raid applied with the prunes held, the module off, the tracks saved, the crash (the journal's op
+  index forgets the op, the train is read back from that save with the module still off), the module
+  on, the raid sent again under the same op: answered DUPLICATE, 22 iron on the train; the save with
+  the module off held the op, its answers and its generation beside every key of Create's (the keys a
+  read and write of the same file without the ring's give). Then, with the module off again and the
+  prunes released, the DUPLICATE's answer is acknowledged and the op leaves the ring (the prune counter
+  rises) and a save writes none of the ring's keys. Failure before the fix: see the end of this record.
 
 ### Slice D (dragons)
 
