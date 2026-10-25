@@ -398,7 +398,7 @@ public final class HouseBuilder {
         return new BlockPos((box.minX() + box.maxX()) / 2, box.minY() + 1, (box.minZ() + box.maxZ()) / 2);
     }
 
-    /** Ends a build: the house record, HOUSE_PLACED and the COMMAND_RESULT, which the house's chunk carries. */
+    /** Ends a build: the house record, HOUSE_PLACED and the COMMAND_RESULT, which every chunk of the house's box carries. */
     private void finish(VillageRegistry.Build b, int status, Village v, BoundingBox box, BlockPos slot, long now) {
         villages.builds.remove(b.op);
         searchIndex.remove(b.op);
@@ -430,10 +430,17 @@ public final class HouseBuilder {
             refused++;
         }
         ByteBuffer result = session.commandResult(b.cmdSeq, b.op, status, now);
-        if (status == Obs.CommandResult.APPLIED && level != null && b.origin != null) {
-            LevelChunk chunk = level.getChunkSource().getChunkNow(b.origin.getX() >> 4, b.origin.getZ() >> 4);
-            if (chunk != null)
-                session.carryResultInChunk(chunk, result);
+        if (status == Obs.CommandResult.APPLIED && level != null && box != null) {
+            // Every chunk of the box carries it, and the journal's next file waits for each (C3): the search
+            // after a crash looks for the op in every chunk of the box (carriesOp), so a box chunk that was
+            // saved ahead of the journal answers DUPLICATE_OP rather than a second house beside the first.
+            // The copies are one record; the engine takes a repeated result by state.
+            for (int cx = box.minX() >> 4; cx <= box.maxX() >> 4; cx++)
+                for (int cz = box.minZ() >> 4; cz <= box.maxZ() >> 4; cz++) {
+                    LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz);
+                    if (chunk != null)
+                        session.carryResultInChunk(chunk, result);
+                }
         }
     }
 }
