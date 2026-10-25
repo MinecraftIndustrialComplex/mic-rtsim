@@ -44,6 +44,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.*;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 
 /**
  * IND_DEPOSIT_DELTA across a crash inside a world save (slice U; docs/choices-journal-barrier.md RP-200 on).
@@ -138,7 +139,7 @@ public final class DepositCrashGameTests {
                         }
                     });
                 })
-                .thenWaitUntil(() -> check("the first save is on disk", settled.get() != null))
+                .thenWaitUntil(io(() -> check("the first save is on disk", settled.get() != null)))
                 .thenExecute(() -> {
                     check("the oil file holds 5,000,000 before the draw: " + settled.get(), settled.get() == START);
                     depositDelta(op, IndRecords.DepositPlugin.DIESEL_OIL, level, cp.x, cp.z, good, DELTA);
@@ -152,7 +153,7 @@ public final class DepositCrashGameTests {
                     save(server, passed);
                     saves[0]++;
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> { // the chain's fsyncs take wall time a tick count does not give (RtsimTests.io)
                     if (disk.get() != null)
                         return;
                     if (passed.get() && saves[0] < 8) { // held by the barrier: the journal's next save writes it
@@ -160,7 +161,7 @@ public final class DepositCrashGameTests {
                         saves[0]++;
                     }
                     check("the journal's file was written (" + saves[0] + " saves; " + barrierLine() + ")", false);
-                })
+                }))
                 .thenExecute(() -> {
                     OnDisk d = disk.get();
                     check("read the disk: " + d.error(), d.error() == null);
