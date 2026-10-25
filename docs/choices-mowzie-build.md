@@ -8186,6 +8186,39 @@ MZB-499) is full.
     echo (with the empty record off it is 3,097,181). Both audits pass; records, changes and ENDED counts are
     the same.
 
+- **MZB-705** (the P1 fix across a crash, whichever record the journal ends at; the build lead's request after the
+  review): `conflict::a_walked_in_fight_is_settled_once_whichever_record_the_journal_ends_at` (rtsim-jni). S0 is
+  the held-arrival test's (pages older than the arrival, a walk-in with the whole band placed, 3 of 12 fallen in 2
+  BAND_CASUALTIES records); the world save's journal is cut after each of five records and a session opens on the
+  pages and the cut journal. The harness's world save keeps the journal only (`WorldSave`): see the Java stores below.
+  - **Cut before the walk-in's echo** (Java applied the walk-in, the echo comes a tick after the command and the
+    journal does not hold it): the replay holds the arrival (RP-23), nothing answers the hold and the replay end
+    resolves it unwatched, once (RP-48): the log's "finds nothing to raid", `raids_watched` unmoved, 12 of 12 alive,
+    then home. The fight's 3 deaths were in the lost tail: **a loss, not a double** (what is lost is that the
+    arrival was fought watched in S0 and is resolved unwatched here, and its deaths).
+  - **Cut at the echo, after the first casualty, among them, after every record:** the fight is honoured as
+    watched once (`raids_watched` +1, no unwatched resolve), the band 12, 10, 9, 9 alive, which is n minus the
+    deaths the journal holds, counted once; abstract (Waiting) after the replay, then home. Never below the
+    session that went on (9).
+  - **In all five orders:** no BAND_MATERIALIZE with members goes to Java in the replay's session or on the band's
+    way home, so the placed members are not spawned again; the fight is settled once, never both watched and
+    unwatched. With the P1 fix switched off the first precondition fails (the journal holds one echo after the
+    pages, not two: there is no echo to cut at); the full-journal replay's double is the held-arrival test's
+    failure (MZB-700).
+  - **Two Java stores sit outside the journal, and the exactness above does not cover them.** (a) The band's
+    bodies: persistence-required mobs saved with their chunks (`ConflictBodies.hold`). After a restart the world
+    can hold bodies beside a band the engine holds abstract; what the bridge does with them at load is M10b's and
+    is not tested here. (b) Holders' pending records (`RtsimAttachments.PENDING`, saved with the entity or chunk
+    that carries them): the REASSERT copies. `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_once`
+    pins the cut-before-the-echo order with copies: the arrival resolved unwatched, then the copies count the
+    fight's 3 deaths once by op id (`casualty_ops`; a second copy is dropped): 12, then 9 alive.
+  - **The double that remains, not fixed:** in that order, an abstract resolve that costs units (a district or a
+    village that defends itself) would cost them on top of the copied deaths, since `casualties(copy)` takes by
+    identity and does not ask whether the arrival was resolved unwatched. By the code, not exercised: the harness
+    camp's base has nothing to raid. It depends on the holders' store, so it is not fixed here: it belongs to the
+    SEC-1 lead's slice U (an unwatched resolve of an arrival would book an op that a copy of the same deaths
+    checks, one identity for both).
+
 ## M11 Aloft
 
 (none yet)
