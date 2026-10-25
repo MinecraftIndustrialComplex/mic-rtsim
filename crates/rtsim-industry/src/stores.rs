@@ -505,8 +505,13 @@ impl PackageStore {
         }
     }
 
-    /// Write `op` goes to Java again at `at`, after the host held it (its module was switched
-    /// off): its answer is awaited from then (RP-294). True when this store sent it.
+    /// Whether `op` is a write of this store not answered yet.
+    pub fn awaits_write(&self, op: OpId) -> bool {
+        self.writing.values().flatten().any(|s| s.op == op)
+    }
+
+    /// Write `op` goes to Java again at `at`, the host's session start after it held it: its
+    /// answer is awaited from then (RP-294). True when this store sent it.
     pub fn write_handed_on_again(&mut self, op: OpId, at: Tick) -> bool {
         match self
             .writing
