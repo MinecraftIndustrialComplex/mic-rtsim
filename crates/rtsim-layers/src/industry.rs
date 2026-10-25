@@ -6,8 +6,9 @@ use std::ops::Range;
 
 use rtsim_industry::district::{District, Phase, Presence};
 use rtsim_industry::engine::{Engine, LineEdge};
-use rtsim_industry::ids::StationId;
+use rtsim_industry::ids::{StationId, StoreId};
 use rtsim_industry::obs::StationDecl;
+use rtsim_industry::stores::PackageStore;
 use rtsim_industry::threat::Leg;
 
 /// What a district's map mark needs.
@@ -194,6 +195,166 @@ pub fn district_mark(d: &District, replays: bool) -> DistrictMark {
     }
 }
 
+/// One section of a district's compile (SECTIONS.md §8.3, slice S7), drawn as its box.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionMark {
+    pub district: u64,
+    pub dim: u32,
+    /// Its index in the compile's sections.
+    pub index: u32,
+    /// [`rtsim_industry::glass::report::section_state`]: also its legend index.
+    pub state: u32,
+    pub working: bool,
+    pub nodes: u32,
+    pub stores: u32,
+    /// Stores it shares with another section.
+    pub shared_stores: u32,
+    /// Its judging unit; None with one unit or none (the district's window judges).
+    pub unit: Option<u32>,
+    /// Its node box grown by a block, in blocks: x0, z0, x1, z1 (z1 and x1 past the last block).
+    pub block_box: [f64; 4],
+}
+
+/// A section state's name, as the card and the key say it.
+pub fn section_state_words(state: u32) -> &'static str {
+    use rtsim_industry::glass::report::section_state as ss;
+    match state {
+        ss::LEARNING => "Learning",
+        ss::PASSED => "Passed",
+        ss::FAILED => "Failed",
+        ss::STALE => "Stale: edited since it was learned",
+        ss::FROZEN => "Frozen: its replay fell back",
+        ss::REPLAYING => "Replaying",
+        _ => "Unknown",
+    }
+}
+
+/// The outline a section state's legend entry draws (`dash` learning, `bad` failed or stale, `dot`
+/// frozen).
+pub fn section_st(state: u32) -> Option<&'static str> {
+    use rtsim_industry::glass::report::section_state as ss;
+    match state {
+        ss::LEARNING => Some("dash"),
+        ss::FAILED | ss::STALE => Some("bad"),
+        ss::FROZEN => Some("dot"),
+        _ => None,
+    }
+}
+
+/// One frogport of a package store.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StorePort {
+    pub x: f64,
+    pub z: f64,
+    pub district: Option<u64>,
+    pub star: bool,
+    /// The packages the store holds for it (booked, the world's: no replay draws them).
+    pub packages: u64,
+}
+
+/// A package store (SECTIONS.md §2.5), drawn as edges between its frogports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreMark {
+    pub id: u64,
+    pub dim: u32,
+    pub ports: Vec<StorePort>,
+    /// Pairs of ports (indices) that follow one another along the chain ([`chain_links`]), the
+    /// first [`crate::STORE_LINKS`]: what the layer draws.
+    pub links: Vec<(u16, u16)>,
+    /// The packages the store holds in all, including the no-route pool.
+    pub packages: u64,
+    /// The last census's difference from the books, in packages.
+    pub residue_packages: i64,
+}
+
+/// One part of a shared kinetic network: a district's SHARED domain, at its first source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetPart {
+    pub district: u64,
+    pub x: f64,
+    pub z: f64,
+}
+
+/// A shared kinetic network (SECTIONS.md §2.6): the parts the districts' compiles make, joined at
+/// the sources they list in common.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetMark {
+    /// Its index in the registry (the compiles' order, so stable for one save only).
+    pub id: u64,
+    pub dim: u32,
+    /// [`rtsim_industry::glass::net::Status::words`].
+    pub status: &'static str,
+    pub coupled: bool,
+    pub parts: Vec<NetPart>,
+}
+
+pub use rtsim_industry::stores::UNKNOWN_HOPS;
+
+/// The pairs of frogports (indices) that follow one another along the chain, the first `most` in
+/// index order: a pair with a known hop count and no third frogport between them
+/// (`hops(i, k) + hops(k, j) == hops(i, j)`), about `n - 1` for a chain of `n`. Frogports 0 hops
+/// apart (on one conveyor) are one stop: each links to the lowest frogport 0 hops from it, and
+/// only a stop links on (two stops are never 0 hops apart). A pair Java could not measure is no
+/// link. The work is about `n` squared a row until `most` are found (`n` cubed for all).
+pub fn chain_links(s: &PackageStore, n: usize, most: usize) -> Vec<(u16, u16)> {
+    let known = |i: usize, j: usize| s.known_hops(i, j).map(u32::from);
+    // Each frogport's stop: the lowest frogport 0 hops from it.
+    let stop: Vec<usize> = (0..n)
+        .map(|i| (0..i).find(|&k| known(k, i) == Some(0)).unwrap_or(i))
+        .collect();
+    let mut links = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            if links.len() >= most {
+                return links;
+            }
+            if stop[j] == i {
+                links.push((i as u16, j as u16));
+                continue;
+            }
+            if stop[i] != i || stop[j] != j {
+                continue;
+            }
+            let Some(h) = known(i, j) else { continue };
+            let between = (0..n).any(|k| {
+                k != i
+                    && k != j
+                    && stop[k] == k
+                    && matches!((known(i, k), known(k, j)), (Some(a), Some(b)) if a + b == h)
+            });
+            if !between {
+                links.push((i as u16, j as u16));
+            }
+        }
+    }
+    links
+}
+
+/// A package store's mark: its frogports and the pairs the chain connects.
+pub fn store_mark(s: &PackageStore) -> StoreMark {
+    let ports: Vec<StorePort> = s
+        .frogports
+        .iter()
+        .zip(&s.pools)
+        .map(|(f, p)| StorePort {
+            x: f64::from(f.pos.x),
+            z: f64::from(f.pos.z),
+            district: f.district.map(|d| d.0),
+            star: f.star,
+            packages: p.packages,
+        })
+        .collect();
+    let links = chain_links(s, ports.len(), crate::STORE_LINKS as usize);
+    StoreMark {
+        id: s.id.0,
+        dim: s.dim,
+        packages: ports.iter().map(|p| p.packages).sum::<u64>() + s.no_route.packages,
+        ports,
+        links,
+        residue_packages: s.residue_packages,
+    }
+}
+
 /// An industry table the layers page through by key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -202,6 +363,12 @@ pub enum Table {
     /// Keyed by the first station's id.
     Lines,
     Legs,
+    /// Keyed by the district's id (its sections).
+    Sections,
+    /// Keyed by the store's id.
+    Stores,
+    /// Keyed by the network's index.
+    Networks,
 }
 
 /// The industry state the layers read.
@@ -215,6 +382,22 @@ pub trait IndustrySource {
     fn lines(&self, ids: Range<u64>, f: &mut dyn FnMut((u64, u64), &LineEdge));
     /// The booked legs with ids in `ids`.
     fn legs(&self, ids: Range<u64>, f: &mut dyn FnMut(u64, &Leg));
+    /// The sections of the districts with ids in `ids` (slice S7): none by default, as only a
+    /// save holds the glass pages.
+    fn sections(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&SectionMark)) {}
+    /// Why a save's glass pages give no sections, when some did not read (the sections and
+    /// networks layers say so when they are empty).
+    fn glass_why(&self) -> Option<String> {
+        None
+    }
+    /// Why a save's package stores are fewer than its pages, when some did not read.
+    fn stores_why(&self) -> Option<String> {
+        None
+    }
+    /// The package stores with ids in `ids`.
+    fn stores(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&StoreMark)) {}
+    /// The shared networks with indices in `ids`.
+    fn networks(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&NetMark)) {}
     /// The first key of `t` at or after `from`.
     fn next_key(&self, t: Table, from: u64) -> Option<u64>;
 }
@@ -252,6 +435,15 @@ impl IndustrySource for Engine {
         }
     }
 
+    fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
+        for (id, s) in self.stores().range(StoreId(ids.start)..) {
+            if id.0 >= ids.end {
+                break;
+            }
+            f(&store_mark(s));
+        }
+    }
+
     fn next_key(&self, t: Table, from: u64) -> Option<u64> {
         match t {
             Table::Districts => self.districts_in(from..u64::MAX).next().map(|d| d.id.0),
@@ -262,6 +454,13 @@ impl IndustrySource for Engine {
                 .next()
                 .map(|((a, _), _)| a.0),
             Table::Legs => self.legs().range(from..u64::MAX).next().map(|(id, _)| id),
+            Table::Stores => self
+                .stores()
+                .range(StoreId(from)..)
+                .next()
+                .map(|(id, _)| id.0),
+            // The glass pages are the save's: the live engine's glass state is not walked here.
+            Table::Sections | Table::Networks => None,
         }
     }
 }
@@ -315,5 +514,57 @@ mod tests {
         assert_eq!(two.len(), 2);
         assert_eq!(area(&two), 2);
         assert!(chunk_outline(&[]).is_empty());
+    }
+
+    fn store_of(n: i32, hops: Vec<u16>) -> PackageStore {
+        use rtsim_industry::ids::BlockPos;
+        use rtsim_industry::stores::{Frogport, Pool};
+        let at = |x| BlockPos { x, y: 64, z: 0 };
+        PackageStore {
+            frogports: (0..n)
+                .map(|i| Frogport {
+                    district: None,
+                    inventory: None,
+                    star: false,
+                    pos: at(i * 10),
+                    conveyor: at(i * 10),
+                })
+                .collect(),
+            pools: vec![Pool::default(); n as usize],
+            hops,
+            ..PackageStore::default()
+        }
+    }
+
+    /// A chain of four frogports links neighbours only, not every pair; a pair Java could not
+    /// measure links nothing.
+    #[test]
+    fn a_store_links_the_chain_and_skips_unknown_hops() {
+        let chain = store_of(4, vec![10, 20, 30, 10, 20, 10]);
+        assert_eq!(chain_links(&chain, 4, usize::MAX), [(0, 1), (1, 2), (2, 3)]);
+        assert_eq!(
+            chain_links(&chain, 4, 2),
+            [(0, 1), (1, 2)],
+            "the first links only"
+        );
+        let u = UNKNOWN_HOPS;
+        let unknown = store_of(3, vec![u, 5, 7]);
+        assert_eq!(chain_links(&unknown, 3, usize::MAX), [(0, 2), (1, 2)]);
+        // Two frogports on one conveyor (0 hops) are one stop: the third links to the lower.
+        assert_eq!(
+            chain_links(&store_of(3, vec![0, 1, 1]), 3, usize::MAX),
+            [(0, 1), (0, 2)]
+        );
+        assert_eq!(
+            chain_links(&store_of(3, vec![1, 1, 0]), 3, usize::MAX),
+            [(0, 1), (1, 2)]
+        );
+        let line = store_of(4, vec![10, 10, 20, 0, 10, 10]);
+        assert_eq!(chain_links(&line, 4, usize::MAX), [(0, 1), (1, 2), (1, 3)]);
+        let all_unknown = store_of(3, vec![u, u, u]);
+        assert!(store_mark(&all_unknown).links.is_empty());
+        // No hop table: no link, and a lone frogport has none either.
+        assert!(chain_links(&store_of(3, Vec::new()), 3, usize::MAX).is_empty());
+        assert!(chain_links(&store_of(1, Vec::new()), 1, usize::MAX).is_empty());
     }
 }

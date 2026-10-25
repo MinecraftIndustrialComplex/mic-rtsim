@@ -43,6 +43,11 @@ pub struct Limits {
     /// Heap bytes above which a card is not decoded (it answers with a note instead). `None`:
     /// no probe (the library cannot see the heap; rtsim-cli passes its allocator's count).
     pub heap_cap: Option<u64>,
+    /// Glass pages decoded at load for the sections layer and cards (slice S7); the districts
+    /// after these, in id order, are named as left out. Each decode builds a district's compile.
+    pub glass_pages: usize,
+    /// Package store pages read at load; the stores after these are named as left out.
+    pub store_pages: usize,
 }
 
 impl Default for Limits {
@@ -53,6 +58,8 @@ impl Default for Limits {
             tile_cache: 64 << 20,
             surveyor_cache: mic_viewer_surveyor::DEFAULT_CACHE_BYTES as u64,
             heap_cap: None,
+            glass_pages: 4096,
+            store_pages: 4096,
         }
     }
 }
@@ -414,7 +421,7 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         },
     };
 
-    let industry = match guarded(|| IndustryView::load(&*source)) {
+    let industry = match guarded(|| IndustryView::load(&*source, &limits)) {
         Ok(None) => absent(&mut modules, "industry"),
         Ok(Some(v)) => {
             let detail = format!(

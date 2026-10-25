@@ -526,4 +526,47 @@ public final class IndustryKit {
     public static int aux(ByteBuffer record) {
         return record.getInt(Layout.R_AUX);
     }
+
+    // ---- commands ---------------------------------------------------------------------------------
+
+    /** What a command said, and what it returned ({@code -1} when it did not run). */
+    public record Said(List<String> lines, int ran) {}
+
+    /**
+     * Runs {@code command} at permission 2 from {@code at} in {@code level} on the server thread and collects the
+     * lines it sends, success and failure alike.
+     */
+    public static Said say(net.minecraft.server.level.ServerLevel level, BlockPos at, String command) {
+        List<String> lines = new ArrayList<>();
+        net.minecraft.commands.CommandSource sink = new net.minecraft.commands.CommandSource() {
+            @Override
+            public void sendSystemMessage(net.minecraft.network.chat.Component c) {
+                lines.add(c.getString());
+            }
+
+            @Override
+            public boolean acceptsSuccess() {
+                return true;
+            }
+
+            @Override
+            public boolean acceptsFailure() {
+                return true;
+            }
+
+            @Override
+            public boolean shouldInformAdmins() {
+                return false;
+            }
+        };
+        net.minecraft.commands.CommandSourceStack src = level.getServer().createCommandSourceStack().withSource(sink).withPermission(2).withLevel(level)
+                .withPosition(net.minecraft.world.phys.Vec3.atCenterOf(at));
+        int ran = -1;
+        try {
+            ran = level.getServer().getCommands().getDispatcher().execute(command, src);
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+            lines.add("syntax error: " + e.getMessage());
+        }
+        return new Said(lines, ran);
+    }
 }

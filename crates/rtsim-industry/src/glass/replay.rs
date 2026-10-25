@@ -739,6 +739,12 @@ impl Replay {
     /// start, and so does a new compile that kept every unit: a replay of the old one stops at its
     /// next step (`glass_step`), so going on with it would stall its bounds and timers.
     pub fn same_units(&self, comp: &Compiled) -> bool {
+        self.same_layout(comp) && self.replays == comp.units_replaying()
+    }
+
+    /// Is the replay over `comp`'s compile and its units, whatever each may do now? Then its
+    /// per-unit flags (`units_on`, `frozen`) index `comp`'s units.
+    pub fn same_layout(&self, comp: &Compiled) -> bool {
         if self.compile() != comp.graph.end.compile {
             return false;
         }
@@ -748,12 +754,11 @@ impl Replay {
         } else {
             &comp.units.of_node
         };
-        let same_nodes = if unit_of.is_empty() {
+        if unit_of.is_empty() {
             p.unit_of.iter().all(|&u| u == NONE)
         } else {
             p.unit_of == unit_of
-        };
-        same_nodes && self.replays == comp.units_replaying()
+        }
     }
 
     pub fn compile(&self) -> u32 {
