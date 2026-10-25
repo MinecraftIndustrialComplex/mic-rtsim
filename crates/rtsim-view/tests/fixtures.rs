@@ -186,7 +186,7 @@ fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
         let links = rtsim_layers::industry::store_mark(st).links.len();
         eprintln!("store {}: {n} frogports, {links} links", st.id.0);
         assert!(
-            links <= n.saturating_sub(1).max(0),
+            links <= n.saturating_sub(1),
             "store {}: {links} links of {n}",
             st.id.0
         );
