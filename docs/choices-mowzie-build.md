@@ -5473,7 +5473,10 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   had), and Java's DUPLICATE then finds nothing. O2, the result first: it finds no exchange and is
   ignored, the raid books and inserts, and DUPLICATE drops the exchange; `books.stolen` is then over
   by the live shortfall, if there was one (none when the carriage had what was asked, the usual
-  case). The leg model is as the re-decision left it in both. Tests: `a_re_decided_train_raid_carries_the_op_java_applied`
+  case). That O2 shortfall is a known residual, not fixed (review P3; the conservative choice): it
+  is in the books only (no goods move), and closing it needs either the engine to keep a result
+  that finds no exchange until the re-decision comes (new state in industry's pages, a format
+  change) or Java to send the applied amounts with its DUPLICATE (a wire change). The leg model is as the re-decision left it in both. Tests: `a_re_decided_train_raid_carries_the_op_java_applied`
   (O2), `a_replayed_result_before_the_duplicate_takes_the_exchange` (O1, a shortfall of 40), and
   each raider's crash test in both orders.
 - **RP-183** (industry already holding the raid; the brief's item 3): `attack_train` returns at
@@ -5493,6 +5496,11 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   | older | forgotten | gone (J3) | twice | twice |
   | older | remembered | restored (J4) | once | a dupe: never off the train, while the raider is credited again (review P1-1, RP-184) |
   | newer (holds the raid) | either | either | twice past the cooldown (a new op), skipped inside it | nothing booked or sent (`knows_key`) |
+
+  The guard's memory is the window (`RECENT`, 256 derivations): once 256 later ops have pushed the
+  key's tag out, `knows_key` no longer sees it and a raider meeting the raid again books it again
+  under the same op (Java: DUPLICATE, the goods once, `books.stolen` twice). Only in this row's
+  case, which one save batch does not reach (review P3); not widened.
 
 - **RP-184** (Java's durability; the coordinator's condition 2; H17 was wrong): the train's goods
   are in Create's `RailwaySavedData` (`data/create_tracks.dat`, the overworld's data storage), each
@@ -5546,7 +5554,8 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   goods and the op index restored from the saves RP-184 names. Each counts the goods off Java's
   carriage, not industry's model, against a live no-crash control. Main's derivation was put back
   on a scratch edit of `attack_train` (the op from `derive(world_seed, now, &cmd)`, no `knows_key`
-  return), the tests run, and the edit reverted; each new test failed on it as follows:
+  return), the tests run, and the edit reverted; each new test failed on it as follows (lines as
+  at de42ece0):
   rtsim-industry `train_raid_ops.rs`: all four on the op, e.g.
   `a_re_decided_train_raid_carries_the_op_java_applied` at :126 (OpId(5281570213733457881)
   against OpId(5275023983707477257)); dragons
@@ -5555,10 +5564,11 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   `which_of_javas_saves_landed_decides_once_twice_or_never` (since renamed
   `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`) 128 against 64 at :189; conflict
   `a_bands_ambush_replayed_after_a_crash_takes_the_goods_once` 64 against 32 at :148,
-  `a_bands_ambush_held_by_industry_is_booked_once` 64 against 32 at :171; ships
+  `a_bands_ambush_held_by_industry_is_booked_once` 64 against 32 at :172; ships
   `a_coast_raid_after_the_replay_takes_the_goods_once` 128 against 64 at :145,
   `a_coast_raid_held_by_industry_is_booked_once` 121 against 64 at :182, and
-  `a_coast_raid_inside_the_replay_is_deferred` passes on main (it pins the deferral, RP-188);
+  `a_coast_raid_inside_the_replay_is_deferred` passes on main (it pins slice S's deferral, RP-95,
+  not A; RP-188);
   rtsim-jni `a_train_raid_decided_again_after_a_crash_is_applied_once` on the op at
   tests/industry.rs:1646, and without that assertion on the world's totals ("world totals off by:
   create:crushed_raw_iron -22", :184). The rtsim-jni test drives the host: a page save while the
@@ -5582,7 +5592,8 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   stopped short of the raid's tick: the hunt re-decides it live, at industry's present (R-b). On
   main R-b was a new op and a double; with A it is a DUPLICATE. Tests:
   `a_coast_raid_after_the_replay_takes_the_goods_once` (R-b),
-  `a_coast_raid_inside_the_replay_is_deferred` (R-a). Conflict's and dragons' raids can fall past
+  `a_coast_raid_inside_the_replay_is_deferred` (R-a; it passes on main, so it pins slice S's
+  deferral, RP-95, not A). Conflict's and dragons' raids can fall past
   the replay's end the same way; A covers them alike.
 - **RP-189** (the docs): docs/replay-gate.md §3.6's industry bullet no longer calls train raids
   "lose, never double"; §6.1's losses list the pirates' R-a, and §6.1 names what A alone leaves,

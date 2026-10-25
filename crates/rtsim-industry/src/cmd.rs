@@ -243,7 +243,8 @@ impl IndustryOps {
     }
 
     /// Whether the window remembers an id derived for `key` in the world `seed`
-    /// ([`IndustryOps::derive_keyed`]): the change it names was decided already (RP-183).
+    /// ([`IndustryOps::derive_keyed`]): the change it names was decided already (RP-183). The
+    /// window is [`RECENT`] derivations: a key pushed out by 256 later ops is not known again.
     pub fn knows_key(&self, seed: u64, key: &[u8]) -> bool {
         let tag = key_tag(&mut keyed_bytes(seed, key));
         self.recent.iter().any(|&(by, _)| by == tag)
