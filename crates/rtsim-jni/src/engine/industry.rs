@@ -403,6 +403,17 @@ impl Link {
         Some(c)
     }
 
+    /// Takes a command out of the queue: Java answered its op. A kept command waits there after
+    /// it was written when the switch or a session start with the module off moved it back
+    /// (`set_enabled`, [`write_resends`]); written again, Java would apply it twice once its
+    /// rings had pruned the op at the answer's acknowledgement (RP-285).
+    fn unqueue(&mut self, op: OpId) -> Option<Cmd> {
+        let i = self.queue.iter().position(|c| c.op() == Some(op))?;
+        let c = self.queue.remove(i)?;
+        self.stats.queued = self.queue.len() as u64;
+        Some(c)
+    }
+
     fn name(&self, kind: u32, id: u32) -> Option<String> {
         if let Some(n) = self.java_names.get(&(kind, id)) {
             return Some(n.clone());
@@ -465,11 +476,14 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
 }
 
 /// The switch changed in a session (MODULES, U10). Off: the engine is frozen where it stands (its
-/// queue and outbox wait, its pages stay what they are, every record is ignored). On: its own
-/// session start runs at once, at this game time, so it catches up to now (every breakpoint and
-/// wake of the time it was off fires) and takes every district as unloaded until Java reports
-/// them again; Java announces its districts and load states again when the module turns on, as
-/// at a session start.
+/// queue and outbox wait, its clock stays, every record but Java's answers is ignored). Off, it
+/// still hears Java's answers to commands it already sent ([`journaled`], RP-285): an answer is
+/// not a new op, and Java prunes its rings at the engine's acknowledgement of it with the module
+/// off too (RP-209, T2), so an acknowledged answer must never be dropped. On: its own session
+/// start runs at once, at this game time, so it catches up to now (every breakpoint and wake of
+/// the time it was off fires) and takes every district as unloaded until Java reports them again;
+/// Java announces its districts and load states again when the module turns on, as at a session
+/// start.
 fn set_enabled(st: &mut State, on: bool) {
     let gt = tick(st.game_time);
     let l = &mut st.industry;
@@ -477,9 +491,11 @@ fn set_enabled(st: &mut State, on: bool) {
     l.enabled = on;
     if on && !was {
         l.session_start_at = Some(gt.max(l.engine.now()));
-        // An answer that came while off was ignored: every kept command goes again, under a new
-        // sequence (Java skips any at or below the last it applied), and Java answers it by op id
-        // (DUPLICATE if it had applied it), so none waits in the outbox for an answer already gone.
+        // Every kept command goes again, under a new sequence (Java skips any at or below the last
+        // it applied), and Java answers it by op id (DUPLICATE if it had applied it). The answers
+        // that came while off took theirs out (RP-285), so this sends only commands Java never
+        // answered as far as the engine heard: none whose answer it acknowledged, which Java's
+        // rings no longer hold.
         let kept: Vec<Cmd> = l.outbox.drain(..).map(|(_, c)| c).collect();
         l.resend.clear();
         for c in kept.into_iter().rev() {
@@ -573,12 +589,31 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 
 /// A journaled record `Replay` admitted (see [`claims`]). Switched off, the industry ignores it,
 /// as the dragons and ships do (U10, replacing W8's "journaled records are still applied"): it is
-/// admitted for its sequence and op id, counted, and dropped; a COMMAND_RESULT too, so a kept
-/// command stays in the outbox and goes again once the module is on.
+/// admitted for its sequence and op id, counted, and dropped. Not a COMMAND_RESULT (RP-285): that
+/// is Java's answer to a command the engine sent, not a new op. Java prunes its op rings, and
+/// trims its journal, at the engine's acknowledgement of the answer whatever the switch (RP-209,
+/// T2), so an answer the engine acknowledged and dropped left the command in the outbox, and
+/// `set_enabled` sent it again under a new sequence once on: a second application. Off, the
+/// answer takes the command out of the outbox, or out of the queue a session start with the module
+/// off moved it to ([`write_resends`]); its book effect lands at once, at the engine's frozen time,
+/// since the book and the link page are saved with the pages while off (`take_save` calls [`save`]
+/// whatever the switch), so a crash after the acknowledgement keeps it.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
     let l = &mut st.industry;
     if !l.enabled {
+        if rec.kind == obs::COMMAND_RESULT {
+            let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
+            // Its IND_CARRIAGE_RESULT, journaled just before it, was ignored if the switch came
+            // between: none will come, so the exchange goes as a DUPLICATE drops it (RP-199).
+            if rec.aux == obs::command_result::APPLIED {
+                l.engine.command_duplicate(op);
+            }
+            // At the frozen time: the answer's own would run the engine's clock (as `dropped`).
+            let now = l.engine.now();
+            command_result(l, op, rec.aux, now);
+            return;
+        }
         l.stats.ignored += 1;
         return;
     }
@@ -641,13 +676,17 @@ fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationE
 /// answered all the same, so it leaves the outbox. A train's loot re-decided after a crash is
 /// such a command: the replay heard the live application's APPLIED, so Java's DUPLICATE comes
 /// here, not to `command_result`, and the exchange is dropped here (RP-182; it is gone already
-/// when the replayed IND_CARRIAGE_RESULT came first).
+/// when the replayed IND_CARRIAGE_RESULT came first). Whatever the switch, as a first answer
+/// ([`journaled`], RP-285).
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
-        st.industry.complete(op);
-        if rec.aux == obs::command_result::DUPLICATE_OP && st.industry.enabled {
-            st.industry.engine.command_duplicate(op);
+        let l = &mut st.industry;
+        if l.complete(op).is_none() && !l.enabled {
+            l.unqueue(op);
+        }
+        if rec.aux == obs::command_result::DUPLICATE_OP {
+            l.engine.command_duplicate(op);
         }
     }
 }
@@ -671,7 +710,8 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
-/// Java's answer to an industry command. A kept command leaves the outbox. A failed carriage
+/// Java's answer to an industry command. A kept command leaves the outbox, or the queue the switch
+/// moved it back to ([`Link::unqueue`], RP-285). A failed carriage
 /// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
 /// the result, so this works whether or not the outbox still had the command: a restart trims the
 /// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
@@ -680,7 +720,7 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// have carried that application's answers was lost (J3): its goods moved once, so the engine
 /// drops the exchange, whatever its reason (RP-182, RP-199).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
-    let kept = l.complete(op);
+    let kept = l.complete(op).or_else(|| l.unqueue(op));
     if status == obs::command_result::DUPLICATE_OP {
         l.engine.command_duplicate(op);
         return;
