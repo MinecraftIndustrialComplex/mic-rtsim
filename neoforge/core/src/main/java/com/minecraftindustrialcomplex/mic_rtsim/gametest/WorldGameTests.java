@@ -481,6 +481,10 @@ public final class WorldGameTests {
         ScriptedEngine stub = RtsimTests.engine();
         ServerLevel level = helper.getLevel();
         long[] op = new long[1];
+        // The DIED's arrivals before the save, and the journal mark then: the save's wait is real time, tens of
+        // thousands of unthrottled ticks on a slow disk, and the received log keeps the last 10,000 records (one
+        // TICK a tick), so the first DIED can be gone from it by the last check.
+        long[] before = new long[2];
         List<ItemEntity> drops = new ArrayList<>();
         Object[] future = new Object[1];
 
@@ -494,6 +498,9 @@ public final class WorldGameTests {
                 .thenExecute(() -> {
                     ScriptedEngine.Received died = RtsimTests.recordsFor(stub, Obs.DIED, agent).get(0);
                     op[0] = died.view().getLong(Obs.Died.OP_ID);
+                    before[0] = stub.eventOpCount(op[0]);
+                    before[1] = RtsimSession.current().boundary().journal().nextObsSeq();
+                    check("the DIED arrived once before the save (" + before[0] + ")", before[0] == 1);
                     check("killed by the player", new UUID(died.view().getLong(Obs.Died.KILLER_MOST), died.view().getLong(Obs.Died.KILLER_LEAST))
                             .equals(player.getUUID()));
                     check("the cargo lies on the ground once: 30 wheat", RtsimTests.itemsAround(helper, Items.WHEAT, 10) == 30);
@@ -534,13 +541,14 @@ public final class WorldGameTests {
                         check("every DIED has the same op id", d.view().getLong(Obs.Died.OP_ID) == op[0]);
                     for (ScriptedEngine.Received c : copies)
                         check("every copy is that DIED, dropped", c.view().getLong(Obs.Died.OP_ID) == op[0] && c.skipped());
-                    check("the death counts once", stub.eventOpCount(op[0]) == 1);
+                    int arrivals = (int) before[0] + stub.eventOpCount(op[0], before[1]);
+                    check("the death counts once (" + arrivals + ")", arrivals == 1);
                     check("the cargo is in the world exactly once: 30 wheat", RtsimTests.itemsAround(helper, Items.WHEAT, 10) == 30);
                     check("and 12 emeralds", RtsimTests.itemsAround(helper, Items.EMERALD, 10) == 12);
                     PuppetGroup g = RtsimTests.group(agent);
                     check("the rest of the caravan stays one group, the dead llama is not back", g != null && g.liveMembers() == 2);
                     record("llamaCargo", "DIED", died.size() + " records and " + copies.size() + " copies, one op id, engine counts "
-                            + stub.eventOpCount(op[0]) + " arrivals of it (applied once)");
+                            + arrivals + " arrivals of it (applied once)");
                     for (ItemEntity item : level.getEntitiesOfClass(ItemEntity.class, new AABB(BlockPos.containing(RtsimTests.centre(helper))).inflate(10)))
                         item.discard();
                     stub.despawnGroup(agent, 1);
