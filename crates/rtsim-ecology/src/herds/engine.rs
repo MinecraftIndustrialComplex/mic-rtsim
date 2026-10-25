@@ -2398,10 +2398,14 @@ impl Herds {
         let Some(h) = herd_of(m.agent).filter(|h| self.herds.contains(*h)) else {
             return;
         };
-        if self.herds[h]
-            .embodied
-            .as_ref()
-            .is_some_and(|e| e.epoch >= m.epoch)
+        // Above the herd's own epoch (§5.2: "above the agent's") and above the group the pages
+        // hold. The pages' state need not be a prefix of the journal: a herd abstract at epoch 7
+        // has already used 5, and a replayed record of 5 is history, not a group to honour.
+        if self.herds[h].epoch >= m.epoch
+            || self.herds[h]
+                .embodied
+                .as_ref()
+                .is_some_and(|e| e.epoch >= m.epoch)
         {
             return;
         }

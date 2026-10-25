@@ -1582,6 +1582,51 @@ fn a_replayed_materialization_of_an_older_epoch_changes_nothing_and_a_newer_one_
     r.h.check(later).unwrap();
 }
 
+/// RP-82: the honour is above the herd's own epoch, not only above the group the pages hold. A
+/// pages state need not be a prefix of the journal: a herd abstract at epoch 7 has used 5 already,
+/// and a replayed record of 5 is history. Control: a record of 8 on the same herd is honoured.
+#[test]
+fn a_replayed_materialization_at_or_below_the_herds_own_epoch_is_not_honoured() {
+    for (epoch, honoured) in [(5, false), (7, false), (8, true)] {
+        let mut r = Rig::valley(5);
+        let f = flock(&r);
+        let agent = agent_of(f);
+        let now = Tick::from_days(12);
+        r.run(now, 2_000, None);
+        // The pages' herd: abstract, its epoch 7 (an earlier replay's floor, folded at its end).
+        let (_, o) = records_naming(agent, 7).swap_remove(2);
+        r.h.begin_replay(false);
+        r.h.ingest(&mut r.legs, &o, now);
+        r.h.replay_done(&mut r.legs, now);
+        let x = r.h.herd(f).unwrap();
+        assert_eq!((x.epoch, x.embodied.is_some()), (7, false));
+        // Then a replay from those pages meets a record of `epoch`.
+        r.h.begin_replay(true);
+        let m = Obs::Materialized(boundary::Materialized {
+            agent,
+            epoch,
+            dimension: 0,
+            spawned: 3,
+        });
+        r.h.ingest(&mut r.legs, &m, now + 10);
+        let x = r.h.herd(f).unwrap();
+        assert_eq!(x.embodied.is_some(), honoured, "a record of {epoch}");
+        assert_eq!(
+            r.h.replay_honoured(),
+            u64::from(honoured),
+            "a record of {epoch}"
+        );
+        if honoured {
+            assert_eq!(x.embodied.as_ref().map(|e| e.epoch), Some(8));
+        }
+        r.h.check(now + 10).unwrap();
+        r.h.replay_done(&mut r.legs, now + 20);
+        assert!(r.h.herd(f).unwrap().embodied.is_none());
+        assert_eq!(r.h.herd(f).unwrap().epoch, 7.max(epoch));
+        r.h.check(now + 20).unwrap();
+    }
+}
+
 /// An ending epoch is never reused (RP-7, RP-81): a group that ended in the replayed window (its
 /// materialization and its capture both replayed, on an engine whose pages did not have it) is
 /// not decided again after the replay end. Control: a group the pages held, ended in the window,
