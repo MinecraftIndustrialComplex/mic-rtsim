@@ -2188,11 +2188,12 @@ mod ack_never_resends {
         /// To the iron line's end and until every command is applied, then the checker and the
         /// books.
         fn finish(self) {
-            self.finish_with(|_| {});
+            self.finish_with(|_, _| {});
         }
 
-        /// [`Rig::finish`], with the case's own checks on the checker's record before it closes.
-        fn finish_with(mut self, extra: impl FnOnce(&AckCheck)) {
+        /// [`Rig::finish`], with the case's own checks on the checker's record (and the last
+        /// session's Java) before it closes.
+        fn finish_with(mut self, extra: impl FnOnce(&AckCheck, &Java)) {
             let end = Tick(self.cfg.days * TICKS_PER_DAY);
             self.run("the iron line's end", end + 2_001, |r| {
                 r.j.mc().t >= end + 2_000
@@ -2201,7 +2202,7 @@ mod ack_never_resends {
                 r.j.mc().commands_in_flight() == 0
             });
             self.c.finish();
-            extra(&self.c);
+            extra(&self.c, &self.j);
             let link = self.j.e.with_industry(|_, l| *l);
             eprintln!("link: {link:?}");
             assert_eq!(link.outbox, 0, "every kept command answered");
@@ -2606,7 +2607,7 @@ mod ack_never_resends {
         assert!(r.c.gone.contains_key(&x), "pruned on the ack past S2");
         r.run_to(day(6.0));
         r.crash_after_a_read_ack();
-        r.finish_with(|c| {
+        r.finish_with(|c, _| {
             assert_eq!(c.arrivals_of(x, 0).len(), 1);
             assert_eq!(c.arrivals_of(x, 1).len(), 1);
             assert!(
@@ -2628,21 +2629,23 @@ mod ack_never_resends {
     /// Before RP-285 (at b5f3c55f) the engine ignored S while off (U10), kept X in its outbox and
     /// sent it again after the ack past S: a real Java (rings pruned, journal trimmed through the
     /// ack) would have applied it twice (the fake world answered DUPLICATE, its applied set never
-    /// pruning). Now S takes X out at once, and the exchange, whose IND_CARRIAGE_RESULT the switch
-    /// made the engine ignore, is dropped with it.
+    /// pruning). Now S takes X out at once. The exchange's IND_CARRIAGE_RESULT, journaled just
+    /// before S, is an answer too: the engine keeps it, with its tick, and books it at the switch
+    /// (at 9bbf1569 the switch made the engine drop the exchange unbooked instead).
     #[test]
     fn an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack() {
         let mut r = Rig::new("ack-switch", false);
         r.run_to(day(3.0));
         r.every = 0;
-        let (x, s) = switch_off_at(&mut r, APPLIED, None);
+        let (x, s, at) = switch_off_at(&mut r, APPLIED, None);
         let (ignored, outbox) = r.j.e.with_industry(|_, l| (l.ignored, l.outbox));
         eprintln!(
-            "probe: X {x:#x} answered at S {s}; industry off: ignored {ignored}, outbox {outbox}"
+            "probe: X {x:#x} answered at S {s} (tick {at:?}); industry off: ignored {ignored}, \
+             outbox {outbox}"
         );
         assert!(
-            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
-            "the answer heard while off took the exchange"
+            industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "the exchange's IND_CARRIAGE_RESULT heard while off waits for the switch"
         );
         let w = r.autosave();
         r.until_read(s);
@@ -2656,9 +2659,15 @@ mod ack_never_resends {
             r.j.mc_mut().forget_applied(OpId(x)),
             "the world applied X, and its journal's op index forgets it at the ack"
         );
-        r.j.modules(MODULE_INDUSTRY);
-        r.tick();
-        r.j.mc_mut().announce();
+        assert!(
+            clock(&r) <= at,
+            "the engine's clock stands at or before the kept answers"
+        );
+        switch_on(&mut r);
+        assert!(
+            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "the switch booked the kept IND_CARRIAGE_RESULT"
+        );
         let t = r.j.mc().t;
         r.run_to(t + 2_000);
         eprintln!(
@@ -2687,7 +2696,7 @@ mod ack_never_resends {
         };
         assert_eq!(applied(&r), 1, "the world applied X once");
         r.every = 3_000;
-        r.finish_with(|c| {
+        r.finish_with(|c, _| {
             assert_eq!(c.arrivals_of(x, 0).len(), 1, "X sent once");
         });
     }
@@ -2722,46 +2731,78 @@ mod ack_never_resends {
         n
     }
 
-    /// Steps until Java answers a station exchange with `status` (the op `only`, if given), and
-    /// switches industry off in that tick, so MODULES goes ahead of the answer in the hand-over.
-    /// Returns the op and the answer's seq. A FAILED answer also stops the world failing them.
-    fn switch_off_at(r: &mut Rig, status: u32, only: Option<u64>) -> (u64, u64) {
-        let mut hit: Option<(u64, u64)> = None;
+    /// The industry command of op `op` this session's Java received, if any.
+    fn sent(j: &Java, op: u64) -> Option<&Cmd> {
+        j.ind_commands
+            .iter()
+            .find(|c| c.2.op() == Some(OpId(op)))
+            .map(|c| &c.2)
+    }
+
+    /// The industry engine's clock.
+    fn clock(r: &Rig) -> Tick {
+        industry(&r.j.e, |ie| ie.now())
+    }
+
+    /// Steps until one of Java's answers of a tick, (op, seq, status), is one `pick` takes, and
+    /// switches industry off in that tick, so MODULES goes ahead of the tick's journaled records in
+    /// the hand-over (the answer, and the records Java journaled with it). Returns the op, the
+    /// answer's seq and its game time. Also stops the world failing carriage deltas.
+    fn switch_off_on(
+        r: &mut Rig,
+        what: &str,
+        pick: impl FnMut(&Java, &(u64, u64, u32)) -> bool,
+    ) -> (u64, u64, Tick) {
+        switch_off_with(r, what, pick, |_, _| {})
+    }
+
+    /// [`switch_off_on`], with `also` journaling more of that tick after the switch (given the
+    /// op), as Java journals a write's `CHAIN_IN` with its answer.
+    fn switch_off_with(
+        r: &mut Rig,
+        what: &str,
+        mut pick: impl FnMut(&Java, &(u64, u64, u32)) -> bool,
+        mut also: impl FnMut(&mut Java, u64),
+    ) -> (u64, u64, Tick) {
+        let mut hit: Option<(u64, u64, Tick)> = None;
         let deadline = Instant::now() + Duration::from_secs(60);
-        let limit = r.j.mc().t + 3 * TICKS_PER_DAY;
+        let limit = Tick(r.cfg.days * TICKS_PER_DAY);
         while hit.is_none() {
             r.step(
                 |_, _, _| true,
                 |j, answers| {
-                    let exchange = answers.iter().find(|(op, _, st)| {
-                        *st == status
-                            && only.is_none_or(|o| o == *op)
-                            && j.ind_commands.iter().any(|c| {
-                                c.2.op() == Some(OpId(*op))
-                                    && matches!(&c.2, Cmd::CarriageDelta(d)
-                                        if d.reason == CarriageReason::Exchange)
-                            })
-                    });
-                    if let Some(&(op, seq, _)) = exchange {
+                    if let Some(&(op, seq, _)) = answers.iter().find(|a| pick(j, a)) {
                         j.modules(0);
                         j.mc_mut().fail_carriage_deltas = false;
-                        hit = Some((op, seq));
+                        also(j, op);
+                        hit = Some((op, seq, Tick(j.game_time as u64)));
                     }
                 },
             );
             r.after_tick();
             assert!(Instant::now() < deadline, "60 s of wall clock");
-            assert!(r.j.mc().t < limit, "a station exchange answered {status}");
+            assert!(r.j.mc().t < limit, "{what}: not by the line's end");
         }
         hit.unwrap()
+    }
+
+    /// [`switch_off_on`] at a station exchange Java answers with `status` (the op `only`, if given).
+    fn switch_off_at(r: &mut Rig, status: u32, only: Option<u64>) -> (u64, u64, Tick) {
+        let what = format!("a station exchange answered {status}");
+        switch_off_on(r, &what, |j, &(op, _, st)| {
+            st == status
+                && only.is_none_or(|o| o == op)
+                && matches!(sent(j, op), Some(Cmd::CarriageDelta(d))
+                    if d.reason == CarriageReason::Exchange)
+        })
     }
 
     /// With industry off since the answer S of X: a page save past S lands and Java reads its ack
     /// (its rings forget X, its journal is trimmed past S), the world saves after a long run of
     /// records the engine ignores, and the engine crashes with the module still off. Restarts on a
     /// minimum-size buffer with the module off, checks the replay spans hand-overs, and returns
-    /// the restart's settle.
-    fn crash_while_off_after_the_ack(r: &mut Rig, x: u64, s: u64) -> Start {
+    /// the restart's settle and the engine's clock before the crash.
+    fn crash_while_off_after_the_ack(r: &mut Rig, x: u64, s: u64) -> (Start, Tick) {
         let through = r.j.next_obs - 1;
         assert!(through >= s);
         r.j.e.request_save(through);
@@ -2772,38 +2813,69 @@ mod ack_never_resends {
         let w = r.c.save(&r.j);
         r.capacity = wire::MIN_CAPACITY;
         r.modules = 0;
+        let frozen = clock(r);
         let start = r.restart(&w);
         assert!(r.j.pages_obs >= s, "the restart's pages are past S");
         let n = replayed_over_several(r);
-        eprintln!("op {x:#x}: crashed off after the ack of S {s}; the replay took {n} hand-overs");
-        start
+        eprintln!(
+            "op {x:#x}: crashed off after the ack of S {s}; the replay took {n} hand-overs; the \
+             engine's clock {frozen:?} before the crash, {:?} after the replay, world {:?}",
+            clock(r),
+            r.j.mc().t
+        );
+        (start, frozen)
     }
 
-    /// On again after a crash while off: Java announces its districts, autosaves run, and the
-    /// line runs to its end with X never sent in the session `session`.
-    fn on_again_to_the_end(mut r: Rig, x: u64, session: usize) {
+    /// Industry on again: MODULES in this tick's hand-over (the engine books the answers it kept,
+    /// each at its own tick, then runs its own session start), and Java announces its districts
+    /// after the switch.
+    fn switch_on(r: &mut Rig) {
         r.modules = MODULE_INDUSTRY;
         r.j.modules(MODULE_INDUSTRY);
         r.tick();
         r.j.mc_mut().announce();
+    }
+
+    /// After the switch: autosaves run, and the line runs to its end with X never sent in the
+    /// session `session`, nor any command `same` takes for one of X's effect under another op (the
+    /// last session's Java received them all after the switch: none goes out while off).
+    fn to_the_end(mut r: Rig, x: u64, session: usize, same: impl Fn(&Cmd) -> bool) {
         r.every = 3_000;
-        r.finish_with(|c| {
+        r.finish_with(|c, j| {
             assert!(
                 c.arrivals_of(x, session).is_empty(),
                 "X never sent after its answer heard while off: {:?}",
                 c.arrivals_of(x, session)
             );
+            let again: Vec<&Cmd> = j
+                .ind_commands
+                .iter()
+                .map(|c| &c.2)
+                .filter(|c| same(c))
+                .collect();
+            assert!(
+                again.is_empty(),
+                "no command of X's effect after the switch, under any op: {again:?}"
+            );
         });
+    }
+
+    /// [`switch_on`], then [`to_the_end`].
+    fn on_again_to_the_end(mut r: Rig, x: u64, session: usize, same: impl Fn(&Cmd) -> bool) {
+        switch_on(&mut r);
+        to_the_end(r, x, session, same);
     }
 
     /// RP-285, FAILED heard while off, across a crash while still off. The world fails every
     /// station exchange for a while, and industry goes off in the tick Java answers the first
-    /// FAILED at S (MODULES ahead of S). Off, the engine hears S: the exchange is taken back at
-    /// once, at the engine's frozen time, and X leaves the outbox (before RP-285 both waited for
-    /// the module, and X went again under a new sequence). Then [`crash_while_off_after_the_ack`]:
-    /// the restart's pages hold the taken-back exchange, the replay does not bring S again (no
-    /// FAILED heard in the new session), and once on the engine never sends X. The give-back is
-    /// booked exactly once: the world's books close at the end.
+    /// FAILED at S (MODULES ahead of S). Off, S takes X out of the outbox at once (before RP-285
+    /// X waited there and went again under a new sequence), and the engine keeps S, with its
+    /// tick, for the switch: the give-back is booked then, at S's tick, as a replay with the module
+    /// on would book it, never at the clock the switch froze (a decision after it derives its op
+    /// from its tick). Then [`crash_while_off_after_the_ack`]: the restart's pages hold the
+    /// exchange still waiting and S kept, the clock where the switch froze it, and the replay does
+    /// not bring S again. On, the switch books S once (one FAILED counted) and the engine never
+    /// sends X. The world's books close at the end.
     #[test]
     fn a_failed_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off() {
         let mut r = Rig::new("ack-off-failed", false);
@@ -2811,24 +2883,39 @@ mod ack_never_resends {
         r.every = 0;
         r.j.mc_mut().fail_carriage_deltas = true;
         let failed = r.j.e.with_industry(|_, l| l.results_failed);
-        let (x, s) = switch_off_at(&mut r, FAILED, None);
-        let (now, failed_after) = r.j.e.with_industry(|ie, l| (ie.now(), l.results_failed));
-        assert!(
-            failed_after > failed,
-            "the FAILED answer was heard while off"
+        let (x, s, at) = switch_off_at(&mut r, FAILED, None);
+        let pending = |r: &Rig| industry(&r.j.e, |ie| ie.exchange_pending(OpId(x)));
+        let (frozen, failed_off) = r.j.e.with_industry(|ie, l| (ie.now(), l.results_failed));
+        assert_eq!(
+            failed_off, failed,
+            "S waits for the switch: nothing booked while off"
         );
+        assert!(pending(&r), "the exchange waits for S's booking");
         assert!(
-            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
-            "the exchange was taken back at once"
+            frozen <= at,
+            "S's tick {at:?} is at or past the frozen clock {frozen:?}"
         );
-        assert!(now < r.j.mc().t, "the engine stays frozen: {now:?}");
-        crash_while_off_after_the_ack(&mut r, x, s);
-        let (pending, failed) =
-            r.j.e
-                .with_industry(|ie, l| (ie.exchange_pending(OpId(x)), l.results_failed));
-        assert!(!pending, "the pages hold the exchange taken back");
-        assert_eq!(failed, 0, "the replay did not bring S again");
-        on_again_to_the_end(r, x, 1);
+        let (_, before) = crash_while_off_after_the_ack(&mut r, x, s);
+        assert_eq!(before, frozen, "the engine stood still while off");
+        assert_eq!(
+            clock(&r),
+            frozen,
+            "the restart with the module off left the clock"
+        );
+        assert!(pending(&r), "the pages hold the exchange still waiting");
+        assert_eq!(
+            r.j.e.with_industry(|_, l| l.results_failed),
+            0,
+            "the replay did not bring S again"
+        );
+        switch_on(&mut r);
+        assert!(!pending(&r), "the switch booked S: the exchange taken back");
+        assert_eq!(
+            r.j.e.with_industry(|_, l| l.results_failed),
+            1,
+            "S booked once"
+        );
+        to_the_end(r, x, 1, |_| false);
     }
 
     /// RP-285, DUPLICATE heard while off, across a crash while still off. First a J3 crash (slice
@@ -2837,9 +2924,10 @@ mod ack_never_resends {
     /// run of records the engine ignores, and the trains, their ring and the world's applied set
     /// after Java applied X. The replay (several hand-overs) derives X again under the same op and
     /// the world refuses it DUPLICATE live at S, in the tick industry goes off (MODULES ahead of S).
-    /// Off, the engine hears S: the exchange derived again is dropped at once (RP-199) and X leaves
-    /// the outbox. Then [`crash_while_off_after_the_ack`] and on again: X is never sent in the third
-    /// session, and the exchange stays dropped.
+    /// Off, the engine hears S: X leaves the outbox at once, and S is kept for the switch, which
+    /// drops the exchange derived again (RP-199) at S's tick. Then [`crash_while_off_after_the_ack`]
+    /// (the exchange still waits, S kept in the link page) and on again: the switch drops it once,
+    /// and X is never sent in the third session.
     #[test]
     fn a_duplicate_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off() {
         let mut r = Rig::new("ack-off-dup", false);
@@ -2875,21 +2963,28 @@ mod ack_never_resends {
         assert_eq!(r.j.e.durable_obs_seq(), t0, "no later page save");
         r.capacity = wire::MIN_CAPACITY;
         r.restart(&w);
-        let (x2, s) = switch_off_at(&mut r, DUPLICATE, Some(x));
+        let (x2, s, at) = switch_off_at(&mut r, DUPLICATE, Some(x));
         assert_eq!(x2, x);
         replayed_over_several(&mut r);
+        let pending = |r: &Rig| industry(&r.j.e, |ie| ie.exchange_pending(OpId(x)));
         assert!(
-            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
-            "the DUPLICATE heard while off dropped the exchange derived again"
+            pending(&r),
+            "the DUPLICATE heard while off waits for the switch"
         );
+        assert!(clock(&r) <= at);
         assert_eq!(
             r.c.arrivals_of(x, 1).len(),
             1,
             "derived again and sent once"
         );
         crash_while_off_after_the_ack(&mut r, x, s);
-        assert!(!industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))));
-        on_again_to_the_end(r, x, 2);
+        assert!(
+            pending(&r),
+            "the pages hold the exchange derived again, S kept"
+        );
+        switch_on(&mut r);
+        assert!(!pending(&r), "the switch dropped it");
+        to_the_end(r, x, 2, |_| false);
     }
 
     /// RP-285 with a chunk's carried answer (`Industry.carryAppliedInChunk`, RP-206). A test's
@@ -3014,6 +3109,281 @@ mod ack_never_resends {
             "carried: P {pk:#x} live S1 {s1}, carried S2 {s2}, lost with the journal; REASSERT at \
              {s}, heard while off and acknowledged"
         );
-        on_again_to_the_end(r, pk, 1);
+        on_again_to_the_end(r, pk, 1, |_| false);
+    }
+
+    /// RP-285: a restart with industry off leaves the engine's clock where the switch froze it, so
+    /// an answer kept for the switch is booked at its own tick. Industry goes off at day 3 and stays
+    /// off for 500 ticks; a page save lands, Java reads its ack, and the engine crashes with the
+    /// module still off and restarts off. At 9bbf1569 `simulate` ran `begin_session` ahead of its
+    /// switch gate, so the restart ran the engine's own session start at the restart's game time
+    /// with the module off: every breakpoint and wake of the time it had been off fired, and their
+    /// decisions waited in the engine's out for the switch (the FAILED case's clock went from
+    /// 72,800 to 72,803). Now the session start waits for the switch, which runs its own.
+    #[test]
+    fn a_restart_with_industry_off_leaves_the_engine_clock_where_the_switch_froze_it() {
+        let mut r = Rig::new("ack-off-clock", false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        r.j.modules(0);
+        r.tick();
+        let frozen = clock(&r);
+        let t = r.j.mc().t;
+        r.run_to(t + 500);
+        assert_eq!(clock(&r), frozen, "off, the engine stands still");
+        let s = r.j.next_obs - 1;
+        let (_, before) = crash_while_off_after_the_ack(&mut r, 0, s);
+        assert_eq!(before, frozen);
+        assert_eq!(
+            clock(&r),
+            frozen,
+            "a restart with the module off does not start the engine's session"
+        );
+        switch_on(&mut r);
+        let now = clock(&r);
+        assert!(
+            now > frozen + 500,
+            "the switch ran the session start, to the world's present: {now:?}"
+        );
+        r.every = 3_000;
+        r.finish();
+    }
+
+    /// RP-285 (P2-1), IND_RECONCILE_RESULT heard while off, across a crash while still off. Industry
+    /// goes off in the tick Java applies a chunk reconcile X and journals its IND_RECONCILE_RESULT
+    /// and APPLIED (MODULES ahead of both). Off, the engine keeps the result with its tick: X stays
+    /// pending until the switch books it there. Then [`crash_while_off_after_the_ack`] (the pages
+    /// hold X pending, the result kept), and on again: the switch books the result before Java's
+    /// announce, and no reconcile of X's chunk and epoch goes out again, under X's op or another
+    /// (a second one is a second booking in Destroy's PollutionLedger). At 9bbf1569 the result was
+    /// ignored off, X stayed pending past the switch, and its booking waited for a ChunkLoaded.
+    #[test]
+    fn a_reconcile_result_heard_with_industry_off_is_booked_once_across_a_crash_while_off() {
+        let mut r = Rig::new("ack-off-reconcile", false);
+        r.run_to(day(1.0));
+        r.every = 0;
+        let (x, s, at) = switch_off_on(&mut r, "a chunk reconcile answered", |j, &(op, _, st)| {
+            st == APPLIED && matches!(sent(j, op), Some(Cmd::ChunkReconcile(_)))
+        });
+        let Some(Cmd::ChunkReconcile(rc)) = sent(&r.j, x).cloned() else {
+            unreachable!("picked a reconcile")
+        };
+        let (d, chunk, epoch) = (rc.district, rc.chunk, rc.epoch);
+        let pending = |r: &Rig| {
+            industry(&r.j.e, |ie| {
+                ie.district(d)
+                    .is_some_and(|x2| x2.pending_ops.contains_key(&OpId(x)))
+            })
+        };
+        assert!(
+            pending(&r),
+            "the result heard while off waits for the switch"
+        );
+        assert!(clock(&r) <= at);
+        crash_while_off_after_the_ack(&mut r, x, s);
+        assert!(pending(&r), "the pages hold X pending, its result kept");
+        switch_on(&mut r);
+        assert!(!pending(&r), "the switch booked the kept result");
+        to_the_end(r, x, 1, move |c| {
+            matches!(c, Cmd::ChunkReconcile(c)
+                if c.district == d && c.chunk == chunk && c.epoch == epoch)
+        });
+    }
+
+    /// A station exchange that unloads a carriage, delivered to the world in the step just run and
+    /// not applied yet, whose carriage holds at least two of that entry's good: (op, train,
+    /// carriage, good, what the world would move).
+    fn delivered_unload(r: &mut Rig) -> (u64, TrainId, u32, Good, i64) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let seen = r.j.ind_commands.len();
+            r.tick();
+            let mc = r.j.mc();
+            let found = r.j.ind_commands[seen..].iter().find_map(|(_, _, c)| {
+                let Cmd::CarriageDelta(cd) = c else {
+                    return None;
+                };
+                if cd.reason != CarriageReason::Exchange {
+                    return None;
+                }
+                let train = mc.trains.iter().find(|t| t.id == cd.train)?;
+                cd.entries.iter().find_map(|&(ci, g, delta)| {
+                    let cargo = train.carriages.iter().find(|c| c.index == ci)?.cargo.get(g);
+                    let m = cargo.min(-delta);
+                    (delta < 0 && m >= 2).then_some((cd.op.0, cd.train, ci, g, m))
+                })
+            });
+            if let Some(f) = found {
+                return f;
+            }
+            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(r.j.mc().t < day(9.0), "an unloading exchange by day 9");
+        }
+    }
+
+    /// RP-285 (P2-2), a short IND_CARRIAGE_RESULT heard while off, across a crash while still off.
+    /// A station exchange X unloads a carriage; before the world applies it, half of what it would
+    /// move leaves the carriage (burned in the world's books), so Java moves less than asked.
+    /// Industry goes off in the tick Java applies X (MODULES ahead of its IND_CARRIAGE_RESULT and
+    /// APPLIED). Off, the engine keeps the result; the switch, after a crash while off, books it at
+    /// its tick, so the district's stock is corrected by the shortfall once. At 9bbf1569 the APPLIED
+    /// heard while off dropped the exchange unbooked, and the district kept goods Java never moved:
+    /// the world's books do not close.
+    #[test]
+    fn a_short_carriage_result_heard_with_industry_off_is_corrected_once_across_a_crash_while_off()
+    {
+        let mut r = Rig::new("ack-off-short", false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let (x, train, ci, g, m) = delivered_unload(&mut r);
+        let k = {
+            let mc = r.j.mc_mut();
+            let car = mc
+                .trains
+                .iter_mut()
+                .find(|t| t.id == train)
+                .and_then(|t| t.carriages.iter_mut().find(|c| c.index == ci))
+                .expect("the carriage");
+            let k = car.cargo.get(g) - m / 2;
+            car.cargo.add(g, -k);
+            mc.books.burned.add(g, k);
+            k
+        };
+        let (_, s, at) = switch_off_on(&mut r, "X's answer", |_, &(op, _, st)| {
+            op == x && st == APPLIED
+        });
+        eprintln!(
+            "short: X {x:#x} moves {} of {m} (took {k} out first), answered at {at:?}",
+            m / 2
+        );
+        crash_while_off_after_the_ack(&mut r, x, s);
+        switch_on(&mut r);
+        assert!(
+            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "the switch booked the result"
+        );
+        to_the_end(r, x, 1, |_| false);
+    }
+
+    /// RP-285 (P1-1), a chain write's `CHAIN_IN` heard while off, across a crash while still off. A
+    /// test's order (W17) writes two packages of ingots into a frogport of a package store Java
+    /// declared (StoreId 7, one frogport in no district). Java applies the write, journals its
+    /// APPLIED and the `CHAIN_IN` carrying the write's op (the rig journals the answer first; both
+    /// are answers, kept or not by kind), and industry goes off in that tick. Off, the engine
+    /// keeps the `CHAIN_IN`; after a crash while off, the frogport's chunk journals it again
+    /// (REASSERT), and the switch takes it once: the store counts two packages written, whatever
+    /// the copy. At 9bbf1569 the `CHAIN_IN` was ignored off, so nothing lowered what the store owed
+    /// or its pools, and an engine write past ten periods went again under a new op (SC113): the
+    /// engine-level case in `chain_replay.rs` shows that write; this one shows the record booked.
+    #[test]
+    fn a_chain_write_answered_with_industry_off_is_taken_once_across_a_crash_while_off() {
+        use rtsim_industry::cmd::{IndustryOps, WriteChain};
+        use rtsim_industry::ids::StoreId;
+        use rtsim_industry::obs::{ChainDirection, ChainPackage, StoreDecl, StoreFrogport};
+        let mut r = Rig::new("ack-off-chain", false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let store = StoreId(7);
+        let pos = BlockPos::new(9_000, 64, 0);
+        let (dim, district, at) = {
+            let mc = r.j.mc();
+            (
+                mc.districts[ORE_COAST].dim,
+                mc.districts[ORE_COAST].id,
+                mc.t,
+            )
+        };
+        r.j.industry_obs(&Timed {
+            at,
+            obs: Obs::PackageStore(StoreDecl {
+                store,
+                dim,
+                epoch: 0,
+                into: None,
+                frogports: vec![StoreFrogport {
+                    district: None,
+                    inventory: None,
+                    star: false,
+                    pos,
+                    conveyor: BlockPos::new(9_001, 64, 0),
+                    from: None,
+                }],
+                hops: vec![],
+            }),
+        });
+        let mut w = Cmd::WriteChain(WriteChain {
+            op: OpId(0),
+            store,
+            district,
+            inventory: 0,
+            frogport: 0,
+            pos,
+            count: 2,
+            goods: GoodVec::from_pairs([(INGOT, 64)]),
+        });
+        // Main has no keyed op (slice T's `derive_keyed`): one derived at this tick, as the engine's.
+        let op = IndustryOps::default().derive(r.cfg.seed, r.j.mc().t, &w);
+        w.set_op(op);
+        let mut record = Vec::new();
+        iw::encode_cmd(0, &w, &mut record).expect("a chain write encodes");
+        r.j.e
+            .order(vec![Order::IndustryCommand {
+                names: vec![],
+                record,
+            }])
+            .unwrap();
+        let x = op.0;
+        let mut chain_in: Option<Vec<u8>> = None;
+        let (_, s, at) = switch_off_with(
+            &mut r,
+            "the chain write's answer",
+            |_, &(o, _, st)| o == x && st == APPLIED,
+            |j, _| {
+                let seq = j.next_obs;
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: Obs::ChainPackage(ChainPackage {
+                        store,
+                        district: None,
+                        inventory: None,
+                        direction: ChainDirection::In,
+                        frogport: 0,
+                        pos,
+                        destination: Some(0),
+                        packages: 2,
+                        address: 0,
+                        op: Some(op),
+                        key: None,
+                        goods: GoodVec::from_pairs([(INGOT, 128)]),
+                    }),
+                });
+                chain_in = Some(j.journaled(seq).expect("the CHAIN_IN journaled"));
+            },
+        );
+        let bytes = chain_in.expect("the CHAIN_IN");
+        let written = |r: &Rig| {
+            industry(&r.j.e, |ie| {
+                ie.stores().get(&store).map_or(0, |st| st.counts.written)
+            })
+        };
+        assert_eq!(
+            written(&r),
+            0,
+            "the CHAIN_IN heard while off waits for the switch"
+        );
+        assert!(clock(&r) <= at);
+        crash_while_off_after_the_ack(&mut r, x, s);
+        assert_eq!(written(&r), 0, "the pages hold it kept, not taken");
+        let nonce = r.c.sessions[0].nonce;
+        r.j.reassert(nonce, &bytes);
+        r.tick();
+        switch_on(&mut r);
+        assert_eq!(written(&r), 2, "the switch took the CHAIN_IN once");
+        to_the_end(
+            r,
+            x,
+            1,
+            move |c| matches!(c, Cmd::WriteChain(w) if w.pos == pos),
+        );
     }
 }
