@@ -2501,7 +2501,7 @@ public final class MowzieGameTests {
                         taken[2 + i] = followers.get(i);
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, grove.spot.x - 200, grove.spot.z);
                 })
-                .thenWaitUntil(gone(level, taken))
+                .thenWaitUntil(waits.chunks(gone(level, taken)))
                 .thenExecute(() -> {
                     // The recall discards them: none was saved with a chunk instead (MZB-673).
                     for (Entity e : taken)
