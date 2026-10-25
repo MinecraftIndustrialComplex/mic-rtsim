@@ -3994,6 +3994,273 @@ fn a_siege_round_in_the_replayed_window_resolves_at_the_holds_slack() {
     assert_eq!(back, vec![slack], "once");
 }
 
+// ---- a held raid's hunt (RP-133) ----------------------------------------------------------------
+
+/// Goblins whose every unit leaves an animal owed where it raided and nobody watched, as the
+/// raptor does (MZB-424), capped at the raptor's 8.
+fn hunting_goblins() -> Cultures {
+    let mut d: CultureDef = serde_json::from_str(GOBLIN_JSON).unwrap();
+    d.plunder_mean_days = None;
+    d.hunt_cap = 8;
+    for u in &mut d.units {
+        u.hunts = 1;
+    }
+    Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
+}
+
+/// A district that holds no one back: every raid on it is survived whole, so its survivors owe
+/// their hunts.
+#[derive(Default)]
+struct Open {
+    raids: Vec<Tick>,
+}
+
+impl rtsim_ecology::infra::Infrastructure for Open {
+    fn districts_near(
+        &mut self,
+        _: u16,
+        _: i64,
+        _: i64,
+        _: i64,
+    ) -> Vec<rtsim_ecology::infra::DistrictSite> {
+        Vec::new()
+    }
+    fn raid(
+        &mut self,
+        t: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_ecology::infra::RaidOutcome> {
+        self.raids.push(t.at);
+        Some(rtsim_ecology::infra::RaidOutcome {
+            survived: 1.0,
+            floor: None,
+            untested: false,
+            stolen: rtsim_industry::ids::GoodVec::new(),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
+    }
+    fn good_name(&self, _: rtsim_industry::ids::Good) -> Option<String> {
+        None
+    }
+}
+
+/// Where the first session of [`a_held_raids_hunt`] ends.
+#[derive(Clone, Copy)]
+enum HuntEnd {
+    /// It goes on: no crash.
+    Live,
+    /// It crashes once every band is home.
+    Home,
+    /// It crashes this many ticks after the first band's arrival.
+    After(u64),
+}
+
+/// What the raids' hunts came to across the sessions: the animals killed in the world, the
+/// OWED_HUNTs (op, count) each session's plugin was sent, and the hunts the engine still owes.
+#[derive(Debug)]
+struct HuntRun {
+    killed: u32,
+    live: Vec<(u64, u32)>,
+    next: Vec<(u64, u32)>,
+    owed: usize,
+}
+
+/// RP-133 (P2-1 of the M9 merge's check): raids on the refinery that nobody watches, one band
+/// ordered at tick 20 and one more `gaps[i]` ticks after it for each gap, the pages saved while the
+/// first marches there unseen, or (`save_after`) 20 ticks past the first hunt's answer. The plugin
+/// applies each OWED_HUNT as it comes and answers `answer` ticks later (`None`: it never applies
+/// one). The session goes on as `end` says; at a crash, the restart from both pages replays the
+/// journal (the arrivals are held, §6.1), ends its replay and runs two days on, with a plugin that
+/// forgot what it held and applied (MZB-426) and answers each hunt it is sent at once. The world
+/// keeps the animals the first plugin killed.
+fn a_held_raids_hunt(gaps: &[u64], answer: Option<u64>, save_after: bool, end: HuntEnd) -> HuntRun {
+    let mut r = Run::new(36, hunting_goblins());
+    let mut bands = vec![raid_band(&mut r)];
+    for &g in gaps {
+        let band =
+            r.c.order_party(
+                &mut r.w,
+                synth::CAMP,
+                PartyKind::Raid,
+                Target::District(synth::REFINERY, synth::REFINERY_POS),
+                None,
+                Tick(20 + g),
+            )
+            .expect("another band");
+        bands.push(band);
+    }
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.plugin.hunt_kills = answer.map(|_| 99);
+    r.plugin.answer_ticks = answer.unwrap_or(1);
+    let arrival = *r.c.parties[bands[0]].times.last().unwrap();
+    let mut walls = Open::default();
+    let mut journal = Vec::new();
+    let save_at = match (save_after, answer) {
+        (true, Some(a)) => arrival + a + 20,
+        _ => Tick(arrival.0 - 3_000),
+    };
+    run_journaled(&mut r, &mut walls, save_at, &mut journal);
+    if save_after {
+        assert!(r.c.stats.hunts_killed > 0, "saved after the hunt's answer");
+    } else {
+        assert!(
+            bands.iter().all(|&b| r.c.parties[b].phase == Phase::Out),
+            "saved while the bands march"
+        );
+    }
+    let (pages, world) = (r.c.save(), r.w.save());
+    journal.clear();
+    match end {
+        HuntEnd::After(k) => run_journaled(&mut r, &mut walls, arrival + k, &mut journal),
+        HuntEnd::Live | HuntEnd::Home => {
+            let mut to = arrival;
+            while bands.iter().any(|&b| r.c.parties.get(b).is_some()) {
+                to += 600;
+                assert!(to < day(8.0), "the bands come home");
+                run_journaled(&mut r, &mut walls, to, &mut journal);
+            }
+        }
+    }
+    let sent = |p: &FakeConflict| -> Vec<(u64, u32)> {
+        p.hunts_sent.iter().map(|h| (h.op, h.count)).collect()
+    };
+    let live = sent(&r.plugin);
+    if matches!(end, HuntEnd::Live) {
+        return HuntRun {
+            killed: r.plugin.animals_killed,
+            live,
+            next: Vec::new(),
+            owed: r.c.factions[r.f as usize].hunts.len(),
+        };
+    }
+    // Java journals other records all along: one past the bands'.
+    let last = r.c.now();
+    journal.push((last, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Open::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.resend_notices();
+    let mut plugin = FakeConflict::new(synth::PLAYER);
+    plugin.hunt_kills = Some(99);
+    let mut next = Run {
+        w,
+        c: back,
+        f: r.f,
+        p: r.p,
+        plugin,
+        cmds: Vec::new(),
+        watch: false,
+        next_obs: Tick::ZERO,
+        refuse: None,
+        refuse_wave0_only: false,
+    };
+    let now = next.c.now();
+    next.flush(now);
+    run_journaled(
+        &mut next,
+        &mut walls,
+        now + 2 * TICKS_PER_DAY,
+        &mut Vec::new(),
+    );
+    HuntRun {
+        killed: r.plugin.animals_killed + next.plugin.animals_killed,
+        live,
+        next: sent(&next.plugin),
+        owed: next.c.factions[next.f as usize].hunts.len(),
+    }
+}
+
+/// P2-1: the session that went on owes the raid's hunt at its arrival and the plugin answers it 5
+/// ticks later, inside the hold's slack; a crash, and the replay holds the arrival. The replayed
+/// HUNT_APPLIED ends the hold first (RP-59's rule, RP-133), so the hunt is owed under its live op
+/// (hashed from the hold's tick) and spent by its own answer: the next session's plugin is sent no
+/// hunt and the animals die once. Before RP-133 the answer found no hunt, the hold ended at the
+/// slack with a new op, and the next session's plugin killed them again.
+#[test]
+fn a_held_raids_hunt_answered_inside_the_slack_kills_once() {
+    let live = a_held_raids_hunt(&[], Some(5), false, HuntEnd::Live);
+    assert_eq!(live.live.len(), 1, "{live:?}");
+    assert!(live.killed > 0 && live.owed == 0, "{live:?}");
+    let back = a_held_raids_hunt(&[], Some(5), false, HuntEnd::Home);
+    assert_eq!(back.live, live.live, "the first session as the live one");
+    assert_eq!(back.next, [], "no hunt to the next session: {back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+}
+
+/// The answer after the hold's own end (its slack's poll): the hold resolves there, owing the hunt
+/// under the op hashed from the arrival, which the late answer then spends.
+#[test]
+fn a_held_raids_hunt_answered_after_the_slack_kills_once() {
+    let a = REPLAY_HOLD_SLACK_TICKS + 300;
+    let live = a_held_raids_hunt(&[], Some(a), false, HuntEnd::Live);
+    assert!(live.killed > 0 && live.owed == 0, "{live:?}");
+    let back = a_held_raids_hunt(&[], Some(a), false, HuntEnd::Home);
+    assert_eq!(back.next, [], "no hunt to the next session: {back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+}
+
+/// Two raids on the district, the second arriving inside the first's slack and before its answer
+/// (500 ticks after each hunt): live the second hunt replaces the first, and the first's late
+/// answer leaves the second's own count (MZB-449). The first answer ends both holds, in their
+/// order, so the replay owes the same two ops as live, and each answer books its own.
+#[test]
+fn two_held_raids_on_a_district_kill_what_the_live_session_killed() {
+    let gaps = [380];
+    let live = a_held_raids_hunt(&gaps, Some(500), false, HuntEnd::Live);
+    assert!(live.live.len() >= 2, "{live:?}");
+    assert!(live.killed > 0 && live.owed == 0, "{live:?}");
+    let back = a_held_raids_hunt(&gaps, Some(500), false, HuntEnd::Home);
+    assert_eq!(back.next, [], "no hunt to the next session: {back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+    // Answered at once, the second raid comes after the first hunt is spent.
+    let live = a_held_raids_hunt(&gaps, Some(5), false, HuntEnd::Live);
+    let back = a_held_raids_hunt(&gaps, Some(5), false, HuntEnd::Home);
+    assert_eq!(back.next, [], "{back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+}
+
+/// The crash before the plugin answered (it never applies one): the journal goes past the slack,
+/// so the hold resolves while replaying, under the live op, and the next session's plugin is sent
+/// that hunt once and kills once. With the journal ending inside the slack the hold is cleared at
+/// the replay end and decided after it, live: its op is the poll's, which no plugin has seen, and
+/// it kills once too.
+#[test]
+fn a_held_raids_hunt_never_answered_goes_once_to_the_next_session() {
+    let live = a_held_raids_hunt(&[], None, false, HuntEnd::Live);
+    assert_eq!((live.killed, live.owed), (0, 1), "{live:?}");
+    let [(op, count)] = live.live[..] else {
+        panic!("{live:?}");
+    };
+    let past = REPLAY_HOLD_SLACK_TICKS + 300;
+    let back = a_held_raids_hunt(&[], None, false, HuntEnd::After(past));
+    assert_eq!(back.next, [(op, count)], "the live hunt, once: {back:?}");
+    assert_eq!((back.killed, back.owed), (count, 0), "{back:?}");
+    let inside = a_held_raids_hunt(&[], None, false, HuntEnd::After(100));
+    let [(_, n)] = inside.next[..] else {
+        panic!("{inside:?}");
+    };
+    assert_eq!((inside.killed, inside.owed), (n, 0), "{inside:?}");
+}
+
+/// The control: the pages saved after the hunt's answer. The replay has no arrival to hold, and
+/// nothing is owed or sent again.
+#[test]
+fn a_raids_hunt_answered_before_the_save_is_not_sent_again() {
+    let live = a_held_raids_hunt(&[], Some(5), true, HuntEnd::Live);
+    assert!(live.killed > 0 && live.owed == 0, "{live:?}");
+    let back = a_held_raids_hunt(&[], Some(5), true, HuntEnd::Home);
+    assert_eq!(back.next, [], "{back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+}
+
 /// The world as `pages` (its `save`) left it, for a restart (`Run::new`'s world, seed `seed`).
 fn world_from(seed: u64, pages: &[u8]) -> World {
     let (goods, ids) = rtsim_world::synth::goods();
