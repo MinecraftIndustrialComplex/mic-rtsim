@@ -184,7 +184,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
                           long windowTicks, int worstGood, double worstMeasured, double worstPredicted,
                           double worstExcess, List<StoreRef> stores) {
 
-        public static final int PASSED = 1, STALE = 2, MAY_REPLAY = 4, FROZEN = 8, WORKING = 16;
+        public static final int PASSED = 1, STALE = 2, MAY_REPLAY = 4, FROZEN = 8, WORKING = 16, BOX = 32, LOW = 64;
 
         public boolean passed() {
             return (flags & PASSED) != 0;
@@ -270,7 +270,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
         Replay rp = new Replay((int) v[33], (long) v[34], (int) v[35], (int) v[36], (int) v[37], (int) v[38], v[39] != 0,
                 (int) v[40]);
         int[] pos = {at};
-        List<Section> sections = sections(v, pos);
+        List<Section> sections = sections(v, pos, u);
         List<Shared> shared = shared(v, pos);
         if (pos[0] != v.length)
             throw new IllegalArgumentException("a glass report of " + v.length + " values for " + n + " goods");
@@ -280,7 +280,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
     }
 
 
-    private static List<Section> sections(double[] v, int[] pos) {
+    private static List<Section> sections(double[] v, int[] pos, int units) {
         int at = pos[0];
         int n = at < v.length ? (int) v[at] : -1;
         if (n < 0 || at + 1 + n * SECTION_STRIDE >= v.length)
@@ -303,10 +303,13 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
         for (int i = 0; i < n; i++) {
             int b = at + 1 + i * SECTION_STRIDE;
             int flags = (int) v[b + 6];
+            int unit = (int) v[b];
+            if (unit < -1 || unit >= units)
+                throw new IllegalArgumentException("section " + i + " names unit " + unit + " in a report of " + units + " units");
             long fp = ((long) v[b + 17] << 32) | (long) v[b + 18];
-            out.add(new Section((int) v[b], (int) v[b + 1], (int) v[b + 2], (int) v[b + 3], (int) v[b + 4], (int) v[b + 5],
-                    flags, (int) v[b + 7], (flags & 32) != 0, (int) v[b + 8], (int) v[b + 9], (int) v[b + 10],
-                    (int) v[b + 11], (int) v[b + 12], (int) v[b + 13], (flags & 64) != 0, (int) v[b + 14], (int) v[b + 15],
+            out.add(new Section(unit, (int) v[b + 1], (int) v[b + 2], (int) v[b + 3], (int) v[b + 4], (int) v[b + 5],
+                    flags, (int) v[b + 7], (flags & Section.BOX) != 0, (int) v[b + 8], (int) v[b + 9], (int) v[b + 10],
+                    (int) v[b + 11], (int) v[b + 12], (int) v[b + 13], (flags & Section.LOW) != 0, (int) v[b + 14], (int) v[b + 15],
                     (int) v[b + 16], fp, (int) v[b + 19], (int) v[b + 20], (int) v[b + 21], (long) v[b + 22],
                     (int) v[b + 23], v[b + 24], v[b + 25], v[b + 26], List.copyOf(stores.get(i))));
         }

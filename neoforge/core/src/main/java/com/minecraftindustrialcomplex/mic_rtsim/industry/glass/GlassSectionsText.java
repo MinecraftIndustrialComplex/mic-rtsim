@@ -10,8 +10,9 @@ public final class GlassSectionsText {
     private GlassSectionsText() {}
 
     /**
-     * The command's text for a report: a header, a line per section (the first section of a unit also names the
-     * unit's worst good, the good its last window missed its band by the most), and a line per shared store.
+     * The command's text for a report: a header, a line per section, and a line per shared store. The worst good (the
+     * good the last window missed its band by the most) is named once: under the first section of each unit, or, with
+     * no units (the district's own window judges every section), under the header.
      */
     public static List<String> lines(long id, String name, GlassReport r, IntFunction<String> goodName) {
         List<String> out = new ArrayList<>();
@@ -19,8 +20,14 @@ public final class GlassSectionsText {
         out.add(String.format(Locale.ROOT, "district %d '%s': %d sections (%d may replay, %d replaying) in %s, %d shared stores",
                 id, name, r.sections().size(), may, replaying,
                 r.units().isEmpty() ? "the district's window" : r.units().size() + " units", r.shared().size()));
-        int[] firstOf = new int[r.units().size()];
-        java.util.Arrays.fill(firstOf, -1);
+        boolean[] named = new boolean[r.units().size()];
+        if (r.units().isEmpty()) {
+            for (GlassReport.Section s : r.sections())
+                if (s.worstGood() >= 0) {
+                    out.add(worst(s, goodName));
+                    break;
+                }
+        }
         for (int i = 0; i < r.sections().size(); i++) {
             GlassReport.Section s = r.sections().get(i);
             StringBuilder sb = new StringBuilder("  s").append(i);
@@ -48,15 +55,10 @@ public final class GlassSectionsText {
             if (s.mayReplay())
                 sb.append(", may replay");
             out.add(sb.toString());
-            boolean first = s.unit() < 0 || firstOf[s.unit()] < 0;
-            if (s.unit() >= 0 && firstOf[s.unit()] < 0)
-                firstOf[s.unit()] = i;
-            if (!first)
-                out.add("      same unit as s" + firstOf[s.unit()] + ": its worst good is there");
-            else if (s.worstGood() >= 0) {
-                String g = goodName.apply(s.worstGood());
-                out.add(String.format(Locale.ROOT, "      worst good %s: measured %.3f/min, predicted %.3f/min, %.3f/min beyond its band",
-                        g == null ? "good " + s.worstGood() : g, s.worstMeasured() * 1200, s.worstPredicted() * 1200, s.worstExcess() * 1200));
+            if (s.unit() >= 0 && s.unit() < named.length && !named[s.unit()]) {
+                named[s.unit()] = true;
+                if (s.worstGood() >= 0)
+                    out.add(worst(s, goodName));
             }
         }
         for (GlassReport.Shared h : r.shared()) {
@@ -88,5 +90,11 @@ public final class GlassSectionsText {
             out.add(sb.toString());
         }
         return out;
+    }
+
+    private static String worst(GlassReport.Section s, IntFunction<String> goodName) {
+        String g = goodName.apply(s.worstGood());
+        return String.format(Locale.ROOT, "      worst good %s: measured %.3f/min, predicted %.3f/min, %.3f/min beyond its band",
+                g == null ? "good " + s.worstGood() : g, s.worstMeasured() * 1200, s.worstPredicted() * 1200, s.worstExcess() * 1200);
     }
 }
