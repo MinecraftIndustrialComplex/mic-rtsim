@@ -1847,19 +1847,33 @@ its files on disk, the rest from the save before. Two directions:
    - a chunk read that fails or takes over 10 s (logged): the write goes on with the mirror as it is;
    - a postbox changed in this life while its station did not attach it, after the port's mirror was
      marked fresh, and a chunk saved between the postbox's unload and Create's next save of it into the
-     buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since;
-   - the module switch: the port's and the train's rings are left out of a save with the module off
-     (RP-194), so a crash inside the first world save after a switch off, before the journal's write,
-     loses them, and an op written before the switch is applied again if the module is on at the restart.
-     `DurableOpRing` is written whatever the switch (RP-204). One rule for all rings at the move to T2's
-     ring rule.
+     buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since.
+
+**Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
+depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
+pollution ledger's, and any later ring. The switch gates only whether new ops are applied. A save writes
+the ring's key whenever the ring is not empty, with the module on or off; a load keeps whatever is there;
+the pruning (by the journal's file now, by the engine's acknowledgement once the rings take T2's rule)
+goes on while the module is off. Why: a save that left a ring out after a switch off at runtime (a config
+reload) could die before the journal's write, and an op applied before the switch would be applied again
+at its resend once the module is on. Tests: create `aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused`
+(applied, the module off, saved, a crash before the journal's write, the restart with it on: refused, one
+package). The port's rings follow it since slice U-a (RP-206) and the store rings always did (RP-204); T2's
+train ring takes it before T2 lands (the coordinator, 2026-10-25), in place of RP-194's gate.
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 
 **UR-1.** Uninstalling mic_rtsim_dieselgenerators: CDG loads `cdg_oil_chunks` with the extra
 `mic_rtsim:applied_ops` key and drops it at its next save. Uninstalling mic_rtsim: NeoForge skips the
 unknown `mic_rtsim:applied_ops` level attachment in `neoforge_data_attachments` with an ERROR log line
-and loads the rest.
+and loads the rest. Uninstalling is not the module switch: the mixins are gone, so the keys drop.
+A reinstall of mic_rtsim is a reinstall reset (docs/choices-reinstall-guard.md RG4 to RG6): the old
+engine's pages are moved aside, so no op from before the gap is sent again, and the journal's applied ids
+still refuse an id seen before; covered by the reset and the re-announce path, not a residual. A plugin
+removed and put back alone (mic_rtsim kept, so no reset) comes back with empty rings; the gap's own world
+saves acknowledge every answer from before it, so nothing from before the gap is resent, except after a
+crash right before the gap, whose resends meet no plugin while the store holds the effect: a residual of
+removing a plugin, not of the rings.
 
 **Tests.** dieselgenerators `DepositCrashGameTests` (3), destroy `PollutionCrashGameTests` (4), create
 `PortRingGameTests` (11: K2's crash cases, the loaded postbox, the chunk newer than the tracks file, the

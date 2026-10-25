@@ -1,8 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
-import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
-import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.simibubi.create.content.trains.graph.DimensionPalette;
 import com.simibubi.create.content.trains.graph.TrackNodeLocation;
 import com.simibubi.create.content.trains.station.GlobalPackagePort;
@@ -59,7 +57,6 @@ public final class PortRing {
     /** Null until the first {@link #available} after start or a test switch; then the answer. */
     private static Boolean available;
     private static boolean fallbackForTest;
-    private static boolean probing;
     private static int fallbackLogs;
 
     /**
@@ -102,14 +99,14 @@ public final class PortRing {
     }
 
     /**
-     * {@code GlobalStation.write}'s hook: each port's rings into its entry of "Ports", when they hold an op and the
-     * industry module is on. With the module off the keys are left out, so the next save drops them (UR-1); the
-     * rings stay on the ports until the server stops.
+     * {@code GlobalStation.write}'s hook: each port's rings into its entry of "Ports", when they hold an op, whatever
+     * the industry module's switch (docs/replay-gate.md 9.6, "Rings and the module switch"): the switch gates only
+     * whether new ops are applied. A save that left the rings out after a switch off could die before the journal's
+     * write, and an op written before the switch would be written again at its resend. With the plugin removed the
+     * mixins are gone, and Create's own write leaves the keys out (UR-1).
      */
     public static void write(GlobalStation station, CompoundTag nbt) {
         if (station == null || nbt == null || station.connectedPorts.isEmpty())
-            return;
-        if (!probing && !RtsimConfig.on(Module.INDUSTRY))
             return;
         ListTag ports = nbt.getList("Ports", Tag.TAG_COMPOUND);
         for (int i = 0; i < ports.size(); i++) {
@@ -312,12 +309,7 @@ public final class PortRing {
             station.connectedPorts.put(at, port);
             DimensionPalette dimensions = new DimensionPalette();
             CompoundTag tag = new CompoundTag();
-            probing = true;
-            try {
-                station.write(tag, registries, dimensions);
-            } finally {
-                probing = false;
-            }
+            station.write(tag, registries, dimensions);
             CompoundTag entry = tag.getList("Ports", Tag.TAG_COMPOUND).getCompound(0);
             long[] probe = {PROBE_OP};
             if (!Arrays.equals(entry.getLongArray(KEY), probe) || !Arrays.equals(entry.getLongArray(POSTBOX_KEY), probe))

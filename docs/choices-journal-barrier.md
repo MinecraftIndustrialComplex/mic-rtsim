@@ -169,13 +169,13 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     - *Corrupt.* A ring whose two arrays differ in length keeps every op as PENDING
       (`DurableOpRing.allPending`): their resends are refused, an effect left out (for a draw, ore the
       world keeps), never one applied twice.
-    - *The module switch.* The ring is written whatever the industry module's switch, unlike T2's train
-      ring and the port's rings, which a save with the module off leaves out (RP-194). A save that left it
-      out after a switch off could die before the journal's write, and an op applied before the switch
-      would be applied again at its resend. UR-1 does not need the gate: CDG ignores the key at load and
-      its save writes into the fresh tag vanilla's `SavedData.save(File)` makes, NeoForge skips an unknown
-      level attachment, and the ledger is mic_rtsim_destroy's own file. With the module off the entries
-      read from disk stay, trimmed as the journal's file moves, at most 4,096 a store.
+    - *The module switch.* The ring is written whatever the industry module's switch: the rule for every
+      ring (docs/replay-gate.md 9.6, "Rings and the module switch"; the coordinator, 2026-10-25). A save
+      that left it out after a switch off could die before the journal's write, and an op applied before
+      the switch would be applied again at its resend. UR-1 does not need a gate: CDG ignores the key at
+      load and its save writes into the fresh tag vanilla's `SavedData.save(File)` makes, NeoForge skips an
+      unknown level attachment, and the ledger is mic_rtsim_destroy's own file. With the module off the
+      entries read from disk stay, trimmed as the journal's file moves, at most 4,096 a store.
   - *Why.* Under JL, B is the only direction for a SavedData pair, and B is exact when the op's dedup is in
     the same file as its effect. "Ring or journal", with the trim by the journal's durable mark, keeps a
     store's ring to about two autosaves of entries however busy the store is; a fixed window sized for
@@ -271,6 +271,10 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
         resend primed the tracks file's older mirror, and the restore put it back over the chunk:
         automation's takes since then undone (a dupe), its puts lost.
     - A write records the op in its path's ring and marks the tracks dirty; the loaded path never primes.
+    - The rings are saved whatever the industry module's switch (replay-gate 9.6, "Rings and the module
+      switch"). Until 2026-10-25 they followed RP-194's gate, left out of a save with the module off; a
+      crash inside the first world save after a switch off then lost them, and the resend wrote the
+      package again.
     - Without the mixins (probed once with a station written and read back), the old dedup: the journal's
       applied set, and the chunk for a loaded postbox, with one WARN.
   - *Why.* Under JL, K2's direction B (the buffer written twice) is the only one, a dupe either way. One
@@ -282,7 +286,8 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     dupe pinned (`withoutTheRingsACrashThatKeptTheBufferAndNotTheJournalWritesAPackageTwice`: two
     packages for one op), `aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce` (written again
     while loaded, refused offline with nothing put in the buffer) and
-    `withIndustryOffAStationSaveDropsThePortRings` (UR-1). The chunk newer than the tracks file:
+    `aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused` (the module switch, and Create's keys
+    kept for UR-1). The chunk newer than the tracks file:
     `aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce` (the first test that runs Create's
     `restoreOfflineBuffer`) and `anUnloadedPostboxWhoseChunkOutlivedTheTracksTakesEachPackageOnce` (a
     synthetic chunk written through `ChunkMap.write`), each with its twin with the chunk checks off
@@ -303,10 +308,6 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
       carry); a chunk read that fails or takes over 10 s; a postbox changed in this life while its station
       did not attach it, after the port's mirror was marked fresh; a chunk saved in the window between
       the postbox's unload and Create's next save of it into the buffer.
-    - The module switch: the port's rings are left out of a save with the module off (RP-194's rule), so
-      a crash inside the first world save after a switch off, before the journal's write, loses them; an
-      op written before the switch is written again if the module is on at the restart. `DurableOpRing` is
-      written whatever the switch (RP-204). Both classes take one rule at the move to T2's ring rule.
 - **RP-207, Destroy's pollution: one ring per file.**
   - *Chosen.* Level pollution is Destroy's `LEVEL_POLLUTION` level attachment, which NeoForge saves in the
     level's `neoforge_data_attachments`. Its ring is a mic_rtsim level attachment (`mic_rtsim:applied_ops`,
