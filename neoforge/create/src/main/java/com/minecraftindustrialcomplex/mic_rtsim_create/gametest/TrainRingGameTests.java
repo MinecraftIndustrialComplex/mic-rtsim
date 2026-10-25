@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import com.minecraftindustrialcomplex.mic_rtsim_create.AppliedOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
+import com.minecraftindustrialcomplex.mic_rtsim_create.RingView;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.BreakForTest;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
@@ -20,6 +21,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtAccounter;
@@ -43,8 +45,9 @@ import java.util.Set;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
 /**
- * The train op ring (docs/choices-mowzie-build.md RP-190 to RP-198): IND_CARRIAGE_DELTA's dedup across a
- * crash that kept one of Java's two SavedData files and not the other.
+ * The train op ring (docs/choices-mowzie-build.md RP-190 to RP-198, RP-250 to RP-254): IND_CARRIAGE_DELTA's
+ * dedup across a crash that kept one of Java's two SavedData files and not the other, the acknowledgement that
+ * takes an op out, the settle of a ring another session answered, and the valve.
  *
  * <p>A crash is emulated on one synthetic train. Its tracks file is what RailwaySavedData.save writes for
  * it (Create's own Train.write, with a dimension palette, through the bytes of a compressed NBT file) and
@@ -134,6 +137,9 @@ public final class TrainRingGameTests {
     private static void crash(GameTestHelper helper, String test, BreakForTest broken, boolean tracksSaved, boolean journalSaved, boolean conserve) {
         boolean ring = broken == BreakForTest.NONE;
         fastConfig();
+        // The raid is sent again after its answer may have been acknowledged, which a real engine never does
+        // (RP-250): the op stays in the ring for it.
+        TrainRing.holdPrunesForTest(true);
         forget(helper);
         ServerLevel level = helper.getLevel();
         Train[] train = {null};
@@ -198,6 +204,7 @@ public final class TrainRingGameTests {
                     journal().forgetAppliedForTest(op);
                     TrainWatch.forget(train[0]);
                     TrainRing.breakForTest(BreakForTest.NONE);
+                    TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
@@ -213,6 +220,7 @@ public final class TrainRingGameTests {
     @GameTest(template = YARD, batch = "train_ring_7", timeoutTicks = 1200)
     public static void withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing(GameTestHelper helper) {
         fastConfig();
+        TrainRing.holdPrunesForTest(true); // the op stays in the ring however soon its answer is acknowledged
         forget(helper);
         ServerLevel level = helper.getLevel();
         var server = level.getServer();
@@ -242,8 +250,11 @@ public final class TrainRingGameTests {
                     train[0] = loaded;
                     CompoundTag next = trainTag(saveTracks(level, loaded));
                     check("the next save drops " + TrainRing.KEY, !next.contains(TrainRing.KEY));
+                    check("the save had the ring's answers and generation beside it", trainTag(saved[0]).contains(AppliedOpRing.answersKey(TrainRing.KEY))
+                            && trainTag(saved[0]).contains(AppliedOpRing.genKey(TrainRing.KEY)));
+                    check("the next save drops them too", !next.contains(AppliedOpRing.answersKey(TrainRing.KEY)) && !next.contains(AppliedOpRing.genKey(TrainRing.KEY)));
                     Set<String> create = new HashSet<>(trainTag(saved[0]).getAllKeys());
-                    create.remove(TrainRing.KEY);
+                    create.removeAll(ringKeys());
                     check("and keeps every key of Create's: " + next.getAllKeys() + " vs " + create, next.getAllKeys().equals(create));
                     record("withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing", "keys saved with the module off", next.getAllKeys().size()
                             + ", the ring key " + (next.contains(TrainRing.KEY) ? "kept" : "dropped"));
@@ -256,6 +267,7 @@ public final class TrainRingGameTests {
                     check("the ring stayed on the train", ring != null && ring.contains(op));
                     check("on again, the next save writes it", Arrays.equals(trainTag(saveTracks(level, train[0])).getLongArray(TrainRing.KEY), new long[] {op}));
                     TrainWatch.forget(train[0]);
+                    TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
@@ -286,13 +298,34 @@ public final class TrainRingGameTests {
         AppliedOpRing back = new AppliedOpRing(2);
         check("read back", back.readFrom(tag, key));
         check("a smaller cap keeps the newest", Arrays.equals(back.toArray(), new long[] {4, 5}) && back.capacity() == 2);
-        check("no ring saved reads as none", !back.readFrom(new CompoundTag(), key) && back.isEmpty());
+        check("no ring saved reads as none, generation 0", !back.readFrom(new CompoundTag(), key) && back.isEmpty() && back.gen() == 0);
         tag.putString("mic_rtsim:other", "not a ring");
         check("a foreign tag under a key is not a ring", !AppliedOpRing.savedIn(tag, "mic_rtsim:other"));
 
+        // The answers and the generation beside the ops (RP-250, RP-251)
+        check("no answer known and no generation: neither key", !tag.contains(AppliedOpRing.answersKey(key)) && !tag.contains(AppliedOpRing.genKey(key)));
+        ring.answered(3, 300);
+        ring.answered(5, 500);
+        ring.gen(0x5EED);
+        ring.writeTo(tag, key);
+        check("the answers in the ops' order: " + Arrays.toString(tag.getLongArray(AppliedOpRing.answersKey(key))),
+                Arrays.equals(tag.getLongArray(AppliedOpRing.answersKey(key)), new long[] {0, 300, 0, 500}));
+        check("the generation", tag.getLong(AppliedOpRing.genKey(key)) == 0x5EED && tag.size() == 4);
+        AppliedOpRing again = new AppliedOpRing(4);
+        check("read back", again.readFrom(tag, key));
+        check("with its answers and generation: " + again, again.answerOf(3) == 300 && again.answerOf(5) == 500
+                && again.answerOf(2) == AppliedOpRing.UNKNOWN && again.gen() == 0x5EED);
+        AppliedOpRing smaller = new AppliedOpRing(2);
+        smaller.readFrom(tag, key);
+        check("a smaller cap keeps the newest with their answers: " + smaller, Arrays.equals(smaller.toArray(), new long[] {4, 5})
+                && smaller.answerOf(5) == 500 && smaller.answerOf(4) == AppliedOpRing.UNKNOWN);
+        ring.forgetAnswers();
+        ring.writeTo(tag, key);
+        check("every answer unknown: the answers' key goes", !tag.contains(AppliedOpRing.answersKey(key)) && tag.contains(AppliedOpRing.genKey(key)));
+
         ring.clear();
         ring.writeTo(tag, key);
-        check("an empty ring removes its key", !tag.contains(key));
+        check("an empty ring removes its three keys", !tag.contains(key) && !tag.contains(AppliedOpRing.answersKey(key)) && !tag.contains(AppliedOpRing.genKey(key)));
         for (String bad : new String[] {"applied_ops", ":x", "x:"}) {
             try {
                 ring.writeTo(tag, bad);
@@ -336,6 +369,289 @@ public final class TrainRingGameTests {
             TrainRing.breakForTest(BreakForTest.NONE);
         }
         helper.succeed();
+    }
+
+    // ---- the ring past the old count, the acknowledgement, the settle and the valve (RP-250 to RP-254) ----
+
+    /** Station exchanges after the raid: more than the old count bound (RP-192's 256). */
+    private static final int EXCHANGES = 304;
+
+    /**
+     * Review2 P2's repro: a raid, then more later exchanges on the same train than the old ring held (256),
+     * then the raid sent again with both files kept (J1). A count-bounded ring had pushed the raid's op out
+     * and applied it a second time (APPLIED, 12 iron); the ring now holds an op until the engine acknowledges
+     * its answer, so it answers DUPLICATE and 22 iron stay. The prunes are held: the raid is sent again after
+     * its answer could have been acknowledged, which a real engine never does.
+     */
+    @GameTest(template = YARD, batch = "train_ring_10", timeoutTicks = 4000)
+    public static void anOpPushedPastTheOldCountByLaterExchangesIsTakenOnce(GameTestHelper helper) {
+        fastConfig();
+        TrainRing.holdPrunesForTest(true);
+        forget(helper);
+        ServerLevel level = helper.getLevel();
+        Train[] train = {null};
+        long op = engineOp();
+        long[] exchanges = new long[EXCHANGES];
+        for (int i = 0; i < exchanges.length; i++)
+            exchanges[i] = engineOp();
+        GameTestSequence seq = helper.startSequence()
+                .thenExecute(() -> {
+                    check("the ring is on", TrainRing.available(level.getServer()));
+                    train[0] = ringTrain(helper);
+                })
+                .thenExecute(() -> raid(op, train[0]))
+                .thenWaitUntil(paced(() -> check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)))));
+        for (int batch = 0; batch < EXCHANGES / 16; batch++) {
+            int from = batch * 16;
+            seq = seq.thenExecute(() -> {
+                for (int i = from; i < from + 16; i++)
+                    carriageDelta(exchanges[i], CreateIds.of(train[0].id), IndRecords.CarriageDelta.EXCHANGE,
+                            List.<Object[]>of(new Object[] {0, "i/64/minecraft:iron_ingot", (long) (i % 2 == 0 ? -1 : 1)}));
+            }).thenWaitUntil(paced(() -> check("exchanges applied", commandResults(exchanges[from + 15]).size() == 1)));
+        }
+        seq.thenExecute(() -> {
+                    check("the exchanges left 22 iron", IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT) == IRON - TAKEN);
+                    AppliedOpRing ring = TrainRing.peekForTest(train[0]);
+                    check("the ring holds the raid and every exchange: " + (ring == null ? 0 : ring.size()),
+                            ring != null && ring.contains(op) && ring.size() == EXCHANGES + 1);
+                    CompoundTag tracks = saveTracks(level, train[0]);
+                    journal().rememberAppliedForTest(op);
+                    TrainWatch.forget(train[0]);
+                    train[0] = loadTracks(level, tracks);
+                })
+                .thenExecute(() -> raid(op, train[0]))
+                .thenWaitUntil(paced(() -> check("the raid sent again is answered", commandResults(op).size() == 2)))
+                .thenExecute(() -> {
+                    int second = commandResults(op).get(1);
+                    long iron = IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT);
+                    record("anOpPushedPastTheOldCountByLaterExchangesIsTakenOnce", "J1 after " + EXCHANGES + " exchanges: second answer, iron",
+                            status(second) + ", " + iron);
+                    journal().forgetAppliedForTest(op);
+                    TrainWatch.forget(train[0]);
+                    TrainRing.holdPrunesForTest(false);
+                    check("J1 past " + EXCHANGES + " exchanges: DUPLICATE, answered " + status(second), second == Obs.CommandResult.DUPLICATE_OP);
+                    check("iron on the train 22: " + iron, iron == IRON - TAKEN);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * An idle train's ring empties (RP-250): once the engine's durable save holds the raid's answer, the op
+     * leaves the ring and the next tracks save writes none of the ring's keys.
+     */
+    @GameTest(template = YARD, batch = "train_ring_11", timeoutTicks = 2400)
+    public static void anAcknowledgedOpLeavesTheRing(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        ServerLevel level = helper.getLevel();
+        Train[] train = {null};
+        long op = engineOp();
+        long[] pruned = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the ring is on", TrainRing.available(level.getServer()));
+                    train[0] = ringTrain(helper);
+                    pruned[0] = TrainRing.pruned();
+                })
+                .thenExecute(() -> raid(op, train[0]))
+                .thenWaitUntil(paced(() -> check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)))))
+                .thenWaitUntil(paced(() -> {
+                    engine().requestSaveAtNextStep();
+                    AppliedOpRing ring = TrainRing.peekForTest(train[0]);
+                    check("the engine acknowledged the answer and the op left: " + ring, ring != null && ring.isEmpty());
+                }))
+                .thenExecute(() -> {
+                    check("counted: " + (TrainRing.pruned() - pruned[0]), TrainRing.pruned() > pruned[0]);
+                    CompoundTag tag = trainTag(saveTracks(level, train[0]));
+                    for (String k : ringKeys())
+                        check("the save holds no " + k, !tag.contains(k));
+                    check("the goods stay taken", IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT) == IRON - TAKEN);
+                    record("anAcknowledgedOpLeavesTheRing", "ops pruned", TrainRing.pruned() - pruned[0]);
+                    TrainWatch.forget(train[0]);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The settle with the session's own view (RP-251): a ring saved by another generation comes back with its
+     * answer unknown, whatever the view, because this GameTest's journal names no session that answered it.
+     * The acknowledgement of the old answer then removes nothing; the op sent again is answered DUPLICATE
+     * from the ring, and the acknowledgement of that answer removes it.
+     */
+    @GameTest(template = YARD, batch = "train_ring_12", timeoutTicks = 2400)
+    public static void aRingAnotherSessionAnsweredKeepsItsOpUntilAnAnswerOfThisSessionIsAcknowledged(GameTestHelper helper) {
+        fastConfig();
+        TrainRing.holdPrunesForTest(true);
+        forget(helper);
+        ServerLevel level = helper.getLevel();
+        Train[] train = {null};
+        long op = engineOp();
+        long[] first = {0}, pruned = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the ring is on", TrainRing.available(level.getServer()));
+                    train[0] = ringTrain(helper);
+                })
+                .thenExecute(() -> raid(op, train[0]))
+                .thenWaitUntil(paced(() -> check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)))))
+                .thenExecute(() -> {
+                    long gen = gen();
+                    AppliedOpRing ring = TrainRing.peekForTest(train[0]);
+                    first[0] = ring.answerOf(op);
+                    check("the ring has the answer's sequence: " + ring, first[0] > 0 && ring.gen() == gen);
+                    CompoundTag tracks = saveTracks(level, train[0]);
+                    // As another session saved it: its generation, its answer.
+                    trainTag(tracks).putLong(AppliedOpRing.genKey(TrainRing.KEY), ~gen);
+                    TrainWatch.forget(train[0]);
+                    train[0] = loadTracks(level, tracks);
+                    AppliedOpRing back = TrainRing.peekForTest(train[0]);
+                    RingView view = TrainRing.sessionViewForTest();
+                    record("aRingAnotherSessionAnsweredKeepsItsOpUntilAnAnswerOfThisSessionIsAcknowledged", "the session's view",
+                            view + ", " + (view.unproven() == null ? "proves pages " + view.pages() : view.unproven()));
+                    check("settled on read: the op stays, its answer unknown: " + back,
+                            back != null && back.contains(op) && back.answerOf(op) == AppliedOpRing.UNKNOWN && back.gen() == gen);
+                    pruned[0] = TrainRing.pruned();
+                    TrainRing.holdPrunesForTest(false);
+                })
+                .thenWaitUntil(paced(() -> {
+                    // The old ring object's answer is acknowledged (and pruned there); the read ring's op stays.
+                    engine().requestSaveAtNextStep();
+                    check("the old answer is acknowledged", TrainRing.pruned() > pruned[0]);
+                }))
+                .thenExecute(() -> check("the acknowledgement of the old answer left the op in the read ring",
+                        TrainRing.peekForTest(train[0]).contains(op)))
+                .thenExecute(() -> raid(op, train[0]))
+                .thenWaitUntil(paced(() -> check("the raid sent again is answered", commandResults(op).size() == 2)))
+                .thenExecute(() -> {
+                    int second = commandResults(op).get(1);
+                    check("the ring answers DUPLICATE: " + status(second), second == Obs.CommandResult.DUPLICATE_OP);
+                    check("iron on the train 22", IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT) == IRON - TAKEN);
+                    long at = TrainRing.peekForTest(train[0]).answerOf(op);
+                    check("the DUPLICATE's sequence is the op's answer now: " + at, at > first[0]);
+                })
+                .thenWaitUntil(paced(() -> {
+                    engine().requestSaveAtNextStep();
+                    check("its acknowledgement removes the op", !TrainRing.peekForTest(train[0]).contains(op));
+                }))
+                .thenExecute(() -> TrainWatch.forget(train[0]))
+                .thenSucceed();
+    }
+
+    /**
+     * The settle's three cases through Create's Train.read (RP-251), against a view a test sets: the ring of
+     * the journal's writer (generation W) with the pages through 100 loses an op answered at 5, keeps one
+     * answered at 200 and one never answered, both unknown; another generation's ring, or W's under pages
+     * ahead of the journal file (P29), keeps all three unknown; a ring this session saved keeps its answers.
+     */
+    @GameTest(template = YARD, batch = "train_ring_13", timeoutTicks = 1200)
+    public static void theSettleTakesWhatThePagesHoldAndKeepsTheRestUnknown(GameTestHelper helper) {
+        fastConfig();
+        TrainRing.holdPrunesForTest(true);
+        forget(helper);
+        ServerLevel level = helper.getLevel();
+        long w = 0x5EED_0001L, v = 0x5EED_0002L;
+        long a = engineOp(), b = engineOp(), c = engineOp();
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the ring is on", TrainRing.available(level.getServer()));
+                    Train t = ringTrain(helper);
+                    long gen = gen();
+                    TrainRing.viewForTest(new RingView(gen, w, 100, 150, 151));
+                    try {
+                        AppliedOpRing writers = settled(level, t, a, b, c, w);
+                        check("W's ring under proven pages through 100: the op answered at 5 leaves, the others stay unknown: " + writers,
+                                Arrays.equals(writers.toArray(), new long[] {b, c}) && writers.unknownCount() == 2 && writers.gen() == gen);
+                        AppliedOpRing others = settled(level, t, a, b, c, v);
+                        check("another generation's ring: all stay, unknown: " + others,
+                                Arrays.equals(others.toArray(), new long[] {a, b, c}) && others.unknownCount() == 3);
+                        AppliedOpRing own = settled(level, t, a, b, c, gen);
+                        check("this session's ring keeps its answers: " + own, own.size() == 3 && own.answerOf(a) == 5 && own.answerOf(b) == 200);
+                        TrainRing.viewForTest(new RingView(gen, w, 160, 150, 151));
+                        AppliedOpRing ahead = settled(level, t, a, b, c, w);
+                        check("W's ring under pages ahead of the journal file: all stay, unknown: " + ahead,
+                                Arrays.equals(ahead.toArray(), new long[] {a, b, c}) && ahead.unknownCount() == 3);
+                        record("theSettleTakesWhatThePagesHoldAndKeepsTheRestUnknown", "writer's, other's, own, P29",
+                                writers + " | " + others + " | " + own + " | " + ahead);
+                    } finally {
+                        TrainRing.viewForTest(null);
+                        TrainRing.holdPrunesForTest(false);
+                        TrainWatch.forget(t);
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The valve (RP-250): a train ring of {@link TrainRing#CAPACITY} unacknowledged ops pushes its oldest out
+     * for the next op applied, counts it, and logs the train once; the next eviction is only counted.
+     */
+    @GameTest(template = YARD, batch = "train_ring_14", timeoutTicks = 1200)
+    public static void aFullRingEvictsItsOldestCountsItAndWarnsOncePerTrain(GameTestHelper helper) {
+        fastConfig();
+        TrainRing.holdPrunesForTest(true);
+        forget(helper);
+        ServerLevel level = helper.getLevel();
+        Train[] train = {null};
+        long op = engineOp();
+        long[] before = {0, 0};
+        long[] filler = new long[TrainRing.CAPACITY];
+        for (int i = 0; i < filler.length; i++)
+            filler[i] = 0x7E00_0000_0000_0000L + i;
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the ring is on", TrainRing.available(level.getServer()));
+                    train[0] = ringTrain(helper);
+                    TrainRing.of(train[0]).load(filler);
+                    before[0] = TrainRing.evictions();
+                    before[1] = TrainRing.warnedForTest();
+                })
+                .thenExecute(() -> raid(op, train[0]))
+                .thenWaitUntil(paced(() -> check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)))))
+                .thenExecute(() -> {
+                    AppliedOpRing ring = TrainRing.peekForTest(train[0]);
+                    check("full, the raid in and the oldest out: " + ring.size(), ring.size() == TrainRing.CAPACITY && ring.contains(op)
+                            && !ring.contains(filler[0]) && ring.contains(filler[1]));
+                    check("counted: " + (TrainRing.evictions() - before[0]), TrainRing.evictions() == before[0] + 1);
+                    check("the train is logged once", TrainRing.warnedForTest() == before[1] + 1);
+                    TrainRing.appliedForTest(train[0], ring, engineOp());
+                    check("the next eviction is counted", TrainRing.evictions() == before[0] + 2 && !ring.contains(filler[1]));
+                    check("and not logged again", TrainRing.warnedForTest() == before[1] + 1);
+                    record("aFullRingEvictsItsOldestCountsItAndWarnsOncePerTrain", "evictions, trains logged",
+                            (TrainRing.evictions() - before[0]) + ", " + (TrainRing.warnedForTest() - before[1]));
+                    TrainWatch.forget(train[0]);
+                    TrainRing.holdPrunesForTest(false);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * Train {@code t} saved with a ring of ops a, b, c answered at 5, 200 and never, settled last by generation
+     * {@code gen}, read back through Create's Train.read: the read ring.
+     */
+    private static AppliedOpRing settled(ServerLevel level, Train t, long a, long b, long c, long gen) {
+        CompoundTag tracks = saveTracks(level, t);
+        AppliedOpRing ring = new AppliedOpRing(TrainRing.CAPACITY);
+        ring.load(new long[] {a, b, c}, new long[] {5, 200, 0});
+        ring.gen(gen);
+        ring.writeTo(trainTag(tracks), TrainRing.KEY);
+        Train read = loadTracks(level, tracks);
+        AppliedOpRing back = TrainRing.peekForTest(read);
+        if (back == null)
+            throw new GameTestAssertException("Train.read made no ring");
+        TrainWatch.forget(read);
+        return back;
+    }
+
+    private static long gen() {
+        RtsimSession s = RtsimSession.current();
+        if (s == null)
+            throw new GameTestAssertException("no mic_rtsim session on the server");
+        return s.boundary().gen();
+    }
+
+    /** The ring's three keys in a train's compound. */
+    private static List<String> ringKeys() {
+        return List.of(TrainRing.KEY, AppliedOpRing.answersKey(TrainRing.KEY), AppliedOpRing.genKey(TrainRing.KEY));
     }
 
     // ---- the emulation --------------------------------------------------------------------------
