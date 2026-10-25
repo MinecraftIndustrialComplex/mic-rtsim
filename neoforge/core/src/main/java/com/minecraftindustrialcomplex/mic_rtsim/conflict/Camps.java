@@ -1547,10 +1547,8 @@ public final class Camps {
                     }
                 }
                 case HELD_PAIR -> {
-                    int r = pairNow(level, c, h.epoch(), h.op(), h.mask(), h.line(), now, h.since(), false);
-                    if (r == PAIR_HELD)
-                        held.add(h);
-                    else if (r == PAIR_STALE)
+                    // a pair still held is put back by pairNow's own holdPair: adding h here as well doubled it every pass
+                    if (pairNow(level, c, h.epoch(), h.op(), h.mask(), h.line(), now, h.since(), false) == PAIR_STALE)
                         answerStale(h, now);
                 }
                 default -> {

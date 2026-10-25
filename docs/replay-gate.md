@@ -618,9 +618,11 @@ live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mo
   build reads 8"), `every_gametest_save_carries_and_matches_each_modules_hash` and
   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
-- **The check's fixes** (RP-133, RP-134, MZB-672 amended, MZB-673). A raid held while replaying
+- **The check's fixes** (RP-133, RP-134, MZB-672 amended, MZB-673; the re-check's RP-135 and
+  RP-136). A raid held while replaying
   owes its hunt under the op the session that went on sent, and a replayed HUNT_APPLIED for its
-  district ends the hold first, so the hunt kills once (RP-133, §6.1, §7.4). A tribute stack
+  district ends the hold first, so the hunt kills once (RP-133, §6.1, §7.4); the holds end in the
+  order they were decided and a decision after the replay end hashes the arrival (RP-135, RP-136). A tribute stack
   answered after the pages' save is booked from its replayed answer, so the census does not put
   it down again (RP-134, §4.4). The faction row boxes M9's hunts (216 bytes, MZB-672). No format
   change: RTC9 / META 8.
@@ -677,9 +679,9 @@ party, reaches `train_passed` and counts stale).
   lurk_robberies). Save and load read the same fields in the same order. No migration.
 - **The eight points:** the gate covers every M8 push (§4.4's M8 paragraph); M8 adds no `Cmd` kind,
   so the verdict test's sample already has both of its kinds. RP-57's table has TRAIN_PASSED read
-  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass rolls as
-  live against industry's present (RP-151); after two crashes one can be stale while replaying
-  (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
+  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass is counted
+  and rolls nothing (RP-151, RP-154); after two crashes every pass of the second session up to
+  its world save can be stale while replaying (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
   the arrive order, M7's `rail_held` and the FactionRow pin need no change (RP-153).
 - **GameTests:** M8's (FrostmawGameTests from `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` on,
   RailFrostmawGameTests, RailDirectionsGameTests and MowzieGameTests'
@@ -705,6 +707,19 @@ party, reaches `train_passed` and counts stale).
   reads 9"), `every_gametest_save_carries_and_matches_each_modules_hash` and
   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
+
+**The M8 fixes and the second-pass merges** (feat/mowzie-m8 from 14c896ee; RP-154 to RP-156).
+The merge check's P2: a replayed TRAIN_PASSED is counted and rolls nothing (RP-154, §4.4), so the
+replay never robs a train the live session may have robbed; RP-151, RP-152 (every pass of the
+second session up to its world save, not one train's roll) and RP-57's 0x080D row say so, and
+`lurk_robberies` counts only robberies told to Java. Then M9's merge-check fixes at 42e8fcc3 (RP-133,
+RP-134, MZB-672 amended, MZB-673; two doc conflicts; the FactionRow pin is M9's 216 again with
+hunts boxed, RP-155) and main at a11311aa (M6 landed with its P3s, its fixtures at RTC7 / META 6,
+slice S's ships; no conflict, RP-156). No format change: RTC10 / META 9. The sims regenerated on the
+merged head equal the committed ones but for wall_ms. The fixture tests that read the conflict's
+pages fail on META 9 against main's META 6 fixtures ("meta page version 6, this build reads 9"), the
+same five as on the earlier merges (listed under Fixtures above); the next fixture regeneration
+(the core and create GameTest saves) brings them to RTC10 / META 9.
 
 ## 3. The flag
 
@@ -861,7 +876,8 @@ ahead:
   four that run the clock there (the works grants and raids, TRIBUTE_START, HERD_FOUND) wait for
   the replay end (RP-33, the fix round's item 3): a unit given while replaying that holds one is
   queued, with every unit after it, and taken at the first step after the end. A conflict command
-  waits the same way, as it goes around the gate (§4.4, RP-66). The rest run no clock.
+  waits the same way, as it goes around the gate (§4.4, RP-66), and so do a dragon command, NEST_DAY
+  and a phase 1 advance, which shifts every later record's time (§4.5, RP-74). The rest run no clock.
 
 **The rule.** rtsim-jni keeps `st.replay_clock: Tick` (not saved): set at the SESSION_START arm to
 the world's present, and raised by `shared::catch_up` to each replayed record's world tick before it
@@ -1068,11 +1084,13 @@ through `push` and the gate:
   standing once, at the party's epoch after the floors are lifted. `resend_lurks` drops any
   AMBUSH_SPOT still in the outbox first, as `resend_notices` drops a NOTICE; with the gate's drops
   there is none (rtsim-jni's `replay_end` asserts the same of its queue).
-- **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything. Queued "keep" and
-  "drop" while replaying: it is the station's roar (RP-12), lost for a pass replayed.
+- **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything, which a live session
+  alone makes (a replayed pass rolls nothing, RP-154). Queued "keep" and "drop" while replaying: it
+  is the station's roar (RP-12), and none is decided then.
 - **A robbery's goods** are no `Cmd`: `train_passed` calls `ambush`, whose `infra.raid_train` takes
   them from industry at industry's present, as M7's `Ev::Ambush` does (industry is not held). A
-  replayed pass rolls as live (RP-151).
+  replayed pass is counted and never calls it (RP-154): the live session may have robbed the
+  train, and the replay's attack would be another op that Java applies again.
 - **The swipe and the roar** are Java's: the swipe is a held lurk puppet's strike when a carriage
   comes in its reach (`ConflictBridge`'s strike through the `Lurker`), and the roar plays at the
   station of a train TRAIN_ROBBED names. Neither sends a record the engine acts on.
@@ -1081,8 +1099,8 @@ through `push` and the gate:
   AMBUSH_SPOT. A camp body is handed to a puppet only from this hand-over's SET_OUT lines, which no
   lurk meets (RP-153).
 - **TRAIN_PASSED** is an observation with no op id and no holder (ConflictBridge journals it at
-  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` reads it as live; a
-  copy is folded and dropped (RP-150).
+  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, while
+  replaying, rolls nothing (RP-154); a copy is folded and dropped (RP-150).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
@@ -1096,8 +1114,28 @@ through `push` and the gate:
 | PlaceLair | keep | send | Java places once per field (LairPlacer's saved `fields`) |
 | OilSurvey | keep | send | a query, answered with OIL_CHUNKS |
 | PlaceNest | keep | send | idempotent (boundary.rs) |
-| NestRenew | keep | drop in slice D; send from slice N | not idempotent until it carries its serial (§7.1) |
+| NestRenew | keep | send (slice N; dropped in slice D) | idempotent by its serial: Java applies a renewal only above the nest's last (§7.1, RP-14) |
 | NestSortie | drop | drop | a watched district's fight, re-derived (RP-15) |
+
+As built (slice D, RP-74): `rtsim-ecology/src/outbox.rs`, `gate` an exhaustive `match` over `Cmd`
+with no `_` arm, every push of nest.rs, oil.rs and engine.rs through `Outbox::push`. "Never"
+(Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew sends while replaying
+since slice N, which gave it its serial (RP-230). The tests are the module's own (§4.2).
+
+Three routes go around the gate, and all are tests': rtsim-jni engine/dragons.rs `order_command`
+(`Order::DragonCommand`, TEST mode only) puts a command of any kind straight into the host's queue,
+`Order::NestDay` books the nests' next watch from the engine's own clock, and
+`Order::Phase1Advance` raises the offset every record's game time takes. Their verdict is "wait",
+as conflict's (§4.4, RP-66) and the herds': a unit holding one, and every unit after it, is held to
+the replay end with RP-33's orders (`waits_for_the_replay_end`, RP-74). The audit of the other
+routes (world orders, founding, lair and nest placement, oil, tribute coin) is in RP-74; none else
+goes around.
+
+Not gated, on purpose: the test orders written straight to Java by `take_unit` (SpawnGroup,
+DespawnGroup, SteerGroup, TransferToContainer, and the scripted phase 1 commands Market,
+MerchantOffers, WriteGossip, Sentiment, PlaceHouse, SpawnResident), because phase 1 is not an RP
+module and they are a test's own; and IndustryThreat and IndustryCommand, because industry keeps its
+own clock and its own replay rules (§3.6) and embodies nothing.
 
 ### 4.6 Herds (rtsim-ecology herds/boundary.rs `Cmd`)
 
@@ -1210,7 +1248,14 @@ the agent is embodied as the last session had it:
 - **Dragons** (DRAGON_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; the dragon's
   state becomes Embodied (since: the record's time, depart_at never, purpose home, no harass), its
   abstract leg cancelled, `by_entity` and the embodied index updated, as `materialize` does
-  without the command.
+  without the command. Only a dragon the pages hold is honoured (RP-70): `begin_replay` records the
+  arena's next index, and an agent at or above it names a dragon the last session allocated after
+  the pages, or a different one the replay allocated at that index; its record is a floor only, and
+  the replay opens a body at such an index only on the answer to its own adoption (the plugin
+  answers an ADOPT with a MATERIALIZED that carries the adopted entity): until then no record of
+  the agent (HURT, DIED, a refused spawn, a NOT_EMBODIED) finds a body, whichever of the last
+  session's records the engine saw. A copy (§5.7) names a body that is gone, so it folds the
+  floor only.
 - **Herds** (HERD_MATERIALIZED: agent, epoch, spawned; RP-82): the herd is embodied at the record's
   epoch, with the members the decision picked: the engine's own `members::pick` of `min(spawned,
   alive)` from the herd as it is now (seen members first, then fresh), `since` the time the record
@@ -1242,7 +1287,8 @@ ships at their materialize). The floor is an in-memory map per engine, agent to 
 seen that the agent's own `epoch` does not hold (RP-30). Not the epoch itself: raising a party's
 `epoch` while it is embodied at an older one would make `party_of` and the despawn miss that body's
 records. At `replay_done`, when every agent is abstract, each floor folds into its agent's epoch and
-the map is cleared, so the pages carry it. A floor raised live (a copy after the replay end) waits
+the map is cleared (the dragons keep the floor of an agent nothing has allocated, §5.6), so the pages
+carry it. A floor raised live (a copy after the replay end) waits
 for the agent's next materialize. A restart loses the map; harmless, since no record of one body
 is ever applied to another (RP-8). Each module that has epochs has its own test: an epoch decided
 after the pages and answered in the journal is never decided again after a crash.
@@ -1300,7 +1346,14 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   to run (§6.1); the CHIEF_STATE records held meanwhile applied, the latest for each faction
   (RP-100); then the kept notices go (`resend_notices`).
 - **Dragons:** every embodied dragon resumed where it was last seen (`resume(.., left: true)`),
-  `by_entity` and `chests` cleared, every player's interest leg cancelled.
+  `by_entity` cleared, every player's interest leg cancelled, the epoch floors folded into the
+  dragons' epochs (§5.3); the floor of an agent nothing has allocated stays, for a dragon born there
+  later (RP-75). As built (RP-70, RP-75, RP-78): `session_start` is gone;
+  `begin_replay(from_pages)` changes no dragon (the bodies stay embodied through the replay, §5.1)
+  and clears `chests` (the plugin's, reported again as its chests load; moved from the end to the
+  start, since the replayed LAIR_CHEST records fill it again); `replay_done(w, at)` is a no-op
+  unless a replay runs. rtsim-jni turns the far feed on at the dragons' replay end (Java's far
+  table is per session).
 - **Herds** (RP-86, RP-87): every embodied group abstract (clips' legs cancelled, members'
   `seen.last` set to the replay clock), every player's interest and `pos` forgotten, `puppets` 0, the
   epoch floors folded (§5.3). The herds are left out of the arm's `player_left` (rtsim-jni
@@ -1340,7 +1393,12 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   lowers it, RP-84): nothing founds a herd while replaying, and a herd founded after, on a handle
   the last session used for another herd (the pages lack what it founded after its last save), is
   not the one a copy names (such a copy counts late; its floor still counts).
-- **Dragons:** nothing is carried; a copied DRAGON_MATERIALIZED would raise the floor only.
+- **Dragons:** `Dragons::ingest_copy(w, obs, at)`, called by rtsim-jni when `st.applying_copy` is
+  `Some` (RP-78). Nothing is carried: a copy embodies nothing, and every copy that names an epoch
+  raises the floor to it first, live or replayed (RP-57, RP-75: the floor folds into the dragon's
+  epoch at the next materialize or the replay end). A copy that names a dragon's agent and epoch
+  finds no body, live or replayed, of the pages or of the replay (RP-8, RP-70): it folds the floor
+  only. The kinds that name none (a lair, a hoard, a nest) are as `ingest`.
 - **Ships:** nothing is carried, and every copy, whatever its kind, raises the floor only
   (`Ships::ingest_copy`, RP-97): the handle a copy names may be another ship than the earlier
   session's, so a copy of a sinking or of loot is lost rather than booked to a stranger (§10).
@@ -1352,6 +1410,10 @@ reason NOT_EMBODIED that carries only the agent and the epoch. The engine's Dema
 (rtsim-ecology engine.rs about L3274) reads no reason and takes the zeros: health 0, hunger 0, a rest at
 (0, 0, 0) in dimension 0. Fix in slice D: reason NOT_EMBODIED takes no position, health or hunger; the
 dragon resumes where the engine had it, as a SPAWN_REJECTED does.
+
+Built in slice D (RP-73): `boundary::DEMAT_NOT_EMBODIED = 6`. The arm removes the dragon's
+`by_entity` entries and leaves health, hunger and rest alone; it resumes as `left` if the dragon was
+leaving, the visit over; its adoption stands. Only reason 6 changes (docs/boundary.md §2.3).
 
 ### 5.9 A casualty finds its stack by epoch (RP-27)
 
@@ -1384,7 +1446,10 @@ the cap makes the order not matter.
     from the branches §6.1 holds, and `wave` returns without scheduling the next, since the kept
     band's fight becomes Waiting at the replay end anyway;
   - dragons `materialize` (callers: `seen`, the field flights in oil.rs, engine.rs about 1380 and
-    2695);
+    2695). As built (RP-71, RP-72): `seen` and `Ev::SeenAtLair` return early (counted as deferred);
+    the raids that asked whether a player watches (`raid_home`, `raid_district`, `refuel_arrive`, a
+    nest's sortie) are gated, not held: the abstract raid stands and books what it books either way,
+    the dragon does not come in person, and `materialize` keeps a `defer()` backstop at its top;
   - herds `seen` (also fired by Ev::Seen events from the pages' wheel);
   - ships `materialize_timetabled` and `materialize_pirate` (from `seen`, `seen_ships`, `raid`).
 - **At the replay end:** `shared::simulate` runs after the modules in every step, so the kept
@@ -1495,7 +1560,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   any), a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`), and
   a HUNT_APPLIED for a district a held party of its faction raids (its target, or a district within
   64 blocks of a position target), oldest hold first (RP-133): the held raid owes its hunt before
-  the answer that spends it.
+  the answer that spends it. Whatever the record, the holds it ends go by `since`, and each takes
+  the faction's older holds bound for the same district with it (RP-135): the hunts' ops fold in
+  the one in flight, so a later raid's hold ended alone, or first (a casualty for the later band,
+  Peaceful's handle order), would owe an op chain the session never sent.
   The hold's end runs `party_event` at the record's tick with the hold bypassed inside the slack
   too (`hold_ending`), so the decision resolves unwatched as the session that went on resolved it
   at the hold's tick, and the record then applies to the band as it did there. Before, the record
@@ -1563,6 +1631,14 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   of a band embodied before the decision, journaled between the fight's command and its
   BAND_MATERIALIZED (normally 1 to 2 ticks), ends the hold as unwatched, and the fight's record
   then finds no hold and is lost as RP-56 says. The books hold, one resolution.
+- A HUNT_APPLIED in that window (RP-133), wider than RP-59's deaths and chief kills: any answer
+  of the band's faction for the district it raids ends the hold, an older hunt's answer too, and so
+  does one for any district within 64 blocks of a position target (the answer's district need not
+  be the one its raid lands on: `resolve` takes the first unwatched district near the position,
+  while the bound test ignores whether a district is watched). The held decision then resolves
+  unwatched, as above: the cost is an abstract raid on the district, and a hunt the session that
+  went on never owed (it fought), which the next session's plugin kills after the replay end. It
+  stays rare: the window is normally 1 to 2 ticks, and Java checks its hunts every 20.
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
@@ -1604,9 +1680,14 @@ are decided again. Java may already have applied them before the crash.
   (RG13), and applies a NEST_RENEW only when its serial is above the last under the same life.
 - **Fail safe on an old file:** a Nests SavedData without the serial loads with every nest's owed at
   0 and its last serial at 0: whatever was owed is dropped, never doubled (the lead's condition 4).
-- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest; the owed count
-  stays (the new life's renewals are its own decisions) (RP-19).
-- Until slice N lands, slice D drops NEST_RENEW while replaying (option a's loss, for one slice).
+- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest, unless the nest
+  remembers that life (one of its last eight, RP-232), in which case it goes on from there; the owed
+  count stays (the new life's renewals are its own decisions) (RP-19).
+- Slice D dropped NEST_RENEW while replaying (option a's loss, for one slice). As built (slice N,
+  RP-230 to RP-239): the serial is at offset 32 of the same 40 bytes, the nest row's `renewals`
+  is saved with it (dragons pages RTD8, meta RTN8), the gate sends it while replaying, and Java's
+  Nests keeps a serial per engine life per nest, for the last eight lives (RP-232). A renewal lost in
+  direction A stays lost (RP-235).
 
 ### 7.2 NEST_SORTIE (RP-15)
 
@@ -1640,7 +1721,12 @@ or at the replay end, later than the session that went on decided it. The hunt's
 decision's tick, so `owe_hunt` takes the hold's tick (`hold_ending`), and a replayed HUNT_APPLIED for
 a held raid's district ends that hold first (RP-133): the hunt is owed under the op that session
 sent and its replayed answer spends it, where before the answer found no hunt and the hunt went
-again under a new op at the replay end, killing twice. Live ops are M9's.
+again under a new op at the replay end, killing twice. Live ops are M9's. The tick hashed is the
+arrival's or the siege round's whoever decides it (RP-136): a poll after the replay end decides a
+held arrival live, and hashed from the poll's tick its op would not be the one a second crash's
+replay owes at the hold's, so the answer that session's plugin journaled would name no hunt and the
+hunt would go to a third plugin. The holds a record ends go by `since` with the older holds bound
+for the same district (RP-135).
 
 ## 8. Formats
 
@@ -1648,10 +1734,10 @@ again under a new op at the replay end, killing twice. Live ops are M9's.
 |---|---|---|
 | Conflict, herds, ships pages | none (a held party's poll is an ordinary Ev::Party) | C, H, S |
 | Conflict: a party's row | `unwatched`, the epoch ranges of the fights its unwatched arrivals resolved (RTC11 and META 10 as M10 has them; no bump) (RP-171) | M10a |
-| Dragons pages: nest rows | `renewals: u32` | N |
+| Dragons pages: nest rows | `renewals: u32` (RTD7 to RTD8; the meta RTN7 to RTN8) | N |
 | Dragons pages: the outbox | NestRenew carries its serial | N |
-| Wire: NEST_RENEW | a u32 serial (docs/boundary.md §6.4, DragonRecords) | N |
-| SavedData: Nests | per nest the last serial and its engine life | N |
+| Wire: NEST_RENEW | a u32 serial in the reserved slot at offset 32, size 40 before and after (docs/boundary.md §6.4, DragonRecords) | N |
+| SavedData: Nests | per nest the last serial and its engine life, and the last serial of each of the eight lives before it | N |
 | META | none (META_VERSION 2 is S4p's) | |
 | Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map, `held_over`, `left_embodied`, `lost_until` and the fill's death counts; each engine's epoch floors | C to S |
 
@@ -1819,6 +1905,37 @@ Tests:
 5. `no_dragon_materializes_while_a_long_replay_runs_with_a_player_near`, with its control.
 6. The gate tests (§4.2).
 
+As built (RP-70 to RP-79 in docs/choices-mowzie-build.md):
+1. `outbox.rs`, the gate and its two tests (`every_command_kind_has_its_replay_verdicts`,
+   `a_never_kind_decided_while_replaying_is_counted_and_not_queued`, the second run once with
+   `--release`).
+2. `begin_replay(from_pages)` and `replay_done(w, at)`; `session_start` removed.
+3. `seen`, `Ev::SeenAtLair` and `materialize` return early (RP-71); the honour (RP-70); the floor
+   (RP-75, RP-76's table for all 18 `Obs` kinds, `Obs::agent_epoch`).
+4. `DEMAT_NOT_EMBODIED` (RP-73).
+5. rtsim-jni `engine/dragons.rs` `reset`, `replay_end`, `take_commands`' counts, copies to
+   `ingest_copy`; shared.rs's `replay_end` calls the dragons first (RP-77).
+6. The list is RP-72: `seen` and `SeenAtLair` deferred, `raid_home`, `raid_district`,
+   `refuel_arrive` and the nest sortie gated.
+7. RP-79, with the DragonBridge lines.
+
+Tests: `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (rtsim-jni protocol; control
+`..._after_a_clean_restart`); the epoch tests in rtsim-ecology `tests/replay.rs`
+(`a_replayed_body_does_not_give_its_epoch_to_the_next_one` and its control,
+`an_epoch_that_ended_in_the_replayed_window_is_never_reused`,
+`every_replayed_kind_raises_the_epoch_floor_or_carries_no_epoch`);
+`a_depart_answered_not_embodied_keeps_the_dragon_where_it_was` with
+`a_dematerialized_of_a_held_dragon_takes_its_health_and_position`;
+`a_replayed_untagged_dragon_is_adopted_again_by_its_live_report` with
+`a_live_untagged_dragon_is_adopted_at_once`;
+`no_dragon_materializes_while_a_long_replay_runs_with_a_player_near` with
+`a_dragon_materializes_when_no_replay_runs_with_a_player_near`; and for step 6,
+`a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract` (tests/dragons.rs)
+and `a_watched_tank_in_the_replayed_window_is_raided_without_the_dragon_coming` (tests/oilgate.rs).
+The bypass of the test orders (RP-74's audit), in rtsim-jni protocol, each with a control that has
+no replay: `a_dragon_command_ordered_while_replaying_waits_for_the_replay_end` and
+`a_nest_day_ordered_while_replaying_waits_for_the_replay_end`.
+
 GameTests: `neoforge/gametest.sh iceandfire`.
 
 Opus review checks: as slice C's 1 to 6, for dragons; the field flights' early return leaves the
@@ -1846,6 +1963,14 @@ Tests:
 3. The rtsim-view fixtures (§8).
 
 GameTests: `neoforge/gametest.sh iceandfire`, after deleting the worktree's run-gametest worlds.
+
+As built (fix/replay-nest-serial, RP-230 to RP-239): the engine half is rtsim-ecology's nest.rs
+(`renewals`, `renew`), boundary.rs (the serial at offset 32, the size still 40), persist.rs (RTD8,
+RTN8) and outbox.rs (NestRenew: keep queued, send while replaying); the Java half is Nests.java's
+`Nest.renewed`, with DragonRecords, DragonBridge and the SavedData's `serial` and `life`. Test 1 is
+`a_renewal_after_the_save_is_not_owed_twice_after_a_restore` (tests/nests.rs, both routes), test 2
+is iceandfire's `NestRenewalSerialTest`, and the GameTest `aRenewalDecidedAgainIsNotOwedTwice` is
+compiled and not run. The rtsim-view fixtures need regenerating (the slice N header in choices-mowzie-build.md names the five tests that fail on the bump).
 
 Opus review checks: never doubled on any path (a restore, a repeat, an old file, a new life); the
 serial is the catch-up's own, not a session's; the wire size matches on both sides.
