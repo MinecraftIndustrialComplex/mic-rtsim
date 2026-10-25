@@ -2870,6 +2870,10 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
     `strayHold` keeps the age of the hold, and once it is HOLD_MAX ticks old runs the 81-chunk scan once every 100
     ticks instead of each tick. With saving off (`/save-off`: vanilla skips the entity manager's `autoSave`, the only
     thing that clears a C2ME-dropped unload) a late den waits for saving to resume.
+  - The hold's reach (re-check P3): `strayChunkHidden` skips a chunk of the 9 x 9 square whose nearest point to the
+    spot is beyond the radius (the radius is a circle, the square its bounding box). Not taken: skipping the hold when
+    the footprint's own strays already fill the free slots (`wideStrays` counts `freeSlots - strayInside`), since it
+    needs the footprint scan on every held tick for a case that only delays the census.
 - **MZB-661** (M5 C2ME diagnosis; P2): `byUuid` (REMOVE, TAKE and ADOPT by UUID) was `level.getEntity`, which
   misses a body whose chunk is hidden: NOTHING was answered and the stray lived. When `getEntity` misses it now
   falls back to the camp's own index (`live(faction)`) by UUID, with the level checked. GameTest
