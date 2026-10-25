@@ -868,29 +868,21 @@ fn an_unchanged_difficulty_changes_nothing() {
 fn a_deferred_record_spends_its_op_id() {
     let mut r = Run::new(42, quiet_goblins());
     let op = 0xABCD;
-    assert!(Conflict::later(&Obs::CampDeath(boundary::CampDeath {
-        faction: synth::CAMP,
-        by: boundary::BY_MOB,
-        body: 1,
-        flags: 0,
-        slot: 0,
-        generation: 0,
-        killer: (0, 0),
-        op,
-    })));
-    r.ingest(
-        Obs::CampDeath(boundary::CampDeath {
+    // The camp records got their engine half in M4 (MZB-150); the tribute's ChiefPaid is a later
+    // slice's.
+    let paid = || {
+        Obs::ChiefPaid(boundary::ChiefPaid {
             faction: synth::CAMP,
-            by: boundary::BY_MOB,
-            body: 1,
-            flags: 0,
             slot: 0,
             generation: 0,
-            killer: (0, 0),
+            flags: 0,
+            player: (0, 0),
             op,
-        }),
-        Tick(5),
-    );
+            items: Vec::new(),
+        })
+    };
+    assert!(Conflict::later(&paid()));
+    r.ingest(paid(), Tick(5));
     assert!(r.c.op_applied(op), "spent");
     let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     assert!(back.op_applied(op), "and saved");
