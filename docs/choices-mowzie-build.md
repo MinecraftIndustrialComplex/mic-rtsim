@@ -7395,7 +7395,8 @@ the slice's head.
 
 - **RP-270** (every op id derives with the decision's own tick): `Engine::decided` (engine.rs:418; not
   saved, `new` and `restore` set it to `now`, 578 and 6268; **amended by RP-259: saved in the globals
-  page after `now`, IGB2, since pages can be taken in the middle of a hand-over**) is the tick of the decision the engine makes:
+  page after `now`, IGB2, since pages can be taken in the middle of a hand-over; `now` there when
+  no coverage mark is pending**) is the tick of the decision the engine makes:
   `session_start` sets it to its `at` (817), each cluster breakpoint in `fire_until` to its tick (858),
   each wake to its tick (871), `ingest_obs` to the record's own `t.at` once the clock has moved to
   `max(t.at, now)` (918), and `threat_with` to the threat's `t.at` (4984). The sites:
@@ -7639,7 +7640,18 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     fixture) on 2a975cc3: the live DepositDelta 0x4962c4fe7b7be699 against the replayed
     0x49274e3eaf93756b (both -4,450, applied twice), and chunk (2,0)'s round at epoch 2 live
     (0x49751b6c400ef275) against epoch 1 replayed (0x4936eee15bcf6a85). The globals page now holds
-    `decided` after `now` (engine.rs:5965 and 6309, IGB2). Passes.
+    `decided` after `now` (engine.rs:5972 and 6317, IGB2). Passes. It holds `now` instead when no
+    coverage mark is pending (`dirty` empty), as `restore` set it before: nothing else reads
+    `decided` before the next decision sets it (the record trigger at 916 runs a flush with nothing
+    to flush and a drain the restore's own drain covers, every network's inputs as saved; the
+    derives at 3422, 3448, 3768 and 4012 run after a record, wake, breakpoint, threat or session
+    start has set it). Found by the workspace run: with `decided` always saved,
+    `gametest_worlds_open_in_the_host_with_their_saved_state` (rtsim-host, core world, "with seasons
+    turning, the fast stride agrees with 20 ticks") failed on `industry`, since the host's season
+    feed stamps IND_CONDITIONS at the hand-over's time, a stride late at the fast stride, and the
+    page took that tick; it passes with the page canonicalized. The other way round (`now` always
+    written) fails the P1-1 test (the live DepositDelta 0x493084c28fd26f77 against the replayed
+    0x497ebe941c4c243f).
   - **P1-2, a command answered FAILED live is never written after the replay end.** Java keeps only
     the ops it applied (Journal.java:221), so a copy of an op it answered FAILED is applied.
     `an_exchange_answered_failed_live_is_not_applied_after_a_crash` (rtsim-jni tests/industry.rs, 3
@@ -7768,7 +7780,8 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     `journaled`'s `!l.enabled` return (590).
 
   **Mutation checks** (one site's `decided` replaced by `self.now`, or the hold removed; rtsim-industry's
-  and rtsim-jni's lib and integration tests run; the source restored):
+  and rtsim-jni's lib and integration tests run; the source restored; the three `decided` sites run
+  again on the canonicalized head, with the same failures and numbers):
   - `reconcile_round`'s immediate DepositDeltas (3422; 3395 on 2a975cc3):
     `stale_records_rederive_their_rounds_deposit_deltas` fails (the live deposit op
     0x49ef3d7ac3997437 against the replayed 0x493084c28fd26f77, `now` 9,500 against 8,200).
@@ -7782,3 +7795,17 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     `a_reconcile_applies_once_when_the_world_save_holds_its_result` and
     `pages_behind_the_world_save_rederive_the_same_reconcile` fail (24 of 27 pass). The exchange
     tests pass without the hold: RP-270 alone removes that double (RP-274's last paragraph).
+  - The globals page writing `now` always (engine.rs:5972's condition `true`):
+    `pages_taken_after_a_stale_record_rederive_its_rounds` fails (P1-1 above). Writing `decided`
+    always fails the host test (P1-1 above).
+
+  **Checks** (at 8702f936): the workspace tests, 1,851 passed, 7 failed, 26 ignored. The 7 are the
+  saved-world fixtures that IGB2 makes unreadable until the lead regenerates them: rtsim-cli's
+  glass (`glass_reads_a_create_gametest_save_and_writes_nothing`) and stores (2), rtsim-view's
+  fixtures (3) and unreadable (`a_district_whose_pages_go_away_is_not_cached_and_names_no_path`).
+  rtsim-host's GameTest worlds open with a fresh industry engine (`Link::load` starts afresh on a
+  format it cannot read) and pass. Clippy on rtsim-industry and rtsim-jni (all targets, `-D
+  warnings`): clean. Rustfmt (stdin, edition 2024) on the 8 touched Rust files, all clean at
+  2a975cc3: clean. The six sims (industry, conflict, dragons, herds, ships, mowzie) against
+  2a975cc3: only `wall_ms` differs; the sims make no crash and report the world and the books, not
+  op ids or command counts.
