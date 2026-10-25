@@ -1031,7 +1031,13 @@ fn a_new_session_makes_groups_abstract_and_the_same_animals_return() {
     let now = r.h.now();
     let legs_before = r.legs.len();
     r.fake = FakeHerds::default();
-    r.h.session_start(&mut r.legs, now);
+    // A new session: the replay begins and, with nothing to replay, ends (docs/replay-gate.md §2.1).
+    r.h.begin_replay(true);
+    assert!(
+        r.h.herd(f).unwrap().embodied.is_some(),
+        "the replay's start changes no group (RP-5)"
+    );
+    r.h.replay_done(&mut r.legs, now);
     assert!(r.h.herd(f).unwrap().embodied.is_none());
     assert!(
         r.legs.len() < legs_before,
