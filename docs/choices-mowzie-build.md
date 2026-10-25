@@ -7400,8 +7400,14 @@ the engine's acknowledgement of each op's answer, not by a count.
   its goods change: the pages ahead of the world save, P29, which no dedup can mend and which pruning
   does not change), from between the application and the prune (it holds the op, an extra entry the
   next start settles, RP-251), or from after the prune (it lacks an op the engine never sends again).
-  Cost: 8 bytes an op and 8 an answer, while unacknowledged, in create_tracks.dat at every save and in
-  memory; at most 64 KiB of each a train at the valve.
+  Cost: 8 bytes an op and 8 an answer, while unacknowledged, in create_tracks.dat at every save, at
+  most 64 KiB a train at the valve. In memory the ring is a `LinkedHashMap<Long, Long>`, about 60 to
+  80 bytes an entry, so about 250 to 320 KiB for a train at the valve (the Opus re-check's P3-1; the
+  64 KiB first written here was the NBT's size only). Slice R drops a command decided while
+  replaying when its op was answered during the replay. Had it dropped APPLIED answers too, an op
+  answered in J1 and decided again during the replay would never be resent, and its UNKNOWN entry
+  would stay until the valve. R drops FAILED answers only (the re-check's P2 against R), and a FAILED
+  op is never in a ring, so R adds no leftovers to RP-255's.
 - **RP-251** (the settle; the lead's seq-reuse check): an answer `at` is a sequence of the session
   that journaled it, and a later session reuses the sequences a crash's lost journal tail had. The
   lead's case: W writes the tracks with X answered at 95 and dies with its journal on disk at 90 and
@@ -7593,6 +7599,25 @@ the engine's acknowledgement of each op's answer, not by a count.
   failed "the op is not applied again: answered APPLIED": the save with the module off held Create's
   20 keys and no ring key, and the raid sent again was applied, 12 iron left on the train (train and
   raider 22 of 32, a double).
+  Amended after the Opus re-check of 6ef5acc4: the prune while the module is off, and the settle at
+  the session's start, are safe only once the engine hears the answers Java gave while the module was
+  on. That is the SEC-1 lead's option A (561aae96 on test/engine-ack-never-resends, slice U), so T2
+  lands only after A is on main or with it. Without A this is the ordering:
+  1. X is applied with the module on and answered APPLIED at S, and S waits in the journal's backlog.
+  2. A config reload turns the module off, and the next hand-over writes MODULES(off) ahead of S
+     (`BoundarySession.flushPreamble` writes MODULES before `journal.drainInto`).
+  3. The engine ignores S while off (`journaled`'s off branch) and keeps X in its outbox.
+  4. An ack at or past S prunes X here.
+  5. The module comes back on, `set_enabled` resends the outbox, and X is applied twice.
+  The settle at the next start drops X the same way after a stop. The sentence above, "an answer
+  acknowledged while the module was off has already left by then", assumes the engine heard that
+  answer, and before A it did not. The re-check's probe
+  (`ack_never_resends::an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack`)
+  fails at b5f3c55f, whose engine differs from this branch's on that path only by a stat counter, and
+  passes with A (7 of 7). Main has the same double through the journal's op index, which is trimmed
+  at the ack. Holding the prunes while off would close only the in-session case, not the settle, so
+  it is not taken. `train_ring_7`'s tail (the op leaves the ring while the module is off) is safe only
+  with A.
 - **RP-258** (the train ring across rollbacks of the engine's pages; T2's half of the coordinator's
   split with the SEC-1 lead, which takes the crash points of industry ops answered live): rtsim-jni
   host tests, on the real engine, of the property the ring's prune rests on: once the engine has
