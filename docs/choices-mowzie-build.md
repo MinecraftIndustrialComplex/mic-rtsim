@@ -8484,6 +8484,32 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
   `mowzie_records.rs`, files M10c does not own, so that merge was not made (a `UU` in a file not edited is a stop).
   **`origin/main` (d64f4eb8) was merged instead** (e94585ba): it conflicted only in this file (the design records), where
   the branch's side was kept. The tests use `ChunkWait`'s two clocks as the brief says.
+- **MZB-741** (the stop's GameTests; step 3): the two stop tests run at simulation distance 8 and 4. A GameTest server's
+  simulation distance is changed for the test and restored when it ends, pass or fail. The square the tests compare
+  against is `ConflictBridge.stopSquare(pcx, pcz, simulationDistance)`, a public static that is the bridge's own
+  (`StopSquare.square`), so a change of the inset moves no test and the tests never restate the inset. `Stack` and `Party`
+  gained read-only accessors for the GameTests in step 2 (`trimDue()`, `back()`, `side()`, `chief()`, `anchorAt(now)`); none
+  of them changes a field.
+- **MZB-742** (the Mowzie march tests; step 8): four tests in `MarchMowzieGameTests`, all in a far place of their own
+  (`MowzieKit.Far`), none run by the implementer (the build rule). Test 32 is two methods, the in-view half
+  (`aBandWalksHomeInViewAndIsHandedBack`) and the out half
+  (`aGroveThatIsOutRecallsItsBandAndTheNextCensusSpawnsItsBodies`); test 28's Java half
+  (`aGroveThatComesInTakesWhatItsMarchLeft`) is one method with two groves 320 blocks apart (past Rule U's 160), one with a
+  player near when it comes in and one without, so the held removal and the free take are each proved in the same run;
+  test 22's march case is `aBandSetsOutAndComesHomeInPlainView`.
+- **MZB-743** (what "no body appears or vanishes" means in a test): a per-tick sampler (`MowzieKit.everyTick`, so at the end
+  of the tick) lists the jar's warriors of an area and its difference from the last tick. A vanishing and an appearance are
+  one swap when they are within two ticks and six blocks (a hand-off) of each other. The tests then say what each swap
+  must carry (health within 1.5, mask, weapon) and which events are left over (the taken or the spawned fourth body), and
+  that no event happens within 128 blocks of the player (test 22). The positions tolerances are four blocks for a body
+  handed back and six for a puppet made at a body's place (a puppet walks a tick between the two reads). If they prove too
+  tight on a first run the failure line holds the distance, so the tolerance can move on a measured value.
+- **MZB-744** (what could not be written, and why): the Umvuthi's puppet and its throne part are M11's, so no test here
+  puts the chief in a band that is handed back; test 28's engine half (the Invasion still reaches its target; pool plus
+  away stay at the cap) and the engine's count of the march belong to the rtsim-jni protocol tests; the "band met walking
+  home is embodied" variant of test 32 is test 33 (core). Forms that move are driven by `ConflictKit.steer` at 0.2 blocks
+  a tick so the walk is in the test and the recall reads the real anchor; the stationary form is only written for the
+  out half's idle (40 ticks, about 8 blocks), where the puppets walk toward the centre over unloaded chunks.
 
 ## M11 Aloft
 
