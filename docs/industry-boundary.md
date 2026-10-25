@@ -334,6 +334,10 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   delta by good first (IR11): Destroy's level-wide pollution (greenhouse, ozone depletion, acid rain)
   goes as IND_DEPOSIT_DELTA every `live_pollution_ticks` while its district replays (I14: "level-wide
   types apply live while unloaded"), the rest at the reconcile; chunk types ride the chunk's reconcile.
+  A deposit delta's dedup is the store's own ring of applied ops, saved in the store's file (Diesel's
+  `cdg_oil_chunks`; a level attachment beside Destroy's level pollution, and the district pollution
+  ledger's own), or the journal's applied set; the journal's file is the last SavedData a world save
+  writes (docs/choices-journal-barrier.md RP-200, RP-204, RP-207).
 - **IND_WRITE_CHAIN** (SECTIONS.md §2.5, SC113): whole packages into the frogport's inventory while
   its chunk is loaded, addressed to its filter, as many as fit with one slot kept free (a package
   Create is catching lands there). Java journals one IND_CHAIN_PACKAGE `CHAIN_IN` with the command's

@@ -208,7 +208,10 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     given-up note's ops out of the applied set and having the engine resend them (turning A into B) needs a
     per-op resend list in the engine; it is a follow-on. A disk that never recovers keeps the journal's
     file old for as long as it lasts: logged once past 10,000 applied ops behind, and a crash then replays
-    from the older file.
+    from the older file. The fixed rings of 256 (T2's train ring, RP-192, and the port's, RP-206) were
+    sized for a hold of at most four autosaves; a hold that lasts hours can push a busy train's or port's
+    op out before the journal's file holds it, and a crash then applies its resend again
+    (`DurableOpRing`'s trim by the journal's mark does not have this limit).
 - **RP-206, the station port's ring (to build once slices T and T2 land; PATCHES.md row 87).**
   - *Chosen.* IND_WRITE_PACKAGE's offline buffer is in `create_tracks.dat` inside each GlobalStation's
     port entry. An `AppliedOpRing` of 256 (T2's class, unchanged) goes in that entry under
