@@ -540,7 +540,6 @@ pub(crate) fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64, fe
     }
 }
 
-/// Least-squares slope from sums.
 /// One counted store's residue as the report shows it (SECTIONS.md §8.1, choice SC168): the
 /// store's residue per good ([`Compiled::sample_counted`]'s `r`) at the sweep that took the
 /// baseline, and at the latest sweep that counted every pair at it. Not saved: the report is
@@ -603,6 +602,7 @@ fn note_residue(
     }
 }
 
+/// Least-squares slope from sums.
 fn slope(n: f64, st: f64, stt: f64, sy: f64, sty: f64) -> f64 {
     let d = n * stt - st * st;
     if d <= 0.0 {

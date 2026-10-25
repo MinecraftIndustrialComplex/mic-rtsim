@@ -172,6 +172,14 @@ fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
             assert!(view.reasons().contains_key(l), "{l} says why it is empty");
         }
     }
+    let unread = view.saved().industry.as_ref().unwrap().glass_unread.len();
+    if unread > 0 {
+        let why = &view.reasons()["industry.sections"];
+        assert!(
+            why.contains("glass page") && why.contains("did not read"),
+            "{why}"
+        );
+    }
     let id = view.saved().industry.as_ref().unwrap().stores[0].id.0;
     let view = Arc::new(view);
     let app = mic_viewer::viewer::App::new(Arc::clone(&view));

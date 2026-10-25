@@ -544,6 +544,14 @@ impl IndustrySource for IndustryView {
         }
     }
 
+    fn glass_why(&self) -> Option<String> {
+        let (n, first) = (self.glass_unread.len(), self.glass_unread.first()?);
+        Some(format!(
+            "{n} glass page{} did not read, so their sections and networks are left out ({first})",
+            if n == 1 { "" } else { "s" }
+        ))
+    }
+
     fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
         let lo = self.stores.partition_point(|s| s.id.0 < ids.start);
         for s in self.stores[lo..].iter().take_while(|s| s.id.0 < ids.end) {
