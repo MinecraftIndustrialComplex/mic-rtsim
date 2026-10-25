@@ -52,6 +52,10 @@ pub const STACK_ITEMS: i64 = 64;
 const HEIR_RETRY: u64 = TICKS_PER_DAY / 24;
 /// The slot space of the tribute transfers' op ids (`rtsim_world::ribbits::identity_op`).
 const TRIBUTE_SLOT: u64 = 0x4d5a_0009 << 32;
+/// The stack indexes from a camp's count a replayed answer is looked for at (RP-134): the session
+/// that went on decided one stack at a time, each after the last one's answer, but a stack the
+/// link failed itself (rtsim-jni `fail_tribute`, which journals nothing) still took its index.
+const REPLAYED_STACK_WINDOW: u32 = 8;
 
 /// A slot's state (MOWZIE.md §4.9's table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1803,6 +1807,10 @@ impl Conflict {
             Ok(i) => camp.owed_tribute[i].1 += a,
             Err(i) => camp.owed_tribute.insert(i, (g, a)),
         }
+        // A replayed answer to a stack of this tribute is looked up in this camp (RP-134).
+        if self.outbox.replaying() && !self.tribute_owing.contains(&f) {
+            self.tribute_owing.push(f);
+        }
         self.place_tribute(w, f, at);
     }
 
@@ -1901,10 +1909,12 @@ impl Conflict {
     }
 
     /// The plugin put a stack in its chest (APPLIED or DUPLICATE_OP): the amount is no longer owed,
-    /// and the next stack goes. False for an op that is not a tribute stack.
+    /// and the next stack goes. While replaying, an answer to a stack no placing holds is booked
+    /// by its op ([`Conflict::replayed_placed`], RP-134). False for an op that is not a tribute
+    /// stack.
     pub fn tribute_placed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
         let Some((f, p)) = self.unplace(op) else {
-            return false;
+            return self.replayed_placed(w, op, at);
         };
         if let Some(camp) = self.camp_mut(f)
             && let Ok(i) = camp.owed_tribute.binary_search_by_key(&p.good, |e| e.0)
@@ -1921,10 +1931,11 @@ impl Conflict {
 
     /// The plugin could not put a stack in its chest (FAILED): the goods go back to the faction's
     /// stock, the tribute is still owed, and the chest is forgotten until the plugin names one
-    /// again.
+    /// again. While replaying, an answer to a stack no placing holds is booked by its op
+    /// ([`Conflict::replayed_failed`], RP-134).
     pub fn tribute_failed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
         let Some((f, p)) = self.unplace(op) else {
-            return false;
+            return self.replayed_failed(op);
         };
         let node = self.factions[f as usize].node;
         if let Some(camp) = self.camp_mut(f) {
@@ -1932,6 +1943,85 @@ impl Conflict {
         }
         let good = GoodId(u16::try_from(p.good).unwrap_or(0));
         w.stock_from_players(node, &BTreeMap::from([(good, p.amount)]), at);
+        true
+    }
+
+    /// The stack a replayed answer names when no placing holds it (RP-134): the session that went
+    /// on decided it after the pages' save and Java answered it, and the replay, whose camps are
+    /// out, decides none. Its op is [`tribute_op`] of the camp, the index, the good and the
+    /// amount, so it is found among the camps that owe tribute in the replay
+    /// (`tribute_owing`), at the indexes from the camp's count ([`REPLAYED_STACK_WINDOW`]), the
+    /// goods owed and every whole-item amount up to a stack and what is owed: the faction, the
+    /// index, the good and the amount. None outside a replay: live, every stack in flight is a
+    /// placing.
+    fn replayed_stack(&self, op: u64) -> Option<(u32, u32, u32, i64)> {
+        // A tribute op is the core's namespace, 55 bits (`identity_op`).
+        if !self.outbox.replaying() || op >> 55 != 0 {
+            return None;
+        }
+        for &f in &self.tribute_owing {
+            let key = self.factions[f as usize].key;
+            let Some(camp) = self.camp(f) else {
+                continue;
+            };
+            for &(g, owed) in &camp.owed_tribute {
+                let most = owed.min(STACK_ITEMS * MILLI) / MILLI;
+                for n in camp.stacks..camp.stacks.saturating_add(REPLAYED_STACK_WINDOW) {
+                    for k in 1..=most {
+                        if tribute_op(key, n, g, k * MILLI) == op {
+                            return Some((f, n, g, k * MILLI));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// A replayed APPLIED or DUPLICATE_OP for a stack no placing holds (RP-134): Java put it in its
+    /// chest, and answers its op DUPLICATE_OP while the journal holds this answer, so it is booked
+    /// as the session that went on booked it. The goods leave the stock to the players (the
+    /// replay never took them), the amount is no longer owed, the camp's count passes the stack,
+    /// and its chest has a slot less until the plugin says otherwise. The census after the replay
+    /// decides the next stack, not this one again from a stock that has moved.
+    fn replayed_placed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+        let Some((f, n, g, amount)) = self.replayed_stack(op) else {
+            return false;
+        };
+        let node = self.factions[f as usize].node;
+        let good = GoodId(u16::try_from(g).unwrap_or(0));
+        // What the stock holds of it: the replay held the stack's goods from the decision to here,
+        // so a market that took more meanwhile leaves less to take.
+        w.stock_to_players(node, &BTreeMap::from([(good, amount)]), at);
+        let Some(camp) = self.camp_mut(f) else {
+            return false;
+        };
+        camp.stacks = camp.stacks.max(n + 1);
+        if let Some(c) = camp.chest.as_mut() {
+            c.free = c.free.saturating_sub(1);
+        }
+        if let Ok(i) = camp.owed_tribute.binary_search_by_key(&g, |e| e.0) {
+            camp.owed_tribute[i].1 -= amount;
+            if camp.owed_tribute[i].1 <= 0 {
+                camp.owed_tribute.remove(i);
+            }
+        }
+        self.stats.tribute_stacks += 1;
+        true
+    }
+
+    /// A replayed FAILED for a stack no placing holds (RP-134): the camp's count passes the stack
+    /// and the chest is forgotten, as the session that went on did. The goods stay in the stock,
+    /// which the replay never took them from, and the tribute is still owed.
+    fn replayed_failed(&mut self, op: u64) -> bool {
+        let Some((f, n, _, _)) = self.replayed_stack(op) else {
+            return false;
+        };
+        let Some(camp) = self.camp_mut(f) else {
+            return false;
+        };
+        camp.stacks = camp.stacks.max(n + 1);
+        camp.chest = None;
         true
     }
 
@@ -1962,12 +2052,18 @@ impl Conflict {
     /// command is per session (docs/boundary.md §9.4); the camp's next census is reconciled
     /// afresh. A feud waiting on lines is planned again.
     pub(super) fn camp_session_start(&mut self, f: u32) {
+        let mut owes = false;
         if let Some(camp) = self.camp_mut(f) {
             camp.epoch = 0;
             camp.refill = camp.refill.wrapping_add(1);
             camp.refill_at = None;
             camp.chest = None;
             camp.void();
+            owes = !camp.owed_tribute.is_empty();
+        }
+        // A replayed answer to a stack of what it owes is looked up in this camp (RP-134).
+        if owes && self.outbox.replaying() && !self.tribute_owing.contains(&f) {
+            self.tribute_owing.push(f);
         }
         let now = self.now;
         self.unblock(f, now);
