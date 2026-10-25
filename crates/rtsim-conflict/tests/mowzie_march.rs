@@ -287,3 +287,112 @@ fn a_fallen_chief_marks_the_band_it_led() {
     assert_eq!(m.flags & boundary::MARCH_CHIEF, 0, "no longer led");
     assert_eq!(m.phase, boundary::MARCH_HOME, "and the band routs home");
 }
+
+// ---- the band's end and the replay gate (MZB-451, MZB-484, MZB-486, RP-170) --------------------
+
+fn peaceful() -> Obs {
+    Obs::Difficulty(boundary::Difficulty {
+        difficulty: boundary::DIFFICULTY_PEACEFUL,
+    })
+}
+
+/// The engine as a restart brings it back: loaded from its save, the session's replay begun.
+fn restart(r: &mut Run) {
+    r.c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    r.c.begin_replay(true);
+}
+
+/// MZB-451: `home` ends the band with an ENDED record, one revision past the last, and the row
+/// goes; the take after sends nothing for it.
+#[test]
+fn a_band_that_ends_sends_one_ended_record() {
+    let mut r = Run::new(45);
+    let band = r.raid();
+    r.flush(Tick(21));
+    r.ingest(peaceful(), Tick(30));
+    let muster = r.c.parties[band].until;
+    r.run(muster);
+    assert!(!r.c.parties.contains(band), "the raid stood down");
+    let sent = r.sent_for(band);
+    assert_eq!(sent.len(), 2, "mustering, then its end");
+    let end = &sent[1];
+    assert_eq!(end.revision, 2);
+    assert_ne!(end.flags & boundary::MARCH_ENDED, 0);
+    assert_eq!(end.agent, Party::agent(band));
+    // Nothing more for it, whatever the next takes hold.
+    r.run(muster + 2_000);
+    assert_eq!(r.sent_for(band).len(), 2);
+}
+
+/// MZB-484, RP-170: while the session's replay runs no march record is built and no flag is
+/// cleared; the first take after `replay_done` sends each party once, with what the replay left,
+/// one revision past what the restart's pages held.
+#[test]
+fn no_march_record_is_built_while_replaying_and_the_first_take_after_sends_each_party_once() {
+    let mut r = Run::new(46);
+    let a = r.raid();
+    let b = r.raid();
+    r.flush(Tick(21));
+    let muster = r.c.parties[a].until.max(r.c.parties[b].until);
+    r.run(muster);
+    assert_eq!(r.sent_for(a).len(), 2);
+    restart(&mut r);
+    assert!(r.c.replaying());
+    let before = [r.c.parties[a].march_rev, r.c.parties[b].march_rev];
+    assert!(r.c.parties[a].march_due && r.c.parties[b].march_due);
+    for _ in 0..2 {
+        let cmds = r.c.take_commands();
+        assert!(marches_of(&cmds).is_empty(), "none built while replaying");
+    }
+    assert!(
+        r.c.parties[a].march_due && r.c.parties[b].march_due,
+        "flags kept"
+    );
+    assert_eq!(
+        [r.c.parties[a].march_rev, r.c.parties[b].march_rev],
+        before,
+        "no revision moved"
+    );
+    r.c.replay_done();
+    let got = marches_of(&r.c.take_commands());
+    assert_eq!(got.len(), 2, "each party once");
+    assert_eq!(
+        got.iter().map(|m| m.agent).collect::<Vec<_>>(),
+        vec![Party::agent(a), Party::agent(b)]
+    );
+    assert_eq!(got[0].revision, before[0] + 1);
+    assert_eq!(got[1].revision, before[1] + 1);
+    assert!(marches_of(&r.c.take_commands()).is_empty(), "and no more");
+}
+
+/// MZB-484: a band that ends while the replay runs sends no ENDED record: Java's map never held it.
+/// The replay end sends the others, and nothing for the one that is gone.
+#[test]
+fn a_band_that_ends_while_replaying_sends_no_end() {
+    let mut r = Run::new(47);
+    let a = r.raid();
+    let b = r.raid();
+    r.flush(Tick(21));
+    restart(&mut r);
+    // `a` stands down at its muster's end, as Peaceful ends every mustering war band.
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &peaceful(), Tick(30));
+    let muster = r.c.parties[a].until;
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, muster);
+    assert!(!r.c.parties.contains(a), "the band ended in the replay");
+    assert!(!r.c.parties.contains(b), "and so did the other");
+    let dropped = r.c.replay_gate_counts();
+    assert!(
+        marches_of(&r.c.take_commands()).is_empty(),
+        "no ENDED while replaying"
+    );
+    assert_eq!(
+        r.c.replay_gate_counts(),
+        dropped,
+        "none was pushed to be dropped"
+    );
+    r.c.replay_done();
+    assert!(
+        marches_of(&r.c.take_commands()).is_empty(),
+        "and nothing for what is gone"
+    );
+}

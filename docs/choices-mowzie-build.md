@@ -7336,7 +7336,9 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   not in a column" is replaced by MZB-469 to MZB-472.
 - **MZB-484** (no M10 push while the session's replay catches up): under rtsim-jni, `take_commands` moves the
   whole outbox into the JNI queue after every ingest, so the engine's `outbox.retain` filters never see a
-  command pushed while `replaying`. Each M10 push is therefore gated where it is made:
+  command pushed while `replaying`. Each M10 push is therefore gated where it is made. (Since slice C, "at the
+  push" is also the outbox's `gate`, exhaustive over every kind, with a verdict per kind while replaying;
+  BAND_MARCH's is drop, MZB-486. The guards below stay: they keep the revision and the flags from moving.)
   - **BAND_MARCH.** `take_commands` builds no march record while `self.replaying`. It leaves `march_due` and
     the flags as they are. `home` pushes its ENDED record only when not replaying, though the flag and the
     row go either way.
@@ -7868,6 +7870,16 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   216 and M8's RP-153 point 7 now says so. No `run-gametest/world` existed in any project of this worktree to
   delete. The saved state is **RTC11 / META 10**, magic `RTCB` (M8's is `RTCA`; M10 lands after M8), no
   migration.
+- **MZB-486** (BAND_MARCH's gate; amends MZB-484's "gated where it is made"): `Cmd::March` was already a kind
+  with a row in slice C's gate, with the verdicts drop and send (docs/replay-gate.md §4.4), before it had a push
+  site. M10 pushes it from two places, `take_commands` (the march records) and `home` (a band's end), and
+  guards both on `!replaying`. The outbox gate (outbox.rs `gate`, exhaustive, RP-170) is the backstop at the
+  push that MZB-484 asked for: its verdict is now **drop while replaying**, not send, since a record sent
+  from a replay would carry a stale revision and Java's map is a session's. Queued at the session start it
+  drops as well (the verdict was already drop). The verdict test's sample line and the §4.4 row move with it.
+  Fork taken: this changes an existing row, which the lead's brief did not name, and the conservative option
+  is the stricter one (nothing sent while replaying); the first take after the replay end sends every party
+  once (MZB-451), so nothing is lost.
 
 ## M11 Aloft
 
