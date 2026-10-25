@@ -888,6 +888,45 @@ fn the_honour_lands_on_a_ship_the_pages_held_not_one_the_replay_allocated() {
     assert_eq!(s.next_epoch(pirate), 4);
 }
 
+/// A floor for a ship the engine does not have yet survives the replay end (RP-92): a record of
+/// the last session names the epoch of a ship the pages did not hold and the replay did not
+/// allocate (a network built after the replay end gives it its handle, in order). Its first body
+/// is above the epoch. Control: the same engine without that record numbers it from 1.
+#[test]
+fn a_floor_for_a_ship_not_yet_allocated_survives_the_replay_end() {
+    // The ship the network's first service gets: the same in every engine over this save.
+    let (mut w, s, mask) = unbuilt(5);
+    let save = s.save();
+    let mut probe = Ships::load(ShipTunables::default(), &save).expect("loads");
+    probe.build(&mut w, &mask, Tick::ZERO);
+    let target = probe.service_ships(0).next().expect("a service's ship");
+    let agent = Ship::agent(target);
+
+    let first_epoch = |floor: Option<u32>| {
+        let (mut w, s, mask) = unbuilt(5);
+        let mut s = Ships::load(ShipTunables::default(), &s.save()).expect("loads");
+        s.begin_replay(true);
+        if let Some(epoch) = floor {
+            let o = Obs::Damaged(boundary::Damaged {
+                agent,
+                epoch,
+                by: By::Player,
+                hull_milli: 900,
+                crew_lost: 0,
+                player: PLAYER,
+                ship: 0,
+            });
+            s.ingest(&mut w, &o, &mask, Tick::ZERO);
+        }
+        s.replay_done(&mut w);
+        s.build(&mut w, &mask, Tick::ZERO);
+        assert_eq!(Ship::agent(s.service_ships(0).next().unwrap()), agent);
+        s.next_epoch(target)
+    };
+    assert_eq!(first_epoch(Some(6)), 7, "above the epoch the journal named");
+    assert_eq!(first_epoch(None), 1, "the control: nothing named");
+}
+
 /// A record naming an epoch at the top of the range cannot make the next body epoch 0, the
 /// plugin's "no body" (a corrupt record: the increment wraps and is held at 1).
 #[test]
