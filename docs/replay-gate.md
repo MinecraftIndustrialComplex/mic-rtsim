@@ -369,6 +369,10 @@ sides' stats kept) and the `Conflict` fields and `Conflict::new` (both sides' ke
    (every record dispatched while replaying is an earlier session's, §2.2), a replayed copy's too,
    its OBS_SEQ being the REASSERT's own (§2.3); a live record's, a live copy's among them, is at or
    past it. A CAMP_BODIES answer is kept by that sequence until a WORLD_SAVED makes it durable.
+   The merge check's follow-ups: `obs_seq` is set before `journaled`'s early paths (RP-67), and a
+   WORLD_SAVED while the outbox replays waits for `replay_done` (`Conflict::world_saved`, RP-68),
+   so no answer booked from a replayed record is forgotten while the replay can still bring its
+   holder's copy.
 3. **The gate**: no new kind (§4.4).
 4. **The floors** (RP-57): no new `Obs` kind either. The camp kinds (CAMP_CENSUS, CAMP_BODIES,
    CAMP_OUT) carry a camp's epoch, a u64 Java draws (`Journal.newOpId`, M5), never one the engine

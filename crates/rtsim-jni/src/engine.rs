@@ -1681,9 +1681,8 @@ impl Engine {
                 let durable = wire::u64_at(b, obs::world_saved::DURABLE_OBS_SEQ);
                 st.replay.forget_ops_through(ObsSeq(durable));
                 // The camp ledgers forget the answers of those records as they next book one
-                // (MZB-177).
-                let known = st.conflict.engine.durable_obs_seq;
-                st.conflict.engine.durable_obs_seq = known.max(durable);
+                // (MZB-177), from the conflict's replay end on (RP-68).
+                st.conflict.engine.world_saved(durable);
                 Self::log_received(st, h, rec, 0, false);
             }
             _ => {

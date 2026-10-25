@@ -786,8 +786,12 @@ pub struct Conflict {
     pub obs_seq: u64,
     /// The highest journal sequence the host has reported durable in a world save (WORLD_SAVED):
     /// answers booked from records at or before it are forgotten, as `Replay` forgets op ids
-    /// (docs/boundary.md §2.3, MZB-177). Set by the host, which never lowers it; not state.
+    /// (docs/boundary.md §2.3, MZB-177). Raised by the host through [`Conflict::world_saved`],
+    /// never lowered; not state.
     pub durable_obs_seq: u64,
+    /// A world save reported while replaying (RP-68): the highest such sequence, raised into
+    /// `durable_obs_seq` at the replay end. Not state.
+    pub(crate) durable_held: u64,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -879,6 +883,7 @@ impl Conflict {
             fights_unanswered: BTreeMap::new(),
             obs_seq: 0,
             durable_obs_seq: 0,
+            durable_held: 0,
         }
     }
 
@@ -5098,6 +5103,8 @@ impl Conflict {
         // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
         self.held.clear();
         self.unheld_fights.clear();
+        // The world saves reported meanwhile make their answers forgettable now (RP-68).
+        self.durable_obs_seq = self.durable_obs_seq.max(std::mem::take(&mut self.durable_held));
         // Every party is abstract now: the floors become the epochs, for the pages (§5.3).
         for (agent, floor) in std::mem::take(&mut self.floors) {
             if let Some(p) = Party::of_agent(agent).filter(|p| self.parties.contains(*p)) {
@@ -5106,6 +5113,18 @@ impl Conflict {
             }
         }
         self.presence.every_player_left();
+    }
+
+    /// A world save made the records through journal sequence `durable` durable (WORLD_SAVED):
+    /// the camps may forget the answers booked from them (MZB-177). While replaying it waits for
+    /// the replay end (RP-68): an answer booked from a replayed record is kept until then, so
+    /// that a holder's copy of that record, journaled again in the replay, is not booked twice.
+    pub fn world_saved(&mut self, durable: u64) {
+        if self.outbox.replaying() {
+            self.durable_held = self.durable_held.max(durable);
+        } else {
+            self.durable_obs_seq = self.durable_obs_seq.max(durable);
+        }
     }
 
     /// Every notice of a feud not played yet goes to the plugin again, once a session (MOWZIE.md

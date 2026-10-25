@@ -247,7 +247,7 @@ smaller of that value and the last sequence the journal's file on disk actually 
 (`JournalSavedData.writtenThrough`): a write the chunk barrier held, or one that failed, does not
 count (docs/choices-journal-barrier.md JB1). The next hand-over carries the value; the engine may then
 forget op ids applied at or before it, and a camp ledger forgets the CAMP_BODIES answers it booked from
-records at or before it (MOWZIE.md §4.9, MZB-177).
+records at or before it (MOWZIE.md §4.9, MZB-177), from the conflict's replay end on (RP-68).
 
 **Idempotent events.** A record a chunk or entity carries arrives again as a copy (REASSERT, §3.1,
 §3.2), which the engine judges by the generation the record was journaled in, not by op id. The

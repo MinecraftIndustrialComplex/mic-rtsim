@@ -3665,3 +3665,13 @@ conservative option at its fork.
   `camp_bodies` (an answer is kept with it, MZB-177), and CAMP_BODIES is neither `later` nor a
   casualty. The records the host makes itself (`reject`'s BAND_SPAWN_REJECTED) carry no
   sequence and keep the last one set; they read none.
+- **RP-68** (a world save while replaying forgets no answer; §2.7; MZB-177; the M5 merge check's
+  item 4): a WORLD_SAVED between a long replay's hand-overs raised `durable_obs_seq` at once, so
+  the camp's next booking forgot the answers of replayed records, and a holder's copy of one,
+  journaled again later in the replay, was booked twice. `Conflict::world_saved` now keeps the
+  highest sequence reported while the outbox replays in `durable_held` (not state) and raises
+  `durable_obs_seq` with it at `replay_done`; live, it raises it at once. rtsim-jni's WORLD_SAVED
+  arm calls it. `Replay`'s own op-id forgetting on the same line is unchanged (not this
+  check's). Failing first, tests/camp.rs's
+  `a_world_save_while_replaying_forgets_no_answer_until_the_replay_end` with the save applied at
+  once: `camp_answers` 12 against 11.
