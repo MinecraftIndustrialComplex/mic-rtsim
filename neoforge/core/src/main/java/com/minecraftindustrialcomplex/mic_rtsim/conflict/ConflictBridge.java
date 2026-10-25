@@ -970,7 +970,9 @@ public final class ConflictBridge implements SessionPlugin {
         long agent = b.getLong(at + ConflictRecords.Materialize.AGENT);
         int epoch = b.getInt(at + ConflictRecords.Materialize.EPOCH);
         int wave = b.getShort(at + ConflictRecords.Materialize.WAVE) & 0xFFFF;
-        if (!ConflictRecords.isConflictAgent(agent) || m <= 0 || ConflictRecords.Materialize.size(m) > size) {
+        int pflags = b.get(at + ConflictRecords.Materialize.FLAGS) & 0xFF;
+        boolean empty = ConflictRecords.Materialize.emptyFight(m, pflags);
+        if (!ConflictRecords.isConflictAgent(agent) || m < 0 || (m == 0 && !empty) || ConflictRecords.Materialize.size(m) > size) {
             reject(agent, epoch, wave, cmdSeq, ConflictRecords.SpawnRejected.BAD_RECORD, now);
             return;
         }
@@ -1001,11 +1003,19 @@ public final class ConflictBridge implements SessionPlugin {
             reject(agent, epoch, wave, cmdSeq, ConflictRecords.SpawnRejected.ALREADY_EMBODIED, now);
             return;
         }
+        if (empty) {
+            // A walked-in band's fight with every member placed already (MZB-728): nothing to place, no epoch to end. The
+            // wave is taken as had, and the echo is the fight's one record, flags and all (a replay reads a refusal as the
+            // fight's refusal, RP-54).
+            if (p != null && p.epoch == epoch)
+                p.waves.add(wave);
+            journalMaterialized(agent, epoch, level.dimension(), wave, pflags, 0, now);
+            return;
+        }
         if (p != null && p.epoch != epoch) {
             capture(p, ConflictRecords.Dematerialized.COMMAND, now);
             p = null;
         }
-        int pflags = b.get(at + ConflictRecords.Materialize.FLAGS) & 0xFF;
         if (p == null) {
             p = new Party(agent, epoch, level.dimension(), b.getLong(at + ConflictRecords.Materialize.FACTION), false,
                     b.get(at + ConflictRecords.Materialize.PURPOSE) & 0xFF, pflags);
@@ -1118,10 +1128,14 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** {@code flags}: the command's, echoed (docs/boundary.md §9.3): a replay tells a fight from a sighting by them. */
     private void journalMaterialized(Party p, int wave, int flags, int spawned, long now) {
-        int dim = session.dimId(p.dimension);
+        journalMaterialized(p.agent, p.epoch, p.dimension, wave, flags, spawned, now);
+    }
+
+    private void journalMaterialized(long agent, int epoch, ResourceKey<Level> dimension, int wave, int flags, int spawned, long now) {
+        int dim = session.dimId(dimension);
         ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.BAND_MATERIALIZED, ConflictRecords.Materialized.SIZE, spawned, now);
-        r.putLong(ConflictRecords.Materialized.AGENT, p.agent);
-        r.putInt(ConflictRecords.Materialized.EPOCH, p.epoch);
+        r.putLong(ConflictRecords.Materialized.AGENT, agent);
+        r.putInt(ConflictRecords.Materialized.EPOCH, epoch);
         r.putInt(ConflictRecords.Materialized.DIM, dim);
         r.putInt(ConflictRecords.Materialized.WAVE, wave);
         r.putInt(ConflictRecords.Materialized.FLAGS, flags);

@@ -302,6 +302,14 @@ public final class ConflictRecords {
         public static int size(int m) {
             return STACKS + STACK * m;
         }
+
+        /**
+         * The one record with no stacks that is valid (MZB-728): a walked-in band's fight sends BAND_FIGHT with
+         * {@code m} = 0 when every member is placed already, and it is echoed, not refused (docs/boundary.md §9.3).
+         */
+        public static boolean emptyFight(int m, int flags) {
+            return m == 0 && (flags & FLAG_FIGHT) != 0;
+        }
     }
 
     /**
