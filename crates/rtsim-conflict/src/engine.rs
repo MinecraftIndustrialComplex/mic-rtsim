@@ -140,8 +140,28 @@ pub struct Faction {
     /// counts. Boxed: a camp with none costs a word.
     pub camp: Option<Box<Camp>>,
     /// The hunts its raids left owed (MZB-424), one for each district a raid fell on: a small
-    /// Vec, never a one-entry map.
-    pub hunts: Vec<Hunt>,
+    /// Vec, never a one-entry map. Boxed, and `None` while there are none (never an empty
+    /// list), so a faction that owes none pays one pointer resident, as its rail meters do
+    /// (MZB-672). Read it through [`Faction::hunts`].
+    #[allow(clippy::box_collection)]
+    pub(crate) hunts: Option<Box<Vec<Hunt>>>,
+}
+
+impl Faction {
+    /// The hunts its raids left owed, one for each district a raid fell on.
+    pub fn hunts(&self) -> &[Hunt] {
+        self.hunts.as_deref().map_or(&[], Vec::as_slice)
+    }
+
+    /// Takes hunt `i` off; the last one takes the box with it (never an empty list).
+    fn remove_hunt(&mut self, i: usize) {
+        if let Some(v) = self.hunts.as_deref_mut() {
+            v.remove(i);
+            if v.is_empty() {
+                self.hunts = None;
+            }
+        }
+    }
 }
 
 /// An owed hunt (MZB-424, MZB-425): `count` animals near a district's centre die when its chunks
@@ -1325,7 +1345,7 @@ impl Conflict {
             cap: cu.def.pool_cap,
             away: 0,
             camp: None,
-            hunts: Vec::new(),
+            hunts: None,
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -4250,7 +4270,7 @@ impl Conflict {
         let key = self.factions[f as usize].key;
         // A replacement takes a new op even within one tick: the op in flight is folded in.
         let held = self.factions[f as usize]
-            .hunts
+            .hunts()
             .iter()
             .find(|h| h.district == d)
             .map_or(0, |h| h.op);
@@ -4270,7 +4290,11 @@ impl Conflict {
         let op = boundary::AGENT_NAMESPACE << 56
             | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
         let x = &mut self.factions[f as usize];
-        let (hunt, added) = match x.hunts.iter_mut().find(|h| h.district == d) {
+        let (hunt, added) = match x
+            .hunts
+            .as_deref_mut()
+            .and_then(|v| v.iter_mut().find(|h| h.district == d))
+        {
             Some(h) => {
                 // The hunt in flight is the one replaced; the one it had replaced is forgotten
                 // (a third hunt inside the flight of two applied ones overpays by the oldest,
@@ -4290,7 +4314,7 @@ impl Conflict {
                     op,
                     replaced: None,
                 };
-                x.hunts.push(hunt);
+                x.hunts.get_or_insert_default().push(hunt);
                 (hunt, hunt.count)
             }
         };
@@ -4346,22 +4370,22 @@ impl Conflict {
             return;
         };
         let x = &mut self.factions[f as usize];
-        let Some(i) = x.hunts.iter().position(|e| {
+        let Some(i) = x.hunts().iter().position(|e| {
             e.district.0 == h.district && (e.op == h.op || e.replaced.is_some_and(|r| r.0 == h.op))
         }) else {
             return;
         };
         self.stats.hunts_killed += u64::from(h.killed);
-        let e = &mut x.hunts[i];
+        let e = &mut x.hunts.as_deref_mut().expect("the hunt matched")[i];
         if e.op == h.op {
-            x.hunts.remove(i);
+            x.remove_hunt(i);
             return;
         }
         let (_, rest) = e.replaced.take().expect("the replaced hunt matched");
         e.count = rest;
         let e = *e;
         if e.count == 0 {
-            x.hunts.remove(i);
+            x.remove_hunt(i);
         }
         // Through the gate, as in `owe_hunt`: a replayed late answer changes the books and sends
         // nothing; the hunt that is left goes with `resend_notices`.
@@ -5716,7 +5740,7 @@ impl Conflict {
                 .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
                 .collect();
             // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
-            let hunts: Vec<Hunt> = self.factions[f as usize].hunts.clone();
+            let hunts: Vec<Hunt> = self.factions[f as usize].hunts().to_vec();
             kept.extend(hunts.iter().map(|h| self.hunt_cmd(f, h)));
             for n in kept {
                 self.outbox.push(n);

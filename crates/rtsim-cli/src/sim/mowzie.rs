@@ -2780,7 +2780,7 @@ fn hunts_capped(out: &mut Vec<Check>) {
         send(&mut r, PartyKind::Raid);
         r.settle();
         let owed: Vec<_> = r.c.factions[r.f as usize]
-            .hunts
+            .hunts()
             .iter()
             .map(|h| (h.count, h.op))
             .collect();
@@ -2798,7 +2798,7 @@ fn hunts_capped(out: &mut Vec<Check>) {
     let at = r.c.now() + 1;
     r.plugin.apply_hunts(3, at);
     r.run(at + 5);
-    let spent = r.c.factions[r.f as usize].hunts.is_empty() && r.c.stats.hunts_killed == 3;
+    let spent = r.c.factions[r.f as usize].hunts().is_empty() && r.c.stats.hunts_killed == 3;
     check(
         out,
         "hunts are never over the culture's cap, and an answer spends them whatever it killed",

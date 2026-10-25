@@ -10430,7 +10430,7 @@ mod conflict {
             e.with_conflict(|c, _| {
                 let f = c.faction_of_key(CAMP).unwrap();
                 c.factions[f as usize]
-                    .hunts
+                    .hunts()
                     .iter()
                     .map(|h| (h.district.0, h.count, h.op))
                     .collect::<Vec<_>>()
@@ -10560,7 +10560,7 @@ mod conflict {
             e.with_conflict(|c, _| {
                 let f = c.faction_of_key(CAMP).unwrap();
                 c.factions[f as usize]
-                    .hunts
+                    .hunts()
                     .iter()
                     .map(|h| (h.district.0, h.count, h.op))
                     .collect::<Vec<_>>()
@@ -10661,7 +10661,7 @@ mod conflict {
         e.with_conflict(|c, _| {
             let f = c.faction_of_key(CAMP).unwrap();
             c.factions[f as usize]
-                .hunts
+                .hunts()
                 .iter()
                 .map(|h| (h.district.0, h.count, h.op))
                 .collect::<Vec<_>>()

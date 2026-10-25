@@ -349,8 +349,8 @@ fn put_faction(w: &mut Writer, x: &Faction) {
     w.bool(x.crystal);
     w.var_u64(u64::from(x.cap));
     w.var_u64(u64::from(x.away));
-    put_usize(w, x.hunts.len());
-    for h in &x.hunts {
+    put_usize(w, x.hunts().len());
+    for h in x.hunts() {
         w.u64(h.district.0);
         put_pos(w, h.pos);
         w.var_u64(u64::from(h.count));
@@ -612,9 +612,10 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
         crystal: r.bool()?,
         cap: get_u32(r)?,
         away: get_u32(r)?,
+        // None while there are none, as the engine keeps it (MZB-672): the encoding is the list's.
         hunts: {
             let n = r.len_prefix(21)?;
-            (0..n)
+            let v = (0..n)
                 .map(|_| {
                     Ok(crate::engine::Hunt {
                         district: DistrictId(r.u64()?),
@@ -624,7 +625,8 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
                         replaced: get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?,
                     })
                 })
-                .collect::<codec::Result<_>>()?
+                .collect::<codec::Result<Vec<_>>>()?;
+            (!v.is_empty()).then(|| Box::new(v))
         },
         camp: get_opt(r, get_camp)?.map(Box::new),
     })
