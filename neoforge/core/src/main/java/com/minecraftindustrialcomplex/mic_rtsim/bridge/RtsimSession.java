@@ -1097,6 +1097,29 @@ public final class RtsimSession {
         return false;
     }
 
+    /**
+     * The op ids the {@code mic_rtsim:pending} records in a chunk's saved data carry (the tag {@code ChunkStorage.read}
+     * gives for a chunk not loaded), when they are of this engine life; empty otherwise or when unreadable.
+     */
+    public static java.util.Set<Long> opsCarriedInChunkTag(net.minecraft.nbt.CompoundTag chunkTag, net.minecraft.core.HolderLookup.Provider registries) {
+        RtsimSession s = current();
+        if (s == null || chunkTag == null)
+            return java.util.Set.of();
+        net.minecraft.nbt.CompoundTag attachments = chunkTag.getCompound(net.neoforged.neoforge.attachment.AttachmentHolder.ATTACHMENTS_NBT_KEY);
+        net.minecraft.resources.ResourceLocation key = net.neoforged.neoforge.registries.NeoForgeRegistries.ATTACHMENT_TYPES.getKey(RtsimAttachments.PENDING.get());
+        if (key == null || !attachments.contains(key.toString()))
+            return java.util.Set.of();
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.CODEC
+                .parse(registries.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE), attachments.get(key.toString()))
+                .result().orElse(null);
+        if (p == null || p.isEmpty() || p.life() != s.engineLife)
+            return java.util.Set.of();
+        java.util.Set<Long> ops = new java.util.HashSet<>();
+        for (byte[] r : p.records())
+            ops.add(pendingOp(r));
+        return ops;
+    }
+
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
         chunk.setData(RtsimAttachments.PENDING, carried(old, java.util.List.of(commandResult.array())));
