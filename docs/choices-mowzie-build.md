@@ -5418,7 +5418,7 @@ pages are older than a train raid it made replays its window and raids the same 
 from the threat's identity. The rtsim-industry change is confined to `attack_train`'s op and the
 loot exchange's drop on DUPLICATE (RP-180, RP-182, RP-183); rtsim-jni passes the DUPLICATE on
 (`answered_again`, RP-182). No page, record or wire format changes (RP-180), no fixture moves, and no Java in
-this slice: RP-185 proposed the Java change, built as slice T2 on this branch (below, RP-190 to RP-196). Tests: rtsim-industry `tests/train_raid_ops.rs` (4) and
+this slice: RP-185 proposed the Java change, built as slice T2 on this branch (below, RP-190 to RP-198). Tests: rtsim-industry `tests/train_raid_ops.rs` (4) and
 `cmd.rs` (2 unit tests), one crash test file per raider on main through a shared harness
 (rtsim-ecology `tests/common/train_raid.rs`, included by path; dragons 3, conflict 2, ships 3), and
 rtsim-jni `tests/industry.rs`'s `a_train_raid_decided_again_after_a_crash_is_applied_once`. M8's
@@ -5641,10 +5641,10 @@ only (the create plugin, one core test helper); no Rust, wire, page or record ch
 already modelled the ring, `Dedup::Ring`, RP-184). Create facts are from cfr on Create 6.0.10, the jar
 neoforge/create compiles and runs against (`create_packMods`: deep-time/smoke/mic/server/mods/
 create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and `TrainRingGameTests`
-(7 GameTests).
+(8 GameTests).
 
-- **RP-190** (the ring and its key; the brief's item 1): `AppliedOpRing` (create, pure Java) holds a
-  train's applied IND_CARRIAGE_DELTA op ids, oldest first. It lives on Create's `Train` as a field
+- **RP-190** (the ring and its key; the brief's item 1): an `AppliedOpRing` (create, reusable, RP-198)
+  of `TrainRing.CAPACITY` holds a train's applied IND_CARRIAGE_DELTA op ids, oldest first. It lives on Create's `Train` as a field
   `ringmixin.TrainRingMixin` adds (`@Unique`, made on the first delta), reached through
   `AppliedOpsHolder`, an interface outside the mixin package that the mixin implements (no bespoke
   entity, D3). It is saved as one long array under `mic_rtsim:applied_ops` (`TrainRing.KEY`) in the
@@ -5695,7 +5695,7 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   bound, an op pushed out by 256 later deltas to the same train inside the window and then sent again
   is applied again (a double); accepted. Not built: pruning on the engine's ack (`Industry.whenAcked`)
   would bound the ring by the window instead of a count, but needs the ack of each op.
-  `AppliedOpRingTest` pins the bound and the order.
+  `AppliedOpRingTest` pins the bound and the order; the bound is `TrainRing.CAPACITY`.
 - **RP-193** (the fallback; item 4): the ring mixin has its own config,
   `mic_rtsim_create_ring.mixins.json` ("required": false, injectors `defaultRequire` 0, each `@Inject`
   `require = 0`), a second `[[mixins]]` entry in create's neoforge.mods.toml, in its own package
@@ -5718,7 +5718,7 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   gone, Create's `Train.read` ignores the key and its `Train.write` drops it (RP-190). Undoing the
   slice is removing the ring config. Test: `withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing`.
 - **RP-195** (the GameTests; item 5): `TrainRingGameTests` (namespace `mic_rtsim_create`, batches
-  `train_ring_1` to `train_ring_7`, one test each) emulate a crash on a synthetic train of 32 iron
+  `train_ring_1` to `train_ring_8`, one test each; the eighth is RP-198's) emulate a crash on a synthetic train of 32 iron
   (IndustryGameTests' `syntheticTrain`, given a dimensional entry, since a carriage saves its storage
   only in those, and found through `TrainWatch.seenForTest`). The tracks file is what
   `RailwaySavedData.save` writes for the train (Create's own `Train.write`, a dimension palette, the
@@ -5729,7 +5729,8 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   live GameTest cannot hold: the engine acks within ticks). A raid of 10 (one IND_CARRIAGE_DELTA, loot)
   is applied, the crash taken, and the raid sent again under the same op, as the replay re-decides it
   (slice T's key). The raider holds the 10 the surviving decision credits it, so the goods are
-  conserved when the train and the raider hold 32 between them. RESULTS
+  conserved when the train and the raider hold 32 between them. The crash is at the data level (RP-198):
+  no test runs a real save or depends on the order the server writes SavedData in. RESULTS
 - **RP-196** (the four cases, J1 to J4; the coordinator's table): which of Java's two saves landed
   after the raid's application (RP-184), the raider's pages older than the raid:
 
@@ -5750,3 +5751,20 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   bullet names the ring as the dedup; TrainWatch's comment at the dedup says the same. RP-183's case
   table has a column for the ring. docs/boundary.md does not describe the carriage delta's dedup (it
   defers industry's records to industry-boundary.md), so it is unchanged.
+- **RP-198** (the build lead's two additions, for SEC-1's slice U): (1) `AppliedOpRing` is reusable,
+  with no Train dependency: `new AppliedOpRing(capacity)`, `capacity()`, `size()`, `isEmpty()`,
+  `contains(op)`, `add(op)` (false for an op already held; full, it drops the oldest), `clear()`,
+  `toArray()` and `load(long[])` (oldest first, the newest kept past the cap), and in any `CompoundTag`
+  `writeTo(tag, key)` (one long array; an empty ring removes the key), `readFrom(tag, key)` (false and
+  empty when nothing is saved there) and the static `savedIn(tag, key)`; the key must be namespaced
+  (`mod:name`), else IllegalArgumentException. The train's bound is `TrainRing.CAPACITY`, its key
+  `TrainRing.KEY`. Slice U reuses the class for Create's GlobalPackagePort offline buffer (also in
+  create_tracks.dat); that ring is not built here. Only the three NBT methods touch Minecraft, and the
+  create unit tests' classpath has no Minecraft, so the NBT form is the GameTest
+  `anAppliedOpRingSavesUnderItsKeyBesideTheOwnersKeys` (`train_ring_8`). (2) The J1 to J4 GameTests
+  work at the data level: the tracks file is the bytes of Create's `Train.write` for the train, taken
+  from after the raid or before it, and the journal's file is its op index, remembered or forgotten,
+  each chosen alone. None runs `saveEverything` or reads a file the server wrote, so none depends on
+  the order vanilla or NeoForge writes SavedData in. Slice U moves the journal's write to the end of
+  the save (after every dimension's SavedData); a real crash then gives J3 and never J4, and the J4
+  tests keep pinning the ring's answer for a journal that outlived its goods.
