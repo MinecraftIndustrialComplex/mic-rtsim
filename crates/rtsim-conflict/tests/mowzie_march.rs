@@ -1291,3 +1291,87 @@ fn the_dead_of_an_abstract_fight_in_bodies_are_counted_once_at_the_recall_and_ac
         );
     }
 }
+
+/// MZB-701: the band of `met_leaving_its_camp`, its road at the camp's exit replaced by a nearly
+/// axis-aligned one (400 blocks along +x and 1 along +z, as integer waypoints make it), and its
+/// watcher moved, before that exit fires, to where the road passes nearly tangent to the 192-block
+/// circle, on the road's lower-z side (the side a positive z truncates toward). `exit_time` solves
+/// the continuous path, but `inside_now` reads the truncated chart position, which is still
+/// inside then (its z is 0.85 short): `unseen` re-bound the same player and booked a tick on,
+/// every tick, until the truncated position left (645 ticks in a row here before the fix, each
+/// with a wheel event, a scan of the players and an exit solve). The exit is now booked at the
+/// first tick the truncated position is outside, so the one watcher is never re-bound for it.
+#[test]
+fn a_near_tangent_exit_is_not_rebooked_tick_after_tick() {
+    let mut r = Run::new(48);
+    let (band, exit) = met_leaving_its_camp(&mut r);
+    let here = r.c.party_chart_pos(band, exit);
+    // The road: A to B, 400 blocks east and 1 south, at the goblins' 0.02 blocks a tick; at the
+    // exit the band is 340 blocks along it (z 0.85 past A's).
+    let a = (here.0 - 340, here.1);
+    let b = (a.0 + 400, a.1 + 1);
+    let t0 = Tick(exit.0 - 17_000);
+    let t1 = Tick(t0.0 + 20_000);
+    {
+        let x = &mut r.c.parties[band];
+        x.route = vec![a, b];
+        x.times = vec![t0, t1];
+        x.seg = 0;
+    }
+    assert_eq!(r.c.party_chart_pos(band, exit), (a.0 + 340, a.1));
+    // The watcher 191.85 blocks south of the road's point at the exit (the road at z + 0.85).
+    let c = (a.0 + 340, a.1 - 191);
+    r.run(Tick(exit.0 - 60));
+    r.c.observe_player(&mut r.w, synth::PLAYER, at_pos(c), Tick(exit.0 - 60));
+    let (mut run, mut longest, mut rebinds) = (0u64, 0u64, 0u64);
+    let events = r.c.stats.events;
+    let mut t = exit;
+    while t < exit + 4_000 && r.c.parties[band].embodied {
+        r.run(t + 1);
+        let due = r.c.parties[band].unseen_due;
+        if due == t + 2 {
+            run += 1;
+            rebinds += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+        t += 1;
+    }
+    let q = r.c.party_chart_pos(band, t);
+    let events = r.c.stats.events - events;
+    eprintln!(
+        "watcher at {c:?}, longest run of tick-on bookings {longest}, {rebinds} in all, {events} events, embodied {} at {} ({q:?})",
+        r.c.parties[band].embodied, t.0
+    );
+    // The bound: the re-bind at the booked exit books a tick on once, and the stepped exit is
+    // then the first tick the watcher is outside, where nobody is left to take the band over.
+    assert!(
+        longest <= 1 && rebinds <= 1,
+        "the re-bind re-booked a tick on for {longest} ticks in a row ({rebinds} in all)"
+    );
+    assert!(!r.c.parties[band].embodied, "recalled once outside");
+    assert!(events <= 10, "{events} events from the exit to the recall");
+    // The stepping's worst case: the truncated position is at most sqrt 2 blocks off the path, so
+    // it is outside once the path is that far beyond the circle (radius R, 192 here). On a chord
+    // that is at most sqrt(2 sqrt 2 R + 2) blocks of walk past the continuous exit (a tangent),
+    // at the goblins' 0.02 blocks a tick.
+    let r_circle = 192.0_f64;
+    let (ax, az) = (f64::from(a.0 - c.0), f64::from(a.1 - c.1));
+    let (qa, qb, qc) = (
+        400.0_f64 * 400.0 + 1.0,
+        2.0 * (ax * 400.0 + az),
+        ax * ax + az * az - r_circle * r_circle,
+    );
+    let f = (-qb + (qb * qb - 4.0 * qa * qc).max(0.0).sqrt()) / (2.0 * qa);
+    let root = t0.0 as f64 + (t1.0 - t0.0) as f64 * f;
+    let worst = (2.0 * 2.0_f64.sqrt() * r_circle + 2.0).sqrt() / 0.02;
+    let stepped = t.0 as f64 - root;
+    eprintln!(
+        "the continuous exit at {root:.1}, the stepped one {stepped:.1} ticks on (worst {worst:.0})"
+    );
+    assert!(
+        (0.0..=worst + 1.0).contains(&stepped),
+        "{stepped} ticks past the root, the bound is {worst}"
+    );
+}

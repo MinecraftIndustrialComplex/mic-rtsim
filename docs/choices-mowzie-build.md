@@ -8109,6 +8109,30 @@ MZB-499) is full.
     `ConflictBridge.materialize` answers m <= 0 with BAND_SPAWN_REJECTED BAD_RECORD today, which a replay
     reads as the fight's refusal (RP-54).
 
+- **MZB-701** (`exit_time` steps to the first tick the truncated position is outside; amends MZB-458): the first
+  P2 of the review. `exit_time` solved the continuous path for the tick it leaves the watcher's circle
+  (`view_radius + party_radius + 16`, 192), but `inside_now`, which `rebind_to` and `exit_time`'s own first check
+  share (MZB-458), reads the truncated chart position, up to sqrt 2 blocks off the path. Booked at the root, the
+  band's `unseen` found the same player still inside and booked a tick on, every tick, until the truncated
+  position left. Repro (`a_near_tangent_exit_is_not_rebooked_tick_after_tick`, tests/mowzie_march.rs): a road
+  400 blocks along +x and 1 along +z (integer waypoints make it near-axis), the watcher moved to where it is
+  tangent to the circle, on the lower-z side: 645 ticks of tick-on bookings in a row before the fix, each a wheel
+  event, a `rebind_to` scan of the players and an exit solve (and `enforce_budget` when paged), no wire bytes;
+  after it one re-bind and 2 events, the band recalled at the same tick (34620) as before.
+  - **The fix is the reviewer's sketch (fe642b6):** after the root, `t` steps on while `inside_now` is still
+    Some, capped at the segment's end (`b`, outside, so the loop ends there at the latest). The exit is still
+    decided by the one position rule, as MZB-458 has it.
+  - **The stepping's cost, and its worst case.** Each step is one `inside_now` (a chart position and a
+    topology image), no event, no allocation. The truncated position is outside once the path is sqrt 2 blocks
+    beyond the circle of radius R; on a chord that takes at most sqrt(2 sqrt 2 R + 2) blocks of walk past the
+    continuous exit, reached on a tangent. For R = 192 that is 23.3 blocks: 1,167 steps at 0.02 blocks a tick
+    (the slowest culture; 778 at 0.03), once per booking, against the same number of wheel events before.
+    A cap at the segment's end holds it for any speed; the test asserts the repro's 644 steps against this
+    figure. A non-tangent exit needs a handful of steps (the step needed is under 1.5 blocks of radial
+    walk over the speed's radial component).
+  - **Not done:** a binary search on the first outside tick (the predicate is not monotone near a tangent, the
+    truncated position can step back inside), and a separate cap on the steps (the segment's end is the cap).
+
 ## M11 Aloft
 
 (none yet)
