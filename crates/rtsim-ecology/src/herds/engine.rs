@@ -2078,7 +2078,8 @@ impl Herds {
         // A slot the engine does not hold (a group the pages kept for a player it no longer
         // knows) is a player who is gone.
         let p = self.players.get(e.player as usize);
-        let gone = p.is_none_or(|p| p.pos.is_none() || !p.interest.is_some_and(|s| legs.is_live(s)));
+        let gone =
+            p.is_none_or(|p| p.pos.is_none() || !p.interest.is_some_and(|s| legs.is_live(s)));
         if gone {
             self.despawn(h, 2, at);
             return;
@@ -2435,7 +2436,10 @@ impl Herds {
             at,
             "honour",
             Some(h),
-            format!("a replayed materialization of epoch {} ({n} members)", m.epoch),
+            format!(
+                "a replayed materialization of epoch {} ({n} members)",
+                m.epoch
+            ),
         );
     }
 
@@ -2954,6 +2958,15 @@ impl Herds {
     pub fn player_area(&self, uuid: Uuid) -> Option<Stamp> {
         let slot = *self.player_by_key.get(&player_key(uuid))?;
         self.players.get(slot as usize).and_then(|p| p.interest)
+    }
+
+    /// Herd puppets embodied for a player: 0 for one the herds do not know. They end at the
+    /// session's replay end (docs/replay-gate.md §5.6).
+    pub fn puppets(&self, uuid: Uuid) -> u32 {
+        self.player_by_key
+            .get(&player_key(uuid))
+            .and_then(|s| self.players.get(*s as usize))
+            .map_or(0, |p| p.puppets)
     }
 
     fn slot_of_actor(&self, actor: u64) -> Option<u32> {
