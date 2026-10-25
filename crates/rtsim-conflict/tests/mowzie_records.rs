@@ -3602,7 +3602,7 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
         })
         .unwrap_or(journal.len());
     assert_eq!(fight < journal.len(), placed, "the fight's record");
-    let mut late = 0;
+    let late;
     match records {
         Records::FightAt(at) => {
             late = (arrival.0 + at)
