@@ -88,9 +88,10 @@ pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// Version 2: a snapshot and a tail (S1). Version 3: the snapshot's world writes its market rows
 /// as a row table (`World::save` RTW2, docs/choices-paging-modules.md). Version 4: the world pages
 /// through the store (`World::save_paged`, PF17), the snapshot pieces hold the link's part only,
-/// and the state hash is written in TEST mode only (0 otherwise, PF16). Before release a version
+/// and the state hash is written in TEST mode only (0 otherwise, PF16). Version 5: the inputs kept
+/// while phase 1 was switched off follow the queue (`Link::kept`, RP-300). Before release a version
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
-pub const META_VERSION: u16 = 4;
+pub const META_VERSION: u16 = 5;
 pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
@@ -298,11 +299,26 @@ pub(super) struct Link {
     last_interest: i64,
     last_market: i64,
     spawn_near: Vec<SpawnNear>,
-    /// U10 (Ben: "Ignore everything"): with phase 1 switched off, its records are admitted by
-    /// `Replay` and then ignored, its world does not run, nothing new is decided or materialized,
-    /// and on again it catches up at once ([`set_enabled`]).
+    /// U10 (Ben: "Ignore everything"), with the rule of RP-300: **the switch gates only new
+    /// decisions; every record of what already happened is heard; a record applied while off goes
+    /// in at its own tick, never at the frozen clock.** With phase 1 switched off its own world
+    /// does not run, nothing new is decided, materialized or sent; the latest-state census is
+    /// ignored; but the journaled records (a robbery, a trade, a taken member, a house placed...)
+    /// are the engine's acknowledged record of what happened, which Java will not send again, so
+    /// they are heard by the same code as when on and their world inputs are kept in
+    /// [`Link::kept`] at the records' own ticks, applied when the world next runs
+    /// ([`drain_kept`]). On again they are applied at once, in time order, before it catches up
+    /// ([`set_enabled`]).
     enabled: bool,
-    /// Records ignored while phase 1 was switched off (U10).
+    /// The inputs heard while phase 1 was switched off, not applied yet: `(tick, input)` in time
+    /// order (RP-300). The tick is the record's own world tick (`wt(GAME_TIME)`), the input was
+    /// built when it was heard (a taken member's chest as the capture then showed it). Saved in
+    /// the meta page with the pages of the save that acknowledged their records. Applied, each
+    /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
+    /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
+    kept: Vec<Logged>,
+    /// Census records ignored while phase 1 was switched off (U10): a census is latest state, sent
+    /// again, and the one kind phase 1 does not hear while off.
     pub(super) ignored: u64,
     pub(super) stats: [u64; STATS],
     /// Captured cargo that did not match the sim's row at a despawn (logged, not reconciled).
@@ -382,6 +398,7 @@ impl Link {
             last_market: i64::MIN,
             spawn_near: Vec::new(),
             enabled: true,
+            kept: Vec::new(),
             ignored: 0,
             stats: [0; STATS],
             capture_mismatches: 0,
@@ -548,6 +565,7 @@ impl Link {
         // them again and threw them away, so they go out from here (their op ids are their
         // identity: one Java already applied is answered DUPLICATE).
         link.queue = m.queued.into();
+        link.kept = m.kept;
         link.stats[stat::INPUTS] = link.base_inputs + link.log.len() as u64;
         link.stats[stat::VILLAGES] = link.nodes.len() as u64;
         Ok(link)
@@ -638,12 +656,13 @@ struct Meta {
     outbox: Vec<(u64, u64, P1Cmd)>,
     agents: BTreeMap<u64, u64>,
     queued: Vec<P1Cmd>,
+    kept: Vec<Logged>,
 }
 
 /// The meta page, written at every save: where the world is (tick and hash, for the replay
 /// check), where its snapshot and tail are, and the link's own state: scripted villages, the
 /// kept outbox, the caravan identity map (review 3, P2) and the kept commands still queued
-/// (review 3, P1).
+/// (review 3, P1), then the inputs kept while phase 1 was switched off (RP-300).
 /// The world's state hash is a whole pass over its rows, so only a TEST engine writes it (`test`;
 /// 0 otherwise, PF16).
 fn encode_meta(l: &Link, test: bool) -> Vec<u8> {
@@ -676,6 +695,10 @@ fn encode_meta(l: &Link, test: bool) -> Vec<u8> {
     w.var_u64(queued.len() as u64);
     for c in queued {
         cmds::encode_kept(&mut w, c);
+    }
+    w.var_u64(l.kept.len() as u64);
+    for k in &l.kept {
+        k.encode(&mut w);
     }
     w.into_bytes()
 }
@@ -724,6 +747,10 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     for _ in 0..r.len_prefix(1)? {
         queued.push(cmds::decode_kept(&mut r)?);
     }
+    let mut kept = Vec::new();
+    for _ in 0..r.len_prefix(3)? {
+        kept.push(Logged::decode(&mut r)?);
+    }
     r.finish()?;
     Ok(Meta {
         now,
@@ -739,6 +766,7 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
         outbox,
         agents,
         queued,
+        kept,
     })
 }
 
@@ -943,8 +971,11 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
 /// is dropped. Commands the bridge answers by op id (gossip, houses, residents) decided before the
 /// switch wait unsequenced until it is on again ([`write_queue_off`]); resends of ones already
 /// written still go out with their sequences, and answers are still taken: that is the protocol
-/// finishing, not the module running (choice PR13). **On:** the world runs to now at the next
-/// simulate (its missed events at once) and materializes again.
+/// finishing, not the module running (choice PR13). Journaled records of what happened (a robbery,
+/// a trade, a taken member, a house placed, an adoption, a report...) are still heard: kept at
+/// their own ticks while off ([`Link::kept`], RP-300). **On:** the kept inputs are applied at
+/// once, in time order, each at its own tick ([`drain_kept`]); then the world runs to now at the
+/// next simulate (its missed events at once) and materializes again.
 fn set_enabled(st: &mut State, on: bool) {
     let l = &mut st.phase1;
     let was = l.enabled;
@@ -976,6 +1007,7 @@ fn set_enabled(st: &mut State, on: bool) {
         l.last_interest = i64::MIN;
         l.last_market = i64::MIN;
         l.markets_sent.clear();
+        drain_kept(st, None);
     }
 }
 
@@ -1241,20 +1273,14 @@ fn item_name(st: &State, id: u32) -> Option<String> {
     st.world.java_dict.get(&(wire::DICT_ITEM, id)).cloned()
 }
 
-/// A phase 1 record `Replay` admitted. Switched off, phase 1 ignores it (U10), except HOUSE_PLACED:
-/// the answer to a house it booked while on, taken at its frozen clock (the world does not run) so
-/// the house's resident comes once it is on again (choice PR13).
+/// A phase 1 record `Replay` admitted. **Heard whether phase 1 is on or off** (RP-300: the switch
+/// gates only new decisions, and this is a record of what already happened, which the engine has
+/// acknowledged and Java will not send again). Its tick is the record's own, `wt(GAME_TIME)`,
+/// always; on, its input is applied now, off it is kept at that tick and applied when the world
+/// next runs ([`book`]). The only thing that differs off is when the world moves.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
-    if !st.phase1.enabled && rec.kind != obs::HOUSE_PLACED {
-        st.phase1.ignored += 1;
-        return;
-    }
     let b = rec.bytes;
-    let at = if st.phase1.enabled {
-        st.phase1.wt(wire::i64_at(b, obs::GAME_TIME))
-    } else {
-        st.phase1.world.now().0
-    };
+    let at = st.phase1.wt(wire::i64_at(b, obs::GAME_TIME));
     match rec.kind {
         obs::VILLAGE_ADOPTED if rec.size() >= obs::village_adopted::SIZE => adopted(st, rec, at),
         obs::TRADE if rec.size() >= obs::trade::SIZE => trade(st, rec, at),
@@ -1283,13 +1309,12 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             } else {
                 Input::UnmarkBase { key, player }
             };
-            st.phase1.input(input, at);
-            take_world_commands(st);
+            book(st, input, at);
         }
         obs::HOUSE_PLACED if rec.size() >= obs::house_placed::SIZE => {
             let op = wire::u64_at(b, obs::house_placed::OP_ID);
             let village = wire::u64_at(b, obs::house_placed::VILLAGE);
-            if st.phase1.scripted.contains(&village) || !st.phase1.nodes.contains_key(&village) {
+            if st.phase1.scripted.contains(&village) || !known(&st.phase1, village) {
                 return;
             }
             // A work placed (SINK.md): its COMMAND_RESULT, right after, is what the world takes;
@@ -1297,10 +1322,149 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             if st.phase1.world.is_work_op(op) {
                 return;
             }
-            st.phase1.input(Input::HousePlaced { op }, at);
-            take_world_commands(st);
+            book(st, Input::HousePlaced { op }, at);
         }
         _ => {}
+    }
+}
+
+// ---- booking: the one path an input takes, on or off -----------------------------------------------
+
+/// Whether the phase 1 world has, or will have once its kept inputs are applied, a node for this
+/// village or base key: a record naming one that is only in [`Link::kept`] (a deferred adoption or
+/// base mark) is about a node, not about nothing.
+fn known(l: &Link, key: u64) -> bool {
+    l.nodes.contains_key(&key)
+        || l.kept.iter().any(|k| {
+            matches!(&k.input, Input::Join { key: j, .. } | Input::MarkBase { key: j, .. } if *j == key)
+        })
+}
+
+/// [`known`] for a village (a base is a node too, and has no ribbits).
+fn known_village(l: &Link, key: u64) -> bool {
+    l.nodes
+        .get(&key)
+        .and_then(|&i| l.world.nodes.get(i))
+        .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)))
+        || l.kept
+            .iter()
+            .any(|k| matches!(&k.input, Input::Join { key: j, .. } if *j == key))
+}
+
+/// Whether a kept input moves goods in or out of this caravan's row (what a despawn's capture
+/// check compares against).
+fn moves_goods_of(input: &Input, bits: u64) -> bool {
+    match input {
+        Input::Rob { caravan, .. }
+        | Input::CargoIn { caravan, .. }
+        | Input::CaravanTrade { caravan, .. }
+        | Input::Member { caravan, .. }
+        | Input::MemberHeld { caravan, .. } => *caravan == bits,
+        _ => false,
+    }
+}
+
+/// Books `input` at world tick `at`, the record's own (RP-300). On: applied now, logged, its
+/// bookkeeping done, its commands taken. Off: kept at `at` in time order (after the kept inputs of
+/// the same tick), nothing else moves; it is applied by [`drain_kept`] when the world next runs.
+fn book(st: &mut State, input: Input, at: u64) {
+    if st.phase1.enabled {
+        apply_booked(st, input, at);
+    } else {
+        let l = &mut st.phase1;
+        let pos = l.kept.partition_point(|k| k.at <= at);
+        l.kept.insert(pos, Logged { at, input });
+    }
+}
+
+/// Applies a booked input at `at` (the world runs there first, `Link::input`) and does what the
+/// record's handler did after it: the counters of its kind. The world's commands are taken only
+/// when phase 1 is on: while off a drain (a viewer module running the clock) leaves them in the
+/// world's buffer, where today's viewer-run commands are ([`write_queue_off`]).
+fn apply_booked(st: &mut State, input: Input, at: u64) {
+    if let Input::WorkStyle { key, .. } = &input
+        && !st.phase1.nodes.contains_key(key)
+    {
+        return; // its adoption was refused: a style of nothing is not logged
+    }
+    let out = st.phase1.input(input.clone(), at);
+    let l = &mut st.phase1;
+    match &input {
+        Input::Join { .. } => l.stats[stat::VILLAGES] = l.nodes.len() as u64,
+        Input::Trade { key, .. } => {
+            if out.refused {
+                l.stats[stat::TRADES_REFUSED] += 1;
+            } else {
+                l.stats[stat::RESIDENT_TRADES] += 1;
+            }
+            if l.enabled {
+                l.market_dirty.insert(*key);
+            }
+        }
+        Input::CaravanTrade { .. } => {
+            if out.refused {
+                l.stats[stat::TRADES_REFUSED] += 1;
+            } else {
+                l.stats[stat::CARAVAN_TRADES] += 1;
+            }
+        }
+        Input::Rob { player, .. } => {
+            if !out.refused && *player != (0, 0) {
+                l.stats[stat::ROBBERIES] += 1;
+            }
+        }
+        Input::CaravanReport { .. } | Input::VillageReport { .. } => {
+            if !out.refused {
+                l.stats[stat::REPORTS] += 1;
+            }
+        }
+        Input::MemberHeld { player, .. } => {
+            if *player != (0, 0) {
+                l.stats[stat::REPORTS] += 1;
+            }
+        }
+        Input::WorkResult { placed, .. } => {
+            if *placed {
+                l.stats[stat::WORKS_PLACED] += 1;
+            } else {
+                l.stats[stat::WORKS_REFUSED] += 1;
+            }
+        }
+        Input::Talked { .. } => {
+            if out.refused {
+                super::talk::refuse_talked(st, "a TALKED the world refused");
+            } else {
+                st.talk.stats.talked += 1;
+            }
+        }
+        _ => {}
+    }
+    if st.phase1.enabled {
+        take_world_commands(st);
+    }
+}
+
+/// Applies the kept inputs with tick up to `bound` (all when `None`) in time order, each at its own
+/// tick after the shared modules ran their events up to it (the catch-up a journaled record gets,
+/// `shared::catch_up_to`), so no input meets a world another module ran past it and none is
+/// booked at the frozen clock (RP-300, hazard J3). Called at the switch-on, at the top of
+/// `simulate`, and at the top of `shared::run_to` (a viewer module running the clock while phase 1
+/// is off). Does nothing while phase 1 is off and no viewer module runs the world (nothing moves
+/// it). While the session's replay runs with a module that shares the world, no further than the
+/// replay clock ([`shared::clock_target`]). Each input is removed before it is applied: applying
+/// runs the clock again, which comes back here.
+pub(super) fn drain_kept(st: &mut State, bound: Option<Tick>) {
+    while !st.phase1.kept.is_empty() {
+        if !st.phase1.enabled && !shared::any_viewer(st) {
+            return;
+        }
+        let limit = shared::clock_target(st, bound.unwrap_or(Tick(u64::MAX)));
+        if st.phase1.kept[0].at > limit.0 {
+            return;
+        }
+        let k = st.phase1.kept.remove(0);
+        shared::run_rounds(st, Tick(k.at));
+        apply_booked(st, k.input, k.at);
     }
 }
 
@@ -1308,7 +1472,7 @@ fn adopted(st: &mut State, rec: &Rec<'_>, at: u64) {
     use obs::village_adopted as k;
     let b = rec.bytes;
     let key = wire::u64_at(b, k::VILLAGE);
-    if st.phase1.scripted.contains(&key) || st.phase1.nodes.contains_key(&key) {
+    if st.phase1.scripted.contains(&key) || known(&st.phase1, key) {
         return; // a test's village, or one seen again after a crash (C22: a no-op)
     }
     let culture_name = st
@@ -1339,14 +1503,13 @@ fn adopted(st: &mut State, rec: &Rec<'_>, at: u64) {
         pop: catalog::population(wire::u32_at(b, k::PIECES), culture),
         resources,
     };
-    st.phase1.input(input, at);
-    // Its village type: which of the catalogue's styled works it buys (SINK.md §4.2).
+    book(st, input, at);
+    // Its village type: which of the catalogue's styled works it buys (SINK.md §4.2). Booked
+    // after the adoption whatever its outcome: `apply_booked` drops it when there is no node.
     let style = works::style_of(&structure);
-    if style != 0 && st.phase1.nodes.contains_key(&key) {
-        st.phase1.input(Input::WorkStyle { key, style }, at);
+    if style != 0 {
+        book(st, Input::WorkStyle { key, style }, at);
     }
-    st.phase1.stats[stat::VILLAGES] = st.phase1.nodes.len() as u64;
-    take_world_commands(st);
 }
 
 /// The caravan row a phase 1 agent is: this session's puppet, else what the pages remember (a
@@ -1399,52 +1562,35 @@ fn trade(st: &mut State, rec: &Rec<'_>, at: u64) {
         l.stats[stat::TRADES_REFUSED] += 1;
         return;
     }
-    if agent == 0 {
-        if l.scripted.contains(&node) || !l.nodes.contains_key(&node) {
+    let input = if agent == 0 {
+        if l.scripted.contains(&node) || !known(l, node) {
             return;
         }
-        let out = l.input(
-            Input::Trade {
-                key: node,
-                player,
-                good: g.0,
-                items,
-                coins,
-                buy: sells,
-            },
-            at,
-        );
-        if out.refused {
-            l.stats[stat::TRADES_REFUSED] += 1;
-        } else {
-            l.stats[stat::RESIDENT_TRADES] += 1;
+        Input::Trade {
+            key: node,
+            player,
+            good: g.0,
+            items,
+            coins,
+            buy: sells,
         }
-        l.market_dirty.insert(node);
     } else {
         let Some(bits) = caravan_of(l, agent) else {
             return;
         };
         let at_node = if l.scripted.contains(&node) { 0 } else { node };
-        let out = l.input(
-            Input::CaravanTrade {
-                caravan: bits,
-                at_node,
-                player,
-                good: g.0,
-                currency: c.0,
-                buy: sells,
-                items,
-                coins,
-            },
-            at,
-        );
-        if out.refused {
-            l.stats[stat::TRADES_REFUSED] += 1;
-        } else {
-            l.stats[stat::CARAVAN_TRADES] += 1;
+        Input::CaravanTrade {
+            caravan: bits,
+            at_node,
+            player,
+            good: g.0,
+            currency: c.0,
+            buy: sells,
+            items,
+            coins,
         }
-    }
-    take_world_commands(st);
+    };
+    book(st, input, at);
 }
 
 fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
@@ -1468,7 +1614,7 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         k::RESIDENT_HURT | k::RESIDENT_KILLED => {
             let node = wire::u64_at(b, k::NODE);
-            if l.scripted.contains(&node) || !l.nodes.contains_key(&node) {
+            if l.scripted.contains(&node) || !known(l, node) {
                 return;
             }
             // Flagged VANILLA_GOSSIP: vanilla wrote its own gossip. The report still counts for
@@ -1482,10 +1628,7 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         _ => return,
     };
-    if !l.input(input, at).refused {
-        l.stats[stat::REPORTS] += 1;
-    }
-    take_world_commands(st);
+    book(st, input, at);
 }
 
 /// A TALKED `Replay` admitted (docs/boundary.md §13.7): the village credits the player's talk with
@@ -1503,12 +1646,7 @@ fn talked(st: &mut State, rec: &Rec<'_>, at: u64) {
     if l.scripted.contains(&t.village) {
         return;
     }
-    let is_village = l
-        .nodes
-        .get(&t.village)
-        .and_then(|&i| l.world.nodes.get(i))
-        .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)));
-    if !is_village {
+    if !known_village(l, t.village) {
         return super::talk::refuse_talked(
             st,
             &format!(
@@ -1517,18 +1655,14 @@ fn talked(st: &mut State, rec: &Rec<'_>, at: u64) {
             ),
         );
     }
-    let out = st.phase1.input(
+    book(
+        st,
         Input::Talked {
             key: t.village,
             player: t.player,
         },
         at,
     );
-    if out.refused {
-        return super::talk::refuse_talked(st, "a TALKED the world refused");
-    }
-    st.talk.stats.talked += 1;
-    take_world_commands(st);
 }
 
 fn rescue(st: &mut State, rec: &Rec<'_>, at: u64) {
@@ -1549,7 +1683,7 @@ fn rescue(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         k::RESIDENT => {
             let node = wire::u64_at(b, k::NODE);
-            if l.scripted.contains(&node) || !l.nodes.contains_key(&node) {
+            if l.scripted.contains(&node) || !known(l, node) {
                 return;
             }
             Input::VillageReport {
@@ -1560,10 +1694,7 @@ fn rescue(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         _ => return,
     };
-    if !l.input(input, at).refused {
-        l.stats[stat::REPORTS] += 1;
-    }
-    take_world_commands(st);
+    book(st, input, at);
 }
 
 fn cargo(st: &mut State, rec: &Rec<'_>, at: u64) {
@@ -1592,35 +1723,32 @@ fn cargo(st: &mut State, rec: &Rec<'_>, at: u64) {
             *inn.entry(g.0).or_default() += delta;
         }
     }
-    let l = &mut st.phase1;
-    let Some(bits) = caravan_of(l, agent) else {
+    let Some(bits) = caravan_of(&st.phase1, agent) else {
         return;
     };
     if !out.is_empty() {
-        let refused = l
-            .input(
-                Input::Rob {
-                    caravan: bits,
-                    player,
-                    goods: out.into_iter().collect(),
-                },
-                at,
-            )
-            .refused;
-        if !refused && player != (0, 0) {
-            l.stats[stat::ROBBERIES] += 1;
-        }
-    }
-    if !inn.is_empty() {
-        l.input(
-            Input::CargoIn {
+        let goods = out.into_iter().collect();
+        book(
+            st,
+            Input::Rob {
                 caravan: bits,
-                goods: inn.into_iter().collect(),
+                player,
+                goods,
             },
             at,
         );
     }
-    take_world_commands(st);
+    if !inn.is_empty() {
+        let goods = inn.into_iter().collect();
+        book(
+            st,
+            Input::CargoIn {
+                caravan: bits,
+                goods,
+            },
+            at,
+        );
+    }
 }
 
 /// A core record about a phase 1 puppet or command, after the core world applied it.
@@ -1661,15 +1789,9 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             }
         }
         obs::TAKEN | obs::DIED => {
-            if !st.phase1.enabled {
-                // U10: ignored, as every phase 1 record is while it is off.
-                if rec.size() >= obs::taken::SIZE.min(obs::died::SIZE)
-                    && caravan_of(&st.phase1, wire::u64_at(b, obs::taken::AGENT)).is_some()
-                {
-                    st.phase1.ignored += 1;
-                }
-                return;
-            }
+            // Heard on or off like every journaled phase 1 record (RP-300), at the record's own
+            // tick. (Before RP-300 this booked at the world's tick when it was heard, which a
+            // replay after a crash heard at another tick: hazard J3.)
             let (agent, epoch, member, player, killed) = if rec.kind == obs::TAKEN {
                 if rec.size() < obs::taken::SIZE {
                     return;
@@ -1712,8 +1834,9 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
                     *held.entry(g.0).or_default() += i64::from(it.count) * MILLI;
                 }
             }
-            let at = l.world.now().0;
-            l.input(
+            let at = l.wt(wire::i64_at(b, obs::GAME_TIME));
+            book(
+                st,
                 Input::MemberHeld {
                     caravan: bits,
                     member,
@@ -1723,10 +1846,6 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
                 },
                 at,
             );
-            if player != (0, 0) {
-                l.stats[stat::REPORTS] += 1;
-            }
-            take_world_commands(st);
         }
         obs::COMMAND_RESULT if rec.size() >= obs::command_result::SIZE => {
             let op = wire::u64_at(b, obs::command_result::OP_ID);
@@ -1735,23 +1854,20 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             l.resend.retain(|(_, o, _)| *o != op);
             // A kept command queued again after a restart that Java applied before the crash.
             l.queue.retain(|c| c.kept_op() != Some(op));
-            // A bought work's answer (SINK.md MS-11): placed, or its kind is full. Taken while
-            // switched off too, at the frozen clock, as HOUSE_PLACED is (PR13).
-            if l.world.is_work_op(op) {
+            // A bought work's answer (SINK.md MS-11): placed, or its kind is full. A record of what
+            // happened: heard on or off, at its own tick, kept while off like the rest (RP-300; it
+            // was taken at the frozen clock while off before). Not again if the same answer is
+            // already kept.
+            if l.world.is_work_op(op)
+                && !l
+                    .kept
+                    .iter()
+                    .any(|k| matches!(k.input, Input::WorkResult { op: o, .. } if o == op))
+            {
                 use obs::command_result as r;
                 let placed = rec.aux == r::APPLIED || rec.aux == r::DUPLICATE_OP;
-                let at = if l.enabled {
-                    l.wt(wire::i64_at(b, obs::GAME_TIME))
-                } else {
-                    l.world.now().0
-                };
-                l.input(Input::WorkResult { op, placed }, at);
-                if placed {
-                    l.stats[stat::WORKS_PLACED] += 1;
-                } else {
-                    l.stats[stat::WORKS_REFUSED] += 1;
-                }
-                take_world_commands(st);
+                let at = l.wt(wire::i64_at(b, obs::GAME_TIME));
+                book(st, Input::WorkResult { op, placed }, at);
             }
         }
         _ => {}
@@ -1764,6 +1880,18 @@ fn check_capture(st: &mut State, agent: u64, p: &Puppet) {
     let PuppetOf::Caravan(bits) = p.of else {
         return;
     };
+    // Inputs of this caravan's goods still kept (heard while phase 1 was off, RP-300): the row
+    // has not heard them yet, so it cannot match what the chest holds now. The comparison is a
+    // diagnostic and the row agrees once they are applied; this despawn is not checked, the next
+    // one is.
+    if st
+        .phase1
+        .kept
+        .iter()
+        .any(|k| moves_goods_of(&k.input, bits))
+    {
+        return;
+    }
     let Some(a) = st.world.agents.get(&agent) else {
         return;
     };
@@ -1867,6 +1995,9 @@ pub(super) fn simulate(st: &mut State) {
     }
     // Held at the replay clock while replaying with a module that shares the world (§3.6).
     let target = shared::hand_over_target(st).0;
+    // Inputs heard while it was off and not yet applied (a start with phase 1 on after a crash
+    // while off, or a replay clock that held them): at their own ticks first, RP-300.
+    drain_kept(st, Some(Tick(target)));
     if target > st.phase1.world.now().0 {
         st.phase1.world.run_until(Tick(target));
     }
@@ -3305,11 +3436,13 @@ mod tests {
         );
     }
 
-    /// U10 (Ben: "Ignore everything"): switched off, phase 1 captures its puppets back, ignores
-    /// its records (a village adopted, a census), and its world does not run; on again it runs
-    /// to now at once. Phase 1 runs only with all four of its modules on (choice PR13).
+    /// U10 (Ben: "Ignore everything"), with the rule of RP-300: switched off, phase 1 captures its
+    /// puppets back and its world does not run, and nothing new is decided; the journaled records
+    /// of what happened (a village adopted) are heard, kept at their own ticks, and applied there
+    /// when it is on again; on again it then runs to now at once. Phase 1 runs only with all four
+    /// of its modules on (choice PR13).
     #[test]
-    fn a_switched_off_phase1_ignores_everything_and_catches_up() {
+    fn a_switched_off_phase1_keeps_its_records_and_catches_up() {
         let mut st = state();
         st.world
             .java_dict
@@ -3399,14 +3532,37 @@ mod tests {
         assert!(st.phase1.outbox.is_empty());
         let second = adopt(2, 2_000);
         journaled(&mut st, &rec(&second));
-        assert_eq!(st.phase1.nodes.len(), 1, "a record while off is ignored");
-        assert_eq!(st.phase1.ignored, 1);
+        assert_eq!(
+            st.phase1.nodes.len(),
+            1,
+            "a record while off is not applied yet"
+        );
+        // The join and its village type, both at the record's tick.
+        assert_eq!(st.phase1.kept.len(), 2, "it is kept, at its own tick");
+        assert!(st.phase1.kept.iter().all(|k| k.at == 2_000));
+        assert_eq!(st.phase1.ignored, 0, "a record of what happened is heard");
+        // The same record again (a copy): one adoption, not two.
+        journaled(&mut st, &rec(&second));
+        assert_eq!(st.phase1.kept.len(), 2);
         st.game_time = 50_000;
         simulate(&mut st);
         assert_eq!(st.phase1.world.now().0, 1_000, "its world does not run");
-        // On again: it runs to now at once.
+        // On again: the kept input goes in at its own tick, then it runs to now at once.
         modules(&mut st, 0b1111);
         assert!(st.phase1.enabled);
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.nodes.len(), 2);
+        let join = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 2, .. }))
+            .expect("the adoption is in the log");
+        assert_eq!(
+            join.at, 2_000,
+            "at its own tick, not the frozen clock or now"
+        );
+        assert_eq!(st.phase1.world.now().0, 2_000);
         simulate(&mut st);
         assert_eq!(st.phase1.world.now().0, 50_000);
         let mut w = RecordWriter::new(&mut buf);

@@ -59,7 +59,7 @@ pub(super) struct Link {
 }
 
 /// Whether any module that sees players runs (and so needs their areas).
-fn any_viewer(st: &State) -> bool {
+pub(super) fn any_viewer(st: &State) -> bool {
     dragons::running(st) || ships::running(st) || herds::running(st) || conflict::running(st)
 }
 
@@ -303,7 +303,18 @@ pub(super) fn simulate(st: &mut State) {
 /// everything due up to its time and no module schedules another's events, so the rounds' times
 /// rise and the loop ends. (With the dragons running, the herds run inside the dragons' rounds,
 /// as their prey, Y7; the herds' own round then finds nothing left.)
+///
+/// Phase 1's inputs kept while it was switched off and ticked up to `at` are applied first, each at
+/// its own tick ([`phase1::drain_kept`], RP-300): a viewer module running the shared clock never
+/// runs the world past an input the world has not heard yet.
 pub(super) fn run_to(st: &mut State, at: Tick) {
+    phase1::drain_kept(st, Some(at));
+    run_rounds(st, at);
+}
+
+/// [`run_to`] without the drain: the rounds themselves. The drain calls it for the catch-up before
+/// each input it applies.
+pub(super) fn run_rounds(st: &mut State, at: Tick) {
     loop {
         let mut t = at;
         if dragons::running(st)
