@@ -341,12 +341,12 @@ public final class SectionsJoinGameTests {
                     playerPlacedBare(helper, press);
                     playerPlacedBare(helper, arm);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> { // the arm reads its points on its first tick: a ticking chunk, late under load
                     ArmBlockEntity a = armAt(helper, arm);
                     check("the arm exists", a != null);
                     check("the arm has read its points (pending " + CreateGlassAccess.armPointsPending(a) + ", inputs " + armInputs(a) + ")",
                             !CreateGlassAccess.armPointsPending(a) && armInputs(a) == 1);
-                })
+                }))
                 .thenExecute(() -> ind().districts().rescanNow(level))
                 .thenWaitUntil(() -> {
                     long ca = chunk(arm), cd = chunk(take);
@@ -380,8 +380,8 @@ public final class SectionsJoinGameTests {
                     check("the fresh arm has not ticked inside this tick", CreateGlassAccess.armPointsPending(fresh[0]));
                     record(t, "detection before the fresh arm's tick", describe(d));
                 })
-                .thenWaitUntil(() -> check("the fresh arm has read its points (pending " + CreateGlassAccess.armPointsPending(fresh[0])
-                        + ", inputs " + armInputs(fresh[0]) + ")", !CreateGlassAccess.armPointsPending(fresh[0]) && armInputs(fresh[0]) == 1))
+                .thenWaitUntil(paced(() -> check("the fresh arm has read its points (pending " + CreateGlassAccess.armPointsPending(fresh[0])
+                        + ", inputs " + armInputs(fresh[0]) + ")", !CreateGlassAccess.armPointsPending(fresh[0]) && armInputs(fresh[0]) == 1)))
                 .thenExecute(() -> {
                     ind().districts().rescanNow(level);
                     long ca = chunk(arm), cd = chunk(take);
@@ -883,12 +883,12 @@ public final class SectionsJoinGameTests {
                     playerPlacedBare(helper, press);
                     playerPlacedBare(helper, arm);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> { // the arm reads its points on its first tick: a ticking chunk, late under load
                     ArmBlockEntity a = armAt(helper, arm);
                     check("the arm exists", a != null);
                     check("the arm has read its points (pending " + CreateGlassAccess.armPointsPending(a) + ", inputs " + armInputs(a) + ")",
                             !CreateGlassAccess.armPointsPending(a) && armInputs(a) == 1);
-                })
+                }))
                 .thenExecute(() -> ind().districts().rescanNow(level))
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, press);

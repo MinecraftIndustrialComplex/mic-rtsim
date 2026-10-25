@@ -315,8 +315,10 @@ public final class StationCargoGameTests {
         vault(level, run.supplyVault);
         for (BlockPos p : List.of(run.sinkVault, run.psi.below(), run.psi, run.psi.above(), run.supplyVault))
             IndustryKit.playerPlaced(h, p);
+        int joined = GlassCorpus.join(h); // the factory and its port: one district wherever the chunk borders fall
         run.builtAt = run.now();
-        GlassCorpusKit.log(run.f.name(), "station cargo built", run.copy.notes() + "; port at " + run.psi.toShortString());
+        GlassCorpusKit.log(run.f.name(), "station cargo built", run.copy.notes() + "; port at " + run.psi.toShortString()
+                + "; chunk borders joined: " + joined);
         run.stage(Stage.DISTRICT);
     }
 
