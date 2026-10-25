@@ -69,6 +69,7 @@ use crate::index::PreyIndex;
 use crate::infra::{DistrictSite, Infrastructure};
 use crate::nest::Nests;
 use crate::oil::{OilIndex, Roll};
+use crate::outbox::Outbox;
 use crate::prey::{Item, PreyClass, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
@@ -400,7 +401,7 @@ pub struct Dragons {
     pub prey_by_season: [[u64; PreyKind::COUNT]; 4],
     /// Fullness gained, per [season][prey kind].
     pub food_by_season: [[i64; PreyKind::COUNT]; 4],
-    pub(crate) outbox: Vec<Cmd>,
+    pub(crate) outbox: Outbox,
     pub(crate) players: BTreeMap<ActorId, PlayerView>,
     pub(crate) index: PreyIndex,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
@@ -571,7 +572,7 @@ impl Dragons {
             hunts: Vec::new(),
             prey_by_season: [[0; PreyKind::COUNT]; 4],
             food_by_season: [[0; PreyKind::COUNT]; 4],
-            outbox: Vec::new(),
+            outbox: Outbox::default(),
             players: BTreeMap::new(),
             index: PreyIndex::default(),
             topo: rtsim_space::topology::all_flat(),
@@ -650,7 +651,7 @@ impl Dragons {
 
     /// Commands for the plugin, oldest first.
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.take()
     }
 
     /// Maps a plugin item dictionary id to a ledger item (for HOARD_ROBBED).
