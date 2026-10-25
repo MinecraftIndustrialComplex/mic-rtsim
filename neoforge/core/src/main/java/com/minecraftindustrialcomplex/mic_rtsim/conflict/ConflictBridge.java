@@ -1778,7 +1778,7 @@ public final class ConflictBridge implements SessionPlugin {
         return best;
     }
 
-    /** The square of blocks a player's stopped bands keep to: one chunk inside its entity-ticking edge. */
+    /** The square of blocks a player's stopped bands keep to: {@value StopSquare#INSET} chunks inside its entity-ticking edge (MZB-746). */
     private int[] square(ServerPlayer pl) {
         ChunkPos c = pl.chunkPosition();
         return StopSquare.square(c.x, c.z, session.server().getPlayerList().getSimulationDistance());
@@ -1822,7 +1822,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /**
      * A placed stack of a stopped band whose walk end lies outside its player's square has the end clamped into it
-     * and walks on from where it stands: it holds one chunk inside the edge while it goes toward the fight, and never
+     * and walks on from where it stands: it holds two chunks inside the edge while it goes toward the fight, and never
      * walks out of the ticking area to be taken back to pending (MZB-472).
      */
     private void clamp(Party p, ServerLevel level, long now) {

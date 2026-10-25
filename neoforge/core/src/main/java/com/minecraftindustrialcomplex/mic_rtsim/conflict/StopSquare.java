@@ -1,20 +1,26 @@
 package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 /**
- * The stop's geometry (MZB-472, CL-D35): the square of blocks a stopped band's stacks may stand in so that a player
+ * The stop's geometry (MZB-472, MZB-746, CL-D35): the square of blocks a stopped band's stacks may stand in so that a player
  * sees them and the world ticks them, as pure numbers.
  *
  * <p>A player's entity-ticking chunks lie within Chebyshev distance {@code s} of its chunk, {@code s} being the
- * server's simulation distance. The square is one chunk inside that edge: chunks {@code pcx - s + 1} to
- * {@code pcx + s - 1}, so blocks {@code 16 * (pcx - s + 1)} to {@code 16 * (pcx + s) - 1}, and the same in z. It is
- * {@code {minX, minZ, maxX, maxZ}}, the maxima inclusive; a point is inside when {@code min <= p < max + 1}.
+ * server's simulation distance. The square is {@value #INSET} chunks inside that edge: chunks {@code pcx - r} to
+ * {@code pcx + r} with {@code r = max(0, s - 2)}, so blocks {@code 16 * (pcx - r)} to {@code 16 * (pcx + r + 1) - 1},
+ * and the same in z. One chunk inside the edge was not enough (a body a fight pushes a chunk off its place left the
+ * ticking area and the stack was taken back, at low simulation distances); the floor is the player's own chunk, so a
+ * simulation distance of 2 or less still leaves a square. It is {@code {minX, minZ, maxX, maxZ}}, the maxima
+ * inclusive; a point is inside when {@code min <= p < max + 1}.
  */
 final class StopSquare {
     private StopSquare() {}
 
+    /** Chunks between the square and the entity-ticking edge (MZB-746). */
+    static final int INSET = 2;
+
     static int[] square(int pcx, int pcz, int simulationDistance) {
-        int s = Math.max(1, simulationDistance);
-        return new int[] {16 * (pcx - s + 1), 16 * (pcz - s + 1), 16 * (pcx + s) - 1, 16 * (pcz + s) - 1};
+        int r = Math.max(0, simulationDistance - INSET);
+        return new int[] {16 * (pcx - r), 16 * (pcz - r), 16 * (pcx + r + 1) - 1, 16 * (pcz + r + 1) - 1};
     }
 
     static boolean inside(double x, double z, int[] sq) {
