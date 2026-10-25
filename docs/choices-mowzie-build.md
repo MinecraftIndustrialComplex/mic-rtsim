@@ -6078,6 +6078,12 @@ conservative option at its fork.
   it are the new session's, not the window's, so a hold would not recover the live answer. The
   option not taken: Java names the owner it sees at the call (a format change to the industry's
   TRAIN_ARRIVED, or a conflict record beside it).
+- **RP-104** (a copied RAIL_PASS; the M7 check, P3): `ingest_copy` sent every kind it did not
+  name to `ingest`, so a RAIL_PASS copy would run `rail_pass` again and count its leg twice. Java
+  never sends one (no op id, no holder reasserts it, §4.4), so nothing counted twice; the conflict no
+  longer trusts that: `ingest_copy` drops a RAIL_PASS. Test: tests/rail.rs
+  `a_copy_of_a_rail_pass_counts_nothing` (the copy counts and holds nothing; the control, the same
+  pass live, is counted and held; without the arm the copy counts 1).
 
 ### Slice H (herds)
 

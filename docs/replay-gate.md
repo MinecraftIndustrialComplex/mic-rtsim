@@ -823,7 +823,8 @@ before the merge asked:
   waits (§6). No "never" kind is decided.
 - **RAIL_PASS** has no op id and no copy: Java journals each once, at once
   (`ConflictBridge.railPass`, no holder reasserts it), and the pages and a contiguous replay apply
-  each record once. It names no epoch (RP-57's table).
+  each record once. It names no epoch (RP-57's table). A copy, were one ever sent, is dropped by
+  `ingest_copy` (RP-104).
 - **Track targets.** A raid or invasion bound for a track (`Target::Track`) asks no watcher at its
   arrival: `arrive`'s track arm comes before the arm that holds (§6.1) and only waits out the band's
   patience at the spot, and `resolve` raids nothing there. So it is never held, and decides while
