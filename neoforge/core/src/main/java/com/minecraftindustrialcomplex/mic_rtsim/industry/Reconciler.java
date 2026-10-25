@@ -481,7 +481,8 @@ public final class Reconciler {
                 continue;
             }
             d.items().removeIf(item -> {
-                if (!d.level().areEntitiesLoaded(ChunkPos.asLong(item.blockPosition())))
+                long at = ChunkPos.asLong(item.blockPosition());
+                if (at == heldChunkForTest || !d.level().areEntitiesLoaded(at))
                     return false;
                 d.level().addFreshEntity(item);
                 return true;
@@ -494,6 +495,15 @@ public final class Reconciler {
     /** Drop batches waiting for their chunks' write or their entity chunks (the GameTests). */
     public int dropsWaiting() {
         return drops.size();
+    }
+
+    /** No chunk: {@link ChunkPos#asLong} never gives it (z would be Integer.MIN_VALUE). */
+    private static final long NO_CHUNK = Long.MIN_VALUE;
+    private static volatile long heldChunkForTest = NO_CHUNK;
+
+    /** Keeps drops lying in {@code chunk} from joining the level, as a slow write would; null lets them go (GameTests only). */
+    public static void holdDropsForTest(ChunkPos chunk) {
+        heldChunkForTest = chunk == null ? NO_CHUNK : chunk.toLong();
     }
 
     /**

@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.growth.HouseBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
@@ -234,6 +235,170 @@ public final class SavedAheadGameTests {
                 .thenSucceed();
     }
 
+    /** The search radius of the two far-plot tests: its outer ring reaches a chunk three away, past a forced chunk's FULL reach. */
+    private static final int FAR_RING = 44;
+
+    /** Cobblestone (the hut's walls) at {@code y + 1} in the square of half-width 2 around (x, z). */
+    private static int walls(ServerLevel level, int x, int y, int z) {
+        int n = 0;
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                if (level.getBlockState(new BlockPos(x + dx, y + 1, z + dz)).is(Blocks.COBBLESTONE))
+                    n++;
+        return n;
+    }
+
+    /** A clear plot for the hut centred on (x, z): air above, a stone floor under it. */
+    private static void plot(ServerLevel level, int x, int y, int z) {
+        fill(level, x - 2, y, z - 2, x + 2, y + 5, z + 2, Blocks.AIR.defaultBlockState());
+        fill(level, x - 2, y - 1, z - 2, x + 2, y - 1, z + 2, Blocks.STONE.defaultBlockState());
+    }
+
+    /**
+     * C3 (RP-211), the first house's plot on disk only: the hut stands at the search's first candidate, in chunk H,
+     * and H is written to disk and unloaded (a forced chunk L three chunks east keeps H's neighbours loaded, not H).
+     * The village registry and the journal go back to before the house; the engine resends the searching PLACE_HOUSE.
+     * The resend's search finds the first candidate not loaded and goes on to the first loaded free plot, on the outer
+     * ring in L. It must find the op in H as saved and answer DUPLICATE_OP, not build a second house in L.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_saved_ahead")
+    public static void aHouseWhosePlotIsOnlyOnDiskIsNotBuiltTwice(GameTestHelper helper) {
+        String t = "aHouseWhosePlotIsOnlyOnDiskIsNotBuiltTwice";
+        ServerLevel level = helper.getLevel();
+        ScriptedEngine stub = RtsimTests.engine();
+        String dim = RtsimTests.dimension(helper);
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        ChunkPos h = new ChunkPos((o.getX() >> 4) + 6890, (o.getZ() >> 4) + 6810), l = new ChunkPos(h.x + 3, h.z);
+        // The first candidate is H's middle; the outer ring's first candidate, FAR_RING east, is in L.
+        int x0 = h.getMinBlockX() + 8, z0 = h.getMinBlockZ() + 8, y = 180, xl = x0 + FAR_RING;
+        long op = engineOp();
+        long seed = 7; // the rings start at an angle of about 0: the first candidate of each ring is east of the centre
+        Village[] v = new Village[1];
+        boolean[] written = new boolean[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(h.x, h.z, true);
+                    level.setChunkForced(l.x, l.z, true);
+                })
+                .thenWaitUntil(paced(() -> check("H and L load", level.getChunkSource().getChunkNow(h.x, h.z) != null
+                        && level.getChunkSource().getChunkNow(l.x, l.z) != null)))
+                .thenExecute(() -> {
+                    plot(level, x0, y, z0);
+                    plot(level, xl, y, z0);
+                    v[0] = RtsimTests.adoptScripted(helper, Cultures.HUMAN,
+                            new BoundingBox(x0 - FAR_RING - 4, y - 2, z0 - FAR_RING - 4, x0 + FAR_RING + 4, y + 6, z0 + FAR_RING + 4), new BlockPos(x0, y, z0));
+                    stub.placeHouse(op, v[0].id, dim, "mic_rtsim:hut", null, x0, y, z0, 0, 0, Cmd.PlaceHouse.FLAG_SEARCH, FAR_RING, seed, 0);
+                })
+                .thenWaitUntil(paced(() -> check("the house is built in H", RtsimSession.chunkCarriesOp(level.getChunk(h.x, h.z), op))))
+                .thenExecute(() -> {
+                    Village.House house = v[0].house(op);
+                    check("at the first candidate: " + (house == null ? null : house.box()), house != null && house.box().minX() == x0 - 1);
+                    // The crash: H as it is now, on disk; the registry and the journal from before the house.
+                    v[0].houses.removeIf(x -> x.op() == op);
+                    RtsimTests.session().phase1.villages.setDirty();
+                    RtsimTests.session().boundary().journal().forgetAppliedForTest(op);
+                    RtsimTests.session().journal().chunks().writeNow(level, List.of(level.getChunk(h.x, h.z))).thenAccept(ok -> written[0] = ok);
+                })
+                .thenWaitUntil(paced(() -> check("H is on disk", written[0])))
+                .thenExecute(() -> level.setChunkForced(h.x, h.z, false))
+                .thenWaitUntil(paced(() -> check("H is no longer loaded", level.getChunkSource().getChunkNow(h.x, h.z) == null)))
+                // The engine, rolled back too, sends the same PLACE_HOUSE again.
+                .thenExecute(() -> stub.placeHouse(op, v[0].id, dim, "mic_rtsim:hut", null, x0, y, z0, 0, 0, Cmd.PlaceHouse.FLAG_SEARCH, FAR_RING, seed, 0))
+                .thenWaitUntil(paced(() -> check("the resend answered", results(stub, op).size() >= 2)))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> rs = results(stub, op);
+                    int again = rs.get(rs.size() - 1).aux(), inL = walls(level, xl, y, z0);
+                    record(t, "results, wall blocks in L", rs.stream().map(r -> r.aux()).toList() + ", " + inL);
+                    check("no second house: the resend answered " + again + " with " + inL + " wall blocks in L",
+                            again == Obs.CommandResult.DUPLICATE_OP && inL == 0);
+                })
+                .thenExecute(() -> level.setChunkForced(h.x, h.z, true))
+                .thenWaitUntil(paced(() -> check("H loads for the clean-up", level.getChunkSource().getChunkNow(h.x, h.z) != null)))
+                .thenExecute(() -> {
+                    fill(level, x0 - 2, y - 1, z0 - 2, x0 + 2, y + 5, z0 + 2, Blocks.AIR.defaultBlockState());
+                    fill(level, xl - 2, y - 1, z0 - 2, xl + 2, y + 5, z0 + 2, Blocks.AIR.defaultBlockState());
+                    dropCarried(level.getChunk(h.x, h.z), op);
+                    dropCarried(level.getChunk(l.x, l.z), op);
+                    RtsimTests.forget(v[0]);
+                    level.setChunkForced(h.x, h.z, false);
+                    level.setChunkForced(l.x, l.z, false);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * C3 (RP-211), an earlier plot free at the resend: the search's first candidate, in chunk E, is not loaded when
+     * the house is built (E unforced, three chunks from the forced L), so the hut goes on the outer ring in L. The
+     * crash keeps L with the house; the registry and the journal go back to before it. E is loaded again and its plot
+     * is free when the engine resends the searching PLACE_HOUSE: the resend must find the op in L and answer
+     * DUPLICATE_OP, not build a second house at the first candidate in E.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_saved_ahead")
+    public static void aHouseIsNotBuiltTwiceOnAnEarlierPlotFreeAtTheResend(GameTestHelper helper) {
+        String t = "aHouseIsNotBuiltTwiceOnAnEarlierPlotFreeAtTheResend";
+        ServerLevel level = helper.getLevel();
+        ScriptedEngine stub = RtsimTests.engine();
+        String dim = RtsimTests.dimension(helper);
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        ChunkPos e = new ChunkPos((o.getX() >> 4) + 6910, (o.getZ() >> 4) + 6810), l = new ChunkPos(e.x + 3, e.z);
+        int x0 = e.getMinBlockX() + 8, z0 = e.getMinBlockZ() + 8, y = 180, xl = x0 + FAR_RING;
+        long op = engineOp();
+        long seed = 7;
+        Village[] v = new Village[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(e.x, e.z, true);
+                    level.setChunkForced(l.x, l.z, true);
+                })
+                .thenWaitUntil(paced(() -> check("E and L load", level.getChunkSource().getChunkNow(e.x, e.z) != null
+                        && level.getChunkSource().getChunkNow(l.x, l.z) != null)))
+                .thenExecute(() -> {
+                    plot(level, x0, y, z0);
+                    plot(level, xl, y, z0);
+                    level.setChunkForced(e.x, e.z, false);
+                })
+                .thenWaitUntil(paced(() -> check("E is no longer loaded", level.getChunkSource().getChunkNow(e.x, e.z) == null)))
+                .thenExecute(() -> {
+                    v[0] = RtsimTests.adoptScripted(helper, Cultures.HUMAN,
+                            new BoundingBox(x0 - FAR_RING - 4, y - 2, z0 - FAR_RING - 4, x0 + FAR_RING + 4, y + 6, z0 + FAR_RING + 4), new BlockPos(x0, y, z0));
+                    stub.placeHouse(op, v[0].id, dim, "mic_rtsim:hut", null, x0, y, z0, 0, 0, Cmd.PlaceHouse.FLAG_SEARCH, FAR_RING, seed, 0);
+                })
+                .thenWaitUntil(paced(() -> check("the house is built in L", RtsimSession.chunkCarriesOp(level.getChunk(l.x, l.z), op))))
+                .thenExecute(() -> {
+                    Village.House house = v[0].house(op);
+                    check("on the outer ring: " + (house == null ? null : house.box()), house != null && house.box().minX() == xl - 1);
+                    // The crash: L as it is now; the registry and the journal from before the house.
+                    v[0].houses.removeIf(x -> x.op() == op);
+                    RtsimTests.session().phase1.villages.setDirty();
+                    RtsimTests.session().boundary().journal().forgetAppliedForTest(op);
+                    level.setChunkForced(e.x, e.z, true);
+                })
+                .thenWaitUntil(paced(() -> check("E loads", level.getChunkSource().getChunkNow(e.x, e.z) != null)))
+                .thenExecute(() -> {
+                    check("E's plot is free", HouseBuilder.free(level, v[0], new BoundingBox(x0 - 1, y, z0 - 1, x0 + 1, y + 2, z0 + 1)));
+                    // The engine, rolled back too, sends the same PLACE_HOUSE again.
+                    stub.placeHouse(op, v[0].id, dim, "mic_rtsim:hut", null, x0, y, z0, 0, 0, Cmd.PlaceHouse.FLAG_SEARCH, FAR_RING, seed, 0);
+                })
+                .thenWaitUntil(paced(() -> check("the resend answered", results(stub, op).size() >= 2)))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> rs = results(stub, op);
+                    int again = rs.get(rs.size() - 1).aux(), inE = walls(level, x0, y, z0);
+                    record(t, "results, wall blocks in E", rs.stream().map(r -> r.aux()).toList() + ", " + inE);
+                    check("no second house: the resend answered " + again + " with " + inE + " wall blocks in E",
+                            again == Obs.CommandResult.DUPLICATE_OP && inE == 0);
+                })
+                .thenExecute(() -> {
+                    fill(level, x0 - 2, y - 1, z0 - 2, x0 + 2, y + 5, z0 + 2, Blocks.AIR.defaultBlockState());
+                    fill(level, xl - 2, y - 1, z0 - 2, xl + 2, y + 5, z0 + 2, Blocks.AIR.defaultBlockState());
+                    dropCarried(level.getChunk(e.x, e.z), op);
+                    dropCarried(level.getChunk(l.x, l.z), op);
+                    RtsimTests.forget(v[0]);
+                    level.setChunkForced(e.x, e.z, false);
+                    level.setChunkForced(l.x, l.z, false);
+                })
+                .thenSucceed();
+    }
+
     // ---- C4: SPAWN_RESIDENT ----------------------------------------------------------------------
 
     /**
@@ -396,6 +561,66 @@ public final class SavedAheadGameTests {
                     check("the drops are marked as ported", level.getEntitiesOfClass(ItemEntity.class, around).stream()
                             .allMatch(i -> i.hasData(IndustryAttachments.PORTED.get()) && i.getData(IndustryAttachments.PORTED.get())));
                 })
+                .thenExecute(() -> {
+                    level.getEntitiesOfClass(ItemEntity.class, around).forEach(Entity::discard);
+                    fill(level, chest.getX() - 4, y - 1, chest.getZ() - 4, chest.getX() + 4, y + 3, chest.getZ() + 4, Blocks.AIR.defaultBlockState());
+                    level.setChunkForced(c.x, c.z, false);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * I2 (RP-213), drops held while their chunk would unload: a reconcile breaks a chest in chunk C, and its drops
+     * are held back (here by the test, as a slow write would hold them) while C's force ticket is taken away. C must
+     * stay loaded, its entities with it, until the drops have joined the level, or they wait for C to load again,
+     * all session, and a stop loses them. The hold covers C only.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_saved_ahead")
+    public static void aReconcilesHeldDropsKeepTheirChunkLoadedUntilTheyJoin(GameTestHelper helper) {
+        String t = "aReconcilesHeldDropsKeepTheirChunkLoadedUntilTheyJoin";
+        ServerLevel level = helper.getLevel();
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        ChunkPos c = new ChunkPos((o.getX() >> 4) + 6930, (o.getZ() >> 4) + 6810);
+        int y = 180;
+        BlockPos chest = new BlockPos(c.getMinBlockX() + 8, y, c.getMinBlockZ() + 8);
+        AABB around = new AABB(chest).inflate(6);
+        BlockState chestState = Blocks.CHEST.defaultBlockState();
+        long op = engineOp();
+        long district = engineOp();
+        long[] since = new long[1];
+        helper.startSequence()
+                .thenExecute(() -> level.setChunkForced(c.x, c.z, true))
+                .thenWaitUntil(paced(() -> check("C and the entities around it load", level.getChunkSource().getChunkNow(c.x, c.z) != null
+                        && entitiesLoadedAround(level, c))))
+                .thenExecute(() -> {
+                    fill(level, chest.getX() - 4, y, chest.getZ() - 4, chest.getX() + 4, y + 3, chest.getZ() + 4, Blocks.AIR.defaultBlockState());
+                    fill(level, chest.getX() - 4, y - 1, chest.getZ() - 4, chest.getX() + 4, y - 1, chest.getZ() + 4, Blocks.STONE.defaultBlockState());
+                    level.getEntitiesOfClass(ItemEntity.class, around).forEach(Entity::discard); // a failed run's
+                    level.setBlock(chest, chestState, 2 | 16);
+                    ((Container) level.getBlockEntity(chest)).setItem(0, new ItemStack(Items.DIAMOND, 64));
+                    com.minecraftindustrialcomplex.mic_rtsim.industry.Reconciler.holdDropsForTest(c);
+                    IndustryTestKit.reconcile(op, district, 1, level, c.x, c.z, List.of(),
+                            List.of(new IndustryTestKit.Destroy(chest, BlockStateParser.serialize(chestState))));
+                })
+                .thenWaitUntil(paced(() -> check("the reconcile applied", !IndustryTestKit.commandResults(op).isEmpty())))
+                .thenExecute(() -> {
+                    check("APPLIED", IndustryTestKit.commandResults(op).get(0) == Obs.CommandResult.APPLIED);
+                    check("the chest is gone and its drops are held", level.getBlockState(chest).isAir()
+                            && lying(level, around, Items.DIAMOND) == 0);
+                    level.setChunkForced(c.x, c.z, false);
+                    since[0] = System.nanoTime();
+                })
+                // Long enough for an unforced far chunk to unload (the C4 test sees it in well under this).
+                .thenWaitUntil(paced(() -> check("C unloads, or 5 s pass", level.getChunkSource().getChunkNow(c.x, c.z) == null
+                        || System.nanoTime() - since[0] > 5_000_000_000L)))
+                .thenExecute(() -> {
+                    boolean loaded = level.getChunkSource().getChunkNow(c.x, c.z) != null && level.areEntitiesLoaded(c.toLong());
+                    level.setChunkForced(c.x, c.z, true); // so the joined drops stay to be counted
+                    com.minecraftindustrialcomplex.mic_rtsim.industry.Reconciler.holdDropsForTest(null);
+                    record(t, "C and its entities loaded while the drops are held", loaded);
+                    check("C stays loaded, its entities with it, while its drops are held", loaded);
+                })
+                .thenWaitUntil(paced(() -> check("the drops joined", lying(level, around, Items.DIAMOND) == 64 && lying(level, around, Items.CHEST) == 1)))
                 .thenExecute(() -> {
                     level.getEntitiesOfClass(ItemEntity.class, around).forEach(Entity::discard);
                     fill(level, chest.getX() - 4, y - 1, chest.getZ() - 4, chest.getX() + 4, y + 3, chest.getZ() + 4, Blocks.AIR.defaultBlockState());
