@@ -48,6 +48,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.DyeColor;
@@ -436,8 +437,12 @@ public final class RailFrostmawGameTests {
         /**
          * Adds {@code rider} to the level standing, not seated, on the floor of a long carriage ({@link #longCars}): over
          * the plank nearest the rear bogey, or the one in the middle. The planks are ordered along the way the train goes
-         * ({@link #sign}, so after {@link #settle}). The feet are put on the plank's top, and Create's server collision
-         * carries a mob from there (it does not carry a player, so a test with a player keeps the train still).
+         * ({@link #sign}, so after {@link #settle}). The feet are put exactly on the plank's top, and Create's server
+         * collision carries a mob from there (it does not carry a player, so a test with a player keeps the train still).
+         * A mob keeps its AI on, so it has gravity and rests on the plank as a real rider would (a {@code noAi} mob has
+         * none and hovered above it, where Create might never carry it), with every goal out so it walks nowhere and
+         * attacks nothing. A player has no gravity and no motion, or it falls through the carriage, which a server
+         * player's collision does not hold up, in the ticks before the test reads it (the second re-check's P2).
          */
         void stand(Entity rider, int carriage, boolean rear) {
             AbstractContraptionEntity e = entityOf(carriage);
@@ -449,7 +454,15 @@ public final class RailFrostmawGameTests {
             check("the long carriage has " + (LONG_SPAN - 1) + " planks (" + floor.size() + ")", floor.size() == LONG_SPAN - 1);
             floor.sort(Comparator.comparingDouble(v -> v.x * sign));
             Vec3 plank = floor.get(rear ? 0 : floor.size() / 2);
-            rider.moveTo(plank.x, plank.y + 0.5 + 0.01, plank.z, 0.0f, 0.0f);
+            if (rider instanceof Mob m) {
+                m.setNoAi(false);
+                m.goalSelector.removeAllGoals(g -> true);
+                m.targetSelector.removeAllGoals(g -> true);
+            } else {
+                rider.setNoGravity(true);
+            }
+            rider.moveTo(plank.x, plank.y + 0.5, plank.z, 0.0f, 0.0f);
+            rider.setDeltaMovement(Vec3.ZERO);
             if (!rider.isAddedToLevel())
                 check("the rider is added", level.addFreshEntity(rider));
             check("the rider stands over a block of the carriage (" + under(rider, e) + ")", stands(rider, e));
@@ -1144,13 +1157,13 @@ public final class RailFrostmawGameTests {
     /** What the riders test knows: the long carriage's standing players and mob, and a bystander beside it. */
     private static final class Riders extends Line {
         Player standing, bystander;
-        LivingEntity mob;
+        LivingEntity mob, decoration;
 
         Riders(GameTestHelper helper) {
             super(helper, 10, 2);
             longCar = true;
             atEnd.add(() -> {
-                for (Entity e : new Entity[] {standing, bystander, mob})
+                for (Entity e : new Entity[] {standing, bystander, mob, decoration})
                     if (e != null)
                         e.discard();
             });
@@ -1160,8 +1173,10 @@ public final class RailFrostmawGameTests {
     /**
      * {@link TrainSampler#ridersOf} on the stopped long carriage: a player standing on its floor (a mock player, the kind
      * Create's server collision skips, so it is never in {@code collidingEntities}: only the search finds it), a zombie
-     * standing on it (Create registers it), are riders; a player standing 3 blocks beside the carriage, level with its
-     * floor, is not. Nothing here moves the train, since a player is not carried by it. Not run.
+     * standing on it (Create registers it), are riders; a player standing 1.6 blocks beside the player on the floor, level
+     * with it and over nothing of the carriage, is not, and nor is an armor stand on the floor (a living entity, but a
+     * decoration, not a mob or a player). Nothing here moves the train, since a player is not carried by it. The players
+     * have no gravity, as a server player's collision does not hold one up. Not run.
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_riders", timeoutTicks = 1200)
     public static void aStandingPlayerAndAStandingMobAreRidersOfACarriageAndABystanderIsNot(GameTestHelper helper) {
@@ -1178,17 +1193,23 @@ public final class RailFrostmawGameTests {
                     if (!(typeOf(ZOMBIE).create(level) instanceof LivingEntity z))
                         throw new GameTestAssertException("could not create a zombie");
                     r.mob = z;
-                    if (z instanceof Mob m) {
-                        m.setNoAi(true);
-                        m.setPersistenceRequired();
-                    }
+                    if (z instanceof Mob m)
+                        m.setPersistenceRequired(); // AI on, goals out: Line.stand does the rest
                     z.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 1_000_000, 0, false, false));
                     r.stand(z, 0, true);
-                    // Level with the floor, 3 blocks off the carriage's side, over nothing of it
+                    // Level with the floor, 1.6 blocks off the standing player (the floor is a plank wide, so 1.1 past its edge), over nothing of it
                     r.bystander = helper.makeMockPlayer(GameType.SURVIVAL);
-                    r.bystander.moveTo(r.standing.getX(), r.standing.getY(), r.standing.getZ() + 3.0, 0.0f, 0.0f);
+                    r.bystander.setNoGravity(true);
+                    r.bystander.moveTo(r.standing.getX(), r.standing.getY(), r.standing.getZ() + 1.6, 0.0f, 0.0f);
+                    r.bystander.setDeltaMovement(Vec3.ZERO);
                     check("the bystander is added", level.addFreshEntity(r.bystander));
                     check("the bystander is not over a block of the carriage", !r.stands(r.bystander, r.entityOf(0)));
+                    // A decoration is not a rider: an armor stand on the floor, over a block of it
+                    ArmorStand stand = new ArmorStand(level, r.standing.getX(), r.standing.getY(), r.standing.getZ());
+                    stand.setNoGravity(true);
+                    r.decoration = stand;
+                    check("the armor stand is added", level.addFreshEntity(stand));
+                    check("the armor stand is over a block of the carriage", r.stands(stand, r.entityOf(0)));
                 })
                 // Create's collision registers the zombie each tick it stands on the carriage
                 .thenIdle(5)
@@ -1201,6 +1222,7 @@ public final class RailFrostmawGameTests {
                     check("the standing player is a rider (" + riders.size() + " riders)", riders.contains(r.standing));
                     check("the standing zombie is a rider (" + riders.size() + " riders)", riders.contains(r.mob));
                     check("the bystander is not a rider (" + riders.size() + " riders)", !riders.contains(r.bystander));
+                    check("the armor stand is not a rider (" + riders.size() + " riders)", !riders.contains(r.decoration));
                 })
                 .thenSucceed();
     }

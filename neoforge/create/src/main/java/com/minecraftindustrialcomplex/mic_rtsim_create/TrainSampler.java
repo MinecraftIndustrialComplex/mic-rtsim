@@ -20,6 +20,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -591,10 +592,10 @@ public final class TrainSampler {
     public static List<LivingEntity> ridersOf(CarriageContraptionEntity e, Mob body) {
         List<LivingEntity> out = new ArrayList<>(4);
         for (Entity p : e.getPassengers())
-            if (p instanceof LivingEntity l && l.isAlive() && l != body)
+            if (p instanceof LivingEntity l && rides(l) && l != body)
                 out.add(l);
         for (Entity p : new ArrayList<>(e.collidingEntities.keySet()))
-            if (p instanceof LivingEntity l && l.isAlive() && l != body && !out.contains(l))
+            if (p instanceof LivingEntity l && rides(l) && l != body && !out.contains(l))
                 out.add(l);
         Contraption c = e.getContraption();
         if (c == null || c.bounds == null)
@@ -604,10 +605,19 @@ public final class TrainSampler {
         double h = Math.max(Math.abs(b.minY), Math.abs(b.maxY)) + RIDER_MARGIN;
         Vec3 a = e.getAnchorVec();
         AABB zone = new AABB(a.x - r, a.y - h, a.z - r, a.x + r, a.y + h, a.z + r);
-        for (LivingEntity l : e.level().getEntitiesOfClass(LivingEntity.class, zone, x -> x.isAlive() && x != body && e.canCollideWith(x)))
+        for (LivingEntity l : e.level().getEntitiesOfClass(LivingEntity.class, zone, x -> rides(x) && x != body && e.canCollideWith(x)))
             if (!out.contains(l) && c.getBlocks().containsKey(BlockPos.containing(ContraptionCollider.worldToLocalPos(l.position().add(0.0, -0.2, 0.0), e))))
                 out.add(l);
         return out;
+    }
+
+    /**
+     * Whether a living entity can be a rider: alive, and a mob or a player. An armor stand is a {@code LivingEntity} (and
+     * collides with a contraption), but it is a decoration: a swipe at it is no train robbed, and a stand on a carriage
+     * must not draw a strike off the carriage's bogey (the second re-check's P3).
+     */
+    private static boolean rides(LivingEntity l) {
+        return l.isAlive() && (l instanceof Mob || l instanceof Player);
     }
 
     /**
