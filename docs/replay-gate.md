@@ -1388,7 +1388,7 @@ GameTests: none (no ships plugin in Java); rtsim-host's ships runs.
 Opus review checks: as slice C's; a kept ship's NextLeg events while replaying drop their commands
 and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
 
-**As built (slice S, RP-90 to RP-102).** The records are in docs/choices-mowzie-build.md, "Slice S
+**As built (slice S, RP-90 to RP-99 and RP-120 to RP-122).** The records are in docs/choices-mowzie-build.md, "Slice S
 (ships)".
 
 - **The gate** (§4.7, RP-90): rtsim-ships `outbox.rs`; one "never" kind (Materialize), the rest drop.
@@ -1401,9 +1401,9 @@ and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
   and HavenFound name none. `Obs::ship_epoch` is an exhaustive match, so a new kind does not
   compile until it says. A floor for a ship the engine does not have yet is kept past the replay end
   (a port or haven that joins after, or a ship the replay allocated later). The fold comes before
-  every drop (RP-102): a module switched off for the session, ships with no dock yet and an
+  every drop (RP-122): a module switched off for the session, ships with no dock yet and an
   engine that has not begun its replay all fold, keyed on the session's replay.
-- **The honour and every by-agent lookup** (§5.2, RP-93, RP-100): only on a ship that existed when
+- **The honour and every by-agent lookup** (§5.2, RP-93, RP-120): only on a ship that existed when
   the session began (`replay_next`, taken once by `Ships::begin_session` from `ships::session_start`;
   `begin_replay` keeps the smaller bound and the first call's `from_pages`). The bound is not the
   honour's alone: `ship_of`, `ship_of_op`, both ships of a Fight, the capturing ship and the doer
@@ -1431,9 +1431,9 @@ The paths that hand the ships engine a command or a decision, each with its verd
 | Path | Verdict |
 |---|---|
 | The engine's own events (`run_until`, from `shared::run_to` and from each ingest) | commands go through the gate; decisions that embody return early (RP-94) |
-| `Ships::ingest` of a journaled record (rtsim-jni `journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57), before the module's switch is asked (RP-102) |
+| `Ships::ingest` of a journaled record (rtsim-jni `journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57), before the module's switch is asked (RP-122) |
 | A copy (REASSERT) | `ingest_copy`: the floor only (RP-97) |
-| `ships::simulate`'s network build, `add_port`, `add_haven`, `add_navy`, `connect` (from journaled PORT_FOUND and HAVEN_FOUND, and from the step) | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 and RP-100 |
+| `ships::simulate`'s network build, `add_port`, `add_haven`, `add_navy`, `connect` (from journaled PORT_FOUND and HAVEN_FOUND, and from the step) | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 and RP-120 |
 | `reject` (the host's own SPAWN_REJECTED for a command it cannot write) | only after a queued Materialize, which the gate never lets through while replaying |
 | `Order::ShipCommand` | held to the replay end with the units after it (RP-96) |
 | `Order::Phase1Advance` and the other clock orders | held by slice D (RP-74), not in S's `matches!`; the merge takes the union |

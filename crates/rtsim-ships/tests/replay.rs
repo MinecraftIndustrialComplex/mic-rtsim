@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The session's replay on the ships (docs/replay-gate.md §4.7, §5, §6, §9.5; RP-90 to RP-99): a
-//! crash restores the pages of the last save, and the journal's records of the session that went
-//! on are applied again. The fake plugin plays the session that went on; the test crashes it and
-//! replays what it journaled into an engine read back from the pages (`begin_replay(true)`), or
-//! into a fresh one (`begin_replay(false)`).
+//! The session's replay on the ships (docs/replay-gate.md §4.7, §5, §6, §9.5; RP-90 to RP-99 and
+//! RP-120 to RP-122): a crash restores the pages of the last save, and the journal's records of
+//! the session that went on are applied again. The fake plugin plays the session that went on; the
+//! test crashes it and replays what it journaled into an engine read back from the pages
+//! (`begin_replay(true)`), or into a fresh one (`begin_replay(false)`).
 //!
 //! Every test has its control: the same records into the engine that never crashed, or the same
 //! engine without a replay.
@@ -1002,7 +1002,7 @@ fn a_player_leaving_the_arm_ends_no_ship_body() {
     assert_eq!(set(&s), before, "nor does the ships' own");
 }
 
-// ---- the handle shift (RP-100, RP-101) --------------------------------------------------------
+// ---- the handle shift (RP-120, RP-121) --------------------------------------------------------
 //
 // Ships are allocated in order and never reused, and the replay allocates them in its own order:
 // a network built inside the replayed window, a port or a haven that joins there. The session
@@ -1119,7 +1119,7 @@ fn materialized(id: ShipId, epoch: u32) -> Obs {
 }
 
 /// A replayed sinking or capture of the live run's merchant 0 lands on the ship the replay put at
-/// that handle (RP-100): the pirate. Ignored unless the pages held the ship: lost rather than
+/// that handle (RP-120): the pirate. Ignored unless the pages held the ship: lost rather than
 /// booked to the wrong body. Control: pages that hold the merchant take the record.
 #[test]
 fn a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle() {
@@ -1155,7 +1155,7 @@ fn a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_hand
 }
 
 /// A capture or a loot credited to a pirate the replay allocated (the haven joined inside the
-/// replayed window, so its pirate is past the pages' ships) is lost, not booked to it (RP-100):
+/// replayed window, so its pirate is past the pages' ships) is lost, not booked to it (RP-120):
 /// the merchant keeps its hold. Control: a pirate the pages held takes the capture and the loot.
 #[test]
 fn a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost() {
@@ -1227,7 +1227,7 @@ fn a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost() {
     }
 }
 
-/// A sinking that names a ship as the doer (RP-100) books the archive row's doer only if the
+/// A sinking that names a ship as the doer (RP-120) books the archive row's doer only if the
 /// pages held that ship: a handle the replay allocated may be another ship than the live run's, so
 /// the row names nobody. The merchant is lost either way (its own record is the pages' ship).
 /// Control: the pirate in the pages is named.
@@ -1281,7 +1281,7 @@ fn a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody() {
     assert_eq!(doers(&s), vec![0], "and the row names nobody");
 }
 
-/// A replayed fight names its two ships by bare handle (RP-100). Handles the replay allocated may
+/// A replayed fight names its two ships by bare handle (RP-120). Handles the replay allocated may
 /// be other ships than the live run's: a fight between the live run's pirate and merchant 0 would
 /// be booked to the replay's last merchant and its pirate. Lost instead. Control: pages that hold
 /// both ships take it.
@@ -1320,7 +1320,7 @@ fn a_replayed_fight_between_handles_the_replay_allocated_is_lost() {
     }
 }
 
-/// The lookups that carry an epoch are bound too (RP-100): a ship the replay allocated is at
+/// The lookups that carry an epoch are bound too (RP-120): a ship the replay allocated is at
 /// epoch 0 until the replay ends, so no real record (epoch 1 and up) finds it by `ship_of`, and the
 /// bound there is a second wall. The test goes through it with the one record that would pass the
 /// epoch check, a report of epoch 0 at the live merchant's handle. Control: the pages hold the
@@ -1364,7 +1364,7 @@ fn an_epoch_checked_lookup_finds_only_a_ship_the_pages_held() {
     }
 }
 
-/// The bound is the session's, taken once (RP-100): a second `begin_replay` inside the replay (the
+/// The bound is the session's, taken once (RP-120): a second `begin_replay` inside the replay (the
 /// ships switched off and on) must not cover the ships the replay allocated since, and must not
 /// turn a replay from the pages into one without. The honour (RP-93) lands on the pirate the pages
 /// held, whichever call came last; on the replay's own pirate it is a floor only. Control: the
@@ -1398,7 +1398,7 @@ fn a_second_begin_replay_keeps_the_sessions_bound_and_flag() {
     }
 }
 
-/// The session's bound is taken before the replay begins (RP-100): with empty pages the first
+/// The session's bound is taken before the replay begins (RP-120): with empty pages the first
 /// record that activates the engine (a HAVEN_FOUND, here) is ingested before `begin_replay`, and
 /// its pirate is the replay's own. The honour of a later SHIP_MATERIALIZED for handle 0 is a
 /// floor only. Control: pages that hold the pirate.
@@ -1466,7 +1466,7 @@ fn a_copy_after_the_replay_end_only_moves_the_floor() {
     }
 }
 
-/// A floor above the epoch a replayed record honours stays (RP-101): a copy folded the epoch 9 of
+/// A floor above the epoch a replayed record honours stays (RP-121): a copy folded the epoch 9 of
 /// the earlier session's later body; the replayed SHIP_MATERIALIZED at 3 sets the epoch but must
 /// not spend the 9. Control: a floor at or below the honoured epoch is spent.
 #[test]
@@ -1494,7 +1494,7 @@ fn the_honour_spends_only_a_floor_it_reaches() {
     }
 }
 
-/// A replay after a replay takes its own bound (RP-100): the reset at the replay end lets a later
+/// A replay after a replay takes its own bound (RP-120): the reset at the replay end lets a later
 /// `begin_replay` of the same engine (a switch-on after a switch-off, in a live session) cover the
 /// ships it holds then, not the session's first bound. With the first bound kept (the mutation the
 /// records list), the ship that joined since would only raise the floor and stay unembodied.

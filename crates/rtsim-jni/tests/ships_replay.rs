@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The ships' replay gate on the real host (docs/replay-gate.md §9.5, RP-90 to RP-99): the fake
-//! Java side's journal replayed after a crash, with the ships' module on. The engine-level tests
-//! are rtsim-ships' `tests/replay.rs`; these are the ones that need the host: the journaled
-//! dispatch, the copies (REASSERT), the hand-overs of a long replay and the orders.
+//! The ships' replay gate on the real host (docs/replay-gate.md §9.5, RP-90 to RP-99 and RP-120 to
+//! RP-122): the fake Java side's journal replayed after a crash, with the ships' module on. The
+//! engine-level tests are rtsim-ships' `tests/replay.rs`; these are the ones that need the host:
+//! the journaled dispatch, the copies (REASSERT), the hand-overs of a long replay and the orders.
 
 mod common;
 
@@ -644,7 +644,7 @@ fn a_replayed_materialization_is_honoured_on_the_pages_ship() {
     assert_eq!(next, before + 6);
 }
 
-// ---- the session's bound and the fold before the drop (RP-100, RP-102) -------------------------
+// ---- the session's bound and the fold before the drop (RP-120, RP-122) -------------------------
 
 /// A ship's (embodied, epoch).
 fn body(e: &Engine, agent: u64) -> (bool, u32) {
@@ -654,7 +654,7 @@ fn body(e: &Engine, agent: u64) -> (bool, u32) {
     })
 }
 
-/// RP-102: an epoch a replayed record named is raised as a floor before anything drops the record,
+/// RP-122: an epoch a replayed record named is raised as a floor before anything drops the record,
 /// the module being off for the session among the reasons. A merchant's body ends after the save
 /// (Java's DEMATERIALIZED); the crash; the next session starts with the ships off and replays the
 /// journal (dropped), and the ships are switched on after the replay end. The ship's next body is
@@ -732,7 +732,7 @@ fn first_ships_agent() -> u64 {
     agent
 }
 
-/// RP-102: the fold is keyed on the session's replay, not on the ships' own: a record journaled
+/// RP-122: the fold is keyed on the session's replay, not on the ships' own: a record journaled
 /// before the ships have any dock or haven (the engine is not running yet, so its replay has not
 /// begun) names an epoch all the same, and the ship that is the record's, found afterwards, has
 /// it as a floor. Control: the same record on pages that hold the coast (the replay begins at
@@ -849,7 +849,7 @@ fn pirate_on_empty_pages(switch: bool) -> (bool, (bool, u32), u32) {
     (seen, end, next)
 }
 
-/// RP-100: the ships the engine holds when the session begins are the only ones a replayed record
+/// RP-120: the ships the engine holds when the session begins are the only ones a replayed record
 /// finds, and the first record that activates the engine (here the HAVEN_FOUND, whose pirate
 /// takes handle 0) is ingested before the replay begins. A SHIP_MATERIALIZED for that handle is a
 /// floor only: the pirate is never seen embodied, and its epoch is the floor at the replay end.
@@ -863,7 +863,7 @@ fn a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate(
     assert_eq!(next, 4);
 }
 
-/// RP-100: the switch off and on inside the replay (a MODULES pair) begins the ships' replay
+/// RP-120: the switch off and on inside the replay (a MODULES pair) begins the ships' replay
 /// again, when the arena holds the replay's own ships too; the bound stays the session's.
 #[test]
 fn a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour() {
