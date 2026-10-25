@@ -2859,6 +2859,65 @@ public final class MowzieGameTests {
     }
 
     /**
+     * A recount waiting holds the engine's SPAWNs (MZB-660): a den that is in with its slot owed, an untagged
+     * Frostmaw in the footprint (its join asked for a recount) and a chunk of the stray radius hidden with its
+     * entities loaded, so the census is held. A SPAWN for the owed slot then plays nowhere: no second Frostmaw
+     * while the stray stands, and the line is not answered until the census; once the chunk shows the census
+     * lists the stray and answers the SPAWN STALE.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_spawn", skyAccess = true)
+    public static void aSpawnWaitsWhileACensusIsHeldForAHiddenChunkAndIsStaleAfterIt(GameTestHelper helper) {
+        String test = "aSpawnWaitsWhileACensusIsHeldForAHiddenChunkAndIsStaleAfterIt";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[1];
+        ChunkPos east = new ChunkPos(den.cx + 2, den.cz);
+        var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> den.force(1))
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay(1).declare();
+                    ConflictKit.onEnd(helper, () -> {
+                        if (level.hasChunk(east.x, east.z))
+                            manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
+                        if (f[0] != null)
+                            f[0].discard();
+                    });
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> {
+                    hide(level, east);
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                    check("the join asked for a recount", den.site().recountPending());
+                    op[0] = MowzieKit.reconcile(den.faction, den.site().epoch(),
+                            List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF | CRYSTAL)));
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    check("the chunk stayed hidden and loaded (an autosave stores it)", level.areEntitiesLoaded(east.toLong()));
+                    check("no census while it is hidden (" + MowzieKit.censusCount(den.faction) + ")", MowzieKit.censusCount(den.faction) == 1);
+                    check("the SPAWN is not answered yet", ConflictKit.outcomes(den.faction, op[0]).isEmpty());
+                    check("and made no second Frostmaw (" + level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).size() + ")",
+                            level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).size() == 1);
+                    manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("the SPAWN once the census ended the hold", ConflictKit.outcomes(den.faction, op[0]), STALE);
+                    List<CensusBody> bodies = ConflictKit.censusBodies(MowzieKit.census(den.faction, 2));
+                    check("census 2 lists the stray (" + bodies.size() + ")", bodies.size() == 1 && bodies.get(0).uuid().equals(f[0].getUUID()));
+                    check("still one Frostmaw (" + level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).size() + ")",
+                            level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).size() == 1);
+                    record(test, "hidden spawn", "a SPAWN waited for the held census and was STALE after it; no second Frostmaw");
+                })
+                .thenSucceed();
+    }
+
+    /**
      * The census drops the records of another engine life a footprint body carries (MZB-654): the loop at the
      * census reaches {@code ensureReasserted} only for a holder the end-of-tick drain has not met, which a body
      * given its records after it joined is. A Frostmaw is given one record of the next engine life before the
