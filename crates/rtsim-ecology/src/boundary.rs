@@ -547,12 +547,17 @@ pub struct PlaceNest {
 
 /// Oil nest `nest` owes `count` more worms, of size `stage` (1 to 3). Placed in its chamber at the next
 /// load of the heart's chunk with no player within 128 blocks (EQUILIBRIUM.md §2.2, OnLoad).
+///
+/// `serial` is the nest's renewal count with this one in it (1 for its first, docs/replay-gate.md
+/// §7.1, RP-14): Java owes the worms only when the serial is above the last it applied for the nest
+/// under the same engine life, so a renewal the engine decides again after a restore is owed once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NestRenew {
     pub nest: u64,
     pub dimension: u32,
     pub count: u32,
     pub stage: u32,
+    pub serial: u32,
 }
 
 /// Up to `count` of oil nest `nest`'s worms go up under the column (x, z) of a watched district it
@@ -1263,6 +1268,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.u64(16, n.nest);
             w.u32(24, n.dimension);
             w.u32(28, n.stage);
+            w.u32(32, n.serial);
             w.finish(NEST_RENEW, n.count, 40);
         }
         Cmd::NestSortie(n) => {
@@ -1363,6 +1369,7 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             dimension: r.u32(24)?,
             count: aux,
             stage: r.u32(28)?,
+            serial: r.u32(32)?,
         }),
         NEST_SORTIE => Cmd::NestSortie(NestSortie {
             nest: r.u64(16)?,
@@ -1599,6 +1606,7 @@ mod tests {
                 dimension: 1,
                 count: 2,
                 stage: 3,
+                serial: 5,
             }),
             Cmd::NestSortie(NestSortie {
                 nest: 1 << 48 | 7,

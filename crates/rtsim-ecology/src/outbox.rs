@@ -70,9 +70,10 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
         Cmd::OilSurvey(_) => verdicts(Q::Keep, R::Send),
         // Idempotent (boundary.rs).
         Cmd::PlaceNest(_) => verdicts(Q::Keep, R::Send),
-        // Java adds `owed += count`, so a renewal decided again is owed twice: dropped until the
-        // renewal carries its serial (slice N, §7.1, RP-14). Loses a renewal Java's save lost.
-        Cmd::NestRenew(_) => verdicts(Q::Keep, R::Drop),
+        // Carries the nest's renewal serial, and Java owes the worms only for a serial above the
+        // last it applied under the same engine life: a renewal decided again, or one still
+        // queued in the pages that Java already applied, is owed once (§7.1, RP-14).
+        Cmd::NestRenew(_) => verdicts(Q::Keep, R::Send),
         // A watched district's fight, re-derived: the raid's effect on the district is the
         // engine's and stands (§7.2, RP-15).
         Cmd::NestSortie(_) => verdicts(Q::Drop, R::Drop),
@@ -252,6 +253,7 @@ mod tests {
                 dimension: 0,
                 count: 1,
                 stage: 1,
+                serial: 1,
             }),
             Cmd::NestSortie(boundary::NestSortie {
                 nest: 1,
@@ -274,7 +276,7 @@ mod tests {
         (boundary::PLACE_LAIR, Queued::Keep, Replaying::Send),
         (boundary::OIL_SURVEY, Queued::Keep, Replaying::Send),
         (boundary::PLACE_NEST, Queued::Keep, Replaying::Send),
-        (boundary::NEST_RENEW, Queued::Keep, Replaying::Drop),
+        (boundary::NEST_RENEW, Queued::Keep, Replaying::Send),
         (boundary::NEST_SORTIE, Queued::Drop, Replaying::Drop),
     ];
 
@@ -325,11 +327,12 @@ mod tests {
             vec![
                 boundary::PLACE_LAIR,
                 boundary::OIL_SURVEY,
-                boundary::PLACE_NEST
+                boundary::PLACE_NEST,
+                boundary::NEST_RENEW,
             ]
         );
         let want = GateCounts {
-            dropped: 6,
+            dropped: 5,
             ..GateCounts::default()
         };
         assert_eq!(o.counts(), want, "the drops are counted");
