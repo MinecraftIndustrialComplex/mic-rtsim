@@ -1319,11 +1319,15 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   (RP-183): booked once, and the raider is credited nothing. Unreachable with the host's one save
   batch; the op window's guard is for the tests' hand-built case and any later change to it.
 
-**What slices T and T2 leave** (RP-184, RP-196): with T2's ring the four durability cases are exact,
-since the train's goods and the ops applied to them are one file. Left: an op pushed out of a
-train's ring by 256 later carriage deltas to it inside the replay window, then sent again (applied
-twice; RP-192), and, only when the ring's mixin did not apply (logged once, RP-193), what slice T
-alone leaves on the journal's index: J3, a double: the train's goods on disk after the raid, the
+**What slices T and T2 leave** (RP-184, RP-196, RP-255): with T2's ring the four durability cases
+are exact, since the train's goods and the ops applied to them are one file, and an op stays in the
+ring until the engine acknowledges its answer, whatever the window's length (RP-250; the ring's answers
+from another session are settled against the pages at the start, RP-251). Left: an op pushed out of a
+full ring (the valve: more than 4096 unacknowledged ops on one train, logged once a train) and then
+sent again (applied twice); ops the ring keeps with an unknown answer after a crash, which cost bytes
+in create_tracks.dat until the engine answers them again or the valve drops them (RP-255); and, only
+when the ring's mixin did not apply (logged once, RP-193), what slice T alone leaves on the journal's
+index, with holes (a) and (b) besides (RP-252): J3, a double: the train's goods on disk after the raid, the
 journal on disk from before it (the tracks file written first and the server dead before the
 journal's, or the journal held by the chunk barrier for up to `GIVE_UP_ROUNDS` saves); the
 re-decided raid's op is one Java forgot, and it is applied again. J4, a dupe: the journal on disk

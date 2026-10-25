@@ -1856,9 +1856,9 @@ fn a_j3_raid_decided_again_after_the_first_durable_save_is_taken_once() {
 }
 
 /// The same J3 under a ring trimmed at the first durable save past the replay end (the reviewer's
-/// rule, or a trim on the journal's mark, RP-252): the op has left the ring when the raid is decided
-/// again, so it is applied twice. Pins why the ring prunes only on the acknowledgement of its own
-/// answer.
+/// rule, RP-252; a trim on the journal's mark keeps this op, its answer past the journal on disk):
+/// the op has left the ring when the raid is decided again, so it is applied twice. Pins why the
+/// ring prunes only on the acknowledgement of its own answer.
 #[test]
 fn a_j3_raid_decided_again_after_a_ring_trimmed_at_the_first_durable_save_is_taken_twice() {
     a_train_raid_across_javas_two_files("j3-late-pruned");

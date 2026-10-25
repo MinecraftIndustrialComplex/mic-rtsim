@@ -327,8 +327,11 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   `changeDetected` resets the idle-cargo counter), wherever the train now is. Java journals
   IND_CARRIAGE_RESULT with what it applied. Its dedup is the train's own ring of applied op ids
   (`mic_rtsim:applied_ops` in the train's NBT, saved with its goods in `create_tracks.dat`): DUPLICATE
-  when the ring holds the op. A train Create no longer has, or a Create the ring's mixin did not apply
-  to, is deduped by the journal's applied set (docs/choices-mowzie-build.md RP-190 to RP-196).
+  when the ring holds the op. An op leaves the ring once the engine acknowledges the answer Java gave
+  it last; a ring another session answered is settled against the engine's pages at the session's
+  start, and what they do not provably hold stays with its answer unknown (RP-250, RP-251). A train
+  Create no longer has, or a Create the ring's mixin did not apply to, is deduped by the journal's
+  applied set (docs/choices-mowzie-build.md RP-190 to RP-196).
 - **IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE:** these stores are level SavedData, so Java applies them at
   once, loaded or not. Each is answered with the bridge's COMMAND_RESULT. The engine routes a deposit
   delta by good first (IR11): Destroy's level-wide pollution (greenhouse, ozone depletion, acid rain)
