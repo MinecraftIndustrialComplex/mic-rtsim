@@ -1500,7 +1500,10 @@ fn stores(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
             );
         }
     });
-    Some("no package store in this save".into())
+    Some(
+        v.stores_why()
+            .unwrap_or_else(|| "no package store in this save".into()),
+    )
 }
 
 fn networks(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {

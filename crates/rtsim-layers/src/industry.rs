@@ -376,6 +376,10 @@ pub trait IndustrySource {
     fn glass_why(&self) -> Option<String> {
         None
     }
+    /// Why a save's package stores are fewer than its pages, when some did not read.
+    fn stores_why(&self) -> Option<String> {
+        None
+    }
     /// The package stores with ids in `ids`.
     fn stores(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&StoreMark)) {}
     /// The shared networks with indices in `ids`.
