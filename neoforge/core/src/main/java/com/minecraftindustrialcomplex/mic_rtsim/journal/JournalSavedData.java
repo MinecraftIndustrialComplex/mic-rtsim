@@ -223,7 +223,8 @@ public final class JournalSavedData extends SavedData {
         return "journal file: written " + writes() + ", through observation " + writtenThrough + ", " + appliedBehind() + " applied ops behind"
                 + "; held " + b.held() + " (" + b.heldInARow() + " in a row" + (b.lastHeld().isEmpty() ? "" : ", last: " + b.lastHeld()) + ")"
                 + ", late " + b.late() + ", wait max " + b.maxWaitMillis() + " ms, kept at a flush save " + flushKept()
-                + ", outside a world save " + skipped() + "; applied-op rings: overflowed " + DurableOpRing.overflowedTotal();
+                + ", outside a world save " + skipped() + "; applied-op rings: overflowed " + DurableOpRing.overflowedTotal()
+                + "; directory syncs " + DirectorySync.synced() + " (" + DirectorySync.failed() + " failed, " + DirectorySync.nanos() / 1_000_000 + " ms)";
     }
 
     private static void forTest(AtomicReference<Consumer<Path>> hook, File file) {

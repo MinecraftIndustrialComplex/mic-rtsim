@@ -61,7 +61,13 @@ sessions; never an industry or threat test. The wire contract test passes (53 te
 - **Q22.** IND_DEPOSIT_DELTA is routed by the core to whichever plugin owns the good
   (`IndustryPlugin.applyDeposit`), not to one registered handler: the command's plugin code says which
   mod, the good says which deposit. The journal's applied set is the dedup (level SavedData and the journal
-  reach disk at the same save, as H17). APPLIED when a plugin owns the good, FAILED otherwise. A reconcile's
+  reach disk at the same save, as H17). *Corrected 2026-10-25 (slice U, docs/choices-journal-barrier.md
+  RP-200 to RP-207):* the same save writes them as separate files, so a crash between the two parted
+  them: Diesel's oil delivered and not drawn, or drawn twice; Destroy's pollution applied twice. The
+  journal's file is now written last in a world save, and the dedup is the store's own ring of applied
+  ops (kept in the store's file) or the journal's applied set: Diesel's ring is in `cdg_oil_chunks`,
+  Destroy's level pollution's is a level attachment beside it, and the district pollution ledger keeps
+  its own. APPLIED when a plugin owns the good, FAILED otherwise. A reconcile's
   deposit delta (inventory 0xFFFFFFFF) goes the same way, in the chunk's own tick, with its epoch.
 - **Q4.** Ore Excavation: a vein is read only in chunks with a drilling machine or extractor
   (`OreDataAttachment.getData` generates a vein on first access, so the sampler never touches other

@@ -17,11 +17,12 @@
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
-//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA,
-//! IND_WRITE_PACKAGE and IND_WRITE_CHAIN stay in the link's outbox from the moment they are written until Java's
-//! answer is admitted through `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate
-//! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
-//! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
+//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and
+//! IND_WRITE_CHAIN (0x8402, IND_CHANNEL_DELTA, is retired: rtsim-industry wire.rs) stay in the
+//! link's outbox from the moment they are written until Java's answer is admitted through
+//! `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate or failed), so a snapshot
+//! taken at observation N holds exactly the ones the world save at N lacks; after a restart they
+//! are resent first. IND_CHUNK_RECONCILE is not: the industry engine
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
 //! (F27).
 

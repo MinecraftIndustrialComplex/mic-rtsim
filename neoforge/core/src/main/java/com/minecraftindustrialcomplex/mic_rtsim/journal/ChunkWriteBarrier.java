@@ -66,8 +66,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * can clear is given up alone, at the arm, and the round goes on without it: a chunk that left its level after its
  * write failed, at once; a chunk that cannot be serialized, an entity chunk that cannot be stored, or a chunk not
  * loaded whose unload is never seen, after {@link #GIVE_UP_ROUNDS} world saves in a row. Each is logged and counted
- * ({@link #late}): its chunk on disk may lack what the journal's file then claims, a loss, never a second copy. A
- * flush save (the stop, {@code /save-all flush}) whose round is held tries once more after every chunk is flushed,
+ * ({@link #late}): its chunk on disk may then be older than the journal's file, so a crash before its next write
+ * keeps the chunk as it was before ops the journal no longer resends. Goods those ops put in are lost; goods they
+ * took out (a negative reconcile delta, a deposit draw, a destroyed block) are back beside what the engine already
+ * holds, a second copy (docs/replay-gate.md 9.6, "After a give-up"). A flush save (the stop, {@code /save-all flush}) whose round is held tries once more after every chunk is flushed,
  * then keeps the older file ({@link JournalSavedData}, {@link WorldSaveOrder}).
  *
  * <p>Entity chunks are noted the same way ({@link #dependsOnEntities}; MOWZIE.md ledger 22): a camp record rides
@@ -607,7 +609,7 @@ public final class ChunkWriteBarrier {
     private void giveUp(String why, int saves) {
         late.incrementAndGet();
         MicRtsim.LOGGER.error("[mic_rtsim] the journal's file goes on without a chunk it speaks for: {}{}; a crash before that chunk's"
-                + " next write loses what its records carry there (counted late in rtsim perf)", why, saves > 0 ? " (" + saves + " world saves in a row)" : "");
+                + " next write keeps it as it was before ops the journal no longer resends (counted late in rtsim perf)", why, saves > 0 ? " (" + saves + " world saves in a row)" : "");
     }
 
     /**

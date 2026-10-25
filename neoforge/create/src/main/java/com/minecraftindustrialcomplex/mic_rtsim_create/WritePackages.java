@@ -30,9 +30,12 @@ import java.util.List;
  * {@code offlineBuffer} (marked {@code primed}, so the postbox takes the buffer back at its next load,
  * as {@code runMailTransfer} does).
  *
- * <p><b>Once:</b> an offline buffer is RailwaySavedData, saved with the journal, so the journal's applied
- * set is the dedup (as H17); a loaded postbox is saved with its chunk, so its chunk carries the
- * COMMAND_RESULT until the engine acknowledges it (the pending-record pattern, docs/boundary.md §3.1).
+ * <p><b>Once:</b> an offline buffer is in {@code create_tracks.dat} (the station's port), a file of its own:
+ * the journal's applied set is not a dedup for it, since a crash between the two files' writes leaves the
+ * buffer holding the packages and the journal not knowing the op, which is then sent again and written twice
+ * (docs/replay-gate.md 9.6, K2; the port's own ring is docs/choices-journal-barrier.md RP-206). A loaded
+ * postbox is saved with its chunk, so its chunk carries the COMMAND_RESULT until the engine acknowledges it
+ * (the pending-record pattern, docs/boundary.md §3.1).
  * <b>Room:</b> packages go into free slots; what does not fit is logged and counted, and the command is
  * APPLIED if any package was written (the engine keeps its books as written, W10), FAILED if none was.
  */

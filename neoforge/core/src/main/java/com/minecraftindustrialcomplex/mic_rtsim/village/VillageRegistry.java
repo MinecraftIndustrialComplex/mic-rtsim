@@ -22,9 +22,12 @@ import java.util.Map;
 
 /**
  * The adopted villages of this world ({@code data/mic_rtsim_villages.dat}), with the growth work still
- * in progress (houses being built, residents waiting to spawn). It is saved in the same world save
- * as the journal, so a command the journal says was applied is always here too (both are overworld
- * SavedData written by one save).
+ * in progress (houses being built, residents waiting to spawn). It is an overworld SavedData written in
+ * the same world save as the journal, before it: the journal's file is the last a world save writes
+ * (docs/choices-journal-barrier.md RP-200), so a command the journal's file says was applied is here too.
+ * The reverse does not hold: a crash between the two writes leaves this file newer than the journal's, and
+ * a resend can find a house or an order here that the journal does not know (docs/replay-gate.md 9.6, C3
+ * and C4).
  *
  * <p>Lookups by position go through a 64-block cell index, so finding the village a trade or a hurt
  * resident belongs to costs one map lookup and a box test.
