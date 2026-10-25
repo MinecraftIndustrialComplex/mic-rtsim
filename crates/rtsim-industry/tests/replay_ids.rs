@@ -1185,3 +1185,131 @@ fn two_districts_on_one_well_write_back_at_one_tick_and_both_apply() {
     let applied: std::collections::HashSet<u64> = wells.iter().map(|x| x.op.0).collect();
     assert_eq!(applied.len(), 2, "two ops: {wells:?}");
 }
+
+// ---- RP-57's floors for the chunk epochs (P2-1 of the review, RP-259) -----------------------
+
+/// The chunks load with the epochs their attachments hold, and the mill is live again.
+fn reload(at: u64, epochs: [u32; 2]) -> Vec<Timed> {
+    let mut v: Vec<Timed> = epochs
+        .iter()
+        .enumerate()
+        .map(|(i, &applied_epoch)| {
+            t(
+                at,
+                Obs::ChunkLoaded {
+                    district: MILL,
+                    chunk: chunks()[i],
+                    applied_epoch,
+                },
+            )
+        })
+        .collect();
+    v.push(load_state(at, LoadState::Live, 2));
+    v
+}
+
+/// Each chunk's reconcile epochs in `cmds`, by chunk index.
+fn epochs_by_chunk(cmds: &[Cmd]) -> [Vec<u32>; 2] {
+    let mut out = [Vec::new(), Vec::new()];
+    for r in reconciles(cmds) {
+        let i = chunks()
+            .iter()
+            .position(|c| *c == r.chunk)
+            .expect("a mill chunk");
+        out[i].push(r.epoch);
+    }
+    out
+}
+
+/// Rule 5 for the industry (an ending epoch is never reused): a round decided after the pages,
+/// applied by the world on the vault's chunk at epoch 1, which Minecraft then saved with the chunk;
+/// the crash lost the journal's tail (review finding 13: the chunk's save came before the
+/// journal's), so the replay has none of its records. After the session start the chunks load
+/// with the vault's at epoch 1 in its attachment, and the round the engine decides again has other
+/// content (the iron of a longer span). It must take epoch 2: at epoch 1 Java answers DUPLICATE,
+/// and the next load's done path (applied epoch at or above the round's) books it as applied,
+/// which the world never did. On 2a975cc3 it took epoch 1 again: ChunkLoaded raised nothing.
+#[test]
+fn an_epoch_the_chunks_saved_before_the_crash_hold_is_never_decided_again() {
+    let mut steps = base_steps();
+    let mut load = Step::new(9_500);
+    load.journaled = reload(9_200, [0, 0]);
+    steps.push(load);
+    let mut live = mill(1_000, 0.05);
+    let mut sink = Vec::new();
+    live_step(&mut live, &steps[0], &mut sink);
+    let pages = live.snapshot();
+    let mut decided = Vec::new();
+    live_step(&mut live, &steps[1], &mut decided);
+    assert_eq!(
+        epochs_by_chunk(&decided),
+        [vec![1], vec![]],
+        "live, one round on the vault's chunk at epoch 1 (the frogport's moved nothing): {decided:?}"
+    );
+    let mut replay = Engine::restore(pages, Tunables::default()).expect("the pages restore");
+    replay.session_start(Tick(20_000));
+    let mut again = replay.drain_commands();
+    for rec in reload(20_000, [1, 0]) {
+        replay.ingest(&rec);
+    }
+    replay.advance_to(Tick(20_100));
+    again.extend(replay.drain_commands());
+    let live_deltas: Vec<Vec<i64>> = reconciles(&decided)
+        .iter()
+        .map(|r| r.deltas.iter().map(|d| d.delta).collect())
+        .collect();
+    let replayed_deltas: Vec<Vec<i64>> = reconciles(&again)
+        .iter()
+        .map(|r| r.deltas.iter().map(|d| d.delta).collect())
+        .collect();
+    assert_ne!(
+        live_deltas, replayed_deltas,
+        "the round decided again has other content"
+    );
+    assert_eq!(
+        epochs_by_chunk(&again),
+        [vec![2], vec![]],
+        "the vault chunk's round after the crash takes one past the epoch its attachment holds: {:?}",
+        chunk_rounds(&again)
+    );
+}
+
+/// RP-57's floor from IND_RECONCILE_RESULT: a result names an epoch the world applied on a chunk,
+/// whether the engine still waits for it or not (a round the replay decided otherwise, so under
+/// another op: `duplicate_results`). The chunk's next round takes one past it. On 2a975cc3 the
+/// next round took the district's epoch 1: the result raised nothing, and Java would answer the
+/// round DUPLICATE.
+#[test]
+fn a_result_the_engine_does_not_wait_for_raises_its_chunks_next_epoch() {
+    let mut e = mill(1_000, 0.05);
+    e.ingest(&t(
+        60,
+        Obs::ReconcileResult(rtsim_industry::obs::ReconcileResult {
+            op: rtsim_kernel::journal::OpId(0x5eed),
+            district: MILL,
+            epoch: 4,
+            chunk: chunks()[0],
+            entries: vec![],
+            destroyed: vec![],
+            blocks_skipped: 0,
+        }),
+    ));
+    assert_eq!(
+        e.stats.duplicate_results, 1,
+        "an op the engine does not hold"
+    );
+    e.ingest(&load_state(100, LoadState::Unloaded, 0));
+    e.advance_to(Tick(5_000));
+    let _ = e.drain_commands();
+    for rec in reload(5_000, [4, 0]) {
+        e.ingest(&rec);
+    }
+    e.advance_to(Tick(5_100));
+    let out = e.drain_commands();
+    assert_eq!(
+        epochs_by_chunk(&out),
+        [vec![5], vec![]],
+        "the vault's chunk one past the result's epoch: {:?}",
+        chunk_rounds(&out)
+    );
+}

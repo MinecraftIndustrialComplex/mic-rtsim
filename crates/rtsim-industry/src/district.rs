@@ -187,7 +187,11 @@ pub struct SimSpan {
 /// A chunk's reconcile waiting for the chunk and then for Java's result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingChunk {
+    /// Its `epoch` is the chunk's ([`District::chunk_epochs`]), which Java's guard reads.
     pub cmd: ChunkReconcile,
+    /// The round that made it ([`District::epoch`]): the key of the round's books
+    /// (`round_added`, `round_short`, the reports) and of its trims.
+    pub round: u32,
     /// Removals to trim outputs already applied (their shortfalls are untracked mints).
     pub trim: bool,
     /// Sent to Java: it may be applied at any moment, so it is never edited again (a trim makes
@@ -306,7 +310,17 @@ pub struct District {
     /// that sweep is current: its well was found drilling then (OG-9e's nests wake on it, OGC71).
     pub last_sweep: u32,
     pub sim: Option<SimSpan>,
+    /// The district's reconcile rounds so far: the key of each round's books. Not what Java's
+    /// guard reads, which is per chunk ([`District::chunk_epochs`]).
     pub epoch: u32,
+    /// Each chunk's last reconcile epoch, the epoch its next IND_CHUNK_RECONCILE takes one past
+    /// (docs/choices-mowzie-build.md RP-259). Java guards a chunk's reconciles by the epoch its
+    /// attachment holds for the district (Reconciler.java `apply`), per chunk, so a counter per
+    /// district let two rounds on two chunks that a crash's replay decides in the other order swap
+    /// epochs, and the second chunk take an epoch above the one it applied live. Raised to every
+    /// epoch Java names for the chunk (IND_CHUNK_LOADED's applied epoch, IND_RECONCILE_RESULT's;
+    /// RP-57): a round after a crash never takes an epoch the world holds already.
+    pub chunk_epochs: BTreeMap<ChunkPos, u32>,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
     pub pending_ops: BTreeMap<OpId, ChunkPos>,
     /// What the replay made in the span each epoch reconciled, which trims are capped by.
@@ -356,8 +370,9 @@ pub const EDITORS_KEPT: usize = 8;
 /// A district page starts with this (OGC54: "IDS2" is the first format with one; before it a
 /// district page had no magic and no editors; "IDS3" adds the stations' ports and per-call
 /// amounts, choices SG32 and SG34; "IDS4", OG-9e: the latest sweep merged, and a fifth threat
-/// class in the defence record). No older page opens.
-pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS4");
+/// class in the defence record; "IDS5", slice R's review: reconcile epochs per chunk and each
+/// pending reconcile's round, RP-259). No older page opens.
+pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS5");
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -391,6 +406,7 @@ impl District {
             last_sweep: 0,
             sim: None,
             epoch: 0,
+            chunk_epochs: BTreeMap::new(),
             pending: BTreeMap::new(),
             pending_ops: BTreeMap::new(),
             round_added: BTreeMap::new(),
@@ -451,6 +467,20 @@ impl District {
             }
             Phase::Learned => None,
         }
+    }
+
+    /// The epoch of `chunk`'s next IND_CHUNK_RECONCILE: one past its last (RP-259).
+    pub fn next_chunk_epoch(&mut self, chunk: ChunkPos) -> u32 {
+        let e = self.chunk_epochs.entry(chunk).or_insert(0);
+        *e += 1;
+        *e
+    }
+
+    /// Java names `epoch` for `chunk` (applied, or answered): the chunk's next reconcile takes
+    /// one past it at least (RP-57's floor, per chunk; RP-259).
+    pub fn raise_chunk_epoch(&mut self, chunk: ChunkPos, epoch: u32) {
+        let e = self.chunk_epochs.entry(chunk).or_insert(0);
+        *e = (*e).max(epoch);
     }
 
     pub fn push_report(&mut self, r: ReconcileReport) {
@@ -893,7 +923,12 @@ mod persist_impls {
         glass,
         folded
     });
-    persist_struct!(PendingChunk { cmd, trim, sent });
+    persist_struct!(PendingChunk {
+        cmd,
+        round,
+        trim,
+        sent
+    });
     persist_struct!(ReconcileReport {
         epoch,
         at,
@@ -983,6 +1018,7 @@ mod persist_impls {
             self.last_sweep.put(w);
             self.sim.put(w);
             self.epoch.put(w);
+            self.chunk_epochs.put(w);
             self.pending.put(w);
             self.pending_ops.put(w);
             self.round_added.put(w);
@@ -1035,6 +1071,7 @@ mod persist_impls {
                 last_sweep: Persist::get(r)?,
                 sim: Persist::get(r)?,
                 epoch: Persist::get(r)?,
+                chunk_epochs: Persist::get(r)?,
                 pending: Persist::get(r)?,
                 pending_ops: Persist::get(r)?,
                 round_added: Persist::get(r)?,
