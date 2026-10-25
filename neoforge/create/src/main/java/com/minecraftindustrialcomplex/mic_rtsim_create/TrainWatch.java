@@ -462,8 +462,10 @@ public final class TrainWatch {
      *
      * <p>J6 (SECTIONS.md §2.1 and §2.4, choice SC6): each inventory is resolved by its chunk to whichever
      * district holds it, not only {@code d}, the district of the station's chunk. The district holding the most
-     * of them (ties to the lowest id) is the one the station serves: the record names it, and the station's
-     * chunk is told to join it ({@code Districts.stationServed}), so its cargo goes there from the next docking.
+     * of them (ties to the lowest id) is the one the station serves, and the station's chunk is told to join it
+     * ({@code Districts.stationServed}), so its cargo goes there from the next docking. The record still names
+     * {@code d}'s inventories only (choice SC158): the cargo of this call is booked to {@code d}, where the
+     * engine matches it against the station's ports.
      */
     static void ports(Industry ind, District d, long station, ServerLevel level, Set<BlockPos> psis) {
         if (level == null || psis.isEmpty())
@@ -477,7 +479,7 @@ public final class TrainWatch {
                 if (inv == null)
                     return;
                 byDistrict.computeIfAbsent(od.id, k -> new TreeSet<>()).add(inv.index());
-                lowest.merge(od.id, canon, (a, b) -> a.asLong() <= b.asLong() ? a : b);
+                lowest.merge(od.id, canon, (x, y) -> x.asLong() <= y.asLong() ? x : y);
             });
         long servedId = -1;
         int most = 0;
@@ -486,23 +488,23 @@ public final class TrainWatch {
                 most = e.getValue().size();
                 servedId = e.getKey();
             }
-        District served = servedId < 0 ? null : ind.district(servedId);
-        if (served == null)
+        if (servedId >= 0)
+            for (District.Station st : d.stations)
+                if (st.id() == station) {
+                    BlockPos at = lowest.get(servedId);
+                    ind.districts().stationServed(level.dimension(), st.pos(), ChunkPos.asLong(at.getX() >> 4, at.getZ() >> 4));
+                    break;
+                }
+        TreeSet<Integer> found = byDistrict.get(d.id);
+        if (found == null)
             return;
-        TreeSet<Integer> found = byDistrict.get(servedId);
-        for (District.Station st : d.stations)
-            if (st.id() == station) {
-                BlockPos at = lowest.get(servedId);
-                ind.districts().stationServed(level.dimension(), st.pos(), ChunkPos.asLong(at.getX() >> 4, at.getZ() >> 4));
-                break;
-            }
-        String key = served.id + ":" + served.revision + ":" + found;
+        String key = d.id + ":" + d.revision + ":" + found;
         if (Objects.equals(PORTS_SENT.get(station), key))
             return;
         PORTS_SENT.put(station, key);
         ByteBuffer r = ind.journal(IndRecords.IND_STATION_PORTS, IndRecords.StationPorts.size(found.size()), found.size());
         r.putLong(IndRecords.StationPorts.STATION, station);
-        r.putLong(IndRecords.StationPorts.DISTRICT, served.id);
+        r.putLong(IndRecords.StationPorts.DISTRICT, d.id);
         int i = 0;
         for (int inv : found)
             r.putInt(IndRecords.StationPorts.INVENTORIES + 4 * i++, inv);
