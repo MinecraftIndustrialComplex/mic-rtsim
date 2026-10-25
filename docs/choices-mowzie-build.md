@@ -5315,9 +5315,9 @@ each at its own far base, scripted engine):
 
 ### The M8 merge (MZB-690 to MZB-692)
 
-M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main;
-docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows; RP-150 to RP-153 the
-replay records.
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main at
+5a45b9e6 (1885aa7d); docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows;
+RP-150 to RP-153 the replay records.
 
 - **MZB-690** (the formats: RTC10 and META 9; the M8 merge): M8 appends its five stats (`lurks`,
   `lurks_ended`, `passes`, `passes_watched`, `lurk_robberies`) to the saved stats list and kept M7's
@@ -8739,9 +8739,9 @@ docs/replay-gate.md §2.7 "The M9 merge" has the conflicts and §4.4 the gate ro
 
 ### The M8 merge (RP-150 to RP-153)
 
-M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main;
-docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows; MZB-690 to MZB-692
-the build records.
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main at
+5a45b9e6 (1885aa7d); docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows;
+MZB-690 to MZB-692 the build records.
 
 - **RP-150** (a copied TRAIN_PASSED; the M8 merge, point 2): TRAIN_PASSED (0x080D) names the lurk's
   agent and the epoch of the lurk table's entry, with no op id, and no holder carries it:
