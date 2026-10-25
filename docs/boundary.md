@@ -1677,8 +1677,9 @@ is not how far the body can strike. A strike is the plugin's call, gated on a sm
 sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider, seated or standing on it (else its
 bogey point), will be within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks on, at the train's
 present speed. The Frostmaw's swipe hits a target whose horizontal centre distance less its half-width is at most
-6.5 and whose 3D feet-to-feet distance is at most 6.5 plus its half-width (about 6.8 for a player), so the gate
-leaves about 0.8 for the prediction's error. The fourth number is the Lurker's `stand()` (the Frostmaw's `STAND`,
+6.5 and whose 3D feet-to-feet distance is at most 6.5 plus its half-width (about 6.8 for a player). A rider is
+about 2 above the puppet's feet, which puts the 3D cut at sqrt(6.8^2 - 2^2) = 6.5 horizontally, so the gate leaves
+about 0.5 for the prediction's error (the horizontal cut alone would leave 0.8). The fourth number is the Lurker's `stand()` (the Frostmaw's `STAND`,
 0.5): how far from the hold point its hold lets the body rest. The rule, in two inequalities, is checked by
 `TrainSampler.spotContract` against the Lurker's stand and the live body's half-width (create's GameTest 9, every
 variant):
@@ -1695,7 +1696,8 @@ SPOT_BLOCKS - slack - stand - halfWidth    >= RAIL_CLEARANCE   5.0 - 0.4 - 0.5 -
 strike reach or a stand is a change to all of them, made together. A body kind with another swing registers its own
 stand through `Lurker.stand()`, and its own gate if its reach differs. Where a body actually rests is the hold's
 doing and is looked at in the GameTest (the Frostmaw's 4-wide body steers loosely, so it may rest beyond its
-stand; the test allows what the gate allows, `STRIKE_REACH - SPOT_BLOCKS` = 1.0).
+stand; the test asks only for the stand, `Lurker.stand()` from the hold point, which the contract counts on, and
+records the figure).
 
 **TRAIN_ROBBED** tells the plugin a lurk took something from a train (the engine's roll hit and the
 train's cargo lost at least one item, of any good). `faction` is the robbing camp's key and `train` the

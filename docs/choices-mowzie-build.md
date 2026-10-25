@@ -3820,8 +3820,8 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     contract. The gate's 6.0 left a puppet resting 1.5 off its spot (the old `STAND`) on the far side from the
     rail 6.5 from the track: inside the jar's reach (a target is hit when its horizontal centre distance less its
     half-width is at most 6.5, so a player at about 6.8 from the Frostmaw's centre) and outside the gate, so such
-    a puppet never struck. The choice, reversible: keep `STRIKE_REACH` at 6.0, which leaves about 0.8 for the
-    prediction's error, and shrink the hold's `STAND` to 0.5 (MZB-361's amendment). The rule is one check in two
+    a puppet never struck. The choice, reversible: keep `STRIKE_REACH` at 6.0, which leaves about 0.5 for the
+    prediction's error (see the correction below), and shrink the hold's `STAND` to 0.5 (MZB-361's amendment). The rule is one check in two
     inequalities, `TrainSampler.spotContract(stand, halfWidth)`:
     - `SPOT_BLOCKS + stand <= STRIKE_REACH`: 5.0 + 0.5 = 5.5 <= 6.0, a margin of 0.5.
     - `SPOT_BLOCKS - stand - halfWidth >= RAIL_CLEARANCE`: 5.0 - 0.5 - 2.0 = 2.5 >= 1.5, a margin of 1.0.
@@ -3835,6 +3835,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     TrainSampler.SPOT_BLOCKS`, so the test lays the engine's spot by construction. A fourth variant pins the
     puppet at the far side of its stand and asserts the strike at 1.4 blocks a tick (MZB-370's amendment).
     A Lurker of another body kind registers its own `stand()`, and its own gate if its reach differs.
+  - Correction (the re-check's P3): the margin the 6.0 gate leaves is about 0.5, not 0.8. The jar's area attack
+    (`AnimationAreaAttackAI.hitEntities`) has two cuts on a target: the horizontal centre distance less its
+    half-width at most 6.5 (6.8 for a 0.6-wide target), and the 3D feet-to-feet distance at most 6.5 plus its
+    half-width (6.8). A rider is about 2 above the puppet's feet (a seat on the bogey, or a floor one block above
+    it), so the 3D cut allows sqrt(6.8^2 - 2^2) = 6.5 horizontally, and the binding cut is the 3D one. The gate's
+    6.0 leaves 0.5 for the prediction's error. The
+    contract's own inequalities are unchanged; it is the room the gate has for the prediction that is smaller
+    than quoted.
   - Amendment (the re-check's P2; compiled, not run): the contract is about the hold point's distance to the rail's
     centre line, which Java now sets (MZB-360's amendment), within `LurkSpots.LATERAL_SLACK` (0.4) of
     `SPOT_BLOCKS`. `spotContract` counts the slack: `SPOT_BLOCKS + slack + stand <= STRIKE_REACH` (5.0 + 0.4 + 0.5
@@ -3906,8 +3914,11 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     (a requeue, a recall, `capture` at a session's end or the module's switching off, a hand-back) discards
     the body, so no hold outlives it; a death or a removal by something else leaves a dead or removed body
     (`forget` now releases a dying one too, which is harmless); a recall or a moved or ended lurk already
-    called `releaseLurk`. A body unloaded with its chunk is saved held, but the join check refuses it as a
-    stale copy and discards it.
+    called `releaseLurk`. (Corrected by the re-check's P3; the first draft said a body unloaded with its chunk
+    is saved held and the join check discards it as a stale copy. A held body is never saved: it carries the
+    core's `mic_rtsim:agent` tag, and `EntitySaveMixin` makes `shouldBeSaved` false for a tagged entity, which is
+    the filter every chunk save applies, and `saveAsPassenger` false, so a body riding something or saved by
+    `Entity.save` is left out too. Its chunk is written without it.)
     Three GameTests in the mowziesmobs project (`FrostmawGameTests`, written and compiled, not run), sharing one
     fixture (`Held`: a one-unit Frostmaw band lurking at a spot, held), because the brief made this a UR-1 break
     and so its test must uninstall and reinstall:
@@ -3920,7 +3931,9 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       first save is checked for the hold only). The uninstall is the module switch the other GameTests use
       (`RtsimConfig.Test.setModule(Module.CONFLICT, false)` and `BridgeEvents.moduleSwitchesChanged`, as
       `IndustryGameTests` and `ModuleSwitchGameTests` do; no GameTest removes a mod, and none is named for an
-      uninstall, so the saved-NBT checks below stand for the mod's removal):
+      uninstall. The uninstall emulation is the NBT round trip below, not the switch: a taken body has left the
+      bridge, so the module going off discards nothing of it, and the saved-NBT checks stand for the mod's
+      removal (the re-check's P3)):
       the saved NBT of the acknowledged body has no `neoforge:attachments` key of `mic_rtsim:`, no
       `NeoForgeData` key and no tag with `mic_rtsim`, no word of `mic_rtsim` anywhere in its string form, and
       `alwaysActive` false, which is what a world without mic_rtsim and the plugin reads (NeoForge skips an
@@ -3938,6 +3951,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       and 60 ticks after the module is on again no Frostmaw stands within 24 blocks of the spot. It passes on the
       unfixed code too (a guard that the release does not change what the switch-off does, which discards the
       body). The test restores the switch when it ends, passed or failed.
+  - Known gap, outside M8 (the re-check's P3; recorded, not fixed): a held puppet is kept out of every chunk save,
+    but `EntitySaveMixin` leaves `saveWithoutId` alone on purpose, because a dimension change copies an entity
+    through it and the copy must keep its tag so the join check knows it. So a third party that captures a
+    mob by calling `saveWithoutId` on it directly (a capture item that does not go through `Entity.save`, which
+    the mixin does cover) would write the held body's NBT, `alwaysActive` true among it, and the released body
+    would come out of that item holding. Carry On's pickup does not: `take` releases the hold first (above). Left
+    open for the dimension copies; closing it means telling a dimension copy from a capture in `saveWithoutId`,
+    which nothing in M8 needs. The same goes for any other plugin's puppet kind.
   - Amendment (the re-check's condition 2; the test is rewritten and compiled, not run): the take test's checks
     run in the order of the claim they make. A body made from the saved NBT is what a world without the mod
     reads, so the saved NBT is saved and read first (`h.saveOrdinary`, then the copy's `alwaysActive`), then
@@ -4030,6 +4051,10 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
         than `STRIKE_REACH - SPOT_BLOCKS` (1.0) from the spot: the strike gate's margin, not `STAND`, because the
         body may rest beyond its stand (MZB-361's amendment). That check can fail on the first run; if it does,
         the figure it prints is what the hold really leaves, and the contract's numbers move to it.
+        (Superseded by the re-check's P3: the check is that the body rests within `Lurkers.of(puppet).stand()` of
+        its hold point, the rest point of the `Den`, which is what the contract counts on and what `STAND` 0.5
+        makes the hold keep; the 1.0 bound let a body rest 0.5 beyond the stand and still pass, and the
+        contract's far side is the stand's. The figure is still recorded, with the strike gate's margin beside it.)
       - `aLurkingFrostmawAtTheFarSideOfItsStandStillSwipesAtOnePointFourBlocksATick` (batch
         `rail_frostmaw_lurk_far`, 2400 ticks): the 1.4 pass without the bait, the hold's checks or the hearer, with
         `LurkRun.pin()` setting the puppet at `stand - 0.001` from the spot on the line away from the rail, with no
