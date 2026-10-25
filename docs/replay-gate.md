@@ -529,8 +529,9 @@ What the merge checked:
    build reads 7"), `every_gametest_save_carries_and_matches_each_modules_hash` and
    `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
    `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped"). Both were
-   regenerated from 32726818 (M7 merged with main a11311aa) before M7 landed: core from a fresh
-   `gametest.sh core` world, create from a `-Psec1fx` run with its world deleted first.
+   regenerated before M7 landed: create from 32726818 (M7 merged with main a11311aa), a `-Psec1fx`
+   run with its world deleted first, and core from 4f152abc (that merged with main 588b229c, which
+   changes no format), a fresh `gametest.sh core` world.
 6. **C2ME** (MZB-662): none of M7's four GameTest classes waits on `getEntity == null` or
    `!hasChunk` as "saved and unloaded". RailFrostmawGameTests forces its chunks and loads them with
    `getChunk`, SamplerBenchGameTests waits on the bench's own state, and the other two wait on
