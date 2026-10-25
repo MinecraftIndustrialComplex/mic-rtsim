@@ -14,7 +14,8 @@ import java.util.Locale;
 public record GlassReport(int compile, int rounds, boolean converged, int nodes, int edges, double solveMicros,
                           long windowStart, long windowTicksDone, long windowTicksTarget, int windowsCompleted,
                           int verdict, int strikes, int solves, int demoted, long latency, Checksum checksum,
-                          Replay replay, List<Good> goods, List<Unit> units) {
+                          Replay replay, List<Good> goods, List<Unit> units, List<Section> sections,
+                          List<Shared> shared) {
 
     /** How a good is judged. */
     public static final int EXACT = 0, BOUNDED = 1, UNBOUNDED = 2;
@@ -22,6 +23,13 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
     public static final int NONE = 0, PASS = 1, FAIL = 2;
 
     public static final int HEADER = 42, GOOD_STRIDE = 16, UNIT_STRIDE = 15;
+    /** The sections part ({@code glass::report::SECTION_STRIDE} and the strides after it). */
+    public static final int SECTION_STRIDE = 27, SECTION_STORE_STRIDE = 3, SHARED_STRIDE = 12, SHARED_LINK_STRIDE = 2,
+            SHARED_RESIDUE_STRIDE = 3;
+
+    /** A section's state ({@code glass::report::section_state}); index = code. */
+    public static final int LEARNING = 0, PASSED_STATE = 1, FAILED = 2, STALE_STATE = 3, FROZEN_STATE = 4, REPLAYING = 5;
+    public static final String[] SECTION_STATES = {"learning", "passed", "failed", "stale", "frozen", "replaying"};
 
     /** What replays the district ({@code glass::report::replay_model}). */
     public static final int REPLAY_NONE = 0, REPLAY_BLACK_BOX = 1, REPLAY_GLASS = 2;
@@ -163,6 +171,77 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
         }
     }
 
+
+    /**
+     * One section (SECTIONS.md §8.1, choice SC165): its judging unit (-1: the district's window judges), judging
+     * group, nodes, stores (with the inventories they hold, -1 for none), domains, box, lowest node position,
+     * fingerprint, state ({@link #SECTION_STATES}), last verdict, strikes, windows completed, open window ticks and
+     * the failed good of its last window that missed its band by the most ({@code worstGood} -1: none).
+     */
+    public record Section(int unit, int group, int nodes, int storeCount, int sharedStores, int domains, int flags,
+                          int state, boolean hasBox, int loX, int loY, int loZ, int hiX, int hiY, int hiZ, boolean hasLow,
+                          int lowX, int lowY, int lowZ, long fingerprint, int verdict, int strikes, int windowsCompleted,
+                          long windowTicks, int worstGood, double worstMeasured, double worstPredicted,
+                          double worstExcess, List<StoreRef> stores) {
+
+        public static final int PASSED = 1, STALE = 2, MAY_REPLAY = 4, FROZEN = 8, WORKING = 16;
+
+        public boolean passed() {
+            return (flags & PASSED) != 0;
+        }
+
+        public boolean stale() {
+            return (flags & STALE) != 0;
+        }
+
+        public boolean mayReplay() {
+            return (flags & MAY_REPLAY) != 0;
+        }
+
+        public boolean frozen() {
+            return (flags & FROZEN) != 0;
+        }
+
+        public boolean working() {
+            return (flags & WORKING) != 0;
+        }
+
+        public String stateName() {
+            return state >= 0 && state < SECTION_STATES.length ? SECTION_STATES[state] : "state " + state;
+        }
+
+        /** Whether its box holds the position. */
+        public boolean holds(int x, int y, int z) {
+            return hasBox && loX <= x && x <= hiX && loY <= y && y <= hiY && loZ <= z && z <= hiZ;
+        }
+
+        /** The 16 hex digits of the fingerprint. */
+        public String fingerprintHex() {
+            return String.format(Locale.ROOT, "%016x", fingerprint);
+        }
+    }
+
+    /** A store a section touches: its inventory (-1: none) and whether another section touches it too. */
+    public record StoreRef(int inventory, boolean shared) {}
+
+    /**
+     * A store shared by sections (SECTIONS.md §4.2, choice SC168): its node, inventory (-1 none), position, sections
+     * that touch it, whether its moves are counted at its movers (it lies between units), the (mover, store) pairs
+     * Java counts at it, whether the latest count sample covered every pair, that sample's sweep (-1 none) and its
+     * residue per good since the baseline (goods and amounts).
+     */
+    public record Shared(int node, int inventory, boolean hasPos, int x, int y, int z, List<Integer> sections,
+                         boolean counted, int pairs, boolean countedNow, long sampleSweep, List<long[]> residue) {
+
+        /** The amount the residue holds of a good; 0 when none. */
+        public long residueOf(int good) {
+            for (long[] r : residue)
+                if (r[0] == good)
+                    return r[1];
+            return 0;
+        }
+    }
+
     /** Null for a null array (no complete compile). */
     public static GlassReport decode(double[] v) {
         if (v == null)
@@ -172,7 +251,8 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
         int n = (int) v[12];
         int tail = HEADER + n * GOOD_STRIDE;
         int u = tail < v.length ? (int) v[tail] : -1;
-        if (u < 0 || v.length != tail + 1 + u * UNIT_STRIDE)
+        int at = tail + 1 + u * UNIT_STRIDE;
+        if (u < 0 || at >= v.length)
             throw new IllegalArgumentException("a glass report of " + v.length + " values for " + n + " goods");
         List<Good> goods = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
@@ -189,9 +269,94 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
                 (int) v[22], (long) v[23], (long) v[24], (int) v[25], discards);
         Replay rp = new Replay((int) v[33], (long) v[34], (int) v[35], (int) v[36], (int) v[37], (int) v[38], v[39] != 0,
                 (int) v[40]);
+        int[] pos = {at};
+        List<Section> sections = sections(v, pos);
+        List<Shared> shared = shared(v, pos);
+        if (pos[0] != v.length)
+            throw new IllegalArgumentException("a glass report of " + v.length + " values for " + n + " goods");
         return new GlassReport((int) v[0], (int) v[1], v[2] != 0, (int) v[3], (int) v[4], v[5], (long) v[6], (long) v[7],
                 (long) v[8], (int) v[9], (int) v[10], (int) v[11], (int) v[13], (int) v[14], (long) v[15], c, rp,
-                List.copyOf(goods), units(v, tail + 1, u));
+                List.copyOf(goods), units(v, tail + 1, u), sections, shared);
+    }
+
+
+    private static List<Section> sections(double[] v, int[] pos) {
+        int at = pos[0];
+        int n = at < v.length ? (int) v[at] : -1;
+        if (n < 0 || at + 1 + n * SECTION_STRIDE >= v.length)
+            throw new IllegalArgumentException("a glass report of " + v.length + " values has no sections part");
+        int sc = at + 1 + n * SECTION_STRIDE;
+        int m = (int) v[sc];
+        if (m < 0 || sc + 1 + m * SECTION_STORE_STRIDE > v.length)
+            throw new IllegalArgumentException("a glass report of " + v.length + " values has a short store list");
+        List<List<StoreRef>> stores = new ArrayList<>(n);
+        for (int i = 0; i < n; i++)
+            stores.add(new ArrayList<>());
+        for (int i = 0; i < m; i++) {
+            int b = sc + 1 + i * SECTION_STORE_STRIDE;
+            int s = (int) v[b];
+            if (s < 0 || s >= n)
+                throw new IllegalArgumentException("a store of section " + s + " in a report of " + n + " sections");
+            stores.get(s).add(new StoreRef((int) v[b + 1], v[b + 2] != 0));
+        }
+        List<Section> out = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int b = at + 1 + i * SECTION_STRIDE;
+            int flags = (int) v[b + 6];
+            long fp = ((long) v[b + 17] << 32) | (long) v[b + 18];
+            out.add(new Section((int) v[b], (int) v[b + 1], (int) v[b + 2], (int) v[b + 3], (int) v[b + 4], (int) v[b + 5],
+                    flags, (int) v[b + 7], (flags & 32) != 0, (int) v[b + 8], (int) v[b + 9], (int) v[b + 10],
+                    (int) v[b + 11], (int) v[b + 12], (int) v[b + 13], (flags & 64) != 0, (int) v[b + 14], (int) v[b + 15],
+                    (int) v[b + 16], fp, (int) v[b + 19], (int) v[b + 20], (int) v[b + 21], (long) v[b + 22],
+                    (int) v[b + 23], v[b + 24], v[b + 25], v[b + 26], List.copyOf(stores.get(i))));
+        }
+        pos[0] = sc + 1 + m * SECTION_STORE_STRIDE;
+        return List.copyOf(out);
+    }
+
+    private static List<Shared> shared(double[] v, int[] pos) {
+        int at = pos[0];
+        int n = at < v.length ? (int) v[at] : -1;
+        if (n < 0 || at + 1 + n * SHARED_STRIDE >= v.length)
+            throw new IllegalArgumentException("a glass report of " + v.length + " values has no shared stores part");
+        int lc = at + 1 + n * SHARED_STRIDE;
+        int links = (int) v[lc];
+        int rc = lc + 1 + links * SHARED_LINK_STRIDE;
+        if (links < 0 || rc >= v.length)
+            throw new IllegalArgumentException("a glass report of " + v.length + " values has a short link list");
+        int res = (int) v[rc];
+        int end = rc + 1 + res * SHARED_RESIDUE_STRIDE;
+        if (res < 0 || end > v.length)
+            throw new IllegalArgumentException("a glass report of " + v.length + " values has a short residue list");
+        List<List<Integer>> sections = new ArrayList<>(n);
+        List<List<long[]>> residues = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            sections.add(new ArrayList<>());
+            residues.add(new ArrayList<>());
+        }
+        for (int i = 0; i < links; i++) {
+            int b = lc + 1 + i * SHARED_LINK_STRIDE;
+            sections.get(checkStore((int) v[b], n)).add((int) v[b + 1]);
+        }
+        for (int i = 0; i < res; i++) {
+            int b = rc + 1 + i * SHARED_RESIDUE_STRIDE;
+            residues.get(checkStore((int) v[b], n)).add(new long[] {(long) v[b + 1], (long) v[b + 2]});
+        }
+        List<Shared> out = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int b = at + 1 + i * SHARED_STRIDE;
+            out.add(new Shared((int) v[b], (int) v[b + 1], v[b + 2] != 0, (int) v[b + 3], (int) v[b + 4], (int) v[b + 5],
+                    List.copyOf(sections.get(i)), v[b + 7] != 0, (int) v[b + 8], v[b + 9] != 0, (long) v[b + 10],
+                    List.copyOf(residues.get(i))));
+        }
+        pos[0] = end;
+        return List.copyOf(out);
+    }
+
+    private static int checkStore(int i, int n) {
+        if (i < 0 || i >= n)
+            throw new IllegalArgumentException("shared store " + i + " in a report of " + n);
+        return i;
     }
 
     private static List<Unit> units(double[] v, int at, int n) {
@@ -214,6 +379,33 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
             if (un.holds(x, y, z))
                 out.add(un);
         return out;
+    }
+
+    /** The sections whose node box holds the position. */
+    public List<Section> sectionsAt(int x, int y, int z) {
+        List<Section> out = new ArrayList<>();
+        for (Section s : sections)
+            if (s.holds(x, y, z))
+                out.add(s);
+        return out;
+    }
+
+    /** Sections that may replay now (their unit's rule, or the district's). */
+    public int sectionsMayReplay() {
+        int n = 0;
+        for (Section s : sections)
+            if (s.mayReplay())
+                n++;
+        return n;
+    }
+
+    /** Sections the district is replaying in glass now. */
+    public int sectionsReplaying() {
+        int n = 0;
+        for (Section s : sections)
+            if (s.state() == REPLAYING)
+                n++;
+        return n;
     }
 
     public Good good(int id) {

@@ -25,6 +25,9 @@ import java.util.UUID;
  *       which are loaded, the load state sent to the engine, the last sweep and defence survey, the last
  *       reconcile, plugin warnings); {@code debug} adds the chunk, inventory and station lists. Neither asks
  *       the engine: there is no ledger on the wire;</li>
+ *   <li>{@code sections [name|id]} (registered by {@code GlassSectionsCommand}, SECTIONS.md §8.1) and {@code graph}:
+ *       the glass box's sections and shared stores, and the compile dump; {@code info} and {@code debug} add one line
+ *       with the section count;</li>
  *   <li>{@code rename <name> <new name>}: the district's name, over its station's;</li>
  *   <li>{@code merge <a> <b>}: one district from two (a merge link between their anchor chunks);</li>
  *   <li>{@code split [radius]}: the member chunks within the radius of your chunk become a district of
