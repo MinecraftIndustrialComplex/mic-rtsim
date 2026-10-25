@@ -6,8 +6,6 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
-import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
-import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import com.simibubi.create.Create;
 import com.simibubi.create.content.trains.entity.Train;
@@ -40,6 +38,13 @@ import java.util.UUID;
  * session's start against the engine's pages ({@link #settle}, RP-251): it leaves only when the pages provably
  * hold it, else it stays with its answer unknown. {@link #CAPACITY} is a valve, not the bound: an op pushed
  * out of a full ring is counted and the first on each train is logged.
+ *
+ * <p>Saving and loading never depend on the industry module's switch (RP-257, amending RP-194): the switch
+ * gates only the applying of new ops ({@code carriageDelta} runs only while the module is on). A save writes
+ * the ring whenever it holds an op, a load keeps what it finds, the acknowledgements prune while the module
+ * is off ({@link #tick} is the session hook's, not the industry's), and the session's settle runs as usual.
+ * A save with the module off that left the ring out, followed by a crash before the journal's file was
+ * written, would apply the op again once the module was back on.
  *
  * <p>The mixin's config is optional ({@code mic_rtsim_create_ring.mixins.json}: not required, require 0),
  * so a Create that moved {@code Train.write} or {@code Train.read} loads without it. {@link #available}
@@ -112,17 +117,16 @@ public final class TrainRing {
     }
 
     /**
-     * {@code Train.write}'s hook: the ring under {@link #KEY}, when it holds an op and the industry module is
-     * on. With the module off the key is left out, so the next save drops it (UR-1); the ring itself stays
-     * on the train until the server stops.
+     * {@code Train.write}'s hook: the ring under {@link #KEY}, whenever it holds an op, whatever the industry
+     * module's switch says (RP-257). An empty ring writes no key, so a ring the acknowledgements emptied leaves
+     * the save as Create's own; with the plugin removed the mixin is gone and Create's {@code Train.write}
+     * drops the key (UR-1).
      */
     public static void write(Object train, CompoundTag tag) {
         if (!(train instanceof AppliedOpsHolder h) || tag == null || broken == BreakForTest.WRITE)
             return;
         AppliedOpRing ring = h.mic_rtsim$appliedOpsIfAny();
         if (ring == null || ring.isEmpty())
-            return;
-        if (!probing && !RtsimConfig.on(Module.INDUSTRY))
             return;
         ring.writeTo(tag, KEY);
     }
@@ -202,14 +206,15 @@ public final class TrainRing {
     }
 
     /**
-     * The industry's plugin tick, after its announce: the acknowledged answers' ops leave their rings (an op
-     * answered again since, or forgotten by {@link #announce}, stays), and Create's tracks are marked for the
-     * next save. Deferred to here from the acknowledgement, which comes earlier in the tick, so that an
-     * announce in the same tick forgets the answers first.
+     * The session hook's end of tick, after the industry's (and so after its announce): the acknowledged
+     * answers' ops leave their rings (an op answered again since, or forgotten by {@link #announce}, stays),
+     * and Create's tracks are marked for the next save. Deferred to here from the acknowledgement, which comes
+     * earlier in the tick, so that an announce in the same tick forgets the answers first. It runs whatever
+     * the industry module's switch says (RP-257): the industry's own tick does not run while it is off.
      */
-    static void tick() {
+    static void tick(RtsimSession session) {
         RtsimSession s = RtsimSession.current();
-        if (s == null || holdPrunes || ACKED.isEmpty())
+        if (s == null || s != session || holdPrunes || ACKED.isEmpty())
             return;
         long gen = s.boundary().gen();
         boolean changed = false;
@@ -293,7 +298,7 @@ public final class TrainRing {
         return ByteBuffer.wrap(record).order(Layout.ORDER).getLong(Obs.JournalGen.GEN);
     }
 
-    /** The session hook: {@link #sessionStarted}. Registered by {@link MicRtsimCreate}. */
+    /** The session hook: {@link #sessionStarted} and the prunes ({@link #tick}). Registered by {@link MicRtsimCreate}. */
     static final class SessionHook implements SessionPlugin {
         @Override
         public String name() {
@@ -303,6 +308,11 @@ public final class TrainRing {
         @Override
         public void sessionStarted(RtsimSession session) {
             TrainRing.sessionStarted(session);
+        }
+
+        @Override
+        public void endOfTick(RtsimSession session, long now) {
+            TrainRing.tick(session);
         }
     }
 

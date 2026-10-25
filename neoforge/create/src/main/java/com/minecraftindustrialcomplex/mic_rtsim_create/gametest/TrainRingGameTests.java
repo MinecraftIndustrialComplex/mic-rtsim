@@ -45,7 +45,7 @@ import java.util.Set;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
 /**
- * The train op ring (docs/choices-mowzie-build.md RP-190 to RP-198, RP-250 to RP-254): IND_CARRIAGE_DELTA's
+ * The train op ring (docs/choices-mowzie-build.md RP-190 to RP-198, RP-250 to RP-254, RP-257): IND_CARRIAGE_DELTA's
  * dedup across a crash that kept one of Java's two SavedData files and not the other, the acknowledgement that
  * takes an op out, the settle of a ring another session answered, and the valve.
  *
@@ -209,67 +209,117 @@ public final class TrainRingGameTests {
                 .thenSucceed();
     }
 
-    // ---- UR-1 -----------------------------------------------------------------------------------
+    // ---- the module switch (UR-1, RP-257) --------------------------------------------------------
 
     /**
-     * UR-1: a tracks file with a ring, read with the industry module off, loads its train as Create would, and
-     * the next save drops the key and keeps every key of Create's. The ring stays on the train in memory: on
-     * again, a save writes it once more. (With the plugin removed the mixin is gone and Create's Train.write
-     * builds its compound from scratch, so the key goes the same way.)
+     * RP-257 (the SEC-1 lead's hole, RP-206): saving and loading never depend on the industry module's switch.
+     * A raid is applied, the module is switched off, the tracks are saved, and the server crashes before the
+     * journal's file is written (its op index forgets the op); the restart loads the tracks with the module
+     * still off and switches it on, and the engine sends the raid again under the same op. The save with the
+     * module off held the ring, so the op is answered DUPLICATE and taken once (before RP-257 the save left
+     * the key out: APPLIED, the raid taken twice). The saved train keeps every key of Create's (UR-1).
+     *
+     * <p>Then the prunes with the module off: the DUPLICATE's answer is acknowledged and the op leaves the ring
+     * while the module is off, and the next save writes none of the ring's keys. The prunes are held until
+     * the module is off, so the prune is the session hook's (the industry's own tick does not run then).
      */
-    @GameTest(template = YARD, batch = "train_ring_7", timeoutTicks = 1200)
-    public static void withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing(GameTestHelper helper) {
+    @GameTest(template = YARD, batch = "train_ring_7", timeoutTicks = 2400)
+    public static void anOpAppliedBeforeTheModuleWentOffIsTakenOnceAfterASaveWithItOffAndACrash(GameTestHelper helper) {
+        String test = "anOpAppliedBeforeTheModuleWentOffIsTakenOnceAfterASaveWithItOffAndACrash";
         fastConfig();
-        TrainRing.holdPrunesForTest(true); // the op stays in the ring however soon its answer is acknowledged
+        TrainRing.holdPrunesForTest(true); // the answer's acknowledgement must not empty the ring before the crash
         forget(helper);
         ServerLevel level = helper.getLevel();
         var server = level.getServer();
         Train[] train = {null};
         CompoundTag[] saved = {null};
         long op = engineOp();
+        long[] pruned = {0};
         helper.startSequence()
                 .thenExecute(() -> {
                     check("the ring is on", TrainRing.available(server));
                     train[0] = ringTrain(helper);
                 })
                 .thenExecute(() -> raid(op, train[0]))
-                .thenWaitUntil(paced(() -> check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)))))
+                .thenWaitUntil(paced(() -> {
+                    check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)));
+                    check("10 iron left the train", IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT) == IRON - TAKEN);
+                }))
                 .thenExecute(() -> {
-                    saved[0] = saveTracks(level, train[0]);
-                    check("the save holds the ring", Arrays.equals(trainTag(saved[0]).getLongArray(TrainRing.KEY), new long[] {op}));
                     RtsimConfig.Test.setModule(Module.INDUSTRY, false);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })
-                .thenIdle(3)
+                .thenWaitUntil(paced(() -> check("the module is off", IndustryApi.current() == null)))
                 .thenExecute(() -> {
-                    check("the module is off", IndustryApi.current() == null);
+                    // The save with the module off, then the crash before the journal's file was written.
+                    saved[0] = saveTracks(level, train[0]);
+                    CompoundTag tag = trainTag(saved[0]);
+                    record(test, "keys saved with the module off", tag.getAllKeys().size() + ", the ring key "
+                            + (tag.contains(TrainRing.KEY) ? "kept: " + Arrays.toString(tag.getLongArray(TrainRing.KEY)) : "dropped"));
+                    journal().forgetAppliedForTest(op);
                     TrainWatch.forget(train[0]);
-                    Train loaded = loadTracks(level, saved[0]);
-                    check("the train loads: its id", loaded.id.equals(train[0].id));
-                    check("and its goods", IndustryGameTests.carriageCount(loaded, Items.IRON_INGOT) == IRON - TAKEN);
-                    train[0] = loaded;
-                    CompoundTag next = trainTag(saveTracks(level, loaded));
-                    check("the next save drops " + TrainRing.KEY, !next.contains(TrainRing.KEY));
-                    check("the save had the ring's answers and generation beside it", trainTag(saved[0]).contains(AppliedOpRing.answersKey(TrainRing.KEY))
-                            && trainTag(saved[0]).contains(AppliedOpRing.genKey(TrainRing.KEY)));
-                    check("the next save drops them too", !next.contains(AppliedOpRing.answersKey(TrainRing.KEY)) && !next.contains(AppliedOpRing.genKey(TrainRing.KEY)));
-                    Set<String> create = new HashSet<>(trainTag(saved[0]).getAllKeys());
-                    create.removeAll(ringKeys());
-                    check("and keeps every key of Create's: " + next.getAllKeys() + " vs " + create, next.getAllKeys().equals(create));
-                    record("withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing", "keys saved with the module off", next.getAllKeys().size()
-                            + ", the ring key " + (next.contains(TrainRing.KEY) ? "kept" : "dropped"));
+                    train[0] = loadTracks(level, saved[0]);
+                    check("the tracks came back with " + (IRON - TAKEN) + " iron", IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT) == IRON - TAKEN);
                     RtsimConfig.Test.setModule(Module.INDUSTRY, null);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })
                 .thenWaitUntil(paced(() -> check("the module is on again", IndustryApi.current() != null)))
+                .thenIdle(3) // the industry's announce at its first tick on (forgetAnswers) comes before the raid's answer
+                .thenExecute(() -> raid(op, train[0])) // the replay re-decides the raid under the same op
+                .thenWaitUntil(paced(() -> check("the replayed raid is answered", commandResults(op).size() == 2)))
                 .thenExecute(() -> {
-                    AppliedOpRing ring = TrainRing.peekForTest(train[0]);
-                    check("the ring stayed on the train", ring != null && ring.contains(op));
-                    check("on again, the next save writes it", Arrays.equals(trainTag(saveTracks(level, train[0])).getLongArray(TrainRing.KEY), new long[] {op}));
-                    TrainWatch.forget(train[0]);
-                    TrainRing.holdPrunesForTest(false);
+                    int second = commandResults(op).get(1);
+                    long iron = IndustryGameTests.carriageCount(train[0], Items.IRON_INGOT);
+                    long held = iron + TAKEN;
+                    record(test, "second answer, iron on the train, train plus raider",
+                            status(second) + ", " + iron + ", " + held + (held == IRON ? " (conserved)" : held > IRON ? " (a dupe)" : " (a double)"));
+                    check("the op is not applied again: answered " + status(second), second == Obs.CommandResult.DUPLICATE_OP);
+                    check("iron on the train " + (IRON - TAKEN) + ": " + iron, iron == IRON - TAKEN);
+                    CompoundTag tag = trainTag(saved[0]);
+                    check("the save with the module off held the ring's op: " + Arrays.toString(tag.getLongArray(TrainRing.KEY)),
+                            Arrays.equals(tag.getLongArray(TrainRing.KEY), new long[] {op}));
+                    check("and its answers and generation", tag.contains(AppliedOpRing.answersKey(TrainRing.KEY)) && tag.contains(AppliedOpRing.genKey(TrainRing.KEY)));
+                    // UR-1: the ring's three keys beside every key of Create's, which a read and write of the same
+                    // file without them gives (Train.read alone: the train is not watched).
+                    CompoundTag plain = withoutRing(saved[0]);
+                    Set<String> keys = new HashSet<>(Train.read(trainTag(plain), level.registryAccess(), Map.of(), DimensionPalette.read(plain))
+                            .write(new DimensionPalette(), level.registryAccess()).getAllKeys());
+                    keys.addAll(ringKeys());
+                    check("the save is every key of Create's and the ring's three: " + tag.getAllKeys() + " vs " + keys, tag.getAllKeys().equals(keys));
+                    // The prunes with the module off.
+                    pruned[0] = TrainRing.pruned();
+                    RtsimConfig.Test.setModule(Module.INDUSTRY, false);
+                    BridgeEvents.moduleSwitchesChanged(server);
                 })
+                .thenWaitUntil(paced(() -> check("the module is off", IndustryApi.current() == null)))
+                .thenExecute(() -> TrainRing.holdPrunesForTest(false))
+                .thenWaitUntil(paced(() -> {
+                    engine().requestSaveAtNextStep();
+                    AppliedOpRing ring = TrainRing.peekForTest(train[0]);
+                    check("with the module off, the engine acknowledged the DUPLICATE's answer and the op left: " + ring, ring != null && ring.isEmpty());
+                }))
+                .thenExecute(() -> {
+                    check("the module is still off", IndustryApi.current() == null);
+                    check("counted: " + (TrainRing.pruned() - pruned[0]), TrainRing.pruned() > pruned[0]);
+                    CompoundTag tag = trainTag(saveTracks(level, train[0]));
+                    for (String k : ringKeys())
+                        check("the save with the module off holds no " + k + " once the op left", !tag.contains(k));
+                    record(test, "ops pruned with the module off", TrainRing.pruned() - pruned[0]);
+                    TrainWatch.forget(train[0]);
+                    RtsimConfig.Test.setModule(Module.INDUSTRY, null);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenWaitUntil(paced(() -> check("the module is on again", IndustryApi.current() != null)))
                 .thenSucceed();
+    }
+
+    /** A tracks file with the ring's keys taken out of its train, as Create alone would have saved it. */
+    private static CompoundTag withoutRing(CompoundTag tracks) {
+        CompoundTag copy = tracks.copy();
+        CompoundTag t = trainTag(copy);
+        for (String k : ringKeys())
+            t.remove(k);
+        return copy;
     }
 
     // ---- the reusable ring's NBT form (RP-198) ----------------------------------------------------
