@@ -33,7 +33,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
     /** Why a good's class is what it is ({@code glass::report::why}); index = reason. */
     public static final String[] WHY = {"none", "node flag", "rule", "cycle", "black box", "port", "unread store",
             "edge flag", "line", "drop", "unconverged", "U infinite", "unlimited flow", "shared edge", "short inputs",
-            "shared capacity", "time share", "shared input", "part duty", "priority tie"};
+            "shared capacity", "time share", "shared input", "part duty", "priority tie", "shared network"};
     /** The {@link #WHY} reasons whose place is an edge, not a node (7 to 10). */
     private static final int WHY_EDGE_FLAG = 7, WHY_LINE = 8, WHY_DROP = 9, WHY_UNCONVERGED = 10;
 
