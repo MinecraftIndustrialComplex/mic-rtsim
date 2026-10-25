@@ -1547,7 +1547,8 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
 /// A raider whose pages are older than its train raid decides it again after a crash, against an
 /// industry engine that is not held (docs/replay-gate.md §3.6; docs/choices-mowzie-build.md
 /// RP-180 to RP-186). The raid's op is its identity, so the world answers DUPLICATE, the link
-/// drops the loot exchange, and the goods leave the train once. The world save holds the raid's
+/// drops the loot exchange (through `answered_again`, RP-182), and the goods leave the train
+/// once. The world save holds the raid's
 /// application and its journaled results (both of Java's saves landed after it, J1); the pages
 /// stop before the raid. Against main's derivation the re-decided raid is a new op, the world
 /// gives the loot twice, and its books no longer close.
@@ -1649,6 +1650,17 @@ fn a_train_raid_decided_again_after_a_crash_is_applied_once() {
         "the raid decided again carries the op the world applied"
     );
     iron_run_to_end(&mut j, &cfg);
+    // The world's DUPLICATE is a second answer for an op the replay heard APPLIED, so `Replay`
+    // refuses it as answered; the loot exchange is dropped all the same (RP-182). A copy
+    // of the engine is asked to drop it again: nothing is left to drop.
+    let pending = industry(&j.e, |ie| {
+        let mut copy = Industry::restore(ie.snapshot(), Tunables::default()).expect("restores");
+        copy.command_duplicate(OpId(live))
+    });
+    assert!(
+        !pending,
+        "the loot exchange of op {live:#x} is still pending after the world's DUPLICATE"
+    );
     assert_eq!(industry(&j.e, |ie| ie.books.stolen.total()), stolen);
     assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
     conserves(&j);
