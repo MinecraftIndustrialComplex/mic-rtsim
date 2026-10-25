@@ -221,7 +221,7 @@ public final class PortRingGameTests {
         GlobalStation[] st = {null};
         long[] id = {0};
         int[] mirrored = {0};
-        long op = engineOp();
+        long op = engineOp(), orphan = engineOp();
         Map<String, Long> copper = Map.of("i/64/minecraft:copper_ingot", 30L);
         helper.startSequence()
                 .thenIdle(5)
@@ -294,6 +294,18 @@ public final class PortRingGameTests {
                     record(test, "offline after a loaded write: third answer, packages in the buffer, primed", status(third) + ", " + got + ", " + port.primed);
                     check("the postbox ring refuses it: DUPLICATE, answered " + status(third), third == Obs.CommandResult.DUPLICATE_OP);
                     check("nothing written into the buffer: " + got + " vs " + mirrored[0], got == mirrored[0] && !port.primed);
+                    // The port outlived its postbox (an orphan): a new op is not written into its buffer.
+                    writePackage(orphan, id[0], 0, postbox, "Mill", 1, copper);
+                })
+                .thenWaitUntil(() -> check("the new op is answered", commandResults(orphan).size() == 1))
+                .thenExecute(() -> {
+                    int answer = commandResults(orphan).get(0);
+                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    int got = packages(port.offlineBuffer);
+                    record(test, "a new op into the orphan port, its postbox's chunk loaded: answer, packages in the buffer, primed",
+                            status(answer) + ", " + got + ", " + port.primed);
+                    check("an orphan port takes no write: FAILED, answered " + status(answer), answer == Obs.CommandResult.FAILED);
+                    check("nothing written into the buffer: " + got + " vs " + mirrored[0], got == mirrored[0] && !port.primed);
                     st[0].connectedPorts.remove(postbox);
                 })
                 .thenSucceed();
@@ -341,8 +353,11 @@ public final class PortRingGameTests {
         ServerLevel level = helper.getLevel();
         PortRing.fallbackForTest(false);
         PortRing.chunkChecksForTest(!checks);
-        BlockPos postbox = inChunk(helper, 4, 4);
         BlockPos stationPos = stationPos(helper, 28);
+        // The postbox's chunk is not loaded at the write (a loaded chunk without its postbox is an orphan's), and is
+        // forced loaded for the restore.
+        ChunkPos far = new ChunkPos((stationPos.getX() >> 4) + 7300 + (checks ? 0 : 4), (stationPos.getZ() >> 4) + 7300);
+        BlockPos postbox = new BlockPos(far.getMinBlockX() + 5, 70, far.getMinBlockZ() + 5);
         GlobalStation[] st = {null};
         CompoundTag[] before = {null};
         long[] carried = {0};
@@ -354,7 +369,7 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
                 .thenExecute(() -> {
                     check("the rings are on", PortRing.available(level.getServer()));
-                    check("no postbox there yet", !(level.getBlockEntity(postbox) instanceof PostboxBlockEntity));
+                    check("the postbox's chunk is not loaded", level.getChunkSource().getChunkNow(far.x, far.z) == null);
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = "Mill";
                     st[0].connectedPorts.put(postbox, port);
@@ -368,7 +383,9 @@ public final class PortRingGameTests {
                     check("one package in the buffer, primed, the op in its ring",
                             packages(port.offlineBuffer) == 1 && port.primed && PortRing.wroteToBuffer(port, op));
                     check("the engine has not acknowledged it", ind().opApplied(op));
-                    // The postbox is placed and registers with its station: Create restores the buffer into it.
+                    // The postbox's chunk loads, and the postbox is placed and registers with its station: Create
+                    // restores the buffer into it.
+                    level.setChunkForced(far.x, far.z, true);
                     level.setBlock(postbox, block("create:white_postbox").defaultBlockState(), 3);
                     PostboxBlockEntity pb = (PostboxBlockEntity) level.getBlockEntity(postbox);
                     ((StationBlockEntity) level.getBlockEntity(stationPos)).attachPackagePort(pb);
@@ -402,6 +419,7 @@ public final class PortRingGameTests {
                         pb.inventory.setStackInSlot(s, ItemStack.EMPTY);
                     dropCarried(level.getChunkAt(postbox), op);
                     level.setBlock(postbox, Blocks.AIR.defaultBlockState(), 3);
+                    level.setChunkForced(far.x, far.z, false);
                     journal().forgetAppliedForTest(op);
                     st[0].connectedPorts.remove(postbox);
                     PortRing.chunkChecksForTest(false);

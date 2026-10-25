@@ -1844,7 +1844,10 @@ its files on disk, the rest from the save before. Two directions:
      buffer (Create's own behaviour, not journal-ordered: a take by automation since then undone);
    - the restore with the industry module off or the rings unavailable: nothing carried, so a loaded
      resend after a crash writes the packages again;
-   - a chunk read that fails or takes over 10 s (logged): the write goes on with the mirror as it is;
+   - a chunk read that fails or takes over 10 s (logged): that write goes on with the mirror as it is,
+     and the port's next offline write reads again, three reads at most;
+   - a chunk of another data version than the running game's (saved before an upgrade): its carried ops
+     are taken, its postbox inventory is not, so the write goes on with the mirror as it is;
    - a postbox changed in this life while its station did not attach it, after the port's mirror was
      marked fresh, and a chunk saved between the postbox's unload and Create's next save of it into the
      buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since.
