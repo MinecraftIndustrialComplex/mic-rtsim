@@ -1140,4 +1140,48 @@ mod tests {
         assert_eq!(back, d);
         assert!(from_bytes::<District>(&bytes[4..]).is_err());
     }
+
+    /// The chunk epochs and the package numbers come back with the page (P2-b of the slice R
+    /// re-check, RP-259): a replay from pages that lost them would number its next round on a
+    /// chunk, or its next package, from 1 again: refused by the chunk's epoch, or a package under
+    /// an op the world holds (a loss) or, while the window still knows that op, under a new one (a
+    /// make).
+    #[test]
+    fn a_district_page_keeps_its_chunk_epochs_and_package_numbers() {
+        let mut d = District::new(DistrictId(3));
+        let (a, b) = (
+            ChunkPos {
+                dim: 0,
+                x: 2,
+                z: -1,
+            },
+            ChunkPos {
+                dim: 0,
+                x: 3,
+                z: -1,
+            },
+        );
+        let iron = Good(4);
+        for _ in 0..3 {
+            d.next_chunk_epoch(a);
+        }
+        d.next_chunk_epoch(b);
+        for _ in 0..5 {
+            d.next_package(1, 7, iron);
+        }
+        d.next_package(1, 8, iron);
+        let mut back: District = from_bytes(&to_bytes(&d)).unwrap();
+        assert_eq!(back.chunk_epochs, d.chunk_epochs);
+        assert_eq!(back.packages_decided, d.packages_decided);
+        assert_eq!(
+            (
+                back.next_chunk_epoch(a),
+                back.next_chunk_epoch(b),
+                back.next_package(1, 7, iron),
+                back.next_package(1, 8, iron),
+            ),
+            (4, 2, 6, 2),
+            "each counter goes on from its last"
+        );
+    }
 }

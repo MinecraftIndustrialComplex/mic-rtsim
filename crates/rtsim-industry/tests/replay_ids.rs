@@ -1510,3 +1510,56 @@ fn a_package_written_live_is_never_written_again_by_the_replay() {
         "the packages the world wrote, against those the engine booked out of the mail pool: {what}"
     );
 }
+
+/// The package numbers go on across pages taken in the middle of the run (P2-b of the slice R
+/// re-check). Live, a postbox sample at 90 shows 8 packages' worth (room for 10) and the mill
+/// unloads at 100; the pages are taken at 20,000, after the first 6 packages, and the live run
+/// writes the other 4 by 40,000. A crash; the engine restored from those pages decides the 4 again
+/// at its session start: each must be the live run's package of its number, under the op the
+/// world holds. Restored without the numbers (mutation M2b), the replay's 4 are numbered 1 to 4:
+/// the window the pages hold knows the first 4's ops, so they take other ordinals, new ops, and
+/// the world writes 4 packages more than the engine booked (a make); past the window they would
+/// meet the first 4's ops instead (answered DUPLICATE: a loss).
+#[test]
+fn the_package_numbers_go_on_from_pages_taken_mid_run() {
+    let mut first = Step::new(20_000);
+    first.deferred = post_sweep(90, 2, 8 * 64);
+    first
+        .journaled
+        .push(load_state(100, LoadState::Unloaded, 0));
+    let second = Step::new(40_000);
+    let mut live = post_mill(9 * 64);
+    let mut before = Vec::new();
+    live_step(&mut live, &first, &mut before);
+    let pages = live.snapshot();
+    let mut after_live = Vec::new();
+    live_step(&mut live, &second, &mut after_live);
+    let mut replay = Engine::restore(pages, Tunables::default()).expect("the pages restore");
+    let mut after_replay = Vec::new();
+    replay_step(&mut replay, &second, &mut after_replay);
+    replay.session_start(Tick(second.g));
+    after_replay.extend(replay.drain_commands());
+    let (before, after_live, after_replay) = (
+        packages(&before),
+        packages(&after_live),
+        packages(&after_replay),
+    );
+    let what = format!(
+        "before the pages {before:x?}; live after them {after_live:x?}; replayed {after_replay:x?}"
+    );
+    assert_eq!(
+        (written(&before), written(&after_live)),
+        (6, 4),
+        "live: 6 packages before the pages, 4 after: {what}"
+    );
+    assert_eq!(
+        after_replay, after_live,
+        "the replay's packages are the live run's, op for op: {what}"
+    );
+    assert!(
+        after_replay
+            .iter()
+            .all(|p| !before.iter().any(|b| b.0 == p.0)),
+        "no package after the pages takes an op of one before them: {what}"
+    );
+}
