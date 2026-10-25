@@ -72,11 +72,29 @@ fn save_durable(e: &Engine, j: &mut Java) {
 /// Three villages with sea ports and a haven between them, reported by the plugin; the network is
 /// built at the next simulate point.
 fn coast(j: &mut Java) {
+    coast_in(j, false);
+}
+
+/// [`coast`], the haven reported before the ports when `haven_first`: the record that first puts
+/// the ships in the world is then the HAVEN_FOUND, whose pirates the engine allocates at once.
+fn coast_in(j: &mut Java, haven_first: bool) {
     for (v, structure, x, z) in VILLAGES {
         j.adopt(v, structure, "human", 90, x, z);
     }
     j.idle();
     let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    let haven = |j: &mut Java| {
+        j.ship_obs(&O::HavenFound(sb::HavenFound {
+            haven: HAVEN,
+            media: 1,
+            dimension: dim,
+            structure: 0,
+            dock: (200, 63, 200),
+        }));
+    };
+    if haven_first {
+        haven(j);
+    }
     for (v, _, x, z) in VILLAGES {
         j.ship_obs(&O::PortFound(sb::PortFound {
             village: v,
@@ -87,13 +105,9 @@ fn coast(j: &mut Java) {
             berths: 4,
         }));
     }
-    j.ship_obs(&O::HavenFound(sb::HavenFound {
-        haven: HAVEN,
-        media: 1,
-        dimension: dim,
-        structure: 0,
-        dock: (200, 63, 200),
-    }));
+    if !haven_first {
+        haven(j);
+    }
     j.idle();
     j.idle();
 }
@@ -719,6 +733,85 @@ fn an_epoch_named_while_the_ships_were_off_is_not_reused_once_they_are_on() {
     }
 }
 
+/// RP-122: the same for a latest-wins state record (`observe_state`, not journaled), which the
+/// plugin's first hand-over of the new session may carry while the replay runs: a SHIP_STATE
+/// names a body of the earlier session, whose epoch is spent whether or not the ships are on. The
+/// next body of the ship, once they are, is above it. Control: the ships on through the replay.
+#[test]
+fn an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused() {
+    for off in [false, true] {
+        let name = if off {
+            "ships-replay-state-off"
+        } else {
+            "ships-replay-state-on"
+        };
+        let (dir, e, mut j, mid) = scene(name, wire::MIN_CAPACITY, false);
+        stand(&mut j, mid);
+        j.run_until("a crewed merchant in view", |j| {
+            laden(j, &j.e.clone()).is_some()
+        });
+        let m = laden(&j, &e).expect("found");
+        let highest = materializations(&j)
+            .iter()
+            .filter(|n| n.agent == m.agent)
+            .map(|n| n.epoch)
+            .max()
+            .unwrap();
+        let named = highest + 5;
+        // A long journal behind the save: the replay spans several hand-overs, and the state
+        // record comes in the first.
+        fillers(&mut j, 4_000);
+        let gt = j.game_time;
+        let saved = j.crash();
+        drop(e);
+
+        let (e, mut j) = reopen(&dir, saved, gt, wire::MIN_CAPACITY);
+        if off {
+            j.module_mask = MODULES & !MODULE_SHIPS;
+        }
+        // The first hand-over opens the session and starts the replay.
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 0, "the replay runs past its first hand-over");
+        let mut b = Vec::new();
+        sb::encode_obs(
+            0,
+            j.game_time,
+            &O::State(sb::State {
+                agent: m.agent,
+                epoch: named,
+                flags: 0,
+                dimension: 0,
+                hull_milli: 1000,
+                crew: 3,
+                pos: (f64::from(mid.0), 63.0, f64::from(mid.1)),
+            }),
+            &mut b,
+        );
+        assert!(j.copy(&b), "room for the state record");
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 0, "the replay runs past its second hand-over");
+        let mut rounds = 0;
+        while replay_counts(&e).0 == 0 {
+            assert!(rounds < 64, "the replay never ended");
+            j.idle();
+            rounds += 1;
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        if off {
+            // The ships come on after the replay end.
+            j.modules(MODULES);
+            j.idle();
+            j.idle();
+        }
+        let next = e.with_ships(|s, _| s.next_epoch(Ship::id_of_agent(m.agent).unwrap()));
+        assert!(
+            next > named,
+            "ships off {off}: the next body is numbered {next}, and the state record spent {named}"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}
+
 /// The agent id of the first ship a found coast allocates (the haven's pirate), learned on a
 /// scratch engine.
 fn first_ships_agent() -> u64 {
@@ -788,24 +881,25 @@ fn an_epoch_named_before_the_ships_had_a_dock_is_not_reused() {
 }
 
 /// A session on pages that hold an empty ships engine (saved before any dock): the coast is
-/// found, the haven's pirate (handle 0, the replay's own) is materialized at epoch 3 between
-/// 4,000 fillers and 4,000 more, then a crash. With `switch` the ships are switched off and on
-/// again after the replay's first hand-over (a MODULES pair), which begins their replay again.
-/// Returns whether the pirate was ever seen embodied between hand-overs, and its (embodied,
-/// epoch) and next epoch after the replay end.
-fn pirate_on_empty_pages(switch: bool) -> (bool, (bool, u32), u32) {
-    let name = if switch {
-        "ships-replay-switch"
-    } else {
-        "ships-replay-empty-pages"
-    };
-    let dir = tmpdir(name);
+/// found (the haven first, or last), the haven's pirate (handle 0 when the haven is first, the
+/// replay's own either way) is materialized at epoch 3 between 4,000 fillers and 4,000 more, then
+/// a crash. With `switch` the ships are switched off and on again after the replay's first
+/// hand-over (a MODULES pair), which begins their replay again. Returns whether the pirate was
+/// ever seen embodied between hand-overs, and its (embodied, epoch) and next epoch after the
+/// replay end.
+fn pirate_on_empty_pages(switch: bool, haven_first: bool) -> (bool, (bool, u32), u32) {
+    let name = format!(
+        "ships-replay-{}-{}",
+        if switch { "switch" } else { "empty-pages" },
+        if haven_first { "haven-first" } else { "ports-first" }
+    );
+    let dir = tmpdir(&name);
     let e = engine(&dir, wire::MIN_CAPACITY);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.module_mask = MODULES;
     j.idle();
     save_durable(&e, &mut j);
-    coast(&mut j);
+    coast_in(&mut j, haven_first);
     let agent = e.with_ships(|s, _| Ship::agent(s.havens[0].ships[0]));
     let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
     fillers(&mut j, 4_000);
@@ -850,25 +944,37 @@ fn pirate_on_empty_pages(switch: bool) -> (bool, (bool, u32), u32) {
 }
 
 /// RP-120: the ships the engine holds when the session begins are the only ones a replayed record
-/// finds, and the first record that activates the engine (here the HAVEN_FOUND, whose pirate
-/// takes handle 0) is ingested before the replay begins. A SHIP_MATERIALIZED for that handle is a
-/// floor only: the pirate is never seen embodied, and its epoch is the floor at the replay end.
+/// finds, and the first record that activates the engine (with the haven first, the HAVEN_FOUND,
+/// whose pirate takes handle 0) is ingested before the replay begins. A SHIP_MATERIALIZED for
+/// that handle is a floor only: the pirate is never seen embodied, and its epoch is the floor at
+/// the replay end. With the ports first the engine is running before the haven's record and the
+/// replay begins in time on either code (the order the session that went on happened to take).
 /// The control (`a_replayed_materialization_is_honoured_on_the_pages_ship`) is the pages' ship,
 /// honoured.
 #[test]
 fn a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate() {
-    let (seen, end, next) = pirate_on_empty_pages(false);
-    assert!(!seen, "the replay's pirate was embodied by a record that named a live ship");
-    assert_eq!(end, (false, 3), "the floor folds at the replay end");
-    assert_eq!(next, 4);
+    for haven_first in [true, false] {
+        let (seen, end, next) = pirate_on_empty_pages(false, haven_first);
+        assert!(
+            !seen,
+            "haven first {haven_first}: the replay's pirate was embodied by a record that named a live ship"
+        );
+        assert_eq!(end, (false, 3), "haven first {haven_first}: the floor folds at the replay end");
+        assert_eq!(next, 4, "haven first {haven_first}");
+    }
 }
 
 /// RP-120: the switch off and on inside the replay (a MODULES pair) begins the ships' replay
 /// again, when the arena holds the replay's own ships too; the bound stays the session's.
 #[test]
 fn a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour() {
-    let (seen, end, next) = pirate_on_empty_pages(true);
-    assert!(!seen, "the replay's pirate was embodied by a record that named a live ship");
-    assert_eq!(end, (false, 3), "the floor folds at the replay end");
-    assert_eq!(next, 4);
+    for haven_first in [true, false] {
+        let (seen, end, next) = pirate_on_empty_pages(true, haven_first);
+        assert!(
+            !seen,
+            "haven first {haven_first}: the replay's pirate was embodied by a record that named a live ship"
+        );
+        assert_eq!(end, (false, 3), "haven first {haven_first}: the floor folds at the replay end");
+        assert_eq!(next, 4, "haven first {haven_first}");
+    }
 }
