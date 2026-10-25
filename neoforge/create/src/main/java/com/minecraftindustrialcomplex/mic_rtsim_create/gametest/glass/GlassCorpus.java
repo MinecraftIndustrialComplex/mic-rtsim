@@ -44,8 +44,8 @@ public final class GlassCorpus {
     }
 
     /**
-     * Builds the factory in a clean yard and marks every store as placed by a player (the I2 seed), so the
-     * factory becomes one district on the next detection. Call at the test's first tick.
+     * Builds the factory in a clean yard, marks every store as placed by a player (the I2 seed) and joins its
+     * chunks ({@link #join}), so the factory becomes one district on the next detection. Call at the test's first tick.
      */
     public static CorpusFactory.Built prepare(GameTestHelper helper, CorpusFactory f) {
         IndustryKit.fastConfig();
@@ -54,7 +54,20 @@ public final class GlassCorpus {
         for (BlockPos p : b.stores())
             IndustryKit.playerPlaced(helper, p);
         IndustryKit.playerPlaced(helper, b.anchor());
+        join(helper);
         return b;
+    }
+
+    /**
+     * Joins the chunks the build's industrial block entities stand in ({@link IndustryKit#joinChunks} over the
+     * yard), so a factory is one district wherever the yard's random position puts a chunk border: since slice
+     * S6 chunks side by side are one district only by a join (SECTIONS.md §2.1), and a factory's parts may meet
+     * across a border only by what joins nothing (the package loop's chain conveyor, two stores side by side, a
+     * gap between two lines). Returns the number of borders joined.
+     */
+    public static int join(GameTestHelper helper) {
+        return IndustryKit.joinChunks(helper, new BlockPos(0, 1, 0),
+                new BlockPos(GlassReplayGameTests.YARD_SIZE - 1, IndustryKit.JOIN_Y - 1, GlassReplayGameTests.YARD_SIZE - 1));
     }
 
     /**

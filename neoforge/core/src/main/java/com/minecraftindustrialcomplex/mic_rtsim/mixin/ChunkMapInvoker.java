@@ -1,9 +1,11 @@
 package com.minecraftindustrialcomplex.mic_rtsim.mixin;
 
+import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
 /**
@@ -24,4 +26,12 @@ public interface ChunkMapInvoker {
      */
     @Invoker("getUpdatingChunkIfPresent")
     ChunkHolder mic_rtsim$updating(long chunkPos);
+
+    /**
+     * {@code pendingUnloads} (private): the holders taken out of the chunk map whose chunk is not saved and
+     * unloaded yet. A chunk asked for again from here is put back from memory, not read from disk. Read by
+     * GameTests only ({@code ChunkWait.inMemory}).
+     */
+    @Accessor("pendingUnloads")
+    Long2ObjectLinkedOpenHashMap<ChunkHolder> mic_rtsim$pendingUnloads();
 }

@@ -12,6 +12,8 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -27,7 +29,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.
  * The district detection runs over several ticks (a block entity budget per tick, DECISIONS.md ST3): the
  * district set changes once, when the detection is done; an edit that arrives meanwhile is not lost; a chunk that
  * unloads meanwhile leaves its district whole. Each test sets a budget of 10 block entities a tick and fills its
- * chunks with 30 inert block entities each, so a chunk costs more than a tick's budget.
+ * chunks with 30 inert block entities each, so a chunk costs more than a tick's budget, and an inert block on each
+ * of its four borders, so that filled chunks side by side touch and are one district (J1, SECTIONS.md §2.1).
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -38,18 +41,47 @@ public final class RescanBudgetGameTests {
     private static final int BUDGET = 10;
     private static final int FILLER = 30;
 
-    /** A machine and {@code FILLER} inert block entities in the chunk whose corner is {@code (cx, cz)} chunks from the first whole chunk. */
+    /**
+     * Inert blocks on the four borders of a chunk, one each, at the same place in every chunk: two filled chunks side
+     * by side touch across their border (J1), so they are one district; diagonal ones join through a filled chunk
+     * beside both.
+     */
+    static final int[][] JOINERS = {{0, 6}, {15, 6}, {10, 0}, {10, 15}};
+
+    /**
+     * A machine, {@code FILLER} inert block entities and the {@link #JOINERS} in the chunk whose corner is
+     * {@code (cx, cz)} chunks from the first whole chunk.
+     */
     private static BlockPos fill(GameTestHelper helper, int cx, int cz, boolean machine) {
         BlockPos base = inChunk(helper, 0, 0);
         BlockPos origin = new BlockPos(base.getX() + 16 * cx, base.getY(), base.getZ() + 16 * cz);
         for (int i = 0; i < FILLER; i++)
             set(helper, origin.offset(2 + i % 6, 0, 8 + i / 6), TestMachines.INERT.get().defaultBlockState());
+        for (int[] j : JOINERS)
+            set(helper, origin.offset(j[0], 0, j[1]), TestMachines.INERT.get().defaultBlockState());
         BlockPos m = origin.offset(4, 0, 4);
         if (machine) {
             set(helper, m, TestMachines.MACHINE.get().defaultBlockState());
             playerPlaced(helper, m);
         }
         return m;
+    }
+
+    /**
+     * Clears the layers these tests build on over chunks {@code [cx0, cx1) x [cz0, cz1)} from the first whole chunk,
+     * and the blocks just outside them. The runner leaves the tests before in place and clears only a few blocks past
+     * a structure, but these chunks reach past the yard: rescan_budget_5's nine chunks reach about 30 blocks into the
+     * next yard, and what was left of them in rescan_budget_6's chunks touched one of their chunks across a border
+     * (J1), so the district grew past the four chunks the test filled whenever that chunk was still loaded. Called
+     * before {@code forgetAll}, which drops the edits this makes and the seeds of the chunks it loads.
+     */
+    private static void clearChunks(GameTestHelper helper, int cx0, int cz0, int cx1, int cz1) {
+        BlockPos base = inChunk(helper, 0, 0);
+        BlockState air = Blocks.AIR.defaultBlockState();
+        for (int y = 0; y < 5; y++)
+            for (int x = 16 * cx0 - 1; x <= 16 * cx1; x++)
+                for (int z = 16 * cz0 - 1; z <= 16 * cz1; z++)
+                    set(helper, base.offset(x, y, z), air);
     }
 
     private static void breakAndRemove(ServerLevel level, BlockPos pos) {
@@ -64,6 +96,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_1", timeoutTicks = 600)
     public static void aBigDetectionSpreadsOverTicksAndChangesTheSetOnce(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 2);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         int[] busyTicks = {0}, violations = {0};
@@ -105,6 +138,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_2", timeoutTicks = 800)
     public static void anEditDuringADetectionIsNotLost(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 5, 4);
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
         List<net.minecraft.world.level.ChunkPos> forced = new ArrayList<>();
@@ -166,6 +200,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_3", timeoutTicks = 1200)
     public static void aChunkThatUnloadsDuringADetectionKeepsItsDistrict(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 6, 0, 8, 1);
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
         List<net.minecraft.world.level.ChunkPos> forced = new ArrayList<>();
@@ -219,6 +254,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_4", timeoutTicks = 200)
     public static void rescanNowIgnoresTheBudget(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 1);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, 1);
         BlockPos[] ms = new BlockPos[2];
@@ -238,13 +274,15 @@ public final class RescanBudgetGameTests {
     }
 
     /**
-     * What spreading buys: a district of nine chunks with about 200 inert block entities each (1,800 in all),
+     * What spreading buys: a district of nine chunks with about 200 inert block entities each (1,800 in all, four of
+     * each chunk's on its borders, so the chunks touch),
      * detected in one call (the old way: one tick) and at the default budget. Logs both; passes when the
      * default budget's longest tick is under the one-call time (a figure for the report, not a timing gate).
      */
     @GameTest(template = YARD, batch = "rescan_budget_5", timeoutTicks = 1200)
     public static void aBigDetectionsLongestTickIsBelowTheOneCallTime(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 3, 3);
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
         long[] oneCall = new long[3];
@@ -258,6 +296,9 @@ public final class RescanBudgetGameTests {
                             for (int x = 1; x < 15; x++)
                                 for (int z = 1; z < 15; z++)
                                     set(helper, o.offset(x, 0, z), TestMachines.INERT.get().defaultBlockState());
+                            // One inert block on each border, so the nine chunks touch and are one district (J1).
+                            for (int[] j : new int[][] {{0, 7}, {15, 7}, {7, 0}, {7, 15}})
+                                set(helper, o.offset(j[0], 0, j[1]), TestMachines.INERT.get().defaultBlockState());
                             set(helper, o, TestMachines.MACHINE.get().defaultBlockState());
                             playerPlaced(helper, o);
                         }
@@ -340,6 +381,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_6", timeoutTicks = 800)
     public static void theRescanCommandSpreadsOverTicksAndReportsWhenDone(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 2);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         Sink sink = new Sink(helper.getLevel());
@@ -350,8 +392,12 @@ public final class RescanBudgetGameTests {
                     for (int i = 0; i < 4; i++)
                         ms[i] = fill(helper, i % 2, i / 2, true);
                 })
-                .thenWaitUntil(() -> check("the district of four chunks is settled",
-                        !ind().districts().rescanning() && districtAt(helper, ms[0]) != null && districtAt(helper, ms[0]).chunks.size() == 4))
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, ms[0]);
+                    boolean busy = ind().districts().rescanning();
+                    check("the district of four chunks is settled (detection under way: " + busy + ", district: "
+                            + (d == null ? "none" : d.chunks.size() + " chunks") + ")", !busy && d != null && d.chunks.size() == 4);
+                })
                 .thenExecute(() -> {
                     looked[0] = ind().districts().rescans();
                     command(helper, ms[0], sink, "rtsim district rescan");
@@ -385,6 +431,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_7", timeoutTicks = 800)
     public static void theMergeCommandJoinsTheDistrictsWhenTheDetectionIsDone(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 4, 1);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         Sink sink = new Sink(helper.getLevel()), refused = new Sink(helper.getLevel());
@@ -394,7 +441,7 @@ public final class RescanBudgetGameTests {
         helper.startSequence()
                 .thenExecute(() -> {
                     ms[0] = fill(helper, 0, 0, true);
-                    ms[1] = fill(helper, 3, 0, true); // two chunks between: no adjacency joins them
+                    ms[1] = fill(helper, 3, 0, true); // two chunks between: nothing joins them
                 })
                 .thenWaitUntil(() -> {
                     check("two districts, settled", !ind().districts().rescanning() && districtAt(helper, ms[0]) != null
@@ -433,6 +480,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_8", timeoutTicks = 800)
     public static void theSplitCommandDividesTheDistrictWhenTheDetectionIsDone(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 1);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         Sink sink = new Sink(helper.getLevel());
@@ -469,6 +517,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_9", timeoutTicks = 1200)
     public static void theExcludeAndIncludeCommandsActWhenTheDetectionIsDone(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 1);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         Sink sink = new Sink(helper.getLevel());
@@ -513,6 +562,7 @@ public final class RescanBudgetGameTests {
     @GameTest(template = YARD, batch = "rescan_budget_10", timeoutTicks = 800)
     public static void aSecondCommandDuringTheDetectionIsAnsweredWithTheFirst(GameTestHelper helper) {
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 2);
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         Sink first = new Sink(helper.getLevel()), second = new Sink(helper.getLevel());
@@ -559,6 +609,7 @@ public final class RescanBudgetGameTests {
     public static void aTickStopsAtTheTimeLimitAndDetectsTheSame(GameTestHelper helper) {
         String t = "aTickStopsAtTheTimeLimitAndDetectsTheSame";
         fastConfig();
+        clearChunks(helper, 0, 0, 2, 2);
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
         IndustryConfig.Test.set(IndustryConfig.RESCAN_SLICE_MICROS, 1);

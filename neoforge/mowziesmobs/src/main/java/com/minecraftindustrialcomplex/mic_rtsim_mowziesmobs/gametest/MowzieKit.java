@@ -15,6 +15,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
@@ -201,6 +202,8 @@ public final class MowzieKit {
         /** The base block and its chunk. */
         public final int bx, bz, k, z0;
         private final Set<Long> forced = new LinkedHashSet<>();
+        /** When the last force that changed a chunk began, and how long that call held the server thread. */
+        private long forcedAt = System.nanoTime(), forceNanos;
 
         public Far(GameTestHelper helper, String test) {
             level = helper.getLevel();
@@ -225,16 +228,37 @@ public final class MowzieKit {
             level.getServer().setDifficulty(d, true);
         }
 
+        /**
+         * Forces the chunk. Vanilla's {@code setChunkForced} loads a chunk it forces with a synchronous
+         * {@code getChunk} on the server thread: a fresh far chunk is generated there, seconds under load.
+         */
         public void force(int cx, int cz) {
-            if (ConflictKit.force(level, cx, cz, true))
-                forced.add(ChunkPos.asLong(cx, cz));
+            long t = System.nanoTime();
+            if (forceOne(cx, cz))
+                forced(t);
         }
 
         /** Forces every chunk of the rectangle, both ends included. */
         public void forceRect(int cx0, int cz0, int cx1, int cz1) {
+            long t = System.nanoTime();
+            boolean changed = false;
             for (int cx = cx0; cx <= cx1; cx++)
                 for (int cz = cz0; cz <= cz1; cz++)
-                    force(cx, cz);
+                    changed |= forceOne(cx, cz);
+            if (changed)
+                forced(t);
+        }
+
+        private boolean forceOne(int cx, int cz) {
+            if (!ConflictKit.force(level, cx, cz, true))
+                return false;
+            forced.add(ChunkPos.asLong(cx, cz));
+            return true;
+        }
+
+        private void forced(long t) {
+            forcedAt = t;
+            forceNanos = System.nanoTime() - t;
         }
 
         public void release(int cx, int cz) {
@@ -254,22 +278,35 @@ public final class MowzieKit {
             forced.clear();
         }
 
-        /** Inside {@code thenWaitUntil}: every chunk this place has forced is loaded, has its entities in, and ticks them. */
+        /**
+         * Inside {@code thenWaitUntil(waits.chunks(...))}: every chunk this place has forced is loaded, has its
+         * entities in, and ticks them. Generation and the entity read are real work on other threads, so the wait
+         * is a {@code ChunkWait.chunks} one, bounded by wall-clock time: a tick bound ran out under load with the
+         * entities still being read. "chunk" is {@code getChunkNow}, a level chunk in memory: {@code level.hasChunk}
+         * reads only the ticket level, true before the chunk is generated.
+         */
         public Runnable ready() {
             return RtsimTests.io(() -> {
                 for (long c : forced) {
                     int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-                    boolean chunk = level.hasChunk(cx, cz), entities = level.areEntitiesLoaded(c);
+                    boolean chunk = level.getChunkSource().getChunkNow(cx, cz) != null, entities = level.areEntitiesLoaded(c);
                     boolean ticking = chunk && entities && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8));
-                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking (chunk " + chunk + ", entities " + entities
-                            + ", ticking " + ticking + ")", ticking);
+                    check(String.format("chunk (%d, %d) is loaded with its entities, ticking (chunk %b, entities %b, ticking %b;"
+                            + " %.1f s since the force, which held the server thread %.1f s)", cx, cz, chunk, entities, ticking,
+                            (System.nanoTime() - forcedAt) / 1e9, forceNanos / 1e9), ticking);
                 }
             });
         }
 
-        /** Inside {@code thenWaitUntil}: the chunk is out of memory. */
+        /**
+         * Inside {@code thenWaitUntil(waits.chunks(...))}: the chunk is out of memory, saved and dropped
+         * ({@link ChunkWait#inMemory}; {@code level.hasChunk} is false while it is still held below FULL).
+         */
         public Runnable unloaded(int cx, int cz) {
-            return RtsimTests.io(() -> check("chunk (" + cx + ", " + cz + ") is unloaded", !level.hasChunk(cx, cz)));
+            return RtsimTests.io(() -> {
+                String in = ChunkWait.inMemory(level, cx, cz);
+                check("chunk (" + cx + ", " + cz + ") is out of memory (still " + in + ")", in.isEmpty());
+            });
         }
     }
 

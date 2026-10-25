@@ -73,7 +73,6 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.abou
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.bridge;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.party;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
-import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -143,10 +142,11 @@ public final class ConflictGameTests {
      * {@link ConflictBridge#REQUEUE_COOLDOWN} ticks. A recall reports every living member, placed or
      * pending, as a survivor. Chunks an earlier failed run left forced in the far area are released first.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "conflict_stacks")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_stacks")
     public static void aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange(GameTestHelper helper) {
         String test = "aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange";
         ServerLevel level = helper.getLevel();
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String dim = RtsimTests.dimension(helper);
         int[] base = ConflictKit.farBase();
         int bx = base[0], bz = base[1];
@@ -183,7 +183,7 @@ public final class ConflictGameTests {
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.materialize(band, List.of(
                         new ConflictKit.StackSpec(WARRIOR, 4, false), new ConflictKit.StackSpec(ARCHER, 4, false))))
-                .thenWaitUntil(() -> check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received m = about(ConflictRecords.BAND_MATERIALIZED, agent).get(0);
                     check("none placed now (" + m.aux() + ")", m.aux() == 0);
@@ -209,14 +209,14 @@ public final class ConflictGameTests {
                     arrive[0] = level.getGameTime() + 100;
                     ConflictKit.steer(agent, 1, 0.8f, bx + 0.5, bz + 16, arrive[0], false);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     long now = level.getGameTime();
                     check("arrived", now > arrive[0] && bridge().steered > 0);
                     for (int i = 0; i < 2; i++) {
                         Set<Long> want = Set.of(chunk(k - 1, z0 + i), chunk(k, z0 + i));
                         check("stack " + i + " in " + chunks(want), st[i].chunksNow(now).equals(want));
                     }
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         int dm = st[i].moves() - moves[i], dt = st[i].tests() - tests[i];
@@ -229,14 +229,15 @@ public final class ConflictGameTests {
                     force.accept(k, z0);
                     force.accept(k, z0 + 1);
                 })
-                .thenWaitUntil(io(() -> check("chunk k ticks entities in both rows",
-                        RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 8))
-                                && RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 24)))))
-                .thenWaitUntil(io(() -> check("chunks k - 1 are loaded", level.hasChunk(k - 1, z0) && level.hasChunk(k - 1, z0 + 1))))
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.chunks(() -> {
+                    check("chunk k ticks entities in both rows", RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 8))
+                            && RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 24)));
+                    check("chunks k - 1 are loaded", level.hasChunk(k - 1, z0) && level.hasChunk(k - 1, z0 + 1));
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < 2; i++)
                         check("stack " + i + " tested on its chunk's change", st[i].tests() == tests[i] + 1);
-                })
+                }))
                 .thenIdle(10)
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
@@ -248,7 +249,9 @@ public final class ConflictGameTests {
                     platform(level, bx - 4, bx + 3, bz + 11, bz + 21);
                     force.accept(k - 1, z0);
                 })
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(() -> check("chunk (k - 1, z0) ticks entities",
+                        RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 8)))))
+                .thenWaitUntil(waits.logic(() -> {
                     check("stack 0 placed", st[0].state() == ConflictBridge.StackState.PLACED && st[0].bodies().size() == 4);
                     pin(st[0]);
                 }))
@@ -260,7 +263,9 @@ public final class ConflictGameTests {
                         check("a warrior is a vindicator", m.getType() == EntityType.VINDICATOR && RtsimApi.isPuppet(m));
                     force.accept(k - 1, z0 + 1);
                 })
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(() -> check("chunk (k - 1, z0 + 1) ticks entities",
+                        RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 24)))))
+                .thenWaitUntil(waits.logic(() -> {
                     check("stack 1 placed", st[1].state() == ConflictBridge.StackState.PLACED && st[1].bodies().size() == 4);
                     pin(st[1]);
                 }))
@@ -276,7 +281,7 @@ public final class ConflictGameTests {
                     out[0] = st[0].bodies().get(0);
                     out[0].moveTo(bx - 19.5, out[0].getY(), out[0].getZ());
                 })
-                .thenWaitUntil(() -> check("the stray moved back", bridge().strays > strays[0]))
+                .thenWaitUntil(waits.logic(() -> check("the stray moved back", bridge().strays > strays[0])))
                 .thenExecute(() -> {
                     record(test, "stray", "moved back to (" + out[0].getX() + ", " + out[0].getZ() + ")");
                     check("once (" + (bridge().strays - strays[0]) + ")", bridge().strays == strays[0] + 1);
@@ -289,7 +294,7 @@ public final class ConflictGameTests {
                     ConflictKit.force(level, k - 1, z0 + 1, false);
                     forced.remove(chunk(k - 1, z0 + 1));
                 })
-                .thenWaitUntil(io(() -> check("stack 1 pending again", st[1].state() == ConflictBridge.StackState.PENDING)))
+                .thenWaitUntil(waits.chunks(() -> check("stack 1 pending again", st[1].state() == ConflictBridge.StackState.PENDING)))
                 .thenExecute(() -> {
                     pendingAt[0] = level.getGameTime();
                     check("requeued once", bridge().requeued == requeued[0] + 1);
@@ -298,11 +303,12 @@ public final class ConflictGameTests {
                     // The chunk ticks again at once; the stack waits out its cooldown.
                     force.accept(k - 1, z0 + 1);
                 })
-                .thenWaitUntil(io(() -> check("its chunk ticks again", RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 24)))))
-                .thenIdle(ConflictBridge.REQUEUE_COOLDOWN / 2)
-                .thenExecute(() -> check("not back within the cooldown", st[1].state() == ConflictBridge.StackState.PENDING
-                        && st[1].placings() == 1))
-                .thenWaitUntil(() -> check("stack 1 placed again", st[1].state() == ConflictBridge.StackState.PLACED))
+                .thenWaitUntil(waits.chunks(() -> check("its chunk ticks again", RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 24)))))
+                // Half the cooldown after it went, however long the chunk took in ticks.
+                .thenWaitUntil(waits.logic(() -> check("half the cooldown passed", level.getGameTime() >= pendingAt[0] + ConflictBridge.REQUEUE_COOLDOWN / 2)))
+                .thenExecute(() -> check("not back within the cooldown (" + (level.getGameTime() - pendingAt[0]) + " ticks)",
+                        st[1].state() == ConflictBridge.StackState.PENDING && st[1].placings() == 1))
+                .thenWaitUntil(waits.logic(() -> check("stack 1 placed again", st[1].state() == ConflictBridge.StackState.PLACED)))
                 .thenExecute(() -> {
                     long after = level.getGameTime() - pendingAt[0];
                     pin(st[1]);
@@ -311,7 +317,7 @@ public final class ConflictGameTests {
                     check("placed twice, all of it", st[1].placings() == 2 && st[1].bodies().size() == 4);
                     ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 0, bx - 200, bz + 16);
                 })
-                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = about(ConflictRecords.BAND_DEMATERIALIZED, agent).get(0);
                     Map<String, Integer> s = ConflictKit.survivors(d);
@@ -1164,6 +1170,9 @@ public final class ConflictGameTests {
      * (MZB-118), here two. The territory command adds and removes the faction's circle. The restart half
      * (the engine resends a kept notice at session start) is M1's rtsim-jni test: the GameTest server
      * has one bridge session, and the resent notice is the same FACTION_NOTICE this test sends (MZB-129).
+     * The waits on what crosses the boundary are paced ({@link RtsimTests#io}): the engine's steps run on its
+     * own thread while the server ticks on without waiting for them, and NOTICE_SHOWN, journaled at the play,
+     * is in the engine's received records only after its next step.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_notice", skyAccess = true)
     public static void aNoticeWaitsForThePlayersNextEntryAcrossALogout(GameTestHelper helper) {
@@ -1184,15 +1193,16 @@ public final class ConflictGameTests {
         });
         int serial = 0x5E41_0019;
         long[] played = {0}, posted = {0}, hearers = {0};
+        long[] atPlay = new long[3]; // the step after the play: game time, nanoTime, NOTICE_SHOWN records received then
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.territory(faction, dim, (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING), tx, tz, 100))
-                .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction) != null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory", bridge().territories().get(faction) != null)))
                 .thenExecute(() -> {
                     played[0] = bridge().noticesPlayed;
                     posted[0] = ConflictNews.posted();
                     ConflictKit.notice(faction, player.getUUID(), dim, ConflictRecords.SIGNAL_MINING, tx, tz, 12f, 3, serial);
                 })
-                .thenWaitUntil(() -> check("kept", bridge().noticesKept() >= 1))
+                .thenWaitUntil(RtsimTests.io(() -> check("kept", bridge().noticesKept() >= 1)))
                 .thenIdle(ConflictBridge.NOTICE_CHECK * 3)
                 .thenExecute(() -> {
                     check("not played while the player is away", bridge().noticesPlayed == played[0] && bridge().noticesKept() >= 1);
@@ -1212,12 +1222,19 @@ public final class ConflictGameTests {
                 .thenExecute(() -> {
                     check("forgotten once played", bridge().noticesKept() == 0);
                     check("the news hook reached (MZB-101: it sends nothing)", ConflictNews.posted() > posted[0]);
+                    atPlay[0] = level.getGameTime();
+                    atPlay[1] = System.nanoTime();
+                    atPlay[2] = noticesShown(faction).size();
+                })
+                .thenWaitUntil(RtsimTests.io(() -> check("NOTICE_SHOWN reached the engine", !ConflictBridge.m1Records() || !noticesShown(faction).isEmpty())))
+                .thenExecute(() -> {
                     if (ConflictBridge.m1Records()) {
-                        List<ScriptedEngine.Received> shown = new ArrayList<>();
-                        for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.NOTICE_SHOWN))
-                            if (r.view().getLong(ConflictRecords.NoticeShown.FACTION) == faction)
-                                shown.add(r);
-                        check("NOTICE_SHOWN with the notice's serial", shown.size() == 1 && shown.get(0).aux() == serial
+                        record(test, "NOTICE_SHOWN", atPlay[2] + " received in the step after the play; " + noticesShown(faction).size() + " after "
+                                + (level.getGameTime() - atPlay[0]) + " ticks, " + (System.nanoTime() - atPlay[1]) / 1_000_000 + " ms");
+                        List<ScriptedEngine.Received> shown = noticesShown(faction);
+                        check("NOTICE_SHOWN with the notice's serial: " + shown.size() + " record(s), serials "
+                                        + shown.stream().map(r -> Integer.toHexString(r.aux())).toList(),
+                                shown.size() == 1 && shown.get(0).aux() == serial
                                 && player.getUUID().equals(ConflictKit.uuidAt(shown.get(0), ConflictRecords.NoticeShown.PLAYER_MOST)));
                     }
                     // To the settlers: every player in range, here two.
@@ -1225,7 +1242,7 @@ public final class ConflictGameTests {
                     hearers[0] = bridge().noticeHearers;
                     ConflictKit.notice(faction, null, dim, ConflictRecords.SIGNAL_KILLING, tx, tz, 20f, 1, serial + 1);
                 })
-                .thenWaitUntil(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0))
+                .thenWaitUntil(RtsimTests.io(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0)))
                 .thenExecute(() -> {
                     long heard = bridge().noticeHearers - hearers[0];
                     record(test, "notices", "kept while away, played on entry; the settlers' to " + heard + " players in range");
@@ -1234,8 +1251,17 @@ public final class ConflictGameTests {
                     FakePlayers.remove(second[0]);
                     ConflictKit.territoryRemoved(faction, dim);
                 })
-                .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction) == null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory removed", bridge().territories().get(faction) == null)))
                 .thenSucceed();
+    }
+
+    /** The engine's NOTICE_SHOWN records of one faction. */
+    private static List<ScriptedEngine.Received> noticesShown(long faction) {
+        List<ScriptedEngine.Received> shown = new ArrayList<>();
+        for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.NOTICE_SHOWN))
+            if (r.view().getLong(ConflictRecords.NoticeShown.FACTION) == faction)
+                shown.add(r);
+        return shown;
     }
 
     // ---- territory signals and camps --------------------------------------------------------------
@@ -1249,7 +1275,8 @@ public final class ConflictGameTests {
      * with the faction); each kind is one TERRITORY_SIGNAL a batch, its count summed, after
      * {@link ConflictBridge#SIGNAL_FLUSH} ticks. A signal the territory does not mind, a block outside it
      * and a kill of a body that is no kin count nothing. {@code reportCamp} sends FACTION_FOUND with the
-     * structure and the census.
+     * structure and the census. The waits on what crosses the boundary are paced ({@link RtsimTests#io}):
+     * the engine's steps run on its own thread while the server ticks on without waiting for them.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 800, batch = "conflict_signals", skyAccess = true)
     public static void signalsInsideATerritoryAreCountedAndBatched(GameTestHelper helper) {
@@ -1270,7 +1297,7 @@ public final class ConflictGameTests {
                             e -> e.getTags().contains(kinTag), null, false, 7, ConflictRecords.FactionFound.CENSUS_CHIEF);
                     check("a faction key", faction[0] != 0 && bridge().hasCamp(faction[0]));
                 })
-                .thenWaitUntil(() -> check("FACTION_FOUND", !ConflictKit.factionsFound(faction[0]).isEmpty()))
+                .thenWaitUntil(RtsimTests.io(() -> check("FACTION_FOUND", !ConflictKit.factionsFound(faction[0]).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received f = ConflictKit.factionsFound(faction[0]).get(0);
                     check("the structure", f.view().getInt(ConflictRecords.FactionFound.STRUCTURE)
@@ -1284,7 +1311,7 @@ public final class ConflictGameTests {
                     int mask = (1 << ConflictRecords.SIGNAL_LOGGING) | (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING);
                     ConflictKit.territory(faction[0], dim, mask, camp.getX(), camp.getZ(), 64);
                 })
-                .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction[0]) != null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory", bridge().territories().get(faction[0]) != null)))
                 .thenExecute(() -> {
                     counted[0] = bridge().signalsCounted;
                     level.setBlock(log, Blocks.OAK_LOG.defaultBlockState(), 3);
@@ -1314,9 +1341,9 @@ public final class ConflictGameTests {
                 })
                 .thenIdle(ConflictBridge.SIGNAL_FLUSH / 2)
                 .thenExecute(() -> check("batched: nothing journaled yet", ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()))
-                .thenWaitUntil(() -> check("journaled", !ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()
+                .thenWaitUntil(RtsimTests.io(() -> check("journaled", !ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()
                         && !ConflictKit.signals(ConflictRecords.SIGNAL_MINING, player.getUUID()).isEmpty()
-                        && !ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player.getUUID()).isEmpty()))
+                        && !ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player.getUUID()).isEmpty())))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> logs = ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID());
                     check("one logging record of 2", logs.size() == 1 && logs.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == 2);
@@ -1333,7 +1360,7 @@ public final class ConflictGameTests {
                     FakePlayers.remove(player);
                     ConflictKit.territoryRemoved(faction[0], dim);
                 })
-                .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction[0]) == null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory removed", bridge().territories().get(faction[0]) == null)))
                 .thenSucceed();
     }
 
@@ -1363,7 +1390,7 @@ public final class ConflictGameTests {
      * are released first, and this run's are released however it ends. Skipped on the stub, which decides
      * nothing.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = "conflict_feud")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_feud")
     public static void aPlayersKillingsClimbTheLadderFromNoticeToARaid(GameTestHelper helper) {
         String test = "aPlayersKillingsClimbTheLadderFromNoticeToARaid";
         if (!(RtsimTests.engine() instanceof NativeEngine e)) {
@@ -1372,6 +1399,7 @@ public final class ConflictGameTests {
             return;
         }
         ServerLevel level = helper.getLevel();
+        ChunkWait waits = ChunkWait.of(helper, 6000);
         int released = ConflictKit.releaseFarChunks(level);
         int[] base = ConflictKit.farBase();
         int bx = base[0] + 8, bz = base[1] + 8; // the camp; the player 40 blocks east
@@ -1438,7 +1466,7 @@ public final class ConflictGameTests {
         });
 
         helper.startSequence()
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(() -> {
                     for (int cx = (bx - 32) >> 4; cx <= (px + 32) >> 4; cx++)
                         for (int cz = (bz - 32) >> 4; cz <= (bz + 32) >> 4; cz++)
                             check("the forced chunks tick entities", RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8)));
@@ -1453,7 +1481,7 @@ public final class ConflictGameTests {
                     if (gap > 0)
                         e.phase1Advance(gap);
                 })
-                .thenWaitUntil(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[2]))
+                .thenWaitUntil(waits.logic(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[2])))
                 .thenExecute(() -> {
                     int py = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, px, bz);
                     player[0] = FakePlayers.add(level, new Vec3(px + 0.5, py, bz + 0.5), "conflict_feud");
@@ -1466,10 +1494,10 @@ public final class ConflictGameTests {
                     record(test, "camp", "(" + bx + ", " + bz + "), the player at (" + px + ", " + bz + "), " + boxChunks
                             + " chunks forced, " + released + " an earlier run left forced released");
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     check("TERRITORY from the engine", bridge().territories().get(faction[0]) != null);
-                })
+                }))
                 .thenExecute(() -> {
                     Territories.Territory t = bridge().territories().get(faction[0]);
                     record(test, "territory", "radius " + t.radius() + ", minds " + Integer.toBinaryString(t.mask()));
@@ -1487,17 +1515,17 @@ public final class ConflictGameTests {
                     }
                     check("each kill counted (" + (bridge().signalsCounted - mark[0]) + ")", bridge().signalsCounted == mark[0] + kills);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     List<ScriptedEngine.Received> rs = ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player[0].getUUID());
                     check("one TERRITORY_SIGNAL of " + kills, rs.size() == 1 && rs.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == kills
                             && rs.get(0).view().getLong(ConflictRecords.TerritorySignal.FACTION) == faction[0]);
-                })
-                .thenWaitUntil(() -> {
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     check("FACTION_NOTICE played to the player", bridge().noticesPlayed > mark[1]);
-                })
-                .thenWaitUntil(() -> {
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     if (partyOf(faction[0], 0) != null)
                         return;
@@ -1507,13 +1535,13 @@ public final class ConflictGameTests {
                             + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] < 80);
                     advance.run();
                     check("the envoy comes", false);
-                })
-                .thenWaitUntil(() -> {
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     envoy[0] = partyOf(faction[0], 0);
                     check("the envoy party is still here", envoy[0] != null);
                     check("placed", envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
-                })
+                }))
                 .thenExecute(() -> {
                     record(test, "envoy after", asks[1] + " steps of " + step + " ticks, world tick "
                             + e.phase1Stats()[NativeEngine.P1_WORLD_TICK]);
@@ -1542,18 +1570,18 @@ public final class ConflictGameTests {
                     emissary.hurt(level.damageSources().playerAttack(pl), 1f);
                     check("struck", bridge().answers == answered + 1 && !envoy[0].guarded());
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     check("ENVOY_ANSWER 3 journaled", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_ATTACKED) == 1);
                     check("DEMAND_SETTLED", bridge().settledCommands > mark[2]);
-                })
+                }))
                 .thenExecute(() -> {
                     check("no ENVOY_ANSWER 2", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_REFUSED) == 0);
                     check("settled as refused (" + bridge().lastSettled + ")", bridge().lastSettled == ConflictRecords.SETTLED_REFUSED);
                     asks[0] = 0;
                     mark[3] = asks[1];
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     if (partyOf(faction[0], ConflictRecords.PURPOSE_SCOUTS) != null)
                         scouts[0] = true;
@@ -1563,14 +1591,14 @@ public final class ConflictGameTests {
                             + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] - mark[3] < 160);
                     advance.run();
                     check("the raid comes", false);
-                })
-                .thenWaitUntil(() -> {
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     keep.run();
                     raid[0] = partyOf(faction[0], ConflictRecords.PURPOSE_RAID);
                     check("the raid is still here", raid[0] != null);
                     for (ConflictBridge.Stack s : raid[0].stacks())
                         check("every stack placed", s.state() == ConflictBridge.StackState.PLACED);
-                })
+                }))
                 .thenExecute(() -> {
                     ConflictBridge.Party r = raid[0];
                     int bodies = 0;
