@@ -204,6 +204,7 @@ public final class GlassGraphCommand {
             pos(w, BlockPos.of(dm.network));
             w.name("current").value(dm.current == GraphBuilder.NONE ? -1 : dm.current);
             w.name("flags").value(dm.flags);
+            w.name("shared").value((dm.flags & GlassRecords.Domain.SHARED) != 0);
             w.name("liveStress").value(dm.liveStress);
             w.name("liveCapacity").value(dm.liveCapacity);
             w.name("levels").beginArray();
@@ -227,15 +228,25 @@ public final class GlassGraphCommand {
                 w.endObject();
             }
             w.endArray();
-            w.name("members").beginArray();
-            for (GraphBuilder.Member m : dm.members)
-                w.beginObject().name("node").value(m.node() == GraphBuilder.NONE ? -1 : m.node()).name("count").value(m.count())
-                        .name("ratio").value(m.ratio().toString()).name("impact").value(m.impact()).endObject();
+            members(w, "members", dm.members);
+            // A shared part's tail (members in no district's chunks) and its peers (the other districts on the network).
+            members(w, "tail", dm.tail);
+            w.name("peers").beginArray();
+            for (int i = 0; i < dm.peers.size(); i++)
+                w.value(dm.peers.getLong(i));
             w.endArray();
             w.endObject();
         }
         w.endArray();
         w.endObject();
+    }
+
+    private static void members(JsonWriter w, String key, java.util.List<GraphBuilder.Member> list) throws IOException {
+        w.name(key).beginArray();
+        for (GraphBuilder.Member m : list)
+            w.beginObject().name("node").value(m.node() == GraphBuilder.NONE ? -1 : m.node()).name("count").value(m.count())
+                    .name("ratio").value(m.ratio().toString()).name("impact").value(m.impact()).endObject();
+        w.endArray();
     }
 
     private static void level(JsonWriter w, GraphBuilder.Level l) throws IOException {

@@ -401,7 +401,19 @@ pub struct Engine {
     /// in its saved state. Not saved: a restore asks again.
     draws_asked: BTreeSet<crate::obs::HeldKey>,
     removes_asked: BTreeSet<crate::obs::HeldKey>,
+    /// Shared kinetic networks (SEC-1 S5-2) whose owners' rows changed since the last drain, by
+    /// registry index ([`Engine::drain_networks`]). Not saved: a restore marks every network.
+    net_dirty: BTreeSet<usize>,
+    /// Per part: the rows its sources give the rest of its network as of the last look
+    /// ([`Engine::net_touch`]). Not saved: refilled on every registry rebuild.
+    net_rows: BTreeMap<crate::glass::net::PartId, Vec<Option<u32>>>,
+    /// A drain is running (a replay step inside it marks networks for its next round).
+    draining: bool,
 }
+
+/// The rounds a drain of the shared networks gives the replays reading them to settle at one tick
+/// (SEC-1 S5-2): past it, a replay whose input still changes falls back as oscillating.
+const NET_ROUNDS: usize = 8;
 
 /// One save's industry pages ([`Engine::save_changed`], ID2): the globals page and every page
 /// changed since the save before, and the pages of districts and clusters gone since then.
@@ -525,6 +537,9 @@ impl Engine {
             chain_limit_logged: BTreeSet::new(),
             draws_asked: BTreeSet::new(),
             removes_asked: BTreeSet::new(),
+            net_dirty: BTreeSet::new(),
+            net_rows: BTreeMap::new(),
+            draining: false,
         }
     }
 
@@ -764,6 +779,7 @@ impl Engine {
     pub fn advance_to(&mut self, to: Tick) {
         let now = self.now;
         self.flush_dirty(now);
+        self.drain_networks(now);
         self.fire_until(to);
     }
 
@@ -779,6 +795,8 @@ impl Engine {
             while let Some((at, h)) = self.clusters.next_due(limit) {
                 self.stats.breakpoints += 1;
                 self.after_cluster(h, at);
+                // A part's new rows reach the replays on its shared networks at the same tick.
+                self.drain_networks(at);
             }
             match next {
                 Some(t) => {
@@ -798,6 +816,7 @@ impl Engine {
                     // A wake can change coverage; it settles at its own tick.
                     let now = self.now;
                     self.flush_dirty(now);
+                    self.drain_networks(now);
                 }
                 None => break,
             }
@@ -807,11 +826,19 @@ impl Engine {
 
     /// Handles one observation.
     pub fn ingest(&mut self, t: &Timed) {
+        self.ingest_obs(t);
+        // What it changed on a shared network reaches the replays reading it now (SEC-1 S5-2).
+        let now = self.now;
+        self.drain_networks(now);
+    }
+
+    fn ingest_obs(&mut self, t: &Timed) {
         let at = t.at.max(self.now);
         // Coverage changed by this tick's records settles before the next tick's (I7).
         if at > self.now {
             let now = self.now;
             self.flush_dirty(now);
+            self.drain_networks(now);
         }
         self.fire_until(at);
         self.stats.observations += 1;
@@ -847,7 +874,11 @@ impl Engine {
                 buf.records += 1;
                 buf.deposits.push(s.clone());
             }
-            Obs::SweepEnd(e) => self.sweep_end(at, e),
+            Obs::SweepEnd(e) => {
+                self.sweep_end(at, e);
+                // Its check solve may give its shared networks other rows.
+                self.net_touch(e.district);
+            }
             Obs::Approach {
                 district,
                 distance,
@@ -878,6 +909,10 @@ impl Engine {
             Obs::District(decl) => {
                 // A new revision clears the chunks; the dimension may change.
                 self.districts_rev = next_districts_rev();
+                let placed = self
+                    .districts
+                    .get(&decl.district)
+                    .is_none_or(|d| d.dim != decl.dim);
                 let dist = self
                     .districts
                     .get_or_insert_with(decl.district, || District::new(decl.district));
@@ -939,6 +974,17 @@ impl Engine {
                             .event(kinds::INDUSTRY_UNLEARNABLE, p, id, 0, i64::from(code));
                     }
                 }
+                // The registry joins parts by dimension: a compiled district placed in one now
+                // (new, or moved) has its parts joined as a restore would join them.
+                if placed
+                    && self
+                        .glass
+                        .districts
+                        .get(&decl.district)
+                        .is_some_and(|g| g.compiled.is_some())
+                {
+                    self.rebuild_nets(at, false);
+                }
             }
             Obs::DistrictChunks {
                 district,
@@ -989,6 +1035,7 @@ impl Engine {
                     self.schedule_drawn_stores(*district, at);
                 }
                 self.glass.remove(*district);
+                self.rebuild_nets(at, false);
             }
             Obs::Edit {
                 district,
@@ -1277,6 +1324,10 @@ impl Engine {
         if matches!(g, GlassObs::End(_) | GlassObs::ChunkTicking(_)) {
             self.mark(g.district());
         }
+        // A compile accepted or dropped changes the district's parts of shared networks.
+        if matches!(g, GlassObs::End(_)) {
+            self.rebuild_nets(at, false);
+        }
     }
 
     fn sweep_end(&mut self, at: Tick, e: &crate::obs::SweepEnd) {
@@ -1495,6 +1546,8 @@ impl Engine {
         }
         // Live or not, its power sinks follow it (F21).
         self.refresh_power(d, at);
+        // and the rows its shared networks' parts give the rest (choice SC152).
+        self.net_touch(d);
     }
 
     /// The district's coverage changed this tick: brought up to date once the tick's records are
@@ -1508,6 +1561,9 @@ impl Engine {
     fn flush_dirty(&mut self, at: Tick) {
         while let Some(d) = self.dirty.pop_first() {
             self.sync_coverage(d, at);
+            // Its replay decided (glass, the black box or frozen), the rows its shared networks'
+            // parts give the rest follow it (choice SC152; `sim_rows` gave the last ones till now).
+            self.net_touch(d);
         }
     }
 
@@ -1831,6 +1887,7 @@ impl Engine {
         dist.made_total.merge(&minted);
         dist.made_total.subtract(&burned);
         self.schedule_drawn_by(d, at);
+        self.net_touch(d);
         Some((span, out.pools))
     }
 
@@ -2497,6 +2554,7 @@ impl Engine {
             contents: BTreeMap::new(),
             owed: dist.owed.clone(),
             live_decls: BTreeMap::new(),
+            net: self.sim_net(d),
         };
         let mut base = GoodVec::new();
         for inv in dist.inventories.values().filter(|i| !i.destroyed) {
@@ -2589,6 +2647,7 @@ impl Engine {
                 self.glass_step(h, d, Some((id, w)), at);
             }
         }
+        self.net_touch(d);
     }
 
     /// The glass replay of `d` at a breakpoint of its part `why.0` (`why.1`), or after an outside
@@ -2642,6 +2701,7 @@ impl Engine {
                 self.after_cluster(h, at);
             }
         }
+        self.net_touch(d);
     }
 
     /// The glass replay cannot go on (§4.5): what it did is carried, and the district replays by
@@ -2658,6 +2718,231 @@ impl Engine {
         self.glass.stats.fallbacks += 1;
         self.note(d, at, format!("glass replay falls back: {}", f.words()));
         self.sync_coverage(d, at);
+    }
+
+    // ---- shared kinetic networks (SEC-1 S5-2, SECTIONS.md §2.6) -------------------------------
+
+    /// The rows part `id`'s sources give the rest of its network as the engine runs the district
+    /// (the sim view): its glass replay's published rows while it replays on glass; its check
+    /// solve's while any of it runs in the world; otherwise (frozen, gated, on the black box, or
+    /// away with no replay) none for a driven source and its one row for a fixed one (choice
+    /// SC152).
+    fn sim_rows(&self, id: crate::glass::net::PartId) -> Vec<Option<u32>> {
+        let Some(dg) = self.glass.districts.get(&id.district) else {
+            return Vec::new();
+        };
+        let Some(comp) = dg.compiled.as_ref() else {
+            return Vec::new();
+        };
+        let Some(dom) = comp.graph.domains.get(id.domain as usize) else {
+            return Vec::new();
+        };
+        let Some(dist) = self.districts.get(&id.district) else {
+            return Vec::new();
+        };
+        // A replay of an older compile names other nodes: it gives nothing until the coverage
+        // pass starts one of this compile.
+        if dist.sim.as_ref().is_some_and(|s| s.glass)
+            && let Some(rp) = dg.replay.as_ref()
+            && rp.compile() == comp.graph.end.compile
+        {
+            return rp.published(comp, id.domain, &self.glass.solved_rows(id));
+        }
+        // A district whose coverage changed this tick gives the rows it last gave until the
+        // coverage pass decides its replay: else an owner just unloaded would give no driven rows
+        // for the moment between its records and its replay's start, and every reader would
+        // re-run twice at that tick (and a frozen one would give its old check rows).
+        if self.dirty.contains(&id.district)
+            && let Some(rows) = self.net_rows.get(&id)
+        {
+            return rows.clone();
+        }
+        if dist.presence != Presence::Unloaded {
+            return self.glass.solved_rows(id);
+        }
+        dom.sources
+            .iter()
+            .map(|s| if s.driver.is_some() { None } else { s.current })
+            .collect()
+    }
+
+    /// What district `d`'s shared networks give it as the engine runs their other parts.
+    fn sim_net(&self, d: DistrictId) -> BTreeMap<u32, crate::glass::solve::NetInput> {
+        self.glass.net_inputs(d, &mut |id| self.sim_rows(id))
+    }
+
+    /// Does district `d` replay on glass?
+    fn replays_glass(&self, d: DistrictId) -> bool {
+        self.districts
+            .get(&d)
+            .is_some_and(|x| x.sim.as_ref().is_some_and(|s| s.glass))
+            && self
+                .glass
+                .districts
+                .get(&d)
+                .is_some_and(|g| g.replay.is_some())
+    }
+
+    /// District `d` may give its shared networks other rows: each network whose part's rows
+    /// changed is marked for the next drain. Whether any did.
+    fn net_touch(&mut self, d: DistrictId) -> bool {
+        if !self.glass.nets.has(d) {
+            return false;
+        }
+        let mut changed = false;
+        let ids: Vec<crate::glass::net::PartId> = self.glass.nets.parts_of(d).collect();
+        for id in ids {
+            let rows = self.sim_rows(id);
+            if self.net_rows.get(&id) == Some(&rows) {
+                continue;
+            }
+            changed = true;
+            self.net_rows.insert(id, rows);
+            if let Some(n) = self.glass.nets.index_of(id) {
+                self.net_dirty.insert(n);
+            }
+        }
+        changed
+    }
+
+    /// Brings every replay on a marked network to what the network gives it now, at `at`: a reader
+    /// whose input changed re-runs its parts there ([`Replay::on_network`]), which may change its
+    /// own rows and mark further networks, for up to [`NET_ROUNDS`] rounds; past them, a reader
+    /// whose rows an input of round [`NET_ROUNDS`] or later changed, and whose input changes
+    /// again, falls back as oscillating, which ends the exchange (a fallback holds until a
+    /// recompile or the district is live).
+    ///
+    /// [`Replay::on_network`]: crate::glass::replay::Replay::on_network
+    fn drain_networks(&mut self, at: Tick) {
+        if self.draining || self.net_dirty.is_empty() {
+            return;
+        }
+        self.draining = true;
+        let mut round = 0usize;
+        // Readers whose own rows changed with an input they took in round NET_ROUNDS or later:
+        // past NET_ROUNDS one of them whose input changes again falls back as oscillating. Any
+        // other reader still takes its new input: one whose rows do not move (a reader that only
+        // reads, downstream of an oscillating pair or of a fallback's lost rows) closes no loop.
+        // Each round past NET_ROUNDS that marks a network adds a reader to `late` or takes one
+        // off glass, else the drain ends: at most two rounds per district.
+        let mut late = BTreeSet::new();
+        let rounds_max = NET_ROUNDS + 2 * self.cluster_of.len() + 1;
+        while !self.net_dirty.is_empty() && round < rounds_max {
+            round += 1;
+            let dirty = std::mem::take(&mut self.net_dirty);
+            let mut readers = BTreeSet::new();
+            for n in dirty {
+                if let Some(net) = self.glass.nets.get(n) {
+                    readers.extend(net.districts());
+                }
+            }
+            for d in readers {
+                if !self.replays_glass(d) {
+                    continue;
+                }
+                let new = self.sim_net(d);
+                if self
+                    .glass
+                    .districts
+                    .get(&d)
+                    .and_then(|g| g.replay.as_ref())
+                    .is_some_and(|rp| rp.inputs() == &new)
+                {
+                    continue;
+                }
+                if round > NET_ROUNDS && late.contains(&d) {
+                    self.glass_fallback(d, crate::glass::replay::Fallback::Oscillating, at);
+                } else if self.glass_network(d, new, at) && round >= NET_ROUNDS {
+                    late.insert(d);
+                }
+            }
+        }
+        self.net_dirty.clear();
+        self.draining = false;
+    }
+
+    /// District `d`'s replay takes its shared networks' new `inputs` at `at`. Whether that changed
+    /// the rows it gives its networks.
+    fn glass_network(
+        &mut self,
+        d: DistrictId,
+        inputs: BTreeMap<u32, crate::glass::solve::NetInput>,
+        at: Tick,
+    ) -> bool {
+        let Some(&h) = self.cluster_of.get(&d) else {
+            return false;
+        };
+        let Engine {
+            clusters,
+            glass,
+            goods,
+            tun,
+            dirty,
+            ..
+        } = self;
+        let Some(dg) = glass.districts.get_mut(&d) else {
+            return false;
+        };
+        let (Some(rp), Some(comp)) = (dg.replay.as_mut(), dg.compiled.as_mut()) else {
+            return false;
+        };
+        if rp.compile() != comp.graph.end.compile {
+            // A new compile came in: the coverage pass stops this replay.
+            dirty.insert(d);
+            return false;
+        }
+        let r = clusters.apply(h, at, |c, at| {
+            rp.on_network(comp, c, inputs, at, goods, &tun.glass)
+        });
+        match r {
+            Some(Err(f)) => self.glass_fallback(d, f, at),
+            _ => self.after_cluster(h, at),
+        }
+        self.net_touch(d)
+    }
+
+    /// Rebuilds the shared network registry from every compile (SEC-1 S5-2) and marks every
+    /// network for the next drain. Status changes go to the district's log; a district whose
+    /// units the domain check across districts made stale has its replay brought up to date.
+    /// `restoring`: as the save had it, without notes or the check (`Glass::rebuild_nets`).
+    fn rebuild_nets(&mut self, at: Tick, restoring: bool) {
+        let max = self.tun.replay.cluster_districts_max;
+        let districts = &self.districts;
+        let (notes, stale) = self.glass.rebuild_nets(
+            &|d| districts.get(&d).map(|x| x.dim),
+            max,
+            at,
+            &self.tun.glass,
+            restoring,
+        );
+        for (d, what) in notes {
+            self.note(d, at, what);
+        }
+        for d in stale {
+            self.note(
+                d,
+                at,
+                "units go stale: their shared network carries more stress".into(),
+            );
+            self.mark(d);
+        }
+        // A district whose coverage pass is pending keeps the rows it last gave (`sim_rows`).
+        let old = std::mem::take(&mut self.net_rows);
+        self.net_dirty.clear();
+        for n in 0..self.glass.nets.len() {
+            let Some(net) = self.glass.nets.get(n) else {
+                continue;
+            };
+            let ids: Vec<crate::glass::net::PartId> = net.parts().collect();
+            for id in ids {
+                let rows = match old.get(&id) {
+                    Some(r) if self.dirty.contains(&id.district) => r.clone(),
+                    _ => self.sim_rows(id),
+                };
+                self.net_rows.insert(id, rows);
+            }
+            self.net_dirty.insert(n);
+        }
     }
 
     /// An outside event changed a glass replay's pools (an import, an export, a theft).
@@ -5908,6 +6193,9 @@ mod persist_impls {
                     e.cluster_of.insert(m, h);
                 }
             }
+            // The shared networks the compiles make (SEC-1 S5-2), drained at the next step.
+            let now = e.now;
+            e.rebuild_nets(now, true);
             // A glass span whose replay came without its glass page (rtsim-view's inspect restores
             // one district alone) goes on by the black box (or freezes) from the next step, its
             // stores' changes carried. With its page it goes on exactly (G2-9).

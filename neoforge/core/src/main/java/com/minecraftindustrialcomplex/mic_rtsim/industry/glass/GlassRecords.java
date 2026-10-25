@@ -124,8 +124,9 @@ public final class GlassRecords {
     }
 
     /**
-     * IND_GRAPH_DOMAIN, aux = members. Body in order: N_LEVELS speed rows (Level24), N_SOURCES sources
-     * (Source32), N_SOURCE_LEVELS source rows (Level24), then the members (Member24).
+     * IND_GRAPH_DOMAIN, aux = members (the tail included). Body in order: N_LEVELS speed rows (Level24), N_SOURCES
+     * sources (Source32), N_SOURCE_LEVELS source rows (Level24), the members (Member24), then N_PEERS peers (u64
+     * district ids). Size {@code 88 + 24L + 32S + 24R + 24n + 8P}.
      */
     public static final class Domain {
         public static final int NETWORK = 32;           // u64
@@ -137,9 +138,9 @@ public final class GlassRecords {
         public static final int LIVE_CAPACITY = 64;     // f64
         public static final int N_SOURCES = 72;         // u32
         public static final int N_SOURCE_LEVELS = 76;   // u32: the sources' rows in all
-        public static final int N_FOREIGN = 80;         // u32: the last N_FOREIGN members are foreign (shared networks); written 0
-        // 84 reserved
-        public static final int LEVELS = 88;            // n x Level24, then sources x Source32, source rows x Level24, members x Member24
+        public static final int N_FOREIGN = 80;         // u32: the last N_FOREIGN members lie in no district's chunks (a shared part's tail)
+        public static final int N_PEERS = 84;           // u32: the peer district ids after the members (a shared part's, else 0)
+        public static final int LEVELS = 88;            // n x Level24, then sources x Source32, source rows x Level24, members x Member24, peers x u64
         /**
          * Level24: u32 selector, i32 speedNum, u32 speedDen, u32 reserved, f64 capacity. A speed row has selector 0
          * and capacity 0 (the reference's speed); a source row has the boiler level (0 for a fixed source), the
@@ -157,12 +158,24 @@ public final class GlassRecords {
         /** Member24: u32 node (NONE), u32 count, i32 ratioNum, u32 ratioDen, f64 impact. */
         public static final int MEMBER = 24;
         public static final int M_NODE = 0, M_COUNT = 4, M_RATIO_NUM = 8, M_RATIO_DEN = 12, M_IMPACT = 16;
+        /** A peer: the u64 id of another district on the same shared network. */
+        public static final int PEER = 8;
+        /**
+         * SHARED: a part of a network that crosses the district's border, otherwise modelled. Its sources are every
+         * source Create lists (a foreign one has no rows), its members the district's own and the tail in no
+         * district's chunks, and it names its peers.
+         */
         public static final int OVERSTRESSED = 1, STRESS_DISABLED = 2, SHARED = 4;
+        /**
+         * A driven source's passive row's selector, above every boiler level (0 to 18): the row its engines run
+         * at while the boiler has passive heat only ({@code BoilerData.isPassive}; SECTIONS.md choice SC154).
+         */
+        public static final int PASSIVE_SELECTOR = 19;
         /** Most speed rows a modelled domain has; more and the domain is unstable. */
         public static final int MAX_SPEED_ROWS = 32;
 
-        public static int size(int levels, int sources, int sourceLevels, int members) {
-            return LEVELS + LEVEL * levels + SOURCE * sources + LEVEL * sourceLevels + MEMBER * members;
+        public static int size(int levels, int sources, int sourceLevels, int members, int peers) {
+            return LEVELS + LEVEL * levels + SOURCE * sources + LEVEL * sourceLevels + MEMBER * members + PEER * peers;
         }
 
         public static int sources(int levels) {
@@ -175,6 +188,10 @@ public final class GlassRecords {
 
         public static int members(int levels, int sources, int sourceLevels) {
             return sourceLevels(levels, sources) + LEVEL * sourceLevels;
+        }
+
+        public static int peers(int levels, int sources, int sourceLevels, int members) {
+            return members(levels, sources, sourceLevels) + MEMBER * members;
         }
     }
 

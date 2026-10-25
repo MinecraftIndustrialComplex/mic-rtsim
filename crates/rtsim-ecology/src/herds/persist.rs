@@ -579,7 +579,7 @@ impl Herds {
         w.var_i64(self.claims_sub);
         let dict = HerdDict::default();
         let mut cmds = Vec::new();
-        for c in &self.outbox {
+        for c in self.outbox.iter() {
             boundary::encode_cmd(0, c, &dict, &mut cmds);
         }
         w.var_u64(self.outbox.len() as u64);
@@ -680,7 +680,7 @@ impl Herds {
         for _ in 0..n {
             let (size, _, c) = boundary::decode_cmd(b, &dict)
                 .map_err(|e| CodecError::Invalid(format!("outbox: {e:?}")))?;
-            h.outbox.push(c);
+            h.outbox.restore(c);
             b = &b[size..];
         }
         for _ in 0..r.len_prefix(16)? {
