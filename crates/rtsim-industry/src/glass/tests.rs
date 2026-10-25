@@ -5426,8 +5426,10 @@ mod replay_path {
                 c.sections.section_of[p0 as usize] as usize,
                 c.sections.section_of[p1 as usize] as usize,
             );
-            let mut dg = crate::glass::check::DistrictGlass::default();
-            dg.compiled = Some(c);
+            let dg = crate::glass::check::DistrictGlass {
+                compiled: Some(c),
+                ..Default::default()
+            };
             let live = DistrictSections::of(&dg).expect("a compile");
             assert_eq!(live.sections.len(), 2);
             assert_eq!(live.units, 2);
