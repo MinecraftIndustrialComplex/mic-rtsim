@@ -367,6 +367,62 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// RP-49 (fixes4 item 6): a save Java asks for while the engine lags its journal by more than
+/// a save interval is taken. Each round Java journals more than one hand-over carries and asks
+/// for a save through its journal's end, as every world save does, and hands over once: the
+/// engine falls further behind each round, and every request after the first lies past it. The
+/// pages must stop at the first request's world save once the engine reaches it. A request that
+/// replaced the pending one pushed the target past the engine each round: no save was taken,
+/// and the journal the next start replays grew without bound.
+#[test]
+fn a_save_asked_for_while_the_engine_lags_is_taken() {
+    const SAVES_DONE: usize = 9;
+    const ROUNDS: u64 = 4;
+    let dir = tmpdir("save-lag");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.idle();
+    // A hand-over of MIN_CAPACITY carries less than its bytes' worth of transfers (about
+    // 1,000): two buffers' worth a round.
+    let per_round = (2 * wire::MIN_CAPACITY / obs::transfer::SIZE) as u64;
+    let saves = e.stats_array()[SAVES_DONE];
+    let mut first = 0;
+    for round in 0..ROUNDS {
+        for i in 0..per_round {
+            j.transfer(wire::JAVA_OP_BIT | (round << 32) | i, 1, 2, 1);
+        }
+        let through = j.next_obs - 1;
+        if first == 0 {
+            first = through;
+        }
+        e.request_save(through);
+        j.flush();
+    }
+    let applied = e.stats_array()[4];
+    assert!(
+        applied > first && applied < j.next_obs - 1,
+        "the engine passed the first request and lags the last: applied {applied}, first \
+         {first}, journal end {}",
+        j.next_obs - 1
+    );
+    let deadline = Instant::now() + DURABLE_WAIT;
+    while e.durable_obs_seq() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "no save taken: {} saves done, durable {}, applied {applied}, first request {first}",
+            e.stats_array()[SAVES_DONE] - saves,
+            e.durable_obs_seq()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        e.durable_obs_seq(),
+        first,
+        "the pages stop at the first request's world save"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn repeats_are_no_ops_and_a_session_start_disembodies() {
     let dir = tmpdir("repeat");
@@ -608,6 +664,7 @@ fn a_new_transfer_after_a_crash_never_reuses_an_op_id() {
 
 #[test]
 fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
+    use std::sync::atomic::Ordering::Acquire;
     let dir = tmpdir("fail");
     let e = engine(&dir, wire::MIN_CAPACITY);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -615,6 +672,11 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
     e.order(vec![Order::Fail]).unwrap();
     j.run_until("the FAILED flag", |j| j.failed_seen);
     assert!(e.protocol_error().is_some_and(|m| m.contains("panicked")));
+    assert_eq!(
+        e.stats.window_grew.load(Acquire),
+        1,
+        "the failure logs that the replay window grows (RP-49)"
+    );
     // The bridge is never left waiting: steps keep publishing.
     let before = j.submitted;
     j.idle();
@@ -629,6 +691,7 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
 #[test]
 fn a_save_failing_partway_costs_that_save_not_the_engine() {
     use rtsim_kernel::page::Fault;
+    use std::sync::atomic::Ordering::Acquire;
     for fault in [Fault::TornLog, Fault::BeforeCleanup] {
         let dir = tmpdir(&format!("poisoned-{fault:?}"));
         let e = engine(&dir, wire::MIN_CAPACITY);
@@ -688,6 +751,11 @@ fn a_save_failing_partway_costs_that_save_not_the_engine() {
             e.stats_array()[15],
             1 + refused,
             "{fault:?}: one failure, and {refused} stale save(s) refused after it"
+        );
+        assert_eq!(
+            e.stats.window_grew.load(Acquire),
+            1 + refused,
+            "{fault:?}: each save asked for and not made logs that the replay window grows (RP-49)"
         );
         assert!(
             e.protocol_error().is_none(),
@@ -3186,6 +3254,91 @@ mod herds {
         );
     }
 
+    /// RP-49 for the herds (fixes4 item 7), the largest paged module: 128 herds under a 4 KiB
+    /// row budget, a save, then `steps` steps of 1,200 ticks with the herds moving on, 50
+    /// transfers journaled a step, no save asked for, and a crash. Returns the live session's
+    /// resident row peak, the same session's with a budget it never reaches (every herd row
+    /// resident: the unpaged footprint), and the replay's peak after the crash, under the budget.
+    fn the_replays_herd_peak_against_the_live_sessions(name: &str, steps: u64) -> [usize; 3] {
+        use std::sync::atomic::Ordering::Acquire;
+        const BUDGET: usize = 4 * 1024;
+        let live = |dir: &std::path::PathBuf, budget: usize| {
+            let e = engine_with(dir, 256 * 1024, |c| c.row_budget = budget);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            found_many(&e, &mut j, 128);
+            save(&e, &mut j);
+            let durable = e.durable_obs_seq();
+            let mut peak = 0;
+            for i in 0..steps * 50 {
+                j.transfer(wire::JAVA_OP_BIT | (i + 1), 1, 2, 1);
+                if (i + 1) % 50 == 0 {
+                    j.game_time += 1_200;
+                    j.idle();
+                    peak = peak.max(e.with_herds(|h, _| h.rows_resident_bytes()));
+                }
+            }
+            assert_eq!(e.durable_obs_seq(), durable, "no save asked for");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let pressure = e.stats.pressure_saves.load(Acquire);
+            let gt = j.game_time;
+            (peak, pressure, gt, j.crash())
+        };
+        let (unpaged, pressure, _, _) = live(&tmpdir(&format!("{name}-unpaged")), 1 << 30);
+        assert_eq!(pressure, 0, "a budget the session never reaches");
+        let dir = tmpdir(name);
+        let (peak, pressure, gt, saved) = live(&dir, BUDGET);
+        assert!(
+            pressure > 0,
+            "the live session's budget took saves of its own"
+        );
+
+        // Not in TEST mode: TEST mode reads every page back for its state hash at the start and
+        // at each save (`herds.rs`, `paging.rs`), which this peak would count as the replay's.
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+            c.row_budget = BUDGET;
+            c.test = false;
+        });
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let mut replay = 0;
+        for hand_overs in 0.. {
+            assert!(hand_overs < 256, "the replay never ended");
+            if e.stats.replays_ended.load(Acquire) > 0 {
+                break;
+            }
+            j.flush();
+            replay = replay.max(e.with_herds(|h, _| h.rows_resident_bytes()));
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        [peak, unpaged, replay]
+    }
+
+    /// RP-49 for the herds (fixes4 item 7, RP-55): the replay's resident herd rows are the pages
+    /// the crashed session touched since its last durable save, bounded by the unpaged footprint.
+    /// No page is taken while replaying (RP-42), so they grow with the window: two steps hold
+    /// about half of it here, eighty nearly all. The live peaks are printed, not asserted: they
+    /// ride on when the IO lane's saves come back.
+    #[test]
+    fn a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save() {
+        let short = the_replays_herd_peak_against_the_live_sessions("herds-rp49-short", 2);
+        let long = the_replays_herd_peak_against_the_live_sessions("herds-rp49-long", 80);
+        eprintln!("herd row bytes [live, unpaged, replay], 2 steps: {short:?}; 80 steps: {long:?}");
+        for [live, unpaged, replay] in [short, long] {
+            assert!(
+                replay <= unpaged,
+                "the replay holds no more than the unpaged footprint: {live} {unpaged} {replay}"
+            );
+        }
+        assert!(
+            short[2] < short[1],
+            "a short window holds the pages it touched, not every page: {short:?}"
+        );
+        assert!(long[2] > short[2], "{short:?} {long:?}");
+    }
+
     /// The herds through the native engine and a fake vanilla herd adapter (rtsim-ecology's
     /// `FakeHerds`): a herd founded by the test order, a player beside it seeing a group of its
     /// sheep materialize (the engine's species, colours, ages and positions, DICT records first),
@@ -3449,6 +3602,795 @@ mod herds {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    // ---- the replay gate (docs/replay-gate.md §9.4, RP-80 to RP-89) ---------------------------
+
+    /// A buffer that holds a whole long replay in one hand-over.
+    const ONE_HAND_OVER: usize = 1024 * 1024;
+
+    /// Filler a replay must read through: `count` obstacle reports of a herd the engine never
+    /// had (56 bytes each, so eight thousand span a dozen minimum-size hand-overs).
+    fn fillers(j: &mut Java, count: usize) {
+        for _ in 0..count {
+            j.herd_obs(&O::Obstacle(hb::Obstacle {
+                agent: 0,
+                epoch: 0,
+                failures: 0,
+                present: 0,
+                stuck: (0, 0),
+                target: (0, 0),
+            }));
+        }
+    }
+
+    /// The replay ends this engine ran, and the last one's hand-overs.
+    fn replay_counts(e: &Engine) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        (
+            e.stats.replays_ended.load(Acquire),
+            e.stats.replay_handovers.load(Acquire),
+        )
+    }
+
+    /// Hands the journal over one step at a time until the replay has ended. No herd command may
+    /// have been written by a step that ended while the replay still ran. Returns the steps.
+    fn replay_quietly(e: &Engine, j: &mut Java) -> u32 {
+        let mut steps = 0;
+        while replay_counts(e).0 == 0 {
+            j.flush();
+            steps += 1;
+            if replay_counts(e).0 == 0 {
+                assert!(
+                    j.herds.is_empty(),
+                    "a herd command written while the replay runs (step {steps}): {:?}",
+                    j.herds
+                );
+            }
+            assert!(steps < 200, "the replay never ended");
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        steps
+    }
+
+    /// Whether the old session's group is in view at its last save.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Group {
+        /// Never: the herd is founded and saved, and nothing is in view.
+        None,
+        /// The pages hold the group embodied.
+        InPages,
+        /// The player arrives after the save: the group is decided and answered in the journal.
+        AfterSave,
+    }
+
+    /// What the old session (the one that crashes) does, in order.
+    #[derive(Clone, Copy)]
+    struct Script {
+        group: Group,
+        /// Filler records right after the save, so that the replay spans hand-overs.
+        fillers: usize,
+        /// Sheep the player kills after the fillers.
+        kills: usize,
+        /// One sheep shorn.
+        shear: bool,
+        /// The player leaves: the group is captured, in the journal.
+        despawn: bool,
+    }
+
+    impl Script {
+        const QUIET: Script = Script {
+            group: Group::None,
+            fillers: 0,
+            kills: 0,
+            shear: false,
+            despawn: false,
+        };
+    }
+
+    /// What the old session left.
+    struct Old {
+        dir: std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        agent: u64,
+        pos: [f64; 3],
+        /// The group Java was commanded, when there was one.
+        group: Option<hb::Materialize>,
+        killed: Vec<u64>,
+        sheared: Vec<u64>,
+    }
+
+    /// A herd of 200 sheep founded, a player beside it, and `s` played after the last save; then
+    /// the crash. The journal holds what the pages lack.
+    fn the_old_session(name: &str, s: Script) -> Old {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 200);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        let in_view = |j: &mut Java| {
+            j.players = vec![(PLAYER, dim, pos)];
+            j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+            j.idle();
+        };
+        if s.group == Group::InPages {
+            in_view(&mut j);
+        }
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        fillers(&mut j, s.fillers);
+        if s.group == Group::AfterSave {
+            in_view(&mut j);
+        }
+        let group = materializations(&j).pop();
+        let killed = j.herd_plugin.kill(agent, s.kills, PLAYER);
+        let sheared = if s.shear {
+            j.herd_plugin.shear(agent, 1, PLAYER)
+        } else {
+            Vec::new()
+        };
+        j.herd_flush();
+        j.idle();
+        if s.despawn {
+            j.players.clear();
+            flush_until(&mut j, "the group captured", 1_000, |j| {
+                j.herds
+                    .iter()
+                    .any(|(_, c)| matches!(c, H::Despawn(d) if d.agent == agent))
+            });
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let bytes = j
+            .world_save()
+            .journal
+            .iter()
+            .filter(|(q, _)| *q >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        if s.fillers >= 8_000 {
+            assert!(
+                bytes > 3 * wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        Old {
+            dir,
+            saved,
+            gt,
+            agent,
+            pos,
+            group,
+            killed,
+            sheared,
+        }
+    }
+
+    /// The next session over the old one's pages and journal, a player standing where the old
+    /// one did when `player`; its journal not handed over.
+    fn next_session(old: &Old, capacity: usize, player: bool) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(&old.dir, capacity);
+        let mut j = Java::open(e.clone(), old.saved.clone());
+        j.module_mask = MODULES;
+        j.game_time = old.gt;
+        if player {
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            j.players = vec![(PLAYER, dim, old.pos)];
+        }
+        (e, j)
+    }
+
+    /// The first group the next session commands, once the player has been seen.
+    fn the_group_again(j: &mut Java) -> hb::Materialize {
+        j.run_until("the group again", |j| !materializations(j).is_empty());
+        j.idle();
+        materializations(j).remove(0)
+    }
+
+    /// §9.4 test 1 (scratch audit :3533): the group in view at the save, three sheep killed behind
+    /// 8,000 fillers, a player standing at the herd as the next session starts. Nothing is
+    /// written while the replay runs, and no group the player sees afterwards holds a sheep the
+    /// replay killed. `capacity`: the next session's buffer.
+    fn a_long_replay_at_the_herd(name: &str, capacity: usize) {
+        let script = Script {
+            group: Group::InPages,
+            fillers: 8_000,
+            kills: 3,
+            ..Script::QUIET
+        };
+        let old = the_old_session(name, script);
+        assert_eq!(old.killed.len(), 3);
+        let epoch = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, capacity, true);
+        let steps = replay_quietly(&e, &mut j);
+        let (ended, hand_overs) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        if capacity == wire::MIN_CAPACITY {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+            assert!(steps >= 3, "{steps} steps");
+        } else {
+            assert_eq!(hand_overs, 1, "a replay of one hand-over");
+        }
+        let m = the_group_again(&mut j);
+        for g in materializations(&j) {
+            for b in &g.members {
+                assert!(
+                    !old.killed.contains(&b.member),
+                    "a sheep the replay killed is sent again: {} in {:?}",
+                    b.member,
+                    g.members.iter().map(|b| b.member).collect::<Vec<_>>()
+                );
+            }
+        }
+        assert!(m.epoch > epoch, "a new epoch: {} after {epoch}", m.epoch);
+        let size = old.group.as_ref().expect("a group").members.len();
+        assert_eq!(m.members.len(), size, "the group is the size it was");
+        let counts = e.with_herds(|h, _| h.replay_gate_counts());
+        assert_eq!(counts.never, 0, "nothing embodied while replaying");
+        assert_eq!(counts.last_never, None);
+        let (_, killed, taken, lost, dead) = summary(&e, old.agent);
+        assert_eq!(
+            (killed, taken, lost, dead),
+            (3, 0, 0, 3),
+            "each kill booked once"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_long_replay_with_a_player_at_the_herd_never_sends_a_killed_sheep() {
+        a_long_replay_at_the_herd("herds-rp80-long", wire::MIN_CAPACITY);
+    }
+
+    /// Control: the same replay in one hand-over.
+    #[test]
+    fn a_one_hand_over_replay_with_a_player_at_the_herd_never_sends_a_killed_sheep() {
+        a_long_replay_at_the_herd("herds-rp80-one", ONE_HAND_OVER);
+    }
+
+    /// §9.4 test 2: the epoch of a group decided after the pages and answered in the journal is
+    /// not decided again after a crash. Returns (the old epoch, the next session's first).
+    fn the_epoch_after_a_crash(name: &str, group: Group) -> (u32, u32) {
+        let old = the_old_session(name, Script { group, ..Script::QUIET });
+        let before = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let m = the_group_again(&mut j);
+        assert_eq!(m.agent, old.agent);
+        assert_eq!(info(&e, old.agent)[8], u64::from(m.epoch));
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (before, m.epoch)
+    }
+
+    /// Today the live session decides epoch 1 and the restart decides 1 again: the pages predate
+    /// the group and its HERD_MATERIALIZED is a no-op.
+    #[test]
+    fn a_group_decided_after_the_pages_does_not_have_its_epoch_decided_again_after_a_crash() {
+        let (before, after) = the_epoch_after_a_crash("herds-rp81", Group::AfterSave);
+        assert_eq!(before, 1, "the old session's first group");
+        assert_eq!(after, 2, "the next session's is above it");
+    }
+
+    /// Control: the pages hold the group, so its epoch is theirs.
+    #[test]
+    fn a_group_in_the_pages_does_not_have_its_epoch_decided_again_after_a_crash() {
+        let (before, after) = the_epoch_after_a_crash("herds-rp81-pages", Group::InPages);
+        assert_eq!((before, after), (1, 2));
+    }
+
+    /// §9.4 test 3: a group decided after the save, shorn once, then captured (its player left):
+    /// the next session's replay reads it as the old one did, so the capture lands on its
+    /// members. `group`: where the group was at the save.
+    fn a_replayed_capture(name: &str, group: Group) {
+        let script = Script {
+            group,
+            shear: true,
+            despawn: true,
+            ..Script::QUIET
+        };
+        let old = the_old_session(name, script);
+        let g = old.group.as_ref().expect("a group");
+        assert_eq!(old.sheared.len(), 1, "one sheep shorn");
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        let (st, ..) = e.herd_stats();
+        assert_eq!(st.captures, 1, "the capture was applied: {st:?}");
+        assert_eq!(st.sheared, 1, "and the shearing: {st:?}");
+        let seen = e.with_herds(|h, _| {
+            h.herd(rtsim_ecology::herds::herd::herd_of(old.agent).unwrap())
+                .unwrap()
+                .seen
+                .clone()
+        });
+        for b in &g.members {
+            let s = seen
+                .get(&b.member)
+                .unwrap_or_else(|| panic!("member {} is not seen", b.member));
+            assert_eq!(
+                s.sheared_at.is_some(),
+                b.member == old.sheared[0],
+                "only the shorn sheep is shorn"
+            );
+        }
+        let lasts: std::collections::BTreeSet<u64> = g
+            .members
+            .iter()
+            .map(|b| seen[&b.member].last.0)
+            .collect();
+        assert_eq!(lasts.len(), 1, "every member captured at one time: {lasts:?}");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_replayed_capture_of_a_group_decided_after_the_save_lands_on_its_members() {
+        a_replayed_capture("herds-rp82", Group::AfterSave);
+    }
+
+    /// Control: a group the pages held.
+    #[test]
+    fn a_replayed_capture_of_a_group_the_pages_held_lands_on_its_members() {
+        a_replayed_capture("herds-rp82-pages", Group::InPages);
+    }
+
+    /// An epoch that ended in the replayed window (the group captured) is not decided again
+    /// (docs/replay-gate.md §5.3, rule 5): the player is back as the next session starts.
+    fn an_epoch_that_ended(name: &str, group: Group) {
+        let script = Script {
+            group,
+            despawn: true,
+            ..Script::QUIET
+        };
+        let old = the_old_session(name, script);
+        let ended = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let m = the_group_again(&mut j);
+        assert!(m.epoch > ended, "epoch {} after {ended} ended", m.epoch);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn an_epoch_that_ended_in_the_replayed_window_is_not_decided_again() {
+        an_epoch_that_ended("herds-rp83", Group::AfterSave);
+    }
+
+    /// Control: the group was in the pages, ended in the window.
+    #[test]
+    fn an_epoch_that_ended_after_the_pages_held_it_is_not_decided_again() {
+        an_epoch_that_ended("herds-rp83-pages", Group::InPages);
+    }
+
+    /// A generation no engine heard: the one a crash lost with its journal.
+    const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+
+    /// A REASSERT of `rec` under generation `nonce`, at the record's own sequence: what
+    /// `Java::reassert` journals, in place of the original.
+    fn as_copy(rec: &[u8], nonce: u64) -> Vec<u8> {
+        let len = obs::reassert::INNER + rec.len();
+        let mut r = vec![0u8; len];
+        wire::put_u16(&mut r, wire::R_KIND, obs::REASSERT);
+        wire::put_u16(&mut r, wire::R_SIZE, len as u16);
+        wire::put_i64(&mut r, obs::GAME_TIME, wire::i64_at(rec, obs::GAME_TIME));
+        wire::put_u64(&mut r, obs::reassert::GEN, nonce);
+        r[obs::reassert::INNER..].copy_from_slice(rec);
+        wire::put_u64(&mut r, obs::OBS_SEQ, wire::u64_at(rec, obs::OBS_SEQ));
+        r
+    }
+
+    /// RP-84: a group decided after the save and answered in the journal, the answer replayed as
+    /// the record itself (`copy` false: honoured) or as a holder's copy of it (REASSERT, from a
+    /// generation no engine heard: not honoured, only its epoch counted). Returns (groups
+    /// honoured, copies applied, the epoch the group had, the epoch of the one the player sees
+    /// after the replay).
+    fn a_replayed_materialization(name: &str, copy: bool) -> (u64, u64, u32, u32) {
+        use std::sync::atomic::Ordering::Acquire;
+        let mut old = the_old_session(
+            name,
+            Script {
+                group: Group::AfterSave,
+                ..Script::QUIET
+            },
+        );
+        let before = old.group.as_ref().expect("a group").epoch;
+        if copy {
+            let mut made = 0;
+            for (_, r) in old.saved.journal.iter_mut() {
+                if wire::u16_at(r, wire::R_KIND) == hb::HERD_MATERIALIZED {
+                    *r = as_copy(r, EARLIER_GEN);
+                    made += 1;
+                }
+            }
+            assert_eq!(made, 1, "one materialization in the journal");
+        }
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let honoured = e.with_herds(|h, _| h.replay_honoured());
+        let copies = e.stats.copies_applied.load(Acquire);
+        let after = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (honoured, copies, before, after)
+    }
+
+    /// RP-84 (the host routes a copy to `ingest_copy`, never to `ingest`): a materialization
+    /// carried by a holder and replayed embodies nothing, and its epoch is not decided again.
+    /// Before, the host applied the copy as the record itself, and the replay honoured it.
+    #[test]
+    fn a_replayed_copy_of_a_materialization_is_not_honoured_but_its_epoch_is_counted() {
+        let (honoured, copies, before, after) = a_replayed_materialization("herds-rp84", true);
+        assert_eq!((honoured, copies), (0, 1), "a copy honours no group");
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// Control: the record itself, replayed, is honoured.
+    #[test]
+    fn a_replayed_materialization_the_journal_holds_is_honoured() {
+        let (honoured, copies, before, after) = a_replayed_materialization("herds-rp84-own", false);
+        assert_eq!((honoured, copies), (1, 0), "the record's group is honoured");
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// RP-81: a record the herds ignore (they are switched off while the journal replays) still
+    /// names an epoch their engine must not decide again once they are switched on. The old
+    /// session journals a HERD_MATERIALIZED of epoch 9 for the saved herd and crashes; the next
+    /// session starts with the herds `off` (or on, the control), replays it, switches them on if
+    /// they were off, and a player stands at the herd. Returns the epoch of the group he sees.
+    fn the_epoch_after_a_replay_with_the_herds(name: &str, off: bool) -> u32 {
+        let mut old = the_old_session(name, Script::QUIET);
+        let mut b = Vec::new();
+        let o = O::Materialized(hb::Materialized {
+            agent: old.agent,
+            epoch: 9,
+            dimension: 0,
+            spawned: 3,
+        });
+        hb::encode_obs(0, old.gt, &o, &mut b);
+        let seq = old.saved.next_obs;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        old.saved.journal.push_back((seq, b));
+        old.saved.next_obs += 1;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        if off {
+            j.module_mask = 0b1111;
+        }
+        replay_quietly(&e, &mut j);
+        if off {
+            j.modules(MODULES);
+            j.idle();
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, old.pos)];
+        let epoch = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epoch
+    }
+
+    #[test]
+    fn a_record_replayed_while_the_herds_are_off_still_raises_their_epoch_floor() {
+        let epoch = the_epoch_after_a_replay_with_the_herds("herds-rp81-off", true);
+        assert!(epoch > 9, "epoch {epoch} after a replayed 9");
+    }
+
+    /// Control: the herds on all along.
+    #[test]
+    fn a_record_replayed_while_the_herds_are_on_raises_their_epoch_floor() {
+        let epoch = the_epoch_after_a_replay_with_the_herds("herds-rp81-on", false);
+        assert!(epoch > 9, "epoch {epoch} after a replayed 9");
+    }
+
+    /// A herd of 200 sheep founded and never saved (a fresh world after a crash, or pages that
+    /// could not be read): the next session starts with no herd. `group`: a player beside it, so
+    /// that a group (epoch 1) is decided and journaled before the crash.
+    fn the_old_session_with_no_saved_herd(name: &str, group: bool) -> Old {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 200);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        if group {
+            j.players = vec![(PLAYER, dim, pos)];
+            j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+            j.herd_flush();
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let made = materializations(&j).pop();
+        let gt = j.game_time;
+        let saved = j.crash();
+        Old {
+            dir,
+            saved,
+            gt,
+            agent,
+            pos,
+            group: made,
+            killed: Vec::new(),
+            sheared: Vec::new(),
+        }
+    }
+
+    /// Founds a herd of 60 sheep 2,000 blocks from the old one and returns its agent.
+    fn found_another(e: &Engine, j: &mut Java) -> u64 {
+        let before = e.herd_agents();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Newdown flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: AT.0 + 2_000,
+            z: AT.1,
+            count: 60,
+            seed: 0,
+        }])
+        .unwrap();
+        j.idle();
+        let after = e.herd_agents();
+        assert_eq!(after.len(), before.len() + 1, "one herd founded");
+        *after
+            .iter()
+            .find(|a| !before.contains(a))
+            .expect("a new herd")
+    }
+
+    /// A holder's copy of a death of member 0 of `agent`, from a generation no engine heard,
+    /// handed over (REASSERT). Returns the copies applied since the engine began.
+    fn a_copy_of_a_death(e: &Engine, j: &mut Java, old: &Old, agent: u64) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        let mut b = Vec::new();
+        let o = O::Killed(hb::Killed {
+            agent,
+            epoch: 1,
+            member: 0,
+            by: hb::KillerKind::Player,
+            killer: PLAYER,
+            op: 1 << 62 | 77,
+        });
+        hb::encode_obs(0, old.gt, &o, &mut b);
+        wire::put_u64(&mut b, obs::OBS_SEQ, old.saved.next_obs + 1_000);
+        j.reassert(EARLIER_GEN, &b);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.stats.copies_applied.load(Acquire)
+    }
+
+    /// RP-84: the herd the old session had under a handle its pages lack (founded after the last
+    /// save) is not the herd the next session founds under it: the world model founds in the
+    /// order the world is explored. A copy of the old herd's death (REASSERT, a generation no
+    /// engine heard) that arrives after the new founding names the agent both share. `known`
+    /// aims it at the saved herd instead (the control). `toggle`: the herds are switched off and
+    /// on again after the founding (a MODULES record), which begins their replay again.
+    /// Returns (the saved herd's killed count, the new herd's) after the copy, and the copies
+    /// applied.
+    fn a_copy_after_a_founding(name: &str, known: bool, toggle: bool) -> ((u64, u64), u64) {
+        let old = the_old_session(name, Script::QUIET);
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        let new = found_another(&e, &mut j);
+        if toggle {
+            j.modules(0b1111);
+            j.idle();
+            j.modules(MODULES);
+            j.idle();
+        }
+        let target = if known { old.agent } else { new };
+        let applied = a_copy_of_a_death(&e, &mut j, &old, target);
+        let out = (summary(&e, old.agent).1, summary(&e, new).1);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (out, applied)
+    }
+
+    #[test]
+    fn a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-founded", false, false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (0, 0), "it lands on neither herd");
+    }
+
+    /// Control: the same copy for the saved herd lands.
+    #[test]
+    fn a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-pages", true, false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
+    /// A switch-off and on after the founding begins the replay again: the session's bound
+    /// stays, so the herd founded meanwhile still takes no copy. Control: the saved herd's lands
+    /// after the same switch.
+    #[test]
+    fn a_switch_on_after_a_founding_does_not_make_the_new_herd_one_the_last_session_had() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-toggle", false, true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (0, 0), "it lands on neither herd");
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-toggle-pages", true, true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
+    /// RP-84: the next session starts with no herd (`saved` false: the old one's was never saved)
+    /// or with the old one (the control). The herds do not run without a herd, so their replay
+    /// begins at the first founding, after the replay end; a copy of the old herd's death must not
+    /// land on a herd founded under the same handle. Returns the killed count of the herd after
+    /// the copy, and the copies applied.
+    fn a_copy_with_no_herd_at_the_session_start(name: &str, saved: bool) -> (u64, u64) {
+        let old = if saved {
+            the_old_session(name, Script::QUIET)
+        } else {
+            the_old_session_with_no_saved_herd(name, false)
+        };
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        if !saved {
+            assert!(e.herd_agents().is_empty(), "the pages hold no herd");
+            let again = found(&e, &mut j, 200);
+            assert_eq!(again, old.agent, "handle 0 again");
+        }
+        let applied = a_copy_of_a_death(&e, &mut j, &old, old.agent);
+        let killed = summary(&e, old.agent).1;
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (killed, applied)
+    }
+
+    #[test]
+    fn a_copy_for_a_herd_the_session_began_without_does_not_land_on_its_first_herd() {
+        let (killed, applied) = a_copy_with_no_herd_at_the_session_start("herds-rp84-empty", false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, 0, "it lands on nothing");
+    }
+
+    /// Control: the herd the pages held takes the copy.
+    #[test]
+    fn a_copy_for_a_herd_the_session_began_with_lands_on_it() {
+        let (killed, applied) =
+            a_copy_with_no_herd_at_the_session_start("herds-rp84-empty-pages", true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, 1, "it lands on the saved herd");
+    }
+
+    /// RP-81: the herds are on with no herd (the pages hold none), so their replay has not begun
+    /// when the journal's records of the old herd are applied; each still raises the floor of its
+    /// agent. The herd founded after the replay end, on the same handle, decides an epoch above
+    /// the old one's. Control (`saved`): the old herd in the pages. Returns the epoch of the group
+    /// the player sees, and of the old session's.
+    fn the_epoch_with_no_herd_when_the_journal_replays(name: &str, saved: bool) -> (u32, u32) {
+        let old = if saved {
+            the_old_session(
+                name,
+                Script {
+                    group: Group::AfterSave,
+                    ..Script::QUIET
+                },
+            )
+        } else {
+            the_old_session_with_no_saved_herd(name, true)
+        };
+        let before = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        if !saved {
+            let again = found(&e, &mut j, 200);
+            assert_eq!(again, old.agent, "handle 0 again");
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, old.pos)];
+        let after = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (before, after)
+    }
+
+    #[test]
+    fn an_epoch_replayed_with_no_herd_yet_is_not_decided_again_for_the_first_herd() {
+        let (before, after) =
+            the_epoch_with_no_herd_when_the_journal_replays("herds-rp81-empty", false);
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// Control: the herd in the pages.
+    #[test]
+    fn an_epoch_replayed_with_the_herd_in_the_pages_is_not_decided_again() {
+        let (before, after) =
+            the_epoch_with_no_herd_when_the_journal_replays("herds-rp81-empty-pages", true);
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// RP-66's twin for the herds: a test's herd command joins the engine's queue around the
+    /// gate, so one ordered while the replay runs waits for the replay end. A STEER is a kind
+    /// the gate drops while replaying; the command is Java's, though, not the engine's.
+    /// Returns (the replay still ran when it was ordered, it was written within a step of the
+    /// order, it was written once the replay had ended).
+    fn a_herd_command_ordered(name: &str, fillers: usize) -> (bool, bool, bool) {
+        let old = the_old_session(
+            name,
+            Script {
+                fillers,
+                ..Script::QUIET
+            },
+        );
+        let (e, mut j) = next_session(&old, wire::MIN_CAPACITY, false);
+        j.idle();
+        let replaying = replay_counts(&e).0 == 0;
+        let mut dict = hb::HerdDict { body: [0; 5] };
+        dict.body[0] = 9;
+        let mut record = Vec::new();
+        hb::encode_cmd(
+            0,
+            &H::Steer(hb::Steer {
+                agent: old.agent,
+                epoch: 99,
+                speed: 0.02,
+                target: (40, -12),
+                arrive: 90_000,
+            }),
+            &dict,
+            &mut record,
+        );
+        e.order(vec![Order::HerdCommand {
+            names: vec![(wire::DICT_BODY, 9, "minecraft:sheep".into())],
+            record,
+        }])
+        .unwrap();
+        let written = |j: &Java| {
+            j.herds
+                .iter()
+                .any(|(_, c)| matches!(c, H::Steer(s) if s.agent == old.agent && s.epoch == 99))
+        };
+        j.idle();
+        let at_once = written(&j);
+        assert_eq!(
+            replay_counts(&e).0 == 0,
+            replaying,
+            "the replay still runs after the order's idle"
+        );
+        // The whole journal handed over: the replay ends.
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        let after = written(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (replaying, at_once, after)
+    }
+
+    #[test]
+    fn a_herd_command_ordered_while_replaying_waits_for_the_replay_end() {
+        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp85", 8_000);
+        assert!(replaying, "the replay runs past its first hand-over");
+        assert!(!at_once, "not written while the replay runs");
+        assert!(after, "written once it has ended");
+    }
+
+    /// Control: with no replay to wait for the command is written at once.
+    #[test]
+    fn a_herd_command_ordered_without_a_replay_is_written_at_once() {
+        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp85-none", 0);
+        assert!(!replaying, "nothing to replay");
+        assert!(at_once && after, "written at once");
+    }
+
     /// C25 (U10): with the ecology module switched off the herds ignore their records (an
     /// obstacle), decide nothing (a player by the herd sees no group) and keep the page they
     /// had; switched on again, the player sees the herd.
@@ -3537,8 +4479,8 @@ mod conflict {
     use rtsim_conflict::culture::PartyKind;
     use rtsim_conflict::engine::{Party, Phase, Target};
     use rtsim_conflict::{Step, synth};
-    use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT};
-    use rtsim_kernel::clock::TICKS_PER_DAY;
+    use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT, MODULE_INDUSTRY};
+    use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
     use rtsim_settle::Pos;
@@ -4288,10 +5230,15 @@ mod conflict {
     /// A conflict session with the camp founded, its territory back, the fake plugin answering
     /// as `PLAYER` and the player standing in the territory.
     fn camp(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        camp_with(name, MODULES)
+    }
+
+    /// [`camp`] with the module switches `mask`.
+    fn camp_with(name: &str, mask: u32) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
         let dir = tmpdir(name);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
-        j.module_mask = MODULES;
+        j.module_mask = mask;
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
         j.players = vec![(PLAYER, dim, base)];
@@ -4817,6 +5764,15 @@ mod conflict {
     /// A grove (FACTION_FOUND with the Umvuthana's structure) with `strays` of its own bodies standing
     /// in it, as the jar places them, in the fake plugin's camp world; the camp is out.
     fn grove(name: &str, strays: u16) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        grove_with(name, strays, false)
+    }
+
+    /// [`grove`], with the pages saved before the camp is found when `pages_first`.
+    fn grove_with(
+        name: &str,
+        strays: u16,
+        pages_first: bool,
+    ) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
         let dir = tmpdir(name);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -4831,6 +5787,9 @@ mod conflict {
         let body = j.dict_id(wire::DICT_BODY, WARRIOR);
         for _ in 0..strays {
             j.conflict_plugin.camp_stray(CAMP, body);
+        }
+        if pages_first {
+            save(&e, &mut j);
         }
         j.conflict_obs(&O::FactionFound(cb::FactionFound {
             faction: CAMP,
@@ -5353,6 +6312,16 @@ mod conflict {
             slots(&e) == [3, 0, 0, 0, 0]
         });
         assert_eq!(reconciles(&j).len(), 1);
+        // What a holder of the answers keeps: its generation and the records as journaled.
+        let (nonce, answers): (u64, Vec<Vec<u8>>) = (
+            j.nonce,
+            j.journal
+                .iter()
+                .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == cb::CAMP_BODIES)
+                .map(|(_, r)| r.clone())
+                .collect(),
+        );
+        assert!(!answers.is_empty());
         let gt = j.game_time;
         let saved = j.world_save();
         let mut plugin =
@@ -5386,10 +6355,84 @@ mod conflict {
             [3, 0, 0, 0, 0],
             "the replayed answers, booked by state"
         );
+        // RP-69: nothing the gate never lets through was decided in the replay; and a live
+        // holder's copy (REASSERT) of each answer, for the replayed census's epoch, books nothing
+        // again.
+        let never = |e: &Engine| e.with_conflict(|c, _| c.replay_gate_counts().never);
+        assert_eq!(never(&e), 0);
+        let booked = e.with_conflict(|c, _| c.stats.camp_answers);
+        for r in &answers {
+            j.reassert(nonce, r);
+        }
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_answers),
+            booked,
+            "the copies"
+        );
+        assert_eq!(reconciles(&j).len(), 0);
         camp_in(&mut j);
         assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
         assert_eq!(reconciles(&j).len(), 0, "nothing to order");
         assert_eq!(j.conflict_plugin.camps[&CAMP].bodies.len(), 3);
+        assert_eq!(never(&e), 0);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-69 (the M5 merge check's item 5): the conflict's replay begun late. The pages predate
+    /// the camp, so the conflict does not run at SESSION_START (conflict.rs `reset_if_due`); the
+    /// replayed FACTION_FOUND starts it and opens the window, and the camp's census replayed after
+    /// it only marks the camp out, as in a replay begun at the session start.
+    #[test]
+    fn a_replay_begun_by_a_replayed_faction_only_marks_its_census_out() {
+        let (dir, e, mut j) = grove_with("camp-replay-late", 3, true);
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoptions answered", |_| {
+            slots(&e) == [3, 0, 0, 0, 0]
+        });
+        assert_eq!(reconciles(&j).len(), 1);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.conflict_plugin = plugin;
+        assert!(
+            e.with_conflict(|c, _| c.faction_of_key(CAMP).is_none()),
+            "the pages predate the camp"
+        );
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the replayed census ordered nothing"
+        );
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "out"
+        );
+        assert_eq!(
+            slots(&e),
+            [3, 0, 0, 0, 0],
+            "the replayed answers, booked by state"
+        );
+        assert_eq!(e.with_conflict(|c, _| c.replay_gate_counts().never), 0);
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(reconciles(&j).len(), 0, "nothing to order");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -5817,9 +6860,20 @@ mod conflict {
         gt: i64,
         capacity: usize,
     ) -> (std::sync::Arc<Engine>, Java) {
+        reopen_mask(dir, saved, gt, capacity, MODULES)
+    }
+
+    /// [`reopen_with`] with the module switches `mask`.
+    fn reopen_mask(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        capacity: usize,
+        mask: u32,
+    ) -> (std::sync::Arc<Engine>, Java) {
         let e = engine(dir, capacity);
         let mut j = Java::open(e.clone(), saved);
-        j.module_mask = MODULES;
+        j.module_mask = mask;
         j.game_time = gt;
         assert_eq!(e.conflict_restore_check(), (None, false));
         // Java hands its journal over while it fits: until it has sent every record.
@@ -5989,6 +7043,2428 @@ mod conflict {
         assert!(!recalled, "nothing kept once the replay has caught up");
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- the replay gate (docs/replay-gate.md, fix/replay-push) ----------------------------
+
+    /// A buffer that holds a whole long replay in one hand-over.
+    const ONE_HAND_OVER: usize = 1024 * 1024;
+
+    /// Filler a replay must read through: `count` casualties of a band the engine never had (64
+    /// bytes each, so about a thousand fill a minimum-size buffer). 4,000 span four hand-overs.
+    fn fillers(j: &mut Java, count: usize) {
+        for _ in 0..count {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: 0,
+                epoch: 0,
+                by: cb::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+            }));
+        }
+    }
+
+    /// The camp's pool of warriors at home, and when it was last changed; and the pool at a
+    /// fixed time after every test's events (its closed form, so a band pooled earlier or later
+    /// gives the same number there).
+    fn pool(e: &Engine) -> (f64, u64, f64) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let x = &c.factions[f as usize];
+            (x.pool, x.pool_at.0, c.pool_at(f, Tick(60_000)))
+        })
+    }
+
+    /// The replay ends this engine ran, and the last one's hand-overs and records.
+    fn replay_counts(e: &Engine) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        (
+            e.stats.replays_ended.load(Acquire),
+            e.stats.replay_handovers.load(Acquire),
+            e.stats.replay_records.load(Acquire),
+        )
+    }
+
+    /// RP-24 (the review's amendment c): a watched fight kept in the pages (Fighting at the save),
+    /// its casualties journaled behind 4,000 fillers, and its end, its walk home and its arrival
+    /// (`home()`, which pools the party) all after them, inside the replayed window, on a short
+    /// route home (100 blocks). The session that goes on pools what is left of the band; after a
+    /// crash the replay must leave the same pool. `capacity`: the next session's buffer (`None`,
+    /// no crash); `mask`: the module switches of both sessions.
+    fn a_fight_kept_in_the_pages_across_a_replay(name: &str, capacity: Option<usize>, mask: u32) {
+        a_fight_kept_in_the_pages_with(name, capacity, mask, None);
+    }
+
+    /// The village a works grant during the replay is for: far from the camp, the raid and the
+    /// players, so that it changes nothing they do.
+    const GRANTED: u64 = 0x0001_0000_0000_00A1;
+
+    /// The dragons' lair a TRIBUTE_START during the replay names: far from the camp too.
+    const TRIBUTE_LAIR: u64 = 0x0000_0EEE_0000_0EEE;
+
+    /// [`a_fight_kept_in_the_pages_across_a_replay`], with `given` (a test's order that runs the
+    /// clock to the hand-over's time, RP-33) given in the replay's first hand-over, so that the
+    /// engine takes it at the next step while it still replays. A works grant's village is
+    /// adopted before the save; a works raid's and a tribute's is given works and a purse there
+    /// too, and a tribute's lair is found. The order's effect is there once the replay has ended.
+    fn a_fight_kept_in_the_pages_with(
+        name: &str,
+        capacity: Option<usize>,
+        mask: u32,
+        given: Option<Order>,
+    ) {
+        let (dir, e, mut j) = camp_with(name, mask);
+        if let Some(
+            Order::WorksGrant { village, .. }
+            | Order::WorksRaid { village, .. }
+            | Order::TributeStart { village, .. },
+        ) = &given
+        {
+            j.adopt(
+                *village,
+                "minecraft:village_plains",
+                "human",
+                90,
+                -4_000,
+                -4_000,
+            );
+            j.idle();
+        }
+        if let Some(Order::WorksRaid { village, .. } | Order::TributeStart { village, .. }) = &given
+        {
+            // Works and a purse: a raid has golems to buy, a tribute coin to pay. The catalog is
+            // read before the grant is taken (a step takes its orders first).
+            j.work_catalog(&test_works());
+            j.idle();
+            e.order(vec![Order::WorksGrant {
+                village: *village,
+                amount: 1_000_000,
+            }])
+            .unwrap();
+            j.idle();
+        }
+        if let Some(Order::TributeStart { lair, .. }) = &given {
+            use rtsim_ecology::boundary as db;
+            let home = (-6_000, 100, -6_000);
+            let dimension = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            j.dragon_obs(&db::Obs::LairFound(db::LairFound {
+                lair: *lair,
+                late: false,
+                dimension,
+                species: rtsim_ecology::species::Species::Fire,
+                kind: rtsim_ecology::dragon::LairKind::Roost,
+                min: (home.0 - 30, 60, home.2 - 30),
+                max: (home.0 + 30, 140, home.2 + 30),
+                home,
+            }));
+            j.idle();
+        }
+        // The player sees the band leave the camp too: only the fight's waves are fought. A
+        // quarter falls, short of a rout: the fight ends sooner, not at once.
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 8, "a band with members to lose: {n}");
+        // A pool well below its cap, so that it shows the band coming home.
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp") as usize;
+            let now = c.now();
+            c.factions[f].pool = 10.0;
+            c.factions[f].pool_at = now;
+        });
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        let fight_at = j.game_time;
+        assert_eq!(books(&e, p).0, n, "no one has fallen yet");
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        fillers(&mut j, 4_000);
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= fight_at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        assert_eq!(
+            party(&e, p).map(|x| x.0),
+            Some(Phase::Fighting),
+            "not routed"
+        );
+        let casualties_at = j.game_time;
+        advance_until(&mut j, 100, 2 * DAY, "the band home", |j| {
+            party(&j.e, p).is_none()
+        });
+        assert!(
+            j.game_time > casualties_at + 1_000,
+            "the fight's end, the walk and the arrival come after the casualties"
+        );
+        // Past where the fight would have ended without its losses, and the walk after it.
+        let home_at = j.game_time;
+        advance_until(
+            &mut j,
+            100,
+            DAY,
+            "past the unshortened fight's walk home",
+            |j| j.game_time >= home_at + 2_000,
+        );
+        let gt = j.game_time;
+        let live = pool(&e);
+        let cap = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp") as usize;
+            f64::from(c.cultures.get(c.factions[f].culture).def.pool_cap)
+        });
+        assert!(
+            live.2 + 1.0 < cap,
+            "the pool is not at its cap, so it shows the band: {live:?} of {cap}"
+        );
+        let Some(capacity) = capacity else {
+            j.idle();
+            assert_eq!(pool(&e), live, "the session that went on");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return;
+        };
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        assert!(
+            bytes > 3 * wire::MIN_CAPACITY && bytes < capacity.max(5 * wire::MIN_CAPACITY),
+            "the replay's records: {bytes} bytes"
+        );
+
+        let (e, j) = match &given {
+            None => reopen_mask(&dir, saved, gt, capacity, mask),
+            Some(order) => {
+                let e = engine(&dir, capacity);
+                let mut j = Java::open(e.clone(), saved);
+                j.module_mask = mask;
+                j.game_time = gt;
+                assert_eq!(e.conflict_restore_check(), (None, false));
+                j.idle();
+                assert_eq!(
+                    replay_counts(&e).0,
+                    0,
+                    "the replay runs on past its first hand-over"
+                );
+                let mut order = order.clone();
+                match &mut order {
+                    // The village's culture buys works, so that the grant has a purse to go to.
+                    Order::WorksGrant { .. } => j.work_catalog(&test_works()),
+                    Order::HerdFound { dimension, .. } => {
+                        *dimension = j.dict_id(wire::DICT_DIMENSION, OVERWORLD)
+                    }
+                    _ => {}
+                }
+                e.order(vec![order]).unwrap();
+                hand_over_all(&mut j);
+                j.idle();
+                (e, j)
+            }
+        };
+        let (ended, hand_overs, _) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        if capacity == wire::MIN_CAPACITY {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        } else {
+            assert_eq!(hand_overs, 1, "a replay of one hand-over");
+        }
+        assert!(party(&e, p).is_none(), "the band is home");
+        let after = pool(&e);
+        assert_eq!(
+            after.2, live.2,
+            "the pool after the replay counts the band as the session that went on did ({n} out, \
+             {lost} lost): {after:?}, live {live:?}"
+        );
+        assert_eq!(
+            after, live,
+            "and the band came home when it did in the session that went on"
+        );
+        // The order itself is taken once the replay has ended.
+        match given {
+            Some(Order::WorksGrant { village, amount }) => {
+                let v = e.phase1_works(village).expect("the granted village");
+                assert_eq!(
+                    v[2] + v[5],
+                    amount,
+                    "the grant in its purse or spent: {v:?}"
+                );
+            }
+            Some(Order::HerdFound { .. }) => {
+                assert_eq!(e.herd_agents().len(), 1, "a herd founded")
+            }
+            Some(Order::WorksRaid { village, .. }) => {
+                let threat = e.with_dragons(|_, w| {
+                    w.node_of_key(village)
+                        .and_then(|n| w.works_of(n))
+                        .and_then(|s| s.threat_at)
+                });
+                assert!(threat.is_some(), "the village raided");
+            }
+            Some(Order::TributeStart { .. }) => {
+                assert_eq!(e.dragons_tribute()[0], 1, "the tribute paid")
+            }
+            _ => {}
+        }
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_long_replay() {
+        let long = Some(wire::MIN_CAPACITY);
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long", long, MODULES);
+    }
+
+    /// The same with industry on: its clock is not held (docs/replay-gate.md §3.6), and the
+    /// conflict's still is.
+    #[test]
+    fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_long_replay_with_industry_on() {
+        let long = Some(wire::MIN_CAPACITY);
+        let mask = MODULES | MODULE_INDUSTRY;
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-long-industry", long, mask);
+    }
+
+    /// RP-33 (the fix round's item 3): a works grant given while the replay runs. Applied at
+    /// once it would run the phase 1 world to the hand-over's time, Java's present, and the next
+    /// replayed record's clamp (`max(record, conflict.now, phase1.world.now)`) would carry the
+    /// conflict there: the fight's end, the walk and `home()` before the casualties, which then
+    /// find the band pooled.
+    #[test]
+    fn a_works_grant_while_replaying_undoes_no_casualty() {
+        let order = Order::WorksGrant {
+            village: GRANTED,
+            amount: 1_000_000,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        a_fight_kept_in_the_pages_with("conflict-rp33-grant", long, MODULES, Some(order));
+    }
+
+    /// The same with a HERD_FOUND, which runs the shared clock to the hand-over's time itself
+    /// (`shared::run_to`), the herds on.
+    #[test]
+    fn a_herd_found_while_replaying_undoes_no_casualty() {
+        let order = Order::HerdFound {
+            name: "Replayed flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: 0,
+            x: -4_000,
+            z: -4_000,
+            count: 6,
+            seed: 0,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        let mask = MODULES | rtsim_jni::engine::MODULE_HERDS;
+        a_fight_kept_in_the_pages_with("conflict-rp33-herd", long, mask, Some(order));
+    }
+
+    /// The same with a works raid (the re-review's item 5), which runs the phase 1 world to the
+    /// hand-over's time as a grant does.
+    #[test]
+    fn a_works_raid_while_replaying_undoes_no_casualty() {
+        let order = Order::WorksRaid {
+            village: GRANTED,
+            tribute: false,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        a_fight_kept_in_the_pages_with("conflict-rp33-raid", long, MODULES, Some(order));
+    }
+
+    /// The same with a TRIBUTE_START (the re-review's item 5), which runs the dragons and the
+    /// phase 1 world to the hand-over's time, the dragons on.
+    #[test]
+    fn a_tribute_start_while_replaying_undoes_no_casualty() {
+        let order = Order::TributeStart {
+            village: GRANTED,
+            lair: TRIBUTE_LAIR,
+        };
+        let long = Some(wire::MIN_CAPACITY);
+        let mask = MODULES | rtsim_jni::engine::MODULE_HERDS;
+        a_fight_kept_in_the_pages_with("conflict-rp33-tribute", long, mask, Some(order));
+    }
+
+    /// RP-66 (the M5 merge check's item 2): a test's conflict command joins the conflict's queue
+    /// around its gate, so one ordered while the replay runs waits for the replay end as RP-33's
+    /// orders do. A BAND_MATERIALIZE, a "never" kind, is not written while the replay runs, and
+    /// is once it has ended.
+    #[test]
+    fn a_conflict_command_ordered_while_replaying_waits_for_the_replay_end() {
+        let (dir, e, mut j) = camp("conflict-rp66-order");
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        // Eight hand-overs: an idle takes two.
+        fillers(&mut j, 8_000);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        assert!(
+            bytes > 6 * wire::MIN_CAPACITY,
+            "the replay's records: {bytes} bytes"
+        );
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.idle();
+        assert_eq!(
+            replay_counts(&e).0,
+            0,
+            "the replay runs past its first hand-over"
+        );
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let (warrior, agent) = (41, 0x43 << 56 | 0x66);
+        let cmd = C::Materialize(cb::BandMaterialize {
+            agent,
+            epoch: 3,
+            dimension: dim,
+            faction: CAMP,
+            purpose: 3,
+            flags: cb::BAND_HOSTILE,
+            wave: 0,
+            arc_centre: (10.0, 20.0),
+            bearing_deg: 90.0,
+            arc_radius: 112,
+            half_width_deg: 30.0,
+            target: (10.0, 64.0, 20.0),
+            target_player: PLAYER,
+            speed: 0.02,
+            members: vec![cb::Stack {
+                body: warrior,
+                count: 5,
+                flags: 0,
+            }],
+        });
+        let mut record = Vec::new();
+        cb::encode_cmd(0, &cmd, &mut record);
+        let name = "mic_rtsim:conflict/goblin/warrior".to_string();
+        e.order(vec![Order::ConflictCommand {
+            names: vec![(wire::DICT_BODY, warrior, name)],
+            record,
+        }])
+        .unwrap();
+        let written =
+            |j: &Java| cmds(j).any(|c| matches!(c, C::Materialize(m) if m.agent == agent));
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 0, "still replaying");
+        assert!(!written(&j), "not written while the replay runs");
+        hand_over_all(&mut j);
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        assert!(written(&j), "written once it has ended");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A second case: the same replay in one hand-over. It does not isolate RP-24: before
+    /// df53fe38 it failed too, on RP-26's anchor (the arm's leave of the players' areas). The
+    /// control is the no-crash variant below.
+    #[test]
+    fn a_fight_kept_in_the_pages_counts_its_casualties_in_a_one_hand_over_replay() {
+        let one = Some(ONE_HAND_OVER);
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-one", one, MODULES);
+    }
+
+    /// Control: no crash, the session that goes on.
+    #[test]
+    fn a_fight_kept_in_the_pages_pools_what_is_left_without_a_crash() {
+        a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None, MODULES);
+    }
+
+    /// RP-22 (the review's amendment a): an invasion of 26 of one body kind, seen leaving the
+    /// camp after the save, the quota's 16 placed; `killed` of them die in view (BAND_CASUALTIES),
+    /// then the player leaves, the band is recalled and Java despawns it with 16 - `killed`
+    /// survivors. Returns the band's alive count: in the session that went on (`crash` false),
+    /// or after a crash and the replay of those records. The honour must place what Java was
+    /// commanded (16), not every alive member (26): Java's despawn counts only the placed.
+    fn an_invasion_seen_after_the_save(name: &str, killed: u32, crash: bool) -> u32 {
+        let (dir, e, mut j) = camp(name);
+        if killed > 0 {
+            // Of one stack of 16: floor(16 * 0.2) = 3, 200 ticks after it spawns.
+            j.conflict_plugin.fight = Some(synth::Fight {
+                kill_share: 0.2,
+                after: 200,
+                kill_chief: false,
+                only_at_base: false,
+            });
+        }
+        // Far, so that it is seen leaving the camp and walks on, not fought.
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Invasion, Step::Invasion, far);
+        on_step(&e, p, Step::Invasion);
+        e.with_conflict_mut(|c, _| {
+            let x = &mut c.parties[p];
+            let u = x.units[0].0;
+            x.units = vec![(u, 26)];
+            x.start_units = 26;
+        });
+        assert!(!books(&e, p).2, "not seen yet");
+        save(&e, &mut j);
+        advance_until(&mut j, 100, 3 * DAY, "the invasion out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        assert_eq!(books(&e, p).4, 16, "the quota placed");
+        if killed > 0 {
+            advance_until(&mut j, 100, 3_000, "the casualties", |j| {
+                books(&j.e, p).0 < 26
+            });
+            assert_eq!(books(&e, p).0, 26 - killed);
+        }
+        let from = j.conflict.len();
+        j.players.clear();
+        advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
+            !recalls(j, from, p).is_empty()
+        });
+        advance_until(&mut j, 100, 3_000, "the despawn", |j| !books(&j.e, p).3);
+        let live = books(&e, p);
+        assert!(!live.2 && live.4 == 0, "despawned: {live:?}");
+        if !crash {
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return live.0;
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, j) = reopen(&dir, saved, gt);
+        let (alive, _, embodied, recalled, spawned) = books(&e, p);
+        assert!(
+            !embodied && !recalled && spawned == 0,
+            "abstract after the replay"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        alive
+    }
+
+    #[test]
+    fn an_invasion_seen_after_the_save_is_counted_as_placed_after_a_crash() {
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22", 0, true),
+            26
+        );
+    }
+
+    #[test]
+    fn an_invasion_seen_after_the_save_counts_its_dead_once_after_a_crash() {
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22-dead", 3, true),
+            23
+        );
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn an_invasion_seen_and_despawned_without_a_crash() {
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22-live", 0, false),
+            26
+        );
+        assert_eq!(
+            an_invasion_seen_after_the_save("conflict-rp22-live-dead", 3, false),
+            23
+        );
+    }
+
+    /// RP-26 (the review's item): a watched fight kept in the pages, its casualties journaled
+    /// after the save, then 4,000 fillers. After the crash the arm changes no body (conflict
+    /// hears no `player_left` there): in the replay's hand-overs that carry the casualties the
+    /// band is still embodied at its epoch, fighting, with its kept stack, and the casualties
+    /// count off that stack, as in the session that went on; no RECALL goes in any buffer.
+    /// `crash`: false is the control (the same books, read at the same point).
+    fn a_watched_band_kept_across_the_arm(name: &str, crash: bool) {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 8, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        let fight_at = j.game_time;
+        let at_save = books(&e, p);
+        assert!(
+            at_save.2 && at_save.4 > 0,
+            "in view at the save: {at_save:?}"
+        );
+        save(&e, &mut j);
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= fight_at + 1_500 + 200
+        });
+        let live = books(&e, p);
+        assert!(n - live.0 >= 2, "the fight cost members: {live:?}");
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Fighting, true)),
+            "still fighting"
+        );
+        assert!(
+            live.4 < at_save.4,
+            "off its stack: {live:?}, at the save {at_save:?}"
+        );
+        fillers(&mut j, 4_000);
+        if !crash {
+            j.idle();
+            assert_eq!(books(&e, p), live, "the session that went on");
+            assert!(recalls(&j, 0, p).is_empty(), "no recall");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return;
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        // Hand over until the casualties are counted, the replay still running.
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            j.flush();
+            let b = books(&e, p);
+            seen.push((b, party(&e, p)));
+            if b.0 == live.0 {
+                break;
+            }
+        }
+        assert!(
+            e.with_conflict(|c, _| c.replaying()),
+            "the fillers are still to come: {seen:?}"
+        );
+        assert_eq!(
+            (books(&e, p), party(&e, p)),
+            (live, Some((Phase::Fighting, true))),
+            "the kept band, its casualties off its kept stack: {seen:?}"
+        );
+        assert!(recalls(&j, 0, p).is_empty(), "no recall in any buffer");
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        assert!(!e.with_conflict(|c, _| c.replaying()), "the replay ended");
+        assert_eq!(books(&e, p).0, live.0, "the replay counted each death once");
+        assert!(recalls(&j, 0, p).is_empty(), "no recall after it either");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_watched_band_kept_in_the_pages_stays_embodied_across_the_arm() {
+        a_watched_band_kept_across_the_arm("conflict-rp26", true);
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_watched_band_keeps_its_books_without_a_crash() {
+        a_watched_band_kept_across_the_arm("conflict-rp26-live", false);
+    }
+
+    /// §9.1 test 1 (the scratch audit's band first seen after a save): a raid in view only after
+    /// the save, so it is materialized at a new epoch, fought and half killed, then a crash. The
+    /// replay honours its BAND_MATERIALIZED (RP-6), so the casualties of that epoch find the band
+    /// (12 alive before RP-6: none of them counted). Returns its alive count after the crash and
+    /// the replay, or in the session that went on (`crash` false).
+    fn a_band_first_seen_after_the_save(name: &str, crash: bool) -> u32 {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        assert_eq!(party(&e, p).map(|x| x.1), Some(false), "not in view yet");
+        save(&e, &mut j);
+        let epoch_at_save = books(&e, p).1;
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let live = books(&e, p);
+        let lost = n - live.0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        assert!(live.1 > epoch_at_save, "seen after the save at a new epoch");
+        if !crash {
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return live.0;
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, j) = reopen(&dir, saved, gt);
+        let (alive, epoch, embodied, recalled, _) = books(&e, p);
+        assert_eq!(alive, n - lost, "the replay counts each death once");
+        assert_eq!(epoch, live.1, "at the epoch the replay honoured");
+        assert!(!embodied && !recalled, "abstract after the replay");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        alive
+    }
+
+    #[test]
+    fn a_band_first_seen_after_the_save_is_counted_after_a_crash() {
+        assert_eq!(
+            a_band_first_seen_after_the_save("conflict-seen-after-save", true),
+            6
+        );
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_band_first_seen_after_the_save_is_counted_without_a_crash() {
+        assert_eq!(
+            a_band_first_seen_after_the_save("conflict-seen-after-save-live", false),
+            6
+        );
+    }
+
+    /// A raid out and in view at a save, half of it killed after the save behind `count` fillers,
+    /// then a crash (scratch audit :5586): what the crash saved, the band, its size and losses,
+    /// the epochs Java was commanded for it, and where it stood at the save and at the crash.
+    struct InView {
+        dir: std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        p: Handle<Party>,
+        n: u32,
+        lost: u32,
+        epochs: Vec<u32>,
+        at_save: (i32, i32),
+        at_crash: (i32, i32),
+    }
+
+    /// See [`InView`]. `resave`: a save after the casualties too, right before the crash, so that
+    /// nothing is left to replay.
+    fn a_band_in_view_at_the_save(name: &str, mask: u32, count: usize, resave: bool) -> InView {
+        let (dir, e, mut j) = camp_with(name, mask);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let epoch_at_save = books(&e, p).1;
+        let at_save = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+        let first = j.world_save().next_obs;
+        fillers(&mut j, count);
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        assert_eq!(
+            books(&e, p).1,
+            epoch_at_save,
+            "one epoch in the old session"
+        );
+        if resave {
+            save(&e, &mut j);
+        }
+        let epochs = materialized_epochs(&j, 0, p);
+        let gt = j.game_time;
+        let at_crash = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        if count >= 4_000 && !resave {
+            assert!(
+                bytes > 3 * wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        InView {
+            dir,
+            saved,
+            gt,
+            p,
+            n,
+            lost,
+            epochs,
+            at_save,
+            at_crash,
+        }
+    }
+
+    /// The epochs of the BAND_MATERIALIZEs Java was commanded for `p` from `from` on, each once,
+    /// in order.
+    fn materialized_epochs(j: &Java, from: usize, p: Handle<Party>) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new();
+        for (_, c) in &j.conflict[from..] {
+            if let C::Materialize(m) = c
+                && m.agent == Party::agent(p)
+                && out.last() != Some(&m.epoch)
+            {
+                out.push(m.epoch);
+            }
+        }
+        out
+    }
+
+    /// The next session over `saved`, a player standing at `at`, its journal not handed over.
+    fn reopen_at(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        at: (i32, i32),
+        capacity: usize,
+        mask: u32,
+    ) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, capacity);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = mask;
+        j.game_time = gt;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(at.0) + 0.5, 64.0, f64::from(at.1) + 0.5];
+        j.players = vec![(PLAYER, dim, pos)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        (e, j)
+    }
+
+    /// Hands Java's whole journal over.
+    fn hand_over_all(j: &mut Java) {
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        assert!(j.sent_obs >= last, "the whole journal handed over");
+        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    }
+
+    /// §9.1 test 2 (scratch audit :5586): the band in view at the save, its casualties replayed
+    /// over the hand-overs a `capacity` buffer takes, with a player standing at the band. The
+    /// replay never embodies it again (RP-11), so the casualties' epoch stays its own and each
+    /// death counts once.
+    fn a_long_replay_at_the_band(name: &str, capacity: usize, mask: u32) {
+        let v = a_band_in_view_at_the_save(name, mask, 4_000, false);
+        let (e, mut j) = reopen_at(&v.dir, v.saved.clone(), v.gt, v.at_crash, capacity, mask);
+        hand_over_all(&mut j);
+        let (ended, hand_overs, _) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        if capacity == wire::MIN_CAPACITY {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        } else {
+            assert_eq!(hand_overs, 1, "a replay of one hand-over");
+        }
+        assert_eq!(
+            books(&e, v.p).0,
+            v.n - v.lost,
+            "the replay counts each death once ({} out, {} lost)",
+            v.n,
+            v.lost
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_long_replay_counts_every_casualty_against_its_band() {
+        a_long_replay_at_the_band("conflict-long-replay", wire::MIN_CAPACITY, MODULES);
+    }
+
+    /// The same with industry on (its clock is not held, docs/replay-gate.md §3.6).
+    #[test]
+    fn a_long_replay_counts_every_casualty_against_its_band_with_industry_on() {
+        let mask = MODULES | MODULE_INDUSTRY;
+        a_long_replay_at_the_band("conflict-long-replay-industry", wire::MIN_CAPACITY, mask);
+    }
+
+    /// Control: the same replay in one hand-over.
+    #[test]
+    fn a_one_hand_over_replay_counts_every_casualty_against_its_band() {
+        a_long_replay_at_the_band("conflict-long-replay-one", ONE_HAND_OVER, MODULES);
+    }
+
+    /// §9.1 test 3: the long replay of test 2, hand-over by hand-over. Until the replay end no
+    /// BAND_MATERIALIZE, ENVOY_MATERIALIZE or FACTION_NOTICE goes in any command buffer; after it
+    /// the band materializes where it is now (seen on the march: the arc's centre is the band's
+    /// place), at an epoch above every one Java was commanded. `resave`, the control: a save right
+    /// before the crash, nothing to replay, and the band materializes as soon as the session
+    /// starts (in the second hand-over, as below).
+    fn a_band_materialized_after_the_replay(name: &str, resave: bool) {
+        let v = a_band_in_view_at_the_save(name, MODULES, 4_000, resave);
+        let (e, mut j) = reopen_at(
+            &v.dir,
+            v.saved.clone(),
+            v.gt,
+            v.at_crash,
+            wire::MIN_CAPACITY,
+            MODULES,
+        );
+        let embodies = |c: &C| matches!(c, C::Materialize(_) | C::Envoy(_) | C::Notice(_));
+        let mut hand_overs = 0;
+        while replay_counts(&e).0 == 0 {
+            assert!(hand_overs < 64, "the replay never ended");
+            j.flush();
+            hand_overs += 1;
+            if replay_counts(&e).0 == 0 {
+                let early: Vec<&str> = j
+                    .conflict
+                    .iter()
+                    .filter(|(_, c)| embodies(c))
+                    .map(|(_, c)| c.name())
+                    .collect();
+                assert!(
+                    early.is_empty(),
+                    "hand-over {hand_overs}, replaying: {early:?}"
+                );
+            }
+        }
+        if resave {
+            assert_eq!(
+                hand_overs, 1,
+                "nothing to replay: it ends in the first hand-over"
+            );
+        } else {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        }
+        // The step books the players' areas after the conflict's run (`shared::simulate` comes
+        // after `conflict::simulate`), so the sighting found in the hand-over that ends the replay
+        // runs in the next one, as a live player's coming into view does.
+        let ended_at = hand_overs;
+        while materialized_epochs(&j, 0, v.p).is_empty() {
+            assert!(
+                hand_overs < ended_at + 8,
+                "never materialized after the replay"
+            );
+            j.flush();
+            hand_overs += 1;
+        }
+        assert_eq!(
+            hand_overs,
+            ended_at + 1,
+            "materialized in the next hand-over"
+        );
+        let (m, live) = (
+            j.conflict
+                .iter()
+                .find_map(|(_, c)| match c {
+                    C::Materialize(m) if m.agent == Party::agent(v.p) => Some(m.clone()),
+                    _ => None,
+                })
+                .expect("the materialize"),
+            e.with_conflict(|c, _| c.party_pos(v.p, c.now())),
+        );
+        let old = v
+            .epochs
+            .iter()
+            .copied()
+            .max()
+            .expect("materialized last session");
+        assert!(
+            m.epoch > old,
+            "a new epoch: {} after {:?}",
+            m.epoch,
+            v.epochs
+        );
+        let off = |a: (f64, f64), b: (i32, i32)| (a.0 - f64::from(b.0)).hypot(a.1 - f64::from(b.1));
+        let moved = off((f64::from(v.at_save.0), f64::from(v.at_save.1)), live);
+        assert!(moved > 16.0, "the band moved since the save: {moved}");
+        assert!(
+            off(m.arc_centre, live) < 4.0,
+            "from where the band is now, {live:?}: {:?} (at the save {:?})",
+            m.arc_centre,
+            v.at_save
+        );
+        assert_eq!(
+            books(&e, v.p).0,
+            v.n - v.lost,
+            "and each death counted once"
+        );
+        hand_over_all(&mut j);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn no_band_materializes_while_a_long_replay_runs_with_a_player_near() {
+        a_band_materialized_after_the_replay("conflict-no-materialize", false);
+    }
+
+    /// Control: nothing to replay.
+    #[test]
+    fn a_band_materializes_at_the_session_start_with_nothing_to_replay() {
+        a_band_materialized_after_the_replay("conflict-no-materialize-resaved", true);
+    }
+
+    /// §9.1 test 4 (RP-7, RP-30): a raid not in view at the save (epoch E), seen after it at
+    /// E + 1 and its BAND_MATERIALIZED journaled, then a crash. The replay honours E + 1 (RP-6),
+    /// and the next session's sighting takes E + 2: E + 1 named the last session's bodies. Returns
+    /// the epochs Java was commanded for the band, as offsets from E, in order. `crash` false, the
+    /// control: the session goes on, the player leaves (a recall and its despawn) and comes back
+    /// to the band.
+    fn epochs_of_a_band_seen_after_the_save(name: &str, crash: bool) -> Vec<u32> {
+        let (dir, e, mut j) = camp(name);
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        assert_eq!(party(&e, p).map(|x| x.1), Some(false), "not in view yet");
+        save(&e, &mut j);
+        let at_save = books(&e, p).1;
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let seen_at = j.game_time;
+        advance_until(&mut j, 100, 1_000, "its BAND_MATERIALIZED journaled", |j| {
+            j.game_time >= seen_at + 200
+        });
+        let mut epochs = materialized_epochs(&j, 0, p);
+        let watch = |j: &mut Java, at: (i32, i32)| {
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let pos = [f64::from(at.0) + 0.5, 64.0, f64::from(at.1) + 0.5];
+            j.players = vec![(PLAYER, dim, pos)];
+        };
+        let (e, mut j) = if crash {
+            let gt = j.game_time;
+            let saved = j.crash();
+            let (e, mut j) = reopen(&dir, saved, gt);
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            let b = books(&e, p);
+            assert!(
+                b.1 == at_save + 1 && !b.2,
+                "the replay honoured E + 1, abstract after it: {b:?}"
+            );
+            // The player comes back where the band is now.
+            let band = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+            watch(&mut j, band);
+            (e, j)
+        } else {
+            let from = j.conflict.len();
+            j.players.clear();
+            advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
+                !recalls(j, from, p).is_empty()
+            });
+            advance_until(&mut j, 100, 3_000, "the despawn", |j| {
+                let b = books(&j.e, p);
+                !b.2 && !b.3
+            });
+            let band = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+            watch(&mut j, band);
+            (e, j)
+        };
+        let from = j.conflict.len();
+        advance_until(&mut j, 20, 2_000, "seen again", |j| {
+            !materialized_epochs(j, from, p).is_empty()
+        });
+        epochs.extend(materialized_epochs(&j, from, p));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epochs.iter().map(|x| x - at_save).collect()
+    }
+
+    #[test]
+    fn a_band_epoch_decided_after_the_save_is_never_decided_again() {
+        let epochs = epochs_of_a_band_seen_after_the_save("conflict-epoch-floor", true);
+        assert_eq!(epochs, vec![1, 2]);
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_band_seen_twice_without_a_crash_takes_two_epochs() {
+        let epochs = epochs_of_a_band_seen_after_the_save("conflict-epoch-floor-live", false);
+        assert_eq!(epochs, vec![1, 2]);
+    }
+
+    /// §9.1 test 7 (U10, docs/replay-gate.md §3.1): the conflict switched off at the session start
+    /// and on in the middle of the session. Its reset begins its replay, and with the session's
+    /// replay over, that replay ends at once. `long`, the control: switched on while the session's
+    /// replay still runs (4,000 fillers after the save), its replay ends with the session's.
+    fn the_conflict_switched_on_mid_session(name: &str, long: bool) {
+        let (dir, e, mut j) = camp(name);
+        save(&e, &mut j);
+        if long {
+            fillers(&mut j, 4_000);
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES & !MODULE_CONFLICT;
+        j.game_time = gt;
+        j.flush();
+        let conflict_replaying = |e: &Engine| e.with_conflict(|c, _| c.replaying());
+        assert_eq!(
+            replay_counts(&e).0,
+            u64::from(!long),
+            "the session's replay end"
+        );
+        assert!(
+            !conflict_replaying(&e),
+            "switched off: its replay has not begun"
+        );
+        j.modules(MODULES);
+        j.flush();
+        assert_eq!(
+            conflict_replaying(&e),
+            long,
+            "switched on: its replay ends with the session's"
+        );
+        hand_over_all(&mut j);
+        assert_eq!(replay_counts(&e).0, 1, "one replay end a session");
+        assert!(!conflict_replaying(&e), "the conflict's replay ended");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_module_switched_on_mid_session_ends_its_replay_at_once() {
+        the_conflict_switched_on_mid_session("conflict-switched-on", false);
+    }
+
+    /// Control: switched on while the session's replay runs.
+    #[test]
+    fn a_module_switched_on_while_the_replay_runs_ends_it_with_the_session() {
+        the_conflict_switched_on_mid_session("conflict-switched-on-replaying", true);
+    }
+
+    /// §9.1 test 7 (docs/replay-gate.md §2.1, §2.2, RP-29): where the replay ends and the
+    /// hand-overs it counts. A camp saved, `count` fillers journaled after the save, and a crash;
+    /// `trim`: Java's journal trimmed past the pages (emptied, its next sequence kept), so that it
+    /// starts at or past `session_first`. Returns the replay counts after the next session's first
+    /// hand-over; by then the replay has ended, and the conflict's with it.
+    fn replay_counts_after(name: &str, count: usize, trim: bool) -> (u64, u64, u64) {
+        let (dir, e, mut j) = camp(name);
+        save(&e, &mut j);
+        fillers(&mut j, count);
+        let gt = j.game_time;
+        let mut saved = j.crash();
+        if trim {
+            saved.journal.clear();
+        }
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.flush();
+        let counts = replay_counts(&e);
+        assert!(
+            !e.with_conflict(|c, _| c.replaying()),
+            "the conflict's replay ended"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        counts
+    }
+
+    #[test]
+    fn a_session_with_nothing_to_replay_ends_its_replay_at_the_session_start() {
+        assert_eq!(
+            replay_counts_after("conflict-replay-nothing", 0, false),
+            (1, 0, 0)
+        );
+    }
+
+    /// RP-29: without the journal check the replay waited for the first live record.
+    #[test]
+    fn a_journal_starting_past_the_session_first_ends_the_replay_at_the_session_start() {
+        assert_eq!(
+            replay_counts_after("conflict-replay-trimmed", 10, true),
+            (1, 0, 0)
+        );
+    }
+
+    /// Control: the same ten records kept, a replay of one hand-over.
+    #[test]
+    fn a_short_replay_ends_in_its_first_hand_over() {
+        let (ended, hand_overs, records) = replay_counts_after("conflict-replay-short", 10, false);
+        assert_eq!((ended, hand_overs), (1, 1));
+        assert!(records >= 10, "the fillers replayed: {records}");
+    }
+
+    // ---- §2.5: the tests that need both S4p and RP (docs/replay-gate.md §2.5, RP-43) ---------
+
+    /// What a holder keeps of a band's casualties: the generation that journaled them and the
+    /// records as journaled.
+    struct Kept {
+        nonce: u64,
+        records: Vec<Vec<u8>>,
+    }
+
+    /// The BAND_CASUALTIES Java journaled for `p` from sequence `first` on.
+    fn casualties_kept(j: &Java, first: u64, p: Handle<Party>) -> Kept {
+        let records = j
+            .journal
+            .iter()
+            .filter(|(s, r)| *s >= first && wire::u16_at(r, wire::R_KIND) == cb::BAND_CASUALTIES)
+            .filter(|(_, r)| {
+                matches!(cb::decode_obs(r), Ok((_, O::Casualties(c), _))
+                    if c.agent == Party::agent(p))
+            })
+            .map(|(_, r)| r.clone())
+            .collect();
+        Kept {
+            nonce: j.nonce,
+            records,
+        }
+    }
+
+    /// A holder's copies (REASSERT) of each kept record, under generation `nonce`, handed over.
+    fn reassert_all(j: &mut Java, k: &Kept, nonce: u64) {
+        for r in &k.records {
+            j.reassert(nonce, r);
+        }
+        j.idle();
+        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    }
+
+    /// Copies applied and dropped (S4p's counts).
+    fn copies(e: &Engine) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        (
+            e.stats.copies_applied.load(Acquire),
+            e.stats.copies_dropped.load(Acquire),
+        )
+    }
+
+    struct Fought {
+        dir: std::path::PathBuf,
+        e: std::sync::Arc<Engine>,
+        j: Java,
+        p: Handle<Party>,
+        n: u32,
+        lost: u32,
+        kept: Kept,
+    }
+
+    /// [`a_fight_and_a_crash`]'s first session, up to its crash: the world saves taken with the
+    /// pages (`before`) and at the crash, and the game time then.
+    struct Crashed {
+        dir: std::path::PathBuf,
+        p: Handle<Party>,
+        n: u32,
+        lost: u32,
+        kept: Kept,
+        before: WorldSave,
+        crashed: WorldSave,
+        gt: i64,
+    }
+
+    /// A raid in view at a save (the pages, and a world save beside them), its fight's casualties
+    /// journaled after it, then a crash.
+    fn a_fight_then_a_crash(name: &str) -> Crashed {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let before = j.world_save();
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        let kept = casualties_kept(&j, before.next_obs, p);
+        assert!(!kept.records.is_empty(), "its casualties journaled");
+        let gt = j.game_time;
+        let crashed = j.crash();
+        Crashed {
+            dir,
+            p,
+            n,
+            lost,
+            kept,
+            before,
+            crashed,
+            gt,
+        }
+    }
+
+    /// [`a_fight_then_a_crash`] and the next session. `lost_tail`: it starts from the world save
+    /// taken with the pages, so the crash lost the casualties with the journal's tail and only a
+    /// holder's copy is left of them; else from the world save at the crash, whose replay counts
+    /// them. Returns the next session, its replay over.
+    fn a_fight_and_a_crash(name: &str, lost_tail: bool) -> Fought {
+        let Crashed {
+            dir,
+            p,
+            n,
+            lost,
+            kept,
+            before,
+            crashed,
+            gt,
+        } = a_fight_then_a_crash(name);
+        let (e, j) = reopen(&dir, if lost_tail { before } else { crashed }, gt);
+        let (alive, _, embodied, recalled, _) = books(&e, p);
+        let want = if lost_tail { n } else { n - lost };
+        assert_eq!(
+            alive, want,
+            "lost with the tail ({lost_tail}), else replayed"
+        );
+        assert!(!embodied && !recalled, "abstract after the replay");
+        Fought {
+            dir,
+            e,
+            j,
+            p,
+            n,
+            lost,
+            kept,
+        }
+    }
+
+    /// §2.5 test 1 (SEC-1 fact 3, case 1; RP-9): a live copy of casualties a crash lost with the
+    /// journal's tail counts once, against the band by identity (its bodies are gone); a second
+    /// copy of the same records is dropped and counts nothing.
+    #[test]
+    fn a_live_copy_of_casualties_a_crash_lost_counts_once() {
+        let Fought {
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+            ..
+        } = a_fight_and_a_crash("conflict-copy-live", true);
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "the copy counts the deaths");
+        assert_eq!(copies(&e), (k, 0));
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "the second copy counts nothing");
+        assert_eq!(copies(&e), (k, k));
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Control: the casualties in the replayed tail and a copy of them after it: counted once, by
+    /// the original; the copy is not new.
+    #[test]
+    fn a_copy_of_casualties_the_replay_counted_counts_nothing() {
+        let Fought {
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+            ..
+        } = a_fight_and_a_crash("conflict-copy-replayed-original", false);
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "counted once, by the original");
+        assert_eq!(copies(&e), (0, k));
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// §2.5 test 2 (fact 3, case 2): test 1's live copy journaled after a save of the session
+    /// that applied it, then a crash. The next session replays the copy: it is dispatched while
+    /// replaying (counted among the replay's records, every record after the pages), and the
+    /// band's units fall once.
+    #[test]
+    fn a_copy_journaled_after_the_pages_is_counted_by_the_replay() {
+        let (e, j, ..) = a_copy_replayed("conflict-copy-in-the-replay");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// §2.5 test 2's sessions, its checks made. Returns the session that replayed the copy, the
+    /// band, its alive units and the records copied.
+    fn a_copy_replayed(name: &str) -> (std::sync::Arc<Engine>, Java, Handle<Party>, u32, Kept) {
+        let Fought {
+            dir,
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+        } = a_fight_and_a_crash(name, true);
+        save(&e, &mut j);
+        let pages = e.durable_obs_seq();
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, n - lost, "counted live");
+        let gt = j.game_time;
+        let saved = j.crash();
+        let tail = saved
+            .journal
+            .iter()
+            .filter(|(s, r)| *s > pages && wire::u16_at(r, wire::R_KIND) != obs::JOURNAL_GEN)
+            .count() as u64;
+        let copies_in_tail = saved
+            .journal
+            .iter()
+            .filter(|(s, r)| *s > pages && wire::u16_at(r, wire::R_KIND) == obs::REASSERT)
+            .count() as u64;
+        assert_eq!(copies_in_tail, k, "the copies are after the pages");
+        let (e, j) = reopen(&dir, saved, gt);
+        assert_eq!(books(&e, p).0, n - lost, "the replay counts the copy once");
+        assert_eq!(copies(&e), (k, 0), "applied from the replay");
+        let (ended, _, records) = replay_counts(&e);
+        assert_eq!(
+            (ended, records),
+            (1, tail),
+            "every record after the pages replayed, the copies among them"
+        );
+        (e, j, p, n - lost, kept)
+    }
+
+    /// SEC-1's meeting-point review, item 7: a second live copy after a replayed copy. §2.5 test
+    /// 2's copy is replayed and counted once; then the holder loads again after the replay end
+    /// and journals the same copies live. The replay recorded them (`admit_copy`), so they are
+    /// not new: dropped, counting nothing.
+    #[test]
+    fn a_second_live_copy_after_a_replayed_copy_counts_nothing() {
+        let (e, mut j, p, alive, kept) = a_copy_replayed("conflict-copy-replayed-then-live");
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, alive, "the live copy counts nothing");
+        assert_eq!(copies(&e), (k, k), "dropped: the replay applied it");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// §2.5 test 3 (RP-8, RP-7): a raid not in view at a save (epoch E), seen after it (its
+    /// BAND_MATERIALIZED at E + 1 journaled), then a crash that loses the journal's tail with it,
+    /// so the next session decided nothing past E. A holder's copy of the BAND_MATERIALIZED,
+    /// `replayed`: applied in that session, then a crash, and replayed in the one after; else
+    /// applied live. It embodies nothing, and the band's next sighting is above it. Returns the
+    /// epochs Java was commanded after the copy, as offsets from E.
+    fn a_copy_of_a_band_materialized(name: &str, replayed: bool) -> Vec<u32> {
+        let (dir, e, mut j) = camp(name);
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        assert_eq!(party(&e, p).map(|x| x.1), Some(false), "not in view yet");
+        save(&e, &mut j);
+        let before = j.world_save();
+        let at_save = books(&e, p).1;
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let seen_at = j.game_time;
+        advance_until(&mut j, 100, 1_000, "its BAND_MATERIALIZED journaled", |j| {
+            j.game_time >= seen_at + 200
+        });
+        let rec = j
+            .journal
+            .iter()
+            .filter(|(s, r)| {
+                *s >= before.next_obs && wire::u16_at(r, wire::R_KIND) == cb::BAND_MATERIALIZED
+            })
+            .map(|(_, r)| r.clone())
+            .next()
+            .expect("its BAND_MATERIALIZED");
+        assert_eq!(materialized_epochs(&j, 0, p), vec![at_save + 1]);
+        let nonce = j.nonce;
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (mut e, mut j) = reopen(&dir, before, gt);
+        assert_eq!(
+            books(&e, p).1,
+            at_save,
+            "the crash lost E + 1 with the tail"
+        );
+        j.reassert(nonce, &rec);
+        j.idle();
+        if replayed {
+            let gt = j.game_time;
+            let saved = j.crash();
+            (e, j) = reopen(&dir, saved, gt);
+        }
+        assert_eq!(copies(&e), (1, 0), "the copy applied");
+        let b = books(&e, p);
+        assert!(!b.2 && b.4 == 0, "the copy embodies nothing: {b:?}");
+        assert!(
+            materialized_epochs(&j, 0, p).is_empty(),
+            "nothing commanded"
+        );
+        // The player comes to where the band is now.
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        let band = e.with_conflict(|c, _| c.party_pos(p, c.now()));
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(band.0) + 0.5, 64.0, f64::from(band.1) + 0.5];
+        j.players = vec![(PLAYER, dim, pos)];
+        advance_until(&mut j, 20, 2_000, "seen again", |j| {
+            !materialized_epochs(j, 0, p).is_empty()
+        });
+        let epochs = materialized_epochs(&j, 0, p);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epochs.iter().map(|x| x - at_save).collect()
+    }
+
+    #[test]
+    fn a_live_copy_of_a_band_materialized_embodies_nothing_and_raises_the_epoch() {
+        assert_eq!(
+            a_copy_of_a_band_materialized("conflict-copy-materialized-live", false),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn a_replayed_copy_of_a_band_materialized_embodies_nothing_and_raises_the_epoch() {
+        assert_eq!(
+            a_copy_of_a_band_materialized("conflict-copy-materialized-replayed", true),
+            vec![2]
+        );
+    }
+
+    /// §2.5 test 5 (RP-21): two live copies of the lost casualties under generation `nonce`.
+    /// Returns the members the copies took and the fight's dead, the conflict's refusals, S4p's
+    /// copy counts, and the records in one copy.
+    fn two_copies_of_lost_casualties(name: &str, nonce: u64) -> ((u32, u32), u64, (u64, u64), u64) {
+        let Fought {
+            e,
+            mut j,
+            p,
+            n,
+            lost,
+            kept,
+            ..
+        } = a_fight_and_a_crash(name, true);
+        reassert_all(&mut j, &kept, nonce);
+        reassert_all(&mut j, &kept, nonce);
+        let took = n - books(&e, p).0;
+        let (_, link) = e.conflict_stats();
+        let k = kept.records.len() as u64;
+        let out = ((took, lost), link.copies_refused, copies(&e), k);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        out
+    }
+
+    /// Generation 0: neither copy counts (a death really lost: a member lives on), each refused.
+    #[test]
+    fn copies_of_generation_0_casualties_are_refused() {
+        let ((took, _), refused, copies, k) =
+            two_copies_of_lost_casualties("conflict-copy-gen0", 0);
+        assert_eq!(took, 0, "neither copy counts");
+        assert_eq!(refused, 2 * k, "both refused");
+        assert_eq!(copies, (2 * k, 0), "S4p finds each new");
+    }
+
+    /// Control: a named generation no page holds: the first copy counts once, the second is
+    /// dropped.
+    #[test]
+    fn copies_of_casualties_of_an_unknown_generation_count_once() {
+        let ((took, lost), refused, copies, k) =
+            two_copies_of_lost_casualties("conflict-copy-unknown-gen", 0x7E57_0000_0000_0001);
+        assert_eq!(took, lost, "the first copy counts the deaths once");
+        assert_eq!(refused, 0);
+        assert_eq!(copies, (k, k), "the second dropped");
+    }
+
+    // ---- The fix round: no save while replaying (docs/replay-gate.md §3.2, RP-42) -----------
+
+    /// The camp's observed fights (`end_fight` pushes one; `wait_over` none).
+    fn observed(e: &Engine) -> Vec<(f64, f64)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp") as usize;
+            c.factions[f].observed.clone()
+        })
+    }
+
+    /// Opens the next session over `saved`, `players` in the world, with Java asking before its
+    /// first hand-over for a save through `session_first - 1`, the last replayed record: the
+    /// save is due at the session's first record, its JOURNAL_GEN. Hands the journal over and
+    /// waits for that save to land. Returns the session and its `session_first`.
+    fn reopen_saving_at_the_first_live_record(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        players: Vec<((u64, u64), u32, [f64; 3])>,
+    ) -> (std::sync::Arc<Engine>, Java, u64) {
+        const SAVES_DONE: usize = 9;
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.players = players;
+        let first = j.next_obs - 1;
+        let back = j
+            .journal
+            .back()
+            .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND)));
+        assert_eq!(
+            back,
+            Some((first, obs::JOURNAL_GEN)),
+            "the session's first record"
+        );
+        assert!(e.durable_obs_seq() < first - 1, "a tail to replay");
+        let saves = e.stats_array()[SAVES_DONE];
+        e.request_save(first - 1);
+        hand_over_all(&mut j);
+        let deadline = Instant::now() + DURABLE_WAIT;
+        while e.durable_obs_seq() < first - 1 {
+            assert!(Instant::now() < deadline, "the save never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            e.durable_obs_seq(),
+            first - 1,
+            "the pages end at the last replayed record"
+        );
+        assert_eq!(e.stats_array()[SAVES_DONE], saves + 1, "one save");
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        (e, j, first)
+    }
+
+    /// A restart from the pages taken at the last session's first record (`first`): their state
+    /// before the first hand-over, then the session with the journal handed over.
+    fn reopen_from_the_first_live_records_pages(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        first: u64,
+        p: Handle<Party>,
+    ) -> (Option<(Phase, bool)>, std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.durable_obs_seq(), first - 1, "the pages of that save");
+        let paged = party(&e, p);
+        hand_over_all(&mut j);
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        (paged, e, j)
+    }
+
+    /// RP-42: the budget's own save waits for the replay end too. A conflict under a small row
+    /// budget, 200 camps found after its last save and 4,000 fillers behind them, then a crash;
+    /// the next session replays them over several hand-overs. The camps' rows are new, so every
+    /// resident row page is dirty and over the budget from the first hand-over on: no save is
+    /// taken until the replay end, and the resident peak passes the budget by the replay's rows
+    /// until then; after it, a budget save comes and the rows go back under their budget.
+    #[test]
+    fn a_long_replay_takes_no_budget_save_before_its_end() {
+        use std::sync::atomic::Ordering::Acquire;
+        let budget = 4 * 1024;
+        let dir = tmpdir("conflict-rp42-budget");
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.idle();
+        save(&e, &mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let structure = j.dict_id(wire::DICT_STRUCTURE, "goblinstyranny:goblin_camp");
+        for i in 0..200 {
+            j.conflict_obs(&O::FactionFound(cb::FactionFound {
+                faction: CAMP + 1 + i,
+                flags: 0,
+                dimension: dim,
+                structure,
+                pos: (CAMP_AT.0 + 400 * i as i32, 64, CAMP_AT.1),
+                home_bodies: 0,
+                census: 0,
+            }));
+        }
+        fillers(&mut j, 4_000);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let (pressure, saves) = (
+            e.stats.pressure_saves.load(Acquire),
+            e.stats.saves_done.load(Acquire),
+        );
+        let total = e.with_conflict(|c, _| c.budget());
+        let (mut peak, mut hand_overs) = (0, 0);
+        while replay_counts(&e).0 == 0 {
+            assert!(hand_overs < 64, "the replay never ended");
+            j.flush();
+            hand_overs += 1;
+            peak = peak.max(e.with_conflict(|c, _| c.resident_bytes()));
+            if replay_counts(&e).0 == 0 {
+                assert_eq!(
+                    e.stats.pressure_saves.load(Acquire),
+                    pressure,
+                    "no budget save while replaying (hand-over {hand_overs})"
+                );
+            }
+        }
+        assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+        assert_eq!(
+            e.stats.saves_done.load(Acquire),
+            saves,
+            "no save while replaying"
+        );
+        assert!(
+            peak > total,
+            "over the budget while replaying: {peak} B of {total} B"
+        );
+        for _ in 0..8 {
+            j.idle();
+        }
+        let resident = e.with_conflict(|c, _| c.resident_bytes());
+        let after = e.stats.pressure_saves.load(Acquire);
+        eprintln!(
+            "a replay of {hand_overs} hand-overs under {total} B: rows {peak} B at peak while \
+             replaying, {resident} B after; {} budget saves after the replay end",
+            after - pressure
+        );
+        assert!(after > pressure, "the budget saved after the replay end");
+        assert!(
+            resident <= total,
+            "the rows back under their budget: {resident} B of {total} B"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The conflict's resident row bytes in [`the_replays_peak_against_the_live_sessions`]: the
+    /// live session's peak under the budget, the same session's with a budget it never reaches
+    /// (every row it touched since its last durable save resident), and the replay's after a
+    /// crash, under the budget.
+    #[derive(Debug)]
+    struct Peaks {
+        live: usize,
+        touched: usize,
+        replay: usize,
+    }
+
+    /// RP-49 (the re-review's item 2): a conflict under a 4 KiB row budget, a save, then `rounds`
+    /// hand-overs of 20 camps found and 400 fillers each, no save asked for, and a crash. The
+    /// live session's budget takes saves of its own, pending generations that the crash rolls
+    /// back (PF15), so the replay starts from the save before the first round and, taking no
+    /// page until its end (RP-42), holds every row the replayed records touch.
+    fn the_replays_peak_against_the_live_sessions(name: &str, rounds: u64) -> Peaks {
+        use std::sync::atomic::Ordering::Acquire;
+        const BUDGET: usize = 4 * 1024;
+        const PER: u64 = 20;
+        let live = |dir: &std::path::PathBuf, budget: usize| {
+            let e = engine_with(dir, 256 * 1024, |c| c.row_budget = budget);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            j.idle();
+            save(&e, &mut j);
+            let durable = e.durable_obs_seq();
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let structure = j.dict_id(wire::DICT_STRUCTURE, "goblinstyranny:goblin_camp");
+            let mut peak = 0;
+            for i in 0..rounds * PER {
+                j.conflict_obs(&O::FactionFound(cb::FactionFound {
+                    faction: CAMP + 1 + i,
+                    flags: 0,
+                    dimension: dim,
+                    structure,
+                    pos: (CAMP_AT.0 + 400 * i as i32, 64, CAMP_AT.1),
+                    home_bodies: 0,
+                    census: 0,
+                }));
+                if (i + 1) % PER == 0 {
+                    fillers(&mut j, 400);
+                    j.game_time += 100;
+                    j.idle();
+                    peak = peak.max(e.with_conflict(|c, _| c.resident_bytes()));
+                }
+            }
+            assert_eq!(e.durable_obs_seq(), durable, "no save asked for");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let pressure = e.stats.pressure_saves.load(Acquire);
+            let gt = j.game_time;
+            (peak, pressure, gt, j.crash())
+        };
+        let (touched, pressure, _, _) = live(&tmpdir(&format!("{name}-touched")), 1 << 30);
+        assert_eq!(pressure, 0, "a budget the session never reaches");
+        let dir = tmpdir(name);
+        let (peak, pressure, gt, saved) = live(&dir, BUDGET);
+        assert!(
+            pressure > 0,
+            "the live session's budget took saves of its own"
+        );
+
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| c.row_budget = BUDGET);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let mut replay = 0;
+        for hand_overs in 0.. {
+            assert!(hand_overs < 256, "the replay never ended");
+            let replaying = replay_counts(&e).0 == 0;
+            if !replaying {
+                break;
+            }
+            j.flush();
+            replay = replay.max(e.with_conflict(|c, _| c.resident_bytes()));
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Peaks {
+            live: peak,
+            touched,
+            replay,
+        }
+    }
+
+    /// RP-49: the replay's resident peak is bounded by the rows the crashed session touched
+    /// since its last durable save, not by its live peak. Under the budget the live session
+    /// stays near its budget and a step, while the replay holds the whole window, so the replay
+    /// passes the live peak by the window's rows less the budget: twice the window, twice the
+    /// excess and more, not a constant (reported to the build lead as a finding; the window is
+    /// Java's save cadence).
+    #[test]
+    fn a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save() {
+        let short = the_replays_peak_against_the_live_sessions("conflict-rp49-short", 5);
+        let long = the_replays_peak_against_the_live_sessions("conflict-rp49-long", 10);
+        eprintln!("resident row bytes, 100 camps: {short:?}; 200 camps: {long:?}");
+        for p in [&short, &long] {
+            assert!(
+                p.replay <= p.touched,
+                "the replay holds no more than the window's rows: {p:?}"
+            );
+            assert!(
+                p.live < p.touched,
+                "the live session under its budget: {p:?}"
+            );
+        }
+        let (a, b) = (short.replay - short.live, long.replay - long.live);
+        assert!(
+            b > a + (long.touched - short.touched) / 2,
+            "the replay's excess over the live peak grows with the window: {a} B, then {b} B"
+        );
+    }
+
+    /// RP-42: a clean close while the replay runs takes no page either: the pages stay as they
+    /// were, and the next start replays the whole tail again.
+    #[test]
+    fn a_close_while_replaying_keeps_the_pages() {
+        let (dir, e, mut j) = camp("conflict-rp42-close");
+        save(&e, &mut j);
+        let pages = e.durable_obs_seq();
+        fillers(&mut j, 4_000);
+        j.idle();
+        let gt = j.game_time;
+        let tail = j.journal.iter().filter(|(s, _)| *s > pages).count() as u64;
+        let saved = j.crash();
+
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved.clone());
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.flush();
+        assert_eq!(replay_counts(&e).0, 0, "still replaying");
+        assert!(e.stats_array()[4] > pages, "some of the tail replayed");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.durable_obs_seq(), pages, "the pages as they were");
+        hand_over_all(&mut j);
+        assert_eq!(
+            replay_counts(&e),
+            (1, 1, tail),
+            "the whole tail replayed again"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-42 (the fix round's item 1): a fight kept in the pages (Fighting at the save), a crash,
+    /// and a next session whose Java asks for a save through its last replayed record, taken at
+    /// its first record. The pages must hold the state after the replay end: the fight Waiting,
+    /// abstract. The session goes on (no player: the band waits out its fight, `wait_over`, and
+    /// walks home), journals past that and crashes. The restart from those pages must end where
+    /// the session that went on did. With the save before the replay end the pages kept the
+    /// fight Fighting and embodied, and the restart ended it with `end_fight`, an observed fight
+    /// the session that went on never had.
+    #[test]
+    fn a_save_at_the_first_live_record_keeps_a_kept_fight_waiting() {
+        let (dir, e, mut j) = camp("conflict-rp42-fight");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        save(&e, &mut j);
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Fighting, true)),
+            "fighting at the crash"
+        );
+        let observed_before = observed(&e);
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        // The next session: the player has gone.
+        let (e, mut j, first) = reopen_saving_at_the_first_live_record(&dir, saved, gt, vec![]);
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Waiting, false)),
+            "abstract after the replay"
+        );
+        advance_until(&mut j, 100, 2 * DAY, "the band home", |j| {
+            party(&j.e, p).is_none()
+        });
+        fillers(&mut j, 20);
+        j.game_time += 600;
+        j.idle();
+        let live = (observed(&e), pool(&e));
+        assert_eq!(
+            live.0, observed_before,
+            "a Waiting fight ends as no observed fight"
+        );
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (paged, e, j) = reopen_from_the_first_live_records_pages(&dir, saved, gt, first, p);
+        assert_eq!(
+            paged,
+            Some((Phase::Waiting, false)),
+            "the pages hold the fight as the replay end left it"
+        );
+        assert!(party(&e, p).is_none(), "the band is home");
+        assert_eq!(
+            (observed(&e), pool(&e)),
+            live,
+            "the restart ends where the session that went on did"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-42: a raid that reaches its target, unwatched, inside the replayed window is held until
+    /// the replay end (§6.1), and Java asks for a save through the last replayed record, taken
+    /// at the session's first record. The session goes on: the held arrival runs as live (no one
+    /// watches: resolved, and the band walks home) while the player stands at the target, then
+    /// a crash. The restart from those pages holds the arrival again while it replays (the
+    /// pages kept its poll) and runs it after its replay end: the band is never read as
+    /// fighting at its target, and its books end as in the session that went on. A band going
+    /// home is never seen (`seen`), so no record of a sighting can follow a held raid's
+    /// arrival to be read as its fight.
+    #[test]
+    fn a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight() {
+        let (dir, e, mut j) = camp("conflict-rp42-held");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        // The player leaves, and its last report goes stale: no one sees the band leave.
+        j.players.clear();
+        j.game_time += 2_500;
+        j.idle();
+        let target = (CAMP_AT.0 + 600, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, target);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid on its way", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Out, false)),
+            "abstract on its way"
+        );
+        save(&e, &mut j);
+        advance_until(
+            &mut j,
+            100,
+            3 * DAY,
+            "the raid arrived and going home",
+            |j| party(&j.e, p).is_some_and(|x| x.0 == Phase::Home),
+        );
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let at_target = [f64::from(target.0) + 0.5, 64.0, f64::from(target.1) + 0.5];
+        let players = vec![(PLAYER, dim, at_target)];
+        let (e, mut j, first) = reopen_saving_at_the_first_live_record(&dir, saved, gt, players);
+        let live_arrival = e.conflict_stats().0.raids_watched;
+        advance_until(&mut j, 20, DAY, "the held arrival run as live", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        let watched = e.conflict_stats().0.raids_watched;
+        assert_eq!(
+            watched, live_arrival,
+            "the held arrival resolved, unwatched"
+        );
+        let live = books(&e, p).0;
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (paged, e, mut j) = reopen_from_the_first_live_records_pages(&dir, saved, gt, first, p);
+        assert!(
+            paged.is_some_and(|x| x.0 == Phase::Out),
+            "the pages hold the held arrival on its last segment: {paged:?}"
+        );
+        advance_until(&mut j, 20, DAY, "the arrival run after the replay", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        assert_eq!(e.conflict_stats().0.raids_watched, watched, "no fight read");
+        assert_eq!(
+            books(&e, p).0,
+            live,
+            "the band's books as in the session that went on"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// SEC-1's meeting-point review, item 7: a save due at a REASSERT (§2.2 trigger 1, §3.2,
+    /// RP-42). On main a session's first live record is its JOURNAL_GEN, so the REASSERT here is
+    /// the first record past the save Java asks for, right after the JOURNAL_GEN in the session's
+    /// first hand-over. S0's casualties are lost with the journal's tail (the next session opens
+    /// on the world save taken with the pages); S1's holder journals its copies before the first
+    /// hand-over, and Java asks for a save through the JOURNAL_GEN. The save is taken before the
+    /// first copy is admitted: the pages end at the JOURNAL_GEN, without the copies, which then
+    /// count once. A crash, and S2 replays the copies from those pages: counted once, not twice
+    /// and not lost.
+    #[test]
+    fn a_save_due_at_a_reassert_takes_the_pages_before_the_copy() {
+        const SAVES_DONE: usize = 9;
+        let Crashed {
+            dir,
+            p,
+            n,
+            lost,
+            kept,
+            before,
+            gt,
+            ..
+        } = a_fight_then_a_crash("conflict-save-at-a-copy");
+        let k = kept.records.len() as u64;
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), before);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let first = j.next_obs - 1;
+        assert_eq!(
+            j.journal
+                .back()
+                .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND))),
+            Some((first, obs::JOURNAL_GEN)),
+            "the session's first record"
+        );
+        let saves = e.stats_array()[SAVES_DONE];
+        e.request_save(first);
+        reassert_all(&mut j, &kept, kept.nonce);
+        let deadline = Instant::now() + DURABLE_WAIT;
+        while e.durable_obs_seq() < first {
+            assert!(Instant::now() < deadline, "the save never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            e.durable_obs_seq(),
+            first,
+            "the pages end at the JOURNAL_GEN, before the copies"
+        );
+        assert_eq!(e.stats_array()[SAVES_DONE], saves + 1, "one save");
+        assert_eq!(books(&e, p).0, n - lost, "the copies count once, live");
+        assert_eq!(copies(&e), (k, 0));
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j) = reopen(&dir, saved, gt);
+        assert_eq!(e.durable_obs_seq(), first, "the pages of that save");
+        assert_eq!(
+            books(&e, p).0,
+            n - lost,
+            "the replay counts the copies once"
+        );
+        assert_eq!(copies(&e), (k, 0), "applied from the replay");
+        assert_eq!(replay_counts(&e), (1, 1, k), "the copies, replayed");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// SEC-1's meeting-point review, item 7: a raid's arrival in the replayed window, held
+    /// (§6.1, RP-23), and its replayed fight. S0: the player at the target sees the band leave
+    /// the camp; a save while it is on its way; its arrival is a watched fight (a
+    /// BAND_MATERIALIZED at the next epoch), a quarter of the wave falls (BAND_CASUALTIES); a
+    /// crash. S1 replays both records from the pages taken before the arrival: the arrival is
+    /// held, the BAND_MATERIALIZED (inside the hold's slack, RP-48) is honoured as its fight, the
+    /// casualties count against that epoch's stack, and nothing is resolved abstractly. The
+    /// band's books, its epoch and the watched fights are S0's, and the fight is Waiting,
+    /// abstract, at the replay end.
+    #[test]
+    fn a_held_arrivals_replayed_fight_counts_its_casualties_once() {
+        let resolved = |e: &Engine| {
+            e.conflict_log(true)
+                .iter()
+                .filter(|l| l.what == "finds nothing to raid")
+                .count()
+        };
+        let (dir, e, mut j) = camp("conflict-held-fight");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 20, DAY, "the raid on its way, in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let durable = e.durable_obs_seq();
+        let (n, at_save) = (books(&e, p).0, books(&e, p).1);
+        let watched = e.conflict_stats().0.raids_watched;
+        let from = j.conflict.len();
+        advance_until(&mut j, 20, DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        advance_until(&mut j, 100, DAY, "its casualties journaled", |j| {
+            books(&j.e, p).0 < n
+        });
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        assert_eq!(materialized_epochs(&j, from, p), vec![at_save + 1]);
+        let replayed = |kind: u16| {
+            j.journal
+                .iter()
+                .filter(|(s, r)| *s > durable && wire::u16_at(r, wire::R_KIND) == kind)
+                .count()
+        };
+        let (m, c) = (
+            replayed(cb::BAND_MATERIALIZED),
+            replayed(cb::BAND_CASUALTIES),
+        );
+        assert!(
+            m >= 1 && c > 20,
+            "the fight's records after the pages: {m}, {c}"
+        );
+        let live = books(&e, p);
+        assert!(live.0 < n && live.1 == at_save + 1, "{live:?}");
+        assert_eq!(party(&e, p), Some((Phase::Fighting, true)));
+        assert_eq!(e.conflict_stats().0.raids_watched, watched + 1);
+        assert_eq!(resolved(&e), 0, "S0 resolved nothing");
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            e.durable_obs_seq(),
+            durable,
+            "the pages from before the arrival"
+        );
+        assert_eq!(resolved(&e), 0, "the held arrival resolved nothing");
+        assert_eq!(
+            e.conflict_stats().0.raids_watched,
+            watched + 1,
+            "the replayed BAND_MATERIALIZED honoured as the arrival's fight"
+        );
+        let b = books(&e, p);
+        assert_eq!(
+            (b.0, b.1),
+            (live.0, live.1),
+            "the casualties counted once, at the fight's epoch"
+        );
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Waiting, false)),
+            "the fight Waiting, abstract, at the replay end"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- The fix round: a held arrival across two crashes (§6.1) ------------------------------
+
+    /// The fix round's item 8 (§6.1): a session's held arrival stays held across a second
+    /// session that ends before its replay end, by a crash or by a clean close (`clean`, the
+    /// re-review's item 3: `close(true)`, the path RP-42 changed). S0: a raid, unwatched,
+    /// reaches its target after the save, resolves (it finds nothing to raid) and walks home;
+    /// 4,000 fillers; a crash. S1 replays at MIN_CAPACITY, past the arrival (held, nothing
+    /// resolved), journals records of its own and ends before its replay end. It takes no page
+    /// while replaying (RP-42), so S2 opens on the same pages and replays S0's tail and S1's
+    /// records whole: the arrival is held again and resolved once, after S2's replay end (inside
+    /// the hold's slack, RP-48), its books as in S0. What is lost is time: the arrival resolves
+    /// after S2's replay end, not at its tick in S0.
+    fn a_held_arrival_across_a_second_session(name: &str, clean: bool) {
+        use std::sync::atomic::Ordering::Acquire;
+        let resolved = |e: &Engine| {
+            e.conflict_log(true)
+                .iter()
+                .filter(|l| l.what == "finds nothing to raid")
+                .count()
+        };
+        let (dir, e, mut j) = camp(name);
+        j.players.clear();
+        j.game_time += 2_500;
+        j.idle();
+        let target = (CAMP_AT.0 + 600, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, target);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid on its way", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        save(&e, &mut j);
+        let pages = e.durable_obs_seq();
+        let arrival = e.with_conflict(|c, _| *c.parties[p].times.last().unwrap());
+        let _ = resolved(&e);
+        advance_until(
+            &mut j,
+            100,
+            3 * DAY,
+            "the raid arrived and going home",
+            |j| party(&j.e, p).is_some_and(|x| x.0 == Phase::Home),
+        );
+        assert_eq!(resolved(&e), 1, "S0 resolves the arrival");
+        let live = books(&e, p).0;
+        fillers(&mut j, 4_000);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        // S1: replays past the arrival, journals 20 records of its own, and crashes or closes.
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let _ = e.conflict_log(true);
+        j.flush();
+        assert_eq!(replay_counts(&e).0, 0, "S1 still replaying");
+        assert!(
+            e.with_conflict(|c, _| c.now()) > arrival,
+            "S1's replay past the arrival"
+        );
+        assert_eq!(party(&e, p), Some((Phase::Out, false)), "held in S1");
+        assert_eq!(resolved(&e), 0, "S1 resolves nothing");
+        fillers(&mut j, 20);
+        assert_eq!(
+            e.stats.window_grew.load(Acquire),
+            0,
+            "S0 saved, so S1's window is S0's tail alone (RP-49)"
+        );
+        let gt = j.game_time;
+        let saved = if clean {
+            let saved = j.world_save();
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+            saved
+        } else {
+            j.crash()
+        };
+        let tail = saved.journal.iter().filter(|(s, _)| *s > pages).count() as u64;
+
+        // S2: the same pages, S0's tail and S1's records replayed whole.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.durable_obs_seq(), pages, "S1 took no page");
+        let _ = e.conflict_log(true);
+        hand_over_all(&mut j);
+        // All but S1's JOURNAL_GEN, which is never dispatched.
+        assert_eq!(replay_counts(&e), (1, 1, tail - 1), "S0's and S1's records");
+        assert_eq!(
+            e.stats.window_grew.load(Acquire),
+            1,
+            "S1 ended with no save, so S2's window holds its records too: logged (RP-49)"
+        );
+        advance_until(&mut j, 20, DAY, "the arrival run after S2's replay", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        assert_eq!(resolved(&e), 1, "resolved once, after S2's replay end");
+        assert_eq!(books(&e, p).0, live, "the band's books as in S0");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_held_arrival_across_a_second_crash_before_the_replay_end_is_resolved_once() {
+        a_held_arrival_across_a_second_session("conflict-held-two-crashes", false);
+    }
+
+    /// The re-review's item 3: S1 closes cleanly while replaying. With RP-42's guard in `close`
+    /// off, S1 saves its pages mid-replay and S2 opens on them: durable through observation
+    /// 1,026, a record S1 replayed, not S0's save at 3; S2 then replays 2,997 records, not
+    /// 4,020. The arrival is still resolved once with S0's books, by `held_since`'s inference
+    /// from pages saved mid-replay, kept as a defence (§6.1, RP-40).
+    #[test]
+    fn a_held_arrival_across_a_clean_close_before_the_replay_end_is_resolved_once() {
+        a_held_arrival_across_a_second_session("conflict-held-a-clean-close", true);
+    }
+
+    // ---- The fix round: phase 1 shows nothing while replaying (RP-44) ------------------------
+
+    /// The villages of [`phase1_across_a_replay`]: a player stands in A, on its roads to B and C.
+    const VILLAGES: [(u64, &str, i32, i32); 3] = [
+        (0x0001_0000_0000_00B1, "minecraft:village_plains", 0, 0),
+        (0x0001_0000_0000_00B2, "minecraft:village_taiga", 400, 0),
+        (0x0001_0000_0000_00B3, "minecraft:village_desert", 0, 400),
+    ];
+
+    /// What phase 1 sent around a replay ([`phase1_across_a_replay`]): (MARKET, SPAWN_GROUP)
+    /// commands while the replay ran and in the hand-overs after its end, and its hand-overs.
+    struct Phase1Replay {
+        during: (usize, usize),
+        after: (usize, usize),
+        hand_overs: u64,
+    }
+
+    /// RP-44 (the fix round's item 4): three villages, a goblin camp far off (so the conflict runs
+    /// and the world is held while replaying, docs/replay-gate.md §3.6), and a player standing in
+    /// village A, on its roads; days on until a caravan is materialized near it, then a save,
+    /// 4,000 fillers and a crash. The next session hands the journal over at `capacity`, one
+    /// hand-over at a time, the player where it was.
+    fn phase1_across_a_replay(name: &str, capacity: usize) -> Phase1Replay {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        for (key, structure, x, z) in VILLAGES {
+            j.adopt(key, structure, "human", 90, x, z);
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = [10.0, 64.0, 0.0];
+        j.players = vec![(PLAYER, dim, at)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        j.idle();
+        found(&mut j, (6_000, 6_000));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let counts = |j: &Java| (j.p1_of(cmd::MARKET).len(), j.p1_of(cmd::SPAWN_GROUP).len());
+        assert!(counts(&j).0 > 0, "the player in A has its market");
+        let mut quanta = 0;
+        while counts(&j).1 == 0 {
+            assert!(
+                quanta < 240,
+                "no caravan near the player: {:?}",
+                e.phase1_stats()
+            );
+            e.order(vec![Order::Phase1Advance(3_000)]).unwrap();
+            // Game time on too: phase 1 looks for what players see every 20 ticks of it.
+            j.game_time += 100;
+            j.idle();
+            quanta += 1;
+        }
+        save(&e, &mut j);
+        fillers(&mut j, 4_000);
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let e = engine(&dir, capacity);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.players = vec![(PLAYER, dim, at)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        let mut during = (0, 0);
+        for _ in 0..64 {
+            j.flush();
+            if replay_counts(&e).0 > 0 {
+                break;
+            }
+            during = counts(&j);
+        }
+        let (ended, hand_overs, _) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        j.idle();
+        let now = counts(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Phase1Replay {
+            during,
+            after: (now.0 - during.0, now.1 - during.1),
+            hand_overs,
+        }
+    }
+
+    /// A replay of several hand-overs: no market and no caravan while it runs, both once it has
+    /// ended.
+    #[test]
+    fn phase1_shows_nothing_while_replaying() {
+        let r = phase1_across_a_replay("phase1-replay-long", wire::MIN_CAPACITY);
+        assert!(r.hand_overs >= 3, "a replay of {} hand-overs", r.hand_overs);
+        assert_eq!(r.during, (0, 0), "(markets, caravans) sent while replaying");
+        assert!(
+            r.after.0 > 0 && r.after.1 > 0,
+            "the market and the caravan after the replay end: {:?}",
+            r.after
+        );
+    }
+
+    /// Control: the same replay in one hand-over, which ends before phase 1 runs.
+    #[test]
+    fn phase1_shows_its_market_and_caravan_after_a_one_hand_over_replay() {
+        let r = phase1_across_a_replay("phase1-replay-one", ONE_HAND_OVER);
+        assert_eq!(r.hand_overs, 1, "a replay of one hand-over");
+        assert_eq!(r.during, (0, 0));
+        assert!(
+            r.after.0 > 0 && r.after.1 > 0,
+            "the market and the caravan in its first hand-over: {:?}",
+            r.after
+        );
     }
 }
 

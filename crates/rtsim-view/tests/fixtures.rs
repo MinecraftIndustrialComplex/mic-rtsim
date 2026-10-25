@@ -4,8 +4,10 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit e67a2f7
-//!   (SEC-1's slices S4c2 and S5-1 merged with main 4b926ef, which carries the Mowzie's Mobs camp
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c67da61
+//!   (SEC-1's slice S5-2 merged with main 095be6e; S5-2's formats: the glass pages IGL7, the
+//!   regimes' and replays' network inputs and published rows, choice SC153; before that, b643465,
+//!   SEC-1's slices S4c2 and S5-1 merged with main 10d2330, which carries the Mowzie's Mobs camp
 //!   reconciler M4 and M5; M5's formats: the conflict's pages are RTC6 with meta version 5, each
 //!   faction row carrying its cap, its members away and its camp ledger, and the wheel's events may
 //!   be a camp refill, MOWZIE.md section 4.9; S4c2's and S5-1's formats: the package stores' pages
@@ -42,13 +44,13 @@
 //!   route draws only when a herd is on the move at the save, which depends on when the server
 //!   stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a had every herd
 //!   staying put. So the route layer is not required here; it still has to draw or say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from e67a2f7 (the core save's
-//!   formats; before that, 37a34e40 as part of the plain `./gametest.sh core create mowziesmobs`
-//!   round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm funnel-point
-//!   fix) with the section fixtures (`-Psec1fx`), its `run-gametest/world` deleted first (delete
-//!   `run-gametest/world` before a create run that follows a stress-generator run, whose clock is
-//!   ahead of the game). Every module's pages, mostly empty: herds, districts with their glass
-//!   pages and stations draw.
+//! - `tests/data/create`: neoforge/create's GameTest world, run from fe87a92 (S5-2 merged with
+//!   main f66cb73; the core save's formats; before that, b643465, 37a34e40 as part of the plain
+//!   `./gametest.sh core create mowziesmobs` round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce,
+//!   ec57cd7, 21e57d2 and S3's arm funnel-point fix) with the section fixtures (`-Psec1fx`), its
+//!   `run-gametest/world` deleted first (delete `run-gametest/world` before a create run that
+//!   follows a stress-generator run, whose clock is ahead of the game). Every module's pages,
+//!   mostly empty: herds, districts with their glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
 //! and these folders are replaced by a fresh GameTest run.
