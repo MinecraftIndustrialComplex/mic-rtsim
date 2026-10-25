@@ -44,6 +44,7 @@ import net.minecraft.world.entity.projectile.ThrownTrident;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -707,6 +708,98 @@ public final class FrostmawGameTests {
                     check("no Frostmaw stands about the spot", h.level.getEntitiesOfClass(EntityFrostmaw.class, around).isEmpty());
                     check("the lurk has no body", RtsimApi.lurkBody(h.agent) == null);
                     record(test, "off", "a held lurk puppet was gone with the module switched off, and nothing stood in its place after it was on again");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    // ---- the hold against the jar's chase (MZB-361) -------------------------------------------------
+
+    /** Ticks the chase test gives a displaced puppet to walk back, and the steady stretch it then stands for. */
+    private static final int BACK_TICKS = 200, STEADY_TICKS = 100;
+    /** The most new paths a puppet standing within its stand may be given in the steady stretch with a player near (the hold gives none). */
+    private static final int STEADY_PATHS = 2;
+
+    /**
+     * The hold wins against the jar's chase (MZB-361, the re-check's P1). A held puppet is pushed 2 blocks off its spot,
+     * across the line to a player 8 blocks west who is its target (the jar's {@code tick} walks an awake Frostmaw to
+     * its target every tick it is more than 5.5 blocks off, replacing the hold's path, and stops it when it is
+     * not). The puppet has no crystal, so no ice breath or ice ball animation stops its walk. Asserted: it is back
+     * within {@link FrostmawLurker#STAND} of the spot within {@value #BACK_TICKS} ticks; it never comes closer to
+     * the player than its spot is, less the stand (it did not walk after the player); and in the {@value #STEADY_TICKS}
+     * ticks after, it stays within the stand and is given at most {@value #STEADY_PATHS} new paths (the jar's fresh
+     * A* each tick, after a hold's stop cleared the last, was twenty a second). The wandering stroll goal, which a
+     * Frostmaw has and which moves a body up to its restriction's radius, is out while it is held too.
+     * <p>On the code before the fix the jar's chase wins nine ticks in ten and the puppet walks west: the test fails
+     * with "back within the stand of its spot in 200 ticks" (the closest it came to the spot is printed), or, inside
+     * 5.5 of the player, a stop each tick keeps it where it is. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_chase", skyAccess = true)
+    public static void aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget(GameTestHelper helper) {
+        String test = "aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget";
+        Held h = new Held(helper, test);
+        ServerPlayer[] player = new ServerPlayer[1];
+        double[] closest = {Double.MAX_VALUE}, nearest = {Double.MAX_VALUE}, stray = {0};
+        long[] from = new long[2];
+        int[] paths = {0, 0};
+        Path[] last = new Path[1];
+        h.up(helper)
+                .thenExecute(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    f.setHasCrystal(false);
+                    player[0] = FakePlayers.add(h.level, h.spot[0].add(-8, 0, 0), "mowzie-chase");
+                    player[0].setNoGravity(true);
+                    player[0].getAttribute(Attributes.MAX_HEALTH).setBaseValue(1000.0);
+                    player[0].setHealth(1000f);
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    // Two blocks north of the spot: the player (west) is then 8.2 blocks off, past the jar's 5.5 chase threshold and 6.5 swipe range
+                    f.setPos(h.spot[0].x, h.spot[0].y, h.spot[0].z - 2.0);
+                    f.setDeltaMovement(Vec3.ZERO);
+                    f.getNavigation().stop();
+                    f.setTarget(player[0]);
+                    from[0] = h.level.getGameTime();
+                    from[1] = -1;
+                })
+                .thenWaitUntil(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    f.setTarget(player[0]); // the restriction gates its own targeting (MZB-362)
+                    double fromSpot = Math.hypot(f.getX() - h.spot[0].x, f.getZ() - h.spot[0].z);
+                    closest[0] = Math.min(closest[0], fromSpot);
+                    nearest[0] = Math.min(nearest[0], Math.hypot(f.getX() - player[0].getX(), f.getZ() - player[0].getZ()));
+                    long now = h.level.getGameTime();
+                    check("back within " + FrostmawLurker.STAND + " blocks of its spot in " + BACK_TICKS + " ticks (" + (now - from[0])
+                            + " gone, the closest it came to the spot " + closest[0] + ", the closest it came to the player " + nearest[0] + ")",
+                            fromSpot <= FrostmawLurker.STAND);
+                })
+                .thenExecute(() -> {
+                    from[1] = h.level.getGameTime();
+                    last[0] = h.f[0].getNavigation().getPath();
+                    stray[0] = Math.hypot(h.f[0].getX() - h.spot[0].x, h.f[0].getZ() - h.spot[0].z);
+                    record(test, "back", "pushed 2 blocks off its spot, the puppet was back within " + FrostmawLurker.STAND + " in " + (from[1] - from[0])
+                            + " ticks, never nearer the player than " + nearest[0]);
+                })
+                .thenWaitUntil(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    f.setTarget(player[0]);
+                    Path p = f.getNavigation().getPath();
+                    if (p != null && p != last[0])
+                        paths[0]++;
+                    last[0] = p;
+                    stray[0] = Math.max(stray[0], Math.hypot(f.getX() - h.spot[0].x, f.getZ() - h.spot[0].z));
+                    nearest[0] = Math.min(nearest[0], Math.hypot(f.getX() - player[0].getX(), f.getZ() - player[0].getZ()));
+                    check("the steady stretch ran " + (h.level.getGameTime() - from[1]) + " of " + STEADY_TICKS + " ticks",
+                            h.level.getGameTime() - from[1] >= STEADY_TICKS);
+                })
+                .thenExecute(() -> {
+                    double floor = h.spot[0].distanceTo(player[0].position().with(net.minecraft.core.Direction.Axis.Y, h.spot[0].y)) - FrostmawLurker.STAND;
+                    check("it never walked after the player: the closest it came was " + nearest[0] + ", its spot is " + (floor + FrostmawLurker.STAND)
+                            + " off (" + floor + " allowed)", nearest[0] >= floor - 0.05);
+                    check("it stayed within its stand for " + STEADY_TICKS + " ticks (strayed " + stray[0] + ")", stray[0] <= FrostmawLurker.STAND + 1e-6);
+                    check("it was given at most " + STEADY_PATHS + " new paths in " + STEADY_TICKS + " ticks standing within its stand with a player near ("
+                            + paths[0] + ")", paths[0] <= STEADY_PATHS);
+                    check("it still holds: alwaysActive and restricted", h.f[0].isAlwaysActive() && h.f[0].hasRestriction());
+                    record(test, "steady", STEADY_TICKS + " ticks within the stand with the player 8 blocks off: strayed " + stray[0] + ", new paths " + paths[0]);
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
