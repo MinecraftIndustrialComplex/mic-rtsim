@@ -623,7 +623,11 @@ impl Conflict {
         self.stats.camp_orders += out.len() as u64;
         self.stats.camp_lines += lines.len() as u64;
         let n = lines.len();
-        self.outbox.extend(out);
+        // Through the gate (docs/replay-gate.md §4.4): never while replaying, since every camp is
+        // out from the replay's start (`camp_session_start`) to its end.
+        for c in out {
+            self.outbox.push(c);
+        }
         self.note(
             at,
             Some(f),
@@ -796,7 +800,7 @@ impl Conflict {
         if !self.culture(f).def.camp_bodies {
             return;
         }
-        if self.replaying {
+        if self.outbox.replaying() {
             if let Some(camp) = self.camp_mut(f) {
                 camp.epoch = 0;
                 camp.refill_at = None;
