@@ -460,40 +460,45 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 /// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a
 /// stack of tribute coin sent to a lair's chest (SINK.md §4.6). Applied or a duplicate, the
 /// coin is in the chest; failed, it waits for the chest to be reported again.
+///
+/// Taken whatever the switch (RP-291, docs/replay-gate.md 9.7's rule: the switch gates only new
+/// decisions). The core took the stack out of the outbox at this answer, and Java forgets its op
+/// (the journal's op index, the chest's chunk carry) at the engine's acknowledgement, so a stack
+/// still `placing` at the switch on would be written again under the same op and put in the
+/// chest a second time. Applied at once, not kept for the switch: neither `tribute_placed` nor
+/// `tribute_failed` reads the clock (a failed stack's next op comes from the lair's own counter,
+/// MSC47), and no decision reads a lair's `placed`. Off, the dragons' pages hold the change at
+/// the next save (`save_due`).
 pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
     }
-    if !st.dragons.enabled {
-        // U10: ignored. The stack left the outbox, so it goes again once they are back on and
-        // Java answers it DUPLICATE_OP if it is already in the chest (`answered_again`).
-        return;
-    }
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
-    match rec.aux {
+    let taken = match rec.aux {
         obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
-            st.dragons.engine.tribute_placed(op);
+            st.dragons.engine.tribute_placed(op)
         }
-        obs::command_result::FAILED => {
-            st.dragons.engine.tribute_failed(op);
-        }
-        _ => {}
+        obs::command_result::FAILED => st.dragons.engine.tribute_failed(op),
+        _ => false,
+    };
+    if taken && !st.dragons.enabled {
+        st.dragons.pager.save_due = true;
     }
 }
 
 /// A COMMAND_RESULT for an op `Replay` already admitted: a tribute stack sent again after the
-/// pages lost its first answer (the dragons were off, or a crash came before a save). Java
-/// answered it DUPLICATE_OP: it is in the chest.
+/// pages lost its first answer (a crash came before a save). Java answered it DUPLICATE_OP: it
+/// is in the chest. Taken whatever the switch, as [`after_core`].
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
-    if rec.kind != obs::COMMAND_RESULT
-        || rec.size() < obs::command_result::SIZE
-        || !st.dragons.enabled
-    {
+    if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
     }
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
     if st.dragons.engine.tribute_placed(op) {
         st.outbox.complete(OpId(op));
+        if !st.dragons.enabled {
+            st.dragons.pager.save_due = true;
+        }
     }
 }
 
@@ -767,7 +772,11 @@ fn write_far(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
         let dim_name = if r.state == FarState::Gone {
             None
         } else {
-            match st.world.java_dict.get(&(wire::DICT_DIMENSION, u32::from(r.frame))) {
+            match st
+                .world
+                .java_dict
+                .get(&(wire::DICT_DIMENSION, u32::from(r.frame)))
+            {
                 Some(n) => Some(n.clone()),
                 None => {
                     // A dimension Java never named has no players to draw it for.
