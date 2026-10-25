@@ -1403,6 +1403,11 @@ and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
   `materialize_pirate`.
 - **Pirate coast raids** (§6.1, RP-95): `coast_raid` is deferred whole while replaying; the answer
   and its reasons are in the record.
+- **The blind watcher** (§6.1, RP-95): no player is routed to the ships until the replay end, so
+  `point_in_view` and `relaunch_in_view` answer true while replaying (every dock is watched). A
+  relaunch then waits for the slot's next stay, a shut haven's refound and a navy's assault look
+  again a period later, and a direct `port_raid` is not made; each is judged by the players routed
+  after the replay end.
 - **Test orders** (§3.6, §4.4, RP-96): `Order::ShipCommand` waits for the replay end.
 - **Copies** (§5.7, RP-97): rtsim-jni routes a REASSERT to `Ships::ingest_copy`.
 - **The link** (§3.2, RP-98): `replay_end` logs the counts; the ships' pages, the outbox and

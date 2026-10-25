@@ -3685,3 +3685,271 @@ conservative option at its fork.
     `a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing`. Each marks
     the party embodied by hand, as the homecoming test does, since no flow of this slice leaves
     one embodied across a restart.
+
+### Slice S (ships)
+
+The ships' replay gate (docs/replay-gate.md §9.5; branch `fix/replay-ships`, base f2cf3d69): the
+outbox and its gate, `begin_replay` and `replay_done`, the honoured SHIP_MATERIALIZED, the epoch
+floors, the early returns, the pirate coast raid, the host's copies and a test's ship command.
+Slice C (RP-1 to RP-69) is the pattern; slices D and H keep RP-70 to RP-89 on their own branches.
+No page, record or wire format changes: the floors, the counts and the replay flags are in memory,
+and the ships' pages hold what they held. Tests: rtsim-ships `tests/replay.rs` (13, the engine
+level), `tests/blockade.rs` (one more), `outbox.rs` (3 unit tests), `engine/blockade.rs` (one
+in-crate test, the blind watcher), rtsim-jni
+`tests/ships_replay.rs` (8, the host level). What each fails with on the base is in RP-90 to RP-99;
+the engine-level tests need the new API and cannot be built on the base, so for them the check is a
+mutation of the fix (the list is under RP-99).
+
+- **RP-90** (the gate; §4.7; RP-3, RP-4): rtsim-ships `outbox.rs`, as conflict's. `gate()` is an
+  exhaustive match on `Cmd` with no `_` arm; the commands are a private `Vec` behind
+  `Outbox::push`, so a push around the gate does not compile. As built:
+
+  | Kind | Queued | While replaying |
+  | --- | --- | --- |
+  | Materialize | drop | never |
+  | Timetable | drop | drop |
+  | Steer | drop | drop |
+  | Depart | drop | drop |
+  | SetCargo | drop | drop |
+  | Despawn | drop | drop |
+
+  "Never" is counted, its kind kept for the log, not queued, with a `debug_assert!` and no release
+  panic (the replay end makes every ship abstract, which heals the skip). `Replaying::Send` exists
+  and no kind uses it. Why dropping each kind leaves the books right: a Timetable, Steer, Depart or
+  Despawn is an order to a body of this session, and while replaying no body of this session exists
+  (RP-91), so the only reader of a dropped order is a body that is not there; the engine's voyage
+  times, leg bookings and flows are its own state and do not move with the command. A SetCargo
+  sets the body's hold, and the books' hold is `cargo_of(&World, ..)`, which reads the world and
+  no command. The engine pushes no Despawn today (the plugin ends a body and answers
+  DEMATERIALIZED), so that row is for the day one does. The queued column drops everything: the
+  ships filtered nothing at the session start before, and a restored command was a body of the
+  last session. Tests: `outbox.rs`'s `every_command_kind_has_its_replay_verdicts` (one row per
+  kind), `a_never_kind_decided_while_replaying_is_counted_and_not_queued` (should_panic in a debug
+  build; `cargo test --release -p rtsim-ships a_never_kind_decided_while_replaying_is_counted_and_not_queued`
+  runs the counting arm), and tests/replay.rs's
+  `a_command_queued_in_the_pages_is_dropped_at_the_replay_start` and
+  `a_kept_ships_next_leg_while_replaying_drops_its_commands` (a kept ship's NextLeg while replaying
+  drops one Timetable and one SetCargo each, `dropped` equals the legs, the voyage's times are
+  those of the control).
+- **RP-91** (`begin_replay(from_pages)` and `replay_done(&mut World)`; §5.1, §5.6; RP-5):
+  `Ships::session_start()` is split. `begin_replay` changes no body (what the pages hold embodied
+  stays embodied, at its epoch, so the journal's damage, loss and loot of that body count against
+  it), applies the queued verdicts and gates every push. `replay_done` is a no-op unless a replay
+  runs; then it makes every ship abstract and clears `seen_by`, cancels every player's interest
+  leg (a no-op under the native link, which keeps none), folds the floors (RP-92), and lays up a
+  ship that was kept sailing only because it was in view (`lay_up_if_waiting`). The engine's own
+  tests choose: the `session_start()` calls in port_raids, lifecycle, blockade and paged (nine
+  lines) are `begin_replay(true); replay_done(&mut world)`.
+  Tests: tests/replay.rs's `no_ship_embodies_while_the_replay_runs` (a player at a dock for days,
+  with a no-replay control that embodies; `deferred` above 0, `never` 0, the ships embody again
+  after the end), tests/blockade.rs's `a_ship_kept_for_its_view_lays_up_at_the_replay_end` (control
+  without the end: embodied and not laid up), and `a_player_leaving_the_arm_ends_no_ship_body`
+  (the ships do not override `Viewer::player_left`, so the arm's leave is a no-op for them; the
+  test pins it).
+- **RP-92** (floors of ships the engine does not have yet are kept; §5.3; RP-7, RP-30; the lead's
+  lesson): the floor map (agent to the highest epoch a replayed or copied record named that the
+  ship does not hold) folds into each existing ship's epoch at `replay_done`, as conflict's does.
+  A floor for an agent whose ship the engine does not hold is kept, not cleared: the arena hands out
+  indices in order and never reuses one, so a port or haven that joins after the replay, or the
+  network the host builds after it, gives that agent its ship later, and its first body must be above
+  every epoch the journal named. The option not taken is conflict's clear-all. The map is in memory
+  and a restart rebuilds it from the records it replays. Test: tests/replay.rs's
+  `a_floor_for_a_ship_not_yet_allocated_survives_the_replay_end` (a Damaged of epoch 6 for the
+  ship the network's first service will get, the replay end, then the build: first epoch 7;
+  control without the record: 1).
+- **RP-93** (the honour only on ships that existed at `begin_replay`; §5.2; RP-6, RP-22, RP-31; the
+  lead's lesson): a replayed SHIP_MATERIALIZED sets the ship's epoch and embodied only when the
+  engine came from its pages, the ship's handle index is below the arena's next index as
+  `begin_replay` saw it (`replay_next`), the ship is active and the record's epoch is above the
+  ship's. Any other one (a copy, a fresh engine, a ship the replay allocated) only raises the
+  floor. The reason is that the host builds the network while replaying: a replayed window that
+  crosses the build, or a PORT_FOUND or HAVEN_FOUND, allocates ships the live run may have
+  allocated in another order, and an honour on that index would embody the wrong ship. Known
+  limit, accepted: the op-id kinds (SHIP_SUNK, SHIP_CAPTURED, CARGO_LOOTED) find their ship by
+  `ship_of_op`, at any epoch (what the plugin moved or destroyed really left), and so keep the same
+  narrow exposure; it needs a save that predates the network or a port and a crash after it, and a
+  record for a ship at an index the replay gave to another. Test: tests/replay.rs's
+  `the_honour_lands_on_a_ship_the_pages_held_not_one_the_replay_allocated` (control: the pirate
+  the pages held is honoured).
+- **RP-94** (nothing embodies while replaying; §6): `seen`, the `Ev::SeenPirate` arm,
+  `materialize_timetabled` and `materialize_pirate` return at their top while replaying through
+  `Outbox::defer`, which counts it (`deferred`). The two `materialize_*` are backstops behind
+  `seen` and `SeenPirate`. Failing without them: removing all four is caught
+  by tests/replay.rs's `no_ship_embodies_while_the_replay_runs` and
+  `a_kept_ships_next_leg_while_replaying_drops_its_commands` (the table at the end of the section).
+  The host level is a guard only: rtsim-jni `no_ship_is_materialized_while_a_long_replay_runs`
+  passes on the base too, because the ships have no player until the replay ends
+  (`shared::simulate` routes none while replaying, RP-11), so no sighting reaches them through the
+  host. It stands a player at a lane at the save, journals 8,000 fillers over ten minutes of game
+  time on a `wire::MIN_CAPACITY` engine, checks every idle of the replay for a ship command, and
+  then sees the lane's ships materialize after the end.
+- **RP-95** (the pirate coast raid, and the blind watcher; §6.1): the answer to the brief's
+  question is that `coast_raid` is held whole while replaying (`defer()` at its top, counted as
+  deferred), not gated branch by branch. Its three branches book against state that the replay
+  has not reached or settled: a player's district by the coast and a player's booked leg crossing
+  the lane go through the industry threat interface, and industry is not held during the replay
+  (it runs to the hand-over's time), so the raid would book at industry's present, not the
+  replayed past; the port village's raid asks a watcher that no replayed record settles. The hunt
+  goes on without its raid, and a raid decided after the last save is lost with the session that
+  took it, never made twice or made worse (§10's lose rather than repeat).
+  The option not taken: run the village branch and hold the other two; it needs a watcher the
+  replay cannot give. `point_in_view` and `relaunch_in_view` answer true while replaying (every dock is
+  watched), because no player is routed to the ships until the replay end (RP-11) and the questions
+  would otherwise be answered "nobody watches" about a window in which somebody did. The four
+  decisions that ask: a direct `port_raid` is not made; a shut haven's refound (`try_refound`) is
+  put off by `refound.base_days`, as a watched site's is; a navy's assault (`dock_in_view`) skips
+  the haven and looks again after its period; a Lost slot's relaunch (`relaunch`) waits for the
+  slot's next stay. Each is then judged by the players routed after the replay end, so the cost of
+  the answer is a delay, never a decision made twice or against a present the replay has not
+  reached. Tests: tests/replay.rs's `a_coast_raid_decided_while_replaying_is_deferred` (seeds 1 to
+  6, 120 days over `sea_havens`; control without a replay raids; with the replay the raid books
+  none and `deferred` counts it while the hunts go on), and blockade.rs's in-crate
+  `a_replaying_engine_takes_every_dock_as_watched` (the two predicates answer true while
+  replaying with no area, false before `begin_replay` and after `replay_done`; added after the
+  mutation run showed no test caught the blind answers). The decisions' own behaviour under the
+  blind answer is pinned by that predicate and by the coast-raid test (the raid), not by a test
+  per decision: a refound, an assault and a relaunch put off while replaying are untested
+  directly.
+- **RP-96** (a test's ship command waits for the replay end; §3.6, §4.4; RP-33, RP-66): rtsim-jni's
+  `order_command` puts a TEST order's command straight into the host's queue, around the gate,
+  so a SHIP_MATERIALIZE (a "never" kind) could be written while the replay runs.
+  `waits_for_the_replay_end` now holds `Order::ShipCommand` with the units that run the clock and
+  `Order::ConflictCommand`, and every unit after it, in order. The audit of every path that hands the
+  ships engine a command or a decision, each with its verdict:
+
+  | Path | Verdict |
+  | --- | --- |
+  | The engine's own events (`run_until`, from `shared::run_to` and from each ingest) | commands through the gate; decisions that embody return early (RP-94) |
+  | `Ships::ingest` of a journaled record (`journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57) |
+  | A copy (REASSERT) | `ingest_copy` (RP-97) |
+  | `ships::simulate`'s network build, and `add_port`, `add_haven`, `add_navy`, `connect` from journaled PORT_FOUND and HAVEN_FOUND | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 |
+  | `reject` (the host's own SPAWN_REJECTED for a command it cannot write) | only after a queued Materialize, which the gate never lets through while replaying |
+  | `Order::ShipCommand` | held (this record) |
+  | `Order::Phase1Advance` and the other orders that run the clock | already held (RP-33) |
+  | `lift_closures` (a switch-off) | unchanged: it queues no command |
+  | `with_ships_mut` | a test accessor, not a route in the game |
+  | `Viewer::player_left` | not overridden for ships: the arm's leave is a no-op for them |
+  | Sightings (`shared::simulate`) | wait for the replay end (§6, RP-11) |
+
+  `Order::DragonCommand` and `Order::HerdCommand` are the same kind of route; slices D and H hold
+  them (the merge takes the union in `waits_for_the_replay_end`). Failing first, rtsim-jni
+  `a_ship_command_ordered_while_replaying_waits_for_the_replay_end` (about 8,000 fillers on a
+  `wire::MIN_CAPACITY` engine, a SHIP_DESPAWN ordered while the replay runs): "not written while
+  the replay runs" on the base; after, it is written once the replay ended. Control
+  `a_ship_command_ordered_without_a_replay_is_written_at_once` passes on both.
+- **RP-97** (a copy is applied by identity; §2.3, §5.7, RP-8, RP-9): rtsim-jni's ships `ingest`
+  calls `Ships::ingest_copy` when `st.applying_copy` is set (the journaled dispatch of a REASSERT),
+  else `Ships::ingest`. A copy names a body that is gone, so it embodies nothing: every copy raises
+  the floor first (RP-57), a SHIP_MATERIALIZED copy does nothing more, and every other kind runs
+  as a live record, by the ship's epoch as held or by op id. Without the routing a copy goes
+  through `ingest` and is honoured like the session's own record. Tests: rtsim-jni
+  `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor` (mid-replay the ship is not
+  embodied and keeps its epoch; at the end the floor has folded, and the next body is above it)
+  against the control `a_replayed_materialization_is_honoured_on_the_pages_ship` (mid-replay
+  embodied at the record's epoch). On the base the control fails at "mid-replay: embodied at the
+  record's epoch" (left (false, 0), right (true, 5)) and the copy test at "the replay end folds the
+  floor" (left (false, 0), right (false, 5)). The routing itself cannot fail on the base, which
+  honours nothing; the mutation list (RP-99) proves it. The engine-level
+  `a_copy_of_a_materialization_embodies_nothing` is the same at the engine.
+- **RP-98** (the host's link; §3.2, §4.3): rtsim-jni `engine/ships.rs`: `Link` carries
+  `from_pages` (set by `load`; RP-31), `replay_end_due` and `never_logged`. `reset_if_due` calls
+  `begin_replay(from_pages)`; `replay_end` calls `replay_done`, takes the commands, and logs
+  "ships: N commands dropped while replaying, N of a kind that embodies (a bug), N decisions that
+  embody or book a raid deferred". `take_commands` logs a rising "never" count at once, as an
+  error. `Engine::ship_gate_counts()` reads the counts for the tests. A switch-on mid-session
+  runs the end at once. Left alone: `engine/shared.rs` (`with_viewers_of`, `session_start`,
+  and its comment that the ships' "bodies end at the arm", which is stale: they end at the replay
+  end), which slices D and H also edit.
+- **RP-99** (the RP-57 list for ships; §5.3; RP-37; the lead's lesson on epoch increments): every
+  ships kind that names an epoch raises the floor, whatever the record does after, before the op-id
+  dedupe and any check that drops it: while replaying `Ships::ingest` folds first, and
+  `ingest_copy` folds every copy, live or replayed. `Obs::ship_epoch` is an exhaustive match, so a
+  new kind does not compile until it says. Every ships kind:
+
+  | Kind | Epoch | Reaches the floor |
+  | --- | --- | --- |
+  | 0x0070 SHIP_STATE | the ship's | Latest-wins and not journaled, so a replay does not carry it; its `ingest` arm does nothing, and the fold covers it should one arrive |
+  | 0x0600 SHIP_MATERIALIZED | the ship's | `ingest`'s fold, then the honour (RP-93) or not; a copy, `ingest_copy`'s |
+  | 0x0601 SHIP_SPAWN_REJECTED | the ship's | `ingest`'s fold, held or not; a copy, `ingest_copy`'s |
+  | 0x0602 SHIP_DEMATERIALIZED | the ship's | `ingest`'s fold, a stale epoch too; a copy, `ingest_copy`'s |
+  | 0x0603 SHIP_DAMAGED | the ship's | `ingest`'s fold; a copy, `ingest_copy`'s |
+  | 0x0604 SHIP_SUNK | the ship's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+  | 0x0605 SHIP_BOARDED | the ship's | `ingest`'s fold; a copy, `ingest_copy`'s |
+  | 0x0606 SHIP_CAPTURED | the ship's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+  | 0x0607 CARGO_LOOTED | the ship's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+  | 0x0608 SHIP_FIGHT, 0x0609 PORT_FOUND, 0x060A HAVEN_FOUND | none | Nothing to fold: the fight names two agents and no epoch, the port and the haven no body |
+
+  The increment is `max(epoch, floor).wrapping_add(1).max(1)` (`next_epoch`, and the two bumps in
+  blockade.rs's `lay_up_merchant` and `relaunch_laid_up`): a corrupt record at `u32::MAX` must not
+  wrap to epoch 0, which the plugin reads as no body. Tests: tests/replay.rs's
+  `every_kind_that_names_an_epoch_raises_the_floor` (nine kinds on three paths: an engine from its
+  pages, a fresh engine, a live copy; the live `ingest` control raises none; the three kinds
+  without an epoch raise none), `an_ending_epoch_is_never_reused` (from the pages and fresh, with
+  the live engine's next epoch as the control: every post-replay materialization is above the
+  journal's), `a_corrupt_epoch_does_not_wrap_the_next_epoch_to_zero`, and rtsim-jni
+  `an_epoch_the_last_session_ended_is_not_reused_after_a_crash` (a merchant materialized and ended
+  after the save: on the base "the ship's next body is numbered 1, and the last session spent 1").
+  The named test, §9.5 test 1: rtsim-jni and rtsim-ships
+  `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash` (a merchant materialized after a
+  save, damaged in view, a crash): crew, hull and epoch are (3, 800, 1) in the session that went on
+  and (4, 1000, 0) after the crash on the base, where the replayed Materialized was a no-op and the
+  replayed Damaged named an epoch the ship did not hold; after the fix the replay honours it and
+  the triple is (3, 800, 1). Controls: the session that went on, and a clean stop and restart
+  (`..._after_a_clean_stop`, passing on both).
+
+What was run, and what each test did on the base (f2cf3d69). The host-level tests build on the base
+once the new engine calls are stubbed; where they fail there, the value is quoted. The
+engine-level tests need the new API and cannot be built on the base, so their proof is a
+mutation of the fix, run on a scratch copy (each mutation applied alone; every one is caught by
+at least the test named):
+
+| Mutation | Caught by |
+| --- | --- |
+| the early returns of `seen`, `SeenPirate` and both `materialize_*` removed | `no_ship_embodies_while_the_replay_runs`, `a_kept_ships_next_leg_while_replaying_drops_its_commands` |
+| `coast_raid` not deferred | `a_coast_raid_decided_while_replaying_is_deferred` |
+| the honour without the `replay_next` guard | `the_honour_lands_on_a_ship_the_pages_held_not_one_the_replay_allocated` |
+| floors of absent ships dropped at the replay end | `a_floor_for_a_ship_not_yet_allocated_survives_the_replay_end` |
+| `next_epoch` wraps to 0 | `a_corrupt_epoch_does_not_wrap_the_next_epoch_to_zero` |
+| no lay-up at the replay end | `a_ship_kept_for_its_view_lays_up_at_the_replay_end` |
+| SetCargo sent while replaying | five tests, among them `a_kept_ships_next_leg_while_replaying_drops_its_commands` and `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash` |
+| a queued Materialize kept at the replay start | `a_command_queued_in_the_pages_is_dropped_at_the_replay_start` |
+| `point_in_view` not blind; `relaunch_in_view` not blind | none at first; now `a_replaying_engine_takes_every_dock_as_watched` |
+| `ingest` does not fold the floor while replaying | five tests, among them `every_kind_that_names_an_epoch_raises_the_floor` |
+| `ingest_copy` does not fold the floor | `a_copy_of_a_materialization_embodies_nothing`, `every_kind_that_names_an_epoch_raises_the_floor` |
+| a copy applied as a live record (rtsim-jni) | `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor` |
+| a test's ship command not held (rtsim-jni) | `a_ship_command_ordered_while_replaying_waits_for_the_replay_end` |
+
+One mutation run was wasted and is worth knowing: the scratch copy was cut from a commit older than
+the floor test, so the first run of the "floors dropped" mutation printed "0 failed". A mutation
+that no test catches proves nothing until the copy is checked to hold the test.
+
+On the base, the host tests give: `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash`
+fails ((4, 1000, 0) against (3, 800, 1): the replayed Materialized was a no-op and the replayed
+Damaged named an epoch the ship did not hold, so the dead sailor and the hull came back);
+`an_epoch_the_last_session_ended_is_not_reused_after_a_crash` fails ("the ship's next body is
+numbered 1, and the last session spent 1"); `a_ship_command_ordered_while_replaying_waits_for_the_replay_end`
+fails ("not written while the replay runs"); `a_replayed_materialization_is_honoured_on_the_pages_ship`
+fails ((false, 0) against (true, 5)); `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor`
+fails ((false, 0) against (false, 5)). The controls pass on both:
+`damage_to_a_ship_seen_after_a_save_is_counted_after_a_clean_stop` and
+`a_ship_command_ordered_without_a_replay_is_written_at_once`. `no_ship_is_materialized_while_a_long_replay_runs`
+passes on both and is kept as a regression guard (RP-94).
+
+Known limits and traps, recorded where they bind: the op-id kinds' exposure (RP-93); the three
+untested decisions under the blind watcher (RP-95); `leave_area` is a no-op for the ships (the
+guard test `a_player_leaving_the_arm_ends_no_ship_body`, RP-91); the relaunch path's watcher under a
+real replay is pinned by its predicate only (RP-95). A test that registers a player during a replay
+cannot be written through the host, because `shared::simulate` routes no player while replaying
+(RP-11), so the host-level quiet test cannot fail on the base; the engine-level one can.
+
+The sims: `rtsim-cli sim ships` (seed 7, 12 days, 192 persist days) on this branch is identical,
+ignoring `wall_ms`, to the same command on the base code, so the ships' unreplayed behaviour is
+unchanged. The checked-in `scenario/results/sim-ships.json` is stale against the base code (it
+predates the blockade stats) and was left alone; the conflict, dragons, herds, mowzie and phase1
+sims do not run the ships engine. The full `cargo test --workspace --no-fail-fast` passed except two
+timing tests that failed under a machine load of about 98 and passed on rerun (rtsim-jni's
+`tap` test `a_commit_at_a_step_the_tap_stood_down_carries_the_states_time` and rtsim-host's `tap`
+`a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one`); a third,
+`the_server_threads_hand_over_keeps_its_timing_class`, failed in three of five reruns at load about
+40 and passed four of four at load about 8 on this branch (and four of four on the base at load
+about 20). None touches the ships (the host calls no replay API of the ships).
