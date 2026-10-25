@@ -412,6 +412,12 @@ pub struct Dragons {
     /// it): a different dragon than the last session's at that index. Set by
     /// [`Dragons::begin_replay`]; in memory only.
     pub(crate) replay_next: u32,
+    /// The agents whose replayed DRAGON_MATERIALIZED named an index the replay owns (at or above
+    /// `replay_next`, RP-70) without being the answer to an adoption the replay made (its entity is
+    /// not the adopted one): the last session's body there is another dragon's, so no record of
+    /// that agent finds a body of this replay's until the replay end. Cleared by
+    /// [`Dragons::replay_done`]; in memory only.
+    pub(crate) contested: BTreeSet<u64>,
     /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30): agent to the highest epoch the
     /// engine has seen for it that its dragon's own `epoch` does not hold (any replayed record or
     /// copy that names one, RP-57). A dragon's next body takes an epoch above both. Not the epoch
@@ -592,6 +598,7 @@ impl Dragons {
             outbox: Outbox::default(),
             replay_from_pages: false,
             replay_next: 0,
+            contested: BTreeSet::new(),
             floors: BTreeMap::new(),
             players: BTreeMap::new(),
             index: PreyIndex::default(),
@@ -3236,6 +3243,9 @@ impl Dragons {
     }
 
     pub(crate) fn embodied(&self, agent: u64, epoch: u32) -> Option<DragonId> {
+        if self.outbox.replaying() && self.contested.contains(&agent) {
+            return None;
+        }
         let d = dragon_of(agent)?;
         let x = self.dragons.get(d)?;
         match x.state {
@@ -3244,6 +3254,13 @@ impl Dragons {
             }
             _ => None,
         }
+    }
+
+    /// Whether `agent` is one the replay owns (RP-70): a replay runs, and its index is at or above
+    /// the arena's next index when the replay began, so the dragon there, if any, was allocated by
+    /// the replay (or will be), and is not the one the last session had.
+    fn replay_owns(&self, agent: u64) -> bool {
+        self.outbox.replaying() && dragon_of(agent).is_some_and(|d| d.index() >= self.replay_next)
     }
 
     /// The epoch of a dragon's next body (docs/replay-gate.md §5.3, RP-7, RP-30): above its own and
@@ -3307,7 +3324,11 @@ impl Dragons {
     /// DRAGON_MATERIALIZED honoured (§5.2).
     pub fn begin_replay(&mut self, from_pages: bool) {
         self.replay_from_pages = from_pages;
-        self.replay_next = self.dragons.next_index();
+        // The bound is the pages' and taken once: a switch off and on inside the replay begins it
+        // again (rtsim-jni's `reset`), when the arena holds the replay's own dragons too (RP-77).
+        if !self.outbox.replaying() {
+            self.replay_next = self.dragons.next_index();
+        }
         self.outbox.begin_replay();
         self.chests.clear();
     }
@@ -3333,6 +3354,7 @@ impl Dragons {
             self.player_left(w, p);
         }
         self.outbox.replay_done();
+        self.contested.clear();
         // A floor of an agent nothing has allocated stays (RP-75): a dragon born there later
         // folds it in when it is allocated ([`Dragons::add_dragon`]).
         for agent in self.floors.keys().copied().collect::<Vec<u64>>() {
@@ -3401,8 +3423,15 @@ impl Dragons {
     ) {
         self.run_until(w, infra, at);
         self.fold_epoch(o);
+        // A copy names a body of a session before the last, which is gone: it finds none of this
+        // session's, and none of the replay's own adoptions (RP-70). Only the bodies the pages
+        // hold, embodied through the replay (§5.1), can be its.
+        let finds_no_body = o
+            .agent_epoch()
+            .is_some_and(|(agent, _)| !self.outbox.replaying() || self.replay_owns(agent));
         match o {
             Obs::Materialized(_) => {}
+            _ if finds_no_body => {}
             _ => self.ingest(w, infra, o, at),
         }
     }
@@ -3431,7 +3460,19 @@ impl Dragons {
             }
             Obs::Untagged(u) => self.untagged(w, u, at),
             Obs::Materialized(m) => {
-                if let Some(d) = self.embodied(m.agent, m.epoch) {
+                // The plugin answers an ADOPT with a MATERIALIZED that carries the adopted entity:
+                // the answer to the replay's own adoption names its entity (RP-70).
+                let answers_adoption = self
+                    .adopted
+                    .get(&m.entity)
+                    .is_some_and(|d| agent_of(*d) == m.agent);
+                if self.replay_owns(m.agent) && !answers_adoption {
+                    // The last session's body at an index the replay allocates itself (a visitor
+                    // it drew after the save, a clutch's young): it may share the agent and the
+                    // epoch of a dragon the replay adopted, but not its entity. Its records, from
+                    // this one on, find no body of the replay's.
+                    self.contested.insert(m.agent);
+                } else if let Some(d) = self.embodied(m.agent, m.epoch) {
                     self.by_entity.insert(m.entity, d);
                 } else if self.outbox.replaying() && self.replay_from_pages {
                     // The last session's answer to a decision after the pages (§5.2); a fresh

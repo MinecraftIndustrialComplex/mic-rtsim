@@ -427,6 +427,12 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.dragons.enabled {
         st.dragons.ignored += 1;
+        // Ignored, but the epoch it names is taken all the same (docs/replay-gate.md §5.3, RP-57,
+        // RP-75): the dragons' next body, once they run again, is above it.
+        let dict = java_species(st);
+        if let Ok((_, _, _, o)) = boundary::decode_obs(rec.bytes, &dict) {
+            st.dragons.engine.fold_epoch(&o);
+        }
         return;
     }
     // Everything before it happens first: the ships, the dragons and the world, in time order.

@@ -157,11 +157,15 @@ fn next_epoch(r: &mut Rig, at: Tick) -> u32 {
 }
 
 fn materialized(agent: u64, epoch: u32) -> Obs {
+    materialized_of(agent, epoch, (0xB0D1, u64::from(epoch)))
+}
+
+fn materialized_of(agent: u64, epoch: u32, entity: (u64, u64)) -> Obs {
     Obs::Materialized(boundary::Materialized {
         agent,
         epoch,
         dimension: 0,
-        entity: (0xB0D1, u64::from(epoch)),
+        entity,
     })
 }
 
@@ -501,6 +505,131 @@ fn the_largest_replayed_epoch_does_not_overflow_the_next_one() {
     ingest(&mut r, &materialized(agent, u32::MAX), Tick(500));
     end(&mut r.d, &mut r.w, Tick(900));
     assert_eq!(next_epoch(&mut r, Tick(1_000)), 1, "wrapped, and not 0");
+}
+
+// ---- the replay's own adoption is not the last session's dragon (RP-70) -----------------------------
+
+/// A rig whose pages hold one dragon, in a replay that has adopted a second at index 1 (a
+/// replayed UNTAGGED, embodied at epoch 1 until the replay end), and that dragon.
+fn replay_that_adopted() -> (Rig, DragonId) {
+    let mut r = restarted(rig());
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    ingest(&mut r, &untagged(), Tick(450));
+    let u = DragonId::from_parts(1, 1);
+    assert!(
+        matches!(
+            r.d.dragon(u).unwrap().state,
+            State::Embodied { epoch: 1, .. }
+        ),
+        "the replayed UNTAGGED adopted the dragon at index 1, embodied at epoch 1"
+    );
+    (r, u)
+}
+
+/// The last session drew a visitor V at index 1 (more than 200 ticks after the save, so the replay
+/// does not draw it), adopted U at index 2, and V materialized and was killed. The replay adopts
+/// U at index 1, at epoch 1 as V's body was: V's MATERIALIZED, HURT and DIED name the agent and
+/// the epoch of the dragon the replay adopted. The plugin answers an ADOPT with a MATERIALIZED
+/// that carries the adopted entity, and V's carries V's: it is of another dragon, and what
+/// follows it matches nothing. U's own answer names index 2, where the replay holds no dragon.
+/// Before: V's MATERIALIZED mapped V's entity to U and V's wounds killed U.
+#[test]
+fn the_last_sessions_body_at_an_index_does_not_wound_the_dragon_the_replay_adopted() {
+    let (mut r, u) = replay_that_adopted();
+    let agent = agent_of(u);
+    let health = r.d.dragon(u).unwrap().health;
+    ingest(&mut r, &materialized(agent, 1), Tick(500));
+    ingest(&mut r, &hurt(agent, 1, 100.0), Tick(600));
+    ingest(&mut r, &died(agent, 1), Tick(700));
+    // U's own answer, in the last session, named index 2.
+    let u_then = agent_of(DragonId::from_parts(2, 1));
+    ingest(&mut r, &materialized_of(u_then, 1, EGG), Tick(800));
+    end(&mut r.d, &mut r.w, Tick(900));
+    let v =
+        r.d.dragon(u)
+            .expect("V's death is not the adopted dragon's");
+    assert_eq!(v.health, health, "V's wounds are not the adopted dragon's");
+}
+
+/// The control: the plugin's answer to the adoption (a MATERIALIZED carrying the adopted entity),
+/// then the records of that body are the adopted dragon's own (the same UNTAGGED in the last
+/// session, the same index and epoch): its wound counts and its death kills it, as they did on
+/// the base.
+#[test]
+fn a_replayed_adoptions_own_wounds_and_death_still_count() {
+    let (mut r, u) = replay_that_adopted();
+    let agent = agent_of(u);
+    ingest(&mut r, &materialized_of(agent, 1, EGG), Tick(500));
+    ingest(&mut r, &hurt(agent, 1, 100.0), Tick(600));
+    assert_eq!(r.d.dragon(u).unwrap().health, 100.0, "the wound counts");
+    ingest(&mut r, &died(agent, 1), Tick(700));
+    end(&mut r.d, &mut r.w, Tick(900));
+    assert!(r.d.dragon(u).is_none(), "the death counts");
+}
+
+/// `begin_replay` runs again when the dragons are switched off and on before the replay end
+/// (rtsim-jni's `reset`): the bound is the first one's, so the dragon the replay adopted is still
+/// the replay's own. Before: the second call moved the bound past it, and V's records found it.
+#[test]
+fn a_second_begin_replay_inside_the_replay_keeps_the_first_bound() {
+    let (mut r, u) = replay_that_adopted();
+    begin(&mut r.d, &mut r.w, Tick(460), true);
+    let agent = agent_of(u);
+    let health = r.d.dragon(u).unwrap().health;
+    ingest(&mut r, &materialized(agent, 1), Tick(500));
+    ingest(&mut r, &hurt(agent, 1, 100.0), Tick(600));
+    ingest(&mut r, &died(agent, 1), Tick(700));
+    end(&mut r.d, &mut r.w, Tick(900));
+    let v = r.d.dragon(u).expect("alive");
+    assert_eq!(v.health, health);
+}
+
+/// A copy of an ended session's record names a body that is gone: after the replay end it folds
+/// the floor and finds no body, even where this session's live body has its agent and epoch.
+/// Before: the copy of V's HURT wounded the dragon this session adopted at the same epoch.
+#[test]
+fn a_copy_after_the_replay_end_folds_the_floor_and_wounds_no_live_body() {
+    let mut r = restarted(rig());
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    end(&mut r.d, &mut r.w, Tick(900));
+    ingest(&mut r, &untagged(), Tick(1_000));
+    let u = DragonId::from_parts(1, 1);
+    assert!(matches!(
+        r.d.dragon(u).unwrap().state,
+        State::Embodied { epoch: 1, .. }
+    ));
+    let agent = agent_of(u);
+    let health = r.d.dragon(u).unwrap().health;
+    r.d.ingest_copy(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &hurt(agent, 1, 100.0),
+        Tick(1_100),
+    );
+    assert_eq!(
+        r.d.dragon(u).unwrap().health,
+        health,
+        "the copy wounds nobody"
+    );
+    r.d.ingest_copy(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &hurt(agent, 5, 100.0),
+        Tick(1_200),
+    );
+    assert_eq!(r.d.dragon(u).unwrap().health, health);
+}
+
+/// The control: a live record of the live body counts.
+#[test]
+fn a_live_wound_of_the_live_body_counts() {
+    let mut r = restarted(rig());
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    end(&mut r.d, &mut r.w, Tick(900));
+    ingest(&mut r, &untagged(), Tick(1_000));
+    let u = DragonId::from_parts(1, 1);
+    ingest(&mut r, &hurt(agent_of(u), 1, 100.0), Tick(1_100));
+    assert_eq!(r.d.dragon(u).unwrap().health, 100.0);
 }
 
 /// A copy of a record from an ended session (S4p's REASSERT) embodies nothing, and its epoch is

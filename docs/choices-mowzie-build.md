@@ -3726,7 +3726,48 @@ changed; the lead runs `gametest.sh iceandfire`.
   epoch 1, health 100. Option not taken: honouring a dragon the replay allocated when its draw is
   the same as the last session's (the visitor's roll is a stream of seed, frame and tick): the
   engine cannot tell it from a different dragon at the same index, and a wrong embodiment kills an
-  innocent dragon while a missed one only drops a wound. Option not taken: reading the purpose and the harass flag
+  innocent dragon while a missed one only drops a wound.
+
+  **The replay's own adoption (the second review).** The bound above covers the honour only. A
+  replayed UNTAGGED adopts a dragon through `add_dragon` at an index at or above `replay_next` and
+  embodies it at `next_epoch`, and every other record kind finds its dragon by `embodied(agent,
+  epoch)`, which had no bound. Failing ordering: the pages hold X (index 0); the last session
+  drew a visitor V at index 1 more than 200 ticks after the save (the replay's rolls do not draw
+  it, RP-72(b)), adopted U at index 2, and V materialized and was killed; the replay adopts U at
+  index 1, epoch 1, which is V's agent and V's epoch, so V's MATERIALIZED mapped V's entity to U
+  and V's HURT and DIED wounded and killed U. The epochs collide every time: both take the highest
+  seen plus one. Taken: a replayed MATERIALIZED naming an index the replay owns
+  (`replay_owns`: replaying, index at or above `replay_next`) contests its agent (`contested`, in
+  memory, cleared at `replay_done`) unless it is the answer to an adoption the replay made: it
+  maps no entity, honours nothing, and from it on no record of that agent finds a body (`embodied`
+  returns None for a contested agent while replaying). What tells the two apart is the entity.
+  DragonBridge answers an ADOPT with a DRAGON_MATERIALIZED that carries the adopted entity (its
+  `adopt`, journalMaterialized), so the answer to the replay's own adoption names an entity that
+  `adopted` maps to the dragon at that agent; V's names V's body, which `adopted` does not know.
+  (My first version contested every MATERIALIZED of an owned index, on the premise that an
+  adoption is never answered by one; rtsim-jni's
+  `dragons_are_adopted_hurt_captured_materialized_and_replayed_across_a_crash` failed on it, the
+  egg dragon's capture after the save lost, health 442 against 300.) Copies (`ingest_copy`) name a session before
+  the last, whose bodies are gone: while replaying they find no body of an owned index, and after
+  the replay end they find none at all, so a copy naming an agent and an epoch folds the floor
+  only (the latent collision with a live body at the same epoch). Failing first (41d3f2b8 plus the
+  first review's commit 90a1a3f0): `the_last_sessions_body_at_an_index_does_not_wound_the_dragon_
+  the_replay_adopted` (U killed by V's records), `a_second_begin_replay_inside_the_replay_keeps_
+  the_first_bound` (U killed) and `a_copy_after_the_replay_end_folds_the_floor_and_wounds_no_live_
+  body` (health 100 against 250); controls `a_replayed_adoptions_own_wounds_and_death_still_count`
+  (the answer with the adopted entity, then the wound and the death) and
+  `a_live_wound_of_the_live_body_counts` pass on both. Options not taken: (1) a bound in
+  `embodied()` alone (no record finds any body of the replay's own while replaying), and (2) an
+  adoption decided while replaying is not embodied. Both close the ordering and both lose what the
+  base did right: a dragon the replay adopts again from the same UNTAGGED the last session adopted
+  has the same index and epoch because it is the same dragon, so its wounds and its death count
+  (the control, and the jni test above; the lair dragon killed in the unsaved window would
+  otherwise live on as an abstract phantom after the restart). A contest is exact on the one thing
+  that tells the two apart. Residual, accepted: a body of the last session at an owned index that
+  no MATERIALIZED of another entity began (another adoption at the same index, which needs a
+  different UNTAGGED stream than the replay's) still matches; and the wounds of a dragon the replay allocates at another index than
+  the last session's are lost, as a visitor's are (above).
+  Option not taken: reading the purpose and the harass flag
   from the command (the record carries neither; the dragon is abstract at the replay end whatever
   they were, and what matters is that the records that follow count against the body). Failing
   first: rtsim-jni's `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (a lair's dragon
@@ -3904,7 +3945,11 @@ changed; the lead runs `gametest.sh iceandfire`.
   on 41d3f2b8 (so a first body at epoch 1, as the control's); after, 3 and a first body at 4. Control
   `a_dragon_born_after_the_replay_with_no_record_starts_at_epoch_one`. Overflow:
   `the_largest_replayed_epoch_does_not_overflow_the_next_one` (a record at `u32::MAX`: the next
-  body's epoch is 1, not a panic in a checked build or 0 in an unchecked one). A live
+  body's epoch is 1, not a panic in a checked build or 0 in an unchecked one). A record the
+  dragons drop because they are switched off raises its floor all the same (rtsim-jni
+  `dragons::journaled` decodes it and calls `fold_epoch` before its early return; the switch-on's
+  replay end folds it): `a_record_ignored_while_switched_off_still_raises_the_epoch_floor` (a
+  capture at epoch 7 ignored while off; the dragon's epoch 1 against 7 after the switch-on). A live
   copy's floor waits for the dragon's next materialize, as RP-57's does. Failing first, the epoch
   test (RP-7): `a_replayed_body_does_not_give_its_epoch_to_the_next_one` (the last session's
   MATERIALIZED at epoch 1 and its capture, then a new body): epoch 1 again on the base, 2 after;
@@ -3942,7 +3987,12 @@ changed; the lead runs `gametest.sh iceandfire`.
   mid-session) the end runs at once at the hand-over's time. `dragons::replay_end` runs at the
   session's replay end, at the replay clock (RP-24), before the other modules' ends; it calls
   `replay_done`, turns the far feed on (Java's far table is per session: far.rs) and takes the
-  commands. Switched off, the end stays due and the switch-on's reset runs it. The arm's `leave_area` (shared.rs
+  commands. Switched off, the end stays due and the switch-on's reset runs it. `begin_replay` can run more than once a
+  session: a MODULES switch off and on before the replay end makes `reset` run again. Any bound it
+  takes is taken once: `replay_next` is set only when no replay runs (the first call), so the
+  second call does not move it past the dragons the replay allocated meanwhile; a switch-on once
+  the replay has ended takes it afresh, as every dragon then held is in the pages that session
+  had. The arm's `leave_area` (shared.rs
   `session_start`) still reaches the dragons, and does nothing there: the dragons' `Viewer` has
   no `player_left` override, so the trait's no-op default runs. It is as if the dragons were left
   out of the arm; their bodies are kept to the replay end (RP-70), whose `replay_done` does the
