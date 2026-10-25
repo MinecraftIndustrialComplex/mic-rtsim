@@ -956,7 +956,7 @@ fn glass_sections(names: &crate::journal::Names, v: &IndustryView, id: u64, mut 
         nets.push(
             Field::new(
                 &format!("Network {}", n.id),
-                format!("{}, {} districts", n.status, n.parts.len()),
+                format!("{}, {} parts", n.status, n.parts.len()),
             )
             .link("industry.networks", n.id),
         );
@@ -1434,7 +1434,7 @@ mod tests {
             text.contains("to District 2"),
             "the store names the district it joins: {text}"
         );
-        assert!(text.contains("coupled, 2 districts"), "{text}");
+        assert!(text.contains("coupled, 2 parts"), "{text}");
         // A district with no compile but a frogport still sees its store.
         let c = glass_sections(
             &names,
