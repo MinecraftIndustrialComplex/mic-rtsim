@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
+import net.minecraft.core.BlockPos;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -52,12 +53,56 @@ public final class GlassKit {
         }
     }
 
-    /** A domain: {@code levels} are its speed rows (the reference's speed), {@code current} the one now (NONE: none). */
+    /**
+     * A domain: {@code levels} are its speed rows (the reference's speed), {@code current} the one now (NONE: none).
+     * {@code members} are the district's own, then the tail ({@code foreign} of them, in no district's chunks); a
+     * shared part's {@code peers} are the other districts on its network, ascending.
+     */
     public record Domain(int index, long network, int current, int flags, double liveStress, double liveCapacity,
-                         List<Level> levels, List<Source> sources, List<Member> members) {
+                         List<Level> levels, List<Source> sources, List<Member> members, int foreign, List<Long> peers) {
         /** The sources that have a driver (a boiler node). */
         public List<Source> driven() {
             return sources.stream().filter(s -> s.driver() != GlassRecords.NONE).toList();
+        }
+
+        /** A part of a network that crosses the district's border (the SHARED flag). */
+        public boolean shared() {
+            return (flags & GlassRecords.Domain.SHARED) != 0;
+        }
+
+        /** The members in the district's own chunks (the tail left out). */
+        public List<Member> ownMembers() {
+            return members.subList(0, members.size() - foreign);
+        }
+
+        /** The members in no district's chunks. */
+        public List<Member> tail() {
+            return members.subList(members.size() - foreign, members.size());
+        }
+
+        /** The source at {@code pos}, or null. */
+        public Source source(long pos) {
+            for (Source s : sources)
+                if (s.pos() == pos)
+                    return s;
+            return null;
+        }
+
+        public String describe() {
+            StringBuilder b = new StringBuilder("domain ").append(index).append(shared() ? " SHARED" : "").append(" flags ").append(flags)
+                    .append(" current ").append(current == GlassRecords.NONE ? "none" : current).append(", ").append(levels.size())
+                    .append(" speed rows, ").append(members.size() - foreign).append(" members + ").append(foreign).append(" tail, peers ")
+                    .append(peers).append(", sources");
+            for (Source s : sources)
+                b.append(" [").append(BlockPos.of(s.pos()).toShortString()).append(" rows ").append(s.rows().size()).append(" driver ")
+                        .append(s.driver() == GlassRecords.NONE ? "none" : s.driver()).append(" ratio ")
+                        .append(s.ratioKnown() ? s.ratioNum() + "/" + s.ratioDen() : "unknown").append(s.rows().isEmpty() ? " foreign" : "").append("]");
+            return b.toString();
+        }
+
+        @Override
+        public String toString() {
+            return describe();
         }
     }
 
@@ -245,9 +290,15 @@ public final class GlassKit {
                     v.getInt(at + GlassRecords.Domain.M_RATIO_NUM), u32(v.getInt(at + GlassRecords.Domain.M_RATIO_DEN)),
                     v.getDouble(at + GlassRecords.Domain.M_IMPACT)));
         }
+        int np = v.getInt(GlassRecords.Domain.N_PEERS);
+        int p0 = GlassRecords.Domain.peers(nl, ns, nsl, nm);
+        List<Long> peers = new ArrayList<>(np);
+        for (int i = 0; i < np; i++)
+            peers.add(v.getLong(p0 + i * GlassRecords.Domain.PEER));
         return new Domain(v.getInt(GlassRecords.INDEX), v.getLong(GlassRecords.Domain.NETWORK), v.getInt(GlassRecords.Domain.CURRENT),
                 v.getInt(GlassRecords.Domain.FLAGS), v.getDouble(GlassRecords.Domain.LIVE_STRESS),
-                v.getDouble(GlassRecords.Domain.LIVE_CAPACITY), levels, sources, members);
+                v.getDouble(GlassRecords.Domain.LIVE_CAPACITY), levels, sources, members, v.getInt(GlassRecords.Domain.N_FOREIGN),
+                List.copyOf(peers));
     }
 
     private static Level level(ByteBuffer v, int at) {

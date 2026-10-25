@@ -1,10 +1,14 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Goods;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassGraphCommand;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim_create.KineticJoin;
 import com.minecraftindustrialcomplex.mic_rtsim_create.KineticSyncPending;
@@ -12,8 +16,10 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.StaleKinetics;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.GlassCorpusKit;
+import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.GlassExitGameTests;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.SteamHelpers;
 import com.simibubi.create.AllBlocks;
+import com.simibubi.create.content.fluids.pipes.FluidPipeBlock;
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.base.RotatedPillarKineticBlock;
@@ -33,16 +39,17 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
+import net.minecraft.world.Clearable;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.PipeBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.AttachFace;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraft.world.level.material.Fluids;
-import net.neoforged.neoforge.capabilities.Capabilities;
-import net.neoforged.neoforge.fluids.FluidStack;
-import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -54,6 +61,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -780,11 +790,14 @@ public final class SectionsChunkLoadGameTests {
      * A compile of a district whose network reaches into an away district loads nothing (SECTIONS.md §2.8,
      * choice SC10; PATCHES.md row 53's kept members). The motor is in B; with B away, A's compile reads CA's
      * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
-     * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
-     * driver (every source fixed), and its members are bounded. {@code /rtsim district graph} writes the compile without loading
-     * anything either. Then B's block entities are taken out of the network, as a restart with B away leaves
-     * it (the network lists only what loaded this session): the next compile still finds the network
-     * crossing (choice SC44: CA's chain reaches B, which is not loaded), with the same domain.
+     * outside A, is a crossing one, so a shared part (SEC-1 S5-2, choice SC153): millstone A's domain is
+     * SHARED with B as its only peer, the motor a foreign source (B's chunks hold it: no rows, no driver, its
+     * ratio known), one speed row at 64 RPM (the motor's candidate), and the members are not bounded.
+     * {@code /rtsim district graph} writes the compile without loading anything either. Then B's block
+     * entities are taken out of the network, as a restart with B away leaves it (the network lists only what
+     * loaded this session): the next compile still finds the network crossing (choice SC44: CA's chain reaches
+     * B, which is not loaded), but no listed source has a known ratio, so the domain is unstable as before: one
+     * row at the speed of A's members, no driver, bounded, not shared.
      */
     @GameTest(template = YARD, batch = "sec1_4", timeoutTicks = 12000)
     public static void aCompileLoadsNoChunk(GameTestHelper helper) {
@@ -815,10 +828,18 @@ public final class SectionsChunkLoadGameTests {
                     check("the reads stopped at B: " + java.unloadedStops, java.unloadedStops > 0);
                     GlassKit.Domain d = millDomain(g);
                     record(t, "millstone A's domain", d);
+                    GlassKit.Source motor = d.source(f.motor.asLong());
+                    record(t, "the motor's source, peers, current", motor + ", " + d.peers() + ", " + d.current());
+                    check("a shared part: " + d, d.shared());
+                    check("its peer is B: " + d.peers() + " for " + f.db(), d.peers().equals(List.of(f.db())));
                     check("one level: " + d.levels(), d.levels().size() == 1);
-                    check("at the network's last speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
+                    check("at the motor's speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
+                    check("and turning at it now: " + d.current(), d.current() != GlassRecords.NONE);
                     check("no driver: " + d.sources(), d.driven().isEmpty());
-                    checkBounded(g, d);
+                    check("the motor is a foreign source: " + motor, motor != null && motor.rows().isEmpty() && motor.driver() == GlassRecords.NONE
+                            && motor.current() == GlassRecords.NONE && motor.ratioKnown());
+                    check("no tail: " + d.foreign(), d.foreign() == 0);
+                    checkNotBounded(g, d);
                     try {
                         Path p = GlassGraphCommand.write(ind(), level.getServer(), ind().district(f.da()));
                         record(t, "graph dump", p);
@@ -857,6 +878,8 @@ public final class SectionsChunkLoadGameTests {
                     watch.on = false;
                     GlassKit.Domain d = millDomain(GlassKit.latest(f.da()));
                     record(t, "millstone A's domain, B unlisted", d);
+                    check("no source is listed: " + d.sources(), d.sources().isEmpty());
+                    check("not a shared part: " + d, !d.shared() && d.peers().isEmpty() && d.foreign() == 0);
                     check("still one level: " + d.levels(), d.levels().size() == 1);
                     check("at the speed of A's members: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
                     check("still no driver: " + d.sources(), d.driven().isEmpty());
@@ -878,14 +901,23 @@ public final class SectionsChunkLoadGameTests {
     }
 
     private static void checkBounded(GlassKit.Graph g, GlassKit.Domain d) {
+        checkMembers(g, d, true);
+    }
+
+    /** The domain's member nodes are modelled, not bounded (a shared part: its network is modelled with its peers). */
+    private static void checkNotBounded(GlassKit.Graph g, GlassKit.Domain d) {
+        checkMembers(g, d, false);
+    }
+
+    private static void checkMembers(GlassKit.Graph g, GlassKit.Domain d, boolean bounded) {
         int n = 0;
         for (GlassKit.Member m : d.members()) {
             if (m.node() == GlassRecords.NONE)
                 continue;
             for (GlassKit.Node node : g.nodes())
                 if (node.index() == m.node()) {
-                    check("member node " + node.index() + " (kind " + node.kind() + ", model " + node.model() + ") is bounded",
-                            node.has(GlassRecords.Node.BOUNDED));
+                    check("member node " + node.index() + " (kind " + node.kind() + ", model " + node.model() + ") is " + (bounded ? "" : "not ") + "bounded",
+                            node.has(GlassRecords.Node.BOUNDED) == bounded);
                     n++;
                 }
         }
@@ -992,34 +1024,74 @@ public final class SectionsChunkLoadGameTests {
     }
 
     /**
-     * A boiler on a chain drives the next district, the driver part (SECTIONS.md §2.6, choice SC11): a
-     * network whose members lie in more than one district is unstable in every district on it, the
-     * boiler's district included. In A, a 2 x 2 x 1 fluid tank over one kindled blaze burner, filled with
-     * 20 mB of water a tick, and a steam engine on it turn a shaft, a chain conveyor over it, a cog and a
-     * millstone; the chain reaches CB in B, two chunks away, with a cog and a millstone. Both chunks are
-     * forced. In both districts' compiles the millstone's domain has one speed row, no driver (every
-     * source fixed, not the boiler's ladder of rows) and bounded members.
+     * A boiler on a chain drives the next district (SECTIONS.md §2.6, SEC-1 S5-2, choices SC151 to SC154): a
+     * network whose members lie in more than one district is a shared part in every district on it, the
+     * boiler's district included. In A, a 2 x 2 x 1 fluid tank over one blaze burner kindled with six coal
+     * (9,600 ticks) and a steam engine on it turn a shaft, a chain conveyor over it, a cog and a millstone; a
+     * mechanical pump at 32 RPM on its own creative motor fills the tank from a pool of four water sources (16
+     * mB a tick: boiler level 1, the engine at 64 RPM). The chain reaches CB in B, two chunks away, with a cog
+     * and a millstone. Each millstone grinds wheat from a chest above it, through chutes, into a chest below
+     * it. Both chunks are forced.
+     *
+     * <p>Loaded: in both districts' compiles the millstone's domain is SHARED and names the other district as
+     * its only peer. A's part tabulates the engine's shaft as a driven source (a row for each of the 19 boiler
+     * levels and the passive row, and the boiler as its driver) and has more than one speed row; B's lists the
+     * same shaft as a foreign source (no rows, no driver, its ratio known), has a speed row for each speed an
+     * engine gives, and turns at one of them. Each lists only the members in its own chunks (the middle chunk
+     * holds no kinetic block, so the tail is empty), and the millstones' nodes are not bounded.
+     *
+     * <p>Away (the native engine only: the stub replays nothing): once both districts are eligible and their
+     * millstones' units may replay, both are released, the burner with fuel for at least
+     * {@value #BURNER_LEFT_MIN} ticks. Both replay on glass. The burner runs out in A's replay at the tick it
+     * would have in the world: the boiler, with water and no heat, goes passive (choice SC154) and the engine
+     * turns at 16 RPM, so A's millstone and, through A's published rows, B's grind at a quarter of the speed.
+     * Brought back, each district's reconcile takes off the wheat its replay ground: at the loaded speed up to
+     * the burner's out tick and at the passive speed after it, within 3 + 5%, and apart from a line that
+     * stopped at the out tick and from one that ran on at the loaded speed. Then, loaded, a burner with no fuel
+     * takes the lit one's place, and Create's own engine turns at the passive 16 RPM the replays used, B's
+     * millstone at the same ratio.
      */
-    @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 12000)
+    @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 24000)
     public static void aBoilerOnAChainDrivesTheNextDistrict(GameTestHelper helper) {
         fastConfig();
+        GlassConfig.Test.set(GlassConfig.CHECKSUM_WINDOW_TICKS, GlassExitGameTests.WINDOW);
         ServerLevel level = helper.getLevel();
         String t = "aBoilerOnAChainDrivesTheNextDistrict";
-        int ax = farChunk(helper, true, 4900), az = farChunk(helper, false, 4900), bx = ax + 2, z = az * 16 + 8;
-        BlockPos burner = new BlockPos(ax * 16 + 2, Y - 1, z), tank = new BlockPos(ax * 16 + 2, Y, z);
-        BlockPos engine = new BlockPos(ax * 16 + 4, Y, z), shaft = engine.east(2), ca = shaft.above(), cb = new BlockPos(bx * 16 + 3, Y + 1, z);
+        int ax = farChunk(helper, true, 4900), az = farChunk(helper, false, 4900), bx = ax + 2, z = az * 16 + 8, x0 = ax * 16;
+        BlockPos burner = new BlockPos(x0 + 2, Y - 1, z), tank = new BlockPos(x0 + 2, Y, z);
+        BlockPos engine = new BlockPos(x0 + 4, Y, z), shaft = engine.east(2), ca = shaft.above(), cb = new BlockPos(bx * 16 + 3, Y + 1, z);
         BlockPos millA = ca.above().south(), millB = cb.above().south();
+        BlockPos[] mills = {millA, millB};
+        // The pump north of the tank, pushing south through one pipe into it; it pulls through a corner and a
+        // pipe down from the pool's north-west source.
+        BlockPos pump = tank.north(2), corner = pump.north(), pool = corner.below(2).north();
         long[] ids = new long[2];
         int[] compiles = {-1, -1};
-        boolean[] water = {false};
+        GlassExitKit.Recorder rec = GlassExitKit.start(level);
+        // the release's game time, and the burner's out tick
+        long[] at = {0, 0};
+        // the millstones' and the engine shaft's speeds at the release
+        float[] rpm = new float[3];
+        boolean[] glass = new boolean[2];
+        int[] oscillations = new int[2];
+        String[] lastAway = {"no report", "no report"};
         helper.onEachTick(() -> {
-            if (!water[0])
-                return;
-            IFluidHandler h = Loaded.capability(level, Capabilities.FluidHandler.BLOCK, tank, null);
-            if (h != null)
-                h.fill(new FluidStack(Fluids.WATER, 20), IFluidHandler.FluidAction.EXECUTE);
+            if (level.getGameTime() % 100 == 0)
+                rec.poll();
         });
-        helper.startSequence()
+        Runnable end = () -> {
+            for (BlockPos m : mills) {
+                Clearable.tryClear(Loaded.blockEntity(level, m.above(2)));
+                Clearable.tryClear(Loaded.blockEntity(level, m.below(2)));
+                // the wheat chest stands above clear()'s band
+                GlassCorpusKit.set(helper, m.above(2), Blocks.AIR.defaultBlockState());
+            }
+            pumpPool(helper, pool, false);
+            clear(level, ax - 1, az - 1, bx + 1, az + 1);
+            level.setChunkForced(ax, az, false);
+            level.setChunkForced(bx, az, false);
+        };
+        GameTestSequence s = helper.startSequence()
                 .thenExecute(() -> {
                     level.setChunkForced(ax, az, true);
                     level.setChunkForced(bx, az, true);
@@ -1027,8 +1099,23 @@ public final class SectionsChunkLoadGameTests {
                 .thenWaitUntil(io(() -> check("A, M and B load", allLoaded(level, ax, bx, az))))
                 .thenExecute(() -> {
                     clear(level, ax - 1, az - 1, bx + 1, az + 1);
+                    for (BlockPos m : mills)
+                        GlassCorpusKit.set(helper, m.above(2), Blocks.AIR.defaultBlockState());
+                    // the pump's water first, on its own creative motor: a shaft and a large cog meshing
+                    // diagonally with the pump (16 RPM to 32), as SharedBoilerTwoLinesFactory has it
+                    pumpPool(helper, pool, true);
+                    GlassCorpusKit.motor(helper, pump.offset(-1, 1, -2), Direction.SOUTH, 16);
+                    GlassCorpusKit.shaft(helper, pump.offset(-1, 1, -1), Direction.Axis.Z);
+                    GlassCorpusKit.largeCog(helper, pump.offset(-1, 1, 0), Direction.Axis.Z);
+                    FluidPipeBlock pipe = (FluidPipeBlock) AllBlocks.FLUID_PIPE.get();
+                    GlassCorpusKit.set(helper, pump, AllBlocks.MECHANICAL_PUMP.getDefaultState().setValue(BlockStateProperties.FACING, Direction.SOUTH));
+                    GlassCorpusKit.set(helper, corner.below(), pipe.getAxisState(Direction.Axis.Y));
+                    GlassCorpusKit.set(helper, corner, pipeCorner(pipe, Direction.DOWN, Direction.SOUTH));
+                    GlassCorpusKit.set(helper, pump.south(), pipe.getAxisState(Direction.Axis.Z));
+                    // the boiler: the burner first, then the tank blocks (they join into one tank on placement)
                     SteamHelpers.burner(helper, burner);
-                    SteamHelpers.topUpAsPlayer(helper, burner, Items.COAL, 4);
+                    int fuel = SteamHelpers.topUpAsPlayer(helper, burner, Items.COAL, 6);
+                    record(t, "the burner's fuel", fuel + " ticks");
                     for (int dx = 0; dx <= 1; dx++)
                         for (int dz = 0; dz <= 1; dz++)
                             GlassCorpusKit.set(helper, tank.offset(dx, 0, dz), AllBlocks.FLUID_TANK.getDefaultState());
@@ -1042,9 +1129,14 @@ public final class SectionsChunkLoadGameTests {
                         GlassCorpusKit.set(helper, c.above().south(), AllBlocks.MILLSTONE.getDefaultState());
                     }
                     join(level, ca, cb);
-                    water[0] = true;
+                    for (BlockPos m : mills)
+                        millLine(helper, m, WHEAT);
                     playerPlaced(helper, millA);
                     playerPlaced(helper, millB);
+                    for (BlockPos m : mills) {
+                        playerPlaced(helper, m.above(2));
+                        playerPlaced(helper, m.below(2));
+                    }
                 })
                 .thenWaitUntil(() -> {
                     District da = districtAt(helper, millA), db = districtAt(helper, millB);
@@ -1056,8 +1148,8 @@ public final class SectionsChunkLoadGameTests {
                 .thenWaitUntil(() -> check("the boiler turns both millstones: A " + speedOf(level, millA) + ", B " + speedOf(level, millB),
                         speedOf(level, millA) != 0 && speedOf(level, millB) != 0))
                 .thenExecute(() -> {
-                    record(t, "engine shaft, CA, CB, millstones", speedOf(level, shaft) + ", " + speedOf(level, ca) + ", " + speedOf(level, cb) + ", "
-                            + speedOf(level, millA) + ", " + speedOf(level, millB));
+                    record(t, "engine shaft, CA, CB, millstones, pump", speedOf(level, shaft) + ", " + speedOf(level, ca) + ", " + speedOf(level, cb) + ", "
+                            + speedOf(level, millA) + ", " + speedOf(level, millB) + ", " + speedOf(level, pump));
                     for (int i = 0; i < 2; i++) {
                         GlassKit.Graph g = GlassKit.latest(ids[i]);
                         compiles[i] = g == null ? -1 : g.end().compile();
@@ -1071,21 +1163,294 @@ public final class SectionsChunkLoadGameTests {
                     }
                 }))
                 .thenExecute(() -> {
+                    // the members Create's network holds in each district's chunk, by position
+                    var network = kinetic(level, ca).getOrCreateNetwork();
+                    LongOpenHashSet inA = new LongOpenHashSet(), inB = new LongOpenHashSet(), elsewhere = new LongOpenHashSet();
+                    for (KineticBlockEntity m : network.members.keySet()) {
+                        int cx = m.getBlockPos().getX() >> 4;
+                        (cx == ax ? inA : cx == bx ? inB : elsewhere).add(m.getBlockPos().asLong());
+                    }
+                    record(t, "network members in A, in B, elsewhere", inA.size() + ", " + inB.size() + ", " + elsewhere.size());
+                    check("the network has members in A and B and none between: " + inA.size() + "/" + inB.size() + "/" + elsewhere.size(),
+                            !inA.isEmpty() && !inB.isEmpty() && elsewhere.isEmpty());
                     for (int i = 0; i < 2; i++) {
                         String which = i == 0 ? "A (the boiler's)" : "B";
                         GlassKit.Graph g = GlassKit.latest(ids[i]);
                         GlassKit.Domain d = millDomain(g);
                         record(t, "district " + which + ": graph, domain", g.describe() + "; " + d);
-                        check(which + ": one level: " + d.levels(), d.levels().size() == 1);
-                        check(which + ": no driver: " + d.sources(), d.driven().isEmpty());
-                        checkBounded(g, d);
+                        check(which + ": a shared part: " + d, d.shared());
+                        check(which + ": the other district is its one peer: " + d.peers(), d.peers().equals(List.of(ids[1 - i])));
+                        GlassKit.Source engineShaft = d.source(shaft.asLong());
+                        record(t, which + ": the engine shaft's source, speed rows, current", engineShaft + "; " + d.levels() + "; " + d.current());
+                        check(which + ": the engine's shaft is a source: " + d.sources(), engineShaft != null);
+                        if (i == 0) {
+                            check(which + ": the shaft has a row for each boiler level and the passive row: " + engineShaft.rows().size(), engineShaft.rows().size() == 20);
+                            check(which + ": and the boiler as its driver: " + d.sources(), !d.driven().isEmpty() && engineShaft.driver() != GlassRecords.NONE);
+                            check(which + ": more than one speed row: " + d.levels(), d.levels().size() > 1);
+                        } else {
+                            check(which + ": the shaft is a foreign source: " + engineShaft, engineShaft.rows().isEmpty()
+                                    && engineShaft.driver() == GlassRecords.NONE && engineShaft.current() == GlassRecords.NONE && engineShaft.ratioKnown());
+                            check(which + ": no driver of its own: " + d.sources(), d.driven().isEmpty());
+                            check(which + ": a speed row at least: " + d.levels(), !d.levels().isEmpty());
+                            check(which + ": turning at one of them: " + d.current(), d.current() != GlassRecords.NONE);
+                        }
+                        // the members are the district's own: all of those in its chunks, none in the other's, no tail
+                        int listed = 0;
+                        for (GlassKit.Member m : d.ownMembers())
+                            listed += m.count();
+                        record(t, which + ": members listed, tail", listed + ", " + d.foreign());
+                        check(which + ": every member in its chunks and no other: " + listed + " of " + (i == 0 ? inA : inB).size(),
+                                listed == (i == 0 ? inA : inB).size());
+                        check(which + ": no tail: " + d.tail(), d.foreign() == 0 && d.tail().isEmpty());
+                        checkNotBounded(g, d);
                     }
-                    water[0] = false;
-                    clear(level, ax - 1, az - 1, bx + 1, az + 1);
+                });
+        if (!nativeEngine()) {
+            s.thenExecute(() -> {
+                record(t, "GAP", "the away half runs on the native engine only (the stub replays nothing)");
+                end.run();
+            }).thenSucceed();
+            return;
+        }
+        s.thenWaitUntil(() -> {
+                    check("a report poll tick", level.getGameTime() % 20 == 0);
+                    // too late to see the burner run out away: the release fails on it
+                    if (SteamHelpers.burnTime(helper, burner) < BURNER_LEFT_MIN)
+                        return;
+                    for (int i = 0; i < 2; i++) {
+                        String which = i == 0 ? "A" : "B";
+                        GlassReport r = GlassExitKit.report(ids[i], rec);
+                        check(which + ": a report", r != null);
+                        check(which + ": eligible: " + r.replay().summary(), r.replay().eligible());
+                        // a district of one line has no units: its own window is the line's, and eligible above
+                        List<GlassReport.Unit> u = r.unitsAt(mills[i].getX(), mills[i].getY(), mills[i].getZ());
+                        check(which + ": the millstone's unit may replay: " + unitLines(r),
+                                r.units().isEmpty() || !u.isEmpty() && u.stream().allMatch(GlassReport.Unit::mayReplay));
+                    }
+                })
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    int left = SteamHelpers.burnTime(helper, burner);
+                    for (int i = 0; i < 2; i++) {
+                        GlassReport r = GlassExitKit.report(ids[i], rec);
+                        record(t, (i == 0 ? "A" : "B") + " at the release", r.replay().summary() + "; " + r.summary() + "; " + unitLines(r));
+                        rpm[i] = speedOf(level, mills[i]);
+                    }
+                    rpm[2] = speedOf(level, shaft);
+                    record(t, "at the release: tick, burner left, heat, engine shaft, millstones", now + ", " + left + ", " + SteamHelpers.heat(helper, burner)
+                            + ", " + rpm[2] + ", " + rpm[0] + ", " + rpm[1]);
+                    check("the burner has " + left + " ticks of fuel left at the release, at least " + BURNER_LEFT_MIN
+                            + " (the replays must see it run out: the loaded half took too long)", left >= BURNER_LEFT_MIN);
+                    check("the engine and both millstones turn at the release: " + rpm[2] + ", " + rpm[0] + ", " + rpm[1], rpm[0] != 0 && rpm[1] != 0 && rpm[2] != 0);
+                    at[0] = now;
+                    at[1] = now + left;
+                    rec.poll();
                     level.setChunkForced(ax, az, false);
                     level.setChunkForced(bx, az, false);
                 })
+                .thenWaitUntil(io(() -> check("A and B unload", unloaded(level, ax, az, ids[0]) && unloaded(level, bx, az, ids[1]))))
+                .thenWaitUntil(() -> {
+                    long now = level.getGameTime();
+                    if (now % 200 == 0)
+                        for (int i = 0; i < 2; i++) {
+                            GlassReport r = GlassExitKit.report(ids[i], rec);
+                            if (r == null)
+                                continue;
+                            glass[i] |= r.replay().model() == GlassReport.REPLAY_GLASS;
+                            oscillations[i] = Math.max(oscillations[i], r.replay().oscillations());
+                            lastAway[i] = r.replay().summary() + "; " + r.summary();
+                            if (now % 1200 == 0)
+                                record(t, (i == 0 ? "A" : "B") + " away", lastAway[i]);
+                        }
+                    check("away until " + (at[1] + AWAY_AFTER_OUT) + " (the burner's out tick " + at[1] + " and " + AWAY_AFTER_OUT + " more)",
+                            now >= at[1] + AWAY_AFTER_OUT);
+                })
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        String which = i == 0 ? "A" : "B";
+                        GlassReport r = GlassExitKit.report(ids[i], rec);
+                        String last = r == null ? "no report" : r.replay().summary() + "; " + r.summary();
+                        record(t, which + " at the return", last);
+                        check(which + " replayed on glass while away: " + lastAway[i], glass[i]);
+                        check(which + " still replays on glass at the return: " + last, r != null && r.replay().model() == GlassReport.REPLAY_GLASS);
+                        check(which + ": no oscillation while away: " + oscillations[i], oscillations[i] == 0);
+                    }
+                    rec.poll();
+                    level.setChunkForced(ax, az, true);
+                    level.setChunkForced(bx, az, true);
+                })
+                .thenWaitUntil(io(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        District d = ind().district(ids[i]);
+                        check((i == 0 ? "A" : "B") + " is live again: " + (d == null ? "gone" : d.loadState()), d != null && d.loadState() == IndRecords.LoadState.LIVE);
+                    }
+                }))
+                .thenWaitUntil(io(() -> {
+                    check("a record poll tick", level.getGameTime() % 20 == 0);
+                    List<ScriptedEngine.Received> recs = rec.records();
+                    for (int i = 0; i < 2; i++)
+                        check((i == 0 ? "A" : "B") + "'s reconcile lands", !reconciles(recs, ids[i], at[0]).isEmpty());
+                    check("no reconcile held: " + ind().reconciler().held(), ind().reconciler().held() == 0);
+                }))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> recs = rec.records();
+                    List<String> failed = new ArrayList<>();
+                    for (int i = 0; i < 2; i++) {
+                        String which = i == 0 ? "A" : "B";
+                        long[] span = awaySpan(recs, ids[i], at[0]);
+                        check(which + ": the engine saw it leave and come back", span != null);
+                        long gone = span[0], back = span[1], out = at[1];
+                        // the millstone's speed after the out tick: the engine's passive 16 RPM on its shaft, through the same ratio
+                        long fastCycle = millCycle(rpm[i]), slowCycle = millCycle(rpm[i] * 16f / rpm[2]);
+                        double fast = Math.max(0, Math.min(out, back) - gone) / (double) fastCycle;
+                        double slow = Math.max(0, back - Math.max(out, gone)) / (double) slowCycle;
+                        double expect = fast + slow, stopped = fast, ranOn = (back - gone) / (double) fastCycle, tol = 3 + 0.05 * expect;
+                        Map<String, Long> applied = applied(reconciles(recs, ids[i], at[0]));
+                        long ground = -applied.getOrDefault("minecraft:wheat", 0L);
+                        record(t, which + ": away from, back at, out tick, cycles fast and slow", gone + ", " + back + ", " + out + ", " + fastCycle + ", " + slowCycle);
+                        record(t, which + ": the reconcile applied", applied.toString());
+                        record(t, which + ": wheat ground away, expected (stopped, ran on)", ground + ", " + String.format(Locale.ROOT, "%.1f +- %.1f (%.1f, %.1f)",
+                                expect, tol, stopped, ranOn));
+                        if (expect - stopped <= tol || ranOn - expect <= tol)
+                            failed.add(which + ": the run cannot tell the passive speed from a stop or from running on (expected " + expect + ", stopped "
+                                    + stopped + ", ran on " + ranOn + ", tolerance " + tol + ")");
+                        if (Math.abs(ground - expect) > tol)
+                            failed.add(String.format(Locale.ROOT, "%s ground %d wheat away, expected %.1f +- %.1f (stopped %.1f, ran on %.1f)", which, ground,
+                                    expect, tol, stopped, ranOn));
+                    }
+                    check("the replays grind at the boiler's speed, then at the passive speed: " + failed, failed.isEmpty());
+                    // The loaded control for the passive speed the replays ran at: a burner with a blaze and no fuel
+                    // in place of the lit one (its fuel did not burn away: a chunk that does not tick burns none).
+                    GlassCorpusKit.set(helper, burner, Blocks.AIR.defaultBlockState());
+                    SteamHelpers.burner(helper, burner);
+                })
+                .thenWaitUntil(() -> {
+                    float sp = speedOf(level, shaft), b = speedOf(level, millB), want = Math.abs(rpm[1] * 16f / rpm[2]);
+                    check("loaded, Create runs the engine on passive heat: the shaft at " + sp + " RPM, B's millstone at " + b + " (want 16, " + want + ")",
+                            Math.abs(sp) == 16f && Math.abs(Math.abs(b) - want) < 1e-3f);
+                })
+                .thenExecute(() -> {
+                    record(t, "loaded, passive heat: the shaft, A's and B's millstones", speedOf(level, shaft) + ", " + speedOf(level, millA) + ", " + speedOf(level, millB));
+                    end.run();
+                })
                 .thenSucceed();
+    }
+
+    /** The burner's fuel left at the release, at least: the replays must see it run out. */
+    private static final int BURNER_LEFT_MIN = 1200;
+    /** How long both districts stay away after the burner's out tick. */
+    private static final int AWAY_AFTER_OUT = 4500;
+    /** The wheat in each millstone's chest: more than either grinds in the test. */
+    private static final int WHEAT = 640;
+
+    /**
+     * Create's millstone at {@code rpm}, in ticks a wheat: its processing speed {@code clamp(|rpm| / 16, 1,
+     * 512)} works the recipe's 150 ticks off, and the next item goes in a tick later.
+     */
+    private static long millCycle(float rpm) {
+        int speed = Math.max(1, Math.min(512, (int) Math.abs(rpm / 16f)));
+        return (150 + speed - 1) / speed + 1;
+    }
+
+    /** A millstone's line: wheat in a chest two above it, a chute down into it, a chute under it and a chest for its flour two below. */
+    private static void millLine(GameTestHelper h, BlockPos mill, int wheat) {
+        GlassCorpusKit.chest(h, mill.below(2));
+        GlassCorpusKit.set(h, mill.below(), AllBlocks.CHUTE.getDefaultState());
+        GlassCorpusKit.set(h, mill.above(), AllBlocks.CHUTE.getDefaultState());
+        GlassCorpusKit.chest(h, mill.above(2));
+        GlassCorpusKit.fill(h, mill.above(2), Items.WHEAT, wheat);
+    }
+
+    /**
+     * A pump's pool: four water sources (2 x 2, {@code nw} the north-west one) walled in stone on a stone
+     * floor, which the vanilla infinite-water rule keeps full (SharedBoilerTwoLinesFactory's); {@code on}
+     * false takes it all away, the water first so that none flows off as the walls go.
+     */
+    private static void pumpPool(GameTestHelper h, BlockPos nw, boolean on) {
+        BlockState stone = on ? Blocks.STONE.defaultBlockState() : Blocks.AIR.defaultBlockState();
+        Runnable water = () -> {
+            for (int dx = 0; dx <= 1; dx++)
+                for (int dz = 0; dz <= 1; dz++)
+                    GlassCorpusKit.set(h, nw.offset(dx, 0, dz), on ? Blocks.WATER.defaultBlockState() : Blocks.AIR.defaultBlockState());
+        };
+        if (!on)
+            water.run();
+        for (int dx = -1; dx <= 2; dx++)
+            for (int dz = -1; dz <= 2; dz++) {
+                GlassCorpusKit.set(h, nw.offset(dx, -1, dz), stone);
+                boolean inside = dx >= 0 && dx <= 1 && dz >= 0 && dz <= 1, corner = (dx == -1 || dx == 2) && (dz == -1 || dz == 2);
+                if (!inside && !corner)
+                    GlassCorpusKit.set(h, nw.offset(dx, 0, dz), stone);
+            }
+        if (on)
+            water.run();
+    }
+
+    private static BlockState pipeCorner(FluidPipeBlock pipe, Direction a, Direction b) {
+        BlockState s = pipe.defaultBlockState();
+        for (Direction d : Direction.values())
+            s = s.setValue(PipeBlock.PROPERTY_BY_DIRECTION.get(d), d == a || d == b);
+        return s;
+    }
+
+    private static String unitLines(GlassReport r) {
+        StringBuilder sb = new StringBuilder(r.units().size() + " units");
+        for (GlassReport.Unit u : r.units())
+            sb.append("; ").append(u.summary());
+        return sb.toString();
+    }
+
+    /**
+     * The game times of the district's first IND_LOAD_STATE UNLOADED from {@code from} on and of its first
+     * LIVE after that: the replay's span as the engine had it. Null when it saw no such pair.
+     */
+    private static long[] awaySpan(List<ScriptedEngine.Received> recs, long district, long from) {
+        long gone = -1;
+        for (ScriptedEngine.Received r : recs) {
+            if (r.kind() != IndRecords.IND_LOAD_STATE || r.bytes().length < IndRecords.LoadState.DISTRICT + 8)
+                continue;
+            ByteBuffer v = r.view();
+            long time = v.getLong(Obs.GAME_TIME);
+            if (v.getLong(IndRecords.LoadState.DISTRICT) != district || time < from)
+                continue;
+            if (gone < 0 && r.aux() == IndRecords.LoadState.UNLOADED)
+                gone = time;
+            else if (gone >= 0 && r.aux() == IndRecords.LoadState.LIVE)
+                return new long[] {gone, time};
+        }
+        return null;
+    }
+
+    /** The district's IND_RECONCILE_RESULT records from {@code from} on. */
+    private static List<ScriptedEngine.Received> reconciles(List<ScriptedEngine.Received> recs, long district, long from) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : recs) {
+            if (r.kind() != IndRecords.IND_RECONCILE_RESULT || r.bytes().length < IndRecords.ReconcileResult.ENTRIES)
+                continue;
+            ByteBuffer v = r.view();
+            if (v.getLong(IndRecords.ReconcileResult.DISTRICT) == district && v.getLong(Obs.GAME_TIME) >= from)
+                out.add(r);
+        }
+        return out;
+    }
+
+    /** What the reconciles put into the world (each entry's applied delta), by good: an item's id, "fluid:" and a fluid's. */
+    private static Map<String, Long> applied(List<ScriptedEngine.Received> results) {
+        Map<String, Long> out = new TreeMap<>();
+        for (ScriptedEngine.Received r : results) {
+            ByteBuffer v = r.view();
+            for (int i = 0; i < r.aux(); i++) {
+                int e = IndRecords.ReconcileResult.ENTRIES + i * IndRecords.RESULT24;
+                if (e + IndRecords.RESULT24 > v.capacity())
+                    break;
+                int good = v.getInt(e + 4);
+                Goods.Name n = Goods.parse(ind().goodName(good));
+                String key = n == null ? "good " + good : (n.cls() == 'f' ? "fluid:" : "") + n.id();
+                out.merge(key, v.getLong(e + 16), Long::sum);
+            }
+        }
+        return out;
     }
 
     /**
