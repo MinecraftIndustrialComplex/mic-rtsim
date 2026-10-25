@@ -238,15 +238,26 @@ public final class IndustryTestKit {
     /** One reconcile delta: inventory (DEPOSIT_INVENTORY for a deposit), good, position, delta. */
     public record Delta(int inventory, String good, BlockPos pos, long delta) {}
 
+    /** One reconcile break: the position and the block state the engine expects there (BlockStateParser's form). */
+    public record Destroy(BlockPos pos, String expectedState) {}
+
     /** Scripts an IND_CHUNK_RECONCILE with deltas only. */
     public static void reconcile(long opId, long district, int epoch, ServerLevel level, int cx, int cz, List<Delta> deltas) {
+        reconcile(opId, district, epoch, level, cx, cz, deltas, List.of());
+    }
+
+    /** Scripts an IND_CHUNK_RECONCILE with deltas and breaks. */
+    public static void reconcile(long opId, long district, int epoch, ServerLevel level, int cx, int cz, List<Delta> deltas, List<Destroy> destroys) {
         String dim = level.dimension().location().toString();
         script(out -> {
             int dimId = out.dict(Obs.DICT_DIMENSION, dim);
             int[] goods = new int[deltas.size()];
             for (int i = 0; i < deltas.size(); i++)
                 goods[i] = out.dict(IndRecords.DICT_GOOD, deltas.get(i).good());
-            int at = out.reserve(IndRecords.IND_CHUNK_RECONCILE, IndRecords.ChunkReconcile.size(deltas.size(), 0), deltas.size());
+            int[] states = new int[destroys.size()];
+            for (int i = 0; i < destroys.size(); i++)
+                states[i] = out.dict(IndRecords.DICT_BLOCK_STATE, destroys.get(i).expectedState());
+            int at = out.reserve(IndRecords.IND_CHUNK_RECONCILE, IndRecords.ChunkReconcile.size(deltas.size(), destroys.size()), deltas.size());
             if (at < 0)
                 return;
             ByteBuffer b = out.buffer();
@@ -256,7 +267,7 @@ public final class IndustryTestKit {
             b.putInt(at + IndRecords.ChunkReconcile.DIM, dimId);
             b.putInt(at + IndRecords.ChunkReconcile.CHUNK_X, cx);
             b.putInt(at + IndRecords.ChunkReconcile.CHUNK_Z, cz);
-            b.putInt(at + IndRecords.ChunkReconcile.DESTROY_COUNT, 0);
+            b.putInt(at + IndRecords.ChunkReconcile.DESTROY_COUNT, destroys.size());
             for (int i = 0; i < deltas.size(); i++) {
                 int e = at + IndRecords.ChunkReconcile.DELTAS + i * IndRecords.ChunkReconcile.DELTA_SIZE;
                 Delta d = deltas.get(i);
@@ -266,6 +277,15 @@ public final class IndustryTestKit {
                 b.putInt(e + IndRecords.ChunkReconcile.D_Y, d.pos().getY());
                 b.putInt(e + IndRecords.ChunkReconcile.D_Z, d.pos().getZ());
                 b.putLong(e + IndRecords.ChunkReconcile.D_DELTA, d.delta());
+            }
+            int b0 = at + IndRecords.ChunkReconcile.DELTAS + deltas.size() * IndRecords.ChunkReconcile.DELTA_SIZE;
+            for (int i = 0; i < destroys.size(); i++) {
+                int e = b0 + i * IndRecords.ChunkReconcile.DESTROY_SIZE;
+                BlockPos p = destroys.get(i).pos();
+                b.putInt(e + IndRecords.ChunkReconcile.B_X, p.getX());
+                b.putInt(e + IndRecords.ChunkReconcile.B_Y, p.getY());
+                b.putInt(e + IndRecords.ChunkReconcile.B_Z, p.getZ());
+                b.putInt(e + IndRecords.ChunkReconcile.B_STATE, states[i]);
             }
         });
     }
