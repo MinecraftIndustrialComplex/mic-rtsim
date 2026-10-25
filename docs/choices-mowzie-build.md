@@ -2517,6 +2517,20 @@ The tests:
     generation.
   - **Same tick.** These tests ingest the copy at the first's tick: the feud's grievance decays by the
     clock, so a copy a tick later would differ in the sixth digit with nothing counted twice.
+  - **A counted casualty ends no hold** (the M6 merge check's P3): `release_before` ran ahead of the dedupe in
+    `casualties`, and BAND_CASUALTIES has no `Obs::op()` for `first_time`, so a casualty the party counted already
+    (a plain recommit at an epoch at or below the party's, or any `ingest_copy`) still ended a held arrival:
+    `end_hold` decided it unwatched, `casualties` counted nothing, and the hold's own fight record found no hold.
+    `release_before` now skips a Casualties whose op is in that party's `casualty_ops`. Failing first,
+    `a_casualty_the_party_counted_already_does_not_end_a_held_arrival` (a raid's arrival held in a replay, the
+    band's casualty counted, then the same op again, as a copy and as a plain recommit): one raid decided and the
+    hold gone against none; the control `a_new_casualty_still_ends_a_held_arrival` (a new op) keeps one raid and one
+    death, as before.
+  - **The copy tests take the real path** (the same check's P3): the restart leg of
+    `a_casualty_copy_after_a_save_and_reopen_counts_once` ingested the copy with `ingest`, a live commit; it now
+    goes through `ingest_copy`, as the host delivers a REASSERT. rtsim-jni's
+    `a_casualty_committed_again_after_a_world_save_counts_once` also sends the first record as a REASSERT (a
+    generation the engine never heard) and checks `copies_applied` moved and nothing counted twice.
 
 ### M6 design for the implementer
 
@@ -4570,6 +4584,20 @@ conservative option at its fork.
   same order. The option not taken: carry the record's game time into the engine and keep the
   crystal's time in state, so that a mend older than the last CHIEF_STATE is skipped. That is a
   format change, which this merge does not make.
+  - The host's replay (the M6 merge check's P3): the hold above keyed on the engine's replay
+    (`outbox.replaying()`), which rtsim-jni begins only once the conflict runs (a faction, source or party in
+    the world). A session that starts with the conflict enabled and no camp (the pages saved before it was
+    found) has the replay of the host (`st.replaying`) running while the engine's has not begun, so a live
+    CHIEF_STATE arriving before the replayed FACTION_FOUND found its faction unknown and was dropped, and the
+    census byte then put the crystal back. Taken: the host side. `observe_state` holds a CHIEF_STATE while
+    `st.replaying` (`Conflict::hold_chief_state`, into the same `chief_states_held`), whatever the engine's replay,
+    and `replay_done` applies it as above. Not taken: holding a record for an unknown faction until
+    `replay_done`, which would also hold one for a live camp the engine has not been told of, with nothing to end
+    the hold. The residual: if the host's replay ends with the conflict still not in the world,
+    `conflict::replay_end` discards what was held (`discard_held_chief_states`), so a faction found live later is
+    not handed a state from before the session. Failing first, protocol.rs
+    `a_chief_state_before_the_replayed_faction_found_is_applied_at_the_replay_end` (pages saved before the camp
+    was found; the control saves them after): the crystal read true after the replay.
 - **RP-101** (M6's `chief_unit_lost` and RP-27; the M6 merge; a residual, not built): the boss's
   unit lost with its chief takes from a stack by M6's own rule (`!embodied` and a recalled stack
   of the epoch), not by `casualties`' (RP-27: `spawned` only when embodied at the record's epoch,
