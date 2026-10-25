@@ -1,0 +1,111 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_mowziesmobs: the Mowzie's Mobs plugin (MOWZIE.md §9, from slice M5). Its own jar and mod id. It
+// compiles against the core and the pack's Mowzie's Mobs 1.8.2 jar (with GeckoLib, whose types its entities
+// extend), which it never bundles; the GameTest server loads both, with the pack's own Mowzie's Mobs config
+// copied into its config folder before each run.
+evaluationDependsOn(':core')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+def packMods = rootProject.file(project.findProperty('packMods') ?: rootProject.packMods).absolutePath
+def mowzieJars = files([mowziesmobs_jar, mowzie_geckolib_jar].collect { "${packMods}/${it}" })
+def mowzieConfig = file("${packMods}/${mowzie_config}")
+
+// The GameTest server runs with the pack's Mowzie's Mobs config, not the defaults the mod would write.
+def packMowzieConfig = tasks.register('packMowzieConfig', Copy) {
+    description = "Copies the pack's Mowzie's Mobs config into the GameTest server's config folder."
+    from mowzieConfig
+    into file('run-gametest/config')
+    onlyIf { mowzieConfig.isFile() }
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        // `./gradlew :mowziesmobs:runGameTestServer`: the core, this plugin and Mowzie's Mobs on a headless
+        // dedicated server, running every @GameTest in this plugin's namespace against the session's engine
+        // (native unless -PrtsimEngine=stub; the camp commands the tests script go to the native engine as
+        // CONFLICT_COMMAND orders).
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            jvmArgument '-Xmx4G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn packMowzieConfig }
+
+dependencies {
+    implementation project(':core')
+    // mic_native, the native host the core requires (the stub engine runs inside it too).
+    runtimeOnly project(':core').micNativeFiles
+    compileOnly mowzieJars
+    runtimeOnly mowzieJars
+    // -Pc2me: the GameTest server loads C2ME too (the pack's jar), as core's does (docs/choices-mowzie-build.md
+    // MZB-249: the camp reconciler's level poll is what C2ME leaves it, no ticket event). Off by default.
+    if (project.hasProperty('c2me'))
+        runtimeOnly files("${packMods}/${c2me_jar}")
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}
