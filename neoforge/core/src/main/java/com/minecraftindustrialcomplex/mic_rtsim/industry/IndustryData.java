@@ -43,8 +43,15 @@ public final class IndustryData extends SavedData {
      * is gone at the session's start ({@link #droppedOnLoad}), and detection finds them again from the
      * seeds their chunks keep. The pins name dropped districts and go too; exclusions and merge links are
      * chunks and stay. No migration (nothing is released).
+     *
+     * <p>4 (slice S6): each district's join pairs ({@link District#joins}) and each station's served chunk
+     * ({@link #stationJoins}); bare 8-adjacency no longer joins chunks (SECTIONS.md §2.1). A format 3 save's
+     * districts are dropped the same way; its plugins' state stays (choice SC155): a package store is chunks
+     * and positions, and its next walk declares it with the new districts.
      */
-    public static final int FORMAT = 3;
+    public static final int FORMAT = 4;
+    /** The first format whose plugins' state a later format keeps (SC155). */
+    static final int PLUGINS_KEPT_SINCE = 3;
 
     /** The operator's one line when an older format's districts were dropped (SECTIONS.md §6). */
     public static final String FORMAT_RESET_LINE = "rtsim industry: the save format changed (SEC-1); learned factory state was reset and districts are detected again.";
@@ -58,6 +65,12 @@ public final class IndustryData extends SavedData {
     final Map<ResourceKey<Level>, LongOpenHashSet> excluded = new HashMap<>();
     /** {@code merge}: pairs of chunks whose districts are one, per dimension. */
     final Map<ResourceKey<Level>, List<long[]>> mergeLinks = new HashMap<>();
+    /**
+     * J6 (SECTIONS.md §2.1, choice SC6): per dimension, a station's chunk to a chunk of the district its docked
+     * interfaces reached last ({@code TrainWatch.ports}), so its chunk joins that district, also after a restart
+     * before the next docking. Dropped when either chunk leaves every district.
+     */
+    final Map<ResourceKey<Level>, Long2LongOpenHashMap> stationJoins = new HashMap<>();
     /** GOOD component hashes and the patches behind them ({@link Goods}). */
     final Map<String, DataComponentPatch> patches = new HashMap<>();
     /** Each plugin's own saved state, by a key the plugin chose ({@link #plugin}). */
@@ -99,6 +112,15 @@ public final class IndustryData extends SavedData {
         return mergeLinks.computeIfAbsent(dim, d -> new ArrayList<>());
     }
 
+    /**
+     * J6's saved pairs (SECTIONS.md §2.1, choice SC156): each station, by its position ({@link BlockPos#asLong}),
+     * to the chunk its interfaces last served; a chunk with several goes by its lowest
+     * ({@code Districts.servedByChunk}). Public for GameTests.
+     */
+    public Long2LongOpenHashMap stationJoins(ResourceKey<Level> dim) {
+        return stationJoins.computeIfAbsent(dim, d -> new Long2LongOpenHashMap());
+    }
+
     public java.util.Collection<District> districts() {
         return districts.values();
     }
@@ -136,6 +158,13 @@ public final class IndustryData extends SavedData {
                 seeds[sk++] = e.getIntValue();
             }
             t.putLongArray("seeds", seeds);
+            long[] joins = new long[d.joins.size() * 2];
+            int jk = 0;
+            for (District.Join j : d.joins) {
+                joins[jk++] = j.a();
+                joins[jk++] = j.b();
+            }
+            t.putLongArray("joins", joins);
             if (d.customName != null)
                 t.putString("customName", d.customName);
             if (d.stationName != null)
@@ -198,6 +227,19 @@ public final class IndustryData extends SavedData {
             linkTag.putLongArray(e.getKey().location().toString(), flat);
         }
         tag.put("mergeLinks", linkTag);
+        CompoundTag stationTag = new CompoundTag();
+        for (Map.Entry<ResourceKey<Level>, Long2LongOpenHashMap> e : stationJoins.entrySet()) {
+            if (e.getValue().isEmpty())
+                continue;
+            long[] flat = new long[e.getValue().size() * 2];
+            int k = 0;
+            for (Long2LongOpenHashMap.Entry p : e.getValue().long2LongEntrySet()) {
+                flat[k++] = p.getLongKey();
+                flat[k++] = p.getLongValue();
+            }
+            stationTag.putLongArray(e.getKey().location().toString(), flat);
+        }
+        tag.put("stationJoins", stationTag);
 
         CompoundTag patchTag = new CompoundTag();
         RegistryOps<Tag> ops = RegistryOps.create(NbtOps.INSTANCE, registries);
@@ -246,6 +288,9 @@ public final class IndustryData extends SavedData {
             long[] seeds = t.getLongArray("seeds");
             for (int i = 0; i + 1 < seeds.length; i += 2)
                 d.seedCounts.put(seeds[i], (int) seeds[i + 1]);
+            long[] joins = t.getLongArray("joins");
+            for (int i = 0; i + 1 < joins.length; i += 2)
+                d.joins.add(District.join(joins[i], joins[i + 1]));
             if (t.contains("customName"))
                 d.customName = t.getString("customName");
             if (t.contains("stationName"))
@@ -296,11 +341,21 @@ public final class IndustryData extends SavedData {
             for (int k = 0; k + 1 < flat.length; k += 2)
                 data.mergeLinks(dim).add(new long[] {flat[k], flat[k + 1]});
         }
+        CompoundTag stationTag = reset ? new CompoundTag() : tag.getCompound("stationJoins");
+        for (String key : stationTag.getAllKeys()) {
+            ResourceKey<Level> dim = dim(key);
+            if (dim == null)
+                continue;
+            long[] flat = stationTag.getLongArray(key);
+            Long2LongOpenHashMap m = data.stationJoins(dim);
+            for (int k = 0; k + 1 < flat.length; k += 2)
+                m.put(flat[k], flat[k + 1]);
+        }
         CompoundTag patchTag = tag.getCompound("patches");
         RegistryOps<Tag> ops = RegistryOps.create(NbtOps.INSTANCE, registries);
         for (String key : patchTag.getAllKeys())
             DataComponentPatch.CODEC.parse(ops, patchTag.get(key)).result().ifPresent(p -> data.patches.put(key, p));
-        CompoundTag pluginTag = reset ? new CompoundTag() : tag.getCompound("plugins");
+        CompoundTag pluginTag = reset && tag.getInt("format") < PLUGINS_KEPT_SINCE ? new CompoundTag() : tag.getCompound("plugins");
         for (String key : pluginTag.getAllKeys())
             data.plugins.put(key, pluginTag.getCompound(key));
         CompoundTag readoptTag = tag.getCompound("readopt");
