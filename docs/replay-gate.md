@@ -613,7 +613,8 @@ rtsim-jni's `take_commands` for each module reads the outbox's counts after each
 
 - a rise in "skipped" logs a warning at once, naming the module and the kind, e.g. "conflict decided a
   BAND_MATERIALIZE (0x....) while replaying: skipped, a bug (docs/replay-gate.md §4)";
-- the replay end's log line gives each module's dropped and skipped totals for the replay.
+- the replay end's log line gives each module's dropped and skipped totals, counted since its
+  engine started (not reset by a session's replay, for conflict and herds alike).
 
 The counts live in the module's JNI stats, not saved.
 
@@ -793,9 +794,9 @@ the agent is embodied as the last session had it:
   `NO_PLAYER`, which no puppet count carries (the counts end at the replay end anyway, §5.6). Not
   every alive member: the record's `spawned` is what Java placed. An older group of the pages' whose
   end was not journaled is released first, its members staying seen. An epoch at or below the
-  group's changes nothing; a newer one replaces it. A group honoured on a world whose frame is not
-  flat counts a later obstacle of it as late (the chart is not known). Only while replaying, only
-  from the pages, never a copy's.
+  group's, or at or below the herd's own epoch, changes nothing; a newer one replaces it. A group
+  honoured on a world whose frame is not flat counts a later obstacle of it as late (the chart is
+  not known). Only while replaying, only from the pages, never a copy's.
 - **Ships** (SHIP_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; `set_embodied(id, true)`.
 
 An epoch at or below the agent's changes nothing. A live *_MATERIALIZED is handled as today. A
@@ -829,6 +830,8 @@ floor sits under the wrap rule, so a floor above the herd's own epoch survives i
 still lands on 1. `seen` spends the floor (`floors.remove`) when it decides. At `replay_done`, with
 every group abstract, each floor folds into its herd's epoch; the floor of an agent with no herd yet
 stays in the map for that agent's first group (the conservative reading; the map is in memory only).
+rtsim-jni folds a record that decodes before its switched-off check, so the herds off for a session
+still raise the floor; a record that does not decode names no epoch and raises none.
 
 **Restarts (the fix round's item 2).** The floors and the fill's deaths (§5.2) are in memory only.
 Outside a replay both are empty, but for a floor raised live: `replay_done` folds every floor into
@@ -901,7 +904,13 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   Every copy raises the floor first. HERD_KILLED, HERD_SHEARED and HERD_TAKEN go by member key and op
   id already, so they apply as `ingest`; every other kind (HERD_GROUP_STATE, HERD_MATERIALIZED,
   HERD_SPAWN_REJECTED, HERD_DEMATERIALIZED, HERD_OBSTACLE) raises the floor and counts as late: each
-  matches a body, and a copy's body is gone (RP-8).
+  matches a body, and a copy's body is gone (RP-8). A copied KILLED or TAKEN has no epoch check, so
+  a copy for epoch 4 can remove a member of a live epoch-5 group: accepted as §10 item 3, the group's
+  count one fewer than its bodies until its next despawn. Those three kinds, and the honour of
+  §5.2, act only on a herd that existed when the session's replay began (`Herds::replay_bound`,
+  the herd arena's next index then, RP-84): nothing founds a herd while replaying, and a herd
+  founded after the replay end, on a handle the last session used for another herd, is not the
+  one a copy names (such a copy counts late; its floor still counts).
 - **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
 
 ### 5.8 The DEPART trap (RP-16)
@@ -1402,6 +1411,14 @@ Tests (rtsim-jni tests/protocol.rs `mod herds`, with the engine's in rtsim-ecolo
    `a_herd_command_ordered_without_a_replay_is_written_at_once`.
 7. Copies: `a_replayed_copy_of_a_materialization_is_not_honoured_but_its_epoch_is_counted`. Control:
    `a_replayed_materialization_the_journal_holds_is_honoured`.
+8. Floors when the herds are off: `a_record_replayed_while_the_herds_are_off_still_raises_their_epoch_floor`.
+   Control: `a_record_replayed_while_the_herds_are_on_raises_their_epoch_floor`.
+9. The herd's own epoch: `a_replayed_materialization_at_or_below_the_herds_own_epoch_is_not_honoured`
+   (rtsim-ecology, controls inside).
+10. Handles: `a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place`
+    (rtsim-jni). Control: `a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding`. The
+    engine's: `a_copy_for_a_herd_founded_after_the_replay_began_lands_on_nothing`,
+    `a_herd_founded_in_the_replay_window_is_not_honoured`.
 
 GameTests: `neoforge/gametest.sh core` (HerdGameTests).
 

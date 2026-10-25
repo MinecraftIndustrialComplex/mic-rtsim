@@ -271,6 +271,13 @@ pub struct Herds {
     pub(crate) replay_from_pages: bool,
     /// Groups the replay honoured since it began (the replay end's log line); in memory only.
     pub(crate) replay_honoured: u64,
+    /// One past the highest herd handle index at the session's replay begin (RP-84): the handles
+    /// the last session's records can name. A herd founded later takes an index at or above it,
+    /// and may be another herd than the one the last session had under that index (the world
+    /// model founds in the order the world is explored), so neither a replayed
+    /// HERD_MATERIALIZED nor a copy is applied to one. `u32::MAX` before any replay begins
+    /// (every handle counts). In memory only.
+    pub(crate) replay_bound: u32,
     /// Predator → herds it follows.
     pub(crate) follows: BTreeMap<u64, BTreeSet<HerdId>>,
     /// Plugin op ids applied, and when (forgotten after a while at the yearly sweep).
@@ -460,6 +467,7 @@ impl Herds {
             floors: BTreeMap::new(),
             replay_from_pages: false,
             replay_honoured: 0,
+            replay_bound: u32::MAX,
             follows: BTreeMap::new(),
             ops: BTreeMap::new(),
             stats: HerdStats::default(),
@@ -2173,7 +2181,17 @@ impl Herds {
     pub fn begin_replay(&mut self, from_pages: bool) {
         self.replay_from_pages = from_pages;
         self.replay_honoured = 0;
+        self.replay_bound = self.herds.next_index();
         self.outbox.begin_replay();
+    }
+
+    /// Whether herd `h` existed when the session's replay began (RP-84): only such a herd is the
+    /// one the last session's records name. Nothing founds a herd while replaying (the host holds
+    /// every founding to the replay end), so this is the herds the pages held; it keeps a herd
+    /// founded after the replay end, on a handle the last session also used for another, from
+    /// taking that session's copies.
+    fn existed_at_replay(&self, h: HerdId) -> bool {
+        h.index() < self.replay_bound
     }
 
     /// The session's replay has caught up (docs/replay-gate.md §5.6): no group outlives a
@@ -2279,12 +2297,24 @@ impl Herds {
     /// RP-8, RP-9, RP-84), called by the host instead of [`Herds::ingest`] while it applies one.
     /// Its group is gone, so a copy matches no body. Every copy raises the floor to the epoch it
     /// names, live or replayed (RP-57). Then HERD_KILLED, HERD_TAKEN and HERD_SHEARED, which go
-    /// by member key (and op id) already, as [`Herds::ingest`]; every other kind (a
+    /// by member key (and op id) already, as [`Herds::ingest`], to a herd that existed when the
+    /// session's replay began (RP-84; any other counts as late); every other kind (a
     /// HERD_MATERIALIZED, a refusal, a capture, an obstacle, a group state) only counts as late.
     pub fn ingest_copy(&mut self, legs: &mut LegIndex, o: &Obs, at: Tick) {
         self.fold_epoch(o);
         match o {
-            Obs::Killed(_) | Obs::Sheared(_) | Obs::Taken(_) => self.apply(legs, o, at),
+            Obs::Killed(_) | Obs::Sheared(_) | Obs::Taken(_) => {
+                // Only a herd the last session could have named (RP-84); the floor has the rest.
+                let known = o
+                    .group_epoch()
+                    .and_then(|(agent, _)| herd_of(agent))
+                    .is_some_and(|h| self.existed_at_replay(h));
+                if known {
+                    self.apply(legs, o, at);
+                } else {
+                    self.stats.late_records += 1;
+                }
+            }
             Obs::GroupState(_)
             | Obs::Materialized(_)
             | Obs::SpawnRejected(_)
@@ -2395,7 +2425,10 @@ impl Herds {
         if !self.outbox.replaying() || !self.replay_from_pages {
             return;
         }
-        let Some(h) = herd_of(m.agent).filter(|h| self.herds.contains(*h)) else {
+        let Some(h) = herd_of(m.agent)
+            .filter(|h| self.herds.contains(*h))
+            .filter(|h| self.existed_at_replay(*h))
+        else {
             return;
         };
         // Above the herd's own epoch (§5.2: "above the agent's") and above the group the pages

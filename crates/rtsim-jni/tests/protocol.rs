@@ -4089,6 +4089,72 @@ mod herds {
         assert!(epoch > 9, "epoch {epoch} after a replayed 9");
     }
 
+    /// RP-84: the herd the old session had under a handle its pages lack (founded after the last
+    /// save) is not the herd the next session founds under it: the world model founds in the
+    /// order the world is explored. A copy of the old herd's death (REASSERT, a generation no
+    /// engine heard) that arrives after the new founding names the agent both share. `known`
+    /// aims it at the saved herd instead (the control). Returns (the saved herd's killed count,
+    /// the new herd's) after the copy, and the copies applied.
+    fn a_copy_after_a_founding(name: &str, known: bool) -> ((u64, u64), u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        let old = the_old_session(name, Script::QUIET);
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Newdown flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: AT.0 + 2_000,
+            z: AT.1,
+            count: 60,
+            seed: 0,
+        }])
+        .unwrap();
+        j.idle();
+        let agents = e.herd_agents();
+        assert_eq!(agents.len(), 2, "the saved herd and the new one");
+        let new = *agents
+            .iter()
+            .find(|a| **a != old.agent)
+            .expect("a new herd");
+        let target = if known { old.agent } else { new };
+        let mut b = Vec::new();
+        let o = O::Killed(hb::Killed {
+            agent: target,
+            epoch: 1,
+            member: 0,
+            by: hb::KillerKind::Player,
+            killer: PLAYER,
+            op: 1 << 62 | 77,
+        });
+        hb::encode_obs(0, old.gt, &o, &mut b);
+        wire::put_u64(&mut b, obs::OBS_SEQ, old.saved.next_obs + 1_000);
+        j.reassert(EARLIER_GEN, &b);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let out = (summary(&e, old.agent).1, summary(&e, new).1);
+        let applied = e.stats.copies_applied.load(Acquire);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (out, applied)
+    }
+
+    #[test]
+    fn a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp90", false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (0, 0), "it lands on neither herd");
+    }
+
+    /// Control: the same copy for the saved herd lands.
+    #[test]
+    fn a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp90-pages", true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
     /// RP-66's twin for the herds: a test's herd command joins the engine's queue around the
     /// gate, so one ordered while the replay runs waits for the replay end. A STEER is a kind
     /// the gate drops while replaying; the command is Java's, though, not the engine's.
@@ -4156,7 +4222,7 @@ mod herds {
 
     #[test]
     fn a_herd_command_ordered_while_replaying_waits_for_the_replay_end() {
-        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp84", 8_000);
+        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp85", 8_000);
         assert!(replaying, "the replay runs past its first hand-over");
         assert!(!at_once, "not written while the replay runs");
         assert!(after, "written once it has ended");
@@ -4165,7 +4231,7 @@ mod herds {
     /// Control: with no replay to wait for the command is written at once.
     #[test]
     fn a_herd_command_ordered_without_a_replay_is_written_at_once() {
-        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp84-none", 0);
+        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp85-none", 0);
         assert!(!replaying, "nothing to replay");
         assert!(at_once && after, "written at once");
     }

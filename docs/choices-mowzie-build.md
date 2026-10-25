@@ -3734,8 +3734,13 @@ changes (RP-89).
   herd, gives none), so a ninth kind does not compile until it says. `Herds::floors` maps an
   agent to the highest epoch a replayed record or a copy named that its herd's own `epoch` does not
   hold (`raise_floor`). `ingest` folds first while replaying, before any check that drops the
-  record; `ingest_copy` always; `fold_epoch` is public for a record rtsim-jni drops before the
-  engine (none today). A herd's next group takes `x.epoch.max(floor).wrapping_add(1).max(1)` in
+  record; `ingest_copy` always; `fold_epoch` is public for the record rtsim-jni drops before the
+  engine: rtsim-jni `engine/herds.rs` `journaled` decodes the record and folds every one that
+  decodes before its `enabled` check, so a session with the herds switched off (U10) still raises
+  the floor, and a switch-on later in the session or after a crash never decides an epoch a record
+  used. A record that does not decode (bad framing, or a kind the boundary cannot read) names no
+  epoch the engine can read: it raises no floor, switched on or off, and is skipped with a
+  warning as before. A herd's next group takes `x.epoch.max(floor).wrapping_add(1).max(1)` in
   `seen`, with `floors.remove` there: the floor sits under the wrap rule, so a floor above the
   herd's epoch survives it and a wrap to 0 still lands on 1. At `replay_done` each floor folds into
   its herd's `epoch` (every group is abstract then); the floor of an agent with no herd yet is kept
@@ -3752,6 +3757,11 @@ changes (RP-89).
   | 0x0705 HERD_TAKEN | the group's | the same |
   | 0x0706 HERD_OBSTACLE | the group's | folded first, before any check that drops it |
 
+  `a_record_replayed_while_the_herds_are_off_still_raises_their_epoch_floor` (rtsim-jni: the herds
+  off for a session that replays a journaled HERD_MATERIALIZED of epoch 9, a crash, the herds on
+  again, the next group's epoch above 9; control
+  `a_record_replayed_while_the_herds_are_on_raises_their_epoch_floor`): with the fold taken out of
+  `journaled` it fails, "epoch 1 after a replayed 9", and the control passes.
   `every_record_naming_an_epoch_raises_its_floor` applies each kind at epoch 4 on three paths (an
   engine from its pages, a fresh engine, a copy) and reads the next group's epoch: 5 on every
   path. It does not compile on the base (the floor, `begin_replay` and `Obs::group_epoch` are new);
@@ -3767,7 +3777,11 @@ changes (RP-89).
   `NO_PLAYER` (`u32::MAX`), which no `players[]` entry carries, so no puppet count rises. It sends
   nothing, and the group lives to the replay end (`active` is updated so `replay_done` finds it).
   An older embodied group of the pages whose end was never journaled is released first (members
-  stay seen). An epoch at or below the group's changes nothing; a newer one replaces. A live record,
+  stay seen). An epoch at or below the group's changes nothing; a newer one replaces. The record's
+  epoch must also be above the herd's own `epoch` (§5.2: "above the agent's"): the pages' state
+  need not be a prefix of the journal, and a herd abstract at epoch 7 has used 5, so a replayed
+  record of 5 is history, not a group to honour (the group-epoch check alone would honour it when
+  no group is embodied). A live record,
   a fresh engine's (RP-31) and a copy's (RP-8) are not honoured. Choice: the member set is the
   engine's own pick rather than a record's list (the record carries none); the same pick the
   decision made, because the herd the pages and the replay leave is the one the decision saw. The
@@ -3780,7 +3794,10 @@ changes (RP-89).
   `NO_PLAYER` is transient: no page is taken while replaying (RP-42), so it is never saved.
   Test: `a_replayed_materialization_is_honoured_only_on_an_engine_from_its_pages` (the four paths;
   the capture lands on the honoured members and is late elsewhere) and
-  `a_replayed_materialization_of_an_older_epoch_changes_nothing_and_a_newer_one_replaces`.
+  `a_replayed_materialization_of_an_older_epoch_changes_nothing_and_a_newer_one_replaces`;
+  `a_replayed_materialization_at_or_below_the_herds_own_epoch_is_not_honoured` (a herd raised to
+  epoch 7, then records of 5 and 7 are not honoured and one of 8 is, with no group embodied): with
+  the herd-epoch check taken out it fails, "a record of 5" honoured.
 - **RP-83** (nothing embodies while replaying; §6; RP-3): `seen` returns first thing while the
   outbox replays (`Outbox::defer`, counted in `deferred`). The `Ev::Seen` events the pages' wheel
   holds are a sighting of the last session's world, the player is not known again until the
@@ -3803,6 +3820,42 @@ changes (RP-89).
   journal) gives (groups honoured, copies applied) = (1, 1) against (0, 1); it does not compile on
   the base (no honour). Control `a_replayed_materialization_the_journal_holds_is_honoured`: the
   record itself, (1, 0). Both then see a group epoch above the old one after the replay end.
+  *Accepted residual.* A copied HERD_KILLED or HERD_TAKEN goes by agent and member key with no
+  epoch check (the key names the herd's own member, not a group's), so a copy for epoch 4 can
+  remove a member of a live epoch-5 group that picked it before the copy was heard: the herd
+  loses the member for good, which is right (the sheep is dead), but the group's count is one
+  fewer than its bodies until the group's next despawn. This is conflict's accepted §10 item 3
+  (a copied band death) in the herds, and the same recommendation: accept. Option not taken: an
+  epoch check on the copy, which would keep a dead sheep alive in the herd.
+  *Handles allocated in the replayed window (the slice D review's P1: a dragons arena hands out
+  indices in order and never reuses them, so a replay that allocates in another order puts
+  another dragon under a record's index).* Can a herd handle differ here? Not in the window: a
+  herd is allocated only by `add_herd`, whose callers are the world model's founding
+  (`worldmodel::simulate` returns while `st.replaying`) and a test's `Order::HerdFound` (in
+  `runs_the_clock`, held to the replay end, RP-33), besides the restore from the pages. A group
+  is no handle (it is the herd's handle and an epoch; no split makes a herd), and a member is
+  named by key within its herd, so no arena order is involved. After the replay end it can: the
+  pages lack the herds the last session founded after its last save, and the world model founds
+  in the order the world is explored, so handle k after a crash can be another herd than handle
+  k before it. Two things reach it. The epoch floor, keyed by agent and kept for an agent with
+  no herd, only ever raises an epoch (the new herd takes a higher one, never an equal one;
+  `a_floor_of_an_agent_with_no_herd_stays_past_the_replay_end`). A copy that arrives after the
+  founding is guarded: `Herds::replay_bound` is the herd arena's next index at `begin_replay`,
+  `honour` and the copy's KILLED, SHEARED and TAKEN act only on a herd below it, and any other
+  copy counts in `late_records` (its floor still counts). rtsim-jni `found` and `order_found`
+  call `reset_if_due` before `add_herd`, so the bound is taken before a founding in a session
+  whose herds had not run yet. Residual: a test's HerdFound while the herds are switched off
+  allocates before the switch-on's `begin_replay`, so counts as known; the world model founds
+  nothing while they are off. Tests: rtsim-ecology
+  `a_copy_for_a_herd_founded_after_the_replay_began_lands_on_nothing` (KILLED and TAKEN; the
+  flock's copy lands, the late flock's counts late) and
+  `a_herd_founded_in_the_replay_window_is_not_honoured` (the flock's record is); rtsim-jni
+  `a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place` (a second
+  herd founded after the replay, a REASSERT of a KILLED naming its agent; control
+  `a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding`). With the bound taken out
+  (every index known) the engine pair fails, "(1, 0)" against "(0, 1)" and "1" honoured against
+  "0", and the wire test fails, "(0, 1)" against "(0, 0)". They do not compile on the base
+  (`begin_replay`, `replay_honoured`).
 - **RP-85** (a test's herd command waits for the replay end; §4.6; RP-33, RP-66): `Order::HerdCommand`
   (TEST mode; `herds::order_command`) puts a command of any kind straight into the link's queue,
   around the gate, so a test could send a HERD_MATERIALIZE while the replay runs. It is held as
@@ -3861,10 +3914,15 @@ changes (RP-89).
   `an_epoch_that_ended_after_the_pages_held_it_is_not_decided_again`): the old session despawns the
   group, the crash, the next session's first group has an epoch above the ended one.
 - **RP-89** (the log, the counts, what changes and what does not): the replay end's log line gains
-  the herds' counts (commands dropped, "never" kinds, decisions deferred, groups honoured), and a
-  `log_warn` names the last "never" kind (rtsim-jni `shared::replay_end`, `Herds::replay_gate_counts`,
-  `GateCounts`). The counts are the engine's, since it was built or loaded, and not saved
-  (`replay_honoured` likewise). No page, journal or wire format changes: the floors and the gate
+  the herds' counts (commands dropped, "never" kinds, decisions deferred, groups honoured), under a
+  wording that says they are totals since each engine started (rtsim-jni `shared::replay_end`,
+  `Herds::replay_gate_counts`, `GateCounts`). The counts are lifetime totals, not reset by
+  `begin_replay`, as conflict's are (the reset option is not taken: one reading for both modules,
+  and the totals show a "never" count of an earlier session too); not saved (`replay_honoured`
+  likewise). A rise in the "never" count is logged at once, not at the replay end: rtsim-jni
+  `herds::take_commands` compares it with the link's `never_logged` and calls `log_error` naming
+  the last kind (§4.3), as conflict's does; this replaces the replay-end `log_warn` the first cut
+  had. No page, journal or wire format changes: the floors and the gate
   state are in memory only, `Embodied.player` is `NO_PLAYER` only transiently, and the
   rtsim-view fixtures need no regeneration for this slice. Forks, all conservative:
   floors keyed by agent in memory and kept for an agent with no herd; a copy of a body-matched
@@ -3904,7 +3962,11 @@ changes (RP-89).
   name): the first workspace run here reported the mutated copy test as failed; the rerun with
   nothing touched passed. (f) The first cut of RP-84 had `Herds::ingest_copy` with no caller in the
   host; only a test through the wire (a REASSERT in the journal) finds that.
-  *Checks:* `cargo test --workspace --no-fail-fast`: 1,593 passed, 0 failed, 25 ignored;
+  *Checks:* `cargo test --workspace --no-fail-fast`: 1,600 tests, 25 ignored, after the review fixes
+  (a run at a load average of about 100 had four fail on timing, none in the herds: the 100,000
+  district card test of rtsim-cli, the leased-run lockstep test of rtsim-host, two protocol tests
+  of the conflict resident peak and the session start's close; each passed alone, the card one
+  flipping from run to run);
   `cargo clippy -p rtsim-ecology -p rtsim-jni --all-targets -- -D warnings`: clean; the "never" unit
   test also under `cargo test --release -p rtsim-ecology a_never_kind`: passes. The sims
   (`rtsim-cli sim herds` and `sim dragons`, the two the herds engine feeds, run to files in /tmp

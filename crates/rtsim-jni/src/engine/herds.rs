@@ -88,6 +88,9 @@ pub(super) struct Link {
     /// The engine came back from its pages ([`Link::load`], RP-31): only then does its replay
     /// honour a replayed HERD_MATERIALIZED (docs/replay-gate.md §5.2).
     from_pages: bool,
+    /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
+    /// §4.3). Not saved.
+    never_logged: u64,
     /// What the saves owe the herds' pages (a save while switched off, a purge at start).
     pub(super) pager: Pager,
     /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
@@ -144,6 +147,7 @@ impl Link {
             reset_due: false,
             replay_end_due: false,
             from_pages: false,
+            never_logged: 0,
             pager: Pager::default(),
             dropped_pages: false,
             restore_diverged: None,
@@ -242,6 +246,9 @@ pub(super) fn found(st: &mut State, n: NewHerd, at: Tick) {
     let at = at.max(st.herds.engine.now()).max(st.phase1.world.now());
     shared::run_to(st, at);
     let (name, species, count, pos) = (n.name.clone(), n.species, n.count, n.pos);
+    // The session's replay begins first, so that the herd is not among those the replay can name
+    // (docs/replay-gate.md §5.7, RP-84).
+    reset_if_due(st);
     let h = st.herds.engine.add_herd(n, at);
     log_info(&format!(
         "herd founded from the world model: {count} {} as {name:?} at ({}, {}): agent {:#x}",
@@ -473,8 +480,19 @@ pub(super) fn simulate(st: &mut State) {
     shared::run_to(st, at);
 }
 
-/// Takes what the herds decided into the link's queue.
+/// Takes what the herds decided into the link's queue. A rise in the gate's "never" count is
+/// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 pub(super) fn take_commands(st: &mut State) {
+    let counts = st.herds.engine.replay_gate_counts();
+    if counts.never > st.herds.never_logged {
+        let (code, name) = counts.last_never.unwrap_or((0, "?"));
+        log_error(&format!(
+            "herds decided a {name} ({code:#06x}) while replaying ({} since the last take): \
+             skipped, a bug (docs/replay-gate.md §4)",
+            counts.never - st.herds.never_logged
+        ));
+        st.herds.never_logged = counts.never;
+    }
     let cmds = st.herds.engine.take_commands();
     st.herds.queue.extend(cmds);
 }
@@ -524,6 +542,7 @@ pub(super) fn order_found(
         .max(st.phase1.world.now());
     // Everything before it happens first.
     shared::run_to(st, at);
+    reset_if_due(st);
     let h = st.herds.engine.add_herd(
         NewHerd {
             name: name.to_string(),

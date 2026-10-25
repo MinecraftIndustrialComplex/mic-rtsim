@@ -1359,6 +1359,76 @@ fn a_floor_of_an_agent_with_no_herd_stays_past_the_replay_end() {
     assert_eq!(g.epoch, 8, "above the floor of the old life's record");
 }
 
+/// A herd the world model founds after a replay (a handle the last session may have used for
+/// another herd).
+fn late_flock() -> NewHerd {
+    NewHerd {
+        name: "Late flock".into(),
+        species: rtsim_ecology::herds::HerdSpecies::Sheep,
+        frame: 0,
+        pos: (300, 1_700),
+        count: 60,
+        seed: Some(9),
+    }
+}
+
+/// RP-84: the herds the last session's records can name are the ones that existed when the
+/// replay began. A herd founded after it takes a new handle index, which may be another herd than
+/// the last session's under that index (the world model founds in the order the world is
+/// explored), so a copy of a death or a taking for it counts late and changes nothing; the same
+/// copy for the flock, which the replay began with, lands. Before, both landed.
+#[test]
+fn a_copy_for_a_herd_founded_after_the_replay_began_lands_on_nothing() {
+    let now = Tick::from_days(12);
+    for (name, kind) in [("HERD_KILLED", 4), ("HERD_TAKEN", 6)] {
+        let mut r = Rig::valley(5);
+        let f = flock(&r);
+        r.run(now, 2_000, None);
+        r.h.begin_replay(true);
+        r.h.replay_done(&mut r.legs, now);
+        let late = r.h.add_herd(late_flock(), now);
+        assert_ne!(agent_of(late), agent_of(f));
+        let books = |r: &Rig| (r.h.stats.killed + r.h.stats.taken, r.h.stats.late_records);
+        let (_, o) = records_naming(agent_of(late), 1).swap_remove(kind);
+        let before = books(&r);
+        r.h.ingest_copy(&mut r.legs, &o, now);
+        assert_eq!(
+            books(&r),
+            (before.0, before.1 + 1),
+            "{name} for the late flock counts late and changes nothing"
+        );
+        let (_, o) = records_naming(agent_of(f), 1).swap_remove(kind);
+        r.h.ingest_copy(&mut r.legs, &o, now);
+        assert_eq!(
+            books(&r),
+            (before.0 + 1, before.1 + 1),
+            "{name} for the flock lands"
+        );
+        r.h.check(now).unwrap();
+    }
+}
+
+/// RP-84, the same for the honour: a herd founded while the replay runs (the host holds every
+/// founding to the replay end, so only an engine called out of turn has one) is not the herd the
+/// last session's record names; the flock's record is honoured.
+#[test]
+fn a_herd_founded_in_the_replay_window_is_not_honoured() {
+    let now = Tick::from_days(12);
+    let mut r = Rig::valley(5);
+    let f = flock(&r);
+    r.run(now, 2_000, None);
+    r.h.begin_replay(true);
+    let late = r.h.add_herd(late_flock(), now);
+    let (_, m) = records_naming(agent_of(late), 1).swap_remove(1);
+    r.h.ingest(&mut r.legs, &m, now);
+    assert_eq!(r.h.replay_honoured(), 0, "the late flock is not honoured");
+    let (_, m) = records_naming(agent_of(f), 1).swap_remove(1);
+    r.h.ingest(&mut r.legs, &m, now);
+    assert_eq!(r.h.replay_honoured(), 1, "the flock is");
+    r.h.replay_done(&mut r.legs, now);
+    r.h.check(now).unwrap();
+}
+
 /// A command decided while replaying is dropped and counted, not queued (RP-3, RP-80): a group
 /// the pages hold in view is steered by an obstacle's replan, and the Steer goes nowhere. Control:
 /// the same obstacle with no replay queues it.
