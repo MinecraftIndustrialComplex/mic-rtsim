@@ -1348,10 +1348,10 @@ fn a_drawn_package_is_removed_after_the_rest_of_it_is_written() {
 /// lost (`WRITE_ANSWER_PERIODS`, choice SC113), and runs the engine's session start, which catches
 /// up the thirty periods. The link keeps the `CHAIN_IN` heard while off and books it at its own
 /// tick, before that session start: the store counts X's packages, and from then on Java is handed
-/// the iron the mine sent, once. The control is the link at 9bbf1569, which ignored the record
-/// while off: the catch-up takes X as lost, and the writes after it hand Java X's iron a second
-/// time under new ops. Then Java writes every write as it comes, both ends load, and the rest
-/// is written. This stands in for a native fixture: the iron line learns no chain link, so no
+/// the iron the mine sent, once. The control is the link before 35a8294b, which ignored the
+/// record while off: the catch-up takes X as lost, and the writes after it hand Java X's iron a
+/// second time under new ops. Then Java writes every write as it comes, both ends load, and the
+/// rest is written. This stands in for a native fixture: the iron line learns no chain link, so no
 /// native rig makes an engine write past ten periods (RP-285's Tests).
 #[test]
 fn a_write_answered_while_industry_is_off_is_taken_at_its_tick_before_the_catch_up() {
