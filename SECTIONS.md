@@ -1,8 +1,8 @@
 # Sections: factories cut at links and stores
 
 **Status:** design approved by Ben on 2026-10-22 (all six questions in §12 answered, each the
-recommended option). Built: S1 and S2a to S2c (§10.1); S2d onward to come. Every other choice is
-listed in §13 and can be undone.
+recommended option). Built: every slice of §10.1, S1 to S7 (S7 landed 2026-10-25). Every other
+choice is listed in §13 and can be undone.
 
 **Decided, and binding here:**
 - **SEC-1** (Ben, 2026-10-21, "Cut at links and stores"): districts stop merging across chain conveyors
