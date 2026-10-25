@@ -105,6 +105,9 @@ public final class LairPlacer {
 
     /** Placed lairs this session has found with their start, or given up on (by field): never looked at again. */
     private final Set<Long> verified = new HashSet<>();
+    /** The ticks between two looks at the placed lairs not yet verified (a lair whose chunk nobody loads stays on the list). */
+    private static final int VERIFY_EVERY = 20;
+    private long lastVerify = Long.MIN_VALUE;
 
     /** This session's counts: {@code savedNow} the placements written at once, {@code replaced} the lairs whose start was missing. */
     public long requests, repeats, refused, badRequests, placedCount, sitesTried, sitesFailed, exhausted, savedNow, replaced, replaceFailed;
@@ -120,7 +123,14 @@ public final class LairPlacer {
         requests = repeats = refused = badRequests = placedCount = sitesTried = sitesFailed = exhausted = 0;
         savedNow = replaced = replaceFailed = 0;
         verified.clear();
+        lastVerify = Long.MIN_VALUE;
         placements.clear();
+    }
+
+    /** GameTests: forgets which placed lairs this session has looked at, so the next tick looks at each again. */
+    public void unverifyForTest() {
+        verified.clear();
+        lastVerify = Long.MIN_VALUE;
     }
 
     /** The saved state, from the overworld's data storage. */
@@ -162,8 +172,10 @@ public final class LairPlacer {
         if (!DragonConfig.placeLairs())
             return;
         Data d = data();
-        if (verified.size() < d.placed.size())
+        if (verified.size() < d.placed.size() && now >= lastVerify + VERIFY_EVERY) {
+            lastVerify = now;
             verifyPlaced(d, now);
+        }
         if (d.pending.isEmpty())
             return;
         int checks = CHECKS_PER_TICK, tries = TRIES_PER_TICK;

@@ -17,20 +17,27 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
+import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -492,6 +499,219 @@ public final class OilFieldGameTests {
         static Data0 of(LairPlacer.Data d) {
             return new Data0(d.fields.size(), d.placed.size());
         }
+    }
+
+    // ---- slice N2: the placed lairs' file and a lair whose start is missing (RP-243, RP-244) --------------------
+
+    /** The placed lairs' own file (written by {@code LairPlacer.saveNow}), read back as the saved state. */
+    static LairPlacer.Data lairFile(ServerLevel level) {
+        Path file = level.getServer().getWorldPath(LevelResource.ROOT).resolve("data").resolve(LairPlacer.Data.NAME + ".dat");
+        try {
+            return LairPlacer.Data.load(NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap()).getCompound("data"), level.registryAccess());
+        } catch (IOException e) {
+            throw new GameTestAssertException("the placed lairs' file cannot be read: " + e);
+        }
+    }
+
+    /** Takes a test's field out of the saved state (the GameTest world is reused). */
+    static void forgetLair(LairPlacer placer, long field) {
+        LairPlacer.Data d = placer.data();
+        d.fields.remove(field);
+        d.pending.removeIf(r -> r.field() == field);
+        d.placed.removeIf(p -> p.field() == field);
+        d.setDirty();
+    }
+
+    /** The structure starts of {@code id} in the loaded chunks within {@code radius} of {@code centre}. */
+    static int startsAround(ServerLevel level, ChunkPos centre, int radius, String id) {
+        Structure st = level.registryAccess().registryOrThrow(Registries.STRUCTURE).get(ResourceLocation.parse(id));
+        int n = 0;
+        for (int dx = -radius; dx <= radius; dx++)
+            for (int dz = -radius; dz <= radius; dz++) {
+                LevelChunk c = level.getChunkSource().getChunkNow(centre.x + dx, centre.z + dz);
+                StructureStart s = c == null ? null : c.getStartForStructure(st);
+                if (s != null && s.isValid())
+                    n++;
+            }
+        return n;
+    }
+
+    /**
+     * RP-243 (audit row D2, direction B): the placed lairs' file is written in the tick a roost is placed, before the
+     * background chunk saver can write one of the roost's chunks ahead of it. A request is placed through
+     * {@code LairPlacer.request} (the engine's PLACE_LAIR path, both engines). The file is read back from the world's data
+     * folder: the field is there, the request is no longer pending, the lair and its start chunk are recorded, and one
+     * write was counted. The crash is then modelled by loading the saved state from that file in place of the one in memory
+     * (the chunks keep the roost): the engine's resend of the request is refused as a repeat and no second roost is placed
+     * (one structure start in the loaded chunks, one placement). Fails without the fix: the file written by the autosave
+     * would not yet hold the placement.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_lair_durable")
+    public static void aPlacedLairIsOnDiskBeforeItsRoostCanBe(GameTestHelper helper) {
+        String test = "aPlacedLairIsOnDiskBeforeItsRoostCanBe";
+        ServerLevel level = helper.getLevel();
+        BlockPos site = DragonKit.farSite();
+        ChunkPos sc = new ChunkPos(site);
+        LairPlacer placer = bridge().placer;
+        String dim = DragonKit.dimension(helper);
+        long field = ThreadLocalRandom.current().nextLong(1L << 40, 1L << 50);
+        DragonConfig.Test.placeLairs = Boolean.TRUE;
+        Runnable unforce = DragonKit.forceChunks(level, sc, 5);
+        LairPlacer.Data original = placer.data();
+        LairPlacer.Placed[] got = {null};
+        long[] before = new long[3];
+        int placements0 = placer.placements.size();
+        DragonKit.onEnd(helper, () -> {
+            if (placer.data() != original)
+                level.getServer().overworld().getDataStorage().set(LairPlacer.Data.NAME, original);
+            forgetLair(placer, field);
+            unforce.run();
+            DragonConfig.Test.reset();
+        });
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5)))
+                .thenExecute(() -> {
+                    before[0] = placer.savedNow;
+                    before[1] = placer.placedCount;
+                    placer.request(field, dim, ROOST, site.getX(), site.getZ(), 100);
+                })
+                .thenWaitUntil(() -> {
+                    for (int i = placements0; i < placer.placements.size(); i++)
+                        if (placer.placements.get(i).field() == field)
+                            got[0] = placer.placements.get(i);
+                    check("the roost placed (" + placer.requests + " requests, " + placer.sitesTried + " sites tried, " + placer.sitesFailed
+                            + " failed)", got[0] != null);
+                })
+                .thenExecute(() -> {
+                    LairPlacer.Placed p = got[0];
+                    check("one write counted at the placement (" + (placer.savedNow - before[0]) + ")", placer.savedNow == before[0] + 1);
+                    LairPlacer.Data file = lairFile(level);
+                    check("the field is in the file", file.fields.contains(field));
+                    check("the request is no longer pending in the file", file.pending.stream().noneMatch(r -> r.field() == field));
+                    List<LairPlacer.Placed> mine = file.placed.stream().filter(x -> x.field() == field).toList();
+                    check("one placed lair of the field in the file (" + mine.size() + ")", mine.size() == 1);
+                    check("with its lair id and structure", mine.get(0).lair() == p.lair() && mine.get(0).structure().equals(ROOST));
+                    check("and its start chunk (" + mine.get(0).start() + " vs " + p.start() + ")", p.start() != null && p.start().equals(mine.get(0).start()));
+                    check("one structure start in the loaded chunks (" + startsAround(level, sc, 5, ROOST) + ")", startsAround(level, sc, 5, ROOST) == 1);
+                    // The crash: the saved state is what the file holds; the chunks keep the roost.
+                    level.getServer().overworld().getDataStorage().set(LairPlacer.Data.NAME, file);
+                    check("the reloaded state is the placer's", placer.data() == file);
+                    long repeats0 = placer.repeats;
+                    placer.request(field, dim, ROOST, site.getX(), site.getZ(), 100);
+                    check("the engine's resend is refused as a repeat (" + (placer.repeats - repeats0) + ")", placer.repeats == repeats0 + 1);
+                })
+                .thenIdle(80)
+                .thenExecute(() -> {
+                    long mine = placer.placements.stream().filter(x -> x.field() == field).count();
+                    check("one placement for the field (" + mine + ")", mine == 1 && placer.placedCount == before[1] + 1);
+                    check("one structure start still (" + startsAround(level, sc, 5, ROOST) + ")", startsAround(level, sc, 5, ROOST) == 1);
+                    check("the field is not pending again", placer.data().pending.stream().noneMatch(r -> r.field() == field));
+                    level.getServer().overworld().getDataStorage().set(LairPlacer.Data.NAME, original);
+                    record(test, "durable", "a roost for field " + field + " placed at chunk " + got[0].start() + ": the file read back from the data folder at "
+                            + "the placement held the field, the lair " + Long.toHexString(got[0].lair()) + " and its start chunk with nothing pending; "
+                            + "the state reloaded from it refused the resend and placed no second roost (one start, one placement)");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * RP-244 (audit row D2, direction A): a placed lair whose start chunk lacks the structure's start (the chunk is older
+     * than the record that the lair was placed) is placed again, at the same chunk, once. A lair whose start is there is
+     * left alone (the control: every placed lair is looked at again, none placed again). Then the start is removed from
+     * the chunk (and the roost's dragon, which the older entity file would not hold) and the placed lairs are looked at
+     * again: the lair is placed once more with the same start chunk and lair id, though its own references survive in
+     * the box chunks (the re-placement skips the reference test: asserted that a reference is there), the start is back,
+     * one lair of the field stays in L, LAIR_FOUND was sent once, one dragon is in the roost, and a further 80 ticks place
+     * nothing more.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_lair_replace")
+    public static void aLairWhoseStartIsMissingIsPlacedAgainOnce(GameTestHelper helper) {
+        String test = "aLairWhoseStartIsMissingIsPlacedAgainOnce";
+        ServerLevel level = helper.getLevel();
+        BlockPos site = DragonKit.farSite();
+        ChunkPos sc = new ChunkPos(site);
+        LairPlacer placer = bridge().placer;
+        String dim = DragonKit.dimension(helper);
+        long field = ThreadLocalRandom.current().nextLong(1L << 40, 1L << 50);
+        DragonConfig.Test.placeLairs = Boolean.TRUE;
+        Runnable unforce = DragonKit.forceChunks(level, sc, 5);
+        LairPlacer.Placed[] got = {null};
+        long[] before = new long[4];
+        int placements0 = placer.placements.size();
+        Structure[] roost = {null};
+        DragonKit.onEnd(helper, () -> {
+            forgetLair(placer, field);
+            unforce.run();
+            DragonConfig.Test.reset();
+        });
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5)))
+                .thenExecute(() -> {
+                    roost[0] = level.registryAccess().registryOrThrow(Registries.STRUCTURE).get(ResourceLocation.parse(ROOST));
+                    before[0] = placer.placedCount;
+                    placer.request(field, dim, ROOST, site.getX(), site.getZ(), 100);
+                })
+                .thenWaitUntil(() -> {
+                    for (int i = placements0; i < placer.placements.size(); i++)
+                        if (placer.placements.get(i).field() == field)
+                            got[0] = placer.placements.get(i);
+                    check("the roost placed (" + placer.requests + " requests, " + placer.sitesTried + " sites tried)", got[0] != null);
+                })
+                .thenExecute(() -> {
+                    check("its start chunk is recorded", got[0].start() != null);
+                    before[1] = placer.replaced;
+                    placer.unverifyForTest(); // the control: the start is there
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    check("a lair whose start is there is not placed again (" + (placer.replaced - before[1]) + " replaced, "
+                            + (placer.placedCount - before[0]) + " placed)", placer.replaced == before[1] && placer.placedCount == before[0] + 1);
+                    // The chunk from before: no start in it, and no dragon in the roost (the older entity file holds none).
+                    LevelChunk home = level.getChunk(got[0].start().x, got[0].start().z);
+                    check("the start is there to remove", home.getStartForStructure(roost[0]) != null);
+                    check("its references stand in the box chunks", ChunkPos.rangeClosed(new ChunkPos(new BlockPos(got[0].box().minX(), 0, got[0].box().minZ())),
+                            new ChunkPos(new BlockPos(got[0].box().maxX(), 0, got[0].box().maxZ()))).anyMatch(c ->
+                            !level.getChunk(c.x, c.z).getReferencesForStructure(roost[0]).isEmpty()));
+                    Map<Structure, StructureStart> starts = new HashMap<>(home.getAllStarts());
+                    starts.remove(roost[0]);
+                    home.setAllStarts(starts);
+                    check("the start is gone", home.getStartForStructure(roost[0]) == null);
+                    EntityType<?> fire = IafDragons.speciesType(DragonKit.FIRE);
+                    for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, AABB.of(got[0].box()).inflate(48)))
+                        if (d.getType() == fire)
+                            d.discard();
+                    before[2] = placer.replaced;
+                    before[3] = placer.placedCount;
+                    placer.unverifyForTest();
+                })
+                .thenWaitUntil(() -> check("the lair placed again (" + placer.replaced + " replaced, " + placer.replaceFailed + " failed)",
+                        placer.replaced == before[2] + 1))
+                .thenExecute(() -> {
+                    LevelChunk home = level.getChunk(got[0].start().x, got[0].start().z);
+                    StructureStart again = home.getStartForStructure(roost[0]);
+                    check("the start is back in its chunk", again != null && again.isValid());
+                    List<LairPlacer.Placed> mine = placer.data().placed.stream().filter(x -> x.field() == field).toList();
+                    check("one lair of the field in L (" + mine.size() + ")", mine.size() == 1);
+                    check("the same lair id and start chunk", mine.get(0).lair() == got[0].lair() && got[0].start().equals(mine.get(0).start()));
+                    check("placed once more (" + (placer.placedCount - before[3]) + ")", placer.placedCount == before[3] + 1);
+                    check("LAIR_FOUND once for it (" + DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, got[0].lair()).size() + ")",
+                            DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, got[0].lair()).size() == 1);
+                    EntityType<?> fire = IafDragons.speciesType(DragonKit.FIRE);
+                    int dragons = 0;
+                    for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, AABB.of(got[0].box()).inflate(48)))
+                        if (d.getType() == fire && !d.isRemoved())
+                            dragons++;
+                    check("one dragon in the roost (" + dragons + ")", dragons == 1);
+                    check("one structure start in the loaded chunks (" + startsAround(level, sc, 5, ROOST) + ")", startsAround(level, sc, 5, ROOST) == 1);
+                })
+                .thenIdle(80)
+                .thenExecute(() -> {
+                    check("placed again once, not again (" + (placer.replaced - before[2]) + " replaced, " + (placer.placedCount - before[3]) + " placed)",
+                            placer.replaced == before[2] + 1 && placer.placedCount == before[3] + 1);
+                    record(test, "replaced", "the start of the roost at chunk " + got[0].start() + " removed with its dragon (the older chunk): the lair was placed again once, "
+                            + "same chunk and lair id, its references standing in the box chunks; LAIR_FOUND sent once; one dragon; the control (start there) placed nothing");
+                })
+                .thenSucceed();
     }
 
     // ---- field flights ------------------------------------------------------------------------------
