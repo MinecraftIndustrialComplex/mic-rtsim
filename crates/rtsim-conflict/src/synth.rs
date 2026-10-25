@@ -2120,10 +2120,14 @@ impl CampRun {
     }
 
     /// A session restart with nothing to replay: [`CampRun::restart_to_replay`], and the replay
-    /// over at once, as the host ends it when the journal has caught up (`replay_done`).
+    /// over at once, as the host ends it when the journal has caught up (`replay_done`), then the
+    /// session's present as the host tells it right after (`replay_present`, MZB-748: the engine's
+    /// own now, the hand-over's game time of a restart with nothing to replay).
     pub fn restart(&mut self) {
         self.restart_to_replay();
         self.c.replay_done();
+        let present = self.c.now();
+        self.c.replay_present(present);
     }
 
     /// A session restart that leaves the replay open: the plugin's observations not yet journaled
