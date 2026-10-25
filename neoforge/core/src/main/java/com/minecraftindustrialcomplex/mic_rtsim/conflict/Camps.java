@@ -1103,6 +1103,15 @@ public final class Camps {
                     b.get(o + ConflictRecords.CampReconcile.L_ACTION) & 0xFF, b.get(o + ConflictRecords.CampReconcile.L_FLAGS) & 0xFF,
                     b.getLong(o + ConflictRecords.CampReconcile.L_A), b.getLong(o + ConflictRecords.CampReconcile.L_B)));
         }
+        // Every band a HAND_BACK names is home whatever the line's outcome, the camp not in, a stale line or a failed
+        // addFreshEntity included: the engine has ended the party and sends nothing more (MZB-464).
+        for (Line ln : ls) {
+            if (ln.action() != ConflictRecords.CampReconcile.HAND_BACK)
+                continue;
+            ConflictBridge.Party hp = bridge.party(ln.a());
+            if (hp != null && hp.epoch == (int) ln.b())
+                homecoming.put(hp.agent, hp);
+        }
         // The heir's pair is one unit (MZB-408): a MASK and a SEAT_HEIR together, else both stale.
         Line mask = null, seat = null;
         for (Line ln : ls) {
@@ -1135,9 +1144,17 @@ public final class Camps {
         }
         if (!quiet.isEmpty())
             answerAll(faction, epoch, op, quiet, quietOutcomes, now);
-        // A band handed back is home: what is left of it walks off and goes (no BAND_RECALL comes, MZB-211).
-        for (ConflictBridge.Party p : homecoming.values())
-            bridge.homeAt(p, c.spot.x, c.spot.z, now);
+        // A band handed back is home: what is left of it walks off and goes (no BAND_RECALL comes, MZB-211). With no
+        // site it walks off from its own front (MZB-464); a band with no stack in play has no one to walk.
+        for (ConflictBridge.Party p : homecoming.values()) {
+            if (c != null) {
+                bridge.homeAt(p, c.spot.x, c.spot.z, now);
+                continue;
+            }
+            ConflictBridge.Stack front = ConflictBridge.frontStack(p);
+            double[] at0 = front == null ? new double[] {0.0, 0.0} : front.anchor(now);
+            bridge.homeAt(p, at0[0], at0[1], now);
+        }
     }
 
     /**

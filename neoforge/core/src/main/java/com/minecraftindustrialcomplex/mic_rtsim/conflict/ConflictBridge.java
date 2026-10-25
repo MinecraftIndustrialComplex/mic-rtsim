@@ -566,7 +566,7 @@ public final class ConflictBridge implements SessionPlugin {
      * M10's (this session): BAND_MARCH records kept, dropped as older than the held one or as an ended agent's, and
      * ended; stacks cut by the trim, walked into the square and clamped on it (MZB-472, MZB-473).
      */
-    public long marchRecords, marchStale, marchEnds, trimmed, walkIns, clamps;
+    public long marchRecords, marchStale, marchEnds, trimmed, walkIns, clamps, unbookedHomeDeaths;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -609,7 +609,7 @@ public final class ConflictBridge implements SessionPlugin {
         noticesPlayed = territoryCommands = settledCommands = campsReported = looted = malformed = unknownCommands = 0;
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
-        marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = 0;
+        marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = unbookedHomeDeaths = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
@@ -2301,6 +2301,13 @@ public final class ConflictBridge implements SessionPlugin {
     /** CHIEF_KILLED for the chief, else BAND_CASUALTIES of one member, each with a Java op id (MZB-589 for the latter). */
     private ByteBuffer journalLoss(Slot sl, int by, UUID killer, long now) {
         Party p = sl.stack.party;
+        if (!p.envoy && !p.recalling && marches.ended(p.agent)) {
+            // MZB-466: the engine has ended this party (its march says so) and its HAND_BACK lines are in flight, so
+            // the engine books this loss nowhere. It costs at most this one body; the log and the count show the rate.
+            unbookedHomeDeaths++;
+            MicRtsim.LOGGER.debug("[mic_rtsim] unbooked death at home: a {} of party {} (epoch {}) died after its march ended", sl.body,
+                    p.agent, p.epoch);
+        }
         ByteBuffer r;
         if (sl.chief) {
             r = session.boundary().beginJournaled(ConflictRecords.CHIEF_KILLED, ConflictRecords.ChiefKilled.SIZE, by, now);
