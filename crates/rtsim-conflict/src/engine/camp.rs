@@ -938,6 +938,21 @@ impl Conflict {
     /// While the outbox replays it waits for the replay end, the latest for each faction (RP-100):
     /// nothing journals it, so it is newer than every record the replay brings back, and one of
     /// those (a FACTION_FOUND's census byte) would undo it or find its faction unknown.
+    /// A CHIEF_STATE held by the host while its own replay runs, before this engine's replay began
+    /// (the host begins the engine's replay once the conflict is in the world, and a faction is
+    /// known only after its FACTION_FOUND is replayed): kept, the latest for each faction, as
+    /// [`Self::chief_state`] keeps one while the outbox replays, and applied at `replay_done` (RP-100).
+    pub fn hold_chief_state(&mut self, c: &ChiefState) {
+        self.chief_states_held.insert(c.faction, *c);
+    }
+
+    /// The host's replay ended with the conflict not in the world (no faction, source or party): the
+    /// chiefs' states held for it describe no camp this engine knows, and a faction found live
+    /// later must not be handed a state from before the session (RP-100).
+    pub fn discard_held_chief_states(&mut self) {
+        self.chief_states_held.clear();
+    }
+
     pub(super) fn chief_state(&mut self, c: &ChiefState, at: Tick) {
         if self.outbox.replaying() {
             self.chief_states_held.insert(c.faction, *c);

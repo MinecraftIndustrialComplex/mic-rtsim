@@ -30,6 +30,8 @@ public final class CreateGlassAccess {
     private static final VarHandle DEPLOYER_MODE = find(DeployerBlockEntity.class, "mode", modeClass(), false);
     private static final VarHandle ARM_INPUTS = find(ArmBlockEntity.class, "inputs", List.class, false);
     private static final VarHandle ARM_OUTPUTS = find(ArmBlockEntity.class, "outputs", List.class, false);
+    private static final VarHandle ARM_PENDING = find(ArmBlockEntity.class, "updateInteractionPoints", boolean.class, false);
+    private static final VarHandle ARM_POINT_TAG = find(ArmBlockEntity.class, "interactionPointTag", net.minecraft.nbt.ListTag.class, false);
     private static final MethodHandle ROTATION_MODIFIER = findStatic(RotationPropagator.class, "getRotationSpeedModifier",
             MethodType.methodType(float.class, KineticBlockEntity.class, KineticBlockEntity.class));
 
@@ -63,7 +65,8 @@ public final class CreateGlassAccess {
 
     /** True when every member resolved (the GameTests assert it, so a Create update fails loudly there). */
     public static boolean allResolved() {
-        return NETWORKS != null && DEPLOYER_MODE != null && ARM_INPUTS != null && ARM_OUTPUTS != null && ROTATION_MODIFIER != null;
+        return NETWORKS != null && DEPLOYER_MODE != null && ARM_INPUTS != null && ARM_OUTPUTS != null && ARM_PENDING != null
+                && ARM_POINT_TAG != null && ROTATION_MODIFIER != null;
     }
 
     /**
@@ -90,7 +93,10 @@ public final class CreateGlassAccess {
         return m instanceof Enum<?> e ? e.name() : null;
     }
 
-    /** {@code ArmBlockEntity.inputs} (package-private; null until the arm's first tick). Row 32. */
+    /**
+     * {@code ArmBlockEntity.inputs} (package-private): empty from the constructor until the arm's first tick
+     * resolves its saved points ({@link #armPointsPending}). Row 32.
+     */
     @SuppressWarnings("unchecked")
     public static List<ArmInteractionPoint> armInputs(ArmBlockEntity be) {
         return ARM_INPUTS == null ? null : (List<ArmInteractionPoint>) ARM_INPUTS.get(be);
@@ -100,6 +106,19 @@ public final class CreateGlassAccess {
     @SuppressWarnings("unchecked")
     public static List<ArmInteractionPoint> armOutputs(ArmBlockEntity be) {
         return ARM_OUTPUTS == null ? null : (List<ArmInteractionPoint>) ARM_OUTPUTS.get(be);
+    }
+
+    /**
+     * Whether the arm has saved points it has not read yet: {@code ArmBlockEntity.updateInteractionPoints}
+     * (package-private, true from the constructor, so after a chunk load; on a client also from a packet that
+     * changes the count) with {@code interactionPointTag} set (only {@code read} sets it), until {@code initInteractionPoints} has read the points into {@link #armInputs} and
+     * {@link #armOutputs} at a tick whose area is loaded. Create's own guard: {@code initInteractionPoints} returns
+     * at once while the tag is null, so an arm made without block entity data (a {@code /setblock}, a deployer's
+     * placement) has no saved points and its empty lists are its points. True, too, when a member is
+     * gone. Row 84.
+     */
+    public static boolean armPointsPending(ArmBlockEntity be) {
+        return ARM_PENDING == null || ARM_POINT_TAG == null || ((boolean) ARM_PENDING.get(be) && ARM_POINT_TAG.get(be) != null);
     }
 
     /**
