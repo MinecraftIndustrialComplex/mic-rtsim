@@ -1391,3 +1391,23 @@ fn a_write_answered_while_industry_is_off_is_taken_at_its_tick_before_the_catch_
         "the control hands Java X's iron again: {lost_handed} against {handed}"
     );
 }
+
+/// `take_out` (the bridge's link, RP-285): a command decided and not drained yet leaves by its op,
+/// once, and the drain no longer hands it on.
+#[test]
+fn a_command_not_drained_yet_is_taken_out_by_its_op() {
+    let decided = || {
+        let mut e = pair(Tunables::default());
+        away(&mut e, MINE, 100);
+        e.advance_to(Tick(20_100));
+        e
+    };
+    let w = writes(&mut decided());
+    assert_eq!(w.len(), 1, "{w:?}");
+    let mut e = decided();
+    let other = rtsim_kernel::journal::OpId((0x49 << 56) | 0x1234);
+    assert_eq!(e.take_out(other), None);
+    assert_eq!(e.take_out(w[0].op), Some(Cmd::WriteChain(w[0].clone())));
+    assert_eq!(e.take_out(w[0].op), None);
+    assert!(e.drain_commands().is_empty());
+}

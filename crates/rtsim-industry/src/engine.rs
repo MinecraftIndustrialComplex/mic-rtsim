@@ -3953,6 +3953,14 @@ impl Engine {
         true
     }
 
+    /// A command decided and not drained yet, taken out by its op: Java answered that op already
+    /// (the bridge's link, RP-285; a command decided again under the op Java applied). None when no
+    /// command waiting to be drained has it.
+    pub fn take_out(&mut self, op: rtsim_kernel::journal::OpId) -> Option<Cmd> {
+        let i = self.out.iter().position(|c| c.op() == Some(op))?;
+        Some(self.out.remove(i))
+    }
+
     /// Whether the engine still waits on the IND_CARRIAGE_RESULT of a carriage delta `op`.
     pub fn exchange_pending(&self, op: rtsim_kernel::journal::OpId) -> bool {
         self.exchanges.contains_key(&op)
