@@ -756,6 +756,21 @@ impl Engine {
         out
     }
 
+    /// A chain write the host held while its module was switched off goes to Java again at `at`,
+    /// the switch-on (docs/choices-journal-barrier.md RP-294): its answer is awaited from then. The
+    /// host calls this before the switch-on's session start, whose catch-up over the time the
+    /// switch held the write would otherwise take its answer as lost ten periods after the drain
+    /// that first handed it on (`WRITE_ANSWER_PERIODS`, choice SC113) and write the frogport
+    /// again under a new op while the held write goes too. Returns whether a store sent `op`.
+    pub fn hand_on_again(&mut self, op: OpId, at: Tick) -> bool {
+        for s in self.stores.values_mut() {
+            if s.write_handed_on_again(op, at) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the
     /// latest-wins samples that were in flight, so they are discarded (F6). Every district is
     /// unloaded until its chunks report in.
