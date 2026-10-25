@@ -1709,7 +1709,11 @@ fn a_one_hand_over_replay_rederives_the_same_op_ids() {
     assert_eq!(b.replay_handovers, 1, "a replay of one hand-over");
     // The same reconciles under the same op ids, which Java answered: not written again (RP-259).
     assert!(b.after.is_empty(), "nothing sent under another op id");
-    assert!(b.unsent >= b.before.len() as u64, "known answered: {}", b.unsent);
+    assert!(
+        b.unsent >= b.before.len() as u64,
+        "known answered: {}",
+        b.unsent
+    );
     assert_eq!(b.applied_again, 0, "nothing applied again");
     assert_eq!(b.pending, Some(0), "the replayed results answer them");
 }
@@ -1742,7 +1746,11 @@ fn a_replay_of_several_hand_overs_rederives_the_same_op_ids() {
         "nothing sent under another op id (replay hand-overs {})",
         b.replay_handovers
     );
-    assert!(b.unsent >= b.before.len() as u64, "known answered: {}", b.unsent);
+    assert!(
+        b.unsent >= b.before.len() as u64,
+        "known answered: {}",
+        b.unsent
+    );
     assert_eq!(b.applied_again, 0, "nothing applied again");
     assert_eq!(b.pending, Some(0), "the replayed results answer them");
 }
@@ -2068,7 +2076,12 @@ fn world_iron(j: &Java) -> (i64, i64, i64, i64) {
             carried += c.cargo.get(g);
         }
     }
-    (stores, carried, w.books.minted.get(g), w.books.burned.get(g))
+    (
+        stores,
+        carried,
+        w.books.minted.get(g),
+        w.books.burned.get(g),
+    )
 }
 
 /// A command Java answered FAILED live is never applied after a crash (the review of 2a975cc3,

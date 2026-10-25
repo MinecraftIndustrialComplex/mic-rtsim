@@ -1191,7 +1191,11 @@ impl Engine {
                 chunk,
                 applied_epoch,
             } => {
-                self.district_mut(*district).loaded_chunks.insert(*chunk);
+                let dist = self.district_mut(*district);
+                dist.loaded_chunks.insert(*chunk);
+                // The world holds this epoch: the chunk's next round takes one past it (RP-57's
+                // floor, RP-259).
+                dist.raise_chunk_epoch(*chunk, *applied_epoch);
                 self.chain_chunk_loaded(*district, Some(*chunk), at);
                 // It leaves the replay once the tick's records are in (I7).
                 self.mark(*district);
@@ -3413,10 +3417,11 @@ impl Engine {
             report.destroyed += destroy.len() as u32;
             report.deltas += deltas.len() as u32;
             report.chunks += 1;
+            // The chunk's own epoch, which Java's guard reads (RP-259); the round's names its books.
             let mut cmd = ChunkReconcile {
                 op: OpId(0),
                 district: d,
-                epoch,
+                epoch: dist.next_chunk_epoch(chunk),
                 chunk,
                 deltas,
                 destroy,
@@ -3429,6 +3434,7 @@ impl Engine {
             dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
                 cmd,
+                round: epoch,
                 trim: false,
                 sent: false,
             });
@@ -3535,6 +3541,10 @@ impl Engine {
         let Some(dist) = self.districts.get_mut(&r.district) else {
             return;
         };
+        // The world applied this epoch on the chunk, whether the engine waits for it or not (a
+        // round the replay did not decide again, RP-271's merged rounds): the chunk's next round
+        // takes one past it (RP-57's floor, RP-259).
+        dist.raise_chunk_epoch(r.chunk, r.epoch);
         let Some(chunk) = dist.pending_ops.remove(&r.op) else {
             // Already applied: a replayed or repeated result changes nothing (A9).
             self.stats.duplicate_results += 1;
@@ -3630,7 +3640,7 @@ impl Engine {
             return;
         }
         self.books.shortfall.merge(&shortfall);
-        let epoch = done.cmd.epoch;
+        let epoch = done.round;
         let rates = dist
             .models
             .get(&season)
@@ -3671,15 +3681,15 @@ impl Engine {
         self.apply_trims(r.district, epoch, &trims, at);
     }
 
-    /// Trims outputs (I8): first from additions of `epoch` not yet applied, then by a new epoch of
-    /// removals from whatever holds them.
+    /// Trims outputs (I8): first from additions of round `epoch` not yet applied, then by a new
+    /// round of removals from whatever holds them, each chunk at its next epoch.
     fn apply_trims(&mut self, d: DistrictId, epoch: u32, trims: &GoodVec, at: Tick) {
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut left = trims.clone();
         for list in dist.pending.values_mut() {
             for p in list
                 .iter_mut()
-                .filter(|p| p.cmd.epoch == epoch && !p.trim && !p.sent)
+                .filter(|p| p.round == epoch && !p.trim && !p.sent)
             {
                 for delta in p.cmd.deltas.iter_mut().filter(|x| x.delta > 0) {
                     let want = left.get(delta.good);
@@ -3733,7 +3743,7 @@ impl Engine {
             let mut cmd = ChunkReconcile {
                 op: OpId(0),
                 district: d,
-                epoch: new_epoch,
+                epoch: dist.next_chunk_epoch(chunk),
                 chunk,
                 deltas,
                 destroy: Vec::new(),
@@ -3746,6 +3756,7 @@ impl Engine {
             dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
                 cmd,
+                round: new_epoch,
                 trim: true,
                 sent: false,
             });
@@ -3756,12 +3767,13 @@ impl Engine {
         }
     }
 
-    fn send_pending_from(&mut self, d: DistrictId, chunk: ChunkPos, epoch: u32) {
+    /// Sends `chunk`'s reconciles of round `round`.
+    fn send_pending_from(&mut self, d: DistrictId, chunk: ChunkPos, round: u32) {
         let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
         if let Some(list) = dist.pending.get_mut(&chunk) {
-            for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch) {
+            for p in list.iter_mut().filter(|p| p.round == round) {
                 p.sent = true;
                 self.stats.chunk_commands += 1;
                 self.sent_this_session.insert(p.cmd.op);
