@@ -44,7 +44,7 @@ public final class IndustryData extends SavedData {
      * seeds their chunks keep. The pins name dropped districts and go too; exclusions and merge links are
      * chunks and stay. No migration (nothing is released).
      *
-     * <p>4 (slice S6): each district's join pairs ({@link District#joins}) and the stations' served chunks
+     * <p>4 (slice S6): each district's join pairs ({@link District#joins}) and each station's served chunk
      * ({@link #stationJoins}); bare 8-adjacency no longer joins chunks (SECTIONS.md §2.1). A format 3 save's
      * districts are dropped the same way; its plugins' state stays (choice SC155): a package store is chunks
      * and positions, and its next walk declares it with the new districts.
@@ -112,7 +112,11 @@ public final class IndustryData extends SavedData {
         return mergeLinks.computeIfAbsent(dim, d -> new ArrayList<>());
     }
 
-    /** J6's saved pairs (SECTIONS.md §2.1, choice SC156): each station chunk to the chunk it last served. Public for GameTests. */
+    /**
+     * J6's saved pairs (SECTIONS.md §2.1, choice SC156): each station, by its position ({@link BlockPos#asLong}),
+     * to the chunk its interfaces last served; a chunk with several goes by its lowest
+     * ({@code Districts.servedByChunk}). Public for GameTests.
+     */
     public Long2LongOpenHashMap stationJoins(ResourceKey<Level> dim) {
         return stationJoins.computeIfAbsent(dim, d -> new Long2LongOpenHashMap());
     }

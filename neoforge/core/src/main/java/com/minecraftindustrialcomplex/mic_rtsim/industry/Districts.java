@@ -50,9 +50,11 @@ import java.util.UUID;
  * <p><b>Detection (DS-10).</b> Only <i>machines</i> start a district. A chunk is industrial when it holds a
  * <i>seed</i>: a block entity a player placed that {@link #seed} calls a machine, or when an industrial
  * block entity in it touches one in a member chunk across the chunk border (belts, pipes, shafts, and
- * storage or a hopper next to a machine: closed under physical connection), or a plugin links it (chain
- * conveyors). A district is a connected group of industrial chunks, 8-neighbour, plus the merge links of
- * {@code /rtsim district merge}, that holds at least one seed; a group with none dissolves. Chunks a
+ * storage or a hopper next to a machine: closed under physical connection), or a plugin links it (a fan's
+ * current, an arm's points, an ejector's target, rotation across a diagonal). A district is a group of
+ * industrial chunks connected by those joins (J1 to J5, SECTIONS.md §2.1; bare 8-adjacency joins nothing), plus
+ * the merge links of {@code /rtsim district merge}, that holds at least one seed; a group with none dissolves,
+ * except that one holding a station's chunk joins one district (J6). Chunks a
  * {@code split} pinned belong to their pinned district only, and excluded chunks to none.
  * Unloaded member chunks keep their membership (nothing new can be known about them), and their seed
  * counts, recorded per chunk in {@link District#seedCounts}, let a district whose machines are gone dissolve
@@ -249,28 +251,51 @@ public final class Districts {
     }
 
     /**
-     * J6 (SECTIONS.md §2.1 and §2.4, choice SC6): the station at {@code station} docked a train whose interfaces
-     * reached inventories of the district holding chunk {@code served}. Saved ({@link IndustryData#stationJoins});
-     * when it is new, both chunks go to the next detection, which moves a station's chunk with no seed of its own
-     * to that district, so the station's cargo goes where it moves.
+     * J6 (SECTIONS.md §2.1 and §2.4, choices SC6 and SC156): the station at {@code station} docked a train whose
+     * interfaces reached inventories of the district holding chunk {@code served}. Saved per station
+     * ({@link IndustryData#stationJoins}); a chunk with several stations goes by the one at the lowest position
+     * that has served ({@link #servedByChunk}), so two stations of one chunk serving two districts never move it to
+     * and fro. When the chunk's served chunk changes, both chunks go to the next detection, which moves a station's
+     * chunk with no seed of its own to that district, so the station's cargo goes where it moves.
      */
     public void stationServed(ResourceKey<Level> dim, BlockPos station, long served) {
         long s = ChunkPos.asLong(station.getX() >> 4, station.getZ() >> 4);
         Long2LongOpenHashMap m = data.stationJoins(dim);
-        if (m.containsKey(s) && m.get(s) == served)
+        long key = station.asLong();
+        if (m.containsKey(key) && m.get(key) == served)
             return;
-        m.put(s, served);
+        m.put(key, served);
         data.setDirty();
-        if (at(dim, s) != at(dim, served)) {
+        Long now = servedByChunk(m).get(s);
+        if (now != null && at(dim, s) != at(dim, now)) {
             markDirty(dim, s);
-            markDirty(dim, served);
+            markDirty(dim, now);
         }
     }
 
-    /** The chunk station chunk {@code chunk} last served (J6), or null. GameTests and the graph dump. */
+    /** The chunk station chunk {@code chunk}'s stations last served as J6 takes it ({@link #servedByChunk}), or null. GameTests and the graph dump. */
     public Long stationServedChunk(ResourceKey<Level> dim, long chunk) {
-        Long2LongOpenHashMap m = data.stationJoins(dim);
-        return m.containsKey(chunk) ? m.get(chunk) : null;
+        return servedByChunk(data.stationJoins(dim)).get(chunk);
+    }
+
+    /**
+     * Each station chunk's served chunk: that of its station at the lowest position ({@link BlockPos#asLong})
+     * with an entry in {@code m}, the saved served chunks by station position. One pass over the entries (the
+     * stations of a dimension that have served).
+     */
+    static Map<Long, Long> servedByChunk(Long2LongOpenHashMap m) {
+        Map<Long, Long> out = new HashMap<>();
+        Map<Long, Long> lowest = new HashMap<>();
+        for (Long2LongOpenHashMap.Entry e : m.long2LongEntrySet()) {
+            long pos = e.getLongKey();
+            long c = ChunkPos.asLong(BlockPos.getX(pos) >> 4, BlockPos.getZ(pos) >> 4);
+            Long low = lowest.get(c);
+            if (low == null || pos < low) {
+                lowest.put(c, pos);
+                out.put(c, e.getLongValue());
+            }
+        }
+        return out;
     }
 
     /** Detection now, whatever the interval, in this tick (GameTests, and the baseline the commands' ticked detection is checked against). */
@@ -1038,6 +1063,11 @@ public final class Districts {
         int cursor;
         /** Candidate chunks that were loaded when they were looked at. */
         final LongOpenHashSet loadedAtTest = new LongOpenHashSet();
+        /** The saved served chunks by station position as this detection began: the commit's cleanup forgets only these (§2.3). */
+        final Long2LongOpenHashMap stationJoinsAtStart;
+        /** Districts whose saved joins {@link #joinedToAway} has read, and their loaded chunks joined to one that is not loaded. */
+        final Set<Long> awayRead = new HashSet<>();
+        final LongOpenHashSet joinedToAway = new LongOpenHashSet();
         long nanos;
         int slices;
         long maxSlice;
@@ -1060,6 +1090,7 @@ public final class Districts {
             this.index = byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
             this.excluded = data.excluded(dim);
             this.pins = data.pins(dim);
+            this.stationJoinsAtStart = new Long2LongOpenHashMap(data.stationJoins(dim));
             if (full) {
                 for (District d : data.districts.values())
                     if (d.dim == dim)
@@ -1244,11 +1275,32 @@ public final class Districts {
             boolean root = seedsIn(level, chunk, scan) > 0 || pins.containsKey(c);
             if (!root) {
                 cost += chunk.getBlockEntities().size();
-                root = holdsStation(chunk, scan) || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan));
+                root = holdsStation(chunk, scan)
+                        || (index.containsKey(c) && (touchesUnloadedMember(level, chunk, index, scan) || joinedToAway(index.get(c), c)));
             }
             if (root && visited.add(c))
                 queue.enqueue(c);
             return cost;
+        }
+
+        /**
+         * Whether loaded chunk {@code c} of district {@code d} has a saved join to one of its chunks that is not
+         * loaded (§2.3): the pair holds it to that member, as {@link #touchesUnloadedMember} does for a border
+         * touch, so it is a root. Without it a chunk held only by a link that reaches past its border (an ejector's
+         * target, an arm's point, a fan's current) would leave the district while the other end is away and come
+         * back when it loads. Each district's joins are read once a detection.
+         */
+        private boolean joinedToAway(District d, long c) {
+            if (awayRead.add(d.id))
+                for (District.Join j : d.joins) {
+                    boolean a = level.getChunkSource().getChunkNow(ChunkPos.getX(j.a()), ChunkPos.getZ(j.a())) != null;
+                    boolean b = level.getChunkSource().getChunkNow(ChunkPos.getX(j.b()), ChunkPos.getZ(j.b())) != null;
+                    if (a && !b)
+                        joinedToAway.add(j.a());
+                    else if (b && !a)
+                        joinedToAway.add(j.b());
+                }
+            return joinedToAway.contains(c);
         }
 
         /** Looks at one reached chunk. Returns the block entities spent. */
@@ -1275,20 +1327,43 @@ public final class Districts {
             return cost;
         }
 
-        /** Grow: a district next to (or pinned at) a chunk the walk reached may merge with it. */
+        /**
+         * Grow: the districts the walk's chunks may merge with or move to. Joins are what merges (§2.1), and the
+         * walk reaches across every join it sees and every saved pair it keeps, so a reached chunk's own district
+         * is enough, with its pin and the far end of a merge link. A station chunk adds the districts J6 may attach
+         * it to: those beside it and the one holding the chunk it served. Bare 8-adjacency adds nothing else, so an
+         * edit in one of two factories side by side does not walk the other.
+         */
         private Set<Long> grown() {
             Set<Long> more = new HashSet<>();
+            Map<Long, Long> served = null;
             for (long c : visited) {
-                for (int dx = -1; dx <= 1; dx++)
-                    for (int dz = -1; dz <= 1; dz++) {
-                        District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
-                        if (o != null && !affected.contains(o.id))
-                            more.add(o.id);
-                    }
+                add(more, index.get(c));
                 if (pins.containsKey(c) && !affected.contains(pins.get(c)))
                     more.add(pins.get(c));
+                if (scan.stationChunks.contains(c)) {
+                    for (int dx = -1; dx <= 1; dx++)
+                        for (int dz = -1; dz <= 1; dz++)
+                            add(more, index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz)));
+                    if (served == null)
+                        served = servedByChunk(data.stationJoins(dim));
+                    Long sv = served.get(c);
+                    if (sv != null)
+                        add(more, index.get((long) sv));
+                }
+            }
+            for (long[] l : data.mergeLinks(dim)) {
+                if (visited.contains(l[0]))
+                    add(more, index.get(l[1]));
+                if (visited.contains(l[1]))
+                    add(more, index.get(l[0]));
             }
             return more;
+        }
+
+        private void add(Set<Long> more, District o) {
+            if (o != null && !affected.contains(o.id))
+                more.add(o.id);
         }
 
         /** The district set, the index and the records, from what the walk recorded: one tick, no block entity visited. */
@@ -1519,16 +1594,19 @@ public final class Districts {
                     for (long c : d.chunks)
                         index.put(c, d);
             // A station's served chunk goes when either chunk this detection looked at left every district (§2.3).
+            // Only an entry this detection started with: one a departure saved meanwhile waits for the next.
             Long2LongOpenHashMap sj = data.stationJoins(dim);
             LongArrayList gone = new LongArrayList();
             for (Long2LongOpenHashMap.Entry e : sj.long2LongEntrySet()) {
-                long st = e.getLongKey(), sv = e.getLongValue();
-                if ((scheduled.contains(st) || visited.contains(st) || scheduled.contains(sv) || visited.contains(sv))
+                long pos = e.getLongKey(), sv = e.getLongValue();
+                long st = ChunkPos.asLong(BlockPos.getX(pos) >> 4, BlockPos.getZ(pos) >> 4);
+                if (stationJoinsAtStart.containsKey(pos) && stationJoinsAtStart.get(pos) == sv
+                        && (scheduled.contains(st) || visited.contains(st) || scheduled.contains(sv) || visited.contains(sv))
                         && (!index.containsKey(st) || !index.containsKey(sv)))
-                    gone.add(st);
+                    gone.add(pos);
             }
-            for (long st : gone)
-                sj.remove(st);
+            for (long pos : gone)
+                sj.remove(pos);
             data.setDirty();
         }
 
@@ -1540,7 +1618,7 @@ public final class Districts {
          * the seeded ones only: one station group never joins another.
          */
         private void stationJoins(List<LongArrayList> seedless, Long2LongOpenHashMap owner, Map<Long, LongArrayList> assigned) {
-            Long2LongOpenHashMap sj = data.stationJoins(dim);
+            Map<Long, Long> sj = servedByChunk(data.stationJoins(dim));
             seedless.sort(Comparator.comparingLong(Districts::minChunk));
             List<long[]> moves = new ArrayList<>();
             for (LongArrayList g : seedless) {
@@ -1553,8 +1631,8 @@ public final class Districts {
                 st.sort(null);
                 long target = -1;
                 for (long s : st)
-                    if (sj.containsKey(s) && owner.get(sj.get(s)) >= 0) {
-                        target = owner.get(sj.get(s));
+                    if (sj.containsKey(s) && owner.get((long) sj.get(s)) >= 0) {
+                        target = owner.get((long) sj.get(s));
                         break;
                     }
                 if (target < 0)
@@ -1582,7 +1660,7 @@ public final class Districts {
         }
 
         /** Whether member chunk {@code c} holds a station: as the walk saw it, else as its old district knew it. */
-        private boolean stationChunk(long c, Long2LongOpenHashMap sj) {
+        private boolean stationChunk(long c, Map<Long, Long> sj) {
             if (visited.contains(c))
                 return scan.stationChunks.contains(c);
             if (sj.containsKey(c))
@@ -2187,7 +2265,6 @@ public final class Districts {
                 long c = ChunkPos.asLong(x, z);
                 data.pins(dim).remove(c);
                 data.excluded(dim).remove(c);
-                data.stationJoins(dim).remove(c);
                 LevelChunk chunk = level.getChunkSource().getChunkNow(x, z);
                 if (chunk != null) {
                     chunk.removeData(IndustryAttachments.SEEDS.get());
@@ -2195,6 +2272,15 @@ public final class Districts {
                     chunk.setUnsaved(true);
                 }
             }
+        // The served chunks of the box's stations (keyed by the station's position).
+        LongArrayList stations = new LongArrayList();
+        for (long pos : data.stationJoins(dim).keySet()) {
+            int x = BlockPos.getX(pos) >> 4, z = BlockPos.getZ(pos) >> 4;
+            if (x >= minCx && x <= maxCx && z >= minCz && z <= maxCz)
+                stations.add(pos);
+        }
+        for (long pos : stations)
+            data.stationJoins(dim).remove(pos);
         Long2ObjectOpenHashMap<District> index = byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
         index.clear();
         for (District d : data.districts.values())

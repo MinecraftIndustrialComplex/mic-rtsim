@@ -66,8 +66,11 @@ import java.util.function.Consumer;
  *   <li><b>Industrial</b>: kinetics, pipes, chutes, funnels, tunnels and the logistics blocks, so shafts,
  *       cogs, belts, pipes and chutes join the chunks they touch into one district (I2, §8.5);
  *       decoration (copycats, clipboards, signals, curved tracks) is not;</li>
- *   <li><b>links</b>: chain conveyor connections, which span gaps, and a fan's air current, from the fan to
- *       the belts and depots it reaches and from those to the fans that reach them ({@link FanLinks}, G2-73);</li>
+ *   <li><b>links</b> (joins J2 and J4, SECTIONS.md §2.1): a fan's air current, from the fan to the belts and
+ *       depots it reaches and from those to the fans that reach them ({@link FanLinks}, G2-73), an arm's
+ *       interaction points, a weighted ejector's target, and rotation across a border that is not a face (a
+ *       cog's diagonals), confirmed by Create ({@link JoinLinks}). A chain conveyor joins nothing, and neither
+ *       does a station by its touch (§2.6, J6);</li>
  *   <li><b>canonical inventories</b>: a vault's or tank's controller ({@code IMultiBlockEntityContainer});</li>
  *   <li><b>boundary inventories</b>: the inventory behind each packager ({@code targetInventory}, I3), and
  *       postboxes and frogports, whose packages are counted by their contents;</li>

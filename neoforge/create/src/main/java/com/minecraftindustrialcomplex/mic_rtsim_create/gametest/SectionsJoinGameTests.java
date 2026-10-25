@@ -684,7 +684,8 @@ public final class SectionsJoinGameTests {
                     var registries = level.registryAccess();
                     IndustryData copy = IndustryData.load(IndustryData.get(level.getServer()).save(new CompoundTag(), registries), registries);
                     Long2LongOpenHashMap saved = copy.stationJoins(level.dimension());
-                    check("a save and a load still map S to B's chest chunk: " + saved, saved.containsKey(cS) && saved.get(cS) == chunk(chest));
+                    check("a save and a load still map the station to B's chest chunk: " + saved,
+                            saved.containsKey(stationPos.asLong()) && saved.get(stationPos.asLong()) == chunk(chest));
                     ind().districts().markDirty(level.dimension(), cS);
                     ind().districts().markDirty(level.dimension(), cA);
                     ind().districts().markDirty(level.dimension(), cB);
