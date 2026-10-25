@@ -360,7 +360,8 @@ public final class TrainRingGameTests {
         ring.writeTo(tag, key);
         check("the answers in the ops' order: " + Arrays.toString(tag.getLongArray(AppliedOpRing.answersKey(key))),
                 Arrays.equals(tag.getLongArray(AppliedOpRing.answersKey(key)), new long[] {0, 300, 0, 500}));
-        check("the generation", tag.getLong(AppliedOpRing.genKey(key)) == 0x5EED && tag.size() == 4);
+        // Five keys: the owner's, the foreign one, and the ring's three.
+        check("the generation beside them: " + tag.getAllKeys(), tag.getLong(AppliedOpRing.genKey(key)) == 0x5EED && tag.size() == 5);
         AppliedOpRing again = new AppliedOpRing(4);
         check("read back", again.readFrom(tag, key));
         check("with its answers and generation: " + again, again.answerOf(3) == 300 && again.answerOf(5) == 500
