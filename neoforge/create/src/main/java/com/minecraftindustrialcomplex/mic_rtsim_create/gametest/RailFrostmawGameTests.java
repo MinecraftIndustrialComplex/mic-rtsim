@@ -262,6 +262,8 @@ public final class RailFrostmawGameTests {
         boolean cleaned;
         /** The train is one long carriage with a plank floor ({@link #longCars}), not the two short ones. */
         boolean longCar;
+        /** The train is a short carriage and a long one with a plank floor behind it ({@link #mixedCars}). */
+        boolean mixed;
 
         Line(GameTestHelper helper, int side, int northRows) {
             this.helper = helper;
@@ -445,6 +447,13 @@ public final class RailFrostmawGameTests {
          * player's collision does not hold up, in the ticks before the test reads it (the second re-check's P2).
          */
         void stand(Entity rider, int carriage, boolean rear) {
+            List<Vec3> floor = planks(carriage);
+            floor.sort(Comparator.comparingDouble(v -> v.x * sign));
+            standOn(rider, carriage, floor.get(rear ? 0 : floor.size() / 2));
+        }
+
+        /** The centres of a long carriage's planks (the floor of {@link #longCars}), unordered. */
+        List<Vec3> planks(int carriage) {
             AbstractContraptionEntity e = entityOf(carriage);
             check("carriage " + carriage + " has an entity", e != null);
             List<Vec3> floor = new ArrayList<>();
@@ -452,8 +461,13 @@ public final class RailFrostmawGameTests {
                 if (entry.getValue().state().is(Blocks.OAK_PLANKS))
                     floor.add(e.toGlobalVector(Vec3.atCenterOf(entry.getKey()), 1.0f));
             check("the long carriage has " + (LONG_SPAN - 1) + " planks (" + floor.size() + ")", floor.size() == LONG_SPAN - 1);
-            floor.sort(Comparator.comparingDouble(v -> v.x * sign));
-            Vec3 plank = floor.get(rear ? 0 : floor.size() / 2);
+            return floor;
+        }
+
+        /** {@link #stand} on a chosen plank's centre (as {@link #planks} gives it): the rider may be put on another plank later. */
+        void standOn(Entity rider, int carriage, Vec3 plank) {
+            AbstractContraptionEntity e = entityOf(carriage);
+            check("carriage " + carriage + " has an entity", e != null);
             if (rider instanceof Mob m) {
                 m.setNoAi(false);
                 m.goalSelector.removeAllGoals(g -> true);
@@ -506,7 +520,8 @@ public final class RailFrostmawGameTests {
                     sbe.updateName("Frostmaw Pass");
                     l.dir = sbe.getAssemblyDirection();
                     check("an assembly direction along the track", l.dir != null && l.dir.getAxis() == Direction.Axis.X);
-                    l.chest = l.longCar ? longCars(l.helper, l.track(STATION_AT), l.dir) : cars(l.helper, l.track(STATION_AT), l.dir, seat);
+                    l.chest = l.longCar ? longCars(l.helper, l.track(STATION_AT), l.dir)
+                            : l.mixed ? mixedCars(l.helper, l.track(STATION_AT), l.dir) : cars(l.helper, l.track(STATION_AT), l.dir, seat);
                     Create.RAILWAYS.markTracksDirty();
                 })
                 .thenIdle(5)
@@ -590,6 +605,28 @@ public final class RailFrostmawGameTests {
         level.setBlock(controls, AllBlocks.TRAIN_CONTROLS.getDefaultState().setValue(BlockStateProperties.HORIZONTAL_FACING, d), 3);
         level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, b2)));
         level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, controls)));
+        return null;
+    }
+
+    /**
+     * Two carriages on the station's track, a short one in front of a long one (the riders-first test): the short one as
+     * {@link #cars}' first, a single small bogey at the first block past the station with the controls above it; the
+     * long one as {@link #longCars}', a small bogey four blocks further and another {@value #LONG_SPAN} past that, a floor
+     * of planks on the blocks between them, glued as one carriage. The first carriage has nothing to stand on. Null.
+     */
+    private static BlockPos mixedCars(GameTestHelper h, BlockPos stationTrack, Direction d) {
+        ServerLevel level = h.getLevel();
+        BlockState bogey = AllBlocks.SMALL_BOGEY.getDefaultState().setValue(BlockStateProperties.HORIZONTAL_AXIS, Direction.Axis.X);
+        BlockPos b1 = stationTrack.relative(d, 1).above(), b2 = stationTrack.relative(d, 5).above(), b3 = stationTrack.relative(d, 5 + LONG_SPAN).above();
+        level.setBlock(b1, bogey, 3);
+        level.setBlock(b2, bogey, 3);
+        level.setBlock(b3, bogey, 3);
+        for (int k = 1; k < LONG_SPAN; k++)
+            level.setBlock(b2.relative(d, k), Blocks.OAK_PLANKS.defaultBlockState(), 3);
+        BlockPos controls = b1.above();
+        level.setBlock(controls, AllBlocks.TRAIN_CONTROLS.getDefaultState().setValue(BlockStateProperties.HORIZONTAL_FACING, d), 3);
+        level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, controls)));
+        level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b2, b3)));
         return null;
     }
 
@@ -1223,6 +1260,151 @@ public final class RailFrostmawGameTests {
                     check("the standing zombie is a rider (" + riders.size() + " riders)", riders.contains(r.mob));
                     check("the bystander is not a rider (" + riders.size() + " riders)", !riders.contains(r.bystander));
                     check("the armor stand is not a rider (" + riders.size() + " riders)", !riders.contains(r.decoration));
+                })
+                .thenSucceed();
+    }
+
+    /** What the riders-first test knows. */
+    private static final class First extends Line {
+        long agent, faction;
+        String dim;
+        Mob puppet;
+        LivingEntity zombie;
+
+        First(GameTestHelper helper) {
+            super(helper, 10, 2);
+            mixed = true;
+            atEnd.add(() -> {
+                if (agent != 0) {
+                    ConflictKit.ambushRemoved(agent, 1, faction, dim);
+                    ConflictKit.recall(agent, 1, com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords.RECALL_DONE, 0, x0, z0 + 200);
+                }
+                if (zombie != null)
+                    zombie.discard();
+                if (puppet != null && !puppet.isRemoved())
+                    puppet.discard();
+            });
+        }
+    }
+
+    /** The bearing of {@code to} from {@code from} as the Lurker aims a strike (degrees, a body's yaw). */
+    private static double bearing(Vec3 from, Vec3 to) {
+        return Math.atan2(to.z - from.z, to.x - from.x) * 57.29577951308232 - 90.0;
+    }
+
+    /**
+     * The swing goes to a rider before a bare bogey (M8, MZB-365, the third check's P3): a stopped train of a short
+     * carriage (no rider, its bogey 5 blocks across from the puppet, inside {@code STRIKE_REACH}) in front of a long one
+     * with a zombie standing on its floor (AI on, goals out, its feet on the plank). First the zombie stands on the
+     * far end of the long carriage, outside the swipe's reach (3D, 6.5 and half its width) but with the carriage
+     * gated in: the sampler must not spend the swing on carriage 0's bogey meanwhile (no strike in the 40 ticks after it
+     * has seen the train), as the rider may be in reach the next tick. Then the zombie is put on the near end of the
+     * long carriage, inside the reach; the first strike must be aimed at it, not at the bogey: the puppet's yaw at
+     * that tick is within 20 degrees of the bearing to the zombie, and the two bearings are 35 or more apart. On the
+     * order of the second re-check (carriage by carriage, a bogey before the next carriage's rider) the first strike is the
+     * bogey's, and with the bogey pass left running while a gated carriage has a rider (the third check's P3) the first
+     * wait sees a strike. Not run.
+     */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_riders_first", timeoutTicks = 1800)
+    public static void theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        First t = new First(helper);
+        long[] strikes0 = new long[1];
+        Vec3[] near = new Vec3[1], far = new Vec3[1], bogey = new Vec3[1];
+        double[] yaw = {Double.NaN};
+
+        probed(t, laid(t, false))
+                .thenExecute(() -> {
+                    t.hold();
+                    t.settle();
+                    t.train.speed = 0.0;
+                    t.dim = level.dimension().location().toString();
+                    // The track point two blocks past carriage 0's bogey toward carriage 1, on the block's centre line
+                    Vec3 lead = t.train.carriages.get(0).getLeadingPoint().getPosition(t.train.graph);
+                    double dirx = Math.signum(t.entityOf(1).getX() - t.entityOf(0).getX());
+                    check("carriage 1 lies along x from carriage 0 (" + dirx + ")", dirx != 0.0);
+                    double lx = Math.floor(lead.x + dirx * 2.0) + 0.5;
+                    t.agent = ConflictKit.newAgent();
+                    Vec3 track = new Vec3(lx, t.railY(), t.z0 + 0.5), spot = new Vec3(lx, t.railY(), t.z0 + 0.5 - LATERAL);
+                    Holder<SoundEvent> roar = BuiltInRegistries.SOUND_EVENT.getHolder(ResourceLocation.parse(ROAR))
+                            .orElseThrow(() -> new GameTestAssertException("no sound " + ROAR));
+                    t.faction = ConflictKit.bridge().reportCamp(level, CAMP, BlockPos.containing(spot), e -> false, roar, false, 0, 0);
+                    check("a camp was reported", t.faction != 0);
+                    ConflictKit.ambushSpot(t.agent, 1, t.faction, t.dim, new double[] {track.x, track.y, track.z},
+                            new double[] {spot.x, spot.y, spot.z}, REACH);
+                    record("railFrostmaw", "ridersFirst", "carriage 0's bogey at x " + lead.x + ", carriage 1 " + (dirx > 0 ? "east" : "west") + " of it, lurk point x " + lx);
+                })
+                .thenWaitUntil(paced(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(t.agent))))
+                .thenExecute(() -> {
+                    ConflictKit.Band b = ConflictKit.band(t.agent, t.faction, t.dim);
+                    Vec3 lurkAt = RtsimApi.lurks().get(t.agent).track(), spotAt = RtsimApi.lurks().get(t.agent).spot();
+                    b.arcX = spotAt.x;
+                    b.arcZ = spotAt.z;
+                    b.targetX = lurkAt.x;
+                    b.targetY = lurkAt.y;
+                    b.targetZ = lurkAt.z;
+                    b.speed = 0.0f;
+                    ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(FROSTMAW, 1, false)));
+                })
+                .thenWaitUntil(paced(() -> {
+                    t.puppet = RtsimApi.lurkBody(t.agent);
+                    check("the puppet stands in the world", t.puppet != null);
+                }))
+                // The premises, read off the puppet and the train; the zombie on the far plank of carriage 1
+                .thenExecute(() -> {
+                    Vec3 p = t.puppet.position();
+                    Vec3 lead = t.train.carriages.get(0).getLeadingPoint().getPosition(t.train.graph);
+                    Vec3 trail = t.train.carriages.get(0).getTrailingPoint().getPosition(t.train.graph);
+                    boolean byLead = Math.hypot(lead.x - p.x, lead.z - p.z) <= TrainSampler.STRIKE_REACH;
+                    bogey[0] = byLead ? lead : trail;
+                    check("carriage 0's bogey is within the strike reach of the puppet (" + Math.hypot(bogey[0].x - p.x, bogey[0].z - p.z) + " of "
+                            + TrainSampler.STRIKE_REACH + ")", Math.hypot(bogey[0].x - p.x, bogey[0].z - p.z) <= TrainSampler.STRIKE_REACH);
+                    if (!(typeOf(ZOMBIE).create(level) instanceof LivingEntity z))
+                        throw new GameTestAssertException("could not create a zombie");
+                    t.zombie = z;
+                    if (z instanceof Mob m)
+                        m.setPersistenceRequired(); // AI on, goals out: Line.stand does the rest
+                    z.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 1_000_000, 0, false, false));
+                    sturdy(z);
+                    List<Vec3> planks = t.planks(1);
+                    planks.sort(Comparator.comparingDouble(v -> Math.hypot(v.x - p.x, v.z - p.z)));
+                    near[0] = planks.get(0);
+                    far[0] = planks.get(planks.size() - 1);
+                    double range = TrainSampler.SWIPE_RANGE + z.getBbWidth() / 2.0;
+                    double dNear = near[0].add(0, 0.5, 0).distanceTo(p), dFar = far[0].add(0, 0.5, 0).distanceTo(p);
+                    check("the near plank is inside the swipe's reach (" + dNear + " of " + range + ")", dNear <= range - 0.3);
+                    check("the far plank is outside it (" + dFar + " of " + range + ")", dFar > range + 0.3);
+                    double apart = Math.abs(Mth.wrapDegrees(bearing(p, bogey[0]) - bearing(p, near[0])));
+                    check("the bogey and the near plank are 35 degrees or more apart as the puppet sees them (" + apart + ")", apart >= 35.0);
+                    t.standOn(z, 1, far[0]);
+                    check("carriage 0 has no rider", TrainSampler.ridersOf(t.train.carriages.get(0).anyAvailableEntity(), t.puppet).isEmpty());
+                    check("carriage 1 has the zombie as a rider", TrainSampler.ridersOf(t.train.carriages.get(1).anyAvailableEntity(), t.puppet).contains(z));
+                    strikes0[0] = ConflictKit.lurkStrikes();
+                    record("railFrostmaw", "ridersFirst", "puppet at " + p + ", carriage 0's bogey " + bogey[0] + " " + Math.hypot(bogey[0].x - p.x, bogey[0].z - p.z)
+                            + " off, near plank " + dNear + " and far plank " + dFar + " away (3D), swipe range " + range + ", bearings apart " + apart);
+                })
+                // The sampler has seen the train at the lurk (the pass is sent in the sample that joins the near set)
+                .thenWaitUntil(paced(() -> check("the sampler has seen the train at the lurk", !ConflictKit.trainsPassed(t.agent).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    long strikes = ConflictKit.lurkStrikes() - strikes0[0];
+                    check("no strike while the rider on carriage 1 is out of reach and carriage 0 has a bare bogey in reach (" + strikes + ")", strikes == 0);
+                    t.standOn(t.zombie, 1, near[0]);
+                    check("the zombie is a rider of carriage 1 at the near plank", TrainSampler.ridersOf(t.train.carriages.get(1).anyAvailableEntity(), t.puppet).contains(t.zombie));
+                })
+                // The first strike after the zombie is in reach: where did the puppet turn
+                .thenWaitUntil(() -> {
+                    if (Double.isNaN(yaw[0]) && ConflictKit.lurkStrikes() - strikes0[0] >= 1)
+                        yaw[0] = t.puppet.getYRot();
+                    check("the lurk struck", !Double.isNaN(yaw[0]));
+                })
+                .thenExecute(() -> {
+                    Vec3 p = t.puppet.position();
+                    double toZombie = Math.abs(Mth.wrapDegrees(yaw[0] - bearing(p, t.zombie.position()))), toBogey = Math.abs(Mth.wrapDegrees(yaw[0] - bearing(p, bogey[0])));
+                    record("railFrostmaw", "ridersFirst", "the first strike turned the puppet to yaw " + yaw[0] + ": " + toZombie + " degrees off the zombie, " + toBogey
+                            + " off the bogey");
+                    check("the first strike was aimed at the zombie on carriage 1 (" + toZombie + " degrees off it)", toZombie <= 20.0);
+                    check("and not at carriage 0's bare bogey (" + toBogey + " degrees off it)", toBogey > 20.0);
                 })
                 .thenSucceed();
     }

@@ -2301,7 +2301,9 @@ public final class MowzieGameTests {
      * agent, while the rail provider knows no direction and says a rail is near the spot, so {@code holdPoint}
      * refuses. The refusal comes before the hand-off is claimed: the SET_OUT is not handed off (the counter does not
      * move, no puppet stands), the tick's end resolves it as a take (DONE, one taken, the camp holds nothing and its
-     * body is gone with its records on a marker), and the bridge counted the refusal. On the code before, the body
+     * body is gone with its records on a marker), and the bridge counted the refusal. The body a player can see is
+     * taken, not discarded unseen (its health and crystal state are lost against a hand-off; only an engine check of
+     * the hold point before the set-out would leave it in its camp, a backlog item). On the code before, the body
      * was claimed and handed to a puppet (handedOff 1), which {@code holdLurks} then found no hold point for and
      * discarded: "no hand-off was made (1)". Not run.
      */
@@ -2321,7 +2323,7 @@ public final class MowzieGameTests {
             }
 
             @Override
-            public boolean trackNear(ServerLevel lv, Vec3 point, double radius) {
+            public boolean trackNear(ServerLevel lv, Vec3 point, double radius, double height) {
                 return true;
             }
         });
@@ -2378,7 +2380,7 @@ public final class MowzieGameTests {
                     check("and no Frostmaw puppet is in the den's area", level.getEntitiesOfClass(EntityFrostmaw.class,
                             new AABB(den.spot.x - 40, den.spot.y - 12, den.spot.z - 40, den.spot.x + 40, den.spot.y + 12, den.spot.z + 40),
                             e -> RtsimApi.isPuppet(e) && !e.isRemoved()).isEmpty());
-                    record(test, "refused", "the lurk was refused " + (ConflictKit.bridge().lurksRefused - was[2]) + " times before the SET_OUT was claimed: taken, not handed off, nothing discarded after a hand-off");
+                    record(test, "refused", "the lurk was refused " + (ConflictKit.bridge().lurksRefused - was[2]) + " times before the SET_OUT was claimed: taken, not handed off, no puppet made from the body and then discarded");
                     ConflictKit.ambushRemoved(agent[0], 1, den.faction, RtsimTests.dimension(helper));
                 })
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent[0]))))

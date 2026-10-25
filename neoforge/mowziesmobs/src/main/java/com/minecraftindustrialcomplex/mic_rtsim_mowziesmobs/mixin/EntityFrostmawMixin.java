@@ -38,10 +38,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>The dodge is the other thing that moves it (the second re-check's P2): a player within 4 blocks that deals 16
  * damage, or lava, starts {@code DODGE_ANIMATION}, and at its tick 6 the jar sets 1.7 blocks a tick sideways and 0.6
  * up, a 10 to 14 block leap off the spot. The animation is left to play (the jar's state stays consistent: the dodge
- * ends on its own timer, its ice breath after it is the jar's), and the {@code setDeltaMovement(DDD)V} calls of
- * {@code tick()} (the dodge's, line 430, and the asleep branch's, line 592) keep a held body's own horizontal motion and
- * take only the vertical part: it hops in place and lands where it was. Two calls in the 1.8.2 jar; a jar with
- * others fails to load.
+ * ends on its own timer, its ice breath after it is the jar's), and the dodge's {@code setDeltaMovement(DDD)V} call in
+ * {@code tick()} (line 430, bytecode offset 1017, the first of the two calls) keeps a held body's own horizontal motion
+ * and takes only the vertical part: it hops in place and lands where it was. A body in lava is let leap out (the third
+ * check's P3: the hold must not keep a body in lava until it burns). The second call (line 592, offset 2954) is the
+ * asleep and waking branch's {@code setDeltaMovement(0, y, 0)}, which stills the body, as a hold wants too, so it is
+ * not wrapped: the wrap is pinned to {@code ordinal = 0} (the third check's P3). The pin trades the earlier "any other
+ * count fails to load" for the dodge being the first call, which the 1.8.2 jar has.
  */
 @Mixin(EntityFrostmaw.class)
 public abstract class EntityFrostmawMixin {
@@ -75,12 +78,15 @@ public abstract class EntityFrostmawMixin {
             original.call(nav);
     }
 
-    /** The dodge's leap: a held puppet hops where it stands and is not carried off its spot (MZB-361). */
+    /**
+     * The dodge's leap: a held puppet hops where it stands and is not carried off its spot (MZB-361), unless it is in
+     * lava, where the jar's own velocity goes through whole and the body leaps out of it (the third check's P3).
+     */
     @WrapOperation(method = "tick()V", at = @At(value = "INVOKE",
-            target = "Lcom/bobmowzie/mowziesmobs/server/entity/frostmaw/EntityFrostmaw;setDeltaMovement(DDD)V"),
-            require = 2, allow = 2)
+            target = "Lcom/bobmowzie/mowziesmobs/server/entity/frostmaw/EntityFrostmaw;setDeltaMovement(DDD)V", ordinal = 0),
+            require = 1, allow = 1)
     private void mic_rtsim_mowziesmobs$noLeap(EntityFrostmaw self, double x, double y, double z, Operation<Void> original) {
-        if (mic_rtsim_mowziesmobs$held()) {
+        if (mic_rtsim_mowziesmobs$held() && !self.isInLava()) {
             Vec3 now = self.getDeltaMovement();
             original.call(self, now.x, y, now.z);
         } else {

@@ -528,12 +528,15 @@ public final class TrainSampler {
     private static void strikeAt(State s, Train t, Lurk l, Mob body) {
         List<Carriage> cs = t.carriages;
         int n = cs.size();
-        // The farthest a bogey can be now and still have a target landing in reach: the reach, what the train covers in a swing, the carriage
-        double far = STRIKE_REACH + SWING_TICKS * Math.abs(t.speed) + BODY_SLACK;
+        // The farthest a carriage can be now and still have a target landing in reach: the longest reach (a rider's, 3D, plus
+        // a block for its half width), what the train covers in a swing, the carriage (the third check's P3: not the bogey's
+        // horizontal STRIKE_REACH, which would gate out a rider at a long carriage's overhang)
+        double far = SWIPE_RANGE + 1.0 + SWING_TICKS * Math.abs(t.speed) + BODY_SLACK;
         // Every carriage's riders before any bogey aim (the second re-check's P3): the body swings once, and a riderless
         // carriage in front must not spend the swing on its bogey while a rider on the next one is in reach
         Vec3[] leads = new Vec3[n], trails = new Vec3[n];
         List<List<LivingEntity>> riders = new ArrayList<>(n);
+        boolean ridden = false;
         for (int c = 0; c < n; c++) {
             List<LivingEntity> here = null;
             Approach a = approach(s, l);
@@ -556,8 +559,13 @@ public final class TrainSampler {
                     }
                 }
             }
+            ridden |= here != null && !here.isEmpty();
             riders.add(here);
         }
+        // No bogey pass while any carriage in range has a rider (the third check's P3): a rider outside riderAim's window now
+        // may be inside it next tick, and a riderless carriage's bogey must not spend the swing (SWING_TICKS) before then
+        if (ridden)
+            return;
         for (int c = 0; c < n; c++) {
             List<LivingEntity> here = riders.get(c);
             if (here == null || !here.isEmpty())
