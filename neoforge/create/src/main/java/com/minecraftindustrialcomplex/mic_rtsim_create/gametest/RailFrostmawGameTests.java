@@ -14,8 +14,10 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.Create;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import com.simibubi.create.content.contraptions.ContraptionCollider;
 import com.simibubi.create.content.contraptions.glue.SuperGlueEntity;
 import com.simibubi.create.content.trains.entity.Carriage;
+import com.simibubi.create.content.trains.entity.CarriageContraptionEntity;
 import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.graph.TrackGraph;
 import com.simibubi.create.content.trains.graph.TrackNodeLocation;
@@ -62,6 +64,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import net.neoforged.neoforge.items.IItemHandler;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -89,7 +92,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * measurement (a separate test, its own batch).
  * <li>Test 9: a lurk. The engine side is scripted (AMBUSH_SPOT, BAND_MATERIALIZE, TRAIN_ROBBED, IND_CARRIAGE_DELTA,
  * AMBUSH_SPOT removed). The Frostmaw stands off the rail at its spot, swipes a seated zombie as a carriage passes,
- * and the train that was robbed has its station's roar.
+ * and the train that was robbed has its station's roar. Variants: the pass at other speeds, the den off the line,
+ * and a zombie standing (not seated) at the middle or the rear of one long carriage.
  * </ul>
  *
  * <p>This class has no {@code @GameTestHolder}: {@link MicRtsimCreate} registers it from
@@ -174,6 +178,19 @@ public final class RailFrostmawGameTests {
 
     // ---- the shared fixture ---------------------------------------------------------------------------------
 
+    /** The long carriage of the standing-rider tests: its two bogeys are this many blocks apart, with a plank floor between them. */
+    static final int LONG_SPAN = 8;
+
+    /**
+     * Who rides test 9's carriage 0 and where: {@code SEATED} a zombie on a seat on the first bogey (the original);
+     * {@code MIDDLE} and {@code REAR} a zombie standing, not seated, on the floor of a long carriage ({@code LONG_SPAN}
+     * blocks between its bogeys, one carriage only), over the plank in the middle and the plank nearest the rear bogey
+     * (the review's P2, a standing rider ignored: a bogey point misses them, the strike must aim at the rider).
+     */
+    enum Rider {
+        SEATED, MIDDLE, REAR
+    }
+
     /** A block box: its blocks before the test built in it, and what the test builds (a floor at its bottom layer, air above). */
     private static final class Patch {
         final int xa, xb, ya, yb, za, zb;
@@ -242,6 +259,8 @@ public final class RailFrostmawGameTests {
         long firstHold = -1;
         BlockPos chest;
         boolean cleaned;
+        /** The train is one long carriage with a plank floor ({@link #longCars}), not the two short ones. */
+        boolean longCar;
 
         Line(GameTestHelper helper, int side, int northRows) {
             this.helper = helper;
@@ -413,6 +432,37 @@ public final class RailFrostmawGameTests {
             e.addSittingPassenger(rider, 0);
             check("the rider rides the carriage", rider.getVehicle() == e && e.getContraption().getSeatMapping().containsKey(rider.getUUID()));
         }
+
+        /**
+         * Adds {@code rider} to the level standing, not seated, on the floor of a long carriage ({@link #longCars}): over
+         * the plank nearest the rear bogey, or the one in the middle. The planks are ordered along the way the train goes
+         * ({@link #sign}, so after {@link #settle}). The feet are put on the plank's top, and Create's server collision
+         * carries a mob from there (it does not carry a player, so a test with a player keeps the train still).
+         */
+        void stand(Entity rider, int carriage, boolean rear) {
+            AbstractContraptionEntity e = entityOf(carriage);
+            check("carriage " + carriage + " has an entity", e != null);
+            List<Vec3> floor = new ArrayList<>();
+            for (var entry : e.getContraption().getBlocks().entrySet())
+                if (entry.getValue().state().is(Blocks.OAK_PLANKS))
+                    floor.add(e.toGlobalVector(Vec3.atCenterOf(entry.getKey()), 1.0f));
+            check("the long carriage has " + (LONG_SPAN - 1) + " planks (" + floor.size() + ")", floor.size() == LONG_SPAN - 1);
+            floor.sort(Comparator.comparingDouble(v -> v.x * sign));
+            Vec3 plank = floor.get(rear ? 0 : floor.size() / 2);
+            rider.moveTo(plank.x, plank.y + 0.5 + 0.01, plank.z, 0.0f, 0.0f);
+            if (!rider.isAddedToLevel())
+                check("the rider is added", level.addFreshEntity(rider));
+            check("the rider stands over a block of the carriage (" + under(rider, e) + ")", stands(rider, e));
+        }
+
+        /** The carriage's local position 0.2 below an entity's feet, which is what Create's own test of standing on a contraption reads. */
+        Vec3 under(Entity rider, AbstractContraptionEntity e) {
+            return ContraptionCollider.worldToLocalPos(rider.position().add(0.0, -0.2, 0.0), e);
+        }
+
+        boolean stands(Entity rider, AbstractContraptionEntity e) {
+            return e.getContraption().getBlocks().containsKey(BlockPos.containing(under(rider, e)));
+        }
     }
 
     private static String idOf(Entity e) {
@@ -443,7 +493,7 @@ public final class RailFrostmawGameTests {
                     sbe.updateName("Frostmaw Pass");
                     l.dir = sbe.getAssemblyDirection();
                     check("an assembly direction along the track", l.dir != null && l.dir.getAxis() == Direction.Axis.X);
-                    l.chest = cars(l.helper, l.track(STATION_AT), l.dir, seat);
+                    l.chest = l.longCar ? longCars(l.helper, l.track(STATION_AT), l.dir) : cars(l.helper, l.track(STATION_AT), l.dir, seat);
                     Create.RAILWAYS.markTracksDirty();
                 })
                 .thenIdle(5)
@@ -504,6 +554,30 @@ public final class RailFrostmawGameTests {
         level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, controls)));
         level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b2, b2.above())));
         return b2.above();
+    }
+
+    /**
+     * One long carriage on the station's track (the standing-rider tests): a small bogey at the first block past the
+     * station and one {@value #LONG_SPAN} further, a floor of planks on the blocks between them (a bogey's own cell is
+     * not one), controls facing the assembly direction on the first bogey, the whole glued. Create's assembler needs
+     * the first bogey at the first block, bogeys at least three apart, and the second bogey in the first's glue group
+     * (then it is the carriage's second bogey, not the next carriage). The train is this one carriage: a second one
+     * behind it would strike the rider's side of the pass at its own bogey point, which the old code could also land on
+     * a rider at the rear. Null (there is no chest).
+     */
+    private static BlockPos longCars(GameTestHelper h, BlockPos stationTrack, Direction d) {
+        ServerLevel level = h.getLevel();
+        BlockState bogey = AllBlocks.SMALL_BOGEY.getDefaultState().setValue(BlockStateProperties.HORIZONTAL_AXIS, Direction.Axis.X);
+        BlockPos b1 = stationTrack.relative(d, 1).above(), b2 = stationTrack.relative(d, 1 + LONG_SPAN).above();
+        level.setBlock(b1, bogey, 3);
+        level.setBlock(b2, bogey, 3);
+        for (int k = 1; k < LONG_SPAN; k++)
+            level.setBlock(b1.relative(d, k), Blocks.OAK_PLANKS.defaultBlockState(), 3);
+        BlockPos controls = b1.above();
+        level.setBlock(controls, AllBlocks.TRAIN_CONTROLS.getDefaultState().setValue(BlockStateProperties.HORIZONTAL_FACING, d), 3);
+        level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, b2)));
+        level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, controls)));
+        return null;
     }
 
     /** A Frostmaw on its feet at (x, y, z): awake for good, with its crystal, kept to its place (radius 2). */
@@ -870,12 +944,18 @@ public final class RailFrostmawGameTests {
         final boolean far;
         /** Where the den lies, so where the engine's spot is. */
         final Den den;
+        /** Who rides carriage 0 and where. */
+        final Rider kind;
+        /** The tick a standing rider was put on (the drive ramps up from it, so the carriage does not leave it behind), or -1. */
+        long rampFrom = -1;
 
-        LurkRun(GameTestHelper helper, double speed, boolean far, Den den) {
+        LurkRun(GameTestHelper helper, double speed, boolean far, Den den, Rider kind) {
             super(helper, 10, 2);
             this.speed = speed;
             this.far = far;
             this.den = den;
+            this.kind = kind;
+            this.longCar = kind != Rider.SEATED;
             atEnd.add(() -> {
                 if (!lurkEnded && agent != 0) {
                     ConflictKit.ambushRemoved(agent, 1, faction, dim);
@@ -891,10 +971,10 @@ public final class RailFrostmawGameTests {
             });
         }
 
-        /** Driven at this run's speed. */
+        /** Driven at this run's speed (a standing rider is brought up to it over ten ticks: a mob stands on a carriage by Create's collision, which a jolt can lose). */
         @Override
         void hold() {
-            hold(speed);
+            hold(rampFrom < 0 ? speed : speed * Math.min(1.0, (level.getGameTime() - rampFrom + 1) / 10.0));
         }
 
         /**
@@ -988,19 +1068,19 @@ public final class RailFrostmawGameTests {
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk", timeoutTicks = 3600)
     public static void aLurkingFrostmawStandsOffTheRailAndSwipesAPassingCarriage(GameTestHelper helper) {
-        lurk(helper, 1.0, true, false, Den.SQUARE);
+        lurk(helper, 1.0, true, false, Den.SQUARE, Rider.SEATED);
     }
 
     /** The pass of test 9 at half a block a tick, on the engine's own spot: the strike still lands (review C, item 2). */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_slow", timeoutTicks = 2400)
     public static void aLurkingFrostmawSwipesACarriageAtHalfABlockATick(GameTestHelper helper) {
-        lurk(helper, 0.5, false, false, Den.SQUARE);
+        lurk(helper, 0.5, false, false, Den.SQUARE, Rider.SEATED);
     }
 
     /** The pass of test 9 at 1.4 blocks a tick (Create's default top speed is about that), on the engine's own spot. */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_fast", timeoutTicks = 2400)
     public static void aLurkingFrostmawSwipesACarriageAtOnePointFourBlocksATick(GameTestHelper helper) {
-        lurk(helper, 1.4, false, false, Den.SQUARE);
+        lurk(helper, 1.4, false, false, Den.SQUARE, Rider.SEATED);
     }
 
     /**
@@ -1010,7 +1090,7 @@ public final class RailFrostmawGameTests {
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_far", timeoutTicks = 2400)
     public static void aLurkingFrostmawAtTheFarSideOfItsStandStillSwipesAtOnePointFourBlocksATick(GameTestHelper helper) {
-        lurk(helper, 1.4, false, true, Den.SQUARE);
+        lurk(helper, 1.4, false, true, Den.SQUARE, Rider.SEATED);
     }
 
     /**
@@ -1022,13 +1102,13 @@ public final class RailFrostmawGameTests {
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_oblique", timeoutTicks = 2400)
     public static void aLurkingFrostmawForAnObliqueDenStandsOnTheRailsNormalAndSwipes(GameTestHelper helper) {
-        lurk(helper, 1.0, false, false, Den.OBLIQUE);
+        lurk(helper, 1.0, false, false, Den.OBLIQUE, Rider.SEATED);
     }
 
     /** The same oblique den at 1.4 blocks a tick with the puppet pinned at the far side of its stand (the contract's far side on the rail's normal). */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_oblique_far", timeoutTicks = 2400)
     public static void aLurkingFrostmawForAnObliqueDenAtTheFarSideOfItsStandStillSwipes(GameTestHelper helper) {
-        lurk(helper, 1.4, false, true, Den.OBLIQUE);
+        lurk(helper, 1.4, false, true, Den.OBLIQUE, Rider.SEATED);
     }
 
     /**
@@ -1039,7 +1119,90 @@ public final class RailFrostmawGameTests {
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_online", timeoutTicks = 2400)
     public static void aLurkingFrostmawForADenOnTheRailStandsBesideItAndSwipes(GameTestHelper helper) {
-        lurk(helper, 1.0, false, false, Den.ON_LINE);
+        lurk(helper, 1.0, false, false, Den.ON_LINE, Rider.SEATED);
+    }
+
+    /**
+     * Test 9's pass with a rider standing, not seated, at the middle of a long carriage (the re-check's P2, a standing
+     * rider ignored). The train is one carriage, {@value #LONG_SPAN} blocks between its bogeys, with a plank floor; a
+     * zombie stands on the plank in the middle of it. The strike has to be aimed at the zombie: the old code, finding
+     * no seated rider, struck at the carriage's leading bogey point, 5 blocks ahead of the zombie, which is out of the
+     * swipe's reach when it lands. Expected on the code before the fix: "the zombie was hurt at 1.0 (health 1000.0 of
+     * 1000.0)". Not run.
+     */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_standing_middle", timeoutTicks = 2400)
+    public static void aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage(GameTestHelper helper) {
+        lurk(helper, 1.0, false, false, Den.SQUARE, Rider.MIDDLE);
+    }
+
+    /** The same at the rear of the carriage: the zombie stands next to the rear bogey, 8 blocks behind the leading bogey's point. */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_standing_rear", timeoutTicks = 2400)
+    public static void aLurkingFrostmawSwipesARiderStandingAtTheRearOfALongCarriage(GameTestHelper helper) {
+        lurk(helper, 1.0, false, false, Den.SQUARE, Rider.REAR);
+    }
+
+    /** What the riders test knows: the long carriage's standing players and mob, and a bystander beside it. */
+    private static final class Riders extends Line {
+        Player standing, bystander;
+        LivingEntity mob;
+
+        Riders(GameTestHelper helper) {
+            super(helper, 10, 2);
+            longCar = true;
+            atEnd.add(() -> {
+                for (Entity e : new Entity[] {standing, bystander, mob})
+                    if (e != null)
+                        e.discard();
+            });
+        }
+    }
+
+    /**
+     * {@link TrainSampler#ridersOf} on the stopped long carriage: a player standing on its floor (a mock player, the kind
+     * Create's server collision skips, so it is never in {@code collidingEntities}: only the search finds it), a zombie
+     * standing on it (Create registers it), are riders; a player standing 3 blocks beside the carriage, level with its
+     * floor, is not. Nothing here moves the train, since a player is not carried by it. Not run.
+     */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_riders", timeoutTicks = 1200)
+    public static void aStandingPlayerAndAStandingMobAreRidersOfACarriageAndABystanderIsNot(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Riders r = new Riders(helper);
+
+        probed(r, laid(r, false))
+                .thenExecute(() -> {
+                    r.hold();
+                    r.settle();
+                    r.train.speed = 0.0;
+                    r.standing = helper.makeMockPlayer(GameType.SURVIVAL);
+                    r.stand(r.standing, 0, false);
+                    if (!(typeOf(ZOMBIE).create(level) instanceof LivingEntity z))
+                        throw new GameTestAssertException("could not create a zombie");
+                    r.mob = z;
+                    if (z instanceof Mob m) {
+                        m.setNoAi(true);
+                        m.setPersistenceRequired();
+                    }
+                    z.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 1_000_000, 0, false, false));
+                    r.stand(z, 0, true);
+                    // Level with the floor, 3 blocks off the carriage's side, over nothing of it
+                    r.bystander = helper.makeMockPlayer(GameType.SURVIVAL);
+                    r.bystander.moveTo(r.standing.getX(), r.standing.getY(), r.standing.getZ() + 3.0, 0.0f, 0.0f);
+                    check("the bystander is added", level.addFreshEntity(r.bystander));
+                    check("the bystander is not over a block of the carriage", !r.stands(r.bystander, r.entityOf(0)));
+                })
+                // Create's collision registers the zombie each tick it stands on the carriage
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    CarriageContraptionEntity e = r.train.carriages.get(0).anyAvailableEntity();
+                    check("carriage 0 has an entity", e != null);
+                    List<LivingEntity> riders = TrainSampler.ridersOf(e, null);
+                    record("railFrostmaw", "riders", "riders " + riders.size() + ", the player is in the colliding set: " + e.collidingEntities.containsKey(r.standing)
+                            + ", the zombie is: " + e.collidingEntities.containsKey(r.mob));
+                    check("the standing player is a rider (" + riders.size() + " riders)", riders.contains(r.standing));
+                    check("the standing zombie is a rider (" + riders.size() + " riders)", riders.contains(r.mob));
+                    check("the bystander is not a rider (" + riders.size() + " riders)", !riders.contains(r.bystander));
+                })
+                .thenSucceed();
     }
 
     /**
@@ -1047,8 +1210,8 @@ public final class RailFrostmawGameTests {
      * cargo delta, the robbery and its roar, the lurk's end); not full it is the pass alone: the puppet placed, a
      * zombie seated, the train driven past, the swipe's hit, TRAIN_PASSED.
      */
-    private static void lurk(GameTestHelper helper, double speed, boolean full, boolean far, Den den) {
-        LurkRun t = new LurkRun(helper, speed, far, den);
+    private static void lurk(GameTestHelper helper, double speed, boolean full, boolean far, Den den, Rider kind) {
+        LurkRun t = new LurkRun(helper, speed, far, den, kind);
         ServerLevel level = t.level;
 
         GameTestSequence s = probed(t, laid(t, true))
@@ -1174,7 +1337,12 @@ public final class RailFrostmawGameTests {
                     }
                     z.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 1_000_000, 0, false, false));
                     sturdy(z);
-                    t.seat(z, 0);
+                    if (t.kind == Rider.SEATED) {
+                        t.seat(z, 0);
+                    } else {
+                        t.stand(z, 0, t.kind == Rider.REAR);
+                        t.rampFrom = level.getGameTime();
+                    }
                     t.health0 = z.getHealth();
                     t.blocks0 = t.blocks();
                     t.strikes0 = ConflictKit.lurkStrikes();
