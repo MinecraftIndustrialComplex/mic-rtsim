@@ -7,6 +7,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.FrostmawLurker;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -33,6 +34,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * lose to the chase about nine ticks in ten and the puppet would walk onto the rail after a player. For a body the
  * hold has in hand, those six calls do nothing. The counts are the 1.8.2 jar's (cfr lines 423, 532, 552, 554, 557,
  * 591); a jar that has others fails to load rather than leave a chase in.
+ *
+ * <p>The dodge is the other thing that moves it (the second re-check's P2): a player within 4 blocks that deals 16
+ * damage, or lava, starts {@code DODGE_ANIMATION}, and at its tick 6 the jar sets 1.7 blocks a tick sideways and 0.6
+ * up, a 10 to 14 block leap off the spot. The animation is left to play (the jar's state stays consistent: the dodge
+ * ends on its own timer, its ice breath after it is the jar's), and the {@code setDeltaMovement(DDD)V} calls of
+ * {@code tick()} (the dodge's, line 430, and the asleep branch's, line 592) keep a held body's own horizontal motion and
+ * take only the vertical part: it hops in place and lands where it was. Two calls in the 1.8.2 jar; a jar with
+ * others fails to load.
  */
 @Mixin(EntityFrostmaw.class)
 public abstract class EntityFrostmawMixin {
@@ -64,6 +73,19 @@ public abstract class EntityFrostmawMixin {
     private void mic_rtsim_mowziesmobs$noStop(PathNavigation nav, Operation<Void> original) {
         if (!mic_rtsim_mowziesmobs$held())
             original.call(nav);
+    }
+
+    /** The dodge's leap: a held puppet hops where it stands and is not carried off its spot (MZB-361). */
+    @WrapOperation(method = "tick()V", at = @At(value = "INVOKE",
+            target = "Lcom/bobmowzie/mowziesmobs/server/entity/frostmaw/EntityFrostmaw;setDeltaMovement(DDD)V"),
+            require = 2, allow = 2)
+    private void mic_rtsim_mowziesmobs$noLeap(EntityFrostmaw self, double x, double y, double z, Operation<Void> original) {
+        if (mic_rtsim_mowziesmobs$held()) {
+            Vec3 now = self.getDeltaMovement();
+            original.call(self, now.x, y, now.z);
+        } else {
+            original.call(self, x, y, z);
+        }
     }
 
     @Unique

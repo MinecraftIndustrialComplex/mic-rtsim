@@ -35,6 +35,7 @@ import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -825,6 +826,85 @@ public final class FrostmawGameTests {
                             + paths[0] + ")", paths[0] <= STEADY_PATHS);
                     check("it still holds: alwaysActive and restricted", h.f[0].isAlwaysActive() && h.f[0].hasRestriction());
                     record(test, "steady", STEADY_TICKS + " ticks within the stand with the player 8 blocks off: strayed " + stray[0] + ", new paths " + paths[0]);
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    // ---- the hold against the jar's dodge (MZB-361, the second re-check's P2) ----------------------
+
+    /** Ticks the dodge tests watch a puppet after the blow: the dodge (15 ticks) leaps at its tick 6, and the hold has time to walk back after. */
+    private static final int DODGE_WATCH = 40;
+
+    /**
+     * A held puppet does not leap off its spot in a dodge (MZB-361): a player 3 blocks off deals 20 damage, which the
+     * jar counts (16 starts a dodge when its target is within 4 blocks), and at the dodge's tick 6 it sets 1.7 blocks a
+     * tick sideways. The leap is a 10 to 14 block jump off the spot, which the six chase calls the mixin switches off
+     * did not cover; its {@code setDeltaMovement} is wrapped to keep the body's own horizontal motion. Asserted: the
+     * dodge ran past its tick 6, and the puppet was never more than {@link FrostmawLurker#STAND} from its hold point in
+     * the {@value #DODGE_WATCH} ticks after. On the code before the fix it is carried 10 blocks or more off in the
+     * dodge: "the puppet never left its stand while it dodged: strayed 11.9 of 0.5". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_dodge_player", skyAccess = true)
+    public static void aHeldPuppetHurtByAPlayerNearbyDoesNotLeapOffItsSpot(GameTestHelper helper) {
+        dodged(helper, "aHeldPuppetHurtByAPlayerNearbyDoesNotLeapOffItsSpot", true);
+    }
+
+    /**
+     * The same for lava (MZB-361): the jar starts a dodge at once on lava damage, with no player or target, and its
+     * tick 6 leaps the same. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_dodge_lava", skyAccess = true)
+    public static void aHeldPuppetHurtByLavaDoesNotLeapOffItsSpot(GameTestHelper helper) {
+        dodged(helper, "aHeldPuppetHurtByLavaDoesNotLeapOffItsSpot", false);
+    }
+
+    private static void dodged(GameTestHelper helper, String test, boolean byPlayer) {
+        Held h = new Held(helper, test);
+        ServerPlayer[] player = new ServerPlayer[1];
+        Vec3[] home = new Vec3[1];
+        double[] stray = {0.0};
+        boolean[] leapt = {false};
+        long[] from = new long[1];
+        h.up(helper)
+                .thenExecute(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    f.setHasCrystal(false);
+                    home[0] = ConflictKit.lurkHold(h.agent);
+                    check("the puppet is held at a point", home[0] != null);
+                    check("and rests within its stand of it", Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z) <= FrostmawLurker.STAND + 1e-6);
+                    DamageSource blow;
+                    if (byPlayer) {
+                        player[0] = FakePlayers.add(h.level, home[0].add(-3.0, 0.0, 0.0), "mowzie-dodge");
+                        player[0].setNoGravity(true);
+                        player[0].getAttribute(Attributes.MAX_HEALTH).setBaseValue(1000.0);
+                        player[0].setHealth(1000f);
+                        ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                        f.setTarget(player[0]);
+                        blow = h.level.damageSources().playerAttack(player[0]);
+                    } else {
+                        blow = h.level.damageSources().lava();
+                    }
+                    from[0] = h.level.getGameTime();
+                    check("the blow lands", f.hurt(blow, byPlayer ? 20f : 1f));
+                })
+                .thenWaitUntil(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    if (byPlayer)
+                        f.setTarget(player[0]); // the restriction gates its own targeting (MZB-362)
+                    stray[0] = Math.max(stray[0], Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z));
+                    if (f.getAnimation() == EntityFrostmaw.DODGE_ANIMATION && f.getAnimationTick() >= 7)
+                        leapt[0] = true;
+                    check("the watch ran " + (h.level.getGameTime() - from[0]) + " of " + DODGE_WATCH + " ticks", h.level.getGameTime() - from[0] >= DODGE_WATCH);
+                })
+                .thenExecute(() -> {
+                    check("the jar's dodge ran past its leap at tick 6 (the premise)", leapt[0]);
+                    check("the puppet never left its stand while it dodged: strayed " + stray[0] + " of " + FrostmawLurker.STAND,
+                            stray[0] <= FrostmawLurker.STAND + 1e-6);
+                    check("it still holds: alwaysActive and restricted", h.f[0].isAlwaysActive() && h.f[0].hasRestriction());
+                    record(test, "dodge", "a held puppet " + (byPlayer ? "hurt for 20 by a player 3 blocks off" : "hurt by lava") + " dodged in place: strayed "
+                            + stray[0] + " blocks from its hold point in " + DODGE_WATCH + " ticks");
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
