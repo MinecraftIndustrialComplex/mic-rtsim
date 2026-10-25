@@ -92,6 +92,26 @@ pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// while phase 1 was switched off follow the queue (`Link::kept`, RP-300). Before release a version
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
 pub const META_VERSION: u16 = 5;
+
+/// The most inputs the list of those heard while phase 1 is off ([`Link::kept`]) holds before the
+/// oldest reports are dropped (RP-300, docs/choices-journal-barrier.md). A busy synthetic day of
+/// switch-off (40 players on average for 24 hours) is about 19,850 inputs, 11,930 of them loss
+/// records and structure the list never drops; the cap holds that day with a quarter to spare. The
+/// meta page, rewritten at every save, is then about 0.77 MB (under 1 MiB, the budget chosen: the
+/// page store itself limits a page to 4 GiB).
+pub const KEPT_CAP: usize = 24_576;
+
+/// Whether losing this input costs a nudge to a village's sentiment or a player's reputation and
+/// nothing else: a caravan or resident hurt or rescued, a talk. Only these are dropped when the
+/// list is over its cap, the oldest first. Never dropped: a trade, a robbery, a taken or killed
+/// member (goods that left the sim's row), an adoption or base (a village or base for good), a
+/// house placed or a work's answer (a resident or a work for good).
+fn drop_eligible(input: &Input) -> bool {
+    matches!(
+        input,
+        Input::CaravanReport { .. } | Input::VillageReport { .. } | Input::Talked { .. }
+    )
+}
 pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
@@ -316,7 +336,18 @@ pub(super) struct Link {
     /// the meta page with the pages of the save that acknowledged their records. Applied, each
     /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
     /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
-    kept: Vec<Logged>,
+    kept: VecDeque<Logged>,
+    /// How many of [`Link::kept`] are drop-eligible ([`drop_eligible`]): the scan for the oldest
+    /// one is skipped when there is none.
+    kept_soft: usize,
+    /// The most inputs [`Link::kept`] holds before [`Link::keep`] drops reports ([`KEPT_CAP`]; a
+    /// test lowers it). Not saved.
+    kept_cap: usize,
+    /// Reports ([`drop_eligible`]) dropped to stay within the cap, this session.
+    pub(super) kept_dropped: u64,
+    /// Inputs kept that left the list over the cap because no report was left to drop (loss
+    /// records alone passed the cap), this session.
+    pub(super) kept_over: u64,
     /// Census records ignored while phase 1 was switched off (U10): a census is latest state, sent
     /// again, and the one kind phase 1 does not hear while off.
     pub(super) ignored: u64,
@@ -398,7 +429,11 @@ impl Link {
             last_market: i64::MIN,
             spawn_near: Vec::new(),
             enabled: true,
-            kept: Vec::new(),
+            kept: VecDeque::new(),
+            kept_soft: 0,
+            kept_cap: KEPT_CAP,
+            kept_dropped: 0,
+            kept_over: 0,
             ignored: 0,
             stats: [0; STATS],
             capture_mismatches: 0,
@@ -565,7 +600,8 @@ impl Link {
         // them again and threw them away, so they go out from here (their op ids are their
         // identity: one Java already applied is answered DUPLICATE).
         link.queue = m.queued.into();
-        link.kept = m.kept;
+        link.kept = m.kept.into();
+        link.kept_soft = link.kept.iter().filter(|k| drop_eligible(&k.input)).count();
         link.stats[stat::INPUTS] = link.base_inputs + link.log.len() as u64;
         link.stats[stat::VILLAGES] = link.nodes.len() as u64;
         Ok(link)
@@ -574,6 +610,61 @@ impl Link {
     /// How many inputs heard while phase 1 was off wait to be applied (RP-300).
     pub(super) fn kept_len(&self) -> usize {
         self.kept.len()
+    }
+
+    /// Keeps an input heard while phase 1 is off, in time order (equal ticks in the order heard).
+    /// Over the cap the oldest drop-eligible input goes ([`drop_eligible`]; the new one if it is
+    /// the oldest there is) until the list fits or none is left: loss records and structure are
+    /// never dropped, so a list of those alone stays over the cap. Returns a warning line when a
+    /// report was dropped or the list stayed over, for the caller to log; rate limited, the first
+    /// time and then at each power of two of its counter.
+    fn keep(&mut self, entry: Logged) -> Option<String> {
+        let pos = self.kept.partition_point(|k| k.at <= entry.at);
+        if drop_eligible(&entry.input) {
+            self.kept_soft += 1;
+        }
+        self.kept.insert(pos, entry);
+        let mut warning = None;
+        while self.kept.len() > self.kept_cap && self.kept_soft > 0 {
+            let oldest = self
+                .kept
+                .iter()
+                .position(|k| drop_eligible(&k.input))
+                .expect("kept_soft counts them");
+            self.kept.remove(oldest);
+            self.kept_soft -= 1;
+            self.kept_dropped += 1;
+            if self.kept_dropped.is_power_of_two() {
+                warning = Some(format!(
+                    "phase 1 is over the cap on inputs heard while switched off (cap {}): dropped the \
+                     oldest hurt, rescue or talk report, {} so far; trades, robberies, taken members, \
+                     adoptions, bases, houses and work answers are never dropped",
+                    self.kept_cap, self.kept_dropped
+                ));
+            }
+        }
+        if self.kept.len() > self.kept_cap {
+            self.kept_over += 1;
+            if self.kept_over.is_power_of_two() {
+                warning = Some(format!(
+                    "phase 1 holds {} inputs heard while switched off, over the cap (cap {}): only \
+                     loss records and structure are left, none is dropped ({} inputs over so far)",
+                    self.kept.len(),
+                    self.kept_cap,
+                    self.kept_over
+                ));
+            }
+        }
+        warning
+    }
+
+    /// The oldest kept input, taken out to be applied.
+    fn take_kept(&mut self) -> Option<Logged> {
+        let k = self.kept.pop_front()?;
+        if drop_eligible(&k.input) {
+            self.kept_soft -= 1;
+        }
+        Some(k)
     }
 
     /// Whether the world came back from its pages: the dragons' page is only good with the world
@@ -1377,9 +1468,9 @@ fn book(st: &mut State, input: Input, at: u64) {
     if st.phase1.enabled {
         apply_booked(st, input, at);
     } else {
-        let l = &mut st.phase1;
-        let pos = l.kept.partition_point(|k| k.at <= at);
-        l.kept.insert(pos, Logged { at, input });
+        if let Some(warning) = st.phase1.keep(Logged { at, input }) {
+            log_warn(&warning);
+        }
     }
 }
 
@@ -1468,7 +1559,7 @@ pub(super) fn drain_kept(st: &mut State, bound: Option<Tick>) {
         if st.phase1.kept[0].at > limit.0 {
             return;
         }
-        let k = st.phase1.kept.remove(0);
+        let k = st.phase1.take_kept().expect("not empty");
         shared::run_rounds(st, Tick(k.at));
         apply_booked(st, k.input, k.at);
     }
@@ -3600,7 +3691,7 @@ mod tests {
     #[test]
     fn the_kept_inputs_come_back_from_a_save_in_order() {
         let mut l = Link::empty();
-        l.kept = vec![
+        for e in [
             Logged {
                 at: 1_000,
                 input: Input::Rob {
@@ -3626,11 +3717,302 @@ mod tests {
                     held: vec![(3, MILLI)],
                 },
             },
-        ];
+        ] {
+            l.keep(e);
+        }
         let back = reload(&l, "kept");
         assert_eq!(back.kept, l.kept, "the same inputs at the same ticks");
         assert_eq!(back.kept_len(), 3);
         assert!(reload(&Link::empty(), "kept-none").kept.is_empty());
+    }
+
+    // ---- the cap on the kept list (RP-300) -------------------------------------------------------
+
+    fn trade_of(key: u64, n: i64) -> Input {
+        Input::Trade {
+            key,
+            player: (1, 2),
+            good: 3,
+            items: n,
+            coins: 2 * n,
+            buy: n % 2 == 0,
+        }
+    }
+
+    fn rob_of(caravan: u64, goods: usize) -> Input {
+        Input::Rob {
+            caravan,
+            player: (1, 2),
+            goods: (0..goods as u16).map(|g| (g, MILLI * 3)).collect(),
+        }
+    }
+
+    fn hurt_of(caravan: u64) -> Input {
+        Input::CaravanReport {
+            caravan,
+            player: (1, 2),
+            rescue: false,
+        }
+    }
+
+    fn talked_of(key: u64) -> Input {
+        Input::Talked {
+            key,
+            player: (1, 2),
+        }
+    }
+
+    fn at_(at: u64, input: Input) -> Logged {
+        Logged { at, input }
+    }
+
+    /// RP-300, the cap: over it the oldest drop-eligible input goes (a hurt, a rescue, a talk) and
+    /// never a loss record or structure, whatever its age.
+    #[test]
+    fn an_overflowing_kept_list_drops_the_oldest_report_and_never_a_loss_record() {
+        let mut l = Link::empty();
+        l.kept_cap = 5;
+        for e in [
+            at_(10, rob_of(7, 1)),
+            at_(20, hurt_of(7)),
+            at_(30, trade_of(1, 4)),
+            at_(40, talked_of(1)),
+            at_(50, join_of(2, 300)),
+        ] {
+            l.keep(e);
+        }
+        assert_eq!(l.kept.len(), 5);
+        assert_eq!(l.kept_dropped, 0, "at the cap, nothing yet");
+        // One more: the oldest report goes, not the older robbery.
+        l.keep(at_(60, rob_of(8, 2)));
+        let ats: Vec<u64> = l.kept.iter().map(|k| k.at).collect();
+        assert_eq!(ats, [10, 30, 40, 50, 60], "the hurt at 20 went");
+        assert_eq!(l.kept_dropped, 1);
+        // And again: the talk at 40.
+        l.keep(at_(70, trade_of(2, 5)));
+        let ats: Vec<u64> = l.kept.iter().map(|k| k.at).collect();
+        assert_eq!(ats, [10, 30, 50, 60, 70], "the talk at 40 went");
+        assert_eq!(l.kept_dropped, 2);
+        // No report is left: a loss record goes over the cap rather than push one out.
+        l.keep(at_(80, trade_of(3, 6)));
+        assert_eq!(l.kept.len(), 6, "over the cap, nothing dropped");
+        assert_eq!(l.kept_dropped, 2);
+        assert_eq!(l.kept_over, 1);
+        // A new report over a list of loss records is the oldest report there is: it goes itself.
+        l.keep(at_(90, hurt_of(9)));
+        assert_eq!(l.kept.len(), 6);
+        assert!(l.kept.iter().all(|k| !drop_eligible(&k.input)));
+        assert_eq!(l.kept_dropped, 3);
+        // The trade and robbery at the front of the list are all still there.
+        assert!(matches!(l.kept[0].input, Input::Rob { caravan: 7, .. }));
+        assert_eq!(
+            l.kept
+                .iter()
+                .filter(|k| matches!(k.input, Input::Trade { .. } | Input::Rob { .. }))
+                .count(),
+            5
+        );
+    }
+
+    /// RP-300: a drop and the passing of the cap each count and give a warning to log, the first
+    /// time and then at each power of two (a long switch-off must not flood the log).
+    #[test]
+    fn the_cap_counts_and_warns_on_the_first_drop_and_at_powers_of_two() {
+        let mut l = Link::empty();
+        l.kept_cap = 2;
+        l.keep(at_(1, trade_of(1, 4)));
+        l.keep(at_(2, trade_of(1, 6)));
+        let mut warned = Vec::new();
+        for i in 0..9u64 {
+            if let Some(w) = l.keep(at_(10 + i, hurt_of(i))) {
+                warned.push((l.kept_dropped, w));
+            }
+        }
+        assert_eq!(l.kept_dropped, 9);
+        let at: Vec<u64> = warned.iter().map(|(n, _)| *n).collect();
+        assert_eq!(at, [1, 2, 4, 8], "the first drop and each power of two");
+        assert!(
+            warned[0].1.contains("cap 2"),
+            "the line says what the cap is: {}",
+            warned[0].1
+        );
+        // Loss records past the cap warn too, once and then at powers of two.
+        let mut over = Vec::new();
+        for i in 0..5u64 {
+            if let Some(w) = l.keep(at_(100 + i, trade_of(2, 4 + 2 * i as i64))) {
+                over.push((l.kept_over, w));
+            }
+        }
+        assert_eq!(l.kept_over, 5);
+        let at: Vec<u64> = over.iter().map(|(n, _)| *n).collect();
+        assert_eq!(at, [1, 2, 4]);
+        assert_eq!(l.kept.len(), 7, "all the loss records are kept");
+    }
+
+    /// RP-300: loss records and structure past the cap are all kept and all applied at the
+    /// switch-on; the cap only ever cost reports.
+    #[test]
+    fn loss_records_over_the_cap_are_all_kept_and_applied_at_the_switch_on() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.phase1.kept_cap = 3;
+        // Three villages first seen while off, 40 trades at them and reports among them.
+        for k in 1..=3u64 {
+            book(&mut st, join_of(k, 300 * k as i32), 100 * k);
+        }
+        for i in 0..40u64 {
+            book(
+                &mut st,
+                trade_of(1 + i % 3, 4 + 2 * i as i64),
+                1_000 + 10 * i,
+            );
+            book(&mut st, hurt_of(i), 1_005 + 10 * i);
+        }
+        assert_eq!(
+            st.phase1.kept_len(),
+            43,
+            "3 joins and 40 trades, over the cap of 3"
+        );
+        assert_eq!(st.phase1.kept_dropped, 40, "and every report dropped");
+        assert!(st.phase1.kept_over > 0);
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.nodes.len(), 3, "every village is adopted");
+        let trades = st.phase1.stats[stat::RESIDENT_TRADES] + st.phase1.stats[stat::TRADES_REFUSED];
+        assert_eq!(trades, 40, "every trade was heard by the world");
+    }
+
+    /// RP-300: a list that was capped saves and loads as it was, in order, and the load works out
+    /// which entries a further overflow may drop.
+    #[test]
+    fn a_capped_list_survives_a_save_and_load() {
+        let mut l = Link::empty();
+        l.kept_cap = 6;
+        for i in 0..14u64 {
+            let input = match i % 4 {
+                0 => trade_of(1, 4 + 2 * i as i64),
+                1 => hurt_of(i),
+                2 => rob_of(i, 2),
+                _ => talked_of(i),
+            };
+            l.keep(at_(10 * (i + 1), input));
+        }
+        assert_eq!(l.kept.len(), 7, "the 7 loss records are over the cap of 6");
+        assert!(l.kept_dropped > 0);
+        let mut back = reload(&l, "kept-capped");
+        assert_eq!(back.kept, l.kept, "the same inputs at the same ticks");
+        assert_eq!(back.kept_soft, 0);
+        back.kept_cap = 6;
+        // The load knows which entries are reports: a report arriving is the one that goes.
+        back.keep(at_(500, talked_of(99)));
+        assert_eq!(back.kept.len(), 7);
+        assert_eq!(back.kept_dropped, 1);
+        // And with room, a report is kept.
+        back.kept_cap = 9;
+        back.keep(at_(510, talked_of(100)));
+        assert_eq!(back.kept.len(), 8);
+        assert_eq!(back.kept_soft, 1);
+    }
+
+    /// RP-300, the size of the cap: a list filled to `KEPT_CAP` with the mix of the synthetic busy
+    /// day saves in a Meta page under 1 MiB (the budget chosen for it), loads back equal, and
+    /// drains. Prints the bytes per entry for the record.
+    #[test]
+    fn a_list_filled_to_the_cap_saves_loads_and_drains() {
+        let mut l = Link::empty();
+        // The mix of the synthetic busy day in docs/choices-journal-barrier.md (RP-300), per mille of
+        // the entries: resident trades 484, caravan trades 24, robbery stacks 48, members taken
+        // or killed 12, hurts 145, rescues 12, talks 242, adoptions 15, houses 8, work answers 8,
+        // bases 2.
+        let human = join_of(1, 0);
+        for i in 0..KEPT_CAP as u64 {
+            let at = 1_000 + i * 80; // a day's 2,000,000 ticks spread over the list
+            let player = (3, 4 + i % 40);
+            let input = match i % 1000 {
+                0..=483 => trade_of(1 + i % 7, 4 + 2 * (i % 13) as i64),
+                484..=507 => Input::CaravanTrade {
+                    caravan: 7 + i % 5,
+                    at_node: 1 + i % 7,
+                    player,
+                    good: 3,
+                    currency: 1,
+                    buy: i % 2 == 0,
+                    items: 5,
+                    coins: 12,
+                },
+                508..=555 => rob_of(7 + i % 5, 1 + (i % 4) as usize),
+                556..=567 => Input::MemberHeld {
+                    caravan: 7 + i % 5,
+                    member: (i % 6) as u32,
+                    player,
+                    killed: i % 3 == 0,
+                    held: (0..1 + (i % 5) as u16).map(|g| (g, 2 * MILLI)).collect(),
+                },
+                568..=640 => hurt_of(7 + i % 5),
+                641..=712 => Input::VillageReport {
+                    key: 1 + i % 7,
+                    player,
+                    kind: 7,
+                },
+                713..=724 => Input::CaravanReport {
+                    caravan: 7 + i % 5,
+                    player,
+                    rescue: true,
+                },
+                725..=966 => talked_of(1 + i % 7),
+                967..=974 => human.clone(),
+                975..=981 => Input::WorkStyle {
+                    key: 1 + i % 7,
+                    style: 2,
+                },
+                982..=989 => Input::HousePlaced { op: 0xAB00 + i },
+                990..=997 => Input::WorkResult {
+                    op: 0xCD00 + i,
+                    placed: true,
+                },
+                _ => Input::MarkBase {
+                    key: 0xB000 + i,
+                    frame: 1,
+                    x: 100,
+                    z: 200,
+                    player: (3, 4),
+                },
+            };
+            assert!(l.keep(at_(at, input)).is_none(), "not over at entry {i}");
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        let bytes = encode_meta(&l, false);
+        let per_entry = bytes.len() as f64 / KEPT_CAP as f64;
+        eprintln!(
+            "kept list at the cap: {KEPT_CAP} entries, Meta {} bytes, {per_entry:.1} per entry",
+            bytes.len()
+        );
+        assert!(bytes.len() < PIECE, "the Meta page is under 1 MiB");
+        // The worst case: every entry the widest a robbery can be (10 goods).
+        let mut worst = Link::empty();
+        for i in 0..KEPT_CAP as u64 {
+            worst.keep(at_(1_000 + i, rob_of(7, 10)));
+        }
+        eprintln!(
+            "kept list at the cap, every entry a 10-good robbery: Meta {} bytes",
+            encode_meta(&worst, false).len()
+        );
+        let t = std::time::Instant::now();
+        let back = reload(&l, "kept-cap-bench");
+        eprintln!("save and load: {:?}", t.elapsed());
+        assert_eq!(back.kept, l.kept);
+        // Drained in time order into a state at the switch-on.
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.phase1.kept = back.kept;
+        st.phase1.kept_soft = back.kept_soft;
+        let t = std::time::Instant::now();
+        modules(&mut st, 0b1111);
+        // Measured: the inputs themselves take 7 ms in all; the 1.2 s is the 49 bases the mix
+        // marks, about 25 ms each, which is the world adding a node (as it does live).
+        eprintln!("drain at the switch-on: {:?}", t.elapsed());
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.kept_soft, 0);
     }
 
     /// RP-300: kept inputs are applied in time order (equal ticks in the order heard), each at its
