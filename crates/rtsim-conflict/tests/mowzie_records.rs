@@ -6716,6 +6716,42 @@ fn paged_open(
     .unwrap()
 }
 
+/// MZB-706: the epoch ranges of the fights a party's held arrival resolved unwatched are in its
+/// row, whole and paged (RTC11, META 10), so a copy that comes sessions later is dropped too.
+#[test]
+fn the_unwatched_epoch_ranges_of_a_party_survive_a_save_whole_and_paged() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    r.c.parties[band].unwatched = vec![(1, 2), (5, 5), (9, u32::MAX)];
+    let other = r.c.order_party(
+        &mut r.w,
+        synth::CAMP,
+        PartyKind::Raid,
+        Target::District(synth::REFINERY, synth::REFINERY_POS),
+        Some(r.p),
+        Tick(30),
+    );
+    let whole = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(
+        whole.parties[band].unwatched,
+        vec![(1, 2), (5, 5), (9, u32::MAX)]
+    );
+    assert!(
+        whole.parties[band].resolved_unwatched(2) && !whole.parties[band].resolved_unwatched(3)
+    );
+    assert_eq!(whole.state_hash(), r.c.state_hash());
+    let s = paged_store("unwatched");
+    paged_save(&mut r.c, &s);
+    let paged = paged_open(&r, &s);
+    assert_eq!(
+        paged.parties[band].unwatched,
+        vec![(1, 2), (5, 5), (9, u32::MAX)]
+    );
+    if let Some(o) = other {
+        assert!(paged.parties[o].unwatched.is_empty());
+    }
+}
+
 /// MZB-589: the slot is free at a paged save (the old party ended); after open_paged the next
 /// party takes it under the bumped generation, and the old agent's copy does nothing.
 #[test]
@@ -6889,6 +6925,280 @@ fn a_walked_in_fight_in_the_replayed_window_is_resolved_once() {
     );
     assert_eq!(crash.watched, live.watched);
     assert_eq!(crash.casualties, live.casualties);
+}
+
+/// What a walk-in's replay came to when a holder's copies of its deaths follow (MZB-706).
+struct WalkedHeld {
+    /// The band's members at the pages.
+    start: u32,
+    /// The deaths the live session's fight cost (the copies', summed).
+    deaths: u32,
+    /// The copies a holder carries: the live session's BAND_CASUALTIES records of the band.
+    copies: Vec<(Tick, Obs)>,
+    /// The members left after the replay and the arrival (resolved abstractly, or honoured as
+    /// the watched fight it was), before any copy.
+    before: u32,
+    /// The members left after every copy was applied once, and after a second time.
+    after: u32,
+    again: u32,
+    /// The abstract raids the replay made, and the log notes of copies dropped.
+    raids: usize,
+    dropped: usize,
+    /// The engine, the world and the band, for what a test asks next.
+    c: Conflict,
+    w: World,
+    walls: Walls,
+    band: Handle<Party>,
+}
+
+/// The walk-in of `a_raid_met_on_its_road_after_the_save` against a district that costs the raid
+/// units (`Walls` with `rout`: every raider held at the walls, half of them fallen), the crash
+/// cutting the journal before the walk-in's echo (`echo` false: the order the journal alone
+/// cannot make exact, MZB-705) or just after it (`echo` true: the arrival answered, watched).
+/// The replay clock goes `past` the arrival: inside the hold's slack (the replay end resolves it)
+/// or beyond (the hold ended inside the replay, RP-48), or stops before it (`None`: the journal
+/// ended before the arrival, which the first run after the end decides, live, in the window the
+/// replay did not reach). The session's present is `present` ticks from the arrival, as the host
+/// tells it. Then the copies of the live fight's deaths, which a holder carried apart from the
+/// journal, come as `ingest_copy`, twice.
+fn a_walk_in_then_copies(echo: bool, past: Option<u64>, present: i64) -> WalkedHeld {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let f = r.f;
+    let now = r.c.now();
+    r.c.factions[f as usize].pool = 10.0;
+    r.c.factions[f as usize].pool_at = now;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls {
+        rout: true,
+        ..Walls::default()
+    };
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let start = r.c.parties[band].alive();
+    journal.clear();
+    r.watch = true;
+    r.sight = true;
+    r.next_obs = r.c.now();
+    let mut end = arrival;
+    while r.c.parties.get(band).is_some() {
+        end += 600;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    let agent = Party::agent(band);
+    let echo_at = journal
+        .iter()
+        .position(|(_, o)| {
+            matches!(o, Obs::Materialized(m) if m.agent == agent
+                && m.flags & u32::from(boundary::BAND_FIGHT) != 0)
+        })
+        .expect("the walk-in's echo");
+    let copies: Vec<(Tick, Obs)> = journal
+        .iter()
+        .filter(|(_, o)| matches!(o, Obs::Casualties(cs) if cs.agent == agent))
+        .cloned()
+        .collect();
+    let deaths: u32 = copies
+        .iter()
+        .map(|(_, o)| match o {
+            Obs::Casualties(cs) => cs.count,
+            _ => 0,
+        })
+        .sum();
+    assert!(deaths > 0, "the fight cost the band members: {copies:?}");
+    // The crash: the journal ends at the echo or just before it.
+    let kept = &journal[..echo_at + usize::from(echo)];
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let tun = r.c.tun.clone();
+    let cultures = r.c.cultures.clone();
+    let mut back = Conflict::load(tun, cultures, &pages).unwrap();
+    back.log_enabled = true;
+    back.begin_replay(true);
+    let mut walls = Walls {
+        rout: true,
+        ..Walls::default()
+    };
+    for (at, o) in kept {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    // The replay's clock goes on past the arrival (a later record of another agent carries it).
+    if let Some(past) = past {
+        back.run_until(&mut w, &mut walls, arrival + past);
+    }
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.replay_present(Tick(arrival.0.saturating_add_signed(present)));
+    // The poll that follows the replay end, or the arrival itself, decides it live.
+    back.run_until(&mut w, &mut walls, arrival + 3_000);
+    let before = back.parties[band].alive();
+    let raids = walls.raids.len();
+    let at = back.now();
+    for (_, o) in &copies {
+        back.ingest_copy(&mut w, &mut walls, o, at);
+    }
+    let after = back.parties[band].alive();
+    for (_, o) in &copies {
+        back.ingest_copy(&mut w, &mut walls, o, at);
+    }
+    let again = back.parties[band].alive();
+    let dropped = back.log.iter().filter(|l| l.kind == "unwatched").count();
+    WalkedHeld {
+        start,
+        deaths,
+        copies,
+        before,
+        after,
+        again,
+        raids,
+        dropped,
+        c: back,
+        w,
+        walls,
+        band,
+    }
+}
+
+/// MZB-706 (the build lead's decision after MZB-705): a walk-in whose echo the crash cut from the
+/// journal is resolved unwatched, as an abstract raid, at the hold's end. When the district
+/// costs the raid units, the abstract resolve takes the fight's losses, and a holder's copy of
+/// the deaths Minecraft saw (their records are in the entities' pending store, apart from the
+/// journal) took them again. The party books that its held arrival was resolved unwatched, at
+/// the walk-in's epoch and the fight's next one, and a copy naming either counts nothing. The
+/// band's losses are the abstract resolve's alone. Replayed to the slack's end (the hold ended
+/// inside the replay) and to the replay end inside the slack (the hold is let go by
+/// `replay_done`), both paths book it.
+#[test]
+fn a_holders_copies_of_an_unanswered_walk_in_add_nothing_to_the_abstract_resolve() {
+    for past in [None, Some(100), Some(700)] {
+        let h = a_walk_in_then_copies(false, past, 1_500);
+        let what = format!("replay clock {past:?} ticks past the arrival");
+        eprintln!(
+            "{what}: {} members, {} left after the resolve, {} after the copies of {} deaths",
+            h.start, h.before, h.after, h.deaths
+        );
+        assert_eq!(h.raids, 1, "{what}: the arrival resolved as one raid");
+        assert!(
+            h.before < h.start,
+            "{what}: the raid on a district costs the band: {} of {}",
+            h.before,
+            h.start
+        );
+        assert!(
+            h.start - h.before > h.deaths || h.deaths <= 1,
+            "{what}: the abstract resolve cost the band {} against the fight's {}",
+            h.start - h.before,
+            h.deaths
+        );
+        assert_eq!(
+            (h.after, h.again),
+            (h.before, h.before),
+            "{what}: the copies of the fight's {} deaths add nothing to the resolve's loss",
+            h.deaths
+        );
+        assert_eq!(h.dropped, 2 * h.copies.len(), "{what}: each copy is noted");
+        assert!(
+            h.c.parties[h.band].resolved_unwatched(h.c.parties[h.band].epoch),
+            "{what}: booked at the band's epoch"
+        );
+        // The booking is in the pages, so a holder's copy that comes in a later session (the
+        // entity's chunk loaded after another restart) is dropped too (RTC11).
+        let mut h = h;
+        let pages = h.c.save();
+        let (tun, cultures) = (h.c.tun.clone(), h.c.cultures.clone());
+        let mut later = Conflict::load(tun, cultures, &pages).unwrap();
+        assert_eq!(
+            later.parties[h.band].unwatched,
+            h.c.parties[h.band].unwatched
+        );
+        let at = later.now();
+        for (_, o) in &h.copies {
+            later.ingest_copy(&mut h.w, &mut h.walls, o, at);
+        }
+        assert_eq!(
+            later.parties[h.band].alive(),
+            h.before,
+            "{what}: a copy in a later session adds nothing"
+        );
+    }
+}
+
+/// MZB-706's control: the arrival answered. The journal holds the walk-in's echo, the fight is
+/// honoured as the watched fight it was, nothing is resolved abstractly, and the holder's copies
+/// of its deaths count, exactly once (a second copy is the same op).
+#[test]
+fn a_holders_copies_of_an_answered_walk_in_still_count_once() {
+    for past in [None, Some(100), Some(700)] {
+        let h = a_walk_in_then_copies(true, past, 1_500);
+        let what = format!("replay clock {past:?} ticks past the arrival");
+        assert_eq!(h.raids, 0, "{what}: the fight was watched, not raided");
+        assert_eq!(h.before, h.start, "{what}: nothing lost before the copies");
+        assert_eq!(
+            h.after,
+            h.start - h.deaths,
+            "{what}: the copies count the fight's deaths"
+        );
+        assert_eq!(h.again, h.after, "{what}: a second copy counts nothing");
+        assert_eq!(h.dropped, 0, "{what}: no copy dropped as unwatched");
+        assert!(
+            h.c.parties[h.band].unwatched.is_empty(),
+            "{what}: nothing booked unwatched"
+        );
+    }
+}
+
+/// MZB-706: a live record (not a copy) of such a fight counts nothing either, and for another
+/// reason. After the replay end no party is in its bodies, so a live BAND_CASUALTIES of an epoch
+/// the engine did not mark `embodied` and `walk_off` is a straggler (its DEMATERIALIZED
+/// counted the survivors): the same before the fix. The booking changes only the copies.
+#[test]
+fn a_live_record_of_an_unanswered_walk_in_counts_nothing_after_the_replay_end() {
+    let mut h = a_walk_in_then_copies(false, Some(100), 1_500);
+    let before = h.c.parties[h.band].alive();
+    let epoch = h.c.parties[h.band].epoch;
+    let at = h.c.now();
+    for (_, o) in &h.copies {
+        let Obs::Casualties(cs) = o else { continue };
+        for e in [cs.epoch, epoch, epoch + 1] {
+            let live = Obs::Casualties(boundary::BandCasualties {
+                epoch: e,
+                op: next_op(),
+                ..*cs
+            });
+            h.c.ingest(&mut h.w, &mut h.walls, &live, at);
+        }
+    }
+    assert_eq!(
+        h.c.parties[h.band].alive(),
+        before,
+        "stragglers count nothing"
+    );
+}
+
+/// MZB-706: only the window the replay did not reach is the last session's. An arrival after the
+/// session's present is this session's own: no fight of the last session can be behind it, so
+/// nothing is booked, and (the walk-in's epoch being the party's, which the end made abstract) no
+/// copy of an epoch it names is dropped on its account.
+#[test]
+fn an_arrival_after_the_sessions_present_books_nothing() {
+    let h = a_walk_in_then_copies(false, None, -100);
+    assert!(
+        h.c.parties[h.band].unwatched.is_empty(),
+        "booked: {:?}",
+        h.c.parties[h.band].unwatched
+    );
+    assert_eq!(h.dropped, 0);
 }
 
 /// MZB-702 (MZB-457 on envoys): an envoy refused in view of its player goes home recalled
