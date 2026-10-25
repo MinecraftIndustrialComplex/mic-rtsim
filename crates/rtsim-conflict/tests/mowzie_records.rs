@@ -1670,6 +1670,107 @@ fn raid_band(r: &mut Run) -> Handle<Party> {
     .unwrap()
 }
 
+/// A raid band's watched fight whose first wave Java refused, live: every other command goes to
+/// the plugin, which kills a quarter of each wave sent at the base 1,500 ticks after it spawns.
+/// Returns the deaths the plugin reported for the band's fight epoch, the deaths the engine
+/// counted, the band's members alive before and after, and the epochs it recalled.
+fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let agent = Party::agent(band);
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    r.run(Tick(arrival.0 - 3_000));
+    let (alive, counted) = (r.c.parties[band].alive(), r.c.stats.casualties);
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    let (mut fight, mut reported, mut recalled) = (None, 0, Vec::new());
+    let mut t = r.c.now();
+    while t < end {
+        let next = [
+            r.c.next_due(),
+            r.plugin.next_due(),
+            r.watch.then_some(r.next_obs),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(end)
+        .clamp(t + 1, end);
+        for (at, o) in r.plugin.due(next) {
+            if let Obs::Casualties(x) = &o
+                && x.agent == agent
+                && Some(x.epoch) == fight
+            {
+                reported += x.count;
+            }
+            r.c.ingest(&mut r.w, &mut NoInfrastructure, &o, at);
+        }
+        r.c.run_until(&mut r.w, &mut NoInfrastructure, next);
+        if r.watch && next >= r.next_obs {
+            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.next_obs = next + 1_200;
+        }
+        let mut to_plugin = Vec::new();
+        for cmd in r.c.take_commands() {
+            match &cmd {
+                Cmd::Materialize(m) if m.agent == agent && m.wave == 0 && m.arc_radius > 0 => {
+                    fight = Some(m.epoch);
+                    let o = Obs::SpawnRejected(boundary::BandSpawnRejected {
+                        agent,
+                        epoch: m.epoch,
+                        wave: 0,
+                        reason: 1,
+                        cmd_seq: 0,
+                    });
+                    r.c.ingest(&mut r.w, &mut NoInfrastructure, &o, next);
+                }
+                Cmd::Recall(x) if x.agent == agent => {
+                    recalled.push(x.epoch);
+                    to_plugin.push(cmd);
+                }
+                _ => to_plugin.push(cmd),
+            }
+        }
+        r.plugin.apply(to_plugin, next);
+        t = next;
+    }
+    assert!(fight.is_some(), "the band's fight began");
+    (
+        reported,
+        r.c.stats.casualties - counted,
+        alive,
+        r.c.parties[band].alive(),
+        recalled,
+    )
+}
+
+/// After a refused first wave, a watched fight's later waves are the band's in Minecraft: their
+/// deaths count, and the fight's end recalls them. The refusal leaves the band unembodied with
+/// nothing placed; the next wave commanded embodies it again.
+#[test]
+fn a_fight_whose_first_wave_was_refused_counts_its_later_waves_deaths() {
+    let (reported, counted, before, after, recalled) = a_fight_with_its_first_wave_refused();
+    assert!(reported > 0, "the plugin killed members of a later wave");
+    assert_eq!(
+        (u64::from(reported), before - after),
+        (counted, reported),
+        "every death the plugin reported is counted against the band"
+    );
+    assert_eq!(
+        recalled,
+        vec![2],
+        "the fight's end recalls the later waves' bodies"
+    );
+}
+
 /// BAND_DEMATERIALIZED for `band` at `epoch`: every member survives but `dead` of the first
 /// stack (the walk-off's deaths).
 fn despawn_with(r: &Run, band: Handle<Party>, epoch: u32, dead: u32) -> Obs {
