@@ -27,7 +27,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.
  * The district detection runs over several ticks (a block entity budget per tick, DECISIONS.md ST3): the
  * district set changes once, when the detection is done; an edit that arrives meanwhile is not lost; a chunk that
  * unloads meanwhile leaves its district whole. Each test sets a budget of 10 block entities a tick and fills its
- * chunks with 30 inert block entities each, so a chunk costs more than a tick's budget.
+ * chunks with 30 inert block entities each, so a chunk costs more than a tick's budget, and an inert block on each
+ * of its four borders, so that filled chunks side by side touch and are one district (J1, SECTIONS.md §2.1).
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -38,12 +39,24 @@ public final class RescanBudgetGameTests {
     private static final int BUDGET = 10;
     private static final int FILLER = 30;
 
-    /** A machine and {@code FILLER} inert block entities in the chunk whose corner is {@code (cx, cz)} chunks from the first whole chunk. */
+    /**
+     * Inert blocks on the four borders of a chunk, one each, at the same place in every chunk: two filled chunks side
+     * by side touch across their border (J1), so they are one district; diagonal ones join through a filled chunk
+     * beside both.
+     */
+    static final int[][] JOINERS = {{0, 6}, {15, 6}, {10, 0}, {10, 15}};
+
+    /**
+     * A machine, {@code FILLER} inert block entities and the {@link #JOINERS} in the chunk whose corner is
+     * {@code (cx, cz)} chunks from the first whole chunk.
+     */
     private static BlockPos fill(GameTestHelper helper, int cx, int cz, boolean machine) {
         BlockPos base = inChunk(helper, 0, 0);
         BlockPos origin = new BlockPos(base.getX() + 16 * cx, base.getY(), base.getZ() + 16 * cz);
         for (int i = 0; i < FILLER; i++)
             set(helper, origin.offset(2 + i % 6, 0, 8 + i / 6), TestMachines.INERT.get().defaultBlockState());
+        for (int[] j : JOINERS)
+            set(helper, origin.offset(j[0], 0, j[1]), TestMachines.INERT.get().defaultBlockState());
         BlockPos m = origin.offset(4, 0, 4);
         if (machine) {
             set(helper, m, TestMachines.MACHINE.get().defaultBlockState());
@@ -238,7 +251,8 @@ public final class RescanBudgetGameTests {
     }
 
     /**
-     * What spreading buys: a district of nine chunks with about 200 inert block entities each (1,800 in all),
+     * What spreading buys: a district of nine chunks with about 200 inert block entities each (1,800 in all, four of
+     * each chunk's on its borders, so the chunks touch),
      * detected in one call (the old way: one tick) and at the default budget. Logs both; passes when the
      * default budget's longest tick is under the one-call time (a figure for the report, not a timing gate).
      */
@@ -258,6 +272,9 @@ public final class RescanBudgetGameTests {
                             for (int x = 1; x < 15; x++)
                                 for (int z = 1; z < 15; z++)
                                     set(helper, o.offset(x, 0, z), TestMachines.INERT.get().defaultBlockState());
+                            // One inert block on each border, so the nine chunks touch and are one district (J1).
+                            for (int[] j : new int[][] {{0, 7}, {15, 7}, {7, 0}, {7, 15}})
+                                set(helper, o.offset(j[0], 0, j[1]), TestMachines.INERT.get().defaultBlockState());
                             set(helper, o, TestMachines.MACHINE.get().defaultBlockState());
                             playerPlaced(helper, o);
                         }
@@ -394,7 +411,7 @@ public final class RescanBudgetGameTests {
         helper.startSequence()
                 .thenExecute(() -> {
                     ms[0] = fill(helper, 0, 0, true);
-                    ms[1] = fill(helper, 3, 0, true); // two chunks between: no adjacency joins them
+                    ms[1] = fill(helper, 3, 0, true); // two chunks between: nothing joins them
                 })
                 .thenWaitUntil(() -> {
                     check("two districts, settled", !ind().districts().rescanning() && districtAt(helper, ms[0]) != null
