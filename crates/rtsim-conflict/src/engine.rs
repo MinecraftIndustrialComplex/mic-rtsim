@@ -648,6 +648,16 @@ fn party_severity(kind: PartyKind) -> Severity {
     }
 }
 
+/// A held decision (docs/replay-gate.md §6.1, RP-23): a war party's arrival, or a siege's next
+/// round, waiting while the session's replay runs.
+#[derive(Clone, Debug)]
+pub(crate) struct Held {
+    /// When the decision came: the arrival's tick, or the round's.
+    pub(crate) since: Tick,
+    /// The plan of its poll: a party that moved since is no longer held.
+    pub(crate) plan: u32,
+}
+
 pub struct Conflict {
     pub seed: u64,
     pub tun: ConflictTunables,
@@ -719,9 +729,13 @@ pub struct Conflict {
     /// The next honoured record of that epoch counts them as placed. In memory only.
     pub(crate) fill_deaths: BTreeMap<Handle<Party>, u32>,
     /// The war parties whose arrival (or a siege's next round) waits for the replay end
-    /// (docs/replay-gate.md §6.1, RP-23): per party, the tick it arrived and the plan of its
-    /// poll. In memory only: a restart from pages saved mid-replay arrives again at the poll.
-    pub(crate) held: BTreeMap<Handle<Party>, (Tick, u32)>,
+    /// (docs/replay-gate.md §6.1, RP-23): per party, its [`Held`]. In memory only: a restart
+    /// from pages saved mid-replay arrives again at the poll.
+    pub(crate) held: BTreeMap<Handle<Party>, Held>,
+    /// Set while [`Conflict::end_hold`] runs a held decision's `party_event`: `arrive` and
+    /// `wait_over` decide it then, unwatched, inside the hold's slack too (RP-59). In memory
+    /// only.
+    pub(crate) hold_ending: bool,
     /// The replayed fights that found no hold (RP-56): per party, the epoch of its fight
     /// recorded at or past its hold's slack, counted once in `ConflictStats::fights_unheld`;
     /// its loot counts against nothing, as its bodies. In memory only, cleared at the replay end.
@@ -816,6 +830,7 @@ impl Conflict {
             floors: BTreeMap::new(),
             fill_deaths: BTreeMap::new(),
             held: BTreeMap::new(),
+            hold_ending: false,
             unheld_fights: BTreeMap::new(),
             fights_unanswered: BTreeMap::new(),
         }
@@ -3305,7 +3320,7 @@ impl Conflict {
                 // up to the hold's slack. Past it no fight answered the hold, and it resolves
                 // unwatched, as the last session did (RP-48).
                 let watcher = if self.outbox.defer() {
-                    if at < arrival + REPLAY_HOLD_SLACK_TICKS {
+                    if !self.hold_ending && at < arrival + REPLAY_HOLD_SLACK_TICKS {
                         self.hold(p, arrival, at, true);
                         return;
                     }
@@ -3364,7 +3379,7 @@ impl Conflict {
             x.seg = x.seg.saturating_sub(1);
         }
         let plan = x.plan;
-        self.held.insert(p, (since, plan));
+        self.held.insert(p, Held { since, plan });
         self.schedule(Self::held_poll(since, at), Ev::Party { party: p, plan });
     }
 
@@ -3372,6 +3387,73 @@ impl Conflict {
     /// if that comes first (RP-48).
     fn held_poll(since: Tick, at: Tick) -> Tick {
         (at + REPLAY_HOLD_TICKS).min(since + REPLAY_HOLD_SLACK_TICKS)
+    }
+
+    /// Ends party `p`'s hold (taken off the map) at `at`, before a record that would move the
+    /// party (RP-59): `party_event` decides it unwatched, as the session that went on did at the
+    /// hold's tick, inside the hold's slack too.
+    fn end_hold(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
+        self.hold_ending = true;
+        self.party_event(w, infra, p, at);
+        self.hold_ending = false;
+    }
+
+    /// Ends the holds a replayed record would move (RP-59), before it is applied: a
+    /// BAND_CASUALTIES or CHIEF_KILLED for a held party at its epoch or an older one (a wipe-out
+    /// or a rout sends it home), or any copy of a BAND_CASUALTIES (`copy`: it counts at any
+    /// epoch), and a DIFFICULTY that makes the world Peaceful, for every held party
+    /// (`stop_war_parties`). The session that went on decided the hold at its tick, before the
+    /// record; applied on the hold, the record moved the party and left the poll stale, so the
+    /// decision's abstract raid was lost. A record of a newer epoch is the held decision's own
+    /// fight, which its paths answer (a BAND_MATERIALIZED, a BAND_SPAWN_REJECTED). A
+    /// BAND_DEMATERIALIZED moves no party, and ends nothing: Java ends a band's older epoch with
+    /// one just before its fight's BAND_MATERIALIZED (`ConflictBridge.materialize`), which would
+    /// end the hold of a fight about to be honoured.
+    fn release_before(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        o: &Obs,
+        copy: bool,
+        at: Tick,
+    ) {
+        if self.held.is_empty() {
+            return;
+        }
+        let by_epoch = |agent: u64, epoch: u32| {
+            Party::of_agent(agent)
+                .filter(|&p| {
+                    self.parties
+                        .get(p)
+                        .is_some_and(|x| copy || epoch <= x.epoch)
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let parties: Vec<Handle<Party>> = match o {
+            Obs::Casualties(cs) => by_epoch(cs.agent, cs.epoch),
+            Obs::ChiefKilled(ck) if !copy => by_epoch(ck.agent, ck.epoch),
+            Obs::Difficulty(d)
+                if !copy && !self.peaceful && d.difficulty == boundary::DIFFICULTY_PEACEFUL =>
+            {
+                self.held.keys().copied().collect()
+            }
+            _ => return,
+        };
+        for p in parties {
+            let Some(h) = self.held.remove(&p) else {
+                continue;
+            };
+            if self.parties[p].plan == h.plan && at < h.since + REPLAY_HOLD_SLACK_TICKS {
+                self.end_hold(w, infra, p, at);
+            }
+        }
     }
 
     /// When a party's held arrival (or siege round) came, while replaying (§6.1, RP-23): by the
@@ -3388,8 +3470,8 @@ impl Conflict {
     fn held_since(&mut self, p: Handle<Party>, at: Tick) -> Option<Tick> {
         let x = &self.parties[p];
         let inside = |since: Tick| at < since + REPLAY_HOLD_SLACK_TICKS;
-        if let Some(&(since, plan)) = self.held.get(&p) {
-            return (plan == x.plan && inside(since)).then_some(since);
+        if let Some(h) = self.held.get(&p) {
+            return (h.plan == x.plan && inside(h.since)).then_some(h.since);
         }
         if self.peaceful || !self.outbox.replaying() {
             return None;
@@ -3460,7 +3542,7 @@ impl Conflict {
         if kind == PartyKind::Siege && round < x.bored_at && x.alive() > 0 && !self.peaceful {
             // As `arrive`'s (§6.1, RP-23, RP-48).
             let watcher = if self.outbox.defer() {
-                if at < round + REPLAY_HOLD_SLACK_TICKS {
+                if !self.hold_ending && at < round + REPLAY_HOLD_SLACK_TICKS {
                     self.hold(p, round, at, false);
                     return;
                 }
@@ -4790,9 +4872,9 @@ impl Conflict {
                 }
                 // A held arrival's poll, while the replay runs (§6.1, RP-23). At the hold's slack
                 // it ends: `party_event` resolves it unwatched (RP-48).
-                if let Some(&(since, held)) = self.held.get(&party) {
-                    if held == plan && at < since + REPLAY_HOLD_SLACK_TICKS {
-                        let next = Self::held_poll(since, at);
+                if let Some(h) = self.held.get(&party) {
+                    if h.plan == plan && at < h.since + REPLAY_HOLD_SLACK_TICKS {
+                        let next = Self::held_poll(h.since, at);
                         self.schedule(next, Ev::Party { party, plan });
                         return;
                     }
@@ -5238,6 +5320,7 @@ impl Conflict {
             // id spent as rtsim-jni spends it (MZB-23).
             return;
         }
+        self.release_before(w, infra, o, false, at);
         match o {
             Obs::State(_) => {}
             Obs::Materialized(m) => self.materialized(w, m, at),
@@ -5605,7 +5688,10 @@ impl Conflict {
         // Every kind's epoch, a live copy's too (RP-57).
         self.fold_epoch(o);
         match o {
-            Obs::Casualties(cs) => self.casualties(w, cs, at, true),
+            Obs::Casualties(cs) => {
+                self.release_before(w, infra, o, true, at);
+                self.casualties(w, cs, at, true);
+            }
             Obs::Materialized(_) => {}
             _ => self.ingest(w, infra, o, at),
         }

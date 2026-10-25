@@ -2716,11 +2716,12 @@ fn a_copied_casualty_counts_against_an_abstract_band_once() {
 }
 
 /// The abstract district raids an infrastructure was asked for (`Infrastructure::raid`): one
-/// tick per raid, whatever its classes. With `rout`, every raider is held at the walls (none
-/// survive); otherwise the raid has no outcome.
+/// tick per raid, whatever its classes, and the members each sent, its classes summed. With
+/// `rout`, every raider is held at the walls (none survive); otherwise the raid has no outcome.
 #[derive(Default)]
 struct Walls {
     raids: std::collections::BTreeSet<Tick>,
+    members: BTreeMap<Tick, u32>,
     rout: bool,
 }
 
@@ -2739,6 +2740,7 @@ impl rtsim_ecology::infra::Infrastructure for Walls {
         t: &rtsim_industry::threat::Threat,
     ) -> Option<rtsim_ecology::infra::RaidOutcome> {
         self.raids.insert(t.at);
+        *self.members.entry(t.at).or_insert(0) += t.count;
         self.rout.then(|| rtsim_ecology::infra::RaidOutcome {
             survived: 0.0,
             floor: None,
@@ -3837,6 +3839,148 @@ fn a_sighting_inside_a_held_decisions_slack_is_no_fight() {
                 embodied: false,
                 ..live
             });
+        }
+    }
+}
+
+/// What comes to a held siege decision's band inside the hold's slack, after a sighting there,
+/// in [`a_held_decision_then`]: every member killed at the sighting's epoch, its chief killed,
+/// or the world made Peaceful.
+#[derive(Clone, Copy, Debug)]
+enum Inside {
+    WipedOut,
+    ChiefKilled,
+    Peaceful,
+}
+
+/// fixes6 item 1 (RP-59; the checker's case): a siege's held decision (its round with
+/// `round`, else its arrival), unwatched, the band with its chief; a sighting 300 ticks after the
+/// decision embodies it inside the hold's slack (RP-56, the hold kept); then `inside`, 50 ticks
+/// later, still inside the slack. Returns the siege as [`SiegeAt`] reads it, the decision, and
+/// the members each abstract raid since the save sent: the session that went on, or, with
+/// `crash`, a replay of its journal on an engine from the pages saved before the decision.
+fn a_held_decision_then(round: bool, inside: Inside, crash: bool) -> (SiegeAt, Tick, Vec<u32>) {
+    let mut r = Run::new(36, patient_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.parties[band].chief = true;
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let decision = if round {
+        let mut to = r.c.now();
+        while r.c.parties[band].phase != Phase::Waiting {
+            to += 600;
+            assert!(to < day(6.0), "the siege waits at its target");
+            run_journaled(&mut r, &mut walls, to, &mut journal);
+        }
+        r.c.parties[band].until
+    } else {
+        let arrival = *r.c.parties[band].times.last().unwrap();
+        run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+        arrival
+    };
+    let x = &r.c.parties[band];
+    assert!(!x.embodied && decision < x.bored_at, "unseen, not bored");
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let watched = r.c.stats.raids_watched;
+    journal.clear();
+    run_journaled(&mut r, &mut walls, decision + 1, &mut journal);
+    assert!(walls.raids.contains(&decision), "resolved unwatched");
+    let seen = decision + 300;
+    r.watch = true;
+    r.next_obs = seen;
+    run_journaled(&mut r, &mut walls, seen + 1, &mut journal);
+    r.watch = false;
+    run_journaled(&mut r, &mut walls, seen + 50, &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.embodied && x.chief, "seen, with its chief");
+    let at = r.c.now();
+    let c = r.c.cultures.get(0).clone();
+    let records = match inside {
+        Inside::WipedOut => x
+            .units
+            .iter()
+            .map(|&(u, n)| {
+                Obs::Casualties(boundary::BandCasualties {
+                    agent: Party::agent(band),
+                    epoch: x.epoch,
+                    by: boundary::BY_MOB,
+                    body: body_id(&r.c.cultures, &c.unit(u).body),
+                    count: n,
+                    killer: (0, 0),
+                })
+            })
+            .collect(),
+        Inside::ChiefKilled => vec![chief_killed_by_mob(band, x.epoch, 7_001)],
+        Inside::Peaceful => vec![difficulty(boundary::DIFFICULTY_PEACEFUL)],
+    };
+    for o in records {
+        r.c.ingest(&mut r.w, &mut walls, &o, at);
+        journal.push((at, o));
+    }
+    let end = seen + 2_000;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let members = |walls: &Walls| walls.members.range(saved_at + 1..).map(|e| *e.1).collect();
+    let live = SiegeAt::of(&r.c, band, &walls, watched, saved_at);
+    if !crash {
+        return (live, decision, members(&walls));
+    }
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let watched = back.stats.raids_watched;
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.run_until(&mut w, &mut walls, end + 1_000);
+    (
+        SiegeAt::of(&back, band, &walls, watched, saved_at),
+        decision,
+        members(&walls),
+    )
+}
+
+/// fixes6 item 1 (RP-59): a held siege decision, seen inside the hold's slack, then its band
+/// wiped out, its chief killed or the world made Peaceful, still inside the slack, the pages
+/// from before the decision. The session that went on raided at the decision, then sent the
+/// band home. The replay used to send it home with its hold's poll left stale: the raid lost.
+#[test]
+fn a_held_decision_whose_band_is_sent_home_inside_the_slack_keeps_its_raid() {
+    for inside in [Inside::WipedOut, Inside::ChiefKilled, Inside::Peaceful] {
+        for round in [true, false] {
+            let (live, decision, sent) = a_held_decision_then(round, inside, false);
+            assert_eq!(
+                live.raids,
+                vec![decision],
+                "{inside:?} round {round}: {live:?}"
+            );
+            assert_eq!(
+                live.phase,
+                Phase::Home,
+                "{inside:?} round {round}: {live:?}"
+            );
+            let (back, _, back_sent) = a_held_decision_then(round, inside, true);
+            back.assert_as(&live);
+            assert_eq!(
+                back_sent, sent,
+                "{inside:?} round {round}: the raid's members"
+            );
         }
     }
 }
