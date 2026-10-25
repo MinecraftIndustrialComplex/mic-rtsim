@@ -83,9 +83,6 @@ public final class MicRtsimIceAndFire {
         bus.addListener(EventPriority.LOWEST, false, EntityLeaveLevelEvent.class, MicRtsimIceAndFire::onLeave);
         if (DragonConfig.Test.ENABLED)
             IndustryApi.register(new com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest.TestWells());
-        // GameTest servers only: after the core's session started (its listener has the normal priority).
-        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.server.ServerStartedEvent.class,
-                com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest.GameTestClock::onServerStarted);
     }
 
     /** The live session this plugin is part of, or null. */

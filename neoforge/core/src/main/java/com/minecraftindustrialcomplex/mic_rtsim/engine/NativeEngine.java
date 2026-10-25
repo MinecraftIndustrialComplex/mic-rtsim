@@ -151,6 +151,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** out.length >= PHASE1_STATS; indexes P1_*. */
     private static native void nPhase1Stats(long handle, long[] out);
 
+    /** out.length >= CLOCKS; indexes CLOCK_*. */
+    private static native void nClocks(long handle, long[] out);
+
     /** A phase 1 village's sentiment toward a player (-128 to 127), Integer.MIN_VALUE when the engine knows no such village (TEST mode). */
     private static native int nPhase1Sentiment(long handle, long village, long most, long least);
 
@@ -877,6 +880,32 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public synchronized boolean opApplied(long opId) {
         return nOpApplied(live(), opId);
+    }
+
+    /** {@link #clocks}'s fields. */
+    public static final int CLOCK_GAME_TIME = 0, CLOCK_OFFSET = 1, CLOCK_PHASE1 = 2, CLOCK_DRAGONS = 3, CLOCK_SHIPS = 4,
+            CLOCK_HERDS = 5, CLOCK_CONFLICT = 6, CLOCK_INDUSTRY = 7, CLOCKS = 8;
+
+    /**
+     * The modules' clocks between steps (indexed by {@code CLOCK_*}): the last hand-over's game time, phase 1's
+     * test offset (a world tick is a game time plus it), the world ticks of phase 1's world, the dragons, the
+     * ships, the herds and the conflict engine, and the industry engine's tick (a game time). Each module
+     * resumes at its pages' clock and never runs back.
+     */
+    public synchronized long[] clocks() {
+        long[] out = new long[CLOCKS];
+        nClocks(live(), out);
+        return out;
+    }
+
+    /**
+     * The game time every module's clock is at or behind: the latest of the world clocks less phase 1's
+     * offset, and the industry engine's. A world's game time below it leaves the modules ahead waiting.
+     */
+    public long gameTimeOfClocks() {
+        long[] c = clocks();
+        long world = Math.max(Math.max(c[CLOCK_PHASE1], c[CLOCK_DRAGONS]), Math.max(Math.max(c[CLOCK_SHIPS], c[CLOCK_HERDS]), c[CLOCK_CONFLICT]));
+        return Math.max(world - c[CLOCK_OFFSET], c[CLOCK_INDUSTRY]);
     }
 
     /** The phase 1 world's counters, indexed by {@code P1_*}; {@link #PHASE1_STATS} long. */
