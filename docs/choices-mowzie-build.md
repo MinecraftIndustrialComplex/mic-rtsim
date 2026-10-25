@@ -2799,14 +2799,17 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
   its cap). `Camps.census` now counts each tagged body loaded elsewhere in `home` (`home++` in the elsewhere loop),
   so the cap is the grove's size and they are adopted. No format change.
   - Tests: `a_grove_found_after_a_reset_with_bodies_away_adopts_them_all` (found 6, 2 in and 4 away, all tagged with
-    generations no slot holds: cap 6, 6 ADOPT, no REMOVE, every body retagged; before the emulator matched Java it
-    failed with 12 ADOPT attempts for 6, none landing, the bodies keeping their old tags) and
+    generations no slot holds: cap 6, 6 ADOPT, no REMOVE, every body retagged) and
     `a_grove_found_short_of_its_bodies_away_removes_them_above_the_cap` (found 2 with the same 6: 2 ADOPT and
     4 REMOVE, the fault as it was, kept to show what the home count decides). GameTest
     `aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll` (two tagged bodies in the footprint and one
     away in a chunk forced alone, made tagged before they join, in the step that declares the grove: FACTION_FOUND
     home 3, the census lists the away body ELSEWHERE, three ADOPTs retag them). Not run, so not shown failing; the
     check "home counts the body away: 3" reads 2 on the unfixed Camps.
+  - What proves what: the Rust test founds the grove at 6 itself (the `home` the emulator is told), so it does not
+    exercise the Java `home++`; its failure before the fix (12 ADOPT attempts for 6, none landing, the bodies
+    keeping their old tags) is MZB-654's emulator change (ADOPT of an already-tagged body), not MZB-653's. The Java
+    `home++` in `Camps.census` is proven only by the GameTest (home 3 against 2 on the unfixed Camps).
   - Not taken (a format change): an engine life on `CampMember`, so a tag from another life reads as no tag. The
     conservative count above needs no format and fixes the case reviewed; the life field would also make the
     census able to tell a reset's leftovers from a live camp's, and is for a release that has a format to keep.
@@ -2831,27 +2834,52 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
   a doubled body; a held Frostmaw at HOLD_MAX doubled the same way. Both now go through `Camps.entitiesIn`:
   entities loaded and the chunk's visibility in the entity manager `isAccessible()` (TRACKED or TICKING; not
   entity-ticking, which fails at level 33). `EntitySectionManagerAccessor` gains `@Accessor("chunkVisibility")`.
-  - The state is forced in a GameTest without C2ME: the entity manager's own `updateChunkStatus(pos,
+  - The state is forced in a GameTest without C2ME by `hide`: the entity manager's own `updateChunkStatus(pos,
     INACCESSIBLE)` leaves the chunk's entities loaded and out of every level query (the ticket level is
-    unchanged). `aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded` hides the den's chunk and sends a
-    TAKE by tag: STALE, the Frostmaw stays; tracked again, the same line is DONE. The `playable` gate is what
-    that test shows; `look` shares the helper (`entitiesIn`) and has no test of its own, since a hidden chunk
-    cannot be made at a census without C2ME's ordering. Not run, so not shown failing; on the unfixed `playable`
-    the TAKE is answered DONE through the index.
+    unchanged), and the chunk is then taken out of the manager's `chunksToUnload` (new
+    `@Accessor("chunksToUnload")`). The status change alone also queues the chunk, and vanilla's next
+    `processUnloads` stores it (HIDDEN and LOADED), so the first version of the two tests collapsed one tick later
+    and answered alike on fixed and unfixed builds; C2ME's real state differs from the hidden one only in not being
+    queued. Each test checks `areEntitiesLoaded` at its answer step, so a periodic save (every 6,000 ticks) landing in
+    the window fails with its own message, and its `onEnd` discards the body so no reloaded body is left.
+    `aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded` hides the den's chunk and sends a TAKE by tag:
+    STALE, the Frostmaw stays; tracked again, the same line is DONE. The `playable` gate is what that test shows.
+    Not run, so not shown failing; on the unfixed `playable` the TAKE is answered DONE through the index.
+  - The stray radius (P2-b): `wideStrays` lists through `getEntities`, which sees visible sections only. A chunk
+    inside the stray radius but outside the footprint can be hidden with its entities loaded; the stray's join set
+    `strayWatch`, the census missed it and cleared the watch, nothing fired when the chunk showed, and the engine
+    SPAWNed a second Frostmaw beside it. `look` now holds the census (`Camps.strayChunkHidden`) while the census
+    would look wide (`strayWatch`, or a late camp's first) and any chunk of the radius has its entities loaded but is
+    not accessible: a camp that is in stays in meanwhile, a camp not yet in waits as for its footprint. The hold
+    ends when the chunk shows or unloads (a periodic save at the latest). A census that is held also delays a late
+    camp's FACTION_FOUND until then, which is the safe side (a founding with the stray missing is the doubled
+    Frostmaw). GameTest `aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows`
+    (a Frostmaw joins in the den's east chunk, 32 blocks out, hidden: no census for 30 ticks; shown, census 2 lists
+    it as a stray chief). Not run; on the unfixed Camps the census 2 is made at once and lists no one.
 - **MZB-661** (M5 C2ME diagnosis; P2): `byUuid` (REMOVE, TAKE and ADOPT by UUID) was `level.getEntity`, which
   misses a body whose chunk is hidden: NOTHING was answered and the stray lived. When `getEntity` misses it now
   falls back to the camp's own index (`live(faction)`) by UUID, with the level checked. GameTest
   `aRemoveByUuidFindsAnElsewhereBodyInAHiddenChunk` (an adopted warrior moved 80 blocks out, its chunk hidden by the
-  entity manager: REMOVE is DONE and the body goes; the unfixed answer is NOTHING). Not run.
+  entity manager and taken out of the unload queue, as in MZB-660: REMOVE is DONE and the body goes; the unfixed
+  answer is NOTHING). Not run.
+  - The untagged stray (P3): a REMOVE or ADOPT by UUID of a stray whose chunk went hidden after its census also
+    answered NOTHING and left it alive (the engine's books were right). Each `Site` now keeps the strays its last
+    census listed by UUID (`strayBodies`, rebuilt by each census, emptied when the camp goes out, at most the census
+    cap) and `byUuid` falls back to it (alive, same level). The same GameTest as the radius check ends with that
+    REMOVE: DONE, the stray goes. Not run.
 - **MZB-662** (P2, test): `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart` waits on `w[0].isRemoved()`
   instead of `unloadedWithout` (`!hasChunk` plus `getEntity == null`, which under C2ME both flip before
   `setRemoved`). The failure message carries alive, the removal reason and whether the chunk is loaded, and says that
   alive in an unloaded chunk is C2ME's dropped entity unload, a case of its own. The ChunkWait conversion (step 3)
-  replaces this wait with `ChunkWait.inMemory`.
+  replaces this wait with `ChunkWait.inMemory`. For that conversion: the converted wait (the `w[0]` wait near line
+  2115) must still wait on the object's own `isRemoved()`, not only on `ChunkWait.inMemory`, or the C2ME dropped-unload
+  case (the object alive in a chunk that is no longer loaded) comes back as a pass of the wrong condition.
 - **MZB-663** (P3, tests): the timings measure from what the camp sees. The poll test starts its out-clock at the
   first tick a footprint holder's level reads above FULL (or has no holder), not at the test's release; the held
   Frostmaw test bounds "placed" against the first tick `camps().heldLines() > 0`, not the test's send; the
-  ticket-event-live test asserts NO_HOLDER only when a ticket event fired, else that every level reads above FULL.
+  ticket-event-live test asserts NO_HOLDER only when a ticket event fired, else that every level reads above FULL and
+  equals the holder's own current level (through `getUpdatingChunkIfPresent`, after the `norm` clamp), so a stale
+  stored level fails.
   `gametest.sh mowziesmobs -Pc2me` runs once after the main round and its result is recorded there.
 - **MZB-664** (P3, doc): `MowzieKit.acknowledge()`'s javadoc said a GameTest server never reaches the periodic
   save. It does, every 6,000 ticks (`MinecraftServer.tickServer`, `saveEverything`; the entity manager's
