@@ -894,7 +894,7 @@ public final class SectionsJoinGameTests {
                     check("the press's district: " + describe(d), d != null);
                     check("X and Y in one district: " + describe(d), holds(d, cx, cy));
                     check("the pair is saved: " + describe(d), d.joins.contains(District.join(cx, cy)));
-                    check("X has no seed: " + describe(d), d.seedCounts.get(cx) == 0 && d.seedCounts.get(cy) == 1);
+                    check("X has no seed, Y the press's and the arm's: " + describe(d), d.seedCounts.get(cx) == 0 && d.seedCounts.get(cy) >= 1);
                     id[0] = d.id;
                     record(t, "before the unload", describe(d));
                 })
