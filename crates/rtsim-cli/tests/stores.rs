@@ -46,6 +46,7 @@ fn stores_lists_the_create_saves_package_stores_and_writes_nothing() {
     assert!(out.status.success(), "{out:?}");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["now"].as_u64().unwrap() > 0, "{v}");
+    assert_eq!(v["unread"], serde_json::json!([]), "{v}");
     let list = v["stores"].as_array().unwrap();
     assert_eq!(list.len(), 6, "{v}");
     for s in list {
@@ -60,6 +61,10 @@ fn stores_lists_the_create_saves_package_stores_and_writes_nothing() {
             assert!(f["drawn"]["keys"].is_array(), "{f}");
         }
         assert!(s["no_route"]["packages"].is_u64(), "{s}");
+        assert!(
+            s["dropped"].is_array() && s["left"].is_array() && s["owed"].is_array(),
+            "{s}"
+        );
         assert!(s["counts"]["declarations"].as_u64().unwrap() >= 1, "{s}");
     }
     // store 2 booked packages and took a census: its residue is named goods, not ids
