@@ -3602,10 +3602,11 @@ impl Dragons {
         true
     }
 
-    /// The plugin could not put a stack in its chest (FAILED: no chest there, or no room): the
-    /// coin waits as unplaced, and the chest is forgotten until the plugin reports one again.
-    /// Java answers FAILED only with the chest's chunk loaded and not carrying the op, so the
-    /// stack was never put there and the coin may go again under a new op id.
+    /// The plugin could not put a stack in its chest (FAILED): the coin waits as unplaced, and
+    /// the chest is forgotten until the plugin reports one again. Java answers FAILED with
+    /// nothing placed: before it looks at the chest (no such level, an unknown item, a count
+    /// below 1), or with the chest's chunk loaded and not carrying the op (no chest there, or no
+    /// room). The stack was never put there, so the coin may go again under a new op id.
     pub fn tribute_failed(&mut self, op: u64) -> bool {
         let Some(p) = self.placing.remove(&op) else {
             return false;
@@ -3621,13 +3622,16 @@ impl Dragons {
     /// The chest's chunk was not loaded when Java read the stack (NOT_LOADED, RP-210). The stack
     /// may already be in that chest (the chunk written ahead of the journal, its APPLIED record
     /// carried in it and copied when it loads), so it stays placing under its op id, parked
-    /// until its lair reports a chest, and goes again only to the same chest. The chest is
-    /// forgotten, as after a failure, so new coin waits for the next report.
+    /// until its lair reports a chest, and goes again only to the same chest. The lair's chest
+    /// is forgotten if it is still this stack's, so new coin waits for the next report; a chest
+    /// the lair reported since, elsewhere, is kept.
     pub fn tribute_unloaded(&mut self, op: u64) -> bool {
         let Some(p) = self.placing.get(&op) else {
             return false;
         };
-        self.chests.remove(&p.lair);
+        if self.chests.get(&p.lair) == Some(&p.chest) {
+            self.chests.remove(&p.lair);
+        }
         self.parked.insert(op);
         true
     }
