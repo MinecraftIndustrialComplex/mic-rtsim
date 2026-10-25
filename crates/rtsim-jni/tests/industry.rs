@@ -1656,14 +1656,14 @@ fn a_one_hand_over_replay_rederives_the_same_op_ids() {
     assert_eq!(b.pending, Some(0), "the replayed results answer them");
 }
 
-/// A replay of several hand-overs (8,000 filler records after the pages, a minimum-size buffer):
-/// the industry engine is not held while replaying (docs/replay-gate.md §3.6, decided 2026-10-24),
-/// so the first replayed hand-over's `simulate` starts the engine's session and runs it to Java's
-/// present (`advance_to`), before the later hand-overs' records arrive. Those records are then
-/// taken at `max(t.at, present)`: the day-3 load's reconcile is re-derived at the present with
-/// another content and another op id. Fails on bc669502.
+/// A replay of several hand-overs (8,000 filler records after the pages, a minimum-size buffer).
+/// On bc669502 the industry engine was not held while replaying, so the first replayed
+/// hand-over's `simulate` started the engine's session and ran it to Java's present
+/// (`advance_to`) before the later hand-overs' records arrived; those were then taken at
+/// `max(t.at, present)` and the day-3 load's reconcile was re-derived at the present with another
+/// content and another op id (RP-263). Held while replaying (RP-274), every replayed record is
+/// taken at its own tick: the same reconciles under the same op ids.
 #[test]
-#[ignore = "slice R: a replay of several hand-overs runs the industry engine to the present after the first (RP-263)"]
 fn a_replay_of_several_hand_overs_rederives_the_same_op_ids() {
     let b = behind_the_save(
         "ind-ids-many",
@@ -1745,7 +1745,11 @@ fn exchange_behind_the_save(tag: &str, filler: usize, capacity: usize) -> Exchan
     };
     let before: Vec<u64> = exchanges(&j, paged)
         .into_iter()
-        .filter(|op| j.mc().applied_ops().contains(&rtsim_kernel::journal::OpId(*op)))
+        .filter(|op| {
+            j.mc()
+                .applied_ops()
+                .contains(&rtsim_kernel::journal::OpId(*op))
+        })
         .collect();
     let jsave = j.world_save();
     let msave = j.mc().saved();
@@ -1798,15 +1802,19 @@ fn a_station_exchange_replayed_in_one_hand_over_is_applied_once() {
     assert_eq!(b.replay_handovers, 1, "a replay of one hand-over");
     assert_eq!(b.after, b.before, "re-derived under its op id");
     assert_eq!(b.applied_again, 0, "never applied twice");
-    assert_eq!(b.cargo_again, b.cargo_live, "the trains hold what they held");
+    assert_eq!(
+        b.cargo_again, b.cargo_live,
+        "the trains hold what they held"
+    );
 }
 
 /// The double (slice R step 2): over a replay of several hand-overs, the first one's `simulate`
 /// runs the industry engine to the present, the train's call is taken at the present and the
 /// exchange re-derived under a new op id, which Java's op-id guard (the only guard a carriage
-/// delta has) does not know: the world loads the train a second time.
+/// delta has) does not know: the world loads the train a second time (on bc669502: 224 ore live,
+/// 448 after the restart). Held while replaying (RP-274), with the exchange named by its train
+/// and its call's tick (RP-270, RP-272): the same op, answered DUPLICATE, loaded once.
 #[test]
-#[ignore = "slice R: a replay of several hand-overs re-derives a station exchange under a new op id and the world loads the train twice"]
 fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
     let b = exchange_behind_the_save("ind-exch-many", 8_000, rtsim_jni::wire::MIN_CAPACITY);
     assert_eq!(b.before.len(), 1, "one exchange before the save");
@@ -1816,6 +1824,9 @@ fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
         b.replay_handovers
     );
     assert_eq!(b.applied_again, 0, "never applied twice");
-    assert_eq!(b.cargo_again, b.cargo_live, "the trains hold what they held");
+    assert_eq!(
+        b.cargo_again, b.cargo_live,
+        "the trains hold what they held"
+    );
     assert_eq!(b.after, b.before, "re-derived under its op id");
 }

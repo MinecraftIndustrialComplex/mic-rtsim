@@ -300,6 +300,49 @@ fn place_of(topo: &rtsim_space::Topologies, d: &District, at: Tick) -> Option<At
     Some(At::new(at.0, d.dim, x, z))
 }
 
+/// What names a command for its op id, with the tick of the decision ([`Engine::decided`];
+/// docs/choices-mowzie-build.md RP-272). Java guards an IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA,
+/// IND_WRITE_PACKAGE and IND_WRITE_CHAIN by its op id alone, so one of those decided again after
+/// a crash must carry the op it carried live, or the world applies it a second time. Its amounts
+/// can differ when it is decided again: the replay has none of the latest-wins records the live
+/// run had, and takes a record a full hand-over left for the next one at its own tick where the
+/// live run took it at the step's (RP-262). So the amounts are left out, and what it changes (the
+/// train, the deposit, the postbox's good, the frogport's good) and the tick name it: decided
+/// again, it meets the op Java applied and is answered DUPLICATE, so the live change stands,
+/// applied once (lose, never double). A chunk reconcile keeps its whole content: Java's chunk
+/// epoch guards it whatever its op, and its epoch and deltas tell two rounds apart.
+fn op_key(c: &Cmd) -> Cmd {
+    let marks = |g: &GoodVec| GoodVec::from_pairs(g.goods().map(|g| (g, 1)));
+    match c {
+        Cmd::ChunkReconcile(_) | Cmd::ProbeSet(_) | Cmd::CountSet(_) | Cmd::HeldDraw(_) => {
+            c.without_op()
+        }
+        Cmd::CarriageDelta(x) => Cmd::CarriageDelta(CarriageDelta {
+            op: OpId(0),
+            train: x.train,
+            reason: x.reason,
+            entries: Vec::new(),
+        }),
+        Cmd::DepositDelta(x) => Cmd::DepositDelta(DepositDelta {
+            op: OpId(0),
+            delta: 0,
+            ..*x
+        }),
+        Cmd::WritePackage(x) => Cmd::WritePackage(WritePackage {
+            op: OpId(0),
+            count: 0,
+            goods: marks(&x.goods),
+            ..x.clone()
+        }),
+        Cmd::WriteChain(x) => Cmd::WriteChain(WriteChain {
+            op: OpId(0),
+            count: 0,
+            goods: marks(&x.goods),
+            ..x.clone()
+        }),
+    }
+}
+
 /// Items in `v` by absolute amount, for an archive magnitude: fluids, energy and deposits are not
 /// items. A good the dictionary does not know counts as one.
 fn item_count(goods: &BTreeMap<Good, GoodInfo>, v: &GoodVec) -> i64 {
@@ -364,6 +407,15 @@ pub struct Engine {
     ops: IndustryOps,
     out: Vec<Cmd>,
     now: Tick,
+    /// The tick of the decision the engine makes now, or made last: a record's own time (`t.at`,
+    /// even when the record is older than `now`), a breakpoint's, a wake's, a raid's, a session
+    /// start's. Every op id derives with it, never with `now` (docs/choices-mowzie-build.md
+    /// RP-270): `now` follows the history of calls, which a replay after a crash does not repeat
+    /// (a record the live run took late, at the step's time, is replayed at its own). A coverage
+    /// flush derives with the tick of the decision that marked it, which is this one: a
+    /// breakpoint's and a wake's marks are flushed at their own ticks, a record's at the next
+    /// record's or the step's (RP-271). Not saved: a restore starts at `now`.
+    decided: Tick,
     pub stats: Stats,
     pub books: Books,
     pub log: std::collections::VecDeque<EngineEvent>,
@@ -523,6 +575,7 @@ impl Engine {
             ops: IndustryOps::default(),
             out: Vec::new(),
             now,
+            decided: now,
             stats: Stats::default(),
             books: Books::default(),
             log: std::collections::VecDeque::new(),
@@ -761,6 +814,7 @@ impl Engine {
     /// unloaded until its chunks report in.
     pub fn session_start(&mut self, at: Tick) {
         self.advance_to(at);
+        self.decided = at;
         self.sent_this_session.clear();
         // Asks of the session before may be lost with it: asked again as they come due.
         self.draws_asked.clear();
@@ -801,13 +855,20 @@ impl Engine {
             let limit = next.unwrap_or(to);
             while let Some((at, h)) = self.clusters.next_due(limit) {
                 self.stats.breakpoints += 1;
+                self.decided = at;
                 self.after_cluster(h, at);
                 // A part's new rows reach the replays on its shared networks at the same tick.
+                self.drain_networks(at);
+                // The coverage it changed settles at its own tick, as a wake's does: left for the
+                // next flush, it would settle at the step's time live and at the next record's
+                // in a replay, which differ (docs/choices-mowzie-build.md RP-271).
+                self.flush_dirty(at);
                 self.drain_networks(at);
             }
             match next {
                 Some(t) => {
                     self.now = self.now.max(t);
+                    self.decided = t;
                     // On a tie a hold ends (or pollution is pushed) before an attack lands.
                     if next_h == Some(t) {
                         let (key, wake) = self.wakes.pop_first().expect("peeked");
@@ -848,6 +909,9 @@ impl Engine {
             self.drain_networks(now);
         }
         self.fire_until(at);
+        // The record's decisions derive their op ids with its own time: a replay takes it at
+        // `t.at`, while a live run may have taken it later (RP-262, RP-270).
+        self.decided = t.at;
         self.stats.observations += 1;
         match &t.obs {
             Obs::Glass(g) => self.glass_obs(at, g),
@@ -2292,7 +2356,7 @@ impl Engine {
                     count: count as u32,
                     goods: GoodVec::from_pairs([(g, each)]),
                 });
-                let op = self.ops.derive(self.world_seed, at, &c);
+                let op = self.ops.derive(self.world_seed, at, &op_key(&c));
                 c.set_op(op);
                 self.out.push(c);
                 self.stats.chain_writes += 1;
@@ -3033,7 +3097,8 @@ impl Engine {
             count: count as u32,
             goods: GoodVec::from_pairs([(g, batch)]),
         });
-        c.set_op(self.ops.derive(self.world_seed, at, &c));
+        // The packages' own tick in the replay, keyed by the postbox and good (RP-272).
+        c.set_op(self.ops.derive(self.world_seed, at, &op_key(&c)));
         self.out.push(c);
     }
 
@@ -3321,8 +3386,9 @@ impl Engine {
             unplaced: rest,
             ..ReconcileReport::default()
         };
+        // With the round's own tick, never `now` (RP-270), and keyed by the deposit (RP-272).
         for mut c in immediate {
-            c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+            c.set_op(self.ops.derive(self.world_seed, self.decided, &op_key(&c)));
             self.out.push(c);
         }
         let chunks: BTreeSet<ChunkPos> = by_chunk.keys().chain(destroys.keys()).copied().collect();
@@ -3342,9 +3408,11 @@ impl Engine {
                 deltas,
                 destroy,
             };
-            cmd.op = self
-                .ops
-                .derive(self.world_seed, self.now, &Cmd::ChunkReconcile(cmd.clone()));
+            cmd.op = self.ops.derive(
+                self.world_seed,
+                self.decided,
+                &Cmd::ChunkReconcile(cmd.clone()),
+            );
             dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
                 cmd,
@@ -3657,9 +3725,11 @@ impl Engine {
                 deltas,
                 destroy: Vec::new(),
             };
-            cmd.op = self
-                .ops
-                .derive(self.world_seed, self.now, &Cmd::ChunkReconcile(cmd.clone()));
+            cmd.op = self.ops.derive(
+                self.world_seed,
+                self.decided,
+                &Cmd::ChunkReconcile(cmd.clone()),
+            );
             dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
                 cmd,
@@ -3893,7 +3963,13 @@ impl Engine {
             reason: CarriageReason::Exchange,
             entries: entries.clone(),
         });
-        let op = self.ops.derive(self.world_seed, self.now, &cmd);
+        // Named by the train and the call's own tick, never by `now` or the entries (RP-270,
+        // RP-272): decided again after a crash, it is the op Java applied, which Java answers
+        // DUPLICATE, whatever the ports hold by then; the replayed IND_CARRIAGE_RESULT, if any,
+        // settles the books against what this decision booked (`carriage_result`).
+        let op = self
+            .ops
+            .derive(self.world_seed, self.decided, &op_key(&cmd));
         cmd.set_op(op);
         self.exchanges.insert(
             op,
@@ -3967,11 +4043,18 @@ impl Engine {
             }
             return;
         }
-        // What the district gave or got differs from what was asked: correct its stock.
+        // What the district gave or got differs from what this exchange booked: correct its
+        // stock. The booking is the exchange's own request, not the result's: a call decided
+        // again after a crash keeps the op of the live call (RP-272), and the live application's
+        // result, replayed, may answer another request (the replay's ports held something else),
+        // so the world's change, `applied`, settles what the replay booked (RP-273).
         let mut fix = GoodVec::new();
-        for e in &r.entries {
+        for &(_, good, requested) in &ex.entries {
             // Into the carriage: the district's change is the negative.
-            fix.add(e.good, e.requested - e.applied);
+            fix.add(good, requested);
+        }
+        for e in &r.entries {
+            fix.add(e.good, -e.applied);
         }
         if fix.is_empty() {
             return;
@@ -4771,7 +4854,7 @@ impl Engine {
                 good: g,
                 delta,
             });
-            c.set_op(self.ops.derive(self.world_seed, at, &c));
+            c.set_op(self.ops.derive(self.world_seed, at, &op_key(&c)));
             self.out.push(c);
             self.stats.pollution_pushes += 1;
         }
@@ -4892,6 +4975,9 @@ impl Engine {
     fn threat_with(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let at = t.at.max(self.now);
         self.advance_to(at);
+        // The raid is decided at the threat's own tick, which the module that sent it chose; the
+        // engine's clock, which it may find past that, only moves (RP-270).
+        self.decided = t.at;
         let t = Threat { at, ..*t };
         match t.target {
             ThreatTarget::District(_) => self.attack_district(&t, fuels, room, in_sight),
@@ -6175,6 +6261,7 @@ mod persist_impls {
             e.ops = Persist::get(&mut r)?;
             e.out = Persist::get(&mut r)?;
             e.now = Persist::get(&mut r)?;
+            e.decided = e.now;
             e.stats = Persist::get(&mut r)?;
             e.books = Persist::get(&mut r)?;
             e.log_enabled = Persist::get(&mut r)?;
