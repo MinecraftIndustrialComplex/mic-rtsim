@@ -25,8 +25,17 @@ import java.util.function.IntUnaryOperator;
  * the body kind ({@code mic_rtsim_ribbits} registers {@code ribbits:ribbit}), at the resident slot of a
  * house the sim placed or at a given position. Residents are ordinary entities saved by vanilla (C2),
  * so exactly-once rests on the op id: the journal while it remembers the result, and after that the
- * spawn chunk and the resident itself, which both carry the COMMAND_RESULT until the engine has it.
- * Each spawn counts against the per-tick spawn quota.
+ * spawn chunk and the resident itself, which both carry the COMMAND_RESULT until the engine has it, and
+ * the journal's next file waits for both (the resident is noted by holder, as a camp body is).
+ *
+ * <p>The resident's entity section is written apart from its chunk, so it can be on disk while the spawn
+ * chunk and the journal are from before (docs/choices-journal-barrier.md RP-212). An order, resent or kept
+ * in the villages, then waits until the entities around the spawn point are loaded: a resident that loads
+ * reasserts its record, and the order is answered DUPLICATE_OP in that tick, whatever its next try, since
+ * the journal forgets the op again once the engine acknowledges the copy. As a backstop the resident's
+ * UUID is a function of the engine's life and the op, so one the level still knows (hidden too) answers
+ * DUPLICATE_OP, and one that loads later than its second is refused by vanilla as a known UUID: a lost
+ * resident, never two. Each spawn counts against the per-tick spawn quota.
  */
 public final class ResidentSpawner {
     /** Ticks between tries while the house or the chunk is not ready (PLACEHOLDER). */
@@ -60,6 +69,12 @@ public final class ResidentSpawner {
         if (villages.residentOrders.isEmpty())
             return;
         for (VillageRegistry.ResidentOrder o : new ArrayList<>(villages.residentOrders.values())) {
+            // Every tick, not at the next try: a resident that loaded this tick reasserted its record before this
+            // runs, and the journal forgets the op again once the engine acknowledges the copy (RP-212).
+            if (session.boundary().journal().commandOpApplied(o.op)) {
+                finish(o, Obs.CommandResult.DUPLICATE_OP, null, null, now);
+                continue;
+            }
             if (now < o.nextTry)
                 continue;
             if (budget.getAsInt() <= 0)
@@ -112,6 +127,17 @@ public final class ResidentSpawner {
             finish(o, Obs.CommandResult.DUPLICATE_OP, chunk, null, now);
             return;
         }
+        // A resident saved ahead of the spawn chunk loads with its entity section, which can come after the chunk
+        // is entity-ticking; it may stand in any chunk standNear reaches.
+        if (!entitiesLoadedAround(level, pos)) {
+            o.nextTry = now + RETRY_TICKS;
+            return;
+        }
+        java.util.UUID id = residentId(o.op);
+        if (((com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor) level).mic_rtsim$entityManager().isLoaded(id)) {
+            finish(o, Obs.CommandResult.DUPLICATE_OP, chunk, null, now);
+            return;
+        }
         Residents.Factory factory = Residents.factory(o.body);
         Entity e = factory == null ? null : factory.create(level, at, o.profession);
         if (e == null) {
@@ -123,6 +149,7 @@ public final class ResidentSpawner {
             standNear(level, e, pos);
         if (e instanceof Mob mob)
             mob.setPersistenceRequired();
+        e.setUUID(id);
         if (!level.addFreshEntity(e)) {
             finish(o, Obs.CommandResult.FAILED, null, null, now);
             return;
@@ -130,6 +157,27 @@ public final class ResidentSpawner {
         spend.applyAsInt(1);
         spawned++;
         finish(o, Obs.CommandResult.APPLIED, chunk, e, now);
+    }
+
+    /** How far {@link #standNear} may move a resident from its spawn point, in blocks along x or z. */
+    static final int REACH = 5;
+
+    /** Whether the entities of every chunk within {@link #REACH} of {@code pos} are loaded. */
+    static boolean entitiesLoadedAround(ServerLevel level, BlockPos pos) {
+        for (int cx = (pos.getX() - REACH) >> 4; cx <= (pos.getX() + REACH) >> 4; cx++)
+            for (int cz = (pos.getZ() - REACH) >> 4; cz <= (pos.getZ() + REACH) >> 4; cz++)
+                if (!level.areEntitiesLoaded(net.minecraft.world.level.ChunkPos.asLong(cx, cz)))
+                    return false;
+        return true;
+    }
+
+    /**
+     * The resident's UUID: one per op in an engine's life (RP-212), so a second spawn of the op meets the first
+     * as a known UUID. A new engine life numbers its ops afresh, and its residents get other UUIDs.
+     */
+    java.util.UUID residentId(long op) {
+        return java.util.UUID.nameUUIDFromBytes(("mic_rtsim:resident:" + session.engineLife() + ":" + op)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /** Around a meeting point: the ground of each column, nearest first (PLACEHOLDER offsets). */
@@ -170,7 +218,7 @@ public final class ResidentSpawner {
         if (status == Obs.CommandResult.APPLIED && chunk != null) {
             session.carryResultInChunk(chunk, r);
             if (resident != null)
-                session.carryOnEntity(resident, List.of(r.array()), r.getLong(Obs.OBS_SEQ));
+                session.carryOnHolder(resident, List.of(r.array()), r.getLong(Obs.OBS_SEQ));
         }
     }
 }
