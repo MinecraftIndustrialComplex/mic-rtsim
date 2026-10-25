@@ -830,8 +830,9 @@ floor sits under the wrap rule, so a floor above the herd's own epoch survives i
 still lands on 1. `seen` spends the floor (`floors.remove`) when it decides. At `replay_done`, with
 every group abstract, each floor folds into its herd's epoch; the floor of an agent with no herd yet
 stays in the map for that agent's first group (the conservative reading; the map is in memory only).
-rtsim-jni folds a record that decodes before its switched-off check, so the herds off for a session
-still raise the floor; a record that does not decode names no epoch and raises none.
+rtsim-jni folds every record that decodes before its switched-off check, so the herds off for a session,
+or on with no herd yet (their replay begins at the first one), still raise the floor; a record that
+does not decode names no epoch and raises none.
 
 **Restarts (the fix round's item 2).** The floors and the fill's deaths (§5.2) are in memory only.
 Outside a replay both are empty, but for a floor raised live: `replay_done` folds every floor into
@@ -907,10 +908,11 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   matches a body, and a copy's body is gone (RP-8). A copied KILLED or TAKEN has no epoch check, so
   a copy for epoch 4 can remove a member of a live epoch-5 group: accepted as §10 item 3, the group's
   count one fewer than its bodies until its next despawn. Those three kinds, and the honour of
-  §5.2, act only on a herd that existed when the session's replay began (`Herds::replay_bound`,
-  the herd arena's next index then, RP-84): nothing founds a herd while replaying, and a herd
-  founded after the replay end, on a handle the last session used for another herd, is not the
-  one a copy names (such a copy counts late; its floor still counts).
+  §5.2, act only on a herd that existed when the session began (`Herds::replay_bound`, the herd
+  arena's next index at the herds' `session_start`, whether or not they run; `begin_replay` only
+  lowers it, RP-84): nothing founds a herd while replaying, and a herd founded after, on a handle
+  the last session used for another herd (the pages lack what it founded after its last save), is
+  not the one a copy names (such a copy counts late; its floor still counts).
 - **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
 
 ### 5.8 The DEPART trap (RP-16)
@@ -1416,9 +1418,16 @@ Tests (rtsim-jni tests/protocol.rs `mod herds`, with the engine's in rtsim-ecolo
 9. The herd's own epoch: `a_replayed_materialization_at_or_below_the_herds_own_epoch_is_not_honoured`
    (rtsim-ecology, controls inside).
 10. Handles: `a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place`
-    (rtsim-jni). Control: `a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding`. The
-    engine's: `a_copy_for_a_herd_founded_after_the_replay_began_lands_on_nothing`,
+    (rtsim-jni). Control: `a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding`. Also
+    after a switch-on (`a_switch_on_after_a_founding_does_not_make_the_new_herd_one_the_last_session_had`)
+    and with no herd at the session start
+    (`a_copy_for_a_herd_the_session_began_without_does_not_land_on_its_first_herd`, control
+    `a_copy_for_a_herd_the_session_began_with_lands_on_it`). The engine's:
+    `a_copy_for_a_herd_founded_after_the_session_began_lands_on_nothing`,
+    `an_engine_with_no_herd_at_the_session_start_takes_no_copy_for_its_first_herd`,
     `a_herd_founded_in_the_replay_window_is_not_honoured`.
+11. Floors with no herd: `an_epoch_replayed_with_no_herd_yet_is_not_decided_again_for_the_first_herd`.
+    Control: `an_epoch_replayed_with_the_herd_in_the_pages_is_not_decided_again`.
 
 GameTests: `neoforge/gametest.sh core` (HerdGameTests).
 

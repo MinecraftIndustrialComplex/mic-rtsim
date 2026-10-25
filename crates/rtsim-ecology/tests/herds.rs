@@ -1372,39 +1372,106 @@ fn late_flock() -> NewHerd {
     }
 }
 
-/// RP-84: the herds the last session's records can name are the ones that existed when the
-/// replay began. A herd founded after it takes a new handle index, which may be another herd than
+/// Whether a copy of a HERD_KILLED (`kind` 4) or HERD_TAKEN (6) naming `agent` lands on its herd
+/// (it counts) or counts late.
+fn a_copy_lands(r: &mut Rig, agent: u64, kind: usize, at: Tick) -> bool {
+    let books = |r: &Rig| (r.h.stats.killed + r.h.stats.taken, r.h.stats.late_records);
+    let before = books(r);
+    let (_, o) = records_naming(agent, 1).swap_remove(kind);
+    r.h.ingest_copy(&mut r.legs, &o, at);
+    let after = books(r);
+    match (after.0 - before.0, after.1 - before.1) {
+        (1, 0) => true,
+        (0, 1) => false,
+        d => panic!("a copy neither landed nor counted late: {d:?}"),
+    }
+}
+
+/// RP-84: the herds the last session's records can name are the ones the engine held when the
+/// session began. A herd founded after it takes a new handle index, which may be another herd than
 /// the last session's under that index (the world model founds in the order the world is
 /// explored), so a copy of a death or a taking for it counts late and changes nothing; the same
-/// copy for the flock, which the replay began with, lands. Before, both landed.
+/// copy for the flock, which the session began with, lands. Whenever the replay begins (the host
+/// begins it at the first herd or a switch-on, not at the session start) the bound stays the
+/// session's: the herd is founded after the replay end, before the replay begins, or before a
+/// switch-on's second `begin_replay`. Before, the bound was taken at `begin_replay`, so the last
+/// two orderings landed.
 #[test]
-fn a_copy_for_a_herd_founded_after_the_replay_began_lands_on_nothing() {
+fn a_copy_for_a_herd_founded_after_the_session_began_lands_on_nothing() {
     let now = Tick::from_days(12);
     for (name, kind) in [("HERD_KILLED", 4), ("HERD_TAKEN", 6)] {
-        let mut r = Rig::valley(5);
-        let f = flock(&r);
-        r.run(now, 2_000, None);
-        r.h.begin_replay(true);
-        r.h.replay_done(&mut r.legs, now);
-        let late = r.h.add_herd(late_flock(), now);
-        assert_ne!(agent_of(late), agent_of(f));
-        let books = |r: &Rig| (r.h.stats.killed + r.h.stats.taken, r.h.stats.late_records);
-        let (_, o) = records_naming(agent_of(late), 1).swap_remove(kind);
-        let before = books(&r);
-        r.h.ingest_copy(&mut r.legs, &o, now);
-        assert_eq!(
-            books(&r),
-            (before.0, before.1 + 1),
-            "{name} for the late flock counts late and changes nothing"
-        );
-        let (_, o) = records_naming(agent_of(f), 1).swap_remove(kind);
-        r.h.ingest_copy(&mut r.legs, &o, now);
-        assert_eq!(
-            books(&r),
-            (before.0 + 1, before.1 + 1),
-            "{name} for the flock lands"
-        );
-        r.h.check(now).unwrap();
+        for when in [
+            "after the replay end",
+            "before the replay begins",
+            "before a switch-on",
+        ] {
+            let mut r = Rig::valley(5);
+            let f = flock(&r);
+            r.run(now, 2_000, None);
+            r.h.begin_session();
+            let late = if when == "before the replay begins" {
+                let late = r.h.add_herd(late_flock(), now);
+                r.h.begin_replay(true);
+                r.h.replay_done(&mut r.legs, now);
+                late
+            } else {
+                r.h.begin_replay(true);
+                r.h.replay_done(&mut r.legs, now);
+                let late = r.h.add_herd(late_flock(), now);
+                if when == "before a switch-on" {
+                    // MODULES off and on: the replay begins again, and ends at once.
+                    r.h.begin_replay(false);
+                    r.h.replay_done(&mut r.legs, now);
+                }
+                late
+            };
+            assert_ne!(agent_of(late), agent_of(f));
+            assert!(
+                !a_copy_lands(&mut r, agent_of(late), kind, now),
+                "{name} for the late flock, founded {when}, counts late"
+            );
+            assert!(
+                a_copy_lands(&mut r, agent_of(f), kind, now),
+                "{name} for the flock, founded {when}, lands"
+            );
+            r.h.check(now).unwrap();
+        }
+    }
+}
+
+/// RP-84: an engine with no herd at the session start (a fresh world after a crash, pages
+/// dropped) never begins its replay at the session start (the host runs it at the first herd), so
+/// the bound is the session's, not the replay's: its first herd, founded after the replay end on
+/// handle 0, takes no copy for the last session's herd 0. Control: a herd it held at the session
+/// start does.
+#[test]
+fn an_engine_with_no_herd_at_the_session_start_takes_no_copy_for_its_first_herd() {
+    let now = Tick::from_days(12);
+    for (name, kind) in [("HERD_KILLED", 4), ("HERD_TAKEN", 6)] {
+        for held in [false, true] {
+            let tun = HerdTunables::default();
+            let mut r = Rig {
+                legs: legs(),
+                h: Herds::new(5, tun, Box::new(Valley::default()), now),
+                fake: FakeHerds::default(),
+            };
+            let first = if held {
+                let first = r.h.add_herd(late_flock(), now);
+                r.h.begin_session();
+                first
+            } else {
+                r.h.begin_session();
+                r.h.add_herd(late_flock(), now)
+            };
+            r.h.begin_replay(true);
+            r.h.replay_done(&mut r.legs, now);
+            assert_eq!(
+                a_copy_lands(&mut r, agent_of(first), kind, now),
+                held,
+                "{name} for the first herd, held at the session start: {held}"
+            );
+            r.h.check(now).unwrap();
+        }
     }
 }
 
@@ -1417,6 +1484,7 @@ fn a_herd_founded_in_the_replay_window_is_not_honoured() {
     let mut r = Rig::valley(5);
     let f = flock(&r);
     r.run(now, 2_000, None);
+    r.h.begin_session();
     r.h.begin_replay(true);
     let late = r.h.add_herd(late_flock(), now);
     let (_, m) = records_naming(agent_of(late), 1).swap_remove(1);
