@@ -8,8 +8,16 @@
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::engine::{Phase, SlotState};
-use rtsim_conflict::synth::CampRun;
+use rtsim_conflict::synth::{self, CampRun};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+
+/// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death, so none
+/// repeats another's op.
+fn next_op() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    (1 << 63) | (N.fetch_add(1, Ordering::Relaxed) + 1)
+}
 
 fn days(d: f64) -> u64 {
     (d * TICKS_PER_DAY as f64) as u64
@@ -23,8 +31,10 @@ fn grove(seed: u64, found: u16) -> CampRun {
     CampRun::new(seed, "umvuthana", found)
 }
 
+/// The Frostmaw's den refilling by rate (MZB-286): the renewal is the Frostmaw's own, and M6's
+/// tests (`tests/frostmaw.rs`) play it; these are M4's, of the refill path.
 fn den(seed: u64, found: u16) -> CampRun {
-    CampRun::new(seed, "frostmaw", found)
+    CampRun::with_cultures(seed, synth::rate_den_cultures(), "frostmaw", found)
 }
 
 /// Slots by state: body, owed, left, gone, dead.
@@ -389,6 +399,70 @@ fn a_member_whose_body_is_missed_three_times_over_two_days_is_written_off() {
     ok(&mut r);
 }
 
+/// The bodies of a camp after a sim reset (MZB-653): `total` bodies standing, the last `away` of them
+/// loaded outside the footprint, each tagged with a slot and a generation of the engine's earlier life
+/// (generations 900 and up, which no slot of this engine holds). `grove(_, found)` has made `found` of
+/// them; the rest are added.
+fn old_life_bodies(r: &mut CampRun, total: usize, away: usize) {
+    let (key, body) = (r.key, r.body);
+    while r.plugin.camp_world(key).bodies.len() < total {
+        r.plugin.camp_stray(key, body);
+    }
+    let bodies = &mut r.plugin.camp_world(key).bodies;
+    let n = bodies.len();
+    for (i, b) in bodies.iter_mut().enumerate() {
+        b.slot = i as u32 + 1;
+        b.generation = 900 + i as u32;
+        b.elsewhere = i >= n - away;
+    }
+}
+
+/// MZB-653, M5 merge review P2: after a sim reset a grove of 6 with 4 of its bodies loaded away is found by
+/// Java with the bodies away counted in its home size (they used to be listed ELSEWHERE and left out of the
+/// count). The cap is the grove's 6, the census's tags are an earlier life's (no slot holds them), and every
+/// body is adopted into a fresh slot: the emulated plugin retags a tagged body as Java's `Camps.adopt` does
+/// (MZB-654). Before the emulator matched Java the adopt of a tagged body was NOTHING and the bodies kept
+/// their old tags.
+#[test]
+fn a_grove_found_after_a_reset_with_bodies_away_adopts_them_all() {
+    let mut r = grove(61, 6);
+    old_life_bodies(&mut r, 6, 4);
+    assert_eq!(r.c.factions[r.f as usize].cap, 6, "found at its full size");
+    come_in(&mut r);
+    assert_eq!(applied(&r, boundary::ACTION_ADOPT), 6);
+    assert_eq!(answered(&r, boundary::LINE_DONE), 6, "every adopt lands");
+    assert_eq!(
+        applied(&r, boundary::ACTION_REMOVE),
+        0,
+        "nothing is above the cap"
+    );
+    assert_eq!(counts(&r), [6, 0, 0, 0, 0]);
+    assert_eq!(world_bodies(&r), 6);
+    let old = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| (900..906).contains(&b.generation))
+        .count();
+    assert_eq!(old, 0, "no body keeps its old life's tag");
+    assert_eq!(tagged_bodies(&r), 6);
+    ok(&mut r);
+}
+
+/// The same bodies found at the size Java used to send (the footprint's 2, the 4 away left out) show the
+/// fault MZB-653 fixed on Java's side: the cap is 2, two are adopted and the 4 away are removed when they
+/// load. Kept to show what the home count decides; Java no longer sends it.
+#[test]
+fn a_grove_found_short_of_its_bodies_away_removes_them_above_the_cap() {
+    let mut r = grove(62, 2);
+    old_life_bodies(&mut r, 6, 4);
+    assert_eq!(r.c.factions[r.f as usize].cap, 2);
+    come_in(&mut r);
+    assert_eq!(applied(&r, boundary::ACTION_ADOPT), 2);
+    assert_eq!(applied(&r, boundary::ACTION_REMOVE), 4);
+    assert_eq!(world_bodies(&r), 2);
+    ok(&mut r);
+}
+
 // ---- deaths ------------------------------------------------------------------------------------
 
 /// §4.9, *Deaths*: at home the pool loses a member and the slot's generation is retired at a death:
@@ -736,6 +810,7 @@ fn a_member_lost_on_a_walk_off_books_once_in_the_camp() {
             body,
             count: 1,
             killer: (0, 0),
+            op: next_op(),
         }),
         at,
     );
@@ -2370,6 +2445,7 @@ fn rich_ledger(r: &mut CampRun) {
                 action: 1 + i as u8,
                 op: 0xAB00 + i as u64,
             }),
+            chief: rtsim_kernel::handle::Handle::from_bits(0x1_0000_0000 + i as u64),
         });
     }
     camp.retired = vec![

@@ -315,7 +315,7 @@ fn a_repeat_counts_from_the_arrival_home() {
 /// these 3 days with a wait for half a warrior).
 #[test]
 fn a_pool_short_of_a_whole_warrior_waits_for_it() {
-    let (mut w, mut c, f) = setup_with(23, Cultures::builtin(), "frostmaw");
+    let (mut w, mut c, f) = setup_with(23, synth::rate_den_cultures(), "frostmaw");
     let p = c.player(&mut w, synth::PLAYER);
     let raid = theta(&c, f, Step::Raid);
     kill(&mut c, &mut w, p, 2.0 * raid / 8.0, Tick(10));

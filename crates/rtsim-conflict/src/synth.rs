@@ -63,14 +63,28 @@ pub fn world(seed: u64) -> (World, SynthGoods) {
 /// A conflict engine on the built-in cultures, with the plugin's dictionary as the fake plugin
 /// names things (items by the world's catalogue, bodies by the culture data).
 pub fn conflict(seed: u64, w: &World) -> Conflict {
-    let mut c = Conflict::new(
-        seed,
-        ConflictTunables::default(),
-        Cultures::builtin(),
-        Tick::ZERO,
-    );
+    conflict_with(seed, w, Cultures::builtin())
+}
+
+/// [`conflict`] on the given cultures.
+pub fn conflict_with(seed: u64, w: &World, cultures: Cultures) -> Conflict {
+    let mut c = Conflict::new(seed, ConflictTunables::default(), cultures, Tick::ZERO);
     define_names(&mut c, w);
     c
+}
+
+/// The built-in cultures with the Frostmaw refilling by rate again (MZB-286): the renewal off and
+/// `recruits_per_day` back at 1/6, the rate it had before M6. For the engine tests of the refill
+/// path (a renewal faction with a rate of 0 and no ledger never refills), which the grove still
+/// uses.
+pub fn rate_den_cultures() -> Cultures {
+    let mut cultures = Cultures::builtin();
+    let i = cultures.index_of("frostmaw").expect("the Frostmaw") as usize;
+    let mut def = cultures.list[i].def.clone();
+    def.renewal = None;
+    def.recruits_per_day = 1.0 / 6.0;
+    cultures.list[i] = crate::culture::Culture::resolve(def).expect("a Frostmaw with a rate");
+    cultures
 }
 
 /// Java's dictionary as [`FakeConflict`] uses it: item ids as the engine's, body ids as the
@@ -229,8 +243,12 @@ pub struct Fight {
 struct Body {
     epoch: u32,
     faction: u64,
+    /// The units standing, by body id: what a recall's DEMATERIALIZED names as survivors.
     members: BTreeMap<u32, u32>,
-    chief: bool,
+    /// The war chief's body, if one stands: an extra body of its stack's kind that is no unit of
+    /// the band (MZB-109), so it is never a survivor, and its death is a CHIEF_KILLED alone. Its
+    /// value is the body id.
+    chief: Option<u32>,
 }
 
 /// A body in a camp's world: the jar's own entity, tagged with its slot and generation, or a stray
@@ -244,6 +262,10 @@ pub struct CampBody {
     pub generation: u32,
     /// Loaded outside the footprint (the census's `BODY_ELSEWHERE`).
     pub elsewhere: bool,
+    /// The camp's chief body (a Frostmaw): its death is a `DEATH_CHIEF`.
+    pub chief: bool,
+    /// The chief body's crystal is on it: a steal takes it.
+    pub crystal: bool,
 }
 
 /// A camp as the plugin sees it (MOWZIE.md §4.9, emulated): its epoch while it is in (0 while it
@@ -489,7 +511,7 @@ impl FakeConflict {
                         epoch: e.epoch,
                         faction: e.faction,
                         members: e.members.iter().copied().collect(),
-                        chief: false,
+                        chief: None,
                     },
                 );
                 self.push(
@@ -544,17 +566,31 @@ impl FakeConflict {
                     epoch: m.epoch,
                     faction: m.faction,
                     members: BTreeMap::new(),
-                    chief: false,
+                    chief: None,
                 });
                 if b.epoch != m.epoch {
                     b.epoch = m.epoch;
                     b.members.clear();
-                    b.chief = false;
+                    b.chief = None;
                 }
+                // As Java makes a stack: its count in units, and for the band's chief stack one
+                // body more, the chief (MZB-109; a count of 0 is the chief alone, MZB-127).
                 for s in &m.members {
-                    *b.members.entry(s.body).or_default() += s.count;
+                    if s.count > 0 {
+                        *b.members.entry(s.body).or_default() += s.count;
+                    }
+                    if m.flags & boundary::BAND_CHIEF != 0 && s.flags & boundary::MEMBER_CHIEF != 0
+                    {
+                        b.chief = Some(s.body);
+                    }
                 }
-                b.chief |= m.flags & boundary::BAND_CHIEF != 0;
+                let spawned = m.members.iter().map(|s| s.count).sum::<u32>()
+                    + u32::from(
+                        m.flags & boundary::BAND_CHIEF != 0
+                            && m.members
+                                .iter()
+                                .any(|s| s.flags & boundary::MEMBER_CHIEF != 0),
+                    );
                 self.push(
                     at + 1,
                     Obs::Materialized(boundary::BandMaterialized {
@@ -562,7 +598,7 @@ impl FakeConflict {
                         epoch: m.epoch,
                         dimension: m.dimension,
                         wave: u32::from(m.wave),
-                        spawned: m.members.iter().map(|s| s.count).sum(),
+                        spawned,
                         flags: u32::from(m.flags),
                     }),
                 );
@@ -577,6 +613,9 @@ impl FakeConflict {
                             {
                                 *n = n.saturating_sub(k);
                             }
+                            // Its own op id, as Java commits each (MZB-589): the engine counts a
+                            // repeated op once. A counter, so the sims stay deterministic.
+                            let op = self.op();
                             self.push(
                                 at + f.after,
                                 Obs::Casualties(boundary::BandCasualties {
@@ -586,11 +625,21 @@ impl FakeConflict {
                                     body: s.body,
                                     count: k,
                                     killer: self.player,
+                                    op,
                                 }),
                             );
                         }
                     }
-                    if f.kill_chief && m.flags & boundary::BAND_CHIEF != 0 && m.wave == 0 {
+                    // The chief's body dies: an extra body, no unit of the band (MZB-109), so no
+                    // survivor is lost with it; Java sends CHIEF_KILLED alone (MZB-272).
+                    if f.kill_chief
+                        && m.flags & boundary::BAND_CHIEF != 0
+                        && m.wave == 0
+                        && self
+                            .bodies
+                            .get_mut(&m.agent)
+                            .is_some_and(|b| b.chief.take().is_some())
+                    {
                         let op = self.op();
                         self.push(
                             at + f.after + 20,
@@ -611,6 +660,7 @@ impl FakeConflict {
                 {
                     // Some die on the way out: the first stacks lose them first.
                     let mut dead = self.walk_off_deaths;
+                    // Java's survivors name only bodies with a living member, and never the chief.
                     let survivors = b
                         .members
                         .iter()
@@ -619,6 +669,7 @@ impl FakeConflict {
                             dead -= lost;
                             (k, v - lost)
                         })
+                        .filter(|e| e.1 > 0)
                         .collect();
                     self.push(
                         at + self.leave_ticks,
@@ -693,6 +744,8 @@ impl FakeConflict {
             slot,
             generation,
             elsewhere: false,
+            chief: false,
+            crystal: false,
         });
         uuid
     }
@@ -713,6 +766,17 @@ impl FakeConflict {
         let epoch = self.op();
         let camp = self.camp_world(faction);
         camp.epoch = epoch;
+        // The first chief body says whether its crystal is on it, as Java's census byte does (the
+        // body nearest the spot, MZB-269); each body carries its own bit too (review C).
+        let flags = flags
+            | camp.bodies.iter().find(|b| b.chief).map_or(0, |b| {
+                boundary::CENSUS_CHIEF
+                    | if b.crystal {
+                        boundary::CENSUS_CRYSTAL
+                    } else {
+                        0
+                    }
+            });
         let bodies: Vec<boundary::CensusBody> = camp
             .bodies
             .iter()
@@ -729,7 +793,12 @@ impl FakeConflict {
                     boundary::BODY_ELSEWHERE
                 } else {
                     0
-                }),
+                }) | (if b.chief { boundary::BODY_CHIEF } else { 0 })
+                    | (if b.chief && b.crystal {
+                        boundary::BODY_CRYSTAL
+                    } else {
+                        0
+                    }),
             })
             .collect();
         self.push(
@@ -765,6 +834,26 @@ impl FakeConflict {
         self.camps.get(&faction).is_some_and(|c| c.epoch != 0)
     }
 
+    /// A thief takes the crystal off the camp's chief body (the steal mixin, MZB-276): the body
+    /// stands robbed and CHIEF_STATE with the flag off is on its way at `at`. `false` when the camp
+    /// holds no chief with a crystal.
+    pub fn steal(&mut self, faction: u64, at: Tick) -> bool {
+        let camp = self.camp_world(faction);
+        let Some(b) = camp.bodies.iter_mut().find(|b| b.chief && b.crystal) else {
+            return false;
+        };
+        b.crystal = false;
+        self.push(
+            at,
+            Obs::ChiefState(boundary::ChiefState {
+                faction,
+                flags: 0,
+                health: 100.0,
+            }),
+        );
+        true
+    }
+
     /// A body of the camp died, or was carried off (`by`): gone from the world, and a CAMP_DEATH
     /// at `at`. `false` when the camp holds no such body.
     pub fn camp_kill(&mut self, faction: u64, uuid: Uuid, by: u32, at: Tick) -> bool {
@@ -778,11 +867,11 @@ impl FakeConflict {
             faction,
             by,
             body: b.body,
-            flags: if b.generation == 0 {
+            flags: (if b.generation == 0 {
                 boundary::DEATH_STRAY
             } else {
                 0
-            },
+            }) | (if b.chief { boundary::DEATH_CHIEF } else { 0 }),
             slot: b.slot,
             generation: b.generation,
             killer: if by == boundary::BY_PLAYER {
@@ -972,14 +1061,19 @@ impl FakeConflict {
                     slot: l.slot,
                     generation: l.generation,
                     elsewhere: false,
+                    chief: l.flags & boundary::LINE_CHIEF != 0,
+                    crystal: l.flags & boundary::LINE_CRYSTAL != 0,
                 });
                 LINE_DONE
             }
+            // Java's `Camps.adopt` takes a stray or a body of the camp's own faction, whatever tag it
+            // carries (it unhooks the old tag and sets the slot's): a body tagged with a generation no
+            // slot holds, as a sim reset leaves them, is retagged here too (MZB-654).
             ACTION_ADOPT => {
                 match camp
                     .bodies
                     .iter_mut()
-                    .find(|b| b.generation == 0 && (b.uuid.0, b.uuid.1) == (l.a, l.b))
+                    .find(|b| (b.uuid.0, b.uuid.1) == (l.a, l.b))
                 {
                     Some(b) => {
                         b.slot = l.slot;
@@ -1111,6 +1205,9 @@ pub struct CampRun {
     /// Whether the chaos run checks the books after each event (off, it checks nothing until
     /// asked: the run to compare with, for an audit that must change nothing).
     pub audits: bool,
+    /// The infrastructure the run's engine acts on (none by default: a raid is skipped). A test
+    /// puts walls here to have a raid on a district fought abstractly (MZB-266).
+    pub infra: Box<dyn rtsim_ecology::infra::Infrastructure>,
     /// What the chaos run did, with when: for a failure's report.
     pub events: Vec<(Tick, String)>,
     next_obs: Tick,
@@ -1120,8 +1217,23 @@ impl CampRun {
     /// A camp of `culture` (`frostmaw` or `umvuthana`) found with `found` of its own bodies
     /// standing in it, at the first tick. The camp is out: nothing has loaded its chunks yet.
     pub fn new(seed: u64, culture: &str, found: u16) -> CampRun {
+        CampRun::with_cultures(seed, Cultures::builtin(), culture, found)
+    }
+
+    /// [`CampRun::new`] on the given cultures.
+    pub fn with_cultures(seed: u64, cultures: Cultures, culture: &str, found: u16) -> CampRun {
+        CampRun::found(seed, cultures, culture, found, false)
+    }
+
+    /// [`CampRun::new`] with its chief found already robbed of its crystal (the census byte says
+    /// so, MZB-257).
+    pub fn robbed(seed: u64, culture: &str, found: u16) -> CampRun {
+        CampRun::found(seed, Cultures::builtin(), culture, found, true)
+    }
+
+    fn found(seed: u64, cultures: Cultures, culture: &str, found: u16, robbed: bool) -> CampRun {
         let (mut w, _) = world(seed);
-        let mut c = conflict(seed, &w);
+        let mut c = conflict_with(seed, &w, cultures);
         let ci = c.cultures.index_of(culture).expect("a built-in culture");
         let structure = c.cultures.get(ci).def.structures[0].clone();
         c.define(4, CAMP_STRUCTURE, &structure);
@@ -1142,6 +1254,23 @@ impl CampRun {
         for _ in 0..found {
             plugin.camp_stray(key, body);
         }
+        // A chief's unit (one with a row of its own without its crystal) found in its camp is the
+        // jar's chief, crystal on it: the census byte says so (MZB-257, MZB-272).
+        let chief = {
+            let cu = c.cultures.get(ci);
+            let u = [
+                crate::culture::PartyKind::Raid,
+                crate::culture::PartyKind::Invasion,
+            ]
+            .into_iter()
+            .find_map(|k| cu.parties[k.index()].first().map(|u| u.0))
+            .expect("a war party");
+            cu.bare[usize::from(u)] != u && found > 0
+        };
+        if chief && let Some(b) = plugin.camp_world(key).bodies.first_mut() {
+            b.chief = true;
+            b.crystal = !robbed;
+        }
         c.ingest(
             &mut w,
             &mut rtsim_ecology::infra::NoInfrastructure,
@@ -1152,7 +1281,12 @@ impl CampRun {
                 structure: CAMP_STRUCTURE,
                 pos: (CAMP_POS.x, 64, CAMP_POS.z),
                 home_bodies: found,
-                census: 0,
+                census: if chief {
+                    (boundary::CENSUS_CHIEF | if robbed { 0 } else { boundary::CENSUS_CRYSTAL })
+                        as u8
+                } else {
+                    0
+                },
             }),
             Tick(1),
         );
@@ -1174,6 +1308,7 @@ impl CampRun {
             watch: false,
             round_trips: true,
             audits: true,
+            infra: Box::new(rtsim_ecology::infra::NoInfrastructure),
             events: Vec::new(),
             next_obs: Tick::ZERO,
         };
@@ -1287,18 +1422,9 @@ impl CampRun {
             .unwrap_or(to)
             .clamp(t + 1, to);
             for (at, o) in self.plugin.due(next) {
-                self.c.ingest(
-                    &mut self.w,
-                    &mut rtsim_ecology::infra::NoInfrastructure,
-                    &o,
-                    at,
-                );
+                self.c.ingest(&mut self.w, &mut *self.infra, &o, at);
             }
-            self.c.run_until(
-                &mut self.w,
-                &mut rtsim_ecology::infra::NoInfrastructure,
-                next,
-            );
+            self.c.run_until(&mut self.w, &mut *self.infra, next);
             if self.watch && next >= self.next_obs {
                 self.c
                     .observe_player(&mut self.w, PLAYER, REFINERY_POS, next);
