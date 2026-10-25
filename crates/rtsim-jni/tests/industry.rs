@@ -1666,3 +1666,86 @@ fn a_train_raid_decided_again_after_a_crash_is_applied_once() {
     conserves(&j);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// A station exchange the engine derived from a simulated arrival, applied by Java, then lost with
+/// the journal (J3: the trains and their ring saved after the application, the journal before it,
+/// with the arrival and without the application's IND_CARRIAGE_RESULT; the pages older than the
+/// arrival). The replay derives the exchange again from the arrival under the same op, the ring
+/// answers DUPLICATE, and `command_result` drops the exchange whatever its reason (RP-199): no
+/// result will come for it. Before RP-199 only loot was dropped, so the exchange stayed pending
+/// for ever, into every page.
+#[test]
+fn a_station_exchange_derived_again_after_a_crash_that_lost_its_result_is_dropped() {
+    use rtsim_industry::cmd::CarriageReason;
+    use rtsim_kernel::journal::OpId;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-exchange-dup");
+    let mut j = iron_java(&dir, cfg);
+    let exchange_ops = |j: &Java| -> Vec<u64> {
+        j.ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) if d.reason == CarriageReason::Exchange => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // Past the first simulated exchanges, the pages are taken; then the next exchange.
+    j.mc_run_until(day(2.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let through = j.e.durable_obs_seq();
+    let before = exchange_ops(&j).len();
+    while exchange_ops(&j).len() == before {
+        j.mc_tick();
+        assert!(j.mc().t < day(8.0), "a simulated station exchange");
+    }
+    let x = exchange_ops(&j)[before];
+    // The journal with the arrival, before the exchange is applied (one tick late, in the world's
+    // next tick).
+    let jsave = j.world_save();
+    assert!(!j.mc().applied_ops().contains(&OpId(x)));
+    for _ in 0..3 {
+        j.mc_tick();
+    }
+    assert!(
+        j.mc().applied_ops().contains(&OpId(x)),
+        "the exchange is applied"
+    );
+    assert!(
+        !industry(&j.e, |ie| ie.exchange_pending(OpId(x))),
+        "its result took the exchange live"
+    );
+    let msave = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    let t0 = j.mc().t;
+    while !exchange_ops(&j).contains(&x) {
+        j.mc_tick();
+        assert!(j.mc().t < t0 + 400, "the replay derives the exchange again");
+    }
+    iron_run_to_end(&mut j, &cfg);
+    let pending = industry(&j.e, |ie| ie.exchange_pending(OpId(x)));
+    assert!(
+        !pending,
+        "the station exchange of op {x:#x} is still pending after the world's DUPLICATE"
+    );
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}

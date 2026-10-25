@@ -634,7 +634,8 @@ fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationE
 /// command written under that op id again (a test's order, or the same decision resent) is
 /// answered all the same, so it leaves the outbox. A train's loot re-decided after a crash is
 /// such a command: the replay heard the live application's APPLIED, so Java's DUPLICATE comes
-/// here, not to `command_result`, and the loot exchange is dropped here (RP-182).
+/// here, not to `command_result`, and the exchange is dropped here (RP-182; it is gone already
+/// when the replayed IND_CARRIAGE_RESULT came first).
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
@@ -668,8 +669,10 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
 /// the result, so this works whether or not the outbox still had the command: a restart trims the
 /// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
-/// A duplicate carriage delta of a train's loot was re-decided after a crash under the op Java
-/// applied before: its goods left once, so the engine drops the exchange (RP-182).
+/// A duplicate carriage delta was decided again after a crash under the op Java applied before
+/// (a train's loot, or a station exchange the replay derived again) and the journal that would
+/// have carried that application's answers was lost (J3): its goods moved once, so the engine
+/// drops the exchange, whatever its reason (RP-182, RP-199).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
     let kept = l.complete(op);
     if status == obs::command_result::DUPLICATE_OP {
