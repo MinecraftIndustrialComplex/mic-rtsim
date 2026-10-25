@@ -900,7 +900,10 @@ fn a_replayed_train_passed_is_counted_and_never_rolls() {
     assert_eq!(l.c.stats.ambushes, 0);
     assert_eq!(l.c.stats.items_from_districts, 0);
     assert!(l.c.ledger.from_players.is_empty(), "no loot taken");
-    assert!(l.c.log.iter().all(|e| e.kind != "ambush"), "no ambush noted");
+    assert!(
+        l.c.log.iter().all(|e| e.kind != "ambush"),
+        "no ambush noted"
+    );
     assert!(l.robbed().is_empty(), "no TRAIN_ROBBED");
     assert!(l.c.lurking(l.p), "the lurk goes on");
 
@@ -909,7 +912,10 @@ fn a_replayed_train_passed_is_counted_and_never_rolls() {
     l.said.clear();
     l.pass(&mut rails, 7, PASSED_WATCHED, 10);
     assert_eq!((l.c.stats.passes, l.c.stats.lurk_robberies), (2, 1));
-    assert!(!rails.threats.is_empty(), "the live pass attacked the train");
+    assert!(
+        !rails.threats.is_empty(),
+        "the live pass attacked the train"
+    );
     assert_eq!(l.robbed(), vec![7]);
     l.c.check(&l.w).expect("books");
 }
