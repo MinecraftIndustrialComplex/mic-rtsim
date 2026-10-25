@@ -3826,6 +3826,11 @@ mod herds {
             }
         }
         assert!(m.epoch > epoch, "a new epoch: {} after {epoch}", m.epoch);
+        let size = old.group.as_ref().expect("a group").members.len();
+        assert_eq!(m.members.len(), size, "the group is the size it was");
+        let counts = e.with_herds(|h, _| h.replay_gate_counts());
+        assert_eq!(counts.never, 0, "nothing embodied while replaying");
+        assert_eq!(counts.last_never, None);
         let (_, killed, taken, lost, dead) = summary(&e, old.agent);
         assert_eq!(
             (killed, taken, lost, dead),
