@@ -1619,6 +1619,100 @@ The paths that hand the ships engine a command or a decision, each with its verd
 | The `Viewer` impl's `player_left` | not overridden for ships, so the arm's leave is a no-op for them (U8) |
 | Sightings (`shared::simulate`) | wait for the replay end (§6) |
 
+### 9.6 Slice U: a crash inside a world save
+
+Slice U (SEC-1; records RP-200 to RP-208 in docs/choices-journal-barrier.md, slice U-b's RP-210 on)
+audited every op kind that changes persisted state against a crash that splits a world save: some of
+its files on disk, the rest from the save before. Two directions:
+- **A:** the journal's file on disk, the op's effect from before. Java's journal knows the op, so the
+  engine never sends it again: the effect is missing, or, for an op that took goods out, the goods are
+  back while the engine holds them.
+- **B:** the effect on disk, the journal's file from before. The engine sends the op again, and only a
+  dedup saved with the effect (a ring of applied ops, a reconcile epoch, a carried record) stops a second
+  application.
+
+**The crash classes.**
+1. A process crash between two SavedData files of one save. Since RP-200 the journal's file is the last
+   SavedData a world save writes, so this is always B, and every SavedData effect of an op now has a
+   ring in its own file (RP-204, RP-206, RP-207, T2's train ring): exact. Before, the direction followed
+   the overworld's SavedData map capacity, unknown on the pack (the audit's U1; moot now).
+2. A process crash between chunk or entity writes and the journal's. A chunk the barrier notes is on
+   disk before the journal's file (JB1 to JB5), so its effect is B, and its carried record or epoch
+   makes it exact. A chunk or entity effect that is not noted can land on either side (JL orders
+   SavedData only; the autosave skips a chunk written in the last 10 s): the residual list below.
+3. A crash between saves. B is the normal state of a chunk the background saver wrote; carried records
+   handle it (docs/boundary.md §3.1).
+4. A power loss. RP-201 syncs the directories so a rename cannot outlive an earlier one; region files
+   are synced by DSYNC or the barrier's force. Not on Windows (residual 1).
+5. A held journal write (RP-205). Every SavedData store is in B until the next written save: exact, by
+   the rings. A hold has no round limit.
+6. A given-up note (RP-205): A for that chunk (residual 2).
+
+**The rows, after slice U** (the audit's row ids; "exact" means the dedup is saved with the effect):
+
+| Row | Op, effect | A | B | After a give-up | Owner of what is left |
+|---|---|---|---|---|---|
+| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact when the chest's chunk is loaded at the resend; not loaded: FAILED, then the chunk's REASSERTed APPLIED is admitted as new and the coin sent again, a dupe (inferred) | loss | slice U-b |
+| C2 | WRITE_GOSSIP, villagers | exact | exact (the villager's ring; a minor loss past its 64 entries) | n/a | none |
+| C3 | PLACE_HOUSE, house box | origin chunk exact; another box chunk skipped by the 10 s cooldown: a partial house, loss | villages newer than the origin chunk: the house missing, loss; another box chunk newer: a second house, dupe | loss | slice U-b |
+| C4 | SPAWN_RESIDENT, resident | resident lost | resident's entity section newer: a second resident, dupe | loss | slice U-b |
+| I1 | reconcile container and energy deltas | exact (epoch, noted) | exact; a double chest across a chunk border: by the delta's sign, dupe or loss (inferred) | negative delta: dupe; positive: loss | slice U-b's test, then the coordinator |
+| I2 | reconcile block destroys, drops | drops lost | drops' section newer: the block back, destroyed again, second drops, dupe | the block back while booked destroyed; with the drops, dupe | slice U-b |
+| I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
+| I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
+| I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
+| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen | exact: T2's train ring (RP-190 on), within its 256-op window and with its mixin applied | n/a | slice T2's limits |
+| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen | exact: the port's ring (RP-206) | n/a | none |
+| K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact; the port's ring also covers an unloaded postbox with the tracks newer; goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
+| K4 | IND_WRITE_CHAIN, frogport | exact (noted) | exact when loaded; unloaded: FAILED then REASSERT, a possible double booking (inferred); goods pushed out before the save: dupe | loss | the coordinator (Create slice) |
+| K5 | reconcile through PostboxAccess, the tracks mirror | exact | the mirror taken by a train while the postbox is unloaded, then reapplied: dupe, independent of the journal | loss or dupe by sign | the coordinator (Create slice) |
+| K6, K7 | IND_HELD_DRAW REMOVE; CHAIN_HELD keying | exact (inferred) | `mic_rtsim_industry` and the conveyor's chunk can part: a re-keyed package, dupe, independent of the journal | dupe | the coordinator (Create slice) |
+| K8 | repair schematics from I2's destroys | schematic lost (low value) | a second schematic (low value) | n/a | the coordinator (Create slice) |
+| F1 to F3 | camp spawn, adopt, take and remove | exact (noted by holder) | exact | F1 written off after 3 misses and 2 days, loss; F2, F3 exact | none |
+| F4 | ENVOY tribute | cannot happen (player data first) | paid, not credited: loss | n/a | none |
+| D1, D3 | PLACE_LAIR and PLACE_NEST requests (module SavedData) | cannot happen | exact | n/a | none |
+| D2, D4, D6, D8 | lair placement, nest carve, worms, adopt | loss | a second roost, a second chamber, worms placed again; the adopted dragon lost (D8) | n/a | the Mowzie lead, slice N2 |
+| D5 | NEST_RENEW | loss or exact | worms owed twice (RP-14); JL widens its route at map capacities of 32 and up | n/a | slice N, which lands before slice U |
+| D7 | NEST_SORTIE | a raid decided again in the replayed window is dropped (§7.2, RP-15): its visible worms are lost, never shown twice (the audit read a doubled raid: harm, no goods) | same | n/a | none (§10 item 1) |
+| X1 to X8 | Java-originated records (caravan, band and herd takes and kills, shearing, tames) | loss | the body or goods on disk, the journal from before: dupe | n/a | the coordinator; X2, X3 and the herd kills match vanilla, lowest priority |
+
+**What slice U leaves** (RP-208):
+1. **Windows directory sync** (RP-201). Java cannot open a directory there, so the sync is skipped
+   (logged once, counted). A power loss on Windows can keep the journal's rename and lose an earlier
+   store's: direction A for that store. A process crash is unaffected.
+2. **Given-up notes** (RP-205): a chunk that cannot be serialized or stored, or whose unload is never
+   seen, after 3 world saves in a row, or one that left its level after a failed write. The journal's
+   file goes on without it: direction A for that chunk (the "After a give-up" column). Logged at error,
+   counted `late` in `/rtsim perf`. Follow-on: take a given-up note's ops out of the applied set and have
+   the engine resend them by op (a per-op resend list), which turns A into B.
+3. **Chunk and entity effects the barrier does not note** (the audit's 3.6): the transfer's surplus
+   item entity (C1, rare), the other half of a double chest (I1), house box chunks other than the origin
+   (C3), the resident (C4), a reconcile's drops (I2), Frontier keying when a package is already keyed
+   (K7), goods moved out of a postbox or frogport before its chunk saved (K3, K4), the repair schematic
+   (K8), and the X rows' bodies and drops. Owners in the table.
+4. **The pollution ledger's under-count** (RP-207): a crash that keeps the level's pollution and loses
+   the ledger leaves the district's total short by the delta. Attribution only: the engine learns a
+   slightly lower rate; no pollution is created or removed.
+5. **Ring entries pending a resend that never comes** (RP-204): an op the store on disk holds but the
+   journal's file did not, whose resend the engine dropped. Harmless (it can only refuse that op), and the
+   cap pushes it out. An entry the cap pushes out before the journal's file holds it is counted as an
+   overflow; its resend would be applied again.
+6. **Slice T2's limits** (RP-192, RP-193): an op pushed out of a train's 256-op ring, and the journal's
+   index as the fallback when the ring's mixin did not apply.
+
+**JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
+
+**UR-1.** Uninstalling mic_rtsim_dieselgenerators: CDG loads `cdg_oil_chunks` with the extra
+`mic_rtsim:applied_ops` key and drops it at its next save. Uninstalling mic_rtsim: NeoForge skips the
+unknown `mic_rtsim:applied_ops` level attachment in `neoforge_data_attachments` with an ERROR log line
+and loads the rest.
+
+**Tests.** dieselgenerators `DepositCrashGameTests` (3), destroy `PollutionCrashGameTests` (4), core
+`JournalBarrierGameTests` (the hold, give-up and flush tests), `DurableOpRingTest`, `DirectorySyncTest`.
+The crash GameTests read the region and `.dat` files at one instant of the journal's write on the IO
+chain and restart from them, the journal's knowledge of the op included; an fsync call is not taken
+as proof of anything.
+
 ## 10. Questions for Ben
 
 Gameplay trade-offs at the forks, recommendation first. The coordinator decided all three on
