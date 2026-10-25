@@ -4,7 +4,10 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 4f152abc
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c934042f
+//!   (replay-gate slice N, the nest renewal serial, on slice D and merged with main bc669502; N's
+//!   formats: the dragons' pages are RTD8, each nest row ending with its renewal serial, and their
+//!   meta page RTN8, RP-230 to RP-239); before that, 4f152abc
 //!   (Mowzie's Mobs M7, the rail: 32726818, M7 merged with main a11311aa, which carries M6 and
 //!   SEC-1's S6, then merged with main 588b229c, which carries SEC-1's S7 and the GameTest flake
 //!   fixes and changes no format; M7's formats: the conflict's pages are RTC8 with meta version 7,
@@ -55,8 +58,9 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 32726818 (the core save's
-//!   formats, before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2
+//! - `tests/data/create`: neoforge/create's GameTest world, run from c934042f (the core save's
+//!   formats); before that, 32726818 (the core save's
+//!   formats before slice N and before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2
 //!   merged with main f66cb73, b643465, 37a34e40 as part of the plain `./gametest.sh core create
 //!   mowziesmobs` round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm
 //!   funnel-point fix) with the section fixtures (`-Psec1fx`), its `run-gametest/world` deleted
