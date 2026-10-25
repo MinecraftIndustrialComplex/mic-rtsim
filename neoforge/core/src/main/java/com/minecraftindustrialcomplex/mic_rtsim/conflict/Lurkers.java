@@ -24,7 +24,7 @@ public final class Lurkers {
     /** A type with no Lurker of its own: the restriction and the walk back, no strike, no roar. */
     public static final Lurker DEFAULT = new Lurker() {
         @Override
-        public void hold(Mob mob, Vec3 spot) {
+        public void hold(Mob mob, Vec3 spot, Memo memo) {
             if (!mob.hasRestriction())
                 mob.restrictTo(net.minecraft.core.BlockPos.containing(spot), HOLD_RADIUS);
             if (mob.getTarget() == null && mob.distanceToSqr(spot) > STRAY * STRAY && mob.getNavigation().isDone())
@@ -37,7 +37,7 @@ public final class Lurkers {
         }
 
         @Override
-        public void release(Mob mob) {
+        public void release(Mob mob, Memo memo) {
             mob.clearRestriction();
         }
 

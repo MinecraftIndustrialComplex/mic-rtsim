@@ -370,6 +370,12 @@ public final class ConflictBridge implements SessionPlugin {
         List<WrappedGoal> stripped;
         /** M8: where the lurk holds this body (its place at the spot, on the floor); null while it is not held. */
         Vec3 holdAt;
+        /**
+         * M8: what the body's {@link Lurker} keeps for it while it holds it (the goals it took out, which reference the
+         * body): on the slot, so it goes with the slot, and emptied by {@code releaseLurk} (the second re-check's P2:
+         * a map by body in the plugin held every killed puppet and its level for good).
+         */
+        Lurker.Memo lurkMemo;
 
         Slot(Stack stack, boolean chief, boolean envoy, String body, int javaBody, EntityType<?> type, double lat, double back) {
             this.stack = stack;
@@ -1265,6 +1271,7 @@ public final class ConflictBridge implements SessionPlugin {
     /** Takes a member's body out of the world (it stays a living member, not in Minecraft). */
     private void despawn(Slot sl) {
         Mob m = sl.entity;
+        releaseLurk(sl); // the Lurker lets go of the body it is about to lose (its goals, its stamp), so nothing of it outlives it
         if (m != null) {
             sl.removing = true;
             if (sl.goal != null)
@@ -2505,7 +2512,9 @@ public final class ConflictBridge implements SessionPlugin {
                         }
                         sl.holdAt = at;
                     }
-                    Lurkers.of(m).hold(m, sl.holdAt);
+                    if (sl.lurkMemo == null)
+                        sl.lurkMemo = new Lurker.Memo();
+                    Lurkers.of(m).hold(m, sl.holdAt, sl.lurkMemo);
                     if (look)
                         aim(m, level);
                 }
@@ -2531,14 +2540,20 @@ public final class ConflictBridge implements SessionPlugin {
             m.setTarget(pl);
     }
 
-    /** A puppet let go: its {@link Lurker} undoes the hold. A body not held, or already out of the world, is not asked. */
+    /**
+     * A puppet let go: its {@link Lurker} undoes the hold and empties its memo. A body not held is not asked; one that is
+     * out of the world (killed, taken, discarded) is, since the Lurker's state for it must go too (the second re-check's
+     * P2: a skipped release left a killed puppet and its goals in the plugin for the life of the server).
+     */
     private void releaseLurk(Slot sl) {
-        if (sl.holdAt == null)
+        if (sl.holdAt == null && sl.lurkMemo == null)
             return;
+        Lurker.Memo memo = sl.lurkMemo != null ? sl.lurkMemo : new Lurker.Memo();
         sl.holdAt = null;
+        sl.lurkMemo = null;
         Mob m = sl.entity;
-        if (m != null && !m.isRemoved())
-            Lurkers.of(m).release(m);
+        if (m != null)
+            Lurkers.of(m).release(m, memo);
     }
 
     private void releaseLurk(Party p) {

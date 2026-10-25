@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
@@ -38,6 +39,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.monster.Zombie;
@@ -726,6 +728,7 @@ public final class FrostmawGameTests {
                 .thenWaitUntil(() -> check("the held body is gone with the module off", h.f[0].isRemoved()))
                 .thenExecute(() -> {
                     check("the lurk has no body", RtsimApi.lurkBody(h.agent) == null);
+                    check("the Lurker keeps nothing of the discarded puppet (a hold stamp, a bearing, a search time)", !tracked(h.f[0]));
                     h.off(helper, false);
                 })
                 .thenIdle(60)
@@ -734,6 +737,42 @@ public final class FrostmawGameTests {
                     check("no Frostmaw stands about the spot", h.level.getEntitiesOfClass(EntityFrostmaw.class, around).isEmpty());
                     check("the lurk has no body", RtsimApi.lurkBody(h.agent) == null);
                     record(test, "off", "a held lurk puppet was gone with the module switched off, and nothing stood in its place after it was on again");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    /** Whether the Frostmaw plugin keeps anything for a body (a hold stamp, a strike's bearing, a search time). */
+    private static boolean tracked(Mob body) {
+        return ((FrostmawLurker) Lurkers.of(body)).tracked(body);
+    }
+
+    /**
+     * A killed puppet is let go of in full (MZB-361, the second re-check's P2): the plugin kept the walking goals it
+     * took out of a held body in a map by body, and each goal has its body as {@code mob}, so a puppet that left the
+     * world by any way but a release (killed, discarded, the session over) was held, with its level, until the server
+     * stopped. The goals are on the core's slot now, which goes with the member; here the puppet is killed once held,
+     * the engine has the casualty, and the body is out of the world: the plugin keeps no stamp, bearing or search time
+     * for it and the bridge has no member for it. (A session stop proper cannot be made in a shared session; the module
+     * switched off, in the test above, is the same capture.) On the code before the fix {@code release} skipped a
+     * removed body and nothing else dropped the goals. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_killed", skyAccess = true)
+    public static void aKilledHeldPuppetLeavesNothingInTheLurker(GameTestHelper helper) {
+        String test = "aKilledHeldPuppetLeavesNothingInTheLurker";
+        Held h = new Held(helper, test);
+        h.up(helper)
+                .thenExecute(() -> {
+                    check("the premise: the plugin keeps a stamp for the held body", tracked(h.f[0]));
+                    MowzieKit.kill(h.f[0], h.level.damageSources().genericKill());
+                })
+                .thenWaitUntil(io(() -> check("the engine has the casualty", ConflictKit.about(ConflictRecords.BAND_CASUALTIES, h.agent).size() == 1)))
+                .thenWaitUntil(() -> check("the body is out of the world (" + h.f[0].deathTime + " ticks dying)", h.f[0].isRemoved()))
+                .thenExecute(() -> {
+                    check("the plugin keeps nothing of the killed puppet", !tracked(h.f[0]));
+                    check("the bridge has no member for it", ConflictKit.bridge().slotOf(h.f[0]) == null);
+                    record(test, "killed", "a held puppet was killed: the casualty is booked, the body is gone, and the plugin keeps no stamp, bearing or search time for it");
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))

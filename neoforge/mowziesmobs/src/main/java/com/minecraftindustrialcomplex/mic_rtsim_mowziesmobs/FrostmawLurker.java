@@ -62,8 +62,20 @@ public final class FrostmawLurker implements Lurker {
      */
     private static final Map<Mob, Long> HELD = Collections.synchronizedMap(new WeakHashMap<>());
 
-    /** The walking goals taken out of a held body, with the priority each had, by body (put back in {@link #release}). */
-    private final Map<Mob, List<Object[]>> taken = new WeakHashMap<>();
+    /**
+     * The walking goals taken out of a held body, with the priority each had (put back in {@link #release}). Kept in
+     * the body's {@link Lurker.Memo}, on the core's slot, and not in a map by body: each goal holds its body as
+     * {@code mob}, so even a weak map keyed by the body never lets go of it (the second re-check's P2).
+     */
+    private record Taken(List<Object[]> goals) {}
+
+    /**
+     * Whether the plugin has anything for this body: a hold stamp, a strike's bearing or a search time. None once the
+     * core has released it, which it does for a body killed, despawned or taken as well as one let go (GameTests).
+     */
+    public boolean tracked(Mob f) {
+        return HELD.containsKey(f) || bearings.containsKey(f) || searched.containsKey(f);
+    }
 
     /**
      * Whether the hold has this body in hand: it held it on the tick just gone (or this one). A body the hold stopped
@@ -78,7 +90,7 @@ public final class FrostmawLurker implements Lurker {
     private static final int HELD_FRESH = 3;
 
     @Override
-    public void hold(Mob mob, Vec3 spot) {
+    public void hold(Mob mob, Vec3 spot, Memo memo) {
         if (!(mob instanceof EntityFrostmaw f) || !f.isAlive())
             return;
         // Awake for good (the jar skips its sleep and its waking roar for an always-active Frostmaw)
@@ -88,8 +100,8 @@ public final class FrostmawLurker implements Lurker {
         if (!f.hasRestriction() || !centre.equals(f.getRestrictCenter()) || f.getRestrictRadius() != RADIUS)
             f.restrictTo(centre, RADIUS);
         HELD.put(f, f.level().getGameTime());
-        if (!taken.containsKey(f))
-            takeOutWalkingGoals(f);
+        if (memo.get(Taken.class) == null)
+            memo.set(takeOutWalkingGoals(f));
 
         if (f.getAnimation() == EntityFrostmaw.SWIPE_ANIMATION && f.getAnimationTick() <= SWIPE_HIT_TICK) {
             Float yaw = bearings.get(f);
@@ -138,9 +150,10 @@ public final class FrostmawLurker implements Lurker {
      * Takes out the goals that walk a body about on their own, a stroll and the pull back into a restriction (a
      * Frostmaw has both, priorities 7 and 5): the stroll wanders it up to its restriction's radius (2) about the
      * spot's block, which is beyond {@link #STAND}, and the pull paths to a point that a wide body ends two blocks
-     * off. The hold is the one thing that walks a held puppet. Remembered to put back in {@link #release}.
+     * off. The hold is the one thing that walks a held puppet. Returned to be kept in the body's memo, to put back in
+     * {@link #release}.
      */
-    private void takeOutWalkingGoals(EntityFrostmaw f) {
+    private Taken takeOutWalkingGoals(EntityFrostmaw f) {
         List<Object[]> out = new ArrayList<>();
         for (WrappedGoal w : new ArrayList<>(f.goalSelector.getAvailableGoals())) {
             Goal g = w.getGoal();
@@ -149,7 +162,7 @@ public final class FrostmawLurker implements Lurker {
         }
         for (Object[] o : out)
             f.goalSelector.removeGoal((Goal) o[1]);
-        taken.put(f, out);
+        return new Taken(out);
     }
 
     /**
@@ -202,15 +215,17 @@ public final class FrostmawLurker implements Lurker {
     }
 
     @Override
-    public void release(Mob mob) {
+    public void release(Mob mob, Memo memo) {
         bearings.remove(mob);
         searched.remove(mob);
         HELD.remove(mob);
-        List<Object[]> out = taken.remove(mob);
+        Taken out = memo.get(Taken.class);
+        memo.set(null);
         if (!(mob instanceof EntityFrostmaw f))
             return;
+        // A body that is already out of the world gets its goals back too: harmless, and nothing of it is kept
         if (out != null)
-            for (Object[] o : out)
+            for (Object[] o : out.goals())
                 f.goalSelector.addGoal((Integer) o[0], (Goal) o[1]);
         f.setAlwaysActive(false);
         f.clearRestriction();
