@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurk;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories;
 import com.simibubi.create.Create;
 import com.simibubi.create.content.trains.entity.Carriage;
+import com.simibubi.create.content.trains.entity.CarriageContraptionEntity;
 import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.entity.TravellingPoint;
 import com.simibubi.create.content.trains.graph.TrackGraph;
@@ -14,6 +15,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -50,7 +53,8 @@ import java.util.function.LongConsumer;
  * engine in the train's dimension ({@link RtsimApi#lurks}), a segment within the lurk's {@code reach} of its
  * track point sends one TRAIN_PASSED per approach (armed again beyond {@link #APPROACH_RESET} blocks), the
  * engine rolls the robbery, and a train whose sample is within that distance of a live lurk puppet joins a
- * near set that is read every tick: a carriage point within {@link #STRIKE_REACH} blocks of the puppet calls
+ * near set that is read every tick: a carriage whose living rider (else whose bogey point) will be within
+ * {@link #STRIKE_REACH} blocks of the puppet when the swing lands, {@link #SWING_TICKS} ticks on, calls
  * {@link RtsimApi#strike} once per carriage per approach. {@link #arrived} is the mixin's call at a
  * station, for the roar of a robbed train. The sampler runs for a lurk without a territory minding the rail.
  *
@@ -76,8 +80,20 @@ public final class TrainSampler {
     public static final double MARGIN = 2.0 * PERIOD;
     /** A train beyond this many blocks of a lurk's track point may send TRAIN_PASSED again, and strikes again (MZB-363, 365). */
     public static final double APPROACH_RESET = 64.0;
-    /** A carriage point this close (blocks, horizontal) to a lurk puppet is struck at (the swipe's range, MZB-365). */
-    public static final double STRIKE_REACH = 6.5;
+    /**
+     * A carriage's rider or bogey point that will be this close (blocks, horizontal) to a lurk puppet when the swing
+     * lands is struck at: the swipe's range of 6.5 less what its 3D, feet-to-feet test adds for a rider seated above
+     * the puppet's floor (MZB-365, second amendment of review C).
+     */
+    public static final double STRIKE_REACH = 6.0;
+    /**
+     * Ticks from a strike's call to the blow landing: the jar's swipe hits at animation tick 9
+     * ({@code FrostmawLurker.SWIPE_HIT_TICK}, which turns the puppet to {@code at + motion * 9}). The create project
+     * names no Mowzie class, so the number is here too; a plugin whose swing takes longer reads a stale aim.
+     */
+    public static final int SWING_TICKS = 9;
+    /** How far a carriage's riders and body can lie beyond the span of its two bogeys (blocks, a bound for the cheap first test). */
+    private static final double BODY_SLACK = 4.0;
     private static final int SIGNAL = ConflictRecords.SIGNAL_RAIL;
 
     /** A pass in progress: the circle's faction and the sample nearest its centre so far. */
@@ -437,10 +453,11 @@ public final class TrainSampler {
     }
 
     /**
-     * Every tick, for the trains near a live lurk puppet: a carriage's leading or trailing point within
-     * {@link #STRIKE_REACH} blocks (horizontal) of the puppet calls {@link RtsimApi#strike} (MZB-365). A strike that
-     * started marks the carriage struck for the approach; one a busy puppet refused is tried again next tick
-     * while the point stays in reach, so a carriage is struck at most once and a refusal loses nothing.
+     * Every tick, for the trains near a live lurk puppet: a carriage whose target will be within
+     * {@link #STRIKE_REACH} blocks (horizontal) of the puppet when the swing lands calls {@link RtsimApi#strike}
+     * (MZB-365). A strike that started marks the carriage struck for the approach; one a busy puppet refused is
+     * tried again next tick while the target stays in reach, so a carriage is struck at most once and a refusal
+     * loses nothing.
      */
     private static void strike() {
         if (NEAR.isEmpty())
@@ -470,17 +487,19 @@ public final class TrainSampler {
 
     private static void strikeAt(State s, Train t, Lurk l, Mob body) {
         List<Carriage> cs = t.carriages;
+        // The farthest a bogey can be now and still have a target landing in reach: the reach, what the train covers in a swing, the carriage
+        double far = STRIKE_REACH + SWING_TICKS * Math.abs(t.speed) + BODY_SLACK;
         for (int c = 0, n = cs.size(); c < n; c++) {
             Approach a = approach(s, l);
             if (a != null && a.struck(c))
                 continue;
-            TravellingPoint point = cs.get(c).getLeadingPoint();
-            Vec3 hit = within(point, t.graph, body);
-            if (hit == null) {
-                point = cs.get(c).getTrailingPoint();
-                hit = within(point, t.graph, body);
-            }
-            if (hit == null || !RtsimApi.strike(l.agent(), hit, motionOf(point, t)))
+            Carriage car = cs.get(c);
+            Vec3 lead = positionOf(car.getLeadingPoint(), t.graph), trail = positionOf(car.getTrailingPoint(), t.graph);
+            double span = far + car.bogeySpacing;
+            if (!near(lead, body, span) && !near(trail, body, span))
+                continue;
+            Vec3[] aim = aimAt(car, t, lead, trail, body);
+            if (aim == null || !RtsimApi.strike(l.agent(), aim[0], aim[1]))
                 continue;
             if (a == null)
                 a = openApproach(s, l);
@@ -490,27 +509,69 @@ public final class TrainSampler {
     }
 
     /**
-     * How far the point moves in one tick: the train's speed (signed, blocks a tick) along the rail's direction at
-     * the point (a positive offset on an edge goes toward its second node, which a positive speed travels). Zero for
-     * a stopped train or an unreadable point.
+     * Where to strike a carriage and how that target moves a tick (the mean over the swing, so the plugin's aim at
+     * {@code at + motion * SWING_TICKS} is where it will be when the blow lands): the first living rider that will
+     * be in reach then; the swipe hits living entities only, and a bogey point misses a rider at the middle or
+     * the rear of a long carriage. A carriage with no living rider is struck at its leading bogey's point, else
+     * its trailing one's. A carriage with a rider that will not be in reach is not struck. Null for none.
      */
-    static Vec3 motionOf(TravellingPoint p, Train t) {
-        Vec3 here = positionOf(p, t.graph);
-        if (here == null || t.speed == 0.0)
-            return Vec3.ZERO;
-        // A step along the edge (back from its end, where a curve clamps), as a rate per block of travel
-        double step = p.position + 0.25 <= p.edge.getLength() ? 0.25 : -0.25;
-        Vec3 along = p.getPositionWithOffset(t.graph, step, false).subtract(p.getPositionWithOffset(t.graph, 0.0, false)).scale(1.0 / step);
-        return along.scale(t.speed);
+    private static Vec3[] aimAt(Carriage car, Train t, Vec3 lead, Vec3 trail, Mob body) {
+        TravellingPoint lp = car.getLeadingPoint(), tp = car.getTrailingPoint();
+        Vec3 leadMove = lead == null ? null : landingOf(lp, t, lead).subtract(lead);
+        Vec3 trailMove = trail == null ? null : landingOf(tp, t, trail).subtract(trail);
+        boolean riders = false;
+        CarriageContraptionEntity e = car.anyAvailableEntity();
+        if (e != null)
+            for (Entity p : e.getPassengers()) {
+                if (!(p instanceof LivingEntity) || !p.isAlive())
+                    continue;
+                riders = true;
+                // A rider moves as the bogey nearer to it does
+                Vec3 at = p.position();
+                boolean byLead = lead != null && (trail == null || at.distanceToSqr(lead) <= at.distanceToSqr(trail));
+                Vec3 move = byLead ? leadMove : trailMove;
+                if (move != null && reaches(at.add(move), body))
+                    return new Vec3[] {at, move.scale(1.0 / SWING_TICKS)};
+            }
+        if (riders)
+            return null;
+        if (lead != null && reaches(lead.add(leadMove), body))
+            return new Vec3[] {lead, leadMove.scale(1.0 / SWING_TICKS)};
+        if (trail != null && reaches(trail.add(trailMove), body))
+            return new Vec3[] {trail, trailMove.scale(1.0 / SWING_TICKS)};
+        return null;
     }
 
-    /** The point's position when it is within {@link #STRIKE_REACH} blocks (horizontal) of the body, else null. */
-    private static Vec3 within(TravellingPoint p, TrackGraph graph, Mob body) {
-        Vec3 v = positionOf(p, graph);
+    /**
+     * Where the point will be {@link #SWING_TICKS} ticks on at the train's present speed (a signed number of blocks a
+     * tick; a positive offset on an edge goes toward its second node, which a positive speed travels). Along the
+     * track, curves included, while it stays on its edge (the position Create gives it after that travel); past an
+     * edge's end, straight on from the end's tangent (the next edge is not read, so a bend beyond the node errs by
+     * about the rest squared over twice its radius). A stopped train's point stays where it is.
+     */
+    static Vec3 landingOf(TravellingPoint p, Train t, Vec3 here) {
+        if (t.speed == 0.0)
+            return here;
+        double d = t.speed * SWING_TICKS;
+        double length = p.edge.getLength();
+        double to = p.position + d;
+        if (to >= 0.0 && to <= length)
+            return p.getPositionWithOffset(t.graph, d, false);
+        double end = to > length ? length : 0.0;
+        Vec3 edgeEnd = p.getPositionWithOffset(t.graph, end - p.position, false);
+        return edgeEnd.add(p.edge.getDirectionAt(end).scale(to - end));
+    }
+
+    /** Whether a landing point is within {@link #STRIKE_REACH} blocks (horizontal) of the body. */
+    private static boolean reaches(Vec3 landing, Mob body) {
+        return near(landing, body, STRIKE_REACH);
+    }
+
+    private static boolean near(Vec3 v, Mob body, double reach) {
         if (v == null)
-            return null;
+            return false;
         double dx = v.x - body.getX(), dz = v.z - body.getZ();
-        return dx * dx + dz * dz <= STRIKE_REACH * STRIKE_REACH ? v : null;
+        return dx * dx + dz * dz <= reach * reach;
     }
 
     /**

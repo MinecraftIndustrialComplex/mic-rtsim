@@ -3646,6 +3646,43 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       `LATERAL` are the two numbers to move.
     A real player on a train passing a lurk at speed is struck in the same way; a train at a standstill in
     reach is struck at once, with a zero motion.
+    (The last sentence was false as built; see the third amendment: the gate looked at where the carriage was,
+    not where it would be.)
+  - Third amendment (review C, item 2; written and compiled, not run): the gate and the aim at speed. As built,
+    the strike fired when a bogey point was within 6.5 blocks (horizontal) of the puppet now, and aimed at that
+    point plus its motion. At 1.0 blocks a tick the swing lands 9 ticks later with the carriage 9 blocks on. The
+    engine's spot is `SPOT_BLOCKS` (5) off the rail (rail.rs: whole blocks toward the den, written as block +
+    0.5), so a point first in reach at 6.5 is 4.15 along from the closest approach and lands 4.85 past it: 6.96
+    blocks horizontally from a puppet 5 off, out of the swipe's 6.5. The test passed only because it laid the
+    spot 4 off (`LATERAL`), which the engine never does. A real player at speed was not struck. Now:
+    - The gate is on the landing point. `TrainSampler.landingOf` is where a bogey point will be `SWING_TICKS`
+      (9) ticks on at the train's present speed: Create's own `TravellingPoint.getPositionWithOffset(graph,
+      speed * 9, false)` while the point stays on its edge (curves included), and straight on from the edge
+      end's tangent (`TrackEdge.getDirectionAt`) past an edge end. A carriage is struck when that landing is
+      within `STRIKE_REACH` = 6.0 blocks (horizontal) of the puppet: the swipe's 6.5 less what its 3D
+      feet-to-feet filter (6.5 + half the width, so 6.8 for a zombie) takes for a rider seated about 2 above the
+      puppet's floor (6.0 horizontal is about 6.3 in 3D). A cheap first test (`STRIKE_REACH + 9 * |speed| + 4`
+      plus the carriage's `bogeySpacing`, from a bogey point now) skips the carriages that cannot be in reach, so
+      the landing is computed only for the few that can.
+    - The aim is at a living rider if the carriage carries one (`CarriageContraptionEntity.getPassengers()`, the
+      first that will be in reach; it is taken to move as the bogey nearer to it does), since the swipe hits
+      living entities and a bogey point misses a rider at the middle or the rear of a long carriage. A carriage
+      with a living rider that will not be in reach is not struck. A carriage with no living rider is struck at
+      its leading bogey's point, else its trailing one's. The motion passed is the landing less the position,
+      over 9, so the plugin's `at + motion * 9` is the landing.
+    - The prediction follows the track within one edge. Past a node it goes straight on, and a bend beyond the
+      node makes the aim err by about the part of the 9 ticks past the node squared over twice the bend's radius
+      (a train at 1.4 blocks a tick covers 12.6 blocks in the swing; a tight Create curve is a few blocks of
+      error). That is the recorded bound, not a fix: the swipe's 67.5 degree arc and its 6.5 reach absorb part of
+      it. A train that changes speed during the swing (a station stop, a signal) errs by the change. Neither is
+      tested.
+    - Test 9 runs at the engine's own spot, 5 blocks off (`LATERAL` 5), at 0.5, 1.0 and 1.4 blocks a tick
+      (`rail_frostmaw_lurk_slow`, `rail_frostmaw_lurk`, `rail_frostmaw_lurk_fast`: the same body with the speed
+      passed in; the slow and the fast skip the bait, the hold's checks and the hearer, which the 1.0 run
+      covers), each asserting that the rider is hit. Expected on the unfixed code: the 0.5 run probably hits
+      (the swing lands 4.5 on, 0.35 past the closest approach: 5.0 horizontal), while the 1.0 and 1.4 runs miss
+      (landing 6.96 and about 9.8 horizontally) and fail with "the zombie was hurt at <speed> (health 1000.0
+      of 1000.0)". Nothing has run.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -3736,6 +3773,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       the test drives the real path without moving the train. The hearer stands 20 blocks behind the first
       station, away from the lurk, so it is about 61 blocks from the puppet (not a target, 50; out of the
       puppet's own sounds) and 80 from the second station.
+    - Amendment (review C, item 2; written and compiled, not run): test 9 is three tests, one body at three
+      speeds (MZB-365's third amendment). Its spot is 5 blocks off the rail, the engine's own `SPOT_BLOCKS`, not
+      the 4 above (which the engine never lays), and the train runs at 0.5, 1.0 and 1.4 blocks a tick with
+      `manualTick` and a set `speed`, so it moves exactly that a tick. Each asserts that the rider is hurt. The
+      1.0 run (`rail_frostmaw_lurk`) keeps the whole test; the other two (`_slow`, `_fast`) skip the bait, the
+      hold's checks and the hearer and end after the TRAIN_PASSED check. The rider is still the seated zombie, so
+      the 3D filter is the one MZB-365's third amendment gates on.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
