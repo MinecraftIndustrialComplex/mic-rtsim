@@ -1166,7 +1166,7 @@ public final class IndustryGameTests {
                     check("district", d != null);
                     id[0] = d.id;
                 })
-                .thenWaitUntil(() -> check("Java worked out its load state", ind().district(id[0]).loadState() >= 0))
+                .thenWaitUntil(() -> check("Java worked out its load state", stillThere(id[0]).loadState() >= 0))
                 // Java journals the district and its load state in the tick it notices them, and the engine
                 // receives them only at a later publish (the native engine a step later still): the mark must
                 // come after the engine has everything journaled so far, or this district's own first records
@@ -1176,9 +1176,9 @@ public final class IndustryGameTests {
                         engine().maxObsSeq() >= through[0] && receivedThrough(through[0])))
                 .thenExecute(() -> {
                     mark[0] = lastReceived();
-                    stateAtMark[0] = ind().district(id[0]).loadState();
+                    District d = stillThere(id[0]);
+                    stateAtMark[0] = d.loadState();
                     ind().diagnostics().warn(id[0], "test", "a test warning");
-                    District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
                     for (var c : ind().diagnostics().debugLines(d))
                         sb.append(c.getString()).append(" / ");
@@ -1220,7 +1220,7 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     int sent = sentSince(mark[0], id[0]);
                     check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since;"
-                            + " load state " + stateAtMark[0] + " at the mark, " + ind().district(id[0]).loadState() + " now)", sent == 0);
+                            + " load state " + stateAtMark[0] + " at the mark, " + stillThere(id[0]).loadState() + " now)", sent == 0);
                 })
                 .thenSucceed();
     }
@@ -1277,6 +1277,16 @@ public final class IndustryGameTests {
                     check("below permission 2 the command is refused", refused);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * The district {@code id}, failing the test (not throwing out of the tick, which stops the whole server) when it
+     * is gone: another test's {@code forget()} forgets every district in the level.
+     */
+    private static District stillThere(long id) {
+        District d = ind().district(id);
+        check("district " + id + " is still there (another test's forget() forgets every district)", d != null);
+        return d;
     }
 
     /** True once the engine's received log holds a record at or past {@code seq} (it arrives in sequence order). */
