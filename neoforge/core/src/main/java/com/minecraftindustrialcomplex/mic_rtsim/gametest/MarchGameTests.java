@@ -449,7 +449,7 @@ public final class MarchGameTests {
 
     /**
      * The stop (MZB-472, CL-D35) at a simulation distance of 8: a band the engine says is waiting or fighting keeps to the square of
-     * blocks one chunk inside the ticking edge of the player it stands near. The chunks of the area are forced (a seen player's
+     * blocks two chunks inside the ticking edge of the player it stands near (MZB-746). The chunks of the area are forced (a seen player's
      * area is test 33's), a plain {@link FakePlayers#add} player stands in the middle, and three bands of six warriors and
      * the chief are met on the march (radius 0, rows of two, the chief at the rear):
      * <ul>
@@ -464,14 +464,14 @@ public final class MarchGameTests {
      * its offset, {@code back} from the point along the new heading).</li>
      * </ul>
      * The same at a simulation distance of 4 is {@link #aStoppedBandKeepsToTheSquareAtSimulationDistanceFour} (P3-2 of the M10b
-     * review: the square is a chunk's margin from the edge, where bodies pushed off their places stay in the ticking area).
+     * review, MZB-746: the square is two chunks from the edge, so bodies a fight pushes a chunk off their places stay in the ticking area).
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_stop")
     public static void aStoppedBandKeepsToThePlayersSquare(GameTestHelper helper) {
         stop(helper, "aStoppedBandKeepsToThePlayersSquare", 8);
     }
 
-    /** The stop at a simulation distance of 4: the ticking area is nine chunks across and the square seven. */
+    /** The stop at a simulation distance of 4: the ticking area is nine chunks across and the square five (P3-2: two chunks inside the edge). */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_stop4")
     public static void aStoppedBandKeepsToTheSquareAtSimulationDistanceFour(GameTestHelper helper) {
         stop(helper, "aStoppedBandKeepsToTheSquareAtSimulationDistanceFour", 4);
@@ -560,8 +560,11 @@ public final class MarchGameTests {
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
                     record(test, "area", "simulation distance " + s + ", the player's chunk (" + at.cx() + ", " + at.cz() + "), the square x "
                             + sq[0] + " to " + sq[2] + " and z " + sq[1] + " to " + sq[3] + ", the ticking area ends at x " + tickEdge);
-                    check("the square lies inside the ticking area by at least a chunk on the east: edge " + east + ", ticking edge " + tickEdge,
-                            tickEdge - east >= 16.0);
+                    check("the square lies inside the ticking area by two chunks on the east: edge " + east + ", ticking edge " + tickEdge
+                            + " (" + (tickEdge - east) + " blocks)", tickEdge - east == 32.0);
+                    check("and by two chunks on every side of the player's chunk: square " + sq[0] + " " + sq[1] + " " + sq[2] + " " + sq[3],
+                            sq[0] == 16 * (at.cx() - (s - 2)) && sq[2] == 16 * (at.cx() + s - 1) - 1
+                                    && sq[1] == 16 * (at.cz() - (s - 2)) && sq[3] == 16 * (at.cz() + s - 1) - 1);
                     ConflictKit.materialize(bw, six);
                     ConflictKit.materialize(bc, six);
                     ConflictKit.materialize(bk, six);

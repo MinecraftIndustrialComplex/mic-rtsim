@@ -8368,8 +8368,8 @@ MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; t
 - **MZB-724** (the stop; step 5): a band is stopped while the bridge holds a march of it in phase 3 or 4 in its own
   level. On the 20-tick beat (`STOP_BEAT`, PLACEHOLDER) or at once when a record has just put it in the stop
   (and when the band is first materialized):
-  - **The square** is one chunk inside the nearest player's entity-ticking edge (`StopSquare.square`), from the
-    server's simulation distance. **The nearest player** is the nearest non-spectator player in the level
+  - **The square** is two chunks inside (MZB-746; one when first built) the nearest player's entity-ticking edge
+    (`StopSquare.square`), from the server's simulation distance. **The nearest player** is the nearest non-spectator player in the level
     within `STOP_REACH` (256) of the head. With no such player nothing is moved.
   - **Walk-in** (pending stacks): a stack whose anchor is outside the square comes in where its line to the head
     crosses it (Liang and Barsky; the head clamped into the square when the line never does), pulled half a
@@ -8536,8 +8536,18 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
     one follower held at 120, the others at 146: not cut; the follower moved out: cut on the beat with its pack). The
     brief gave 100 and 160, and 66 against 50, for the old 64 rule; the numbers here are against the 128 the rule now is,
     and the far player stands at 170 (past the 160 of the Umvuthi's tracking range of 10). The tests set the server's view
-    distance to 10 (restored when the test ends); the rest of the GameTests with a watching player stand within 50 blocks
-    or beyond 128 and are not moved by the wider rule.
+    distance to 10 (restored when the test ends). No other band GameTest relies on a player between 64 and 128 blocks off
+    (the ones that recall use a one-tick timeout), so none is moved by the wider rule.
+- **MZB-746** (the stop's inset; P3-2 of the Opus review of M10b): the stop's square is **two chunks** inside the
+  entity-ticking edge, not one (`StopSquare.INSET`): chunks `pcx - r` to `pcx + r`, `r = max(0, s - 2)`. At a low
+  simulation distance a body a fight pushed a chunk off its place left the ticking area, and `checkPlaced` took the stack
+  back to pending (a flicker). The floor is the player's own chunk, so a simulation distance of 2 or less still leaves a
+  square (16 by 16 blocks). MZB-724's "one chunk inside" and the design texts' (`MOWZIE.md` §§4.16 and 7, the
+  ledger's MZ-17) are this record's now; `docs/boundary.md` is corrected. At the two distances the stop's GameTests
+  use, the square is 13 chunks across at 8 and 5 at 4. `StopSquareTest` (8) is rewritten for it, with the floor and
+  an every-distance check of the two-chunk margin; the stop's GameTest at 4 now asserts the east margin is exactly 32
+  blocks and the square's four sides are two chunks in (`aStoppedBandKeepsToTheSquareAtSimulationDistanceFour` is the
+  GameTest the review asked for), and the one at 8 asserts the same.
 
 ## M11 Aloft
 

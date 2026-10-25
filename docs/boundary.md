@@ -1946,9 +1946,10 @@ joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16). 
 - **What Java does with it (M10b, MZB-720 to MZB-731).** Java keeps the latest record per agent and sends
   nothing back for it. It lays a materialized band out as a column (rows of two, a raptor pack's pairs
   abreast, the war chief at the rear), turns the column at each BAND_STEER, and trims what it holds beyond
-  the record's counts. A band in phase 3 or 4 is held in the square one chunk inside its nearest player's
+  the record's counts. A band in phase 3 or 4 is held in the square two chunks inside its nearest player's
   entity-ticking edge, checked every 20 ticks. The trim cuts pending members first, then placed members no
-  player is within 64 blocks of, never one in sight; it books nothing and journals nothing, and an ENDED
+  player sees (within the entity's tracking range, 128 blocks at the least, bounded by the view distance), never
+  one in sight; it books nothing and journals nothing, and an ENDED
   record trims nothing. The walk-in, the clamp and the trim are Java's alone: the engine learns of them from
   the next records and from the bodies' own casualties. A HAND_BACK line sends its band home whatever the
   line's outcome, the camp not in included (MZB-726).
