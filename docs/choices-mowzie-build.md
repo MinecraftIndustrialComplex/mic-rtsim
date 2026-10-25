@@ -8475,6 +8475,7 @@ MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; t
     a line with no puppet behind it, so nothing is stranded and the band still walks home; skipping the homecoming for
     those would leave a band the engine has ended standing for good. The band that stays is the band of the next census's
     orders (the existing `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale`, unchanged, asserts `!recalling()`).
+    **Wrong, reverted by MZB-751** (see "The M10 end review"): a STALE books nothing and the next order is a SPAWN, so the kept band was stranded.
 - **MZB-727** (`ConflictKit` for M10c; step 8): `march(MarchSpec)` scripts a BAND_MARCH (agent, revision, dimension,
   faction, kind, phase, flags, muster end, units by body name, waypoints as `{x, z, tick}`); `trimmed()`,
   `walkIns()`, `clamps()` and `unbookedHomeDeaths()` read the counters. It works on the stub and on the native engine.
@@ -8655,6 +8656,54 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
   `cargo test -p rtsim-conflict` passes, and the Java compiles. `ConflictGameTests`'
   `aNoticeWaitsForThePlayersNextEntryAcrossALogout` and `signalsInsideATerritoryAreCountedAndBatched` still have
   unwrapped site-load waits, as they do on main. They are left as they are unless the round fails them.
+
+### The M10 end review (MZB-751 to MZB-759)
+
+An Opus review of M10's head (2443e915) found one P1, one P2 and seven P3s. Each fix is one commit; the lead owns P3-4
+(M11's design takes the deferrals that test list does not name).
+
+- **MZB-751** (P1-1: MZB-726's amendment was wrong, and is reverted). MZB-726 (P3-1 of the M10b review) took a band
+  whose HAND_BACK answered STALE out of the homecoming (`Camps.staying`, `removeAll(staying)`), on the reading that
+  the puppet stays, the next census orders "it" again, and the same line would then come once more. None of that is
+  how the engine behaves. A STALE books nothing (camp.rs, the answer loop: "a stale line books nothing"), the slot
+  stays Owed with no party (`go_home` cleared `s.party` and ended the party when it sent the HAND_BACKs), and the
+  next order for that slot is a SPAWN from `spawn_lines`, never the same HAND_BACK. The engine has no row for the
+  band any more and sends nothing more for it. So keeping the band stranded it:
+  - every puppet of the band stayed held in `byAgent` until the session ended, with no engine row (breaking MZB-463,
+    "no puppet outlives its band's row");
+  - the band's other slots were already handed back or spawned in the same reconcile, so the raptor pack and the
+    puppet stood beside the camp's bodies: a double in the same tick, and a second one when the next census spawned
+    the cancelled slot beside its own puppet;
+  - `home_open` never closed, so a stranded puppet's later death counted as unbooked.
+
+  `Camps` is back to the MZB-464 rule: every band a HAND_BACK names is walked home whatever the line's outcome (the
+  camp not in, a stale line, a failed `addFreshEntity`), the puppet whose join was cancelled with it. Nothing is lost:
+  the slot is Owed and the census respawns it (MZB-244). The commit that added `staying` (9f4197e5) changed only
+  `Camps.java` and this file, so the revert is its whole code change. **The GameTest** is renamed
+  `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale` to
+  `aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody` and says the true thing: after the
+  STALE it sends the SPAWN line for slot 0 the engine would send, then asserts the SPAWN is DONE, the party is gone
+  (`ConflictKit.party(agent)` null), both puppets are removed, and exactly one body (and one body in all) is held for
+  slot 0. Its waits are `waits.logic` on ChunkWait's tick clock (one `waits.chunks` for the site); no chunk
+  forcing is undone from a listener. **Why it fails at 2443e915** (read from the code, not run): the STALE puts the
+  band in `staying`, so `homeAt` never runs: the party stays in `byAgent` and `ConflictKit.party(agent)` is not null
+  ("the party is gone" never passes; the wait runs out its 2000 tick budget), and the puppets are not removed; the SPAWN
+  would also have made a body beside the standing puppet of slot 0. **Engine side:** nothing in camp.rs or
+  boundary.rs assumes the band stays after a STALE (`go_home` ends the party and zeroes `s.party` before any line is
+  sent, and a STALE answer is dropped by the answer loop); there is no Rust test of a STALE HAND_BACK to change.
+  The MZB-726 amendment above is corrected in place with a pointer here.
+- **MZB-752** (P2-1: the seam lap of `go_home`, MZB-456). No test failed when `go_home` took its start from
+  `party_pos` (the canonical cell) instead of `party_chart_pos` (the cell in the route's chart): all 812
+  rtsim-conflict and rtsim-jni tests passed. The CLI's `sim mowzie` seam check (`sim/mowzie/march.rs`) covers it, but it
+  is not a cargo test. `tests/mowzie_march.rs` now has
+  `a_band_routed_after_the_seam_walks_home_from_its_chart_position_not_a_lap_away`: an x-wrapped world (period 1200),
+  a raid whose target lies across the seam from the camp (x 900 to 100), the band walked out in 20 tick steps until its
+  chart cell and canonical cell differ, then routed by `chief_killed`; it asserts the way home is the chart cell then
+  the road it came by back to front, and its first segment is as long as the walk made. **Mutation:** with
+  `party_pos` at engine.rs:5025 the test fails, "the route home starts at the chart cell (1200, 1000), not the
+  canonical (0, 1000)": the route is `[(0, 1000), (900, 1000)]`, a first segment of 900 blocks for a walk
+  of 300 (the right route's first segment is the 300 blocks from (1200, 1000) back to the camp's x 900), and passes
+  with `party_chart_pos`.
 
 ## M11 Aloft
 
