@@ -159,12 +159,15 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
     /**
      * The command's text against the report it was built from (SECTIONS.md §8.1): the district holds the two lines
      * sharing the vault and the bystander, so the report has several sections and a shared store. The report is
-     * fetched in the same tick as the command, on the server thread, so the two see one state. Checks the header,
+     * fetched in the same tick as the command, on the server thread, after the steps handed over have run, so the
+     * two see one state. Checks the header,
      * one {@code  sN} line per section (counted on its own, apart from the shared store lines, which start
      * {@code  shared}), each line's state word and unit, the vault's shared-store line (counted at its movers, with
      * the report's pair count), the return value, and {@code /rtsim district info}'s glass sections line.
      */
     static void sectionsCommand(GlassReplayGameTests.Run run, BlockPos vault) {
+        // Each fetch asks the engine between steps: with no step in flight, the three below see one state.
+        IndustryKit.engine().awaitIdle();
         District d = IndustryKit.ind().district(run.fd);
         var fetch = d == null ? null : IndustryKit.ind().diagnostics().glassReportOf(d);
         if (fetch == null || fetch.report() == null) {

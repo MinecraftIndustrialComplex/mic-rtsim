@@ -96,7 +96,7 @@ pub struct IndustryView {
     pub glass_unread: Unread,
     /// Store pages that did not read, by store (the layers draw without them).
     pub stores_unread: Unread,
-    /// Each store's mark, in `stores`' order: its chain links are found once, not per draw.
+    /// Each store's mark, in `stores`' order: its drawn chain links are found once, not per draw.
     store_marks: Vec<StoreMark>,
     globals: Vec<u8>,
 }
