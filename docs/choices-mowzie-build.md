@@ -5407,3 +5407,176 @@ Merge notes for the integration (S lands after slice H and before D; the merge o
 - RP-57's table in this file had one row for "Dragons, ships"; the merge split it as H split the
   herds' (a dragons row, still without a floor until D, and a ships row pointing at RP-99, RP-97
   and RP-120 to RP-122).
+
+### Slice T (train attack ops)
+
+The double robbery (branch `fix/replay-train-ops`, base a11311aa). Industry is not held while
+replaying (docs/replay-gate.md §3.6, the coordinator's decision of 2026-10-24), so a raider whose
+pages are older than a train raid it made replays its window and raids the same train again, and
+`attack_train` derived the CarriageDelta's op from industry's present (`derive(world_seed, now,
+&cmd)`): a new op, which TrainWatch applied again. The coordinator's decision A: derive the op
+from the threat's identity. The rtsim-industry change is confined to `attack_train`'s op and the
+loot exchange's drop on DUPLICATE (RP-180, RP-182, RP-183); rtsim-jni's `command_result` passes the
+DUPLICATE on. No page, record or wire format changes (RP-180), no fixture moves, and no Java is
+built: RP-185 proposes the Java change. Tests: rtsim-industry `tests/train_raid_ops.rs` (4) and
+`cmd.rs` (2 unit tests), one crash test file per raider on main through a shared harness
+(rtsim-ecology `tests/common/train_raid.rs`, included by path; dragons 3, conflict 2, ships 3), and
+rtsim-jni `tests/industry.rs`'s `a_train_raid_decided_again_after_a_crash_is_applied_once`. M8's
+TRAIN_PASSED test is written for the M8 merge (RP-187).
+
+- **RP-180** (the key; §3.6): a train attack's op is `IndustryOps::derive_keyed(world_seed, key)`,
+  where the key (`attack_key`, rtsim-industry engine.rs) is 19 bytes: `b'T'`, `Threat.id` (u64 LE),
+  the source (u8: Natural 0, Dragon 1, Bandit 2, Boss 3, Synthetic 4, Nest 5), the class index (u8)
+  and the train (u64 LE). Not industry's `now`, not `t.at` (`threat_with` raises the attack's tick
+  to `now`, and every raider's id holds its own tick already), and not the entries (what the leg's
+  cargo gives at industry's present). `derive_keyed` hashes `[seed][u64::MAX][ordinal][key]`
+  (the `u64::MAX` where `derive` puts the tick, so a keyed hash never meets an unkeyed one) into
+  the low 56 bits under industry's namespace, as `derive` does. The window (`recent`, 256 entries)
+  now holds `(tag, low bits)`: a tick for an unkeyed derivation, as before, and for a keyed one the
+  FNV-1a of its bytes with the ordinal slot at `u64::MAX`, bit 63 set (`KEY_TAG`, above any tick).
+  A tag the window holds gives back the id it was given, however many derivations came between,
+  so the same key is the same op; an unknown tag takes the ordinal loop past low bits the window
+  holds, as `derive` does, so two keys whose hashes meet still get two ops. The window was
+  `VecDeque<(Tick, u64)>` and is `VecDeque<(u64, u64)>`: a Tick persists as a u64, so the page
+  bytes are the same (`the_window_keeps_its_page_bytes`), no format change and no fixture.
+  Stable across a replay: every input is the raider's own (its id, source, class) or the train,
+  which the raider derives again from its pages and the replayed records, and the world seed. The
+  restarted engine's window comes from pages older than the raid, so it does not hold the key and
+  the re-derivation takes ordinal 0, as the live one did unless the live hash's low bits met another
+  op in the window (a chance of about 256 in 2^56): then the two differ and the raid is applied
+  twice. Accepted.
+- **RP-181** (the key is unique per real attack; the coordinator's condition 1): no per-threat
+  sequence number is needed, since no raider makes two real attacks with one id. Conflict's
+  `Ev::Ambush` (`ambush`, rtsim-conflict engine.rs): `fnv1a64(agent, at, train, class)`, one threat
+  per class, so the class is in the id and in the key. M8's `train_passed` calls the same `ambush`
+  (the same ids). Dragons' `train_raid`: `fnv1a64(dragon seed, at, train)`. Ships' `coast_raid`:
+  `fnv1a64(ship seed, at)`, with no train; the key adds it, and one call raids one train. A raider
+  that attacks the same train again does it at another tick, so another id and another op. Two
+  attacks with one id would be one band ambushing one train twice in a tick (two `Ev::Ambush`, or
+  an `Ev::Ambush` and an M8 pass at the same tick): the second is the same key and is skipped
+  (RP-183), where main's per-class train cooldown (24,000 ticks) skipped it already, so no real
+  attack is lost. Two raiders' ids meeting (conflict's bands and the pirates are both `Bandit`;
+  their hashes are of 32 and 16 bytes): a 64-bit collision on the same train and class, about
+  2^-64 a pair; accepted. `the_key_parts_the_attacks_it_should` pins what parts two keys (id,
+  source, class) and what does not (the tick).
+- **RP-182** (DUPLICATE drops a loot exchange; the brief's item 2): `Engine::command_duplicate(op)`
+  removes the pending exchange of `op` when it is loot, and rtsim-jni's `command_result` calls it
+  on DUPLICATE_OP (after `complete`, as before). The goods left the train once, at the first
+  application, so the books keep what the re-decision booked; no IND_CARRIAGE_RESULT comes for the
+  op. A station exchange is left alone (conservative: a DUPLICATE there is a copy of a command
+  whose result is journaled and comes, and dropping it would lose that result's correction). The
+  two orders of the replayed IND_CARRIAGE_RESULT of the live application against the re-decided
+  raid, both possible in the host (industry's records run no `catch_up`, so whether the raider
+  reaches the raid's tick before the result's record depends on the module records between them):
+  O1, the raid first: it books and inserts its exchange under the live op, the replayed result
+  takes the exchange and corrects `books.stolen` by the live shortfall (loot the carriage no longer
+  had), and Java's DUPLICATE then finds nothing. O2, the result first: it finds no exchange and is
+  ignored, the raid books and inserts, and DUPLICATE drops the exchange; `books.stolen` is then over
+  by the live shortfall, if there was one (none when the carriage had what was asked, the usual
+  case). The leg model is as the re-decision left it in both. Tests: `a_re_decided_train_raid_carries_the_op_java_applied`
+  (O2), `a_replayed_result_before_the_duplicate_takes_the_exchange` (O1, a shortfall of 40), and
+  each raider's crash test in both orders.
+- **RP-183** (industry already holding the raid; the brief's item 3): `attack_train` returns at
+  its top when the op window holds the attack's key (`IndustryOps::knows_key`): nothing is booked,
+  no stat moves, nothing is sent, and the raider is credited nothing (its pages lost the raid: a
+  loss to its ledger, never a second theft). Without it an engine past the train's cooldown booked
+  the raid again under the same op (Java: DUPLICATE, the goods once, but `books.stolen` twice).
+  Industry's pages newer than a raider's do not happen with the host's one save batch (every
+  module's pages are saved together); the check is for the window's 256 entries, and the tests
+  build the case by hand. The case table (the raider's pages older than the raid, Java as RP-184
+  names its saves):
+
+  | Industry's pages | Java's op index | Java's goods | Main | With A |
+  | --- | --- | --- | --- | --- |
+  | older than the raid (one batch) | remembered | gone (J1) | twice | once (DUPLICATE, the exchange dropped) |
+  | older | forgotten | restored (J2) | once | once |
+  | older | forgotten | gone (J3) | twice | twice (RP-185 would make it once, or a loss) |
+  | older | remembered | restored (J4) | once | never: a loss, the books hold it stolen |
+  | newer (holds the raid) | either | either | twice past the cooldown (a new op), skipped inside it | nothing booked or sent (`knows_key`) |
+
+- **RP-184** (Java's durability; the coordinator's condition 2; H17 was wrong): the train's goods
+  are in Create's `RailwaySavedData` (`data/create_tracks.dat`, the overworld's data storage), each
+  carriage's storage serialised with its train. The op index TrainWatch dedups by
+  (`Industry.opApplied`, `Journal.appliedCmdOps`) is rebuilt from the journal's entries, in
+  `mic_rtsim_journal.dat` (`JournalSavedData`, the same storage), and holds an op until the
+  engine's durable ack trims the entries that carry it (`Journal.trim`, `forgetOp`). Both are
+  SavedData of one `DimensionDataStorage`: a world save walks its cache (a HashMap, so their order
+  is the keys' hash order at the map's capacity, which can change as other SavedData register) and
+  NeoForge writes each file as its own task on one IO chain, one after the other. The journal's
+  task first waits for the barrier's round (`ChunkWriteBarrier.await`, at most `WAIT_MILLIS` 10 s)
+  and, if its chunks are not on disk, holds the file to the next world save, up to
+  `GIVE_UP_ROUNDS` (3) saves in a row; the tracks file is written at every save. Autosave is every
+  6,000 ticks. So the two part, both ways: the goods on disk without the journal (J3) when the
+  tracks file is first in the chain and the server dies before the journal's write (milliseconds,
+  up to the 10 s wait), or when the barrier holds the journal (up to three autosaves); the journal
+  without the goods (J4) when the journal is first and the server dies between the two writes
+  (milliseconds). What A guarantees: once when both landed (J1, the common case: any save between
+  the raid and the crash) or neither (J2); twice in J3, as on main; never in J4, a loss (the goods
+  stay on the train, while industry's books and the raider's ledger hold them taken), which the
+  coordinator's "lose, never double" accepts. Main was once in J2 and J4 and twice in J1 and J3.
+  The trim forgets no op a raider can re-decide: the engine acks after the host's one-batch save,
+  which moved the raider's pages past the raid too. Test:
+  `which_of_javas_saves_landed_decides_once_twice_or_never` (dragons).
+- **RP-185** (the Java change, proposed, not built): (a), recommended: TrainWatch keeps for each
+  train a bounded ring (about 64) of the carriage delta ops it applied, saved with the train in
+  `create_tracks.dat` (a mixin on `Train.write` and `Train.read`, one long array tag), and
+  dedups IND_CARRIAGE_DELTA by that ring instead of the journal's index. The goods and the op that
+  moved them are then one file, so J3 is a DUPLICATE (once) and J4 applies the op again to the
+  restored goods (once): exact in every case. 64 ops a train is far more than a raider's window
+  between two page saves can re-decide. (b), smaller: never let `create_tracks.dat` reach disk
+  ahead of the journal (a mixin on `RailwaySavedData`'s save that waits on the journal's round, as
+  the barrier waits on chunks), which turns J3 into J4: a loss, never a double, and J4 stays a
+  loss. The lead and Ben choose; nothing is built.
+- **RP-186** (the tests and their controls): each raider's crash test runs the raid live, saves the
+  raider and industry at `s` before it (one batch), crashes at `c` after Java applied it, brings
+  both back from `s` with industry moved on to `c` (not held), feeds the journal's carriage
+  results in either order and replays the raider; Java is `JavaTrain` (the harness), with the
+  goods and the op index restored from the saves RP-184 names. Each counts the goods off Java's
+  carriage, not industry's model, against a live no-crash control. Main's derivation was put back
+  on a scratch edit of `attack_train` (the op from `derive(world_seed, now, &cmd)`, no `knows_key`
+  return), the tests run, and the edit reverted; each new test failed on it as follows:
+  rtsim-industry `train_raid_ops.rs`: all four on the op, e.g.
+  `a_re_decided_train_raid_carries_the_op_java_applied` at :126 (OpId(5281570213733457881)
+  against OpId(5275023983707477257)); dragons
+  `a_dragons_train_raid_replayed_after_a_crash_takes_the_goods_once` 128 against 64 at :137,
+  `a_dragons_train_raid_held_by_industry_is_booked_once` 121 against 64 at :161,
+  `which_of_javas_saves_landed_decides_once_twice_or_never` 128 against 64 at :189; conflict
+  `a_bands_ambush_replayed_after_a_crash_takes_the_goods_once` 64 against 32 at :148,
+  `a_bands_ambush_held_by_industry_is_booked_once` 64 against 32 at :171; ships
+  `a_coast_raid_after_the_replay_takes_the_goods_once` 128 against 64 at :145,
+  `a_coast_raid_held_by_industry_is_booked_once` 121 against 64 at :182, and
+  `a_coast_raid_inside_the_replay_is_deferred` passes on main (it pins the deferral, RP-188);
+  rtsim-jni `a_train_raid_decided_again_after_a_crash_is_applied_once` on the op at
+  tests/industry.rs:1646, and without that assertion on the world's totals ("world totals off by:
+  create:crushed_raw_iron -22", :184). The rtsim-jni test drives the host: a page save while the
+  iron line's train is laden, an `Order::IndustryThreat` (a Bandit siege), a world save (J1), a
+  crash and the same threat ordered again.
+- **RP-187** (M8's `train_passed`; guard B): M8 keeps guard B (`if self.outbox.replaying() {
+  return; }` in rail.rs `train_passed`, RP-154) until this slice lands; the M8 merge that follows
+  drops it, deletes lurk.rs `a_replayed_train_passed_is_counted_and_never_rolls` (its first half
+  asserts the guard), and adds /tmp/mzbuild/rp-t-m8-test.rs as
+  `crates/rtsim-conflict/tests/train_passed_replay.rs` (written against feat/mowzie-m8 df324e0d,
+  not built here). Without the guard a replayed TRAIN_PASSED is ingested at its journaled tick,
+  so it rolls the slot it rolled live (`train ^ at`) and its threats carry the live ids: the same
+  keys, DUPLICATE, the goods once. Its three tests mirror the dragons': both orders, industry
+  holding the robbery, and the J1 to J4 table. Main's `Ev::Ambush` was given no guard: A is its
+  fix, as the coordinator ruled.
+- **RP-188** (the pirates' `defer`; the brief's question 4): `Outbox::defer()` is true while the
+  outbox replays, and `coast_raid` returns at its top, counted deferred and never retried (RP-95).
+  So a coast raid the live session made is either inside the replayed window, where the replay
+  drops it (R-a: a loss to the pirates' ledger; the goods left the train once, live), or past the
+  replay's end, when the replay clock (raised only by the modules' replayed records, `catch_up_to`)
+  stopped short of the raid's tick: the hunt re-decides it live, at industry's present (R-b). On
+  main R-b was a new op and a double; with A it is a DUPLICATE. Tests:
+  `a_coast_raid_after_the_replay_takes_the_goods_once` (R-b),
+  `a_coast_raid_inside_the_replay_is_deferred` (R-a). Conflict's and dragons' raids can fall past
+  the replay's end the same way; A covers them alike.
+- **RP-189** (the docs): docs/replay-gate.md §3.6's industry bullet no longer calls train raids
+  "lose, never double"; §6.1's losses list J4 and the pirates' R-a, and names J3 as the one double
+  left. TrainWatch's comment at the carriage delta's dedup said "Train cargo and the journal reach
+  disk at the same save" (H17, docs/overnight-choices-industrymc.md); it now says what RP-184
+  found. Not changed, outside the slice: core Industry.java's `depositDelta` comment and Q22
+  (docs/overnight-choices-indplugins.md) make the same claim for IND_DEPOSIT_DELTA ("as H17"),
+  whose store (Diesel's `OilChunksSavedData`) is a SavedData file of its own, written apart from
+  the journal's, so it can part from it as RP-184 says (not checked further); the overnight records
+  are left as written.

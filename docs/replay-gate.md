@@ -622,11 +622,22 @@ ahead:
   `train_scan` (rtsim-ecology engine.rs about L1596) and ships' `coast_raid` (rtsim-ships engine.rs
   about L3493). While held, a module asks about a window that industry has already passed, and a leg
   industry closed since may be missing, so a replayed ambush or scan can miss a train the live one
-  found (lose, never double). And raids, which industry applies at its own present
+  found (a loss). And raids, which industry applies at its own present
   (`threat_with` takes `t.at.max(self.now)`), so a held module's raid books on industry's later
   state. Conflict's district raids come from `resolve`, which §6.1 holds; its train ambushes
   (`Ev::Ambush`, `raid_train`) still run in the replayed window, as today, and are abstract (no
-  body). Dragons' and pirates' raids are slices D's and S's check. **Decided by the coordinator,
+  body), as do dragons' train raids and, with M8, a lurking band's TRAIN_PASSED; the pirates'
+  coast raid is deferred while replaying (RP-95). **A train raid found again was not "lose, never
+  double"**, as this bullet said until slice T: industry derived its CarriageDelta's op from its
+  own present, so the re-decided raid was a new op, Java applied it, and the goods left the real
+  train twice. Slice T (docs/choices-mowzie-build.md RP-180 to RP-189) derives the op from the
+  attack's identity (the threat's id, source and class, and the train), so Java answers
+  DUPLICATE and the goods leave once, wherever the raid is re-decided (in the replay, or live after
+  its end when the replay clock stopped short of it, RP-188). That holds while Java's two saves
+  agree (RP-184): the train's goods (`create_tracks.dat`) and the journal's op index
+  (`mic_rtsim_journal.dat`) are separate files and can part. Goods on disk without the journal
+  is still a double, the journal without the goods a loss; §6.1 lists both, and RP-185 proposes
+  the Java change that closes the double. **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
   industry's own replay); the long-replay tests run with industry on and off.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
@@ -1217,6 +1228,23 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
 - An M7 track-target party held at a track Java has removed since (§4.4's note).
+- A train raid re-decided after a crash whose op the journal on disk remembers while the train's
+  goods on disk are from before the raid (docs/choices-mowzie-build.md RP-184's J4: the journal's
+  file landed and the tracks' did not). Java answers DUPLICATE and the goods stay on the train,
+  while industry's books and the raider's ledger hold them taken. A window of milliseconds between
+  two writes of one world save.
+- A pirate coast raid the live session made inside what becomes the replayed window: `coast_raid`
+  is deferred while replaying and never retried (RP-95, RP-188). The goods left the train once,
+  live; the pirates' ledger misses the raid.
+- A train raid a raider's replay meets that an industry engine newer than its pages already holds
+  (RP-183): booked once, and the raider is credited nothing. Unreachable with the host's one save
+  batch; the op window's guard is for the tests' hand-built case and any later change to it.
+
+**The one double left** (RP-184's J3): the train's goods on disk after the raid, the journal on
+disk from before it (the tracks file written first and the server dead before the journal's, or
+the journal held by the chunk barrier for up to `GIVE_UP_ROUNDS` saves). The re-decided raid's op
+is one Java forgot, and it is applied again. RP-185 proposes the Java change that makes it exact
+(the applied ops saved with the train) or a loss (the tracks file never ahead of the journal).
 
 **More than one crash** (the fix round's item 8). A held arrival stays held until its slack or the
 replay end of the first session that reaches one, whichever comes first. A session that crashes or
