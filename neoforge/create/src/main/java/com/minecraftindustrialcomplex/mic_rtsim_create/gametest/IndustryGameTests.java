@@ -995,9 +995,11 @@ public final class IndustryGameTests {
     /**
      * Damage (C18, I23): a reconcile's destroy entry whose block still has its expected state is broken
      * with drops, so the chest's 12 emeralds lie on the ground; one whose state changed is skipped; no
-     * fire. The result names the block broken.
+     * fire. The result names the block broken. The drops join the level only once the chunk is on disk
+     * (docs/choices-journal-barrier.md RP-213), which takes wall time: that wait is paced, and the timeout
+     * (at least 60 s at 5 ms a failed check) covers {@code ChunkWriteBarrier.WRITE_NOW_MILLIS}.
      */
-    @GameTest(template = YARD, batch = "industry_08", timeoutTicks = 400)
+    @GameTest(template = YARD, batch = "industry_08", timeoutTicks = 12_000)
     public static void aBrokenBlockDropsItsContents(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -1029,20 +1031,22 @@ public final class IndustryGameTests {
                     check("the broken block is the chest", r.getInt(p) == chestPos.getX() && r.getInt(p + 4) == chestPos.getY() && r.getInt(p + 8) == chestPos.getZ());
                     check("the chest is gone", level.getBlockState(chestPos).isAir());
                     check("the barrel stands", level.getBlockState(barrelPos).is(Blocks.BARREL));
-                    int emeralds = 0;
-                    for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new AABB(chestPos).inflate(3)))
-                        if (it.getItem().is(Items.EMERALD))
-                            emeralds += it.getItem().getCount();
-                    check("its 12 emeralds dropped: " + emeralds, emeralds == 12);
                     boolean fire = false;
                     for (BlockPos q : BlockPos.betweenClosed(chestPos.offset(-3, -1, -3), chestPos.offset(3, 2, 3)))
                         if (level.getBlockState(q).is(Blocks.FIRE))
                             fire = true;
                     check("no fire", !fire);
+                })
+                .thenWaitUntil(paced(() -> {
+                    int emeralds = 0;
+                    for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new AABB(chestPos).inflate(3)))
+                        if (it.getItem().is(Items.EMERALD))
+                            emeralds += it.getItem().getCount();
+                    check("its 12 emeralds dropped once the chunk is on disk: " + emeralds, emeralds == 12);
                     record("aBrokenBlockDropsItsContents", "dropped emeralds", emeralds);
                     for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new AABB(chestPos).inflate(3)))
                         it.discard();
-                })
+                }))
                 .thenSucceed();
     }
 
