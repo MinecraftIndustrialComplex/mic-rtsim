@@ -30,6 +30,7 @@ pub mod engine;
 pub mod fight;
 pub mod geom;
 pub mod network;
+mod outbox;
 mod persist;
 pub mod synth;
 pub mod timetable;
@@ -40,4 +41,5 @@ pub use engine::{
     NETWORK_KEY, Role, SHIP_TABLE, Ship, ShipId, ShipStats, ShipTickets, Ships, Status,
     THREAT_TABLE,
 };
+pub use outbox::GateCounts;
 pub use tunables::{MediumTunables, ShipTunables};

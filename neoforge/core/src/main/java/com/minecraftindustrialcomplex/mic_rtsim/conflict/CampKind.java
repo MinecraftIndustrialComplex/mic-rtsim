@@ -57,6 +57,14 @@ public interface CampKind {
         return true;
     }
 
+    /**
+     * Whether the crystal is on this body (the census's BODY_CRYSTAL, read off each chief body so a leftover
+     * body nearest the spot cannot speak for the camp's chief); false for a kind with no crystal.
+     */
+    default boolean hasCrystal(Entity e) {
+        return false;
+    }
+
     /** The chief's fields read from the entities standing in the camp's footprint (all of them, not only bodies). */
     Chief chief(ServerLevel level, Camps.Site site, List<Entity> footprint);
 

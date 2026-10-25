@@ -13,6 +13,10 @@ private data in them; the base coordinates and the seed are read from private fi
 > vanilla's trader spawner. Everywhere below, `doTraderSpawning` findings, log lines and rollback steps describe
 > the build rehearsed, not today's: the bridge no longer writes the gamerule.
 
+> Round 2 (2026-10-23): the rehearsal ran again on that day's pack and mic-rtsim main (DECISIONS.md
+> DR-0a). Its findings, R2-1 to R2-11, are in section 10; sections 0 to 7 are round 1's. The runbook
+> (section 8) and the choices (section 9) are updated for round 2 and say where.
+
 ## 0. Findings, by deploy risk
 
 What booted: the July pack (the control), the upgraded pack (dc49fe7), the upgraded pack with rtsim
@@ -704,22 +708,30 @@ the service is `minecraft-server`, runs as `mcserver` in `/var/lib/mc/server`, h
 with `RestartSec=10`, and the world's `level.dat`, `playerdata/` and `data/*.dat` are readable by
 `mcserver` only. The disk had 347 GB free on 2026-10-21. Never stop the server with `/stop` in
 its console for maintenance: systemd starts it again 10 seconds later. Use `systemctl`.
+The SSH account is in `wheel`, but its sudo needs a password (2026-10-23, DR-0b): run `sudo -n true`
+first, and stop if it asks for one.
 
 ### 8.1 Build on the laptop
 
-1. Pack: at cd019b2 or later, with the DR1 and DR4 fixes in (mic-petrochem 1.0.1 among them). Export
-   the mrpack from a pack checkout that has the raw jars `index.toml` lists (Destroy among them; check
-   each with `sha256sum` against `index.toml`), and copy `scripts/setup_server.py` with it.
-2. rtsim: from main at or after the merge of `feat/deploy-rehearsal` (the fixes of 6.8), in the
-   mic-rtsim repository, `tools/natives/build-natives.sh --only linux-x86_64-gnu` in
-   mic-native's dev shell, then `cd neoforge && ./gradlew -Prelease :core:jar` plus one `:<plugin>:jar`
-   for each of the eleven plugins (carryon, climate, create, destroy, dieselgenerators,
-   endertransmission, iceandfire, oreexcavation, powergrid, radar, ribbits). Terra Entity and Sandworms
-   are not in the pack: leave them out. Build them after any GameTest run in the same checkout:
-   `runGameTestServer` rewrites `core/build/libs` with a jar that is not a release one.
+1. Pack: at aaed844 or later, the commit round 2 rehearsed, with the DR1 and DR4 fixes in (mic_fixes
+   1.0.2 and mic_petrochem 1.0.2 among them). Export the mrpack from a pack checkout that has the raw
+   jars `index.toml` lists (Destroy among them; check each with `sha256sum` against `index.toml`), with
+   `packwiz-0-unstable-2026-02-18` or newer (the pack's cache is version 2, which the older packwiz in
+   the flake cannot read), and copy `scripts/setup_server.py` with it.
+2. rtsim: from main after the last format change before the deploy, in the mic-rtsim repository,
+   `tools/natives/build-natives.sh --only linux-x86_64-gnu` in mic-native's dev shell, then `cd
+   neoforge && ./gradlew -Prelease :core:jar` plus one `:<plugin>:jar` for each plugin whose mod is in
+   the pack's index: twelve at round 2's commit (carryon, climate, create, destroy, dh,
+   dieselgenerators, endertransmission, iceandfire, oreexcavation, powergrid, radar, ribbits), plus
+   mowziesmobs if main has that plugin by then. Terra Entity and Sandworms are not in the pack: leave
+   them out. Build them after any GameTest run in the same checkout: `runGameTestServer` rewrites
+   `core/build/libs` with a jar that is not a release one. Round 2 ran main at `4bc03a6d`, and a format
+   changed after it (Mowzie M2, `89fb716f`): run 10.6's rtsim steps once more on the deploy's jars
+   (rtsim, reload, reset) before they go to the host.
 3. mic_native: its jar from mic-native (`mic_native-1.21.1-0.1.0.jar`); it carries baseline and
    x86-64-v3 builds and picks v3 on the host's AVX2 CPU.
-4. Copy the mrpack, `setup_server.py` and the 13 jars to the host (`scp -P 23 ... carol@host:/tmp/`).
+4. Copy the mrpack, `setup_server.py` and the jars (14 at round 2: the core, 12 plugins and
+   mic_native) to the host (`scp -P <port> ... <user>@<host>:/tmp/`).
 
 ### 8.2 Back up
 
@@ -740,34 +752,41 @@ its console for maintenance: systemd starts it again 10 seconds later. Use `syst
 3. Re-apply the two live KubeJS edits if Ben still wants them (diff
    `kubejs/server_scripts/destroy_metallurgy_integration.js` and `overgeared_mechanical_forging.js`
    against the backup).
-4. JVM arguments: `setup_server.py` now sets `-Xms` equal to `-Xmx` (8G by default, `--heap SIZE`,
-   `--no-heap`) and with `-y` does so without asking; it never lowers a larger `-Xmx` and keeps other
-   args. The host's file has `-Xms` twice and no `-Xmx`, so check the result against section 8.5.
+4. JVM arguments: `setup_server.py` sets `-Xms` equal to `-Xmx` and with `-y` does so without asking,
+   but it never lowers a heap: it takes the largest of the requested size and the file's old `-Xms` and
+   `-Xmx`, so the host's `-Xms8G -Xms12G` comes out as `-Xms12G -Xmx12G` (round 2, R2-2). After the
+   script, replace `user_jvm_args.txt` with section 8.5's three lines and check it with `cat`.
 5. `sudo systemctl start minecraft-server`; follow `logs/latest.log` to `Done`, then compare it with
-   section 6.2's list of expected errors. Let one player log in and check an inventory, an ender
+   section 6.2's list of expected errors and 10.2's additions. Distant Horizons 3.3.3 resets
+   `config/DistantHorizons.toml` to its defaults at this first start (`config is of an older version
+   ... resetting config`) and updates its LOD database (R2-7); read the new file once if Ben wants
+   non-default DH settings on the server. Let one player log in and check an inventory, an ender
    chest, the Cobblemon party and PC, a train and a Sable ship: the rehearsal could not check any of
    them (section 2).
 
 ### 8.4 Install rtsim
 
 1. `sudo systemctl stop minecraft-server`.
-2. Copy the 13 jars into `mods/` as `mcserver`. mic_native extracts its natives into a
-   `mic_native/` folder in the server folder at start, so the folder must be writable by that user.
+2. Copy the jars (14 at round 2) into `mods/` as `mcserver`. mic_native extracts its natives
+   into a `mic_native/` folder in the server folder at start, so the folder must be writable by that
+   user.
 3. Start. In `logs/latest.log` look for `mic_native natives: status=OK ... build=x86-64-v3`,
    `plugin mic_rtsim 0.1.0 loaded`, `session started: native engine`, `6 structures are villages the
-   sim adopts`, and `the sim owns wandering traders now: doTraderSpawning false`. No line may say
-   `Mixin apply` or `InvalidInjectionException` (every rtsim mixin is required, so a failed one stops
-   the server with a crash report).
+   sim adopts`, and `the sim owns wandering traders now: vanilla's trader spawner is cancelled while
+   trade and travel are on (doTraderSpawning is not touched)` (C8a; round 1's build logged
+   `doTraderSpawning false` instead). No line may say `Mixin apply` or `InvalidInjectionException`
+   (every rtsim mixin is required, so a failed one stops the server with a crash report).
 4. Districts: from the console (`sudo -u mcserver screen -r minecraft`, detach with Ctrl-A D),
    `execute positioned <x> <y> <z> in minecraft:overworld run rtsim district adopt 16` at each factory,
-   then `rtsim district list` to see what it made (55 districts in the rehearsal, DR6) and `rtsim
-   district info <id>` on the main base. With the glass box on (DR9 recommends it off for now): its
-   `glass:` line must say `compile N: ... nodes`, the log must have no `glass: compiling district <id>
-   failed` and no `is not compilable`, and a few minutes on its `glass checksum:` line must show sweeps
-   sampled (`52 sweeps (40 sampled)`) and the same revision twice (`revision 2 (district 2)`). A
-   `(district 0)` there, or a last discard of `revision` over and over, is the reset bug of 6.8 (3.).
-   With it off, `rtsim district info` says nothing about the glass, and `rtsim perf` should show
-   few `ticks waited on the engine`.
+   then `rtsim district list` to see what it made (8 districts in round 2, the main base in three of
+   them; round 1's build made 55; DR6 says whether to merge) and `rtsim district info <id>` on each part
+   of the main base. The glass box is on (DR9): each `glass:` line must say `compile N: ... nodes` and
+   a `last N us` in microseconds to tens of milliseconds (round 2: 32.2 ms at most split, 15.3 ms
+   merged), the log must have no `glass: compiling district <id> failed` and no `is not compilable`,
+   and a few minutes on the `glass checksum:` line must show sweeps sampled (`55 sweeps (43
+   sampled)`) and the same revision twice (`revision 1 (district 1)`). A `(district 0)` there, or a
+   last discard of `revision` over and over, is the reset bug of 6.8 (3.). `rtsim perf` should show no or few `ticks waited on the
+   engine` (round 2: 0).
 5. Watch for a day: `/neoforge tps`, `/rtsim perf`, `rtsim district perf` (the slowest inventory read,
    open item 2 of 6.9), the size of `world/rtsim/`, and the GC log's heap after young collections.
 
@@ -787,7 +806,10 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
 
 - 8 GiB is three times the live set measured here. A player at the main base, Distant Horizons'
   server-side generation and rtsim's growth over months add to it; the GC log says after a week whether
-  it is enough (the `Pause Young` lines' heap after collection should stay under about 5 GiB).
+  it is enough (the `Pause Young` lines' heap after collection should stay under about 5 GiB). Round 2
+  ran these arguments (10.7): 2.3 to 2.6 GiB live with the bases loaded, 3.4 to 3.7 GiB on the full
+  world, which filled the heap as many far-apart chunks loaded at once (R2-6). On the host, `Evacuation
+  Failure` or `Pause Full` lines other than the one at each stop are that, and worth a look.
 - `-Xms` equal to `-Xmx` (ST3): on big Create worlds the live heap near G1's marking threshold at
   `-Xmx6G` cost 10 to 16 ms of background CPU per tick (`docs/stress-worlds-results.md` §8). A heap of
   at least 8 GB with `-Xms` equal to `-Xmx` avoids it, and the heap no longer grows in steps during boot.
@@ -801,23 +823,38 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
 
 ### 8.6 Rollback
 
-- **rtsim only** (keep the new pack): first give the wandering traders back, while rtsim is still
-  installed: set `trade = false` under `[modules]` in `config/mic_rtsim-server.toml` and restart, and
-  rtsim logs `trade or travel is off: doTraderSpawning back to true`. Then stop; delete
-  `mods/mic_rtsim*.jar` and `mods/mic_native-*.jar`; start. If the jars are already gone, run
-  `gamerule doTraderSpawning true` instead: nothing else turns it back on (6.6). Expect section 6.6's
-  one-off `unknown or non-serializable data attachment mic_rtsim:*` errors. What rtsim leaves on disk
-  is inert (6.6): `world/rtsim/`, `world/data/mic_rtsim_*.dat`, `config/mic_rtsim*.toml` and the
-  `mic_native/` folder can stay or go.
+- **rtsim only** (keep the new pack): stop; delete `mods/mic_rtsim*.jar` and `mods/mic_native-*.jar`;
+  start. Since C8a rtsim never writes `doTraderSpawning` (it cancels vanilla's trader spawner while it
+  runs), so there is nothing to give back first: round 2 read the gamerule true in every run, with
+  rtsim, after it and without it (10.6). Only a world that ran a build from before C8a (round 1's) can
+  have it false: check `gamerule doTraderSpawning` after the start and set it true if not. Expect
+  section 6.6's one-off `unknown or non-serializable data attachment mic_rtsim:*` errors, one per chunk
+  that carries one as it loads (round 2: 74). What rtsim leaves on disk is inert (6.6): `world/rtsim/`,
+  `world/data/mic_rtsim_*.dat`, `config/mic_rtsim*.toml` and the `mic_native/` folder can stay or go.
+- **Putting rtsim back** after the world ran without it (UR-1): put the jars back and start; nothing
+  else. rtsim reads `level.dat`'s mod list at the start, sees that the world ran without it, and resets
+  the whole sim itself (docs/choices-reinstall-guard.md). Expect, at ERROR, `[mic_rtsim] REINSTALL:
+  ...` and `[mic_rtsim] REINSTALL RESET (UR-1): ...`, which say that `world/rtsim/` moved to
+  `world/rtsim-reinstall-<time>/`; then `[industry] reinstall reset: N chunks of M districts are
+  adopted again as they load`, the sim reset's two `the engine's pages lack observations the journal no
+  longer holds (the reinstall reset)` lines, and `reinstall reset: saved; marker
+  mic_rtsim-reinstall.txt deleted` at the first save. `rtsim perf` says `reinstall guard: SIM RESET at
+  this start (UR-1)` with the re-adoption's progress for the whole session. Check that `rtsim district
+  list` keeps its districts as their chunks load. `rtsim district adopt` only the machines built during
+  the gap in a chunk that was in no district. Delete `world/rtsim-reinstall-*` once satisfied. To undo
+  the reset (a gap known to be harmless): stop, move that directory back to `world/rtsim/`, delete
+  `world/mic_rtsim-reinstall.txt` if it is still there, and start (RG9). Measured on a copy of round 2's
+  uninstalled world (10.6): 6 districts before and after, none dissolved.
 - **Everything**: stop; `sudo mv /var/lib/mc/server /var/lib/mc/server-failed`; `sudo mv
   /var/lib/mc/server-backup-<date> /var/lib/mc/server`; start.
 - **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/` and
   nothing else (the world's `data/mic_rtsim_*.dat` is how the bridge knows what to announce again);
   start. The log must then say `the engine's pages lack observations the journal no longer holds` twice,
   from the industry module and from phase 1, with the counts of districts and villages announced
-  again, and `rtsim perf`'s phase 1 line must count as many villages `in the engine` as before the
-  semicolon. Section 6.7 says what a reset keeps and what it loses. Only with jars at or after this
-  branch's merge: older ones leave the fresh engine without the districts and villages (6.8, 3.). Do
+  again (round 2: 6 districts and 2 villages, 10.6), and `rtsim perf`'s phase 1 line must count as many
+  villages `in the engine` as before the semicolon. Section 6.7 says what a reset keeps and what it
+  loses. Only with jars at or after this branch's merge: older ones leave the fresh engine without the
+  districts and villages (6.8, 3.). Do
   the same for an rtsim update that changes a page format: delete `world/rtsim/` rather than let the
   engine drop one module's pages by itself, which the bridge does not see (6.9, 6.).
 - **Restoring a world from a backup**: `world/rtsim/` and `world/data/mic_rtsim_*.dat` belong to the
@@ -827,16 +864,332 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
 ## 9. Choices for Ben
 
 Each row is a choice the rehearsal cannot make: the pack, the host or what the sim should see. The
-recommended option is first.
+recommended option is first. Round 2 (section 10) changed DR1, DR2, DR3, DR4, DR6, DR8 and DR9 and
+added DR10; each says so.
 
 | Id | Choice | Recommended | Alternatives | Why |
 |---|---|---|---|---|
-| DR1 | The Ice and Fire hippocampus crash (6.1), a blocker for the pack upgrade | A null-guard mixin on `HippocampusExplorationGoal.tick` that does what upstream `f47956e2` does (`if (this.target == null ...) return`), in one of the pack's MIC mods, until an Ice and Fire release has the fix | (b) Build IceAndFire-CE's `1.21.1` branch at or after `f47956e2` and ship that jar: unreleased code in the pack. (c) Keep Ice and Fire 2.0-beta.17, the July version the host runs with 677 hippocampi: needs checking that the pack's other mods (rtsim's iceandfire plugin among them) accept it. (d) The rehearsal's KubeJS spawn cancel: no, it deletes the players' hippocampi, tamed ones too | The crash needs only a hippocampus in a loaded chunk with no water target, so the live server would die within minutes of the upgrade. A mixin is the smallest change and goes away when a release lands |
-| DR2 | The host's heap (8.5) | `-Xms4G -Xmx8G` and a GC log | (b) `-Xmx6G`: more room for Elasticsearch and the page cache, 2.4 times the live set. (c) Leave the fixed 12 GiB | The live set is 2.3 to 2.5 GiB with or without rtsim; a 12 GiB heap on 16 GB with Elasticsearch puts the heap in swap, the likeliest cause of the weekly watchdog crashes |
-| DR3 | The watchdog (`max-tick-time`) | Keep 60000 | (b) 300000, as the rehearsal's runs used on the laptop: fewer restarts, but a player waits up to 5 minutes in a hung tick. (c) -1, off | A tick over a minute is a hang that deserves a crash report and a restart; the fix is DR2, not a longer leash. Revisit if the crashes go on after DR2 |
-| DR4 | The pack's broken scripts and tag (6.2) | Fix them in the pack before the upgrade: `create_power_loader.js` without its top-level `return` (wrap the body in `if (Platform.isLoaded(...)) { ... }`), the missing `/` key in `radar_integration.js`'s two shaped recipes, `copycats:copycat_catwalk` out of Sable's physics tag, and mic-petrochem 1.0.1 (its thruster fuels' `consumption_multiplier` key) in place of 1.0.0 | (b) Ship as is: Create Power Loader's recipes are missing, the data link and auto yaw controller are uncraftable, Sable logs 3 errors, and neither petrochem fuel drives a Create Propulsion thruster | Pack bugs, not world damage; each is a one-line fix or a version bump in the pack repository |
+| DR1 | The Ice and Fire hippocampus crash (6.1), a blocker for the pack upgrade | **Round 2: done.** mic_fixes 1.0.2 in pack aaed844 carries the guard, and it applied on the full world (R2-1, 10.2). Round 1's recommendation was: a null-guard mixin on `HippocampusExplorationGoal.tick` that does what upstream `f47956e2` does (`if (this.target == null ...) return`), in one of the pack's MIC mods, until an Ice and Fire release has the fix | (b) Build IceAndFire-CE's `1.21.1` branch at or after `f47956e2` and ship that jar: unreleased code in the pack. (c) Keep Ice and Fire 2.0-beta.17, the July version the host runs with 677 hippocampi: needs checking that the pack's other mods (rtsim's iceandfire plugin among them) accept it. (d) The rehearsal's KubeJS spawn cancel: no, it deletes the players' hippocampi, tamed ones too | The crash needs only a hippocampus in a loaded chunk with no water target, so the live server would die within minutes of the upgrade. A mixin is the smallest change and goes away when a release lands |
+| DR2 | The host's heap (8.5) | `-Xms8G -Xmx8G` and a GC log, written after `setup_server.py` (8.3 step 4). Round 2 ran it (10.7); this row said `-Xms4G` where 8.5 said `-Xms8G`, and 8.5 is right | (b) `-Xmx6G`: more room for Elasticsearch and the page cache, 2.4 times the live set. (c) Leave the fixed 12 GiB | The live set is 2.3 to 2.5 GiB with or without rtsim; a 12 GiB heap on 16 GB with Elasticsearch puts the heap in swap, the likeliest cause of the weekly watchdog crashes |
+| DR3 | The watchdog (`max-tick-time`) | Keep 60000 | (b) 300000, as the rehearsal's runs used on the laptop: fewer restarts, but a player waits up to 5 minutes in a hung tick. (c) -1, off | A tick over a minute is a hang that deserves a crash report and a restart; the fix is DR2, not a longer leash. Revisit if the crashes go on after DR2. Both rounds ran 300000 on the laptop, for the laptop's sake (10.1), not as a value for the host |
+| DR4 | The pack's broken scripts and tag (6.2) | **Round 2: done** in pack aaed844, all four checked in the boot log (10.2). Round 1's recommendation was: fix them in the pack before the upgrade: `create_power_loader.js` without its top-level `return` (wrap the body in `if (Platform.isLoaded(...)) { ... }`), the missing `/` key in `radar_integration.js`'s two shaped recipes, `copycats:copycat_catwalk` out of Sable's physics tag, and mic-petrochem 1.0.1 (its thruster fuels' `consumption_multiplier` key) in place of 1.0.0 | (b) Ship as is: Create Power Loader's recipes are missing, the data link and auto yaw controller are uncraftable, Sable logs 3 errors, and neither petrochem fuel drives a Create Propulsion thruster | Pack bugs, not world damage; each is a one-line fix or a version bump in the pack repository |
 | DR5 | Deploy order | The pack upgrade alone first, with the GC log; rtsim a week later | (b) Both in one maintenance window: one downtime, but any new problem has two suspects | The upgrade carries the blocker (DR1) and the heap change (DR2); a week on it says whether the watchdog crashes stop before rtsim adds anything |
-| DR6 | What the sim sees around the main base (6.5) | `rtsim district adopt 16` at the main base, as rehearsed, and keep the 54 small districts it makes | (b) `rtsim district exclude` the small ones, one command each where they stand. (c) A smaller adopt radius: may leave parts of the main base out | The 54 are real player blocks (0 to 3 inventories each) and cost next to nothing to sweep; whether the sim should count a lone furnace as a factory is a design question, and exclude is reversible |
+| DR6 | What the sim sees around the main base (6.5, round 2: 10.4) | **Round 2:** keep the 8 districts `rtsim district adopt 16` makes since DS-10, the main base as three of them | (b) Merge the main base's three into one (`rtsim district merge` twice, where they stand): one factory, as a player sees it, and its Create logistics network in one district, but then too wide for the threat survey's perimeter cut (DR8). (c) Round 1's 54 small districts no longer arise: DS-10 seeds only machines | Split, nothing breaks: each part sweeps, solves its glass box in at most 32 ms and gets its perimeter cut; the logistics network that spans two parts only makes its gauges wait while one part is unloaded. Merge and split are both reversible commands, so this can change after the deploy |
 | DR7 | The two KubeJS edits made on the live server (section 4) | Re-apply both after the upgrade and put the `borax` tag edit in the pack, so the next upgrade keeps it | (b) Drop them | `setup_server.py -y` overwrites them; the tag edit changes recipes, the other is a comment |
-| DR8 | The threat survey's column cap (6.5) | Leave `surveyMaxColumns` at 40,000; measure the survey's cost on the host before raising it | (b) Raise it until the main base fits, unmeasured | The main base is surveyed without its perimeter cut today, which is a fallback, not an error |
-| DR9 | The glass box on the host (6.7) | `enabled = 0` under `[industry.glass]` in `config/mic_rtsim-industry-server.toml` until a solve of the main base is bounded in time (6.9, 5.) | (b) Leave it on and watch `ticks waited on the engine` in `rtsim perf`: the server thread does not wait, the sim lags by each solve, and a stop during one leaves the pages to the journal. (c) `maxNodes` (20,000) below 1,258, which leaves the main base out and compiles the small districts | The glass box is a read-only checksum today: off, the sim runs on the black box alone, as it did in every rehearsal run before the chute fix, and nothing a player sees changes |
+| DR8 | The threat survey's column cap (6.5) | **Round 2:** moot while the main base stays split (DR6). Merged, it is too wide again: then leave `surveyMaxColumns` at 40,000 and measure the survey's cost on the host before raising it | (b) Raise it until the main base fits, unmeasured | The main base is surveyed without its perimeter cut when too wide, which is a fallback, not an error |
+| DR9 | The glass box on the host (6.7, round 2: 10.5) | **Round 2:** leave it on (the default). A solve of the merged main base takes 5.7 to 15.3 ms, of its largest part split 12.6 to 32.2 ms, bounded by its work budget, the engine skipped no hand-over and no stop failed the final save (R2-3) | (b) `enabled = 0` under `[industry.glass]` in `config/mic_rtsim-industry-server.toml`, round 1's recommendation while a solve took seconds: off, the sim runs on the black box alone and only the glass box's diagnostics are lost | The glass box is a read-only checksum today, now cheap; on, its checksum lines are the first sign of a wrong flow model on a real base (10.5 has two) |
+| DR10 | What the sim builds in the players' villages (round 2: R2-5, 10.6) | Leave it on, and tell the players that the villages near them will start to build | (b) Switch the `settlements` module off: nothing built, but no phase 1 either (villages, markets, caravans). (c) A switch for building alone: code, not in rtsim today | It is the design: a village's works purse buys lamps, decor and golems (SINK.md §4.2) and Ribbit villages grow houses (C7). In round 2 the two adopted villages built three lamp posts within minutes, over air, grass and leaves only. The free-plot test refuses block entities and any block that is not air, a plant, leaves, water or floor terrain, but blocks a player placed before the install are not marked, so a player's flowers or leaf hedge in a village could be built over. Players will see it; Ben decides whether they hear first |
+
+## 10. Round 2 (2026-10-23)
+
+Ben's answer of 2026-10-23 (DECISIONS.md DR-0a): rehearse again now on today's mic-rtsim main and today's
+pack, with the DR rows' recommendations in, and deploy later. Nothing was deployed. Sections 0 to 9 are
+round 1 (2026-10-20 and 21); where round 2 changes a DR row or a runbook step, section 8 and 9 now say
+so and point here.
+
+### 10.0 Findings, by deploy risk
+
+Verdict: **today's pack plus mic-rtsim main is ready to deploy once the format changes land**, after one
+short repeat of the rtsim runs on the final formats (10.1). Nothing found in round 2 blocks it. The
+runbook changed in three places (8.3 step 4 for R2-2, 8.3 step 5 for R2-7, and 8.6 for C8a and R2-9),
+and Ben has two choices to make before rtsim goes on: DR6, changed by DS-10, and DR10, new (section 9).
+
+- **R2-1. Resolved, the pack's blockers are gone (DR1, DR4).** mic_fixes 1.0.2 is in the pack and its
+  hippocampus guard applies (`applying the null guard`, and the mixin's `Mixing
+  HippocampusExplorationGoalMixin` line): 694 hippocampi in 618 force-loaded chunks of the full world
+  ran 600 s with no crash (h-on, h-nodh), and the runs went without the KubeJS script round 1 needed.
+  The negative control reproduced round 1's crash: the pruned world with the bases loaded and the guard
+  switched off (`-Dmic_fixes.hippocampusGuard=false`, r-hoff) died 74 s after the last box was
+  force-loaded, `Ticking entity`, the NullPointerException in `HippocampusExplorationGoal.tick`; with
+  the guard on, the same world and boxes ran clean in all 11 runs. DR4's four fixes are all in the
+  pack (10.2).
+- **R2-2. High, the runbook: `setup_server.py -y` turns the host's heap into a fixed 12 GiB.** Its rule
+  is `max(requested, old -Xms, old -Xmx)`, so the host's `-Xms8G -Xms12G` becomes `-Xms12G -Xmx12G`,
+  not the 8 GiB of DR2. Step 4 of 8.3 now writes 8.5's file after the script. DR2's row also said
+  `-Xms4G` where 8.5 said `-Xms8G`; both say `-Xms8G -Xmx8G` now (10.7).
+- **R2-3. Medium, rtsim, solved: the glass box is bounded now (DR9).** The main base merged into one
+  district (1,072 nodes, 1,699 edges, round 1's graph was 1,258 nodes) solves in 5.7 to 15.3 ms over
+  three runs (r1-reload's 16 timed solves: p50 6.7 ms), stopped by its work budget after one round and
+  not converged; round 1's solve took 2.4 to 5.4 s. Split, its largest part solves in 12.6 to 32.2 ms.
+  In every rtsim run the engine skipped no hand-over in the sampling window (0 of 1,860 to 4,637), no
+  stop failed the engine's final save, and the main base's glass checksum sampled its sweeps.
+  DR9 now recommends leaving the glass box on (10.5).
+- **R2-4. Medium, rtsim, Ben's choice: what the sim sees around the main base (DR6).** DS-10 seeds
+  districts from machines only. The same two `district adopt 16` now make 8 districts, not 55: the main
+  base is three of them (42, 37 and 8 chunks), and one Create logistics network spans two, so its gauges
+  wait while either is unloaded. Two `rtsim district merge` commands make it one district (87 chunks,
+  200 inventories), which is then too wide for the threat survey's perimeter cut again (DR8) (10.4).
+- **R2-5. Medium, players will see it: the sim builds in their villages from the first minutes.** A
+  village's works purse buys lamps, decor and golems (SINK.md §4.2). In the rtsim run the two adopted
+  villages built three lamp posts (oak fence, stripped oak wood, wall torches) within seven minutes of
+  the start. A block diff of the two village boxes against the pack run beside it shows they replaced
+  only air, short grass and leaves. Blocks a player placed before the install are not marked
+  (`PlayerBlocks` marks placements from the install on), but the free-plot test refuses any block entity
+  and any block that is not air, a plant, leaves, water or, in the floor layer, terrain, so a player's
+  flowers or leaf hedge in a village could be built over and little else. DR10 (10.6).
+- **R2-6. Medium, the host: loading many far-apart chunks filled the 8 GiB heap.** The three hippocampus
+  runs, which force-load 618 chunks scattered over the full world 50 at a time, filled the heap with
+  humongous allocations as the batches loaded, failed evacuations (7 to 37 times) and paid 1 to 5 full
+  collections of 1.0 to 2.4 s each, before settling at a live set of 3.4 to 3.7 GiB, with the guard on
+  and off alike. Deleting Distant Horizons' 2.8 GB database did not help (h-nodh was the worst of the
+  three), so the database's size is not the cause; DH's own work on the chunks is not ruled out, and
+  which mod makes the humongous allocations was not measured. The pruned world's runs, 1,415 chunks in
+  8 compact boxes and no DH database either, never did (live set 2.3 to 2.6 GiB). 8 GiB still holds the
+  live set twice over; the GC log is how the host shows whether it happens there (8.5) (10.7).
+- **R2-7. Low, the pack: Distant Horizons 3.1.2-b to 3.3.3.** At its first start it resets the host's
+  `config/DistantHorizons.toml` (version 4) to 3.3.3's defaults, as it has no config updater: the
+  host's two values that differ from a fresh file (`realTimeUpdateDistanceRadiusInChunks` 256 and
+  `maxGenerationRequestDistance` 4096) equal 3.3.3's defaults, the `enableServerGeneration` and
+  `enableDistantGeneration` keys are gone from version 5, and it picks a new `serverId`. It runs a SQL
+  update on the LOD database (`0110-sqlite-addApplyToParentIndex.sql`), so the backup of 8.2 is the
+  only way back to the July pack's DH. And it logs one ERROR at the first chunk load, before Chunky has
+  started (`Chunky is not loaded`, from DH's Chunky hook; the other chunk load listeners ran). Runbook
+  8.3 step 5.
+- **R2-8. Low, rtsim's cost is still below what the laptop resolves.** The two pairs at a usable load:
+  +0.76 ms and -0.08 ms mean tick with rtsim, against standard deviations of the paired difference of
+  35.9 and 41.1 ms; boot, stop, resident memory and the live set are the same (10.3).
+- **R2-9. Low, the rollback path: putting rtsim back loses every district (UR-1).** Save, stop, reload,
+  uninstall and the sim reset all behaved (10.6): no stop failed the engine's final save, the reload
+  restored every module from its pages, the uninstall left no rtsim id in the world, and the sim reset
+  announced the 2 villages and 6 districts again. Putting the jars back on the uninstalled world is
+  where it differs: rtsim does not see that the world ran without it (UR-1's detection is not built),
+  restores its pages as they were, villages and herds included, and every district dissolves as its
+  chunks load, without a log line, because the uninstall's save dropped their seed attachments (6
+  districts at the start, 0 at the end). No block or block entity changed, and no reconcile replayed,
+  but none was owed in this world, so UR-1's replay risk was not exercised. **Fixed** by the reinstall
+  guard (UR-1, docs/choices-reinstall-guard.md): rtsim now sees the gap in `level.dat`'s mod list and
+  resets the whole sim itself, adopting the stripped districts again as their chunks load. Rerun on a
+  copy of r-uninstall's world (10.6): 6 districts kept, none dissolved. 8.6 says what to expect.
+- **R2-10. What the new features showed without a player** (10.8): the syn200 commands work on the real
+  base (two merges and a rescan); the ships module's `RTS4` pages and phase 1's `RTW4` pages were written
+  and read back, but this world has no docks, so S8b's ports and havens had nothing to run on (`ships
+  restored: 0 docks, 0 lanes, 0 ships, 0 havens`); TALK, the DH far view and Mowzie need a player or a
+  client (Mowzie has no plugin yet; M1 is the engine's). Not checked: a client joining, skipped (10.9).
+- **R2-11. Low, rtsim, for its owners: the first detection after a start takes one long tick.** On a
+  world with districts, the session's first detection spent 0.68 to 2.2 s in one tick at boot (cold
+  code; warm detections take at most 35 ms), and its slice budget counts block entities, not time, so
+  nothing cuts that slice short.
+  One slow tick before players are on; not a deploy blocker (10.6).
+  **Fixed** with the reinstall guard (docs/choices-reinstall-guard.md, Part 3): the time went to chunk
+  loads, not cold code. Two reads waited for a chunk that is due but still loading, while every other
+  chunk load due ran: 534 to 972 chunk loads inside one look at one chunk. Create's fan links asked
+  `Level.isLoaded`, which such a chunk passes, and read a block in it; and a vault's item handler, built
+  the first time anything asks for it, read every block of the vault, one of them in such a chunk. Fan
+  links now read only FULL chunks (RG15), a vault with a block in a chunk not FULL is described from its
+  controller without its handler (RG17), so is a double chest with a half in such a chunk (RG18, found
+  by review), and a detection's tick also stops at a time limit, 5 ms by default (RG12).
+
+### 10.1 What ran
+
+- **rtsim**: main at `4bc03a6d` (2026-10-23, with syn200's leg pages of `f6847446`), built with
+  `-Prelease`: the core, 12 plugins (carryon, climate, create, destroy, dh, dieselgenerators,
+  endertransmission, iceandfire, oreexcavation, powergrid, radar, ribbits) and mic_native, 14 jars.
+  Every plugin under `neoforge/` whose mod is in the pack's index is in; mowziesmobs is in the pack but
+  has no plugin at this commit, and dh's dependencies are all client side, so on a server it loads and
+  does nothing. Mowzie M2 landed later (`89fb716f`, a new item in the catalogue, a format change): the
+  deploy's jars come from main after the last format change, and the rtsim runs of 10.6 get one short
+  repeat on them before the deploy.
+- **The pack**: master at `aaed844` (2026-10-22): mic_fixes 1.0.2 (the hippocampus guard),
+  mic_petrochem 1.0.2, Distant Horizons 3.3.3, Chunky on the server only, NeoForge 21.1.249. Exported
+  with the packwiz the pack's cache needs (`packwiz-0-unstable-2026-02-18`; the flake's older one cannot
+  read the cache) and set up with `setup_server.py` on a copy of the host's server folder, as 8.3 does.
+- **The world**: round 1's pruned copy of the 2026-10-20 snapshot (17,779 chunks), not a fresh one: the
+  host's `level.dat`, `playerdata/` and `data/*.dat` are owner-only, the regions had changed little,
+  and the same copy compares directly with round 1. The hippocampus runs used the whole snapshot.
+- **The JVM**: 8.5's arguments, `-Xms8G -Xmx8G` and the GC log, plus the laptop's stand-ins for the
+  host's 4 cores (`-XX:ActiveProcessorCount=4`, `-Dmic_native.fgThreads=4`, `-Dmic_native.bgThreads=2`).
+  Round 1 ran `-Xms2G -Xmx8G`.
+- **`max-tick-time` 300000 on the laptop, not the host's value.** The laptop is shared with other agents'
+  builds and GameTests at loads up to 80, where a single tick of a minute is the laptop's and not the
+  server's, and a watchdog kill ends a measurement (round 1 lost 2 of 4 servers to it). The host keeps
+  60000 (DR3); the long ticks are read from the `Can't keep up` lines instead.
+- **The method** is round 1's (section 5): reflink copies, pairs started 5 s apart with the order swapped
+  between pairs, simulation and view distance 16, the 8 force-load boxes 20 s apart, `rtsim village` at
+  both villages and `rtsim district adopt 16` at both factories, 300 s of `neoforge tps` every 5 s, an
+  entity census, `save-all flush`, stop, and the next step on a copy of the world it left. New: each
+  sample also reads `rtsim perf` and `rtsim district info 1` (glass solves and hand-overs), every
+  district's `info` at the end, and the hippocampus runs. Every boot held the shared heavy lock.
+
+| Run | World | What | Exit |
+|---|---|---|---|
+| r1-pack, r1-rtsim | pruned | p1: the pack, and the pack with rtsim, pack first | 0, 0 |
+| r2-rtsim, r2-pack | pruned | p2: the same, rtsim first; at a load of 46 to 49, not a measurement | 0, 0 |
+| h-on, h-off | full | DR1: every chunk that holds a hippocampus force-loaded for 600 s, the guard on and off | 0, 0 |
+| r1-reload | r1-rtsim's | reload; then the main base's three districts merged, the measurement, a rescan | 0 |
+| r-uninstall, r-reset | r1-reload's | 8.6's uninstall; the sim reset (`world/rtsim/` deleted) | 0, 0 |
+| r-reinstall, r-reset-reload | theirs | rtsim put back on the uninstalled world (UR-1); the reset world booted again | 0, 0 |
+| r3-pack, r3-rtsim | pruned | p3: p1 again (pack first), as p2 measured the laptop | 0, 0 |
+| r-hoff, h-nodh | pruned, full | round 1's crash conditions with the guard off; h-on without DH's database | crashed, 0 |
+
+### 10.2 The pack
+
+- **DR1.** See R2-1. Why h-off did not crash: a single force-loaded chunk ticks its entities only while
+  they stay inside it, so no hippocampus could swim off into shallow water. Round 1's crash was in a
+  chunk that holds no hippocampus in the snapshot, so the one that crashed had swum there, with the
+  bases loaded and whole areas ticking. Those conditions with the guard off (r-hoff) crashed again,
+  in a chunk other than round 1's, 5 minutes after the start; the server then hung until the
+  watchdog ended it (300 s on the laptop, 60 s on the host). mic_fixes' own GameTests prove the crash
+  and the guard in a shallow pool.
+- **DR4, all four fixed**: `Loaded script server_scripts:create_power_loader.js` and no `invalid return`;
+  `radar_integration.js` loads with no `Pattern references symbol '/'`; no Sable error on
+  `copycat_catwalk`; mic_petrochem 1.0.2 loads with no thruster fuel parse error.
+- **New log groups against round 1's upgraded pack**: DH's config reset and its Chunky ERROR (R2-7, the
+  ERROR logged a second time by C2ME's chunk load invoker), and one petrolpark mixin WARN (`Shift.BY`).
+  The expected ERROR groups of 6.2 are unchanged: 1,191 `iceandfire:portal_data` attachments, 148 `No
+  key id` items, Cobblemon's old fossil starts.
+- **mic_petrochem skips 10 of its reactions at every start**: 8 name Create Metallurgy items the pack
+  does not have (`cobalt_dust` 4, `platinum_dust` 3, `nickel_ingot` 1), 2 name Destroy molecules that do
+  not exist (`destroy:butane`, `destroy:propane`). Not new (round 1's upgrade logged them too); a pack
+  bug for mic_petrochem's owners, with no effect on the world.
+
+### 10.3 rtsim's cost (MSPT)
+
+| Pair | Run | Boot | Done | Mean | SD | p50 | p90 | Cores | RSS | Stop | Load |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| p1 | r1-pack | 125.1 s | 29.1 s | 67.4 | 25.6 | 57.0 | 98.0 | 1.16 | 9,043 MB | 3.0 s | 12.2 |
+| p1 | r1-rtsim | 134.7 s | 14.3 s | 68.2 | 27.7 | 57.5 | 88.9 | 1.14 | 8,983 MB | 3.0 s | 11.6 |
+| p2 | r2-rtsim | 78.1 s | 13.2 s | 251.5 | 217.2 | 114.2 | 610.4 | 0.75 | 9,066 MB | 15.0 s | 45.6 |
+| p2 | r2-pack | 78.2 s | 12.8 s | 288.2 | 242.7 | 115.8 | 701.1 | 0.71 | 8,790 MB | 17.7 s | 48.9 |
+| p3 | r3-pack | 52.1 s | 10.4 s | 98.3 | 40.1 | 81.5 | 193.3 | 1.08 | 8,784 MB | 4.3 s | 18.8 |
+| p3 | r3-rtsim | 56.1 s | 9.3 s | 99.5 | 38.5 | 82.0 | 183.9 | 1.08 | 8,784 MB | 4.3 s | 19.2 |
+
+Milliseconds per tick over 300 s with the bases loaded. p1's rtsim minus pack per sample: mean +0.76 ms,
+standard deviation 35.9, median +0.47 (58 samples). p2 ran at a load near 48 (other agents' work), its
+ticks four times p1's, so it measures the laptop. p3 repeated p1 at a load of 19: rtsim minus pack
+mean -0.08 ms, standard deviation 41.1, median +1.43 (57 samples). p3 kept p1's order (pack first), so
+the order swap rests on p2 alone. rtsim's own counters: its server thread time was 3.3 s over 10,539
+ticks in r1-rtsim (311 us a tick mean, p50 120 us) and 3.0 s over 8,516 in r3-rtsim (354 us, p50
+159 us); the sweeps read 12,600 inventories in 199 ms (the slowest one 27 ms, open item 2 of 6.9).
+
+### 10.4 What the sim sees (DR6, DR8)
+
+- `district adopt 16` at the two factories took 596 and 202 seeds (round 1: 3,871 and 3,533, every
+  block entity) and made 8 districts: 42, 37, 12, 8, 3, 2, 2 and 1 chunks, with 74, 91, 7, 35, 13, 0,
+  1 and 4 inventories. The first factory's point itself is in no district now.
+- The main base is districts 1, 2 and 4. A Create logistics network spans 2 and 4 (`its gauges wait
+  while any of them is unloaded`, a WARN at detection).
+- `rtsim district merge 1 2`, then `merge 1 4` (each waits for the detection the last started) made one
+  district of 87 chunks and 200 inventories, revision 3. Round 1's main base was 166 chunks and 278
+  inventories: DS-10 leaves out the storage and stray blocks round 1 counted.
+- Split, no district is too wide for the threat survey's perimeter cut (709 and 686 columns for the two
+  largest), so DR8 does not arise. Merged, the main base is (`too wide for the perimeter cut (40000
+  columns at most): perimeter sent as 0`, twice), as in round 1.
+- A `rescan` afterwards changed nothing (same chunks, inventories and revision).
+
+### 10.5 The glass box (DR9)
+
+| District | Nodes | Edges | Rounds | Solve |
+|---|---|---|---|---|
+| 1 (part of the main base) | 469 | 395 | 1, converged | 223 to 455 us |
+| 2 (part of the main base) | 484 | 1,155 | 1, not converged | 12.6 and 32.2 ms (r2-rtsim, r3-rtsim) |
+| 4 (part of the main base) | 123 | 95 | 1, converged | 139 us |
+| 3, 5 to 8 | 2 to 55 | 0 to 54 | 1 or 2, converged | 36 to 196 us |
+| 1 merged (1, 2 and 4) | 1,072 | 1,699 | 1, not converged | 5.7 to 13.2 ms, p50 6.7 ms (r1-reload, 16 timed); 8.2 to 15.3 ms (r-reset), 13.7 ms (r-reset-reload) |
+
+- A solve that cannot converge now stops at its work budget (G2-58) and bounds the parts it did not
+  finish (G2-59), where round 1's ran 278 rounds in 2.4 to 5.4 s. The engine's step waited on nothing:
+  hand-overs waited 0 of 10,539 (r1-rtsim), 1 of 5,192 (r2-rtsim at a load near 48, none in the
+  sampling window), 0 of 9,814 (r1-reload, merged) and 0 of 7,109 to 8,516 in r3-rtsim and the reset,
+  reset-reload and reinstall runs. No final save failed in any run.
+- The main base's checksum sampled its sweeps: 43 of 55 (r1-rtsim), 19 of 31 in the merged district's
+  first window (it recompiled at each merge). District 4's window had not opened (`last discard
+  recompile`), district 6 has no inventory to sweep.
+- What the checksum says, for the glass box's owners: district 3's first window failed (lava measured at
+  -947 a minute and shears at 0.4 a minute, both predicted 0), and the main base's black box at one node
+  predicts flint and cobblestone unbounded where the sweeps measure -1 and 253 to 263 a minute. A
+  diagnostic, read-only today: nothing a player sees changes.
+
+### 10.6 Save, reload, uninstall, reset, reinstall
+
+- **Reload** (r1-reload): `engine started: pages include observation 589`, every module restored from
+  its pages in 0 ms (phase 1 at its world tick, 2 herds, 0 dragons, 0 ships, 0 factions, the world model
+  of 88 cells), the 8 districts and 2 villages as they were, no re-announce. The pages hold `RTW4` and
+  `RTS4`.
+- **Village works** (R2-5): `houses 3 built / 0 refused` in r1-rtsim (the counter counts works too;
+  round 1 built none), `1 houses the sim built` and `2` in the two villages; the block diff is
+  `tools/deploy-rehearsal/blockdiff.py`.
+- **C8a**: `the sim owns wandering traders now: vanilla's trader spawner is cancelled while trade and
+  travel are on (doTraderSpawning is not touched)`, and `gamerule doTraderSpawning` read true in all 11
+  runs that read it, with rtsim, after it and without it. 8.6 no longer has a gamerule step.
+- **Census**, in all 11 runs on the pruned world: 12 villagers, 1 iron golem, no ribbit, 1,470 to 1,514
+  entities, the same with and without rtsim. The snapshot's one wandering trader was there in every run
+  from the pruned start and in the reload, and gone from the uninstall's world on (traders despawn).
+  No chunk lost and the same 18,191 block entities in the kept chunks.
+- **Uninstall** (r-uninstall, 8.6 on r1-reload's world): booted and stopped clean (exit 0, `Done` in
+  13.6 s). 74 one-off `unknown or non-serializable data attachment` errors as the seeded chunks loaded
+  (71 `mic_rtsim:industry_seeds`, 3 `mic_rtsim:player_blocks`; round 1 had 243, when adoption seeded
+  every block entity). `idscan.py` finds no rtsim id in the world after the stop (it finds the same 71
+  and 3 in r1-reload's world). `doTraderSpawning` read true.
+- **Sim reset** (r-reset, `world/rtsim/` deleted from r1-reload's world): `engine started: pages include
+  observation 0`, then both lines 8.6 asks for, `phase 1: the engine's pages lack observations the
+  journal no longer holds (a sim reset?): 2 villages adopted again, 0 base marks to be made again` and
+  `industry: ... 6 districts are announced again`. Phase 1 counted 2 villages in the engine, the
+  districts swept and compiled their glass, no final save failed. Booted again (r-reset-reload), it
+  restored from its new pages with no re-announce and the same 6 districts and 2 villages.
+- **Reinstall** (r-reinstall, the jars put back on r-uninstall's world, UR-1): `engine started: pages
+  include observation 1717`, every module restored as it was at the uninstall (2 villages with their
+  works, 2 herds, 6 districts in the engine), no re-announce: nothing detects that the world ran
+  without rtsim. `rtsim district list` showed 4 districts after the start and 0 at the end (`detections
+  3`): each district dissolved as its chunks loaded with no seed attachment left, and no line in the log
+  says so. `reconciles: 0 applied`, and the world's block entities and chunks match r-uninstall's
+  (18,212 and 18,732, none missing).
+  **Rerun with the reinstall guard** (2026-10-24, a copy of r-uninstall's world, the branch's build):
+  the start logged `REINSTALL` and `REINSTALL RESET (UR-1)`, moved `world/rtsim/` aside, and the engine
+  started over with a new engine life; `reinstall reset: 69 chunks of 6 districts are adopted again as
+  they load`, all 69 already loaded at the session's start (796 machines adopted again, none found
+  with its seeds kept). Phase 1 adopted the 2 villages again and the industry announced the 6
+  districts again. `rtsim district list` showed the same 6 districts at 2, 3 and 8 minutes, with
+  every base forceloaded, `reconciles: 0 applied, 0 duplicates`, and the first save deleted the
+  marker. Started again (no gap), it kept the engine life and the 6 districts.
+- **The first detection after a start takes one long tick.** Where districts exist at the start (the
+  reload, reset and reinstall runs), the session's first detection looked at 271 to 305 block entities
+  in one tick of 0.68 s (r1-reload, load 19), 1.33 s (r-reset, load 10) and 2.2 s (r-reset-reload, load
+  36), with no GC pause over 0.3 s near it; in r1-rtsim and r2-rtsim, where every detection came minutes
+  after the start, the longest tick was 16 to 35 ms. The core reads only loaded chunks (`getChunkNow`),
+  so this was first read as cold code; it was chunk loads inside one look: Create's fan links asked
+  `Level.isLoaded`, which a chunk still loading passes, and waited for that chunk, and so did a vault's
+  item handler for a block of the vault in such a chunk (R2-11, fixed). One slow tick at boot, before
+  players are on.
+
+### 10.7 Heap and GC (DR2)
+
+- With the bases loaded, the live set past 300 s was 2,387 to 2,597 MiB (p50 2,437) without rtsim and
+  2,370 to 2,548 MiB (p50 2,393) with it; resident memory 9.0 GB. The longest young pause after boot was
+  102 and 177 ms. At boot, with all 8 GiB committed from the start, G1's young generation is large and
+  its first mixed collection took up to 2.27 s at a load of 33 (`4759M->1133M`). A full collection at the
+  stop (`System.gc()`) took 0.66 s at a load of 12 and 6.1 to 6.6 s at 48.
+- R2-6, the full world's runs (618 scattered chunks force-loaded 50 at a time, then 600 s):
+
+| Run | Evacuation failures | Full collections (compaction) | Longest | Live set after | Mean tick |
+|---|---|---|---|---|---|
+| h-on (guard on) | 12 | 2, at 385 and 398 s | 2.43 s | 3,450 to 3,558 MiB | 16.7 ms |
+| h-off (guard off) | 7 | 1, at 381 s | 2.21 s | 3,452 MiB | 16.2 ms |
+| h-nodh (guard on, no DH database) | 37 | 5, at 168 to 263 s and one in the stop's save | 2.28 s | 2,533 to 3,701 MiB | 12.1 ms |
+
+  The pruned world's runs had no evacuation failure and no full collection but the stop's
+  `System.gc()`. Resident memory peaked at 8.0 to 9.6 GB.
+- R2-2: `setup_server.py -y`, run as 8.3 runs it on a copy of the host's server folder, wrote
+  `-Xms12G -Xmx12G` into `user_jvm_args.txt`, as it keeps the largest heap it finds (requested, old
+  `-Xms`, old `-Xmx`). 8.3 step 4 now replaces the file with 8.5's lines after the script.
+
+### 10.8 The new features
+
+| Feature | What round 2 saw |
+|---|---|
+| Ports and havens (S8b) | The ships module is on and its `RTS4` pages were saved and read back; this world has no docks, lanes or havens, so nothing ran |
+| TALK slices 1 to 3 | Needs a player talking to a villager or ribbit: not exercised |
+| Mowzie M1 | Engine and JNI only at this commit, no plugin: nothing a server without players shows |
+| DH far view | `far feed: 0 subscribers, 2 sources`: the server side is up, a DH client is needed to subscribe |
+| syn200's commands (DS-12 to DS-16) | adopt, merge (twice) and rescan on the real main base, as 10.4 says; `split` not run, as the merge answered DR6's question |
+| `RTS4`, `RTW4` | Written by r1-rtsim and read back by r1-reload, as 10.6 says |
+
+### 10.9 Not checked
+
+A client joining (the stretch goal) was skipped: it needs an offline-mode copy of the server, the pack's
+client mod set, a GPU on a shared laptop and the heavy lock, a project of its own. So still unchecked,
+as in round 1: a player login (inventories, ender chests, Cobblemon, a player aboard a Sable ship),
+puppets, TALK, the far view, ports with players, and the host's own load. The first login after each
+step of the runbook is the check.
+
+The optional pair of the July pack beside today's (`campaign2.sh july`) was not run either: round 1
+measured the July pack, and nothing round 2 found in today's pack needed it again.

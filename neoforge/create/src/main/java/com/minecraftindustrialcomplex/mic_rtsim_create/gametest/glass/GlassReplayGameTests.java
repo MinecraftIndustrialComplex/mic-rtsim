@@ -198,10 +198,10 @@ public final class GlassReplayGameTests {
     static final Map<String, String> KNOWN_GAPS = Map.of("package_loop", "package addresses not modelled, For Ben 1");
 
     /** Keeps a chunk FULL (level 33, distance 0) and not block-ticking. */
-    private static final TicketType<ChunkPos> FULL_ONLY =
+    static final TicketType<ChunkPos> FULL_ONLY =
             TicketType.create("mic_rtsim_create_replay_full", Comparator.comparingLong(ChunkPos::toLong));
     /** Keeps a chunk block-ticking (level 32, distance 1) with its neighbours FULL only. */
-    private static final TicketType<ChunkPos> BLOCK_TICKING =
+    static final TicketType<ChunkPos> BLOCK_TICKING =
             TicketType.create("mic_rtsim_create_replay_ticking", Comparator.comparingLong(ChunkPos::toLong));
 
     @GameTestGenerator
@@ -277,6 +277,41 @@ public final class GlassReplayGameTests {
         }
     }
 
+    /**
+     * A run's own part (SEC-1's section fixtures, {@link SectionsFx}): what to wait for before the far copy
+     * leaves, what to read from its report while it is away and after the settle. The cycle itself, and the
+     * judging of every good, are unchanged. All hooks run on the server thread; the far copy is
+     * {@link Run#fd}'s district, the control {@link Run#cd}'s.
+     */
+    interface Scenario {
+        /** Ticks the loaded stage may take on top of the eligibility budget (a scenario that edits and waits for new windows). */
+        default int extraTicks() {
+            return 0;
+        }
+
+        /** Ticks the far copy stays away at least, from the snapshot. */
+        default int span() {
+            return SPAN;
+        }
+
+        /** Both copies were (re)built: forget the state of an earlier build. */
+        default void built(Run run) {}
+
+        /** Every tick of the loaded stage once both districts are known (for a fine look after an edit). */
+        default void tick(Run run) {}
+
+        /** At every poll of the loaded stage: null when the far copy may leave now, else what is awaited. */
+        default String ready(Run run, GlassReport far) {
+            return null;
+        }
+
+        /** At every poll while the far copy is away, and once more at the end of the span. */
+        default void away(Run run, GlassReport far, boolean last) {}
+
+        /** After the settle, with both copies' final reports and the cycle's rows judged. */
+        default void judged(Run run, GlassReport far, GlassReport control) {}
+    }
+
     enum Stage { LOAD_FAR, RUN, UNLOAD, AWAY, RELOAD, SETTLE, DONE }
 
     /** Both copies' declared stores at one tick, for the copy check. */
@@ -290,6 +325,8 @@ public final class GlassReplayGameTests {
         final boolean partial;
         /** The straddle smoke: a partial copy across a chunk corner, judged on its compile and model only. */
         final boolean straddle;
+        /** The fixture's own checks (null: the plain corpus cycle). */
+        final Scenario scenario;
         final String test;
         final GlassExitKit.Recorder rec;
         final boolean judge;
@@ -352,8 +389,9 @@ public final class GlassReplayGameTests {
         String waitedOn;
         long waitStartNanos = -1;
 
-        Run(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle) {
+        Run(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle, Scenario scenario) {
             this.helper = helper;
+            this.scenario = scenario;
             this.f = f;
             this.partial = partial || straddle;
             this.straddle = straddle;
@@ -387,9 +425,13 @@ public final class GlassReplayGameTests {
     }
 
     static void start(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle) {
+        start(helper, f, slot, partial, straddle, null);
+    }
+
+    static void start(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle, Scenario scenario) {
         GlassConfig.Test.set(GlassConfig.CHECKSUM_WINDOW_TICKS, WINDOW);
         IndustryKit.fastConfig();
-        Run run = new Run(helper, f, slot, partial, straddle);
+        Run run = new Run(helper, f, slot, partial, straddle, scenario);
         IndustryKit.record(run.test, "far copy", "offset " + run.far.offset.toShortString() + ", box " + run.farMin.toShortString() + " to "
                 + run.farMax.toShortString() + ", chunks " + run.farChunks + ", engine " + IndustryKit.engine().describe()
                 + (run.judge ? "" : ", NOT judged (no natives)"));
@@ -592,6 +634,8 @@ public final class GlassReplayGameTests {
         seed(run.far, run.copy);
         run.builtAt = run.now();
         GlassCorpusKit.log(run.f.name(), run.rebuilds > 0 ? "replay rebuilt" : "replay built", "control: " + run.control.notes() + "; far: " + run.copy.notes());
+        if (run.scenario != null)
+            run.scenario.built(run);
         run.stage(Stage.RUN);
     }
 
@@ -832,6 +876,8 @@ public final class GlassReplayGameTests {
 
     /** Both copies run loaded until the far copy may be replayed (G-B4), then both are snapshot and the far copy leaves. */
     static void runLoaded(Run run) {
+        if (run.scenario != null && run.judge && run.cd >= 0 && run.fd >= 0)
+            run.scenario.tick(run);
         if (run.stageTicks % POLL != 0)
             return;
         if (run.cd < 0 || run.fd < 0) {
@@ -854,7 +900,7 @@ public final class GlassReplayGameTests {
         sample(run);
         if (warmUpCheck(run))
             return;
-        int budget = run.f.warmupTicks() + 2 * (WINDOW + GlassExitGameTests.SLACK);
+        int budget = run.f.warmupTicks() + 2 * (WINDOW + GlassExitGameTests.SLACK) + (run.scenario == null ? 0 : run.scenario.extraTicks());
         long since = run.now() - run.builtAt;
         GlassReport fr = null;
         if (!run.judge) {
@@ -883,7 +929,19 @@ public final class GlassReplayGameTests {
             if (run.stageTicks % 1200 == 0)
                 IndustryKit.record(run.test, "status", run.last);
             boolean passed = fr != null && fr.windowsCompleted() > 0 && fr.verdict() == GlassReport.PASS;
-            if (fr != null && fr.replay().eligible()) {
+            if (run.scenario != null) {
+                String gate = fr == null ? "no complete compile" : run.scenario.ready(run, fr);
+                if (gate == null) {
+                    run.eligible = true;
+                    run.eligibleBy = "the scenario is ready";
+                } else if (since < budget) {
+                    run.last = "scenario: " + gate;
+                    return;
+                } else {
+                    run.eligibleBy = "NEVER ready in " + since + " ticks";
+                    run.failures.add(run.f.name() + ": the scenario never became ready (" + gate + ")");
+                }
+            } else if (fr != null && fr.replay().eligible()) {
                 run.eligible = true;
                 run.eligibleBy = "the report says eligible" + (passed ? "" : " (last verdict not a pass)");
             } else if (passed) {
@@ -1017,6 +1075,11 @@ public final class GlassReplayGameTests {
             if (d == null || d.chunks.size() < 2) {
                 // One chunk cannot be part loaded: nothing for this variant to judge where the yard landed.
                 IndustryKit.record(run.test, "SKIPPED", "the far district has " + (d == null ? "no" : d.chunks.size()) + " chunk(s): no partial load");
+                if (run.scenario != null) {
+                    // A fixture is built to be judged on a part loaded district: not judging it is a failure.
+                    fail(run, "the far district has " + (d == null ? "no" : d.chunks.size()) + " chunk(s): no partial load for the fixture");
+                    return;
+                }
                 run.stage(Stage.DONE);
                 return;
             }
@@ -1105,7 +1168,7 @@ public final class GlassReplayGameTests {
     }
 
     static void away(Run run) {
-        long due = Math.max(run.t1 + SPAN, run.unloadedAt + MIN_AWAY);
+        long due = Math.max(run.t1 + (run.scenario == null ? SPAN : run.scenario.span()), run.unloadedAt + MIN_AWAY);
         boolean last = run.now() >= due;
         if (run.judge && !run.stub && (run.stageTicks % POLL == 0 || last)) {
             GlassReport r = report(run, run.fd);
@@ -1122,6 +1185,8 @@ public final class GlassReplayGameTests {
                 run.awaySummary = r.replay().summary();
                 if (run.stageTicks % 1200 == 0)
                     IndustryKit.record(run.test, "away", r.replay().summary() + "; " + r.summary());
+                if (run.scenario != null)
+                    run.scenario.away(run, r, last);
             }
         }
         if (!last)
@@ -1204,6 +1269,14 @@ public final class GlassReplayGameTests {
         run.rec.poll();
         run.t2 = run.now();
         judge(run);
+        if (run.scenario != null && run.judge) {
+            try {
+                run.scenario.judged(run, report(run, run.fd), report(run, run.cd));
+            } catch (RuntimeException e) {
+                MicRtsim.LOGGER.error("[gametest] {}: the scenario's checks threw", run.test, e);
+                run.failures.add(run.f.name() + ": the scenario's checks threw " + e);
+            }
+        }
         run.stage(Stage.DONE);
     }
 

@@ -24,6 +24,11 @@ pub struct StationId(pub u64);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TrainId(pub u64);
 
+/// A package store (SECTIONS.md §2.5): a chain network whose frogports sit in more than one
+/// district, numbered by the Java side (IND_PACKAGE_STORE).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct StoreId(pub u64);
+
 /// What kind of thing a good is. Decides how capacity is counted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum GoodClass {

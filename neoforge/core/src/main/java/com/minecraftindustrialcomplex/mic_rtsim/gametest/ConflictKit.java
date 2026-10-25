@@ -154,8 +154,15 @@ public final class ConflictKit {
         b.putLong(least, u.getLeastSignificantBits());
     }
 
-    /** One stack of a BAND_MATERIALIZE: a body kind, how many, and whether the war chief walks in it. */
-    public record StackSpec(String body, int count, boolean chief) {}
+    /**
+     * One stack of a BAND_MATERIALIZE: a body kind, how many, whether the war chief walks in it, and whether
+     * its units are bare (no crystal on them, STACK_BARE).
+     */
+    public record StackSpec(String body, int count, boolean chief, boolean bare) {
+        public StackSpec(String body, int count, boolean chief) {
+            this(body, count, chief, false);
+        }
+    }
 
     /** BAND_MATERIALIZE's fields but its stacks; build with {@link #band}. */
     public static final class Band {
@@ -209,7 +216,8 @@ public final class ConflictKit {
                 int o = at + ConflictRecords.Materialize.STACKS + i * ConflictRecords.Materialize.STACK;
                 b.putInt(o + ConflictRecords.Materialize.S_BODY, bodies[i]);
                 b.putInt(o + ConflictRecords.Materialize.S_COUNT, stacks.get(i).count());
-                b.putInt(o + ConflictRecords.Materialize.S_FLAGS, stacks.get(i).chief() ? ConflictRecords.Materialize.STACK_CHIEF : 0);
+                b.putInt(o + ConflictRecords.Materialize.S_FLAGS, (stacks.get(i).chief() ? ConflictRecords.Materialize.STACK_CHIEF : 0)
+                        | (stacks.get(i).bare() ? ConflictRecords.Materialize.STACK_BARE : 0));
             }
         });
     }
@@ -470,9 +478,55 @@ public final class ConflictKit {
         return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_CENSUS, ConflictRecords.CampCensus.FACTION, faction);
     }
 
-    /** CAMP_BODIES records of one camp, in the order received (a holder's record journaled again is one more). */
+    /**
+     * CAMP_BODIES records of one camp, in the order received. A holder's record journaled again is one more:
+     * a copy (REASSERT, docs/boundary.md §3.2) whether the engine applied it or dropped it as a record it had
+     * ({@code skipped}), listed under the copy's sequence.
+     */
     public static List<ScriptedEngine.Received> campBodies(long faction) {
-        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.FACTION, faction);
+        return withCopies(ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.FACTION, faction);
+    }
+
+    /**
+     * The records of {@code kind} about one camp (the faction at {@code factionAt}), in the order received: those
+     * the engine did not skip, and the copies (REASSERT) of such records, applied or dropped, under the copy's sequence.
+     */
+    private static List<ScriptedEngine.Received> withCopies(int kind, int factionAt, long faction) {
+        ScriptedEngine engine = RtsimTests.engine();
+        List<ScriptedEngine.Received> out = new ArrayList<>(RtsimTests.recordsWith(engine, kind, factionAt, faction));
+        for (ScriptedEngine.Received c : engine.copies(kind))
+            if (c.bytes().length >= factionAt + 8 && c.view().getLong(factionAt) == faction)
+                out.add(c);
+        out.sort(java.util.Comparator.comparingLong(ScriptedEngine.Received::obsSeq));
+        return out;
+    }
+
+    /** A copy (REASSERT) as the engine received it: the generation it named, and the record it carried. */
+    public record Copy(long gen, ScriptedEngine.Received record) {
+        /** The engine judged it a record it had, and dropped it. */
+        public boolean dropped() {
+            return record.skipped();
+        }
+    }
+
+    /**
+     * The copies of records of {@code kind} about one camp (the faction at {@code factionAt}), in the order received,
+     * each with the generation the holder named for it. Its record is the copy's ({@link ScriptedEngine.Received#inner}).
+     */
+    public static List<Copy> copiesOf(int kind, int factionAt, long faction) {
+        List<Copy> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : RtsimTests.engine().received(Obs.REASSERT)) {
+            ScriptedEngine.Received in = r.inner();
+            if (in != null && in.kind() == kind && in.bytes().length >= factionAt + 8 && in.view().getLong(factionAt) == faction)
+                out.add(new Copy(r.view().getLong(Obs.Reassert.GEN), in));
+        }
+        out.sort(java.util.Comparator.comparingLong(c -> c.record().obsSeq()));
+        return out;
+    }
+
+    /** The copies of CAMP_BODIES records of one camp. */
+    public static List<Copy> bodiesCopies(long faction) {
+        return copiesOf(ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.FACTION, faction);
     }
 
     /** CAMP_BODIES records answering one op. */
@@ -501,8 +555,12 @@ public final class ConflictKit {
         return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_OUT, ConflictRecords.CampOut.FACTION, faction);
     }
 
+    /**
+     * CAMP_DEATH records of one camp, in the order received. As {@link #campBodies}, a copy of one (a marker that
+     * carried it loaded again) is one more, applied or dropped.
+     */
     public static List<ScriptedEngine.Received> campDeaths(long faction) {
-        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.FACTION, faction);
+        return withCopies(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.FACTION, faction);
     }
 
     /** CHIEF_STATE records of one faction (the faction at offset 8), in the order received (MZB-273). */

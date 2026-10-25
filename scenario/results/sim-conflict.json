@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 289.034756,
+      "wall_ms": 293.220443,
       "checks": [
         {
           "name": "conservation",
@@ -317,6 +317,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 1,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -521,7 +523,7 @@
           "day": 14.372458333333332,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "invasion home with 19 left and 0 items for the haven"
+          "what": "invasion home with 20 left and 0 items for the haven"
         },
         {
           "tick": 458980,
@@ -605,7 +607,7 @@
           "day": 21.587666666666667,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "raid home with 7 left and 0 items for the haven"
+          "what": "raid home with 8 left and 0 items for the haven"
         },
         {
           "tick": 529078,
@@ -709,9 +711,9 @@
           "BAND_RECALL: recall 4300000400000001, reason 4"
         ]
       ],
-      "wire_bytes": 3080,
+      "wire_bytes": 3104,
       "state_hashes": [
-        "2e6c4f768e8af99f",
+        "06fb447b6cb6d991",
         "d450929438383fb2"
       ],
       "archive": {
@@ -759,7 +761,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 289.92684099999997,
+      "wall_ms": 271.111927,
       "checks": [
         {
           "name": "conservation",
@@ -968,6 +970,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -1318,7 +1322,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 304.345178,
+      "wall_ms": 272.37922,
       "checks": [
         {
           "name": "conservation",
@@ -1505,6 +1509,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -1764,7 +1770,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 2e6c4f768e8af99f, world d450929438383fb2 (uninterrupted 2e6c4f768e8af99f, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict 06fb447b6cb6d991, world d450929438383fb2 (uninterrupted 06fb447b6cb6d991, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,

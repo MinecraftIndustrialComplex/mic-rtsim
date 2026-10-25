@@ -17,8 +17,8 @@
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
-//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA and
-//! IND_WRITE_PACKAGE stay in the link's outbox from the moment they are written until Java's
+//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA,
+//! IND_WRITE_PACKAGE and IND_WRITE_CHAIN stay in the link's outbox from the moment they are written until Java's
 //! answer is admitted through `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate
 //! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
 //! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
@@ -78,6 +78,8 @@ pub const COMMANDS: RangeInclusive<u16> = 0x8400..=0x84FF;
 /// IND_PORT and IND_PACKAGE carry Java's op id at 48.
 const PORT_OP: usize = 48;
 const PACKAGE_OP: usize = 48;
+/// IND_CHAIN_PACKAGE carries, at 64, the engine's op of the IND_WRITE_CHAIN it answers (0: none).
+const CHAIN_OP: usize = 64;
 /// Where an industry command holds its dimension (the engine's dictionary id).
 const RECONCILE_DIM: usize = 36;
 const DEPOSIT_DIM: usize = 24;
@@ -174,7 +176,7 @@ fn new_seed() -> u64 {
 fn kept(c: &Cmd) -> bool {
     matches!(
         c,
-        Cmd::CarriageDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_)
+        Cmd::CarriageDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_) | Cmd::WriteChain(_)
     )
 }
 
@@ -244,7 +246,25 @@ impl Link {
         // afresh, rather than keeping the whole engine, core included, from starting.
         let restored = if has_globals {
             match Industry::restore(pages, Tunables::default()) {
-                Ok(e) => Some(e),
+                Ok(e) => {
+                    // A glass page of another format or other sections drops its district's
+                    // glass state alone (SECTIONS.md §5): one line, and those districts learn again.
+                    let dropped = &e.glass.dropped_on_restore;
+                    if !dropped.is_empty() {
+                        let ids: Vec<String> = dropped
+                            .iter()
+                            .take(16)
+                            .map(|(d, why)| format!("{} ({why})", d.0))
+                            .collect();
+                        log_warn(&format!(
+                            "{} districts' glass pages are dropped, so they learn again: {}{}",
+                            dropped.len(),
+                            ids.join(", "),
+                            if dropped.len() > 16 { ", ..." } else { "" }
+                        ));
+                    }
+                    Some(e)
+                }
                 Err(e) => {
                     log_error(&format!(
                         "the industry engine's {count} pages do not decode ({e}): another build's format; the industry engine starts afresh and they are replaced"
@@ -522,14 +542,19 @@ pub(super) fn claims(rec: &Rec<'_>) -> bool {
 }
 
 /// The op id `Replay` applies an industry record under at most once (0: none). Java's own op ids
-/// only (ports and packages): IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT carry the engine's, and
+/// for ports and packages: IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT carry the engine's, and
 /// the engine takes each once by state (its pending reconciles and exchanges), so they need no op
-/// in `Replay` and never meet the COMMAND_RESULT Java journals under the same op id (W11).
+/// in `Replay` and never meet the COMMAND_RESULT Java journals under the same op id (W11). A
+/// `CHAIN_IN` an IND_WRITE_CHAIN wrote does carry the engine's op (SECTIONS.md §2.5, SC113): its
+/// chunk carries it with the COMMAND_RESULT and a later session journals both again, so `Replay`
+/// takes it once by that op, and the COMMAND_RESULT after it is an answer heard again
+/// ([`answered_again`]), which still empties the outbox.
 pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     let b = rec.bytes;
     let at = match rec.kind {
         iw::IND_PORT => PORT_OP,
         iw::IND_PACKAGE => PACKAGE_OP,
+        iw::IND_CHAIN_PACKAGE => CHAIN_OP,
         _ => return 0,
     };
     if b.len() >= at + 8 {
@@ -610,6 +635,8 @@ fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
         return;
     }
     match kept {
+        // Nothing fitted in the frogport: the store still owes it and writes again (SC113).
+        Some(Cmd::WriteChain(_)) => {}
         Some(c) => log_warn(&format!(
             "Minecraft could not apply industry command {:#x} ({}); the engine keeps its books as if it had (W10)",
             op.0,
@@ -666,7 +693,20 @@ fn districts_fit(o: &Obs) -> bool {
         Obs::PowerLink { sink, source } => {
             return sink.0 < DISTRICT_ID_LIMIT && source.is_none_or(|s| s.0 < DISTRICT_ID_LIMIT);
         }
-        Obs::Conditions(_) | Obs::CarriageResult(_) | Obs::TrainUnwatched(_) => {
+        // A package store's page key is its id, which must fit as a district's does.
+        Obs::ChainPackage(p) => {
+            return p.store.0 < DISTRICT_ID_LIMIT
+                && p.district.is_none_or(|d| d.0 < DISTRICT_ID_LIMIT);
+        }
+        Obs::PackageStore(s) => {
+            return s.store.0 < DISTRICT_ID_LIMIT
+                && s.into.is_none_or(|i| i.0 < DISTRICT_ID_LIMIT)
+                && s.frogports
+                    .iter()
+                    .all(|f| f.district.is_none_or(|d| d.0 < DISTRICT_ID_LIMIT));
+        }
+        Obs::StoreCensus(c) => return c.store.0 < DISTRICT_ID_LIMIT,
+        Obs::Conditions(_) | Obs::CarriageResult(_) | Obs::TrainUnwatched(_) | Obs::HeldList(_) => {
             return true;
         }
     };
@@ -680,6 +720,9 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
         Cmd::ProbeSet(_) => "IND_PROBE_SET",
+        Cmd::CountSet(_) => "IND_COUNT_SET",
+        Cmd::WriteChain(_) => "IND_WRITE_CHAIN",
+        Cmd::HeldDraw(_) => "IND_HELD_DRAW",
     }
 }
 
@@ -753,7 +796,11 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
             p.goods.goods().for_each(|g| goods(g, &mut names));
             None
         }
-        Cmd::ProbeSet(_) => None,
+        Cmd::ProbeSet(_) | Cmd::CountSet(_) | Cmd::HeldDraw(_) => None,
+        Cmd::WriteChain(p) => {
+            p.goods.goods().for_each(|g| goods(g, &mut names));
+            None
+        }
     };
     names.sort_unstable();
     names.dedup();

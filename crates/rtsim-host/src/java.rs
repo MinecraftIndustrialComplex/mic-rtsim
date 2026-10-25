@@ -105,11 +105,17 @@ pub struct Java {
     pub e: Arc<Engine>,
     // the journal (saved with the "world")
     pub journal: VecDeque<(u64, Vec<u8>)>,
+    /// The newest acknowledged JOURNAL_GEN, kept past the trim and sent first at a session start
+    /// (Java's `Journal.pinnedGen`, docs/boundary.md §3.2).
+    pub pinned_gen: Option<(u64, Vec<u8>)>,
     pub next_obs: u64,
     pub last_applied_cmd: u64,
     pub dict: Vec<(u32, String)>,
     pub applied_cmd_ops: HashSet<u64>,
     // per session
+    /// This session's generation (docs/boundary.md §3.2): its JOURNAL_GEN's nonce, which the
+    /// records a holder carries are stamped with.
+    pub nonce: u64,
     pub pages_obs: u64,
     pub journal_first_at_start: u64,
     pub world_next_at_start: u64,
@@ -207,6 +213,7 @@ pub struct Java {
 #[derive(Clone)]
 pub struct WorldSave {
     pub journal: VecDeque<(u64, Vec<u8>)>,
+    pub pinned_gen: Option<(u64, Vec<u8>)>,
     pub next_obs: u64,
     pub last_applied_cmd: u64,
     pub dict: Vec<(u32, String)>,
@@ -216,6 +223,7 @@ impl WorldSave {
     pub fn fresh() -> Self {
         WorldSave {
             journal: VecDeque::new(),
+            pinned_gen: None,
             next_obs: 1,
             last_applied_cmd: 0,
             dict: Vec::new(),
@@ -230,6 +238,14 @@ impl Java {
 
     /// [`Java::open`], returning the engine's start error instead of panicking (the host).
     pub fn try_open(e: Arc<Engine>, save: WorldSave) -> Result<Java, String> {
+        Java::try_open_as(e, save, session_gen())
+    }
+
+    /// [`Java::try_open`] as the session `nonce` (never 0). The host, which carries no holders
+    /// and so never journals a copy, names its session after the world's save so that two runs
+    /// of one world write the same pages; every other session is random, as the bridge's are.
+    pub fn try_open_as(e: Arc<Engine>, save: WorldSave, nonce: u64) -> Result<Java, String> {
+        assert_ne!(nonce, 0, "generation 0 is a record from before generations");
         let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd)?;
         if next_cmd_seq <= save.last_applied_cmd {
             return Err(format!(
@@ -248,19 +264,19 @@ impl Java {
         let next_obs = save.next_obs.max(pages_obs + 1);
         let mut applied_cmd_ops = HashSet::new();
         for (_, r) in &save.journal {
-            if wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
-                && wire::u32_at(r, wire::R_AUX) == obs::command_result::APPLIED
-            {
-                applied_cmd_ops.insert(wire::u64_at(r, obs::command_result::OP_ID));
+            if let Some(op) = applied_op(r) {
+                applied_cmd_ops.insert(op);
             }
         }
-        Ok(Java {
+        let mut j = Java {
             e,
             journal: save.journal,
+            pinned_gen: save.pinned_gen,
             next_obs,
             last_applied_cmd: save.last_applied_cmd,
             dict: save.dict,
             applied_cmd_ops,
+            nonce,
             pages_obs,
             journal_first_at_start: journal_first,
             world_next_at_start: world_next,
@@ -309,12 +325,19 @@ impl Java {
             policy: Policy::Play,
             refused: BTreeMap::new(),
             undecoded: 0,
-        })
+        };
+        // The session's first record names its generation, as BoundarySession's constructor does.
+        let g = j.nonce;
+        j.journal(obs::JOURNAL_GEN, obs::journal_gen::SIZE, 0, |r| {
+            wire::put_u64(r, obs::journal_gen::GEN, g)
+        });
+        Ok(j)
     }
 
     pub fn world_save(&self) -> WorldSave {
         WorldSave {
             journal: self.journal.clone(),
+            pinned_gen: self.pinned_gen.clone(),
             next_obs: self.next_obs,
             last_applied_cmd: self.last_applied_cmd,
             dict: self.dict.clone(),
@@ -397,6 +420,39 @@ impl Java {
         }
         self.journal.push_back((seq, r));
         seq
+    }
+
+    /// Journals a copy of a record a holder carried (REASSERT, docs/boundary.md §3.2): the
+    /// record's bytes as first journaled, after `nonce`, the generation they were journaled in.
+    /// Returns the copy's sequence.
+    pub fn reassert(&mut self, nonce: u64, original: &[u8]) -> u64 {
+        let len = obs::reassert::INNER + original.len();
+        let mut r = vec![0u8; len];
+        wire::put_u16(&mut r, wire::R_KIND, obs::REASSERT);
+        wire::put_u16(&mut r, wire::R_SIZE, len as u16);
+        wire::put_i64(
+            &mut r,
+            obs::GAME_TIME,
+            wire::i64_at(original, obs::GAME_TIME),
+        );
+        wire::put_u64(&mut r, obs::reassert::GEN, nonce);
+        r[obs::reassert::INNER..].copy_from_slice(original);
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut r, obs::OBS_SEQ, seq);
+        if let Some(op) = applied_op(&r) {
+            self.applied_cmd_ops.insert(op);
+        }
+        self.journal.push_back((seq, r));
+        seq
+    }
+
+    /// The journal's record at `seq`, as a holder would have kept it.
+    pub fn journaled(&self, seq: u64) -> Option<Vec<u8>> {
+        self.journal
+            .iter()
+            .find(|(s, _)| *s == seq)
+            .map(|(_, r)| r.clone())
     }
 
     pub fn transfer(&mut self, op: u64, from: u64, to: u64, amount: i64) -> u64 {
@@ -484,8 +540,9 @@ impl Java {
         let mut submitted = false;
         if self.preamble() {
             let entries: Vec<(u64, Vec<u8>)> = self
-                .journal
+                .pinned_gen
                 .iter()
+                .chain(&self.journal)
                 .filter(|(s, _)| *s > self.sent_obs)
                 .cloned()
                 .collect();
@@ -752,7 +809,10 @@ impl Java {
             if self.pending_ack > 0 && !self.hold_acks {
                 let a = self.pending_ack;
                 while self.journal.front().is_some_and(|(s, _)| *s <= a) {
-                    self.journal.pop_front();
+                    let e = self.journal.pop_front().unwrap();
+                    if wire::u16_at(&e.1, wire::R_KIND) == obs::JOURNAL_GEN {
+                        self.pinned_gen = Some(e);
+                    }
                 }
                 if self.policy == Policy::Play {
                     self.acks.push(a);
@@ -1134,7 +1194,11 @@ impl Java {
                 .goods
                 .goods()
                 .for_each(|g| self.check_mirrored(DICT_GOOD, g.0)),
-            Cmd::ProbeSet(_) => {}
+            Cmd::WriteChain(p) => p
+                .goods
+                .goods()
+                .for_each(|g| self.check_mirrored(DICT_GOOD, g.0)),
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) | Cmd::HeldDraw(_) => {}
         }
         if self.fail_next_carriage
             && let Cmd::CarriageDelta(cd) = &c
@@ -1781,4 +1845,37 @@ impl Java {
             .find(|(_, f)| f.ask_id == id)
             .map(|(_, f)| f.sentiment)
     }
+}
+
+/// A session's generation nonce: random, never 0.
+fn session_gen() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(1);
+    h.finish() | 1
+}
+
+/// A session's nonce named after the world's save (the host's, [`Java::try_open_as`]): the same
+/// save gives the same nonce, and any record or session since gives another. Never 0.
+pub fn nonce_of(save: &WorldSave) -> u64 {
+    let mut x = save.next_obs ^ save.last_applied_cmd.rotate_left(32) ^ 0x5254_4a47_0000_0000;
+    for (s, r) in &save.journal {
+        x = (x ^ s ^ (r.len() as u64).rotate_left(17)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    x ^= x >> 31;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    (x ^ (x >> 29)) | 1
+}
+
+/// The engine op a journaled record says Java applied: a COMMAND_RESULT APPLIED's, a copy's too.
+fn applied_op(r: &[u8]) -> Option<u64> {
+    let r = if wire::u16_at(r, wire::R_KIND) == obs::REASSERT {
+        r.get(obs::reassert::INNER..)?
+    } else {
+        r
+    };
+    (r.len() >= obs::command_result::SIZE
+        && wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
+        && wire::u32_at(r, wire::R_AUX) == obs::command_result::APPLIED)
+        .then(|| wire::u64_at(r, obs::command_result::OP_ID))
 }

@@ -11,6 +11,14 @@ use rtsim_conflict::engine::{Phase, SlotState};
 use rtsim_conflict::synth::{self, CampRun};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
+/// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death, so none
+/// repeats another's op.
+fn next_op() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    (1 << 63) | (N.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 fn days(d: f64) -> u64 {
     (d * TICKS_PER_DAY as f64) as u64
 }
@@ -391,6 +399,70 @@ fn a_member_whose_body_is_missed_three_times_over_two_days_is_written_off() {
     ok(&mut r);
 }
 
+/// The bodies of a camp after a sim reset (MZB-653): `total` bodies standing, the last `away` of them
+/// loaded outside the footprint, each tagged with a slot and a generation of the engine's earlier life
+/// (generations 900 and up, which no slot of this engine holds). `grove(_, found)` has made `found` of
+/// them; the rest are added.
+fn old_life_bodies(r: &mut CampRun, total: usize, away: usize) {
+    let (key, body) = (r.key, r.body);
+    while r.plugin.camp_world(key).bodies.len() < total {
+        r.plugin.camp_stray(key, body);
+    }
+    let bodies = &mut r.plugin.camp_world(key).bodies;
+    let n = bodies.len();
+    for (i, b) in bodies.iter_mut().enumerate() {
+        b.slot = i as u32 + 1;
+        b.generation = 900 + i as u32;
+        b.elsewhere = i >= n - away;
+    }
+}
+
+/// MZB-653, M5 merge review P2: after a sim reset a grove of 6 with 4 of its bodies loaded away is found by
+/// Java with the bodies away counted in its home size (they used to be listed ELSEWHERE and left out of the
+/// count). The cap is the grove's 6, the census's tags are an earlier life's (no slot holds them), and every
+/// body is adopted into a fresh slot: the emulated plugin retags a tagged body as Java's `Camps.adopt` does
+/// (MZB-654). Before the emulator matched Java the adopt of a tagged body was NOTHING and the bodies kept
+/// their old tags.
+#[test]
+fn a_grove_found_after_a_reset_with_bodies_away_adopts_them_all() {
+    let mut r = grove(61, 6);
+    old_life_bodies(&mut r, 6, 4);
+    assert_eq!(r.c.factions[r.f as usize].cap, 6, "found at its full size");
+    come_in(&mut r);
+    assert_eq!(applied(&r, boundary::ACTION_ADOPT), 6);
+    assert_eq!(answered(&r, boundary::LINE_DONE), 6, "every adopt lands");
+    assert_eq!(
+        applied(&r, boundary::ACTION_REMOVE),
+        0,
+        "nothing is above the cap"
+    );
+    assert_eq!(counts(&r), [6, 0, 0, 0, 0]);
+    assert_eq!(world_bodies(&r), 6);
+    let old = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| (900..906).contains(&b.generation))
+        .count();
+    assert_eq!(old, 0, "no body keeps its old life's tag");
+    assert_eq!(tagged_bodies(&r), 6);
+    ok(&mut r);
+}
+
+/// The same bodies found at the size Java used to send (the footprint's 2, the 4 away left out) show the
+/// fault MZB-653 fixed on Java's side: the cap is 2, two are adopted and the 4 away are removed when they
+/// load. Kept to show what the home count decides; Java no longer sends it.
+#[test]
+fn a_grove_found_short_of_its_bodies_away_removes_them_above_the_cap() {
+    let mut r = grove(62, 2);
+    old_life_bodies(&mut r, 6, 4);
+    assert_eq!(r.c.factions[r.f as usize].cap, 2);
+    come_in(&mut r);
+    assert_eq!(applied(&r, boundary::ACTION_ADOPT), 2);
+    assert_eq!(applied(&r, boundary::ACTION_REMOVE), 4);
+    assert_eq!(world_bodies(&r), 2);
+    ok(&mut r);
+}
+
 // ---- deaths ------------------------------------------------------------------------------------
 
 /// §4.9, *Deaths*: at home the pool loses a member and the slot's generation is retired at a death:
@@ -738,6 +810,7 @@ fn a_member_lost_on_a_walk_off_books_once_in_the_camp() {
             body,
             count: 1,
             killer: (0, 0),
+            op: next_op(),
         }),
         at,
     );
@@ -950,6 +1023,98 @@ fn a_party_home_with_its_puppets_has_them_handed_back_not_spawned() {
         !r.cmds.iter().any(|(_, c)| matches!(c, Cmd::Recall(_))),
         "no recall: the camp is in"
     );
+    ok(&mut r);
+}
+
+/// RP-69 (the M5 merge check's item 5): the same homecoming while the session's replay runs (the
+/// party kept embodied from the pages). The replay's start made the camp out, so its puppets are
+/// recalled as at any out camp (`camp_home`), and the gate drops the recall: no body of this
+/// session is there yet. No line goes, nothing the gate never lets through is decided, and the
+/// next census spawns the owed bodies.
+#[test]
+fn a_replayed_homecoming_at_an_out_camp_sends_nothing() {
+    let mut r = grove(133, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    let mut t = r.c.now();
+    while r.c.parties[p].phase != Phase::Home {
+        t += 200;
+        r.run(t);
+        assert!(t < day(20.0), "the party never walked home");
+    }
+    assert_eq!(counts(&r), [5, 0, 0, 4, 0], "away, gone");
+    let units = r.c.parties[p].units.clone();
+    r.c.parties[p].embodied = true;
+    r.c.parties[p].spawned = units;
+    r.restart_to_replay();
+    let (gate, sent) = (r.c.replay_gate_counts(), r.cmds.len());
+    let end = r.c.parties[p].until.max(t) + days(2.0);
+    r.run(end);
+    assert!(war_parties(&r).is_empty(), "home");
+    assert_eq!(counts(&r), [5, 4, 0, 0, 0], "gone, owed again");
+    let g = r.c.replay_gate_counts();
+    assert_eq!(g.never, 0);
+    assert!(g.dropped > gate.dropped, "the recall, dropped");
+    assert!(
+        r.cmds[sent..]
+            .iter()
+            .all(|(_, c)| !matches!(c, Cmd::Recall(_) | Cmd::Reconcile(_))),
+        "nothing sent"
+    );
+    r.c.replay_done();
+    come_in(&mut r);
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    assert_eq!(world_bodies(&r), 9);
+    ok(&mut r);
+}
+
+/// RP-69: a CAMP_DEATH replayed while the session's replay runs, of a body left in the camp by a
+/// party kept embodied from the pages: that member's unit dies, its puppet count follows it, and
+/// nothing is sent.
+#[test]
+fn a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing() {
+    let mut r = grove(134, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    r.camp_out();
+    let end = r.c.parties[p].until;
+    r.run(end + 100);
+    assert_eq!(r.c.parties[p].phase, Phase::Out);
+    assert_eq!(counts(&r)[2], 4, "left in the camp while it was out");
+    let units = r.c.parties[p].units.clone();
+    r.c.parties[p].embodied = true;
+    r.c.parties[p].spawned = units;
+    let b = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .find(|b| {
+            b.generation != 0
+                && r.c
+                    .camp(r.f)
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .any(|s| s.generation == b.generation && s.state == SlotState::Left)
+        })
+        .copied()
+        .unwrap();
+    r.restart_to_replay();
+    let sent = r.cmds.len();
+    let at = r.c.now() + 1;
+    r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
+    let to = r.c.now() + 3;
+    r.run(to);
+    let x = &r.c.parties[p];
+    assert_eq!(x.alive(), 3);
+    assert_eq!(
+        x.spawned.iter().map(|s| s.1).sum::<u32>(),
+        3,
+        "one puppet fewer"
+    );
+    assert_eq!(counts(&r)[2], 3);
+    assert_eq!(r.c.replay_gate_counts().never, 0);
+    assert!(r.cmds[sent..].is_empty(), "nothing sent");
+    r.c.replay_done();
     ok(&mut r);
 }
 
@@ -1199,14 +1364,18 @@ fn a_late_out_for_an_older_epoch_ends_nothing() {
 }
 
 /// §4.9: a CAMP_CENSUS replayed from an earlier session only marks its camp out; its bodies are
-/// not the world as it is now.
+/// not the world as it is now. The session's replay window opens as the host opens it
+/// (`begin_replay`, which makes every camp out first), and the census changes nothing after it
+/// but the epoch answered: an answer of the replayed epoch, journaled twice (a holder's copy), is
+/// booked once (RP-65; `begin_replay` has marked the camp out already, so this is what shows the
+/// census was read).
 #[test]
 fn a_replayed_census_only_marks_its_camp_out() {
     let mut r = grove(30, 9);
     come_in(&mut r);
+    r.c.begin_replay(true);
     let slots = r.c.camp(r.f).unwrap().slots.clone();
     let sent = orders(&r).len();
-    r.c.replaying = true;
     let at = r.c.now();
     r.c.ingest(
         &mut r.w,
@@ -1225,6 +1394,35 @@ fn a_replayed_census_only_marks_its_camp_out() {
         }),
         at,
     );
+    let (slot, generation) = {
+        let s = &r.c.camp(r.f).unwrap().slots[0];
+        (s.id, s.generation)
+    };
+    let answers = r.c.stats.camp_answers;
+    for _ in 0..2 {
+        r.c.ingest(
+            &mut r.w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            &Obs::CampBodies(boundary::CampBodies {
+                faction: r.key,
+                epoch: 12345,
+                op: 0xA11,
+                lines: vec![boundary::LineAnswer {
+                    line: 0,
+                    slot,
+                    generation,
+                    action: boundary::ACTION_SPAWN,
+                    outcome: boundary::LINE_DONE,
+                }],
+            }),
+            at,
+        );
+    }
+    assert_eq!(
+        r.c.stats.camp_answers,
+        answers + 1,
+        "the replayed epoch's answer, booked once"
+    );
     r.c.replay_done();
     r.flush(at);
     assert!(!r.c.camp_is_in(r.f), "marked out");
@@ -1242,6 +1440,69 @@ fn a_replayed_census_only_marks_its_camp_out() {
     assert!(r.c.camp_is_in(r.f));
     assert_eq!(r.c.stats.camp_censuses, 2);
     ok(&mut r);
+}
+
+/// RP-68 (the M5 merge check's item 4): a world save reported while the replay runs (WORLD_SAVED
+/// between a long replay's hand-overs) makes no camp forget the answers of replayed records until
+/// the replay end, so a holder's copy of one, journaled again in the replay, is booked once. At
+/// the end the save's sequence is the durable one.
+#[test]
+fn a_world_save_while_replaying_forgets_no_answer_until_the_replay_end() {
+    let mut r = grove(132, 9);
+    come_in(&mut r);
+    r.c.begin_replay(true);
+    let at = r.c.now();
+    let epoch = 777;
+    let census = Obs::CampCensus(boundary::CampCensus {
+        faction: r.key,
+        epoch,
+        flags: 0,
+        health: 0.0,
+        throne: (0.0, 0.0, 0.0),
+        direction: 0.0,
+        traded_slot: 0,
+        traded_generation: 0,
+        bodies: Vec::new(),
+        traded: Vec::new(),
+    });
+    let mut infra = rtsim_ecology::infra::NoInfrastructure;
+    r.c.ingest(&mut r.w, &mut infra, &census, at);
+    let s = &r.c.camp(r.f).unwrap().slots[0];
+    let answer = |op| {
+        Obs::CampBodies(boundary::CampBodies {
+            faction: r.key,
+            epoch,
+            op,
+            lines: vec![boundary::LineAnswer {
+                line: 0,
+                slot: s.id,
+                generation: s.generation,
+                action: boundary::ACTION_SPAWN,
+                outcome: boundary::LINE_DONE,
+            }],
+        })
+    };
+    let (first, second) = (answer(0xA1), answer(0xA2));
+    let answers = r.c.stats.camp_answers;
+    r.c.obs_seq = 5;
+    r.c.ingest(&mut r.w, &mut infra, &first, at);
+    r.c.world_saved(100);
+    // The next answer booked is where a camp forgets (MZB-177).
+    r.c.obs_seq = 6;
+    r.c.ingest(&mut r.w, &mut infra, &second, at);
+    r.c.obs_seq = 7;
+    r.c.ingest_copy(&mut r.w, &mut infra, &first, at);
+    assert_eq!(
+        r.c.stats.camp_answers,
+        answers + 2,
+        "the copy of the first answer is not booked again"
+    );
+    assert_eq!(r.c.durable_obs_seq, 0, "held while replaying");
+    r.c.replay_done();
+    assert_eq!(r.c.durable_obs_seq, 100, "durable from the replay end");
+    // Live, a save is durable at once.
+    r.c.world_saved(150);
+    assert_eq!(r.c.durable_obs_seq, 150);
 }
 
 // ---- answers lost, replayed and stale ---------------------------------------------------------
@@ -1614,6 +1875,92 @@ fn an_answer_of_a_superseded_epoch_books_nothing() {
     assert_eq!(counts(&r)[SlotState::Owed as usize], 1);
 }
 
+/// A sim reset keeps the journal (docs/choices-reinstall-guard.md RG5), so the old engine's
+/// unacknowledged tail reaches the new one (RG14's "not covered"). Its camps are no camps of this
+/// engine, whatever their kind of record: a census, an answer, a death and an out for a faction
+/// this engine never founded book nothing and order nothing, and a camp this engine did found is
+/// left as it was (MZB-650, MZB-651).
+#[test]
+fn camp_records_of_a_camp_this_engine_never_founded_book_nothing() {
+    let mut r = grove(66, 9);
+    come_in(&mut r);
+    let before = r.c.camp(r.f).unwrap().clone();
+    let stats = r.c.stats;
+    let sent = orders(&r).len();
+    let other = r.key ^ 0x5eed_5eed_5eed;
+    assert_ne!(other, r.key);
+    ingest(
+        &mut r,
+        &Obs::CampCensus(boundary::CampCensus {
+            faction: other,
+            epoch: 0xBEEF,
+            flags: 0,
+            health: 0.0,
+            throne: (0.0, 0.0, 0.0),
+            direction: 0.0,
+            traded_slot: 0,
+            traded_generation: 0,
+            bodies: vec![boundary::CensusBody {
+                body: 0,
+                flags: boundary::BODY_STRAY,
+                slot: 0,
+                generation: 0,
+                uuid: (1, 2),
+            }],
+            traded: Vec::new(),
+        }),
+    );
+    ingest(
+        &mut r,
+        &Obs::CampBodies(boundary::CampBodies {
+            faction: other,
+            epoch: 0xBEEF,
+            op: 0xFEED,
+            lines: vec![boundary::LineAnswer {
+                line: 0,
+                slot: 0,
+                generation: 1,
+                action: boundary::ACTION_TAKE,
+                outcome: boundary::LINE_DONE,
+            }],
+        }),
+    );
+    ingest(
+        &mut r,
+        &Obs::CampDeath(boundary::CampDeath {
+            faction: other,
+            by: boundary::BY_PLAYER,
+            body: 0,
+            flags: 0,
+            slot: 0,
+            generation: 1,
+            killer: (3, 4),
+            op: 0xD1ED,
+        }),
+    );
+    ingest(
+        &mut r,
+        &Obs::CampOut(boundary::CampOut {
+            faction: other,
+            epoch: 0xBEEF,
+        }),
+    );
+    assert_eq!(r.c.stats, stats, "nothing was counted");
+    assert_eq!(
+        r.c.camp(r.f).unwrap(),
+        &before,
+        "the camp it did found is as it was"
+    );
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert_eq!(
+        orders(&r).len(),
+        sent,
+        "nothing was ordered for the strangers"
+    );
+    ok(&mut r);
+}
+
 /// A camp death is idempotent by its slot and generation, so its op id is not kept: the set of
 /// applied ops does not grow with each death (a farmed grove is a death a few minutes), and the
 /// same record twice (the journal's, then a holder's) is booked once.
@@ -1658,7 +2005,7 @@ fn lines_in(cmds: &[Cmd], action: u8) -> usize {
 /// which the engine ingests inside the session's replay window (`CampRun::restart_to_replay` opens
 /// it) and `replay_done` closes, as rtsim-jni does when the journal has caught up.
 fn replay(r: &mut CampRun, journal: Vec<(Tick, Obs)>) {
-    assert!(r.c.replaying, "the session's replay window is open");
+    assert!(r.c.replaying(), "the session's replay window is open");
     for (t, o) in journal {
         let at = t.max(r.c.now());
         r.c.ingest(

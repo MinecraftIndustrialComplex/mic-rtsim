@@ -22,10 +22,14 @@ public final class GlassRecords {
     public static final int IND_GRAPH_END = 0x004C;
     /** A probed buffer's contents in a sweep; not counted in the sweep's records. */
     public static final int IND_PROBE_SAMPLE = 0x004D;
+    /** What was counted at a count set's (mover, store) pairs in a sweep; not counted in the sweep's records. */
+    public static final int IND_COUNT_SAMPLE = 0x004F;
     /** Journaled: a district chunk started or stopped block-ticking. */
     public static final int IND_CHUNK_TICKING = 0x040B;
     /** Command: buffers to add to a district's sweeps. */
     public static final int IND_PROBE_SET = 0x8406;
+    /** Command: the (mover, store) pairs whose moves Java counts for a district. */
+    public static final int IND_COUNT_SET = 0x8408;
 
     /** {@code Option<u32>} index on the wire: none. */
     public static final int NONE = 0xFFFF_FFFF;
@@ -63,6 +67,8 @@ public final class GlassRecords {
 
         // Flags.
         public static final int BOUNDED = 1, ANY_OUTPUT_BLOCKS = 2, STOCHASTIC = 4, FLUID = 8, CALIBRATED = 16, FRAME = 32, PASS_THROUGH = 64;
+        /** A package store's frogport (SECTIONS.md §2.5, slice S4): a store whose chain side is a port. */
+        public static final int CHAIN_PORT = 128;
 
         // Rate flags.
         public static final int RATE_SHARED = 1, RATE_FIRST_CYCLE = 2;
@@ -117,30 +123,75 @@ public final class GlassRecords {
         }
     }
 
-    /** IND_GRAPH_DOMAIN, aux = members. */
+    /**
+     * IND_GRAPH_DOMAIN, aux = members (the tail included). Body in order: N_LEVELS speed rows (Level24), N_SOURCES
+     * sources (Source32), N_SOURCE_LEVELS source rows (Level24), the members (Member24), then N_PEERS peers (u64
+     * district ids). Size {@code 88 + 24L + 32S + 24R + 24n + 8P}.
+     */
     public static final class Domain {
-        public static final int NETWORK = 32;       // u64
-        public static final int N_LEVELS = 40;      // u32
-        public static final int CURRENT = 44;       // u32
-        public static final int DRIVER = 48;        // u32, NONE
-        public static final int FLAGS = 52;         // u32
-        public static final int LIVE_STRESS = 56;   // f64
-        public static final int LIVE_CAPACITY = 64; // f64
-        public static final int LEVELS = 72;        // n x Level24, then members x Member24
-        /** Level24: u32 selector, i32 speedNum, u32 speedDen, u32 reserved, f64 capacity. */
+        public static final int NETWORK = 32;           // u64
+        public static final int N_LEVELS = 40;          // u32: the speed rows
+        public static final int CURRENT = 44;           // u32: the speed row now, NONE when none is
+        // 48 reserved
+        public static final int FLAGS = 52;             // u32
+        public static final int LIVE_STRESS = 56;       // f64
+        public static final int LIVE_CAPACITY = 64;     // f64
+        public static final int N_SOURCES = 72;         // u32
+        public static final int N_SOURCE_LEVELS = 76;   // u32: the sources' rows in all
+        public static final int N_FOREIGN = 80;         // u32: the last N_FOREIGN members lie in no district's chunks (a shared part's tail)
+        public static final int N_PEERS = 84;           // u32: the peer district ids after the members (a shared part's, else 0)
+        public static final int LEVELS = 88;            // n x Level24, then sources x Source32, source rows x Level24, members x Member24, peers x u64
+        /**
+         * Level24: u32 selector, i32 speedNum, u32 speedDen, u32 reserved, f64 capacity. A speed row has selector 0
+         * and capacity 0 (the reference's speed); a source row has the boiler level (0 for a fixed source), the
+         * source's own signed speed and its capacity at that speed in SU.
+         */
         public static final int LEVEL = 24;
         public static final int L_SELECTOR = 0, L_SPEED_NUM = 4, L_SPEED_DEN = 8, L_CAPACITY = 16;
+        /**
+         * Source32: u32 driver (the boiler node, NONE), u32 first source row, u32 row count, u32 current (index into
+         * its own rows, NONE when unknown), i32 ratioNum, u32 ratioDen (the source's speed over the reference's;
+         * ratioDen 0: unknown), i64 position ({@code BlockPos.asLong}).
+         */
+        public static final int SOURCE = 32;
+        public static final int S_DRIVER = 0, S_FIRST = 4, S_ROWS = 8, S_CURRENT = 12, S_RATIO_NUM = 16, S_RATIO_DEN = 20, S_POS = 24;
         /** Member24: u32 node (NONE), u32 count, i32 ratioNum, u32 ratioDen, f64 impact. */
         public static final int MEMBER = 24;
         public static final int M_NODE = 0, M_COUNT = 4, M_RATIO_NUM = 8, M_RATIO_DEN = 12, M_IMPACT = 16;
-        public static final int OVERSTRESSED = 1, STRESS_DISABLED = 2;
+        /** A peer: the u64 id of another district on the same shared network. */
+        public static final int PEER = 8;
+        /**
+         * SHARED: a part of a network that crosses the district's border, otherwise modelled. Its sources are every
+         * source Create lists (a foreign one has no rows), its members the district's own and the tail in no
+         * district's chunks, and it names its peers.
+         */
+        public static final int OVERSTRESSED = 1, STRESS_DISABLED = 2, SHARED = 4;
+        /**
+         * A driven source's passive row's selector, above every boiler level (0 to 18): the row its engines run
+         * at while the boiler has passive heat only ({@code BoilerData.isPassive}; SECTIONS.md choice SC154).
+         */
+        public static final int PASSIVE_SELECTOR = 19;
+        /** Most speed rows a modelled domain has; more and the domain is unstable. */
+        public static final int MAX_SPEED_ROWS = 32;
 
-        public static int size(int levels, int members) {
-            return LEVELS + LEVEL * levels + MEMBER * members;
+        public static int size(int levels, int sources, int sourceLevels, int members, int peers) {
+            return LEVELS + LEVEL * levels + SOURCE * sources + LEVEL * sourceLevels + MEMBER * members + PEER * peers;
         }
 
-        public static int members(int levels) {
+        public static int sources(int levels) {
             return LEVELS + LEVEL * levels;
+        }
+
+        public static int sourceLevels(int levels, int sources) {
+            return sources(levels) + SOURCE * sources;
+        }
+
+        public static int members(int levels, int sources, int sourceLevels) {
+            return sourceLevels(levels, sources) + LEVEL * sourceLevels;
+        }
+
+        public static int peers(int levels, int sources, int sourceLevels, int members) {
+            return members(levels, sources, sourceLevels) + MEMBER * members;
         }
     }
 
@@ -197,6 +248,39 @@ public final class GlassRecords {
 
         public static int size(int n) {
             return pad8(NODES + 4 * n);
+        }
+    }
+
+    /** IND_COUNT_SAMPLE, aux = n entries (one per pair and good; a pair that counted nothing has good NONE). */
+    public static final class CountSample {
+        // 8 i64 gameTime, 16 u64 district
+        public static final int SWEEP = 24;     // u32
+        public static final int COMPILE = 28;   // u32
+        public static final int ENTRIES = 32;   // n x Count40
+        /**
+         * Count40: u32 mover node, u32 store node, u32 good (NONE), u32 entries (how many entries the entry's
+         * (mover, store) pair has in all, over every record of the sweep), i64 since, i64 in, i64 out.
+         */
+        public static final int ENTRY = 40;
+        public static final int E_MOVER = 0, E_STORE = 4, E_GOOD = 8, E_ENTRIES = 12, E_SINCE = 16, E_IN = 24, E_OUT = 32;
+
+        public static int size(int n) {
+            return ENTRIES + ENTRY * n;
+        }
+    }
+
+    /** IND_COUNT_SET (command: 8 cmdSeq), aux = n pairs. */
+    public static final class CountSet {
+        public static final int DISTRICT = 16;  // u64
+        public static final int COMPILE = 24;   // u32
+        // 28 reserved
+        public static final int PAIRS = 32;     // n x Pair8
+        /** Pair8: u32 mover node, u32 store node (the named compile's node numbers). */
+        public static final int PAIR = 8;
+        public static final int P_MOVER = 0, P_STORE = 4;
+
+        public static int size(int n) {
+            return pad8(PAIRS + PAIR * n);
         }
     }
 

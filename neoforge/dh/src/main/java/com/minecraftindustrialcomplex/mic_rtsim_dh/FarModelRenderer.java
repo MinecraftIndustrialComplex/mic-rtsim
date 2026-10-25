@@ -63,8 +63,9 @@ import org.lwjgl.opengl.GL30;
  *       the band inside them. Each kind is held to the tier's count ({@link FarDetail#dragons},
  *       {@link FarDetail#feedObjects}), nearest first by horizontal distance as the boxes rank theirs, a dragon
  *       reaching as far as its boxes do; a dragon still drawn as a box takes its place in that count here, and a
- *       model in {@link FarDragonView}'s, so in DH's pass the models and the boxes together keep to it. The
- *       band's boxes have no count of their own, so there only the models keep to it.</li>
+ *       model in {@link FarDragonView}'s, so in DH's pass the models and the boxes together keep to it. In the
+ *       band {@link FarBandRenderer} counts its dragon boxes with the models, in the same order (DHT69), so
+ *       there too they keep to it together.</li>
  *   <li><b>Live</b>: the nearest {@link #LIVE_DRAGONS} dragons within {@link #LIVE_DISTANCE} blocks are drawn by
  *       their own renderer each frame (smooth wings), the rest from baked frames. In DH's vanilla fade, where
  *       both passes draw, both render it live: one pose placed once a frame and rendered twice at the same time
@@ -144,6 +145,9 @@ final class FarModelRenderer {
     private static long preparedFrame = -1, dhDrawnFrame = -1;
     private static int depthFunc, dhDrawFbo;
     private static int errors;
+    /** Models skipped for a placement that is not finite (DHT73), and how many were logged. */
+    static long badPlacements;
+    private static int badLogged;
 
     // What the last frame did, for the bench
     static final GpuTimer DH_GPU = new GpuTimer(), BAND_GPU = new GpuTimer();
@@ -256,6 +260,9 @@ final class FarModelRenderer {
             if (m.kind() != FarKind.CARRIAGE && m.kind() != FarKind.DRAGON || !dimension.equals(m.dimension()))
                 continue;
             m.segmentAt(clock, SEG);
+            // A carriage run longer than any carriage is a bad sample: not drawn (FarTrainView logs it; DHT73)
+            if (m.kind() == FarKind.CARRIAGE && FarTrainView.tooLong(SEG))
+                continue;
             double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
             double dx = x - cam.x, dy = y - cam.y, dz = z - cam.z;
             if (!(dx * dx + dz * dz <= radiusSq))
@@ -454,6 +461,8 @@ final class FarModelRenderer {
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
                 continue;
             it.mv.set(mv).translate(rx, ry, rz).mul(it.model.local);
+            if (!placed(it))
+                continue;
             DRAWN.add(it);
         }
         lastDh = DRAWN.size();
@@ -498,6 +507,20 @@ final class FarModelRenderer {
             RenderSystem.setShaderFogEnd(fogEnd);
             SAVED.apply();
         }
+    }
+
+    /**
+     * True when the item's model-view matrix is finite; else it is not drawn, and counted, and the first few
+     * logged (DHT73).
+     */
+    private static boolean placed(Item it) {
+        if (it.mv.isFinite())
+            return true;
+        badPlacements++;
+        if (badLogged++ < 5)
+            MicRtsimDh.LOGGER.warn("mic_rtsim_dh: far model {} has a placement that is not finite; not drawn ({} so far)."
+                    + " At {} {} {}", it.mover.key(), badPlacements, it.x, it.y, it.z);
+        return false;
     }
 
     /** The level's diffuse lights, as vanilla's entity pass sets them ({@code LevelRenderer.renderLevel}). */
@@ -569,6 +592,8 @@ final class FarModelRenderer {
                 continue;
             it.mv.set(mv).translate((float) (it.x - cam.x), (float) (it.y - cam.y), (float) (it.z - cam.z))
                     .mul(it.model.local);
+            if (!placed(it))
+                continue;
             DRAWN.add(it);
         }
         lastBand = DRAWN.size();
