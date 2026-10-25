@@ -2,11 +2,9 @@ package com.minecraftindustrialcomplex.mic_rtsim_create;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
-import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
-import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
-import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
-import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.RingView;
 import com.simibubi.create.Create;
 import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.graph.DimensionPalette;
@@ -14,11 +12,9 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -76,10 +72,6 @@ public final class TrainRing {
 
     // ---- the session's view and the deferred prunes ----------------------------------------------
 
-    /** The session generation {@link #view} was taken for (0: none yet). */
-    private static long viewGen;
-    private static RingView view;
-    private static RingView viewOverride;
     /** An acknowledged answer: the op leaves its ring at the next {@link #tick} if its answer is still {@code at}. */
     private record Acked(AppliedOpRing ring, long op, long at, long gen) {}
     private static final ArrayDeque<Acked> ACKED = new ArrayDeque<>();
@@ -142,10 +134,18 @@ public final class TrainRing {
             return;
         AppliedOpRing ring = h.mic_rtsim$appliedOps();
         ring.readFrom(tag, KEY);
-        if (probing)
-            return;
+        if (!probing)
+            loaded(ring);
+    }
+
+    /**
+     * A ring read from create_tracks.dat (a train's, or a station port's, {@link PortRing}): read during this
+     * session, one this session answered keeps its answers and waits for their acknowledgements again; any other
+     * is settled ({@link #settle}). Read before the session, the session settles it when it starts.
+     */
+    static void loaded(AppliedOpRing ring) {
         RtsimSession s = RtsimSession.current();
-        if (s == null)
+        if (s == null || ring.isEmpty())
             return;
         long gen = s.boundary().gen();
         if (ring.gen() == gen)
@@ -193,7 +193,10 @@ public final class TrainRing {
                     train.name == null ? "?" : train.name.getString(), train.id, ring.capacity(), Long.toHexString(ring.lastEvicted()), evictions);
     }
 
-    /** {@code carriageDelta} answered {@code op} at {@code seq}: the op leaves the ring once the engine acknowledges {@code seq}. */
+    /**
+     * {@code carriageDelta} (or {@link WritePackages}, for a port's ring) answered {@code op} at {@code seq}: the op
+     * leaves the ring once the engine acknowledges {@code seq}. The ring must be settled by this session first.
+     */
     static void answered(AppliedOpRing ring, long op, long seq) {
         RtsimSession s = RtsimSession.current();
         if (s == null || seq <= 0 || !ring.answered(op, seq))
@@ -254,55 +257,23 @@ public final class TrainRing {
                 any[0] = true;
             }
         });
-        if (any[0])
+        if (PortRing.sessionStarted() | any[0])
             Create.RAILWAYS.markTracksDirty();
     }
 
-    /**
-     * This session's view of the engine's pages and the journal file it loaded, taken once per session at its
-     * start (or at the first ring access if that came first). {@code written} is the loaded file's end only
-     * while no write of this session has landed; once one has, {@code written >= firstSeq} and the view proves
-     * nothing (every op stays, unknown).
-     */
+    /** This session's view of the engine's pages, shared by every ring ({@link DurableOpRings#view}, RP-251). */
     private static RingView view(RtsimSession s) {
-        BoundarySession b = s.boundary();
-        if (viewGen == b.gen() && view != null)
-            return viewOverride != null ? viewOverride : view;
-        long firstSeq = b.replayUpTo() + 1;
-        Journal j = b.journal();
-        List<long[]> gens = new ArrayList<>();
-        if (j.pinnedGen() != null)
-            gens.add(new long[] {j.pinnedGen().seq(), genOf(j.pinnedGen().bytes())});
-        for (Journal.Entry e : j.entries())
-            if (e.seq() < firstSeq && kindOf(e.bytes()) == Obs.JOURNAL_GEN)
-                gens.add(new long[] {e.seq(), genOf(e.bytes())});
-        long[] seqs = new long[gens.size()], nonces = new long[gens.size()];
-        for (int i = 0; i < gens.size(); i++) {
-            seqs[i] = gens.get(i)[0];
-            nonces[i] = gens.get(i)[1];
-        }
-        view = new RingView(b.gen(), RingView.writerGen(seqs, nonces, firstSeq), b.start().pagesObsSeq(), s.journal().writtenThrough(), firstSeq);
-        viewGen = b.gen();
-        String why = view.unproven();
-        MicRtsim.LOGGER.info("[mic_rtsim_create] train rings settle against {} (RP-251)", why == null
-                ? "the engine's pages through " + view.pages() + ", written by generation " + Long.toHexString(view.writerGen())
-                : "nothing: " + why + "; every op another session answered stays, its answer unknown");
-        return viewOverride != null ? viewOverride : view;
+        return DurableOpRings.view(s);
     }
 
-    private static int kindOf(byte[] record) {
-        return Short.toUnsignedInt(ByteBuffer.wrap(record).order(Layout.ORDER).getShort(Layout.R_KIND));
-    }
-
-    private static long genOf(byte[] record) {
-        return ByteBuffer.wrap(record).order(Layout.ORDER).getLong(Obs.JournalGen.GEN);
-    }
-
-    /** The session hook: {@link #sessionStarted} and the prunes ({@link #tick}). Registered by {@link MicRtsimCreate}. */
+    /**
+     * The session hook: {@link #sessionStarted} and the prunes ({@link #tick}), for the trains' rings and the station
+     * ports' ({@link PortRing}), all in create_tracks.dat. Registered by {@link MicRtsimCreate}.
+     */
     static final class SessionHook implements SessionPlugin {
         @Override
         public String name() {
-            return "mic_rtsim_create train rings";
+            return "mic_rtsim_create train and port rings";
         }
 
         @Override
@@ -350,6 +321,7 @@ public final class TrainRing {
                 held[2] += ring.unknownCount();
             }
         });
+        RingView view = DurableOpRings.lastView();
         String why = view == null ? "no view yet" : view.unproven();
         return "train rings: " + held[1] + " ops on " + held[0] + " trains (" + held[2] + " answers unknown), " + pruned + " acknowledged away, "
                 + ACKED.size() + " acknowledgements pending; " + settles + " settled (" + settledAway + " away, " + settledUnknown + " kept unknown, "
@@ -414,23 +386,14 @@ public final class TrainRing {
         holdPrunes = hold;
     }
 
-    /** Settles against this view instead of the session's ({@code null}: the session's again). */
+    /** Settles against this view instead of the session's ({@code null}: the session's again); every ring's. */
     public static void viewForTest(RingView v) {
-        viewOverride = v;
+        DurableOpRings.viewForTest(v);
     }
 
     /** The session's own view (taken if not yet). */
     public static RingView sessionViewForTest() {
-        RtsimSession s = RtsimSession.current();
-        if (s == null)
-            return null;
-        RingView keep = viewOverride;
-        viewOverride = null;
-        try {
-            return view(s);
-        } finally {
-            viewOverride = keep;
-        }
+        return DurableOpRings.sessionViewForTest();
     }
 
     /** Trains whose eviction this session logged. */

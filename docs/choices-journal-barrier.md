@@ -147,6 +147,9 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
   - *Left.* A mod that saves the overworld on its own schedule only delays the journal to the next world
     save.
 - **RP-204, rings of applied ops beside the effect.**
+  - *Amended by RP-209.* The trim by the journal's file mark, the PENDING state and `allPending` below
+    are replaced by T2's rule: an entry leaves at the engine's acknowledgement of its answer, and a ring
+    another session answered is settled at the session's start. The rest stands.
   - *Chosen.* `DurableOpRing` (core `journal/`): the engine ops applied to one SavedData store, saved in the
     store's own file under `mic_rtsim:applied_ops`, each with the sequence of the COMMAND_RESULT that
     answered it. The dedup is "the store's ring, or the journal".
@@ -235,12 +238,14 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     op out before the journal's file holds it, and a crash then applies its resend again. `DurableOpRing`
     (4,096) has the same limit: its trim follows the journal's file, which the hold keeps back, so 4,096
     ops into one store during the hold push its oldest out, counted as overflows (replay-gate 9.6,
-    residual 6).
+    residual 6). *Since RP-250 and RP-209* every ring prunes at the engine's acknowledgement, which the
+    hold does not keep back, and holds 4,096: only 4,096 ops into one ring that the engine has not
+    acknowledged push one out.
 - **RP-206, the station port's rings (PATCHES.md row 87).**
   - *Chosen.* IND_WRITE_PACKAGE's offline buffer is in `create_tracks.dat`, in its port's entry of the
     station's "Ports" list. Each `GlobalPackagePort` keeps two `AppliedOpRing`s of 256 (T2's class,
-    unchanged) in that entry, through mixins at the RETURN of `GlobalStation.write` and `read` in T2's
-    `require 0` config (`PortRing`): `mic_rtsim:applied_ops` for the ops whose packages went into the
+    unchanged; 4,096 and pruned by T2's rule since RP-209) in that entry, through mixins at the RETURN of
+    `GlobalStation.write` and `read` in T2's `require 0` config (`PortRing`): `mic_rtsim:applied_ops` for the ops whose packages went into the
     offline buffer, `mic_rtsim:applied_ops_postbox` for the ops whose packages went into the loaded postbox,
     which Create mirrors into the buffer, unprimed. WritePackages looks the port up on both paths.
     - An offline write is refused when either ring holds the op, and only then: the journal is not asked,
@@ -339,7 +344,8 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     - A resend the level's ring refuses stamps the ledger's entry with the refusal's answer too
       (`IndustryPlugin.depositRefused`, when the ledger holds the key). Left with its first life's
       sequence, the entry turned PENDING at the first trim and stayed until the cap pushed it out, counted
-      as an overflow (the U-a review).
+      as an overflow (the U-a review). Under RP-209 the refusal's answer is what the engine acknowledges, so
+      the stamp is what lets the entry leave.
   - *Why.* One op changes two files, so a crash can keep either; each file refuses what it already holds.
     For a crash right before the journal's write, with the resend:
 
@@ -360,12 +366,59 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
 - **RP-208, what slice U leaves, and UR-1.**
   - *Residual list.* Kept in docs/replay-gate.md 9.6: the Windows directory sync (RP-201), given-up notes
     (RP-205), chunk and entity effects the barrier does not note, the ledger's under-count (RP-207), ring
-    entries pending a resend that never comes (RP-204), the rings' limits, a re-decided op after its answer
-    was consumed, and a postbox's chunk newer than the tracks file where RP-206's hooks do not reach. Each item says what it costs and who owns it.
+    entries whose answer is unknown, waiting for a resend that never comes (RP-204, RP-209), the rings'
+    valves, a re-decided op after its answer was consumed (closed by RP-209), and a postbox's chunk newer
+    than the tracks file where RP-206's hooks do not reach. Each item says what it costs and who owns it.
   - *UR-1.* Uninstalling mic_rtsim_dieselgenerators: CDG loads `cdg_oil_chunks` with the extra key and drops
     it at its next save. Uninstalling mic_rtsim: NeoForge skips the unknown `mic_rtsim:applied_ops` level
     attachment in `neoforge_data_attachments` with an ERROR log line and loads the rest. The ledger's ring
     is in mic_rtsim_destroy's own file.
+- **RP-209, every ring follows T2's rule (the coordinator, at the re-merge with T2; amends RP-204 to
+  RP-207).**
+  - *Chosen.* The store rings (`DurableOpRing`: Diesel's oil file, Destroy's level pollution and its
+    ledger) and the station port's two rings (`AppliedOpRing`s, `PortRing`) keep an op until the engine
+    can no longer send it, as T2's train ring does (docs/choices-mowzie-build.md RP-250, RP-251):
+    - Each answer the industry gives an op of a ring (APPLIED, or DUPLICATE_OP on a ring hit the journal
+      did not know) stamps the entry with that answer's sequence. The engine's acknowledgement of the
+      sequence (its durable save holds the answer) removes the entry at the end of the tick, if its answer
+      is still that one. The prunes run from session hooks, whatever the industry module's switch
+      (`DurableOpRings.SessionHook` for the stores; `TrainRing.SessionHook` for the trains and the ports,
+      all in create_tracks.dat).
+    - A ring another session answered is settled once per session against one view of the engine's
+      pages and the journal file the session loaded (`DurableOpRings.view`, T2's `RingView`, moved to
+      core and shared by every ring): at the session's start for the rings loaded with the world, at the
+      load for one loaded later. An entry leaves only when that view proves the pages hold its answer;
+      every other entry stays with its answer unknown until its op's resend is refused and the refusal
+      stamps it. A ring read again in the session that answered it keeps its answers and waits for their
+      acknowledgements again.
+    - The industry's announce (the module back on, or the engine lost observations) makes every answer
+      this session gave unknown (`DurableOpRings.announce`, `PortRing.announce`).
+    - Saved per ring: each entry's answer and the generation of the session that settled the ring last
+      (`ops`, `seqs` and `gen` in a store's `mic_rtsim:applied_ops` compound; `_at` and `_gen` beside a
+      port ring's long array, T2's format).
+    - The caps are valves: 4,096 a store ring, as before, and 4,096 a port ring (was 256). The oldest is
+      pushed out first, counted (`/rtsim perf`, `/rtsim district perf`) and, for the ports, logged for the
+      first eight.
+    - Gone: the trim by the journal's file mark, PENDING, `JournalSavedData`'s load mark,
+      `DurableOpRing.allPending` (now `allUnknown`). `Industry.commandResultInChunk` returns the answer's
+      sequence, so a loaded postbox's write stamps its ring.
+  - *Why.* The trim by the journal's file mark dropped an entry the engine could still re-decide under the
+    same op id after a replay consumed its answer (RP-204's hole (a), replay-gate 9.6 residual 7). The
+    acknowledgement is the moment the engine can no longer send the op. One rule for every ring also gives
+    the port's rings a prune (they had none) and frees every ring from the journal's file, which a hold
+    keeps back (RP-205).
+  - *Tests.* `DurableOpRingTest` (9: the acknowledgement, an unknown answer, the settle against a bound and
+    against none, the announce, the valve, an acknowledgement before the valve, a corrupt ring, a malformed
+    one). Diesel `aDrawsOpLeavesTheOilRingAtTheEnginesAcknowledgement`; create
+    `aPortOpLeavesItsRingAtTheEnginesAcknowledgement` (the ring saved with its answer and generation, read
+    back in the session, then pruned at the acknowledgement; the next save holds none of its keys). The
+    crash GameTests (Diesel's three, Destroy's four, the port's eleven) hold the prunes
+    (`holdPrunesForTest`): the scripted engine acknowledges an answer once its own save holds it, and the
+    emulated crash then sends the op again, which a real engine does not.
+  - *Left.* An entry whose answer is unknown (a settle that proves nothing, the announce, a corrupt ring,
+    or an op a postbox's chunk was found to carry, `PortRing.refreshed`) stays until its op's resend or
+    the valve; it can only refuse that op. 4,096 unacknowledged ops in one ring push the oldest out,
+    counted.
 
 ## For Ben
 

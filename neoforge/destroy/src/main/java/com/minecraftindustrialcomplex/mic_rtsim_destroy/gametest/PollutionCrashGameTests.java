@@ -130,6 +130,9 @@ public final class PollutionCrashGameTests {
         ServerLevel level = server.overworld();
         check("the test's level is the overworld", helper.getLevel() == level);
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        DurableOpRings.holdPrunesForTest(true);
         forgetAll(helper);
         HolderLookup.Provider registries = level.registryAccess();
         Path data = DimensionType.getStorageFolder(Level.OVERWORLD, server.getWorldPath(LevelResource.ROOT)).resolve("data");
@@ -257,6 +260,7 @@ public final class PollutionCrashGameTests {
                         long ledgerSeq = seqOf(ledgerRing, DurableOpRing.keyOf(op, good[0]));
                         check("the ledger's entry has the refusal's answer " + levelSeq + ", not " + ledgerSeq, ledgerSeq == levelSeq);
                     }
+                    DurableOpRings.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }

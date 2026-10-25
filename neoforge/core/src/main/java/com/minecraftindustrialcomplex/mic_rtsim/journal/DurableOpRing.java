@@ -1,9 +1,15 @@
 package com.minecraftindustrialcomplex.mic_rtsim.journal;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * The engine ops applied to one SavedData store, kept in the store's own file beside their effect (slice U,
@@ -11,51 +17,38 @@ import java.util.concurrent.atomic.AtomicLong;
  * "this ring, or the journal". The journal's file is written last in a world save (RP-200), so a crash can leave a
  * store newer than the journal on disk; the store's ring then still knows the op, and the engine's resend of it is
  * answered DUPLICATE_OP instead of being applied a second time. Pure Java (the unit tests touch no game class); the
- * NBT and the session's marks are {@link DurableOpRings}'.
+ * NBT, the session's acknowledgements and its settle are {@link DurableOpRings}'.
  *
- * <p><b>Entries</b> are (op id, sequence of the COMMAND_RESULT that answered it), in the order they came. An entry is
- * needed until the journal on disk holds that result: then the journal is the dedup, and once the engine has
- * acknowledged the result it never sends the op again. For an APPLIED answer the journal's dedup is its applied
- * index; for an entry stamped by a DUPLICATE_OP answer, which that index does not count, it is the resend's own
- * command sequence, at or below the journal's last applied one, which {@code BoundarySession} skips as stale. So the
- * store's save trims by the durable mark ({@link #trim}): an entry whose result is at or below the sequence the
- * journal's file holds goes.
+ * <p><b>Entries</b> are (op id, sequence of the COMMAND_RESULT that answered it last, or {@link #UNKNOWN}), in the
+ * order they came; an op answered again moves to the newest end. An entry stays until the engine can no longer send
+ * the op again, T2's rule (docs/choices-mowzie-build.md RP-250, RP-251): the engine's acknowledgement of the answer's
+ * sequence, its durable save holding the answer, removes it ({@link #pruneIfAnsweredAt}); and a ring another session
+ * answered is settled at this session's start against the engine's pages ({@link #settle}): an op leaves only when
+ * the pages provably hold its answer, else it stays with its answer unknown until the engine sends it again and the
+ * refusal's answer stamps it. The ring keeps the generation ({@link #gen}) of the session that settled it last.
  *
- * <p><b>Entries read from disk</b> carry sequences of the life that wrote them. Those at or below the journal's file
- * as it was read at this start ({@code durableAtLoad}) were held by that file: they go at the first trim. The others
- * are what a crash between the store's write and the journal's left: their sequences are handed out again in this
- * life, so they wait as {@link #PENDING} until the engine sends the op again and the answer stamps them with its
- * own sequence. One the engine never sends again stays until the cap pushes it out.
- *
- * <p><b>The cap</b> ({@value #DEFAULT_CAP}, TUNABLE): the oldest entry goes first. Pushing out one the journal on
- * disk does not hold yet is an overflow, counted ({@link #overflowed}), since its resend could then be applied twice.
+ * <p><b>The cap</b> ({@value #DEFAULT_CAP}, a valve): the oldest entry goes first. Every entry is one the engine has
+ * not acknowledged, so pushing one out is an overflow, counted ({@link #overflowed}): its resend could then be
+ * applied twice.
  *
  * <p>Server thread only.
  */
 public final class DurableOpRing {
     /** The key under which a store's tag keeps its ring. */
     public static final String KEY = "mic_rtsim:applied_ops";
-    /** Entries kept at most. TUNABLE, PLACEHOLDER 4096: a store's entries live about two autosaves. */
+    /** Entries kept at most: a valve, as T2's train ring's (RP-250). At most 64 KiB of ids and as many sequences. */
     public static final int DEFAULT_CAP = 4096;
-    /** The sequence of an entry read from disk that the journal's file did not hold: waits for its op's resend. */
-    public static final long PENDING = Long.MAX_VALUE;
+    /** An op's answer that no durable save of the engine is known to hold. */
+    public static final long UNKNOWN = 0;
 
     private static final AtomicLong OVERFLOWED = new AtomicLong();
-
-    private static final class Entry {
-        long seq;
-        boolean fromDisk;
-
-        Entry(long seq, boolean fromDisk) {
-            this.seq = seq;
-            this.fromDisk = fromDisk;
-        }
-    }
+    /** Every ring alive, for the session's settle and the industry's announce ({@link DurableOpRings}). */
+    private static final Set<DurableOpRing> LIVE = Collections.newSetFromMap(new WeakHashMap<>());
 
     private final int cap;
-    private final LinkedHashMap<Long, Entry> entries = new LinkedHashMap<>();
-    /** The journal's durable mark at the last trim: entries above it are not on disk in the journal. */
-    private long mark;
+    /** Op to the sequence of its last answer ({@link #UNKNOWN}: none known), oldest first. */
+    private final LinkedHashMap<Long, Long> entries = new LinkedHashMap<>();
+    private long gen;
     private long overflowed;
     private Runnable onChange = () -> {};
 
@@ -67,28 +60,36 @@ public final class DurableOpRing {
         if (cap < 1)
             throw new IllegalArgumentException("cap " + cap);
         this.cap = cap;
+        synchronized (LIVE) {
+            LIVE.add(this);
+        }
     }
 
-    /** A ring read from a store's file: {@code ops[i]} was answered at {@code seqs[i]} in the life that wrote it. */
-    public static DurableOpRing fromDisk(long[] ops, long[] seqs, int cap) {
+    /**
+     * A ring read from a store's file: {@code ops[i]} was answered at {@code seqs[i]} by the session of generation
+     * {@code gen} (0: none), which settled it last.
+     */
+    public static DurableOpRing fromDisk(long[] ops, long[] seqs, long gen, int cap) {
         if (ops.length != seqs.length)
             throw new IllegalArgumentException(ops.length + " ops, " + seqs.length + " sequences");
         DurableOpRing r = new DurableOpRing(cap);
-        for (int i = 0; i < ops.length; i++)
-            r.entries.put(ops[i], new Entry(seqs[i], true));
+        for (int i = 0; i < ops.length; i++) {
+            r.entries.remove(ops[i]);
+            r.entries.put(ops[i], Math.max(UNKNOWN, seqs[i]));
+        }
         while (r.entries.size() > cap)
-            r.evictOldest();
+            r.entries.remove(r.entries.keySet().iterator().next());
+        r.gen = gen;
         return r;
     }
 
     /**
-     * A ring whose file kept its ops and lost their sequences (corrupt): every op waits for its resend, as
-     * {@link #PENDING}. A resend is then refused: an effect left out, never one applied twice.
+     * A ring whose file kept its ops and lost their sequences (corrupt): every op's answer is {@link #UNKNOWN}, so
+     * no settle drops it and it waits for its resend. A resend is then refused: an effect left out, never one applied
+     * twice.
      */
-    public static DurableOpRing allPending(long[] ops, int cap) {
-        long[] pending = new long[ops.length];
-        java.util.Arrays.fill(pending, PENDING);
-        return fromDisk(ops, pending, cap);
+    public static DurableOpRing allUnknown(long[] ops, int cap) {
+        return fromDisk(ops, new long[ops.length], 0, cap);
     }
 
     /**
@@ -110,9 +111,14 @@ public final class DurableOpRing {
         return x;
     }
 
-    /** Runs when an entry is added: the store's {@code setDirty}. */
+    /** Runs when the ring changes (an op answered or gone): the store's {@code setDirty}. */
     public void onChange(Runnable onChange) {
         this.onChange = onChange;
+    }
+
+    /** The store's {@code setDirty}, for a change {@link DurableOpRings} made (a settle). */
+    void changed() {
+        onChange.run();
     }
 
     public boolean contains(long op) {
@@ -121,62 +127,106 @@ public final class DurableOpRing {
 
     /**
      * {@code op} was answered at journal sequence {@code seq} (APPLIED, or DUPLICATE_OP on a hit of this ring the
-     * journal did not know): kept until the journal on disk holds that answer. A known op is stamped again and moves
-     * to the newest end.
+     * journal did not know; {@link #UNKNOWN} for none known): kept until the engine acknowledges that answer. A known
+     * op is stamped again and moves to the newest end.
      */
     public void add(long op, long seq) {
         entries.remove(op);
-        entries.put(op, new Entry(seq, false));
+        entries.put(op, Math.max(UNKNOWN, seq));
         while (entries.size() > cap)
             evictOldest();
         onChange.run();
     }
 
     private void evictOldest() {
-        Iterator<Map.Entry<Long, Entry>> it = entries.entrySet().iterator();
-        Entry e = it.next().getValue();
+        Iterator<Long> it = entries.keySet().iterator();
+        it.next();
         it.remove();
-        if (e.fromDisk || e.seq > mark) {
-            overflowed++;
-            OVERFLOWED.incrementAndGet();
-        }
+        overflowed++;
+        OVERFLOWED.incrementAndGet();
+    }
+
+    /** The sequence of an op's last answer, {@link #UNKNOWN} when none is known, or -1 when the ring lacks the op. */
+    public long answerOf(long op) {
+        Long at = entries.get(op);
+        return at == null ? -1 : at;
     }
 
     /**
-     * At the store's save: drops the entries the journal's file holds. {@code writtenThrough} is the last sequence
-     * the journal's file on disk holds now, {@code durableAtLoad} the last one it held when this start read it.
-     * Returns the entries dropped.
+     * Removes an op whose last answer is still the one at {@code at}: the engine's durable save holds that answer. An
+     * op answered again since, made {@link #UNKNOWN} or gone stays as it is: false.
      */
-    public int trim(long writtenThrough, long durableAtLoad) {
-        mark = Math.max(mark, writtenThrough);
-        int dropped = 0;
-        for (Iterator<Entry> it = entries.values().iterator(); it.hasNext(); ) {
-            Entry e = it.next();
-            if (e.fromDisk) {
-                if (e.seq <= durableAtLoad) {
-                    it.remove();
-                    dropped++;
-                } else {
-                    e.seq = PENDING;
-                    e.fromDisk = false;
-                }
-            } else if (e.seq <= mark) {
+    public boolean pruneIfAnsweredAt(long op, long at) {
+        Long now = entries.get(op);
+        if (now == null || now != at || at == UNKNOWN)
+            return false;
+        entries.remove(op);
+        onChange.run();
+        return true;
+    }
+
+    /** Every op's answer becomes {@link #UNKNOWN}; returns how many had one. */
+    public int forgetAnswers() {
+        int n = 0;
+        for (Map.Entry<Long, Long> e : entries.entrySet())
+            if (e.getValue() != UNKNOWN) {
+                e.setValue(UNKNOWN);
+                n++;
+            }
+        return n;
+    }
+
+    /**
+     * Settles a ring another session answered against what the engine's pages hold: an op answered at or below
+     * {@code bound} leaves, and every other op's answer becomes {@link #UNKNOWN}. A bound of 0 or less proves
+     * nothing: every op stays, unknown. Returns how many left.
+     */
+    public int settle(long bound) {
+        int away = 0;
+        for (Iterator<Map.Entry<Long, Long>> it = entries.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<Long, Long> e = it.next();
+            long at = e.getValue();
+            if (bound > 0 && at != UNKNOWN && at <= bound) {
                 it.remove();
-                dropped++;
+                away++;
+            } else {
+                e.setValue(UNKNOWN);
             }
         }
-        return dropped;
+        return away;
+    }
+
+    /** Calls {@code each} with every op that has a known answer, oldest first. */
+    public void forEachAnswered(AnswerConsumer each) {
+        for (Map.Entry<Long, Long> e : new ArrayList<>(entries.entrySet()))
+            if (e.getValue() != UNKNOWN)
+                each.accept(e.getKey(), e.getValue());
+    }
+
+    /** An op and the sequence of its answer. */
+    @FunctionalInterface
+    public interface AnswerConsumer {
+        void accept(long op, long at);
+    }
+
+    /** The generation of the session that last settled the ring (0: none). */
+    public long gen() {
+        return gen;
+    }
+
+    public void gen(long gen) {
+        this.gen = gen;
     }
 
     public int size() {
         return entries.size();
     }
 
-    /** Entries waiting for their op's resend ({@link #PENDING}). */
-    public int pending() {
+    /** Entries whose answer is {@link #UNKNOWN}: they wait for their op's resend. */
+    public int unknownCount() {
         int n = 0;
-        for (Entry e : entries.values())
-            if (e.seq == PENDING)
+        for (long at : entries.values())
+            if (at == UNKNOWN)
                 n++;
         return n;
     }
@@ -194,12 +244,12 @@ public final class DurableOpRing {
     public long[] seqs() {
         long[] out = new long[entries.size()];
         int i = 0;
-        for (Entry e : entries.values())
-            out[i++] = e.seq;
+        for (Long at : entries.values())
+            out[i++] = at;
         return out;
     }
 
-    /** Entries pushed out by the cap before the journal on disk held them (this ring). */
+    /** Entries pushed out by the cap (this ring): each an op the engine had not acknowledged. */
     public long overflowed() {
         return overflowed;
     }
@@ -207,5 +257,15 @@ public final class DurableOpRing {
     /** {@link #overflowed} over every ring since the server started (rtsim perf). */
     public static long overflowedTotal() {
         return OVERFLOWED.get();
+    }
+
+    /** Calls {@code each} with every ring alive now (a copy of the set, so {@code each} may make rings). */
+    static void forEachLive(Consumer<DurableOpRing> each) {
+        List<DurableOpRing> rings;
+        synchronized (LIVE) {
+            rings = new ArrayList<>(LIVE);
+        }
+        for (DurableOpRing r : rings)
+            each.accept(r);
     }
 }

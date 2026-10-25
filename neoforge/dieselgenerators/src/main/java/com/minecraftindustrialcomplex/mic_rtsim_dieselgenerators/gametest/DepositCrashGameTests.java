@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Deposits;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.DieselOilPlugin;
@@ -106,11 +107,82 @@ public final class DepositCrashGameTests {
         crash(helper, "aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal", Level.NETHER, false, false, START + DELTA);
     }
 
+    /**
+     * T2's rule on a store's ring (docs/choices-journal-barrier.md RP-209): a draw's op stays in the oil file's ring,
+     * with its answer's sequence and the session's generation, until the engine's durable save holds that answer;
+     * then it leaves, and the oil file's next save holds no ring. The draw stays.
+     */
+    @GameTest(template = "yard", batch = "diesel_ring_ack", timeoutTicks = 2400)
+    public static void aDrawsOpLeavesTheOilRingAtTheEnginesAcknowledgement(GameTestHelper helper) {
+        String test = "aDrawsOpLeavesTheOilRingAtTheEnginesAcknowledgement";
+        ServerLevel level = helper.getLevel();
+        fastConfig();
+        DurableOpRings.holdPrunesForTest(true); // until the ring is looked at
+        forgetAll(helper);
+        java.util.Random rnd = new java.util.Random();
+        ChunkPos cp = new ChunkPos(60_000 + rnd.nextInt(20_000), -60_000 - rnd.nextInt(20_000)); // nobody loads it
+        String good = Deposits.name(DieselOilPlugin.OIL, level.dimension(), cp.x, cp.z);
+        long op = engineOp();
+        long[] pruned0 = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    OilChunksSavedData.setChunkOilAmount(level, cp, START);
+                    depositDelta(op, IndRecords.DepositPlugin.DIESEL_OIL, level, cp.x, cp.z, good, DELTA);
+                })
+                .thenWaitUntil(() -> check("applied", commandResults(op).contains(Obs.CommandResult.APPLIED)))
+                .thenExecute(() -> {
+                    DurableOpRing ring = ((OilRingHolder) OilChunksSavedData.load(level)).mic_rtsim$ring();
+                    long at = ring.answerOf(op);
+                    check("the oil file's ring holds the op with its answer's sequence: " + at, at > 0);
+                    CompoundTag saved = DurableOpRings.toTag(ring);
+                    check("its tag holds the op, the answer and the session's generation: " + saved, saved != null
+                            && java.util.Arrays.equals(saved.getLongArray("ops"), new long[] {op})
+                            && java.util.Arrays.equals(saved.getLongArray("seqs"), new long[] {at})
+                            && saved.getLong("gen") == RtsimSession.current().boundary().gen());
+                    pruned0[0] = DurableOpRings.pruned();
+                    DurableOpRings.holdPrunesForTest(false);
+                })
+                .thenWaitUntil(paced(() -> {
+                    engine().requestSaveAtNextStep();
+                    check("the engine acknowledged the answer and the op left the ring",
+                            !((OilRingHolder) OilChunksSavedData.load(level)).mic_rtsim$ring().contains(op));
+                }))
+                .thenExecute(() -> {
+                    check("counted: " + (DurableOpRings.pruned() - pruned0[0]), DurableOpRings.pruned() > pruned0[0]);
+                    CompoundTag data = OilChunksSavedData.load(level).save(new CompoundTag(), level.registryAccess());
+                    long[] kept = data.getCompound(DurableOpRing.KEY).getLongArray("ops");
+                    check("the oil file's save no longer holds the op: " + java.util.Arrays.toString(kept),
+                            java.util.Arrays.stream(kept).noneMatch(o -> o == op));
+                    check("the draw stays", OilChunksSavedData.getChunkOilAmount(level, cp) == START + DELTA);
+                    record(test, "ops pruned", DurableOpRings.pruned() - pruned0[0]);
+                })
+                .thenSucceed();
+    }
+
+    /** A wait on the engine's own thread: while the check fails, the tick sleeps 5 ms (the GameTest server ticks unthrottled). */
+    private static Runnable paced(Runnable check) {
+        return () -> {
+            try {
+                check.run();
+            } catch (RuntimeException e) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                throw e;
+            }
+        };
+    }
+
     private static void crash(GameTestHelper helper, String test, ResourceKey<Level> dim, boolean afterJournal, boolean journalFirst, int expected) {
         MinecraftServer server = helper.getLevel().getServer();
         ServerLevel level = server.getLevel(dim);
         check("the level " + dim.location(), level != null);
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        DurableOpRings.holdPrunesForTest(true);
         forgetAll(helper);
         java.util.Random rnd = new java.util.Random();
         ChunkPos cp = new ChunkPos(60_000 + rnd.nextInt(20_000), 60_000 + rnd.nextInt(20_000)); // nobody loads it
@@ -185,6 +257,7 @@ public final class DepositCrashGameTests {
                     record(test, "after the restart", now + " left (" + commandResults(op) + ")");
                     check(String.format("%,d left after the restart, expected %,d (%,d is the deposit kept: oil from nothing)", now, expected, START),
                             now == expected);
+                    DurableOpRings.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
@@ -205,7 +278,8 @@ public final class DepositCrashGameTests {
             int oil = oilOnDisk(oilFile, cp);
             CompoundTag oilData = Files.isRegularFile(oilFile)
                     ? NbtIo.readCompressed(oilFile, NbtAccounter.unlimitedHeap()).getCompound("data") : new CompoundTag();
-            boolean ring = DurableOpRings.read(oilData).contains(op);
+            // The ring's ops as the file holds them (not DurableOpRings.read: a ring read registers with the session, server thread only).
+            boolean ring = java.util.Arrays.stream(oilData.getCompound(DurableOpRing.KEY).getLongArray("ops")).anyMatch(o -> o == op);
             boolean has = false;
             if (Files.isRegularFile(journalFile)) {
                 CompoundTag j = NbtIo.readCompressed(journalFile, NbtAccounter.unlimitedHeap());

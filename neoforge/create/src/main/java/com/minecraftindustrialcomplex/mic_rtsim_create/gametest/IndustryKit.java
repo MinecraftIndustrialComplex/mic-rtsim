@@ -129,6 +129,7 @@ public final class IndustryKit {
         com.minecraftindustrialcomplex.mic_rtsim_create.Frontier.ignoreReturnsForTest = false;
         com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.breakForTest(com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.BreakForTest.NONE);
         com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.holdPrunesForTest(false);
+        com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings.holdPrunesForTest(false);
         com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.viewForTest(null);
         com.minecraftindustrialcomplex.mic_rtsim_create.PortRing.fallbackForTest(false);
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
