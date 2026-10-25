@@ -98,25 +98,32 @@ public final class TrainSampler {
      */
     public static final double SPOT_BLOCKS = com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.SPOT_BLOCKS;
     /** The nearest a lurking body's box may come to the rail's centre line (blocks): clear of the carriages' boxes (MZB-370). */
-    public static final double RAIL_CLEARANCE = 1.5;
+    public static final double RAIL_CLEARANCE = com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkGeometry.RAIL_CLEARANCE;
 
     /**
      * The spot-distance contract (MZB-374, one rule in two inequalities), for a Lurker that rests its body within
-     * {@code stand} blocks of the hold point, which Java puts within {@code LATERAL_SLACK} of {@code SPOT_BLOCKS} from
+     * {@code stand} blocks of the hold point, which Java puts within the geometry's slack of {@code SPOT_BLOCKS} from
      * the rail's centre line (a block centre), and whose body is {@code halfWidth} blocks across to its side: the far
      * side of its stand is still inside the strike reach ({@code SPOT_BLOCKS + slack + stand <= STRIKE_REACH}) and the
-     * near side of its box is still off the rail ({@code SPOT_BLOCKS - slack - stand - halfWidth >= RAIL_CLEARANCE}).
-     * Null when both hold, else the one that fails, as a sentence.
+     * near side of its box is still off the rail ({@code SPOT_BLOCKS - slack - stand - reach >= RAIL_CLEARANCE}). A
+     * rail along an axis meets the box's side, so {@code reach} is the half-width and the slack
+     * {@code LATERAL_SLACK}; a diagonal rail meets its corner, {@code halfWidth * sqrt(2)}, and the geometry then holds
+     * the body no nearer than {@code OBLIQUE_NEAR_SLACK} short of the spot distance, so the rule holds by itself and
+     * not by what the block lattice happens to give. Null when both hold, else the one that fails, as a sentence.
      */
-    public static String spotContract(double stand, double halfWidth) {
+    public static String spotContract(double stand, double halfWidth, boolean diagonal) {
         double slack = com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.LATERAL_SLACK;
-        double far = SPOT_BLOCKS + slack + stand, near = SPOT_BLOCKS - slack - stand - halfWidth;
+        double nearSlack = diagonal ? com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.OBLIQUE_NEAR_SLACK : slack;
+        double reach = diagonal ? halfWidth * Math.sqrt(2.0) : halfWidth;
+        double far = SPOT_BLOCKS + slack + stand, near = SPOT_BLOCKS - nearSlack - stand - reach;
+        String rail = diagonal ? "a diagonal rail" : "a rail along an axis";
         if (far > STRIKE_REACH)
-            return "the far side of the stand is " + far + " blocks from the track point, past the strike reach (" + STRIKE_REACH + ")";
-        if (near < RAIL_CLEARANCE)
-            return "the near edge of the body at the near side of the stand is " + near + " blocks from the rail's centre line (" + RAIL_CLEARANCE + " needed)";
+            return "for " + rail + " the far side of the stand is " + far + " blocks from the track point, past the strike reach (" + STRIKE_REACH + ")";
+        if (near < RAIL_CLEARANCE - 1.0e-9)
+            return "for " + rail + " the near edge of the body at the near side of the stand is " + near + " blocks from the rail's centre line (" + RAIL_CLEARANCE + " needed)";
         return null;
     }
+
     /**
      * Ticks from a strike's call to the blow landing: the jar's swipe hits at animation tick 9
      * ({@code FrostmawLurker.SWIPE_HIT_TICK}, which turns the puppet to {@code at + motion * 9}). The create project
@@ -520,57 +527,88 @@ public final class TrainSampler {
 
     private static void strikeAt(State s, Train t, Lurk l, Mob body) {
         List<Carriage> cs = t.carriages;
+        int n = cs.size();
         // The farthest a bogey can be now and still have a target landing in reach: the reach, what the train covers in a swing, the carriage
         double far = STRIKE_REACH + SWING_TICKS * Math.abs(t.speed) + BODY_SLACK;
-        for (int c = 0, n = cs.size(); c < n; c++) {
+        // Every carriage's riders before any bogey aim (the second re-check's P3): the body swings once, and a riderless
+        // carriage in front must not spend the swing on its bogey while a rider on the next one is in reach
+        Vec3[] leads = new Vec3[n], trails = new Vec3[n];
+        List<List<LivingEntity>> riders = new ArrayList<>(n);
+        for (int c = 0; c < n; c++) {
+            List<LivingEntity> here = null;
             Approach a = approach(s, l);
-            if (a != null && a.struck(c))
+            if (a == null || !a.struck(c)) {
+                Carriage car = cs.get(c);
+                Vec3 lead = positionOf(car.getLeadingPoint(), t.graph), trail = positionOf(car.getTrailingPoint(), t.graph);
+                double span = far + car.bogeySpacing;
+                if (near(lead, body, span) || near(trail, body, span)) {
+                    leads[c] = lead;
+                    trails[c] = trail;
+                    CarriageContraptionEntity e = car.anyAvailableEntity();
+                    here = e == null ? List.of() : ridersOf(e, body);
+                    Vec3[] aim = here.isEmpty() ? null : riderAim(car, t, lead, trail, here, body);
+                    if (aim != null && RtsimApi.strike(l.agent(), aim[0], aim[1])) {
+                        if (a == null)
+                            a = openApproach(s, l);
+                        a.mark(c);
+                        strikes++;
+                        return;
+                    }
+                }
+            }
+            riders.add(here);
+        }
+        for (int c = 0; c < n; c++) {
+            List<LivingEntity> here = riders.get(c);
+            if (here == null || !here.isEmpty())
                 continue;
-            Carriage car = cs.get(c);
-            Vec3 lead = positionOf(car.getLeadingPoint(), t.graph), trail = positionOf(car.getTrailingPoint(), t.graph);
-            double span = far + car.bogeySpacing;
-            if (!near(lead, body, span) && !near(trail, body, span))
-                continue;
-            Vec3[] aim = aimAt(car, t, lead, trail, body);
+            Vec3[] aim = bogeyAim(cs.get(c), t, leads[c], trails[c], body);
             if (aim == null || !RtsimApi.strike(l.agent(), aim[0], aim[1]))
                 continue;
+            Approach a = approach(s, l);
             if (a == null)
                 a = openApproach(s, l);
             a.mark(c);
             strikes++;
+            return;
         }
     }
 
     /**
-     * Where to strike a carriage and how that target moves a tick (the mean over the swing, so the plugin's aim at
-     * {@code at + motion * SWING_TICKS} is where it will be when the blow lands): the first living rider that will
-     * be in reach then, seated or standing ({@link #ridersOf}); the swipe hits living entities only, and a bogey
-     * point misses a rider at the middle or the rear of a long carriage. A carriage with no living rider is struck
-     * at its leading bogey's point, else its trailing one's. A carriage with a rider that will not be in reach is
-     * not struck. Null for none.
+     * Where to strike a carriage that has living riders and how that target moves a tick (the mean over the swing, so
+     * the plugin's aim at {@code at + motion * SWING_TICKS} is where it will be when the blow lands): the first of
+     * {@code riders} (seated or standing, {@link #ridersOf}) that will be in the swipe's reach then
+     * ({@link #reachesRider}); the swipe hits living entities only, and a bogey point misses a rider at the middle
+     * or the rear of a long carriage. A carriage with a rider that will not be in reach is not struck (null).
      */
-    private static Vec3[] aimAt(Carriage car, Train t, Vec3 lead, Vec3 trail, Mob body) {
+    private static Vec3[] riderAim(Carriage car, Train t, Vec3 lead, Vec3 trail, List<LivingEntity> riders, Mob body) {
         TravellingPoint lp = car.getLeadingPoint(), tp = car.getTrailingPoint();
         Vec3 leadMove = lead == null ? null : landingOf(lp, t, lead).subtract(lead);
         Vec3 trailMove = trail == null ? null : landingOf(tp, t, trail).subtract(trail);
-        boolean riders = false;
-        CarriageContraptionEntity e = car.anyAvailableEntity();
-        if (e != null)
-            for (LivingEntity p : ridersOf(e, body)) {
-                riders = true;
-                // A rider moves as the bogey nearer to it does
-                Vec3 at = p.position();
-                boolean byLead = lead != null && (trail == null || at.distanceToSqr(lead) <= at.distanceToSqr(trail));
-                Vec3 move = byLead ? leadMove : trailMove;
-                if (move != null && reaches(at.add(move), body))
-                    return new Vec3[] {at, move.scale(1.0 / SWING_TICKS)};
-            }
-        if (riders)
-            return null;
-        if (lead != null && reaches(lead.add(leadMove), body))
-            return new Vec3[] {lead, leadMove.scale(1.0 / SWING_TICKS)};
-        if (trail != null && reaches(trail.add(trailMove), body))
-            return new Vec3[] {trail, trailMove.scale(1.0 / SWING_TICKS)};
+        for (LivingEntity p : riders) {
+            // A rider moves as the bogey nearer to it does
+            Vec3 at = p.position();
+            boolean byLead = lead != null && (trail == null || at.distanceToSqr(lead) <= at.distanceToSqr(trail));
+            Vec3 move = byLead ? leadMove : trailMove;
+            if (move != null && reachesRider(at.add(move), p, body))
+                return new Vec3[] {at, move.scale(1.0 / SWING_TICKS)};
+        }
+        return null;
+    }
+
+    /** Where to strike a carriage with no living rider: its leading bogey's point, else its trailing one's, when that lands in {@link #STRIKE_REACH}. Null for none. */
+    private static Vec3[] bogeyAim(Carriage car, Train t, Vec3 lead, Vec3 trail, Mob body) {
+        TravellingPoint lp = car.getLeadingPoint(), tp = car.getTrailingPoint();
+        if (lead != null) {
+            Vec3 move = landingOf(lp, t, lead).subtract(lead);
+            if (reaches(lead.add(move), body))
+                return new Vec3[] {lead, move.scale(1.0 / SWING_TICKS)};
+        }
+        if (trail != null) {
+            Vec3 move = landingOf(tp, t, trail).subtract(trail);
+            if (reaches(trail.add(move), body))
+                return new Vec3[] {trail, move.scale(1.0 / SWING_TICKS)};
+        }
         return null;
     }
 
@@ -638,6 +676,23 @@ public final class TrainSampler {
         double end = to > length ? length : 0.0;
         Vec3 edgeEnd = p.getPositionWithOffset(t.graph, end - p.position, false);
         return edgeEnd.add(p.edge.getDirectionAt(end).scale(to - end));
+    }
+
+    /**
+     * The jar's swipe range (blocks): its area attack takes a living entity whose 3D {@code distanceTo} (feet to feet) is
+     * within this plus half the target's width ({@code AnimationAreaAttackAI.hitEntities}, MZB-365).
+     */
+    public static final double SWIPE_RANGE = 6.5;
+
+    /**
+     * Whether a rider's landing point (feet) is in the swipe's reach of the body's feet: the swipe is 3D, so a rider on
+     * a carriage floor a block or two above, or a body on a bank, counts the height (the second re-check's P3, where
+     * the bogey point's {@link #STRIKE_REACH} is horizontal only and absorbs |dy| up to 2.5 of it).
+     */
+    private static boolean reachesRider(Vec3 landing, LivingEntity rider, Mob body) {
+        double dx = landing.x - body.getX(), dy = landing.y - body.getY(), dz = landing.z - body.getZ();
+        double r = SWIPE_RANGE + rider.getBbWidth() / 2.0;
+        return dx * dx + dy * dy + dz * dz <= r * r;
     }
 
     /** Whether a landing point is within {@link #STRIKE_REACH} blocks (horizontal) of the body. */

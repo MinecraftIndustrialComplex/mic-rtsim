@@ -16,4 +16,16 @@ public interface RailAxes {
      * rail's direction is ambiguous there (a crossing). Called on the server thread, rarely (once per body held).
      */
     Vec3 at(ServerLevel level, Vec3 point);
+
+    /**
+     * Whether any piece of track (a straight piece, a junction, or one segment of a curve) lies within {@code radius}
+     * blocks (horizontal, block centre to {@code point}, and within a few blocks of its height) of {@code point}. The
+     * core asks it where {@link #at} knew no direction: the middle of a curve, a crossing, a junction. A body put at the
+     * engine's spot there might stand on, or against, the rail, so the lurk is refused when a rail is that near and the
+     * engine's spot kept only when none is (the second re-check's P3). False for a provider that cannot tell (the
+     * default). Called on the server thread, rarely (once per body held).
+     */
+    default boolean trackNear(ServerLevel level, Vec3 point, double radius) {
+        return false;
+    }
 }

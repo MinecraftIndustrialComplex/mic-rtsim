@@ -1284,7 +1284,9 @@ public final class RailFrostmawGameTests {
                 // The spot-distance contract (MZB-374), read off the Lurker and the body: one rule, two inequalities
                 .thenExecute(() -> {
                     double stand = Lurkers.of(t.puppet).stand(), half = t.puppet.getBbWidth() / 2.0;
-                    String broken = TrainSampler.spotContract(stand, half);
+                    String broken = TrainSampler.spotContract(stand, half, false);
+                    if (broken == null)
+                        broken = TrainSampler.spotContract(stand, half, true);
                     record("railFrostmaw", "lurk", "the spot is " + TrainSampler.SPOT_BLOCKS + " blocks off, the stand " + stand + ", the body's half-width " + half
                             + ", the strike reach " + TrainSampler.STRIKE_REACH + ", the rail clearance " + TrainSampler.RAIL_CLEARANCE + (t.far ? ", pinned at the far side" : ""));
                     check("the spot-distance contract holds" + (broken == null ? "" : ": " + broken), broken == null);

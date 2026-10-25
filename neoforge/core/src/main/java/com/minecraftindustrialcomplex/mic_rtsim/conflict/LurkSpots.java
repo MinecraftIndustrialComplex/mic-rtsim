@@ -17,6 +17,8 @@ public final class LurkSpots {
     public static final double SPOT_BLOCKS = LurkGeometry.SPOT_BLOCKS;
     /** See {@link LurkGeometry#LATERAL_SLACK}. */
     public static final double LATERAL_SLACK = LurkGeometry.LATERAL_SLACK;
+    /** See {@link LurkGeometry#OBLIQUE_NEAR_SLACK}. */
+    public static final double OBLIQUE_NEAR_SLACK = LurkGeometry.OBLIQUE_NEAR_SLACK;
 
     private static volatile RailAxes axes;
 

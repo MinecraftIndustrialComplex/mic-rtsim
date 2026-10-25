@@ -84,10 +84,42 @@ class LurkSpotsTest {
         assertTrue(cands(100.5, 200.5, 105.5, 200.1, EW).get(0)[1] > 200.5);
     }
 
+    /** The Frostmaw: a stand of 0.5, a box 4 across, and the rail clearance and strike reach of the create sampler (MZB-374). */
+    private static final double STAND = 0.5, HALF = 2.0, CLEARANCE = 1.5, REACH = 6.0;
+
     @Test
-    void aDiagonalRailStandsWithinTheSlackOfFiveWhateverTheFractionOfTheTrackPoint() {
-        // Block centres on a diagonal's side lie on lines 0.707 apart: sweep the point's fraction along the rail and
-        // across it, and the nearest centre must always be inside LATERAL_SLACK, on the den's side.
+    void aDiagonalRailStandsOnTheNearSideOfFiveWhateverTheFractionAlongTheRail() {
+        // The track point is a bogey's, on the rail's line: its fraction along the line varies, the line does not. The
+        // block centres of a diagonal's side lie on lines 0.707 apart (4.95 and 5.66 from this one), and the window
+        // [5 - OBLIQUE_NEAR_SLACK, 5 + LATERAL_SLACK] finds the 4.95 one every time, on the den's side.
+        for (double[] axis : new double[][] {DIAG, ANTI})
+            for (int i = 0; i < 40; i++) {
+                double tx = 100.5 + i * 0.05, tz = 200.5 + i * 0.05 * Math.signum(axis[0] * axis[1]);
+                double len = Math.hypot(axis[0], axis[1]);
+                double nx = -axis[1] / len, nz = axis[0] / len;
+                for (int side : new int[] {1, -1}) {
+                    List<double[]> c = cands(tx, tz, tx + side * nx * 5.0, tz + side * nz * 5.0, axis);
+                    String at = "axis " + axis[0] + "," + axis[1] + " track " + tx + "," + tz + " side " + side;
+                    assertFalse(c.isEmpty(), "a point is found: " + at);
+                    double[] p = c.get(0);
+                    double l = lat(tx, tz, axis, p);
+                    assertEquals(4.9497, l, 1.0e-3, "lateral " + l + " for " + at);
+                    double signed = (p[0] - tx) * nx + (p[1] - tz) * nz;
+                    assertTrue(signed * side > 0.0, "on the den's side: " + at);
+                    double along = ((p[0] - tx) * axis[0] + (p[1] - tz) * axis[1]) / len;
+                    assertTrue(Math.abs(along) <= LurkGeometry.ALONG_MAX + 1.0e-9, "along " + along + " for " + at);
+                }
+            }
+    }
+
+    @Test
+    void aDiagonalRailsBodyIsNeverNearerThanItsClearanceWhateverTheTrackPoint() {
+        // The contract holds by itself (the second re-check's P3): every point found, for any track point on or off the
+        // diagonal's lattice line, has its box's corner, half * sqrt(2) from the centre, at least the clearance off the
+        // line at the near side of the stand, and its far side inside the reach. Off the lattice the den's side may
+        // have no point in the window (the block centres lie k / sqrt(2) from the line, offset by the track point);
+        // the other side, the mirror lattice, has one, so a diagonal is never without a point.
+        int denSide = 0, otherSide = 0;
         for (double[] axis : new double[][] {DIAG, ANTI})
             for (int i = 0; i < 20; i++)
                 for (int j = 0; j < 20; j++) {
@@ -96,17 +128,33 @@ class LurkSpotsTest {
                     double nx = -axis[1] / len, nz = axis[0] / len;
                     for (int side : new int[] {1, -1}) {
                         List<double[]> c = cands(tx, tz, tx + side * nx * 5.0, tz + side * nz * 5.0, axis);
-                        String at = "axis " + axis[0] + "," + axis[1] + " track " + tx + "," + tz + " side " + side;
-                        assertFalse(c.isEmpty(), "a point is found: " + at);
-                        double[] p = c.get(0);
-                        double l = lat(tx, tz, axis, p);
-                        assertEquals(5.0, l, LurkGeometry.LATERAL_SLACK + 1.0e-9, "lateral " + l + " for " + at);
-                        double signed = (p[0] - tx) * nx + (p[1] - tz) * nz;
-                        assertTrue(signed * side > 0.0, "on the den's side: " + at);
-                        double along = ((p[0] - tx) * axis[0] + (p[1] - tz) * axis[1]) / len;
-                        assertTrue(Math.abs(along) <= LurkGeometry.ALONG_MAX + 1.0e-9, "along " + along + " for " + at);
+                        String where = "axis " + axis[0] + "," + axis[1] + " track " + tx + "," + tz + " side " + side;
+                        assertFalse(c.isEmpty(), "one side or the other has a point: " + where);
+                        double[] first = c.get(0);
+                        if (((first[0] - tx) * nx + (first[1] - tz) * nz) * side > 0.0)
+                            denSide++;
+                        else
+                            otherSide++;
+                        for (double[] p : c) {
+                            double l = lat(tx, tz, axis, p);
+                            String at = where + " lateral " + l;
+                            assertTrue(l - STAND - HALF * Math.sqrt(2.0) >= CLEARANCE - 1.0e-9, "the corner clears the rail: " + at);
+                            assertTrue(l + STAND <= REACH + 1.0e-9, "the far side is in reach: " + at);
+                        }
                     }
                 }
+        assertTrue(denSide > 0, "some track points find one on the den's side");
+        assertTrue(otherSide > 0, "and the window is narrow enough that others find none there and go to the other side (it is not the old 0.4 either side): " + otherSide);
+    }
+
+    @Test
+    void aRailAlongAnAxisKeepsTheWiderWindowOnTheNearSide() {
+        // The side of a box meets an axis rail: 5 - 0.4 - 0.5 - 2.0 = 2.1 clear, so the near slack is the far slack
+        assertEquals(LurkGeometry.LATERAL_SLACK, LurkGeometry.nearSlack(1, 0), 0.0);
+        assertEquals(LurkGeometry.LATERAL_SLACK, LurkGeometry.nearSlack(0, -3), 0.0);
+        assertEquals(LurkGeometry.OBLIQUE_NEAR_SLACK, LurkGeometry.nearSlack(1, 1), 0.0);
+        assertEquals(LurkGeometry.OBLIQUE_NEAR_SLACK, LurkGeometry.nearSlack(-2, 1), 0.0, "any axis not along x or z is held to the tight window");
+        assertTrue(5.0 - LurkGeometry.LATERAL_SLACK - STAND - HALF >= CLEARANCE);
     }
 
     @Test

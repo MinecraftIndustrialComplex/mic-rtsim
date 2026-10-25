@@ -960,6 +960,11 @@ public final class FrostmawGameTests {
      * three candidate columns on that side of the rail (the whole search depth of {@code standAt}).
      */
     private static void placedAt(GameTestHelper helper, String test, double[] spotAt, boolean digNorth, boolean digSouth, double[] expectAt) {
+        placedAt(helper, test, spotAt, digNorth, digSouth, 8, expectAt);
+    }
+
+    /** As above, the dug columns taken out {@code depth + 1} blocks deep from the floor's top (8: the whole search; 2: a cutting whose bottom is 3 below the rail). */
+    private static void placedAt(GameTestHelper helper, String test, double[] spotAt, boolean digNorth, boolean digSouth, int depth, double[] expectAt) {
         Held h = new Held(helper, test);
         h.pad = 1;
         h.trackAt = new double[] {0.0, 0.0};
@@ -971,7 +976,7 @@ public final class FrostmawGameTests {
             int top = (int) h.track[0].y - 1;
             for (int side : new int[] {-1, 1})
                 if (side < 0 ? digNorth : digSouth)
-                    dig(h.level, h.x, h.z + 5 * side, top);
+                    dig(h.level, h.x, h.z + 5 * side, top, depth);
         };
         long[] refused = {ConflictKit.bridge().lurksRefused};
         if (expectAt == null) {
@@ -993,10 +998,10 @@ public final class FrostmawGameTests {
                 .thenSucceed();
     }
 
-    /** Takes the floor out of the three columns beside a rail point (x - 1 to x + 1 at {@code z}), from {@code top} down 8. */
-    private static void dig(ServerLevel level, int x, int z, int top) {
+    /** Takes the floor out of the three columns beside a rail point (x - 1 to x + 1 at {@code z}), from {@code top} down {@code depth}. */
+    private static void dig(ServerLevel level, int x, int z, int top, int depth) {
         for (int dx = -1; dx <= 1; dx++)
-            for (int y = top - 8; y <= top; y++)
+            for (int y = top - depth; y <= top; y++)
                 level.setBlock(new BlockPos(x + dx, y, z), Blocks.AIR.defaultBlockState(), 2);
     }
 
@@ -1077,6 +1082,80 @@ public final class FrostmawGameTests {
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_other", skyAccess = true)
     public static void aLurkPuppetWhoseDensSideHasNoFloorStandsOnTheOtherSide(GameTestHelper helper) {
         placedAt(helper, "aLurkPuppetWhoseDensSideHasNoFloorStandsOnTheOtherSide", new double[] {0.0, -5.0}, true, false, new double[] {0.0, 5.0});
+    }
+
+    /**
+     * The den's side is a cutting (MZB-360, the second re-check's P3): the den lies due north and the floor 5 north of
+     * the track point is dug out three blocks, so the first floor under it is 3 below the rail. The swipe is 3D (6.5
+     * feet to feet), so a body that deep is out of the contract (|dy| 2.5 at most); {@code standAt} takes a floor within
+     * 2 of the rail only, and the puppet is held on the other side instead. On the code before (a floor 8 below to 4
+     * above) it stands in the cutting: "the hold point is (...), a block centre 5.0 off the rail". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_cutting", skyAccess = true)
+    public static void aLurkPuppetWhoseDensSideIsACuttingStandsOnTheOtherSide(GameTestHelper helper) {
+        placedAt(helper, "aLurkPuppetWhoseDensSideIsACuttingStandsOnTheOtherSide", new double[] {0.0, -5.0}, true, false, 2, new double[] {0.0, 5.0});
+    }
+
+    /**
+     * No direction known, a rail near (MZB-360, the second re-check's P3): the provider knows no axis at the point (a
+     * curve's middle, a crossing) and says a rail lies within the asked radius, which must be the Frostmaw's half width
+     * and the rail clearance (2.0 + 1.5 = 3.5) about the engine's spot. The lurk is refused (counted, nothing stands,
+     * no hold point). Then no rail is near (the no-create case), the retry stands the puppet at the engine's spot, as
+     * before. On the code before the engine's spot was kept: "the lurk was refused (0 times)". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_curve", skyAccess = true)
+    public static void aLurkWithNoRailDirectionButARailNearItsSpotIsRefusedAndStandsOnceNoneIs(GameTestHelper helper) {
+        String test = "aLurkWithNoRailDirectionButARailNearItsSpotIsRefusedAndStandsOnceNoneIs";
+        Held h = new Held(helper, test);
+        boolean[] near = {true};
+        double[] asked = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
+        RailAxes before = LurkSpots.axes();
+        LurkSpots.register(new RailAxes() {
+            @Override
+            public Vec3 at(ServerLevel level, Vec3 point) {
+                return null;
+            }
+
+            @Override
+            public boolean trackNear(ServerLevel level, Vec3 point, double radius) {
+                asked[0] = point.x;
+                asked[1] = point.y;
+                asked[2] = point.z;
+                asked[3] = radius;
+                return near[0];
+            }
+        });
+        ConflictKit.onEnd(helper, () -> LurkSpots.register(before));
+        long[] refused = {ConflictKit.bridge().lurksRefused};
+        h.lurking(helper)
+                .thenWaitUntil(io(() -> check("the lurk was refused (" + (ConflictKit.bridge().lurksRefused - refused[0]) + " times)",
+                        ConflictKit.bridge().lurksRefused > refused[0])))
+                .thenExecute(() -> {
+                    check("the radius asked is the half width and the rail clearance (" + asked[3] + ")", Math.abs(asked[3] - 3.5) < 1e-9);
+                    check("about the engine's spot, at the track's height (" + asked[0] + ", " + asked[1] + ", " + asked[2] + ")",
+                            Math.abs(asked[0] - h.spot[0].x) < 1e-6 && Math.abs(asked[1] - h.track[0].y) < 1e-6 && Math.abs(asked[2] - h.spot[0].z) < 1e-6);
+                    check("no Frostmaw stands in the place", h.level.getEntitiesOfClass(EntityFrostmaw.class,
+                            new AABB(h.x - 14, h.track[0].y - 12, h.z - 14, h.x + 14, h.track[0].y + 12, h.z + 14)).isEmpty());
+                    check("the table has no body for it", RtsimApi.lurkBody(h.agent) == null);
+                    check("and no hold point", ConflictKit.lurkHold(h.agent) == null);
+                    record(test, "refused", "no axis and a rail within " + asked[3] + " of the spot: refused " + (ConflictKit.bridge().lurksRefused - refused[0]) + " times, nothing stands");
+                    near[0] = false;
+                    ConflictKit.onEnd(helper, () -> {
+                        Entity b = RtsimApi.lurkBody(h.agent);
+                        if (b != null)
+                            b.discard();
+                    });
+                })
+                .thenWaitUntil(io(() -> check("the retry stands the puppet", RtsimApi.lurkBody(h.agent) instanceof EntityFrostmaw)))
+                .thenExecute(() -> {
+                    h.f[0] = (EntityFrostmaw) RtsimApi.lurkBody(h.agent);
+                    Vec3 hold = ConflictKit.lurkHold(h.agent);
+                    check("held at the engine's spot, as with no plugin (" + hold + ")",
+                            hold != null && Math.abs(hold.x - h.spot[0].x) < 1e-6 && Math.abs(hold.z - h.spot[0].z) < 1e-6);
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
     }
 
     /**

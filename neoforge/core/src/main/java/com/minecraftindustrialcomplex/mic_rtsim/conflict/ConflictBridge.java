@@ -2420,16 +2420,21 @@ public final class ConflictBridge implements SessionPlugin {
         return level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
     }
 
+    /** How far above or below the rail's y a held body's feet may stand (blocks): the second re-check's P3, embankments and cuttings. */
+    static final double STAND_RISE = 2.0;
+
     /**
      * Like {@link #floorAt} for a point a body is to be held at, with no fallback: NaN when the point's chunk does not
-     * tick entities, or no block with a sturdy top face between the track's y + 4 and y - 8 has the body's box free
-     * above it.
+     * tick entities, or no block with a sturdy top face whose top is within {@link #STAND_RISE} of the track's y has the
+     * body's box free above it.
      */
     private double standAt(ServerLevel level, Lurk l, double x, double z, EntityType<?> type) {
         int bx = Mth.floor(x), bz = Mth.floor(z);
         if (!RtsimSession.entitiesTickAt(level, new BlockPos(bx, level.getSeaLevel(), bz)))
             return Double.NaN;
-        int top = Mth.floor(l.track().y) + 4, bottom = Mth.floor(l.track().y) - 8;
+        // Standing y within STAND_RISE of the rail's: a rim of a cutting or the crown of an embankment is another level,
+        // out of the contract's reach (the strike's reach is horizontal) and a long walk from the rail
+        int top = Mth.floor(l.track().y + STAND_RISE) - 1, bottom = Mth.ceil(l.track().y - STAND_RISE) - 1;
         BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
         for (int by = top; by >= bottom; by--) {
             at.set(bx, by, bz);
@@ -2446,8 +2451,8 @@ public final class ConflictBridge implements SessionPlugin {
      * Where the puppet of {@code sl} is held (M8, MZB-360, the re-check's P2): with a rail direction known at the lurk's
      * track point ({@link LurkSpots}), the first standable block centre on the rail's normal at the spot distance, on
      * the den's side and then the other, plus the slot's offset in its stack; null when neither side has one (the
-     * lurk is refused). With none known (no plugin, no rail block at the point, a crossing) the engine's spot, as
-     * before.
+     * lurk is refused). With none known (no plugin, no rail block at the point, a crossing, a curve's middle) the
+     * engine's spot, as before, unless a rail lies within the body's half-width and the rail clearance of it (refused).
      */
     private Vec3 holdPoint(ServerLevel level, Lurk l, Slot sl) {
         double ox = sl.placeX(1.0) - l.spot().x, oz = sl.placeZ(1.0) - l.spot().z;
@@ -2455,6 +2460,11 @@ public final class ConflictBridge implements SessionPlugin {
         Vec3 axis = rails == null ? null : rails.at(level, l.track());
         if (axis == null) {
             double x = sl.placeX(1.0), z = sl.placeZ(1.0);
+            // No direction known (a curve's middle, a crossing, no plugin): the engine's spot stands, unless a rail lies where
+            // the body's box would reach it (the second re-check's P3): half the body's width and the rail clearance from
+            // the spot, 3.5 blocks for the 4-wide Frostmaw. Refused, as when no side has a floor.
+            if (rails != null && rails.trackNear(level, new Vec3(x, l.track().y, z), sl.type.getWidth() / 2.0 + LurkGeometry.RAIL_CLEARANCE))
+                return null;
             return new Vec3(x, floorAt(level, l, x, z, sl.type), z);
         }
         for (Vec3 c : LurkSpots.candidates(l.track(), l.spot(), axis)) {
