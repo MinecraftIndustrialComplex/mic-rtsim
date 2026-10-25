@@ -2856,6 +2856,16 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
     Frostmaw). GameTest `aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows`
     (a Frostmaw joins in the den's east chunk, 32 blocks out, hidden: no census for 30 ticks; shown, census 2 lists
     it as a stray chief). Not run; on the unfixed Camps the census 2 is made at once and lists no one.
+  - The SPAWNs of the held census (re-check P2): the engine orders a SPAWN to a camp that is in without a census
+    (`camp_arrival`, `camp_refill`), and a held SPAWN also plays past 160 blocks or at HOLD_MAX. With a recount
+    waiting (a stray joined, or the census is held for a hidden chunk) the slot a SPAWN fills is the one the
+    visible stray is about to fill: two Frostmaws. So while `c.recount` is set every SPAWN is held, past HOLD_MAX too
+    (`spawnLine` and `playHeld`), and the census that ends the hold stales it (`staleHeld`); the engine orders
+    again from the census. GameTest `aSpawnWaitsWhileACensusIsHeldForAHiddenChunkAndIsStaleAfterIt` (a den in, a
+    visible stray in the footprint, the east chunk hidden, a SPAWN line: no second Frostmaw and no answer for 30
+    ticks; the chunk shown, the SPAWN is STALE and census 2 lists the stray). Not run; on the unheld `spawnLine` the
+    SPAWN plays at once and the den has two Frostmaws. Any recount, not only a held one, now holds SPAWNs until the
+    census at the end of that tick.
 - **MZB-661** (M5 C2ME diagnosis; P2): `byUuid` (REMOVE, TAKE and ADOPT by UUID) was `level.getEntity`, which
   misses a body whose chunk is hidden: NOTHING was answered and the stray lived. When `getEntity` misses it now
   falls back to the camp's own index (`live(faction)`) by UUID, with the level checked. GameTest

@@ -196,6 +196,11 @@ public final class Camps {
             return waiting;
         }
 
+        /** Whether a recount is waiting for the next look (GameTests). */
+        public boolean recountPending() {
+            return recount;
+        }
+
         public List<ChunkPos> footprintChunks() {
             List<ChunkPos> out = new ArrayList<>(chunks.length);
             for (long c : chunks)
@@ -1005,7 +1010,9 @@ public final class Camps {
             return ConflictRecords.CampBodies.NOTHING;
         if (level.getDifficulty() == Difficulty.PEACEFUL)
             return ConflictRecords.CampBodies.STALE;
-        if (mayHold && (c.kind.holdSpawn(level, c, ln.body(), ln.flags()) || !bridge.session().spendSpawnBudget(1))) {
+        // A recount waiting (a stray joined, or a census held for a hidden chunk, MZB-660) holds every SPAWN: the
+        // engine orders one for a slot a stray here is about to fill, and the census that ends the hold stales it.
+        if (mayHold && (c.recount || c.kind.holdSpawn(level, c, ln.body(), ln.flags()) || !bridge.session().spendSpawnBudget(1))) {
             held.add(new Held(c, epoch, op, ln, now));
             heldSpawns++;
             return 0;
@@ -1286,7 +1293,8 @@ public final class Camps {
                 answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
                 continue;
             }
-            boolean wait = now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
+            // Past HOLD_MAX too while a recount waits: the census that ends the hold stales the line (MZB-660).
+            boolean wait = c.recount || now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
             if (wait || !bridge.session().spendSpawnBudget(1)) {
                 held.add(h);
                 continue;
