@@ -905,13 +905,13 @@ fn an_unchanged_difficulty_changes_nothing() {
     assert_eq!(r.c.peaceful_since, Tick(10), "the span starts at the first");
 }
 
-/// MZB-23 (review): a record whose engine half comes later spends its op id, as rtsim-jni does.
+/// MZB-23 (review): a record's op id is spent as rtsim-jni spends it, a deferred one too. The
+/// camp records got their engine half in M4 (MZB-150) and the grove's tribute records in M9, so
+/// what is left deferred is the rail's, which carry no op id.
 #[test]
-fn a_deferred_record_spends_its_op_id() {
+fn a_booked_record_spends_its_op_id() {
     let mut r = Run::new(42, quiet_goblins());
     let op = 0xABCD;
-    // The camp records got their engine half in M4 (MZB-150); the tribute's ChiefPaid is a later
-    // slice's.
     let paid = || {
         Obs::ChiefPaid(boundary::ChiefPaid {
             faction: synth::CAMP,
@@ -923,7 +923,8 @@ fn a_deferred_record_spends_its_op_id() {
             items: Vec::new(),
         })
     };
-    assert!(Conflict::later(&paid()));
+    assert!(!Conflict::later(&paid()));
+    assert!(paid().op().is_some_and(|o| o == op));
     r.ingest(paid(), Tick(5));
     assert!(r.c.op_applied(op), "spent");
     let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
@@ -2683,9 +2684,92 @@ fn a_casualty_copy_after_a_save_and_reopen_counts_once() {
     assert_eq!(back.parties[band].epoch, epoch);
     assert_eq!(back.parties[band].spawned, r.c.parties[band].spawned);
     let before = counted(&r, &back, band);
-    back.ingest(&mut r.w, &mut NoInfrastructure, &cs, at);
+    // As the host delivers a copy: through `ingest_copy`, which takes the record at any epoch
+    // (`ingest` is a live commit, a different path).
+    back.ingest_copy(&mut r.w, &mut NoInfrastructure, &cs, at);
     assert_eq!(counted(&r, &back, band), before, "the replay's copy too");
     assert_eq!(back.parties[band].alive(), r.c.parties[band].alive());
+}
+
+/// MZB-589: a raid on the refinery, the pages saved while it marches there unseen, a restart
+/// that replays: the band's first copy of a casualty counts, the replay holds the arrival
+/// (RP-23), and the record `second` arrives while the arrival is held, through `ingest_copy`
+/// (`copy`) or as a plain recommit. Returns the raids decided while replaying right after it
+/// (the hold ended: the arrival was decided unwatched), and the casualties counted.
+fn a_casualty_while_an_arrival_is_held(second_is_new: bool, copy: bool) -> (usize, u64) {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    assert!(r.c.parties[band].phase == Phase::Out && !r.c.parties[band].embodied);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    let c = back.cultures.get(0).clone();
+    let body = body_id(&back.cultures, &c.unit(back.parties[band].units[0].0).body);
+    let epoch = back.parties[band].epoch;
+    let (a, b) = (next_op(), next_op());
+    let first = Obs::Casualties(killed(band, epoch, body, 1, a));
+    let at = back.now() + 1;
+    back.ingest_copy(&mut w, &mut walls, &first, at);
+    assert_eq!(
+        back.parties[band].casualty_ops,
+        vec![a],
+        "the party counted it"
+    );
+    let counted = back.stats.casualties;
+    // The arrival comes inside the replay and is held.
+    back.run_until(&mut w, &mut walls, arrival + 10);
+    let _ = back.take_commands();
+    assert!(back.replaying());
+    assert_eq!(back.parties[band].phase, Phase::Out, "held");
+    assert!(walls.raids.is_empty(), "not decided yet");
+    let second = Obs::Casualties(killed(
+        band,
+        epoch,
+        body,
+        1,
+        if second_is_new { b } else { a },
+    ));
+    if copy {
+        back.ingest_copy(&mut w, &mut walls, &second, arrival + 10);
+    } else {
+        back.ingest(&mut w, &mut walls, &second, arrival + 10);
+    }
+    (walls.raids.len(), back.stats.casualties - counted)
+}
+
+/// MZB-589 (the merge check's P3): a casualty the party counted already moves nothing, so it does
+/// not end a held arrival either. `release_before` ran ahead of the dedupe in `casualties`, and
+/// BAND_CASUALTIES has no op for `first_time`: the hold was removed, the arrival decided
+/// unwatched, the count unchanged, and the hold's own fight record found no hold.
+#[test]
+fn a_casualty_the_party_counted_already_does_not_end_a_held_arrival() {
+    for copy in [true, false] {
+        assert_eq!(
+            a_casualty_while_an_arrival_is_held(false, copy),
+            (0, 0),
+            "a known op, copy {copy}: the hold stays, nothing counts"
+        );
+    }
+}
+
+/// The control: a new op still releases the hold (a wipe-out or a rout sends the band home) and
+/// counts.
+#[test]
+fn a_new_casualty_still_ends_a_held_arrival() {
+    let (raids, counted) = a_casualty_while_an_arrival_is_held(true, true);
+    assert_eq!(
+        (raids, counted),
+        (1, 1),
+        "the hold ended, the death counted"
+    );
 }
 
 /// MZB-589: a casualty of bodies kept as a recalled stack (the walk-off's dead) counts once as

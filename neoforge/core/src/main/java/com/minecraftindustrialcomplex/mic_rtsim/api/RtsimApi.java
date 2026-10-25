@@ -255,6 +255,33 @@ public final class RtsimApi {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.looted(member, items);
     }
 
+    /**
+     * A player paid a camp's chief (CHIEF_PAID, M9; MZB-418): {@code items} given, the chief's trade memory keyed on the
+     * payer's game profile id. An untagged chief standing in a camp's footprint is booked PAID_STRAY. False when
+     * nothing was written (no live session, a machine for a payer, an empty payment, no camp's chief).
+     */
+    public static boolean chiefPaid(net.minecraft.world.entity.LivingEntity chief, net.minecraft.world.entity.player.Player payer,
+                                    java.util.List<net.minecraft.world.item.ItemStack> items) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().chiefPaid(chief, payer, items);
+    }
+
+    /**
+     * A player traded gold with a camp's masked minion (TRADED, M9; MZB-417): {@code nuggets} the gold nuggets on
+     * either side. False when nothing was written (no live session, a machine, no gold, no camp's body).
+     */
+    public static boolean traded(net.minecraft.world.entity.LivingEntity body, net.minecraft.world.entity.player.Player player,
+                                 int nuggets) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().traded(body, player, nuggets);
+    }
+
+    /**
+     * Whether a chief body is a camp's second body (M9; MZB-431): its slot's body is already replaced (a held removal
+     * or a seat over it), so it journals no death and drops nothing. A plugin's death mixin asks.
+     */
+    public static boolean secondChiefBody(Entity entity) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().secondBody(entity);
+    }
+
     /** The conflict factions' territories, by dimension and position (read only; M7's train sampler). */
     public static com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories territories() {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.territories();

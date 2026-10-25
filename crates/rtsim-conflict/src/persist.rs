@@ -43,8 +43,8 @@ use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus,
-    HeldPass, Line, LineCount, Party, Phase, Pin, RailMeter, Retired, Slot, SlotState, Source,
-    Target, Throne,
+    Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired, Slot,
+    SlotState, Source, TRADED_CAP, Target, Throne,
 };
 use crate::grievance::{Grievance, KB, RailTail};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
@@ -69,15 +69,23 @@ use crate::tunables::ConflictTunables;
 /// resident state ends with the passes held for a line (M7, MZB-302). So that a world with no
 /// rail pays base's bytes, the Rail kind's grievance components ride after a feud's flags byte
 /// (bit 1), a focus's track after a focus tag of 2, and a source's pin after a flags byte (bit 1)
-/// that also says whether it has a district (MZB-331's gate, MZB-313, MZB-314).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC8");
+/// that also says whether it has a district (MZB-331's gate, MZB-313, MZB-314). RTC9: a camp's
+/// ledger goes on with its heir, its chief's trade memory, the tribute it owes and is placing and
+/// the heir's pair in flight, a faction ends with its owed hunts, the wheel's events may be a camp
+/// heir, and the resident state ends with the tribute stacks being placed after the held passes
+/// (M9, MZB-437, MZB-448). RTC10, whose four magic bytes are `RTCA` (A for ten): the stats end
+/// with the lurk's five (lurks, lurks_ended, passes, passes_watched, lurk_robberies), after M9's
+/// three and M7's seven (M8, MZB-690).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCA");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
-/// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7).
+/// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7). 8: a
+/// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448). 9: the
+/// resident state's stats end with the lurk's five (M8, MZB-690).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 7;
+const META_VERSION: u16 = 9;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -344,6 +352,17 @@ fn put_faction(w: &mut Writer, x: &Faction) {
     w.bool(x.crystal);
     w.var_u64(u64::from(x.cap));
     w.var_u64(u64::from(x.away));
+    put_usize(w, x.hunts.len());
+    for h in &x.hunts {
+        w.u64(h.district.0);
+        put_pos(w, h.pos);
+        w.var_u64(u64::from(h.count));
+        w.u64(h.op);
+        put_opt(w, &h.replaced, |w, &(op, n)| {
+            w.u64(op);
+            w.var_u64(u64::from(n));
+        });
+    }
     put_opt(w, &x.camp, |w, c| put_camp(w, c));
 }
 
@@ -391,6 +410,51 @@ fn put_camp(w: &mut Writer, c: &Camp) {
     w.u32(at_day);
     w.var_u64(u64::from(c.arrival));
     put_opt(w, &c.arrival_at, |w, t| w.u64(t.0));
+    put_opt(w, &c.heir, |w, h| {
+        w.u64(h.due.0);
+        w.bool(h.found_empty);
+    });
+    w.var_u64(u64::from(c.heir_stamp));
+    put_usize(w, c.traded.len());
+    for t in &c.traded {
+        w.u64(t.0);
+        w.u64(t.1);
+    }
+    put_usize(w, c.owed_tribute.len());
+    for (g, m) in &c.owed_tribute {
+        w.var_u64(u64::from(*g));
+        w.i64(*m);
+    }
+    w.var_u64(u64::from(c.stacks));
+    put_opt(w, &c.mask, |w, m| {
+        w.u64(m.0);
+        w.var_u64(u64::from(m.1));
+    });
+    put_opt(w, &c.seat, |w, m| {
+        w.u64(m.0);
+        w.var_u64(u64::from(m.1));
+    });
+}
+
+/// A tribute stack in flight (MZB-423).
+fn put_placing(w: &mut Writer, p: &Placing) {
+    w.u64(p.op);
+    w.var_u64(u64::from(p.good));
+    w.i64(p.amount);
+    w.var_u64(u64::from(p.dimension));
+    w.var_i64(i64::from(p.pos.0));
+    w.var_i64(i64::from(p.pos.1));
+    w.var_i64(i64::from(p.pos.2));
+}
+
+fn get_placing(r: &mut Reader<'_>) -> codec::Result<Placing> {
+    Ok(Placing {
+        op: r.u64()?,
+        good: get_u32(r)?,
+        amount: r.i64()?,
+        dimension: get_u32(r)?,
+        pos: (get_i32(r)?, get_i32(r)?, get_i32(r)?),
+    })
 }
 
 fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
@@ -471,6 +535,34 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let pressure = Pressure::from_parts(p, r.u32()?);
     let arrival = get_u32(r)?;
     let arrival_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
+    let heir = get_opt(r, |r| {
+        Ok(Heir {
+            due: Tick(r.u64()?),
+            found_empty: r.bool()?,
+        })
+    })?;
+    let heir_stamp = get_u32(r)?;
+    let n = r.len_prefix(16)?;
+    let mut traded: Vec<(u64, u64)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let t = (r.u64()?, r.u64()?);
+        if traded.last().is_some_and(|l| *l >= t) || n > TRADED_CAP {
+            return bad("trade memory out of order or over its cap".to_string());
+        }
+        traded.push(t);
+    }
+    let n = r.len_prefix(2)?;
+    let mut owed_tribute: Vec<(u32, i64)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let e = (get_u32(r)?, r.i64()?);
+        if owed_tribute.last().is_some_and(|l| l.0 >= e.0) || e.1 <= 0 {
+            return bad("owed tribute out of order or not positive".to_string());
+        }
+        owed_tribute.push(e);
+    }
+    let stacks = get_u32(r)?;
+    let mask = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
+    let seat = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
     Ok(Camp {
         epoch,
         seen,
@@ -484,6 +576,14 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         pressure,
         arrival,
         arrival_at,
+        heir,
+        heir_stamp,
+        traded,
+        owed_tribute,
+        stacks,
+        chest: None,
+        mask,
+        seat,
     })
 }
 
@@ -515,6 +615,20 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
         crystal: r.bool()?,
         cap: get_u32(r)?,
         away: get_u32(r)?,
+        hunts: {
+            let n = r.len_prefix(21)?;
+            (0..n)
+                .map(|_| {
+                    Ok(crate::engine::Hunt {
+                        district: DistrictId(r.u64()?),
+                        pos: get_pos(r)?,
+                        count: get_u32(r)?,
+                        op: r.u64()?,
+                        replaced: get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?,
+                    })
+                })
+                .collect::<codec::Result<_>>()?
+        },
         camp: get_opt(r, get_camp)?.map(Box::new),
     })
 }
@@ -892,6 +1006,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::CampHeir { faction, stamp } => {
+            w.u8(9);
+            w.var_u64(u64::from(faction));
+            w.var_u64(u64::from(stamp));
+        }
         Ev::Rail {
             faction,
             actor,
@@ -943,6 +1062,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             stamp: get_u32(r)?,
         },
         8 => Ev::Arrival {
+            faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        9 => Ev::CampHeir {
             faction: get_u32(r)?,
             stamp: get_u32(r)?,
         },
@@ -1033,6 +1156,9 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.camp_written_off,
         s.arrivals,
         s.renewal_losses,
+        s.tribute_stacks,
+        s.hunts_owed,
+        s.hunts_killed,
         s.rail_passes,
         s.rail_pushes,
         s.rail_wakes,
@@ -1103,6 +1229,9 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.camp_written_off = n();
     s.arrivals = n();
     s.renewal_losses = n();
+    s.tribute_stacks = n();
+    s.hunts_owed = n();
+    s.hunts_killed = n();
     s.rail_passes = n();
     s.rail_pushes = n();
     s.rail_wakes = n();
@@ -1433,6 +1562,11 @@ impl Conflict {
             put_usize(w, v.len());
             v.iter().for_each(|h| put_held(w, h));
         }
+        put_usize(w, self.placing.len());
+        for (f, p) in &self.placing {
+            w.var_u64(u64::from(*f));
+            put_placing(w, p);
+        }
     }
 
     /// An engine from what [`Conflict::put_resident`] wrote, its row tables empty and resident.
@@ -1506,6 +1640,11 @@ impl Conflict {
             if c.rail_held.insert(train, v).is_some() {
                 return bad("a train held twice".into());
             }
+        }
+        let n = r.len_prefix(8)?;
+        for _ in 0..n {
+            let f = get_u32(r)?;
+            c.placing.push((f, get_placing(r)?));
         }
         Ok(c)
     }

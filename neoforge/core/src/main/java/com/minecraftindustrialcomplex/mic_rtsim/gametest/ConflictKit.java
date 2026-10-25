@@ -282,6 +282,31 @@ public final class ConflictKit {
         });
     }
 
+    /**
+     * OWED_HUNT, as the engine sends a debt of animals a raid on an unwatched district left (docs/boundary.md §9.4):
+     * {@code count} animals within {@code radius} of the centre, or {@code rest} when {@code replaced} is the op last applied.
+     */
+    public static void owedHunt(long faction, long district, long op, long replaced, String dimension, int count,
+                                int centreX, int centreZ, int radius, int rest) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(ConflictRecords.OWED_HUNT, ConflictRecords.OwedHunt.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.OwedHunt.FACTION, faction);
+            b.putLong(at + ConflictRecords.OwedHunt.DISTRICT, district);
+            b.putLong(at + ConflictRecords.OwedHunt.OP_ID, op);
+            b.putLong(at + ConflictRecords.OwedHunt.REPLACED, replaced);
+            b.putInt(at + ConflictRecords.OwedHunt.DIM, dim);
+            b.putInt(at + ConflictRecords.OwedHunt.COUNT, count);
+            b.putInt(at + ConflictRecords.OwedHunt.CENTRE_X, centreX);
+            b.putInt(at + ConflictRecords.OwedHunt.CENTRE_Z, centreZ);
+            b.putInt(at + ConflictRecords.OwedHunt.RADIUS, radius);
+            b.putInt(at + ConflictRecords.OwedHunt.REST, rest);
+        });
+    }
+
     /** BAND_RECALL with a reason, a timeout in ticks (0: the default) and the way home. */
     public static void recall(long agent, int epoch, int reason, int timeout, double towardX, double towardZ) {
         script(out -> {
@@ -449,8 +474,16 @@ public final class ConflictKit {
         }
     }
 
-    /** CAMP_RECONCILE for a camp at an epoch, with an op id. */
+    /** CAMP_RECONCILE for a camp at an epoch, with an op id and no throne (FLAG_THRONE clear: a grove uses its fire pit). */
     public static void reconcile(long faction, long epoch, long op, List<CampLine> lines) {
+        reconcile(faction, epoch, op, null, 0f, lines);
+    }
+
+    /**
+     * CAMP_RECONCILE with the camp's throne (FLAG_THRONE, its spot and direction, MZB-404) when {@code throne} is not
+     * null.
+     */
+    public static void reconcile(long faction, long epoch, long op, net.minecraft.world.phys.Vec3 throne, float direction, List<CampLine> lines) {
         script(out -> {
             int[] bodies = new int[lines.size()];
             for (int i = 0; i < lines.size(); i++)
@@ -463,6 +496,13 @@ public final class ConflictKit {
             b.putLong(at + ConflictRecords.CampReconcile.FACTION, faction);
             b.putLong(at + ConflictRecords.CampReconcile.EPOCH, epoch);
             b.putLong(at + ConflictRecords.CampReconcile.OP_ID, op);
+            if (throne != null) {
+                b.putInt(at + ConflictRecords.CampReconcile.FLAGS, ConflictRecords.CampReconcile.FLAG_THRONE);
+                b.putDouble(at + ConflictRecords.CampReconcile.THRONE_X, throne.x);
+                b.putDouble(at + ConflictRecords.CampReconcile.THRONE_Y, throne.y);
+                b.putDouble(at + ConflictRecords.CampReconcile.THRONE_Z, throne.z);
+                b.putFloat(at + ConflictRecords.CampReconcile.DIRECTION, direction);
+            }
             for (int i = 0; i < n; i++) {
                 CampLine l = lines.get(i);
                 int o = at + ConflictRecords.CampReconcile.LINES + i * ConflictRecords.CampReconcile.LINE;
@@ -473,6 +513,28 @@ public final class ConflictKit {
                 b.put(o + ConflictRecords.CampReconcile.L_FLAGS, (byte) l.flags());
                 b.putLong(o + ConflictRecords.CampReconcile.L_A, l.a());
                 b.putLong(o + ConflictRecords.CampReconcile.L_B, l.b());
+            }
+        });
+    }
+
+    /**
+     * CHIEF_BODY (command, MZB-421): a camp's chief's trade memory at home, {@code players} by game profile id, for a
+     * camp at {@code epoch}; {@code health} 0 leaves the body its own.
+     */
+    public static void chiefBody(long faction, long epoch, float health, List<UUID> players) {
+        script(out -> {
+            int n = players.size();
+            int at = out.reserve(ConflictRecords.CHIEF_BODY, ConflictRecords.ChiefBody.size(n), n);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.ChiefBody.FACTION, faction);
+            b.putLong(at + ConflictRecords.ChiefBody.EPOCH, epoch);
+            b.putFloat(at + ConflictRecords.ChiefBody.HEALTH, health);
+            for (int i = 0; i < n; i++) {
+                int o = at + ConflictRecords.ChiefBody.TRADED + i * ConflictRecords.ChiefBody.PLAYER;
+                b.putLong(o, players.get(i).getMostSignificantBits());
+                b.putLong(o + 8, players.get(i).getLeastSignificantBits());
             }
         });
     }

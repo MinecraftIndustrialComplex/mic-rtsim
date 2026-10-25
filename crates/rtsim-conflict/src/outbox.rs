@@ -78,6 +78,9 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
         Cmd::ChiefBody(_) => verdicts(Q::Keep, R::Never),
         // Latest wins per agent (MOWZIE.md §4.16): the abstract party's march.
         Cmd::March(_) => verdicts(Q::Drop, R::Send),
+        // The faction's hunts are state: every hunt still held goes again from them at the
+        // replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (MZB-449).
+        Cmd::OwedHunt(_) => verdicts(Q::Drop, R::Drop),
     }
 }
 
@@ -188,7 +191,7 @@ mod tests {
     use crate::boundary;
 
     /// docs/replay-gate.md §4.4, one row per kind: (kind, queued, while replaying).
-    const TABLE: [(u16, Queued, Replaying); 12] = [
+    const TABLE: [(u16, Queued, Replaying); 13] = [
         (boundary::TERRITORY, Queued::Drop, Replaying::Send),
         (boundary::FACTION_NOTICE, Queued::Drop, Replaying::Drop),
         (boundary::ENVOY_MATERIALIZE, Queued::Drop, Replaying::Never),
@@ -201,6 +204,7 @@ mod tests {
         (boundary::TRAIN_ROBBED, Queued::Keep, Replaying::Drop),
         (boundary::CHIEF_BODY, Queued::Keep, Replaying::Never),
         (boundary::BAND_MARCH, Queued::Drop, Replaying::Send),
+        (boundary::OWED_HUNT, Queued::Drop, Replaying::Drop),
     ];
 
     #[test]
@@ -215,10 +219,15 @@ mod tests {
             };
             assert_eq!(gate(c), verdicts(queued, replaying), "{}", c.name());
         }
-        // The queued column is the conflict's old session-start filter exactly.
+        // The queued column is the conflict's old session-start filter exactly, but for M9's
+        // OWED_HUNT, which that filter kept and the gate drops: `resend_notices` sends every
+        // hunt still held from the faction's state at the replay end (RP-131).
         for c in &cmds {
             let old = c.agent().is_none()
-                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_));
+                && !matches!(
+                    c,
+                    Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_) | Cmd::OwedHunt(_)
+                );
             assert_eq!(gate(c).queued == Queued::Keep, old, "{}", c.name());
         }
         // And the outbox applies them: queued at the start, then pushed while replaying.
@@ -243,7 +252,7 @@ mod tests {
         let sent: Vec<u16> = o.take().iter().map(Cmd::kind).collect();
         assert_eq!(sent, vec![boundary::TERRITORY, boundary::BAND_MARCH]);
         let want = GateCounts {
-            dropped: 6,
+            dropped: 8,
             ..GateCounts::default()
         };
         assert_eq!(o.counts(), want, "the drops are counted");

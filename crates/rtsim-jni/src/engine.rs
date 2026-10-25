@@ -612,11 +612,15 @@ fn runs_the_clock(o: &Order) -> bool {
 }
 
 /// A test's order that waits for the replay end, with every unit after it (RP-33): one that runs
-/// the clock, a conflict command (RP-66), which joins the conflict's queue around its gate
-/// (docs/replay-gate.md §4.4), and a herd command (RP-85), which joins the herds' queue around
-/// theirs (§4.6): neither must go while the replay runs.
+/// the clock, a conflict command (RP-66), a herd command (RP-85) and a ship command (RP-96),
+/// which join their module's queue around its gate (docs/replay-gate.md §4.4, §4.6, §4.7) and so
+/// must not go while the replay runs.
 fn waits_for_the_replay_end(o: &Order) -> bool {
-    runs_the_clock(o) || matches!(o, Order::ConflictCommand { .. } | Order::HerdCommand { .. })
+    runs_the_clock(o)
+        || matches!(
+            o,
+            Order::ConflictCommand { .. } | Order::HerdCommand { .. } | Order::ShipCommand { .. }
+        )
 }
 
 fn spawn_size(members: &[crate::orders::MemberOrder]) -> usize {
@@ -1386,8 +1390,8 @@ impl Engine {
         // A test's order that runs the clock to the hand-over's time, Java's present, waits for
         // the replay end, and so does every unit after it, in order (docs/replay-gate.md §3.6,
         // RP-33): taken now it would carry the modules past the replayed records still to come.
-        // A conflict command waits too, as it bypasses the gate (RP-66), and a herd command
-        // (RP-85).
+        // A conflict command, a herd command and a ship command wait too, as they bypass the gate
+        // (RP-66, RP-85, RP-96).
         if !st.replaying {
             for unit in std::mem::take(&mut st.held_units) {
                 self.take_unit(&mut st, unit);
@@ -1909,6 +1913,7 @@ impl Engine {
                 shared::catch_up(st, rec);
                 phase1::after_core(st, rec);
                 dragons::after_core(st, rec);
+                conflict::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1934,6 +1939,7 @@ impl Engine {
             industry::answered_again(st, rec);
         }
         dragons::answered_again(st, rec);
+        conflict::answered_again(st, rec);
         st.world.refused_journaled(rec);
     }
 

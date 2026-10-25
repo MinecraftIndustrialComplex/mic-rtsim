@@ -355,7 +355,8 @@ fn no_port_raid_in_view_in_the_catch_up() {
             drive(&mut s, &mut fake, off, TICKS_PER_DAY / 4);
             s.ships.lift_closures(&mut s.world);
             s.world.run_until(on);
-            s.ships.session_start();
+            s.ships.begin_replay(true);
+            s.ships.replay_done(&mut s.world);
             if watched {
                 let villages = village_nodes(&s.world);
                 let docks: Vec<Pos> = s

@@ -169,6 +169,7 @@ impl Row for FactionRow {
             + self.feuds.iter().filter(|e| e.1.notice.is_some()).count()
                 * std::mem::size_of::<crate::boundary::Notice>()
             + self.reach.capacity() * std::mem::size_of::<(SignalKind, u32)>()
+            + self.x.hunts.capacity() * std::mem::size_of::<crate::engine::Hunt>()
             + self.feuds.iter().map(|e| e.1.tail_bytes()).sum::<usize>()
             + self.rail.as_deref().map_or(0, |v| {
                 std::mem::size_of::<Vec<RailMeter>>()

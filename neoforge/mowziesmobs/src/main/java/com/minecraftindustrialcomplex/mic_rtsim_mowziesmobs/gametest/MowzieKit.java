@@ -3,8 +3,13 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.bobmowzie.mowziesmobs.server.item.ItemHandler;
+import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
+import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
+import com.bobmowzie.mowziesmobs.server.inventory.ContainerUmvuthiTrade;
+import com.bobmowzie.mowziesmobs.server.message.MessageUmvuthiTrade;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
@@ -36,6 +41,7 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
@@ -56,6 +62,7 @@ import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -65,6 +72,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
+import java.lang.reflect.Proxy;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
@@ -84,6 +94,7 @@ public final class MowzieKit {
     public static final String TEST_GROVE = "mic_rtsim_mowziesmobs:test_grove";
     public static final String FROSTMAW = MicRtsimMowziesMobs.FROSTMAW;
     public static final String WARRIOR = MicRtsimMowziesMobs.WARRIOR;
+    public static final String UMVUTHI = MicRtsimMowziesMobs.UMVUTHI;
     public static final String RAPTOR = MicRtsimMowziesMobs.RAPTOR;
 
     // ---- the end of every tick ------------------------------------------------------------------
@@ -449,6 +460,8 @@ public final class MowzieKit {
         public final int cx, cz;
         public long faction;
         public Vec3 spot;
+        /** The kind the grove was declared with. */
+        public CampKind kind = GroveKind.INSTANCE;
 
         public Grove(Far far, int cx, int cz) {
             this.far = far;
@@ -475,14 +488,20 @@ public final class MowzieKit {
         }
 
         public Grove declare() {
+            return declare(TEST_GROVE, GroveKind.INSTANCE);
+        }
+
+        /** Declared under a structure name a culture may claim (the native engine then runs the camp) and a kind of the caller's. */
+        public Grove declare(String structure, CampKind withKind) {
             ServerLevel level = far.level;
             int x = cx * 16 + 8, z = cz * 16 + 8;
             int y = level.hasChunk(cx, cz) ? level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) : level.getSeaLevel();
             Vec3 s = new Vec3(x + 0.5, y, z + 0.5);
-            faction = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), TEST_GROVE, GroveKind.INSTANCE, new BlockPos(x, y, z), s,
+            faction = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), structure, withKind, new BlockPos(x, y, z), s,
                     MowzieCamps.GROVE_RADIUS, 0, false);
             check("the grove is declared (a live session)", faction != 0);
             spot = s;
+            kind = withKind;
             return this;
         }
 
@@ -582,6 +601,117 @@ public final class MowzieKit {
         }
     }
 
+    // ---- a grove that holds a warrior's removal (test 30) ----------------------------------------
+
+    /**
+     * The grove's own kind, except that it also holds the removal of the warriors a test names: the real kind never
+     * holds a warrior (MZB-433), so a MASK's "no line of its own in flight" needs a kind that does. Everything else is
+     * {@link GroveKind}'s.
+     */
+    public static final class HoldingKind implements CampKind {
+        public static final HoldingKind INSTANCE = new HoldingKind();
+
+        private static final Set<UUID> HOLDING = ConcurrentHashMap.newKeySet();
+
+        private HoldingKind() {}
+
+        /** From now on the removal of this body waits (until the test ends). */
+        public static void hold(GameTestHelper helper, Entity body) {
+            HOLDING.add(body.getUUID());
+            ConflictKit.onEnd(helper, () -> HOLDING.remove(body.getUUID()));
+        }
+
+        @Override
+        public boolean holdRemoval(ServerLevel level, Camps.Site site, Mob body) {
+            return HOLDING.contains(body.getUUID()) || GroveKind.INSTANCE.holdRemoval(level, site, body);
+        }
+
+        @Override
+        public boolean isBody(Entity e) {
+            return GroveKind.INSTANCE.isBody(e);
+        }
+
+        @Override
+        public String bodyName(Entity e) {
+            return GroveKind.INSTANCE.bodyName(e);
+        }
+
+        @Override
+        public boolean isChief(Entity e) {
+            return GroveKind.INSTANCE.isChief(e);
+        }
+
+        @Override
+        public boolean pooled(Entity e) {
+            return GroveKind.INSTANCE.pooled(e);
+        }
+
+        @Override
+        public Chief chief(ServerLevel level, Camps.Site site, List<Entity> footprint) {
+            return GroveKind.INSTANCE.chief(level, site, footprint);
+        }
+
+        @Override
+        public Mob make(ServerLevel level, Camps.Site site, String body, int lineFlags, double x, double y, double z, float yaw) {
+            return GroveKind.INSTANCE.make(level, site, body, lineFlags, x, y, z, yaw);
+        }
+
+        @Override
+        public Vec3 spawnAt(ServerLevel level, Camps.Site site, String body, int lineFlags) {
+            return GroveKind.INSTANCE.spawnAt(level, site, body, lineFlags);
+        }
+
+        @Override
+        public boolean holdSpawn(ServerLevel level, Camps.Site site, String body, int lineFlags) {
+            return GroveKind.INSTANCE.holdSpawn(level, site, body, lineFlags);
+        }
+
+        @Override
+        public void joined(Camps.Site site, Mob body) {
+            GroveKind.INSTANCE.joined(site, body);
+        }
+
+        @Override
+        public void chiefBody(Mob body, ChiefBody memory) {
+            GroveKind.INSTANCE.chiefBody(body, memory);
+        }
+
+        @Override
+        public boolean inFight(ServerLevel level, Mob body) {
+            return GroveKind.INSTANCE.inFight(level, body);
+        }
+
+        @Override
+        public void copy(Mob from, Mob to) {
+            GroveKind.INSTANCE.copy(from, to);
+        }
+
+        @Override
+        public boolean chiefLines() {
+            return GroveKind.INSTANCE.chiefLines();
+        }
+
+        @Override
+        public int slots(Camps.Site site) {
+            return GroveKind.INSTANCE.slots(site);
+        }
+
+        @Override
+        public double strayRadius(Camps.Site site) {
+            return GroveKind.INSTANCE.strayRadius(site);
+        }
+
+        @Override
+        public java.util.function.Predicate<Entity> kin() {
+            return GroveKind.INSTANCE.kin();
+        }
+
+        @Override
+        public net.minecraft.core.Holder<net.minecraft.sounds.SoundEvent> sound() {
+            return GroveKind.INSTANCE.sound();
+        }
+    }
+
     // ---- the jar's bodies -----------------------------------------------------------------------
 
     /**
@@ -605,6 +735,23 @@ public final class MowzieKit {
         m.setNoAi(noAi);
         check(type + " is added", level.addFreshEntity(m));
         return m;
+    }
+
+    /** An Umvuthi standing where it is told, untagged and with no AI (as the grove census test makes one: not finalized). */
+    public static EntityUmvuthi umvuthi(ServerLevel level, Vec3 at) {
+        return stray(level, EntityHandler.UMVUTHI.get(), at.x, at.y, at.z, true, false);
+    }
+
+    /** A grove warrior standing where it is told, untagged and with no AI (finalized as the jar's worldgen does). */
+    public static EntityUmvuthanaMinion warrior(ServerLevel level, Vec3 at) {
+        return stray(level, EntityHandler.UMVUTHANA_MINION.get(), at.x, at.y, at.z, true);
+    }
+
+    /** A real server player standing where it is told (in the level's list, not ticked), taken out again when the test ends. */
+    public static ServerPlayer player(GameTestHelper helper, Vec3 at, String name) {
+        ServerPlayer p = FakePlayers.add(helper.getLevel(), at, name);
+        ConflictKit.onEnd(helper, () -> FakePlayers.remove(p));
+        return p;
     }
 
     /** A sleeping Frostmaw (the template's: active false) with or without its crystal. */
@@ -759,6 +906,31 @@ public final class MowzieKit {
         return op;
     }
 
+    /** Scripts a CAMP_RECONCILE that names the camp's throne (FLAG_THRONE, MZB-404) at an epoch with a fresh op id; the op. */
+    public static long reconcile(long faction, long epoch, Vec3 throne, float direction, List<ConflictKit.CampLine> lines) {
+        long op = ConflictKit.newOp();
+        ConflictKit.reconcile(faction, epoch, op, throne, direction, lines);
+        return op;
+    }
+
+    /** One line of a CAMP_BODIES answer: the slot and generation it names (a MASK's are the warrior's taken) and its outcome. */
+    public record Answered(int line, int slot, int generation, int outcome) {}
+
+    /** The first answer of each line of an op, by line index, with the slot and generation the answer names. */
+    public static Map<Integer, Answered> answeredLines(long faction, long op) {
+        Map<Integer, Answered> out = new LinkedHashMap<>();
+        for (ScriptedEngine.Received r : ConflictKit.campBodies(faction, op)) {
+            var b = r.view();
+            for (int i = 0; i < r.aux(); i++) {
+                int o = ConflictRecords.CampBodies.LINES + i * ConflictRecords.CampBodies.LINE;
+                int line = b.getInt(o + ConflictRecords.CampBodies.L_LINE);
+                out.putIfAbsent(line, new Answered(line, b.getInt(o + ConflictRecords.CampBodies.L_SLOT),
+                        b.getInt(o + ConflictRecords.CampBodies.L_GENERATION), b.get(o + ConflictRecords.CampBodies.L_OUTCOME) & 0xFF));
+            }
+        }
+        return out;
+    }
+
     /** One CAMP_BODIES record's outcomes by line index. */
     public static Map<Integer, Integer> outcomesOf(ScriptedEngine.Received r) {
         Map<Integer, Integer> out = new LinkedHashMap<>();
@@ -789,6 +961,55 @@ public final class MowzieKit {
     public static void allOutcomes(String what, Map<Integer, Integer> o, int outcome) {
         for (Map.Entry<Integer, Integer> e : o.entrySet())
             check(what + ": line " + e.getKey() + " is " + outcomeName(outcome) + ", not " + outcomeName(e.getValue()), e.getValue() == outcome);
+    }
+
+    // ---- the Umvuthi's trade (MZB-418; tests 13 and 25) ------------------------------------------
+
+    /** A masked player: the jar's fear mask on the head, which the Umvuthana look for in a trader. */
+    public static void mask(Player p) {
+        p.setItemSlot(EquipmentSlot.HEAD, new ItemStack(ItemHandler.UMVUTHANA_MASK_FEAR.get()));
+    }
+
+    /** A test {@code IPayloadContext}: the player is the payer and {@code enqueueWork} runs at once (no network thread). */
+    public static IPayloadContext payload(ServerPlayer player) {
+        return (IPayloadContext) Proxy.newProxyInstance(IPayloadContext.class.getClassLoader(), new Class<?>[] {IPayloadContext.class},
+                (proxy, m, args) -> {
+                    switch (m.getName()) {
+                        case "player":
+                            return player;
+                        case "enqueueWork":
+                            if (args[0] instanceof Supplier<?> s)
+                                return CompletableFuture.completedFuture(s.get());
+                            ((Runnable) args[0]).run();
+                            return CompletableFuture.completedFuture(null);
+                        default:
+                            throw new UnsupportedOperationException(m.getName());
+                    }
+                });
+    }
+
+    /** As below, paying the Umvuthi's own desires (7 gold blocks in the pack's config). */
+    public static boolean payUmvuthi(ServerPlayer payer, EntityUmvuthi umvuthi) {
+        return payUmvuthi(payer, umvuthi, umvuthi.getDesires().copy());
+    }
+
+    /**
+     * The player opens the Umvuthi's trade, puts {@code pay} in its input slot (there is none once it has traded) and
+     * sends the jar's {@code MessageUmvuthiTrade}, handled at once by {@code handleServer} as the server would; then it
+     * closes the menu. Returns whether the jar remembers the player afterwards. The first such payment calls
+     * {@code rememberTrade} (CHIEF_PAID, MZB-418); a later one gives Sun's Blessing and no record.
+     */
+    public static boolean payUmvuthi(ServerPlayer payer, EntityUmvuthi umvuthi, ItemStack pay) {
+        boolean traded = umvuthi.hasTradedWith(payer);
+        umvuthi.setCustomer(payer);
+        ContainerUmvuthiTrade menu = new ContainerUmvuthiTrade(97, umvuthi, payer.getInventory());
+        payer.containerMenu = menu;
+        if (!traded)
+            menu.getSlot(0).set(pay.copy());
+        MessageUmvuthiTrade.handleServer(new MessageUmvuthiTrade(umvuthi.getId()), payload(payer));
+        menu.removed(payer);
+        payer.containerMenu = payer.inventoryMenu;
+        return umvuthi.hasTradedWith(payer);
     }
 
     // ---- record markers -------------------------------------------------------------------------
