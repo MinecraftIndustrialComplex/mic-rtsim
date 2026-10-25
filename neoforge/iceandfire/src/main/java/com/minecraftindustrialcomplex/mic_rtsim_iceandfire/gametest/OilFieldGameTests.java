@@ -35,6 +35,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -323,14 +324,32 @@ public final class OilFieldGameTests {
                     expected.put(p.toLong(), a);
             }
         long new0 = s.newSampled;
+        // Every OIL_CHUNKS entry as it arrives, by its record's sequence and its chunk: the chunks generate
+        // during a real-time wait, tens of thousands of unthrottled ticks under load, and the received log
+        // keeps the last 10,000 records (one TICK a tick), so the first chunks' records can leave it before
+        // the check. A second send of a chunk is another record, so it still shows.
+        Map<String, long[]> seen = new LinkedHashMap<>();
+        long[] lastSeq = {0};
+        Runnable take = () -> {
+            long top = lastSeq[0];
+            for (long[] e : oilEntries(dim)) {
+                if (e[6] <= lastSeq[0])
+                    continue; // taken at an earlier tick (records arrive in journal order)
+                seen.putIfAbsent(e[6] + ":" + e[0] + ":" + e[1], e);
+                top = Math.max(top, e[6]);
+            }
+            lastSeq[0] = top;
+        };
+        waits.eachTick(take);
         Runnable unforce = DragonKit.forceChunks(level, sc, r);
         helper.startSequence()
                 .thenWaitUntil(waits.chunks(() -> check("the site's chunks generated", DragonKit.ready(level, sc, r))))
                 .thenWaitUntil(waits.logic(() -> check("their samples ran (" + s.newChunksPending() + " pending)", s.newChunksPending() == 0)))
                 .thenIdle(2)
                 .thenExecute(() -> {
+                    take.run();
                     Map<Long, long[]> got = new HashMap<>();
-                    for (long[] e : oilEntries(dim))
+                    for (long[] e : seen.values())
                         if (Math.abs(e[0] - sc.x) <= r + 4 && Math.abs(e[1] - sc.z) <= r + 4)
                             check("chunk " + e[0] + "," + e[1] + " sent once", got.put(ChunkPos.asLong((int) e[0], (int) e[1]), e) == null);
                     check("every new chunk with oil was sent (" + got.size() + " of " + expected.size() + ")",
