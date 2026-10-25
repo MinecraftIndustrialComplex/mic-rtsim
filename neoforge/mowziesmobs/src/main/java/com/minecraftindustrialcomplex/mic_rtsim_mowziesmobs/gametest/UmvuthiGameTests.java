@@ -38,6 +38,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ExperienceOrb;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Zombie;
@@ -461,6 +462,8 @@ public final class UmvuthiGameTests {
                     }
                     follower[0] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_FOLLOWER_TO_PLAYER.get(), g.at(-22, 10).x, g.at(-22, 10).y,
                             g.at(-22, 10).z, true, false);
+                    // a follower with no leader retracts and discards itself after 30 ticks; an inactive one never does
+                    follower[0].setActive(false);
                     player[0] = MowzieKit.player(helper, g.at(0, 12).add(0, 1, 0), "mowzie-slayer");
                     MowzieKit.everyTick(helper, () -> {
                         int deaths = ConflictKit.campDeaths(g.faction).size();
@@ -606,6 +609,8 @@ public final class UmvuthiGameTests {
                         g[i].lay().declare();
                         markers[i] = new Markers(helper, level, g[i].area());
                         u[i] = MowzieKit.umvuthi(level, g[i].at(0, 0));
+                        // the player stands 170 blocks off: past the follow range of 40 the Umvuthi's own tick drops its target
+                        u[i].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
                         stood[i] = u[i].position();
                         p[i] = MowzieKit.player(helper, off(g[i], 0, 150), "mowzie-near-" + i);
                     }
@@ -1178,8 +1183,10 @@ public final class UmvuthiGameTests {
                     g4.lay().declare();
                     g5.lay().declare();
                     old[0] = MowzieKit.umvuthi(level, g4.at(-8, 0));
+                    old[0].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000); // the player stands 50 blocks off
                     w[0] = MowzieKit.warrior(level, g4.at(10, 0));
                     old[1] = MowzieKit.umvuthi(level, g5.at(-8, 0));
+                    old[1].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
                     w[1] = MowzieKit.warrior(level, g5.at(10, 0));
                     p[0] = MowzieKit.player(helper, off(g4, 0, 150), "mowzie-seat-p4");
                     p[1] = MowzieKit.player(helper, off(g5, 0, 50), "mowzie-seat-p5");

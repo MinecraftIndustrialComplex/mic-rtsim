@@ -59,7 +59,6 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -833,15 +832,18 @@ public final class UmvuthanaWorldGameTests {
 
     /**
      * A chest that nothing can insert into (MZB-642): a {@code ChestBlockEntity} on a block NeoForge registers no item
-     * handler for, as Lootr's chests are (they keep their loot table, so show all slots free). Made on the enchanting
-     * table's block with a type of its own, not registered, so the test removes it before its chunk can be saved.
+     * handler for (capabilities are keyed by block), as Lootr's chests are (they keep their loot table, so show all
+     * slots free). Vanilla's chest type stands on the enchanting table's block: no type of its own, since the registries
+     * are frozen by test time. The test removes it before its chunk can be saved.
      */
     private static final class HandlerlessChest extends ChestBlockEntity {
-        static final BlockEntityType<HandlerlessChest> TYPE =
-                BlockEntityType.Builder.of(HandlerlessChest::new, Blocks.ENCHANTING_TABLE).build(null);
-
         HandlerlessChest(BlockPos pos, BlockState state) {
-            super(TYPE, pos, state);
+            super(pos, state);
+        }
+
+        @Override
+        public boolean isValidBlockState(BlockState state) {
+            return true;
         }
     }
 
