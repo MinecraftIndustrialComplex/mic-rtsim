@@ -2458,7 +2458,7 @@ public final class ConflictBridge implements SessionPlugin {
         return null;
     }
 
-    /** Where the lurk puppet of {@code agent} is held, or null while it is not (M8; GameTests and the sampler). */
+    /** Where the lurk puppet of {@code agent} is held, or null while it is not (M8; GameTests only, through {@code ConflictKit.lurkHold}). */
     public Vec3 lurkHold(long agent) {
         Party p = byAgent.get(agent);
         if (p == null)

@@ -3584,7 +3584,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       free above it, no heightmap fallback) plus the slot's offset in its stack. It is used at spawn
       (`spawn` makes the body there: no walk) and by `holdLurks` for a body that has no hold point yet.
       `Slot.holdAt` is set at spawn; `Slot.place` and `Slot.lag` use it, so `ConflictFollowGoal` (LEASH
-      6.0) does not walk a member back to the engine's spot. `RtsimApi.lurkHold(agent)` reads it (GameTests).
+      6.0) does not walk a member back to the engine's spot. `ConflictKit.lurkHold(agent)` reads it (GameTests only; it was on `RtsimApi` until the second re-check).
     - Refused: neither side has a standable candidate. At spawn `spawn` returns false, the stack is tried
       again after `RETRY_FAILED` (100) ticks, and `lurksRefused` counts each; at `holdLurks` the body is
       despawned and the stack waits `REQUEUE_COOLDOWN` (200). There was no refusal before: the choice is
@@ -4069,7 +4069,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       the engine's spot) and a rest point (where the hold must stand the body): `SQUARE` is the earlier test
       (spot 5 north, rest the spot); `OBLIQUE`, the den 4 east and 4 north (spot +4, -4; rest 5 north of the
       track point); `ON_LINE`, the den on the rail (spot 5 along +x; rest 5 south, the left-hand side). Every
-      run checks that `RtsimApi.lurkHold(agent)` is the rest point and the body was made within its stand of it.
+      run checks that `ConflictKit.lurkHold(agent)` is the rest point and the body was made within its stand of it.
       The hold phase's stray, clearance, pin and bait use the rest point (the bait is placed on the body's side
       of the rail, `away()`). Two new tests for the oblique den (`rail_frostmaw_lurk_oblique`, speed 1.0, and
       `_oblique_far`, 1.4 with the body pinned at the far side of its stand) and one for the den on the line

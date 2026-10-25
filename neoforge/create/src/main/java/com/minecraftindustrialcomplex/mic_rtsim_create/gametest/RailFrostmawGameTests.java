@@ -1268,7 +1268,7 @@ public final class RailFrostmawGameTests {
                     check("the spot-distance contract holds" + (broken == null ? "" : ": " + broken), broken == null);
                     check("the test lays the engine's spot (" + LATERAL + " of " + TrainSampler.SPOT_BLOCKS + ")", LATERAL == TrainSampler.SPOT_BLOCKS);
                     // MZB-360, the re-check's P2: held on the rail's normal through the track point, whatever the den's side or direction
-                    Vec3 hold = RtsimApi.lurkHold(t.agent);
+                    Vec3 hold = ConflictKit.lurkHold(t.agent);
                     check("the bridge holds the puppet at a point", hold != null);
                     check("the hold point is " + LATERAL + " off the rail on the normal through the track point, (" + t.rest.x + ", " + t.rest.z
                             + "), for a " + t.den + " den (" + hold + "; the engine's spot " + t.spot + ")",

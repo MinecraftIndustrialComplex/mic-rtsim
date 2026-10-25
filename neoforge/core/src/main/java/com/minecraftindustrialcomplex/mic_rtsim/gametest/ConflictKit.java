@@ -54,6 +54,11 @@ public final class ConflictKit {
         return ConflictBridge.INSTANCE;
     }
 
+    /** Where the lurk puppet of an agent is held (the hold point, not the engine's spot), or null while it is not held (M8; GameTests only). */
+    public static net.minecraft.world.phys.Vec3 lurkHold(long agent) {
+        return bridge().lurkHold(agent);
+    }
+
     /** The party of an agent, waiting for it (inside thenWaitUntil). */
     public static ConflictBridge.Party party(long agent) {
         ConflictBridge.Party p = bridge().party(agent);
