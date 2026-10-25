@@ -178,6 +178,100 @@ pub(super) fn done<E: Paged>(engine: &mut E, pager: &mut Pager, t: Option<E::Tic
     }
 }
 
+pub const KEPT_MAGIC: u32 = u32::from_le_bytes(*b"RTKP");
+
+/// The page beside a module's meta page that holds the records it kept while switched off
+/// ([`Kept`]): two past the meta page, after the state hash's.
+pub fn kept_key(meta: PageKey) -> PageKey {
+    PageKey::new(meta.table(), meta.id() + 2)
+}
+
+/// The records a switched-off module heard (docs/replay-gate.md 9.7, RP-292): "The switch gates
+/// only new decisions; every record of what already happened is heard; a record applied while off
+/// goes in at its own tick, never at the frozen clock." Each journaled record of the module's
+/// that `Replay` admitted while it was off is kept here whole, with the copy bit it came under, in
+/// the order it came; the module applies them at its switch-on (its reset, between its engine's
+/// `begin_replay` and its replay end), each after its own catch-up. They are saved with the
+/// module's pages (a page of their own, [`kept_key`]), so a save that trimmed them from Java's
+/// journal never loses them.
+#[derive(Default)]
+pub(super) struct Kept {
+    /// (the copy's generation nonce, `st.applying_copy`; the record's bytes), oldest first.
+    recs: Vec<(Option<u64>, Vec<u8>)>,
+}
+
+impl Kept {
+    pub(super) fn is_empty(&self) -> bool {
+        self.recs.is_empty()
+    }
+
+    /// Keeps one record, as it came (`copy`: `st.applying_copy`).
+    pub(super) fn push(&mut self, copy: Option<u64>, bytes: &[u8]) {
+        self.recs.push((copy, bytes.to_vec()));
+    }
+
+    /// Every record kept, oldest first; none left.
+    pub(super) fn take(&mut self) -> Vec<(Option<u64>, Vec<u8>)> {
+        std::mem::take(&mut self.recs)
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u32(KEPT_MAGIC);
+        w.u32(self.recs.len() as u32);
+        for (copy, b) in &self.recs {
+            w.bool(copy.is_some());
+            w.u64(copy.unwrap_or(0));
+            w.bytes(b);
+        }
+        w.into_bytes()
+    }
+
+    fn decode(b: &[u8]) -> Result<Kept, String> {
+        let bad = |e: rtsim_kernel::codec::CodecError| e.to_string();
+        let mut r = Reader::new(b);
+        if r.u32().map_err(bad)? != KEPT_MAGIC {
+            return Err("not a kept-records page".into());
+        }
+        let n = r.u32().map_err(bad)?;
+        let mut recs = Vec::new();
+        for _ in 0..n {
+            let is_copy = r.bool().map_err(bad)?;
+            let nonce = r.u64().map_err(bad)?;
+            let bytes = r.bytes().map_err(bad)?.to_vec();
+            recs.push((is_copy.then_some(nonce), bytes));
+        }
+        r.finish().map_err(bad)?;
+        Ok(Kept { recs })
+    }
+
+    /// Reads the kept records of the module whose meta page is `meta` (none when the store holds
+    /// no such page).
+    pub(super) fn load(source: &dyn PageSource, meta: PageKey) -> Result<Kept, String> {
+        match source.read(kept_key(meta)) {
+            Err(e) => Err(format!("cannot read the records kept while off: {e}")),
+            Ok(None) => Ok(Kept::default()),
+            Ok(Some(b)) => Kept::decode(&b).map_err(|e| format!("the records kept while off: {e}")),
+        }
+    }
+
+    /// The kept records' part of a save: written whenever there are any, whether or not the save
+    /// writes the module (a switched-off module's meta page stays as it was, U10), and live with
+    /// its pages. None kept: a save that writes the module deletes the page with the rest of its
+    /// table; one that keeps the module's pages finds none to delete (records are only taken at a
+    /// switch-on, and a save that follows writes the module: it is on, or `save_due` from the
+    /// switch-off after).
+    pub(super) fn save(&self, meta: PageKey, batch: &mut SaveBatch, live: &mut Live) {
+        if self.recs.is_empty() {
+            return;
+        }
+        batch.put(kept_key(meta), &self.encode());
+        if let Live::Pages(pages) = live {
+            pages.push(kept_key(meta));
+        }
+    }
+}
+
 /// The state hash the save with the meta page at `meta` wrote, if it wrote one (TEST mode).
 pub(super) fn saved_hash(source: &dyn PageSource, meta: PageKey) -> Option<u64> {
     let b = source.read(hash_key(meta)).ok()??;
@@ -191,6 +285,19 @@ pub(super) fn holds_pages(source: &dyn PageSource, tables: RangeInclusive<u16>) 
         source
             .table_ids(t)
             .map(|ids| !ids.is_empty())
+            .unwrap_or(true)
+    })
+}
+
+/// Whether the store holds any page of the module whose meta page is `meta`, its own table and
+/// its row and index tables, besides the records it kept while off ([`Kept`]): a module switched
+/// off before its first save holds those alone.
+pub(super) fn holds_pages_besides_kept(source: &dyn PageSource, meta: PageKey) -> bool {
+    let kept = kept_key(meta);
+    tables(meta.table()).any(|t| {
+        source
+            .table_ids(t)
+            .map(|ids| ids.into_iter().any(|id| PageKey::new(t, id) != kept))
             .unwrap_or(true)
     })
 }

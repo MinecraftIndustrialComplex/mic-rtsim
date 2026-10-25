@@ -78,7 +78,7 @@ use rtsim_kernel::rows::PageSource;
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 
-use super::paging::{self, Live, Pager};
+use super::paging::{self, Kept, Live, Pager};
 use super::{State, log_error, log_info, log_warn, phase1, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
@@ -149,8 +149,15 @@ pub(super) struct Link {
     /// The last load read back a conflict whose state hash is not the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
-    /// Records ignored: the conflict was switched off.
+    /// Records heard while the conflict was switched off: not applied then, kept for the
+    /// switch-on ([`Link::kept`]).
     pub(super) ignored: u64,
+    /// The records heard while switched off, applied at the switch-on (RP-292, docs/replay-gate.md
+    /// 9.7): saved beside the meta page (`paging::kept_key`).
+    pub(super) kept: Kept,
+    /// The reset is applying [`Link::kept`]: a first camp among them introduces no area inside
+    /// the replay (the switch-on introduces them after its replay end). Not saved.
+    applying_kept: bool,
     pub(super) commands_written: u64,
     /// Latest-wins BAND_STATE records seen (read for nothing yet).
     pub(super) band_states: u64,
@@ -278,6 +285,8 @@ impl Link {
             restore_diverged: None,
             records: 0,
             ignored: 0,
+            kept: Kept::default(),
+            applying_kept: false,
             commands_written: 0,
             band_states: 0,
             chief_states: 0,
@@ -319,10 +328,18 @@ impl Link {
         );
         let engine = match opened {
             Err(e) => return unreadable(&format!("the conflict's meta page: {e}")),
-            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+            Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_CONFLICT) => {
                 return unreadable("conflict pages without their meta page");
             }
-            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(None) => {
+                // Switched off before its first save, it may have kept records all the same.
+                let mut l = Link::fresh(source, budget);
+                l.kept = match Kept::load(&**source, KEY_CONFLICT) {
+                    Ok(k) => k,
+                    Err(e) => return unreadable(&e),
+                };
+                return Ok(l);
+            }
             Ok(Some(_)) if !world_restored => {
                 return unreadable(
                     "the phase 1 world it lives in did not come back from its pages",
@@ -348,10 +365,15 @@ impl Link {
             engine.pending_events(),
             hash.map_or(String::new(), |h| format!(", state {h:016x}"))
         ));
+        let kept = match Kept::load(&**source, KEY_CONFLICT) {
+            Ok(k) => k,
+            Err(e) => return unreadable(&e),
+        };
         let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
         let mut l = Link::with_engine(engine, structures, pollution);
         l.restore_diverged = diverged;
         l.from_pages = true;
+        l.kept = kept;
         Ok(l)
     }
 
@@ -364,9 +386,18 @@ impl Link {
     }
 }
 
-/// Whether the conflict runs: switched on and in the world.
+/// Whether the conflict runs: switched on and in the world, and not waiting with kept records for
+/// Java's dictionary ([`kept_waiting`]).
 pub(super) fn running(st: &State) -> bool {
-    st.conflict.enabled && st.conflict.active()
+    st.conflict.enabled && st.conflict.active() && !kept_waiting(st)
+}
+
+/// The conflict holds records kept while switched off, and a session start has not had Java's
+/// dictionary yet (`State::dict_wait`): the records name its ids (a camp's structure, a body, a
+/// pollution type, items), so the reset that applies them waits for the first record after the
+/// DICTs ([`dict_ready`]), and the conflict does not run meanwhile.
+fn kept_waiting(st: &State) -> bool {
+    st.dict_wait && !st.conflict.kept.is_empty()
 }
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
@@ -408,18 +439,62 @@ fn set_enabled(st: &mut State, on: bool) {
 /// begins (`begin_replay`, told whether it came back from its pages, RP-31), TERRITORY goes out
 /// again for every faction, and its replay end is due. With no replay running (a switch-on, or a
 /// first camp in the middle of a session) that end runs at once.
+///
+/// Records kept while off (RP-292) make it due with no camp too, and are applied in it
+/// ([`apply_kept`]).
 fn reset_if_due(st: &mut State) {
-    if st.conflict.reset_due && running(st) {
+    let l = &st.conflict;
+    if l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st) {
         st.conflict.reset_due = false;
         let from_pages = st.conflict.from_pages;
         st.conflict.engine.begin_replay(from_pages);
         st.conflict.replay_end_due = true;
         st.phase1.taint();
         take_commands(st);
+        apply_kept(st);
         if !st.replaying {
             replay_end(st);
         }
     }
+}
+
+/// A session start's first record after Java's DICTs (`State::dict_wait`): a reset that waited
+/// with kept records runs now.
+pub(super) fn dict_ready(st: &mut State) {
+    reset_if_due(st);
+}
+
+/// The records heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in the reset,
+/// after `begin_replay` and before the replay end, where a restart's replay of the same records
+/// applies them: oldest first, each as it came (a copy as a copy, so a generation-0 casualty copy
+/// is still refused), each after its own catch-up (`shared::catch_up`), so the conflict's events
+/// due before it fire first. Each goes in at its own tick as far as the world allows: the conflict
+/// shares the phase 1 world, which ran on while it was off, and a record is booked no earlier
+/// than the world's present (`ingest`). A band member a player killed in the switch's tick is dead
+/// before the replay end makes its band abstract; the epoch every record names reaches the floor
+/// here, before the conflict decides anything (RP-57: nothing is decided while off).
+fn apply_kept(st: &mut State) {
+    let kept = st.conflict.kept.take();
+    if kept.is_empty() {
+        return;
+    }
+    let outer = st.applying_copy;
+    st.conflict.applying_kept = true;
+    for (copy, bytes) in &kept {
+        let rec = Rec {
+            kind: wire::u16_at(bytes, wire::R_KIND),
+            aux: wire::u32_at(bytes, wire::R_AUX),
+            bytes,
+        };
+        st.applying_copy = *copy;
+        apply(st, &rec);
+    }
+    st.conflict.applying_kept = false;
+    st.applying_copy = outer;
+    log_info(&format!(
+        "the conflict applied {} records heard while it was switched off",
+        kept.len()
+    ));
 }
 
 /// The conflict's replay end (docs/replay-gate.md §3.2), when due and the conflict runs: the
@@ -428,11 +503,12 @@ fn reset_if_due(st: &mut State) {
 /// cleared its notice by now. A notice a replayed record made again is dropped from the queue
 /// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
 pub(super) fn replay_end(st: &mut State) {
-    if !running(st) {
+    if !running(st) && !kept_waiting(st) {
         // The host's replay is over and no camp came back: nothing the held chiefs' states name.
         st.conflict.engine.discard_held_chief_states();
     }
-    if !st.conflict.replay_end_due || !running(st) {
+    // Switched on is enough: a reset that applied kept records runs with no camp too.
+    if !st.conflict.replay_end_due || !st.conflict.enabled || kept_waiting(st) {
         return;
     }
     st.conflict.replay_end_due = false;
@@ -599,12 +675,23 @@ fn translate(st: &State, o: &mut Obs) {
     }
 }
 
-/// A conflict record `Replay` admitted. Switched off, the conflict ignores it (U10).
+/// A conflict record `Replay` admitted. Switched off, the conflict keeps it for the switch-on
+/// (RP-292, docs/replay-gate.md 9.7: the switch gates only new decisions; every record of what
+/// already happened is heard), saved with its pages. It folds no epoch while off: the switch-on
+/// applies it, epoch and all, before the conflict decides anything (RP-57's hole is closed by the
+/// keeping, RP-293).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.conflict.enabled {
         st.conflict.ignored += 1;
+        st.conflict.kept.push(st.applying_copy, rec.bytes);
         return;
     }
+    apply(st, rec);
+}
+
+/// A conflict record applied: as it comes with the conflict on, or kept while off
+/// ([`apply_kept`]).
+fn apply(st: &mut State, rec: &Rec<'_>) {
     let mut o = match boundary::decode_obs(rec.bytes) {
         Ok((_, o, _)) => o,
         Err(e) => {
@@ -705,7 +792,7 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     log_fights_unheld(st);
     reset_if_due(st);
     take_commands(st);
-    if !was_running && running(st) {
+    if !was_running && running(st) && !st.conflict.applying_kept {
         shared::introduce_conflict(st);
     }
 }
@@ -1218,7 +1305,7 @@ pub(super) fn save(
         take_commands(st);
     }
     let l = &mut st.conflict;
-    let out = paging::save(
+    let mut out = paging::save(
         &mut l.engine,
         &mut l.pager,
         l.enabled,
@@ -1229,6 +1316,7 @@ pub(super) fn save(
     if out.0.is_some() {
         l.dropped_pages = false;
     }
+    l.kept.save(KEY_CONFLICT, batch, &mut out.1);
     out
 }
 
