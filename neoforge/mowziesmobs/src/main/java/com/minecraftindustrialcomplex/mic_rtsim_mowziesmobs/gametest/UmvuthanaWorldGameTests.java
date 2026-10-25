@@ -335,10 +335,6 @@ public final class UmvuthanaWorldGameTests {
                     for (Mob m : all)
                         nearest = Math.min(nearest, m.distanceTo(masked[0]));
                     check("a body is within 14 blocks of the masked player (" + nearest + ")", nearest <= 14);
-                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
-                        if (struck[0] == null && s.entity() instanceof EntityUmvuthanaMinion w)
-                            struck[0] = w;
-                    check("a warrior to strike", struck[0] != null);
                     MowzieKit.everyTick(helper, () -> {
                         if (watching[0] == 0)
                             return;
@@ -359,12 +355,22 @@ public final class UmvuthanaWorldGameTests {
                     record(test, "unprovoked", "the bare player was first targeted at tick " + bareFirst[0] + " of the watch");
                     check("no body targeted the masked player (" + violations + ")", violations.isEmpty());
                     watching[0] = 2;
+                    // the warrior nearest the masked player now: the band has walked toward the bare one since
+                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
+                        if (s.entity() instanceof EntityUmvuthanaMinion w && !w.isRemoved() && w.isAlive()
+                                && (struck[0] == null || w.distanceTo(masked[0]) < struck[0].distanceTo(masked[0])))
+                            struck[0] = w;
+                    check("a warrior to strike", struck[0] != null);
+                    double hurtByReach = 1.7 * struck[0].getAttributeValue(Attributes.FOLLOW_RANGE);
+                    check("it is within the hurt-by goal's reach (" + struck[0].distanceTo(masked[0]) + " of " + hurtByReach + ")",
+                            struck[0].distanceTo(masked[0]) < hurtByReach);
                     boolean hit = struck[0].hurt(level.damageSources().playerAttack(masked[0]), 1f);
                     check("the masked player's blow lands", hit);
                 })
                 .thenIdle(20)
                 .thenExecute(() -> {
-                    check("the struck warrior turns on the masked player (" + struck[0].getTarget() + ")", struck[0].getTarget() == masked[0]);
+                    check("the struck warrior turns on the masked player (" + struck[0].getTarget() + ", " + struck[0].distanceTo(masked[0]) + " blocks)",
+                            struck[0].getTarget() == masked[0]);
                     // The raptor's followers are extras, no members: a player's kill of each drops no loot and no experience
                     // (MZB-643; the stack is made again with new ones, so each would be a mask and experience to farm).
                     AABB around = new AABB(st.centre, st.centre).inflate(40);

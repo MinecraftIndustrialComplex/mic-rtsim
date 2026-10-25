@@ -6073,7 +6073,7 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   indexes, the goods owed and 64 amounts: about 512 hashes a camp for each COMMAND_RESULT no placing
   holds while replaying, none live.
 
-### The M9 GameTest round (MZB-675 to MZB-677)
+### The M9 GameTest round (MZB-675 to MZB-678)
 
 The first run of M9's Mowzie GameTests on the real engine (86a99d6b, after the ChunkWait conversion): the
 suite died in a class initialiser, and three Umvuthi tests failed at their first poll. None came from the
@@ -6099,6 +6099,25 @@ conversion or the merge: the tests had been compiled but never run.
   `ServerTickEvent.Post` hook sets it again, so a player 170 (or 50) blocks off was never its target at
   the check: both tests that stand a player that far off raise the follow range to 1000 on their
   Umvuthi.
+- **MZB-678** (the round's second run, 6ed91fc1 and 353c0f02 in): the suite ran to the end with four
+  Mowzie failures and one core, all on the tests' side.
+  - `killingTheUmvuthiKillsTheDevotedUmvuthanaWithin30Blocks` read -376: the wait on the booked deaths
+    passes in the GameTest step, before the tick's `ServerTickEvent.Post` hook that timed the deaths had run,
+    so the end time was still 0. The deaths are now timed in the world (both warriors `isDeadOrDying`), in
+    the wait and in the hook, not by the engine's booking.
+  - `theUmvuthisRemovalsWaitWhileAPlayerIsNearOrFightsIt`: with no player within 160 and no target, Camps'
+    own Post pass played the held removal in the tick the players moved off, before the test's hook set the
+    target. The Umvuthi are targeted in the step that moves the players (MZB-677's follow range stays).
+  - `aMaskedPlayerIsNotTargetedByTheBand`: the warrior to strike was picked at set-up, and by the strike the
+    band had walked toward the bare player, so the struck warrior could stand past the hurt-by goal's reach
+    (1.7 x its follow range of 16) and drop the masked player for the bare one. The warrior nearest the
+    masked player at the strike is struck, with its reach checked and its distance logged.
+  - `anUmvuthiHeirSeatedInPlaceReplacesTheOldChief`: health set to 10 is read five ticks later, and an
+    untargeted Umvuthi heals 0.3 a tick: the bound is 12.
+  - Core's `aBigDetectionsLongestTickIsBelowTheOneCallTime` (not M9's code): its wait read the one-call
+    rescans' slice count in the tick they ran. On a host slow enough that one call passes the 5 ms slice
+    limit (11 ms here against 2.5 ms on main), those rescans split into slices too, and the wait passed on
+    them. It now waits for one more detection by `Districts.rescans()`.
 
 ## M10 March
 

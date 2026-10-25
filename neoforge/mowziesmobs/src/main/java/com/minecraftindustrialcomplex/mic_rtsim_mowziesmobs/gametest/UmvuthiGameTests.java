@@ -465,9 +465,9 @@ public final class UmvuthiGameTests {
                     // a follower with no leader retracts and discards itself after 30 ticks; an inactive one never does
                     follower[0].setActive(false);
                     player[0] = MowzieKit.player(helper, g.at(0, 12).add(0, 1, 0), "mowzie-slayer");
+                    // the warriors' deaths in the world, timed against the kill (the booking may come later)
                     MowzieKit.everyTick(helper, () -> {
-                        int deaths = ConflictKit.campDeaths(g.faction).size();
-                        if (killedAt[1] == 0 && deaths >= 3)
+                        if (killedAt[1] == 0 && killedAt[0] != 0 && w[0].isDeadOrDying() && w[1].isDeadOrDying())
                             killedAt[1] = level.getGameTime();
                     });
                 })
@@ -498,8 +498,12 @@ public final class UmvuthiGameTests {
                     killedAt[0] = level.getGameTime();
                     MowzieKit.kill(u[0], level.damageSources().playerAttack(player[0]));
                 })
-                .thenWaitUntil(waits.logic(() -> check("three deaths are booked (" + ConflictKit.campDeaths(g.faction).size() + ")",
-                        ConflictKit.campDeaths(g.faction).size() >= 3)))
+                .thenWaitUntil(waits.logic(() -> {
+                    // the wait passes before the tick's Post hook runs: it times the deaths too
+                    if (killedAt[1] == 0 && killedAt[0] != 0 && w[0].isDeadOrDying() && w[1].isDeadOrDying())
+                        killedAt[1] = level.getGameTime();
+                    check("three deaths are booked (" + ConflictKit.campDeaths(g.faction).size() + ")", ConflictKit.campDeaths(g.faction).size() >= 3);
+                }))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> deaths = ConflictKit.campDeaths(g.faction);
                     check("exactly three (" + deaths.size() + ")", deaths.size() == 3);
@@ -646,8 +650,11 @@ public final class UmvuthiGameTests {
                 .thenIdle(Camps.HOLD_MAX + 100)
                 .thenExecute(() -> {
                     stillHeld.run();
-                    for (int i = 0; i < 2; i++)
+                    for (int i = 0; i < 2; i++) {
+                        // targeted before the move: Camps' Post pass would play the held removal this tick otherwise
+                        u[i].setTarget(p[i]);
                         p[i].moveTo(off(g[i], 0, 170).x, off(g[i], 0, 170).y, off(g[i], 0, 170).z);
+                    }
                     fight[0] = true;
                 })
                 .thenIdle(5)
@@ -1227,7 +1234,8 @@ public final class UmvuthiGameTests {
                     check("the REMOVE is held (" + (camps.heldRemovals - counters[3]) + ")", camps.heldRemovals == counters[3] + 1);
                     check("it has no answer", unanswered(g4.faction, op[2]));
                     check("the old Umvuthi is a second body", camps.secondBody(old[0]));
-                    check("it remembers a trade and is hurt", !old[0].getTradedPlayers().isEmpty() && old[0].getHealth() <= 10f);
+                    // set to 10 five ticks ago; an untargeted Umvuthi heals 0.3 a tick
+                    check("it remembers a trade and is hurt (" + old[0].getHealth() + ")", !old[0].getTradedPlayers().isEmpty() && old[0].getHealth() <= 12f);
                     op[3] = MowzieKit.reconcile(g4.faction, epochOf(g4), g4.at(0, 8), 3f, List.of(
                             CampLine.of(0, 0, WARRIOR, MASK, 0), new CampLine(CHIEF_SLOT, 2, UMVUTHI, SEAT_HEIR, CHIEF, 1L, 0L)));
                 })
