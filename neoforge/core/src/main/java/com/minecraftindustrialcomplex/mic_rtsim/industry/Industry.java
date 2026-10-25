@@ -101,6 +101,7 @@ public final class Industry {
     /** The session ends: nothing is counted any more (the count points' static pointer is cleared). */
     public void close() {
         counting.clear();
+        reconciler.close();
     }
 
     /** Counting at the movers (SEC-1 S3). */
