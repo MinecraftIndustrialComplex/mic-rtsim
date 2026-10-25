@@ -1632,4 +1632,39 @@ mod tests {
         // Before the area begins, nobody watched.
         assert!(!c.ships.point_in_view(&c.world, frame, here, Tick(at.0 - 1)));
     }
+
+    /// While the last session's journal replays no player is routed to the ships, so the view
+    /// rules take every dock as watched (docs/replay-gate.md §6.1, RP-95): a relaunch waits for the
+    /// slot's next stay, and a raid, a refound and a navy assault wait for the players routed after
+    /// the replay end. After it the world's areas answer again. Control: the same engine and
+    /// place with no replay and no area is unwatched.
+    #[test]
+    fn a_replaying_engine_takes_every_dock_as_watched() {
+        let mut c = quiet_coast(1);
+        let (v, a, _) = two_port_service(&c);
+        let t1 = Tick::from_days(10);
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        let s = c.ships.service_ships[v as usize]
+            .ids()
+            .find(|&id| c.ships.ships[id].is_laid_up())
+            .expect("a laid-up slot");
+        let at = c.ships.now();
+        let here = c.ships.position(&c.world, s, at);
+        let frame = c.ships.ships[s].frame;
+        assert!(!c.ships.relaunch_in_view(&c.world, s, at), "control");
+        assert!(!c.ships.point_in_view(&c.world, frame, here, at), "control");
+        c.ships.begin_replay(true);
+        assert!(c.ships.relaunch_in_view(&c.world, s, at), "replaying");
+        assert!(
+            c.ships.point_in_view(&c.world, frame, here, at),
+            "replaying"
+        );
+        c.ships.replay_done(&mut c.world);
+        assert!(!c.ships.relaunch_in_view(&c.world, s, at), "after the end");
+        assert!(
+            !c.ships.point_in_view(&c.world, frame, here, at),
+            "after the end"
+        );
+    }
 }
