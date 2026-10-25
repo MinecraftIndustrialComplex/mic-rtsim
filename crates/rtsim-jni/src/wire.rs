@@ -267,6 +267,9 @@ pub mod obs {
         pub const NOT_FREE: u32 = 4;
         /// WRITE_GOSSIP refused: vanilla records that act first-hand itself.
         pub const VANILLA_KNOWS: u32 = 5;
+        /// TRANSFER_TO_CONTAINER: the container's chunk is not loaded, so Java could not look for
+        /// the op in it (RP-210). Nothing was put; the op may be there already.
+        pub const NOT_LOADED: u32 = 6;
     }
 
     // ---- phase 1 (docs/boundary.md §4.1) ----------------------------------------------------------

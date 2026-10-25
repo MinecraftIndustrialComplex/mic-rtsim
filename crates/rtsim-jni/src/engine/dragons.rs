@@ -404,7 +404,8 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 
 /// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a
 /// stack of tribute coin sent to a lair's chest (SINK.md §4.6). Applied or a duplicate, the
-/// coin is in the chest; failed, it waits for the chest to be reported again.
+/// coin is in the chest; failed, it waits for the chest to be reported again; not loaded, the
+/// stack waits under its op id for its lair's next chest report (RP-210).
 pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
@@ -421,6 +422,9 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
         }
         obs::command_result::FAILED => {
             st.dragons.engine.tribute_failed(op);
+        }
+        obs::command_result::NOT_LOADED => {
+            st.dragons.engine.tribute_unloaded(op);
         }
         _ => {}
     }
@@ -727,15 +731,15 @@ fn write_far(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
 }
 
 /// Writes the tribute stacks the dragons send to lairs' chests (SINK.md §4.6) that are not in
-/// the core outbox yet. Each joins it under its own op id, so a restart sends it again and Java
-/// answers a stack it already put DUPLICATE_OP. Returns the highest sequence written and whether
-/// some wait for the next buffer.
+/// the core outbox yet and not parked (their chunk was not loaded, RP-210). Each joins it under
+/// its own op id, so a restart sends it again and Java answers a stack it already put
+/// DUPLICATE_OP. Returns the highest sequence written and whether some wait for the next buffer.
 fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
     let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
     let todo: Vec<(u64, Placing)> = st
         .dragons
         .engine
-        .placing()
+        .placing_to_send()
         .filter(|(op, _)| !sent.contains(op))
         .map(|(op, p)| (op, *p))
         .collect();

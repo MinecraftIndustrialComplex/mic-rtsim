@@ -279,9 +279,11 @@ final class CommandDispatcher implements Handover.CommandSink {
 
     /**
      * An engine-to-Minecraft cross-store transfer. Applied at most once per op id: an op id whose
-     * COMMAND_RESULT(APPLIED) is still in the journal is skipped as a duplicate (an engine that a crash
-     * rolled back re-derives the same op under a new command sequence). All or nothing: the items go in
-     * only when the whole stack fits.
+     * COMMAND_RESULT(APPLIED) is still in the journal, or that the container's chunk carries, is skipped as
+     * a duplicate (an engine that a crash rolled back re-derives the same op under a new command sequence).
+     * A chunk that is not loaded is answered NOT_LOADED, never FAILED: it may hold the op already (written
+     * ahead of the journal), and FAILED would let the engine send the items again under a new op (RP-210).
+     * All or nothing: the items go in only when the whole stack fits.
      */
     private void transferToContainer(ByteBuffer b, int at, long now) {
         long cmdSeq = b.getLong(at + Cmd.CMD_SEQ);
@@ -297,8 +299,12 @@ final class CommandDispatcher implements Handover.CommandSink {
         // getChunkNow, not isLoaded: isLoaded reads the ticket level only, and the capability lookup
         // below would then wait on the server thread for the chunk to finish loading.
         net.minecraft.world.level.chunk.LevelChunk chunk = level == null ? null : level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
-        if (level == null || item == null || count <= 0 || chunk == null) {
+        if (level == null || item == null || count <= 0) {
             session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
+            return;
+        }
+        if (chunk == null) {
+            session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.NOT_LOADED, now);
             return;
         }
         // The chunk itself remembers what was applied into it (PendingRecords): it may have been saved

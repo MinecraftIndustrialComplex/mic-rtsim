@@ -232,7 +232,8 @@ captured member before it), TAKEN or DIED.
 - TRANSFER kinds: 1 generic (the only one so far).
 - COMMAND_RESULT status: 1 applied, 2 duplicate op id (already applied, skipped), 3 failed; phase 1
   adds 4 not free (PLACE_HOUSE found no free plot) and 5 vanilla knows (WRITE_GOSSIP refused: vanilla
-  already records that act first-hand).
+  already records that act first-hand); 6 not loaded (TRANSFER_TO_CONTAINER: the container's chunk is
+  not loaded, so Java could not look for the op in it; the op may already be there).
 
 **SESSION_START and the kernel's `Replay::reconcile`.** `journalFirstObsSeq` and `worldNextObsSeq`
 are the two numbers `reconcile(journal_first, world_next)` takes. `worldNextObsSeq` is the world
@@ -314,7 +315,10 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
 - **Steering** points the group's leader at the target; members follow it.
 - **TRANSFER_TO_CONTAINER** is one stack (count up to the item's stack size; split bigger ones). It
   is all or nothing, through the block's NeoForge item handler. An op id whose COMMAND_RESULT(applied)
-  is still in Java's journal is answered DUPLICATE and not applied again.
+  is still in Java's journal is answered DUPLICATE and not applied again. A container whose chunk is
+  not loaded is answered NOT_LOADED, never FAILED: the chunk may have been written ahead of the
+  journal holding the op (§3.1), so the engine must send it again under the same op id and never
+  the items under a new one (RP-210).
 
 ## 3. The journal (A9, PLAN.md §4.9)
 
@@ -744,7 +748,9 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the next step), through the core's outbox with `push_with_op` and the core's
      TRANSFER_TO_CONTAINER writer, the dimension and item names through the engine's dictionary. A
      stack whose dimension or item the engine cannot name is failed at once. The COMMAND_RESULT is
-     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait; a
+     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait,
+     NOT_LOADED parks the stack under its op id (not saved: a new session sends it again) until its
+     lair's next LAIR_CHEST, which sends it again to the chest it went to first (RP-210); a
      replayed answer for an op the replay already admitted (its DuplicateOp verdict) still places
      the stack. While the module is off its COMMAND_RESULTs are not looked at: the stack is still in
      the outbox, goes again, and Java answers DUPLICATE_OP.
@@ -1041,8 +1047,12 @@ per command, the village's currency item (emerald for humans), the chest's dimen
 These are engine ops in the core's outbox, so they are resent after a restart until answered, and
 each stack's op id is drawn from the lair's key and a per-lair stack counter (a resent stack is the
 same op). The answer is COMMAND_RESULT: APPLIED or DUPLICATE_OP count the stack in the chest;
-FAILED (the chunk unloaded, the chest gone or full) puts the coin back to wait and makes the engine
-forget the chest until LAIR_CHEST names one again, and the stack then goes under a new op id.
+FAILED (the chest gone or full, its chunk loaded and not carrying the op) puts the coin back to wait
+and makes the engine forget the chest until LAIR_CHEST names one again, and the stack then goes under
+a new op id. NOT_LOADED (the chunk not loaded) also forgets the chest, but the stack stays under its
+op id: the chunk may hold it already, written ahead of the journal, and its REASSERT of the APPLIED
+record places it when it loads. The lair's next LAIR_CHEST sends it again, to its first chest
+(RP-210).
 Nothing goes out while the lair has no chest: the coin waits in the lair's books.
 
 ### 6.5 How Java applies them
