@@ -3734,11 +3734,14 @@ changes (RP-89).
   herd, gives none), so a ninth kind does not compile until it says. `Herds::floors` maps an
   agent to the highest epoch a replayed record or a copy named that its herd's own `epoch` does not
   hold (`raise_floor`). `ingest` folds first while replaying, before any check that drops the
-  record; `ingest_copy` always; `fold_epoch` is public for the record rtsim-jni drops before the
-  engine: rtsim-jni `engine/herds.rs` `journaled` decodes the record and folds every one that
+  record; `ingest_copy` always; `fold_epoch` is public for the record rtsim-jni sees before the
+  engine can: rtsim-jni `engine/herds.rs` `journaled` decodes the record and folds every one that
   decodes before its `enabled` check, so a session with the herds switched off (U10) still raises
   the floor, and a switch-on later in the session or after a crash never decides an epoch a record
-  used. A record that does not decode (bad framing, or a kind the boundary cannot read) names no
+  used. It folds live records too, and when the herds are on with no herd: such an engine does
+  not run (`running` needs a herd), so its replay begins at its first founding and its own fold
+  in `ingest` (only while its replay runs) never saw the journal's records. A live record names
+  an epoch its herd holds, which raises nothing. A record that does not decode (bad framing, or a kind the boundary cannot read) names no
   epoch the engine can read: it raises no floor, switched on or off, and is skipped with a
   warning as before. A herd's next group takes `x.epoch.max(floor).wrapping_add(1).max(1)` in
   `seen`, with `floors.remove` there: the floor sits under the wrap rule, so a floor above the
@@ -3757,6 +3760,11 @@ changes (RP-89).
   | 0x0705 HERD_TAKEN | the group's | the same |
   | 0x0706 HERD_OBSTACLE | the group's | folded first, before any check that drops it |
 
+  `an_epoch_replayed_with_no_herd_yet_is_not_decided_again_for_the_first_herd` (rtsim-jni: the old
+  session's herd never saved, a group of epoch 1 journaled, the next session on with no herd; the
+  herd founded after the replay end, on the same handle, decides above 1; control
+  `an_epoch_replayed_with_the_herd_in_the_pages_is_not_decided_again`): with the fold only in the
+  switched-off branch it fails, "epoch 1 after 1".
   `a_record_replayed_while_the_herds_are_off_still_raises_their_epoch_floor` (rtsim-jni: the herds
   off for a session that replays a journaled HERD_MATERIALIZED of epoch 9, a crash, the herds on
   again, the next group's epoch above 9; control
@@ -3840,22 +3848,37 @@ changes (RP-89).
   k before it. Two things reach it. The epoch floor, keyed by agent and kept for an agent with
   no herd, only ever raises an epoch (the new herd takes a higher one, never an equal one;
   `a_floor_of_an_agent_with_no_herd_stays_past_the_replay_end`). A copy that arrives after the
-  founding is guarded: `Herds::replay_bound` is the herd arena's next index at `begin_replay`,
-  `honour` and the copy's KILLED, SHEARED and TAKEN act only on a herd below it, and any other
-  copy counts in `late_records` (its floor still counts). rtsim-jni `found` and `order_found`
-  call `reset_if_due` before `add_herd`, so the bound is taken before a founding in a session
-  whose herds had not run yet. Residual: a test's HerdFound while the herds are switched off
-  allocates before the switch-on's `begin_replay`, so counts as known; the world model founds
-  nothing while they are off. Tests: rtsim-ecology
-  `a_copy_for_a_herd_founded_after_the_replay_began_lands_on_nothing` (KILLED and TAKEN; the
-  flock's copy lands, the late flock's counts late) and
-  `a_herd_founded_in_the_replay_window_is_not_honoured` (the flock's record is); rtsim-jni
+  founding is guarded: `Herds::replay_bound` is the herd arena's next index at the session's
+  start, `honour` and the copy's KILLED, SHEARED and TAKEN act only on a herd below it, and any
+  other copy counts in `late_records` (its floor still counts). *The bound is the session's,
+  not the replay's.* The first cut took it at `begin_replay`, and the re-check found that wrong
+  twice. The herds' replay does not begin at the session start: it begins when they first run
+  (`reset_if_due` needs a herd, `running` being switched on with a herd), so with no herd at the
+  start it begins at the first founding, after that herd's `add_herd`, and a `reset_if_due`
+  placed before `add_herd` never ran (the first cut had one, now removed); and a switch-on in
+  mid-session begins it again, reading the bound with the herds founded since. Now rtsim-jni's
+  herds `session_start` calls `Herds::begin_session` whether or not the herds run, which sets
+  the bound, and `begin_replay` only lowers it (`min`). This also closes the earlier residual of
+  a test's HerdFound while the herds are off: it allocates after `begin_session`, so it is not
+  known. A process that runs a second session takes a new bound at its start, with the herds
+  founded in the first among those it can name.
+  Tests: rtsim-ecology `a_copy_for_a_herd_founded_after_the_session_began_lands_on_nothing`
+  (KILLED and TAKEN; the herd founded after the replay end, before the replay begins, and before
+  a switch-on's second `begin_replay`; the flock's copy lands),
+  `an_engine_with_no_herd_at_the_session_start_takes_no_copy_for_its_first_herd` (control: a
+  herd held at the session start takes it) and `a_herd_founded_in_the_replay_window_is_not_honoured`
+  (the flock's record is). rtsim-jni
   `a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place` (a second
   herd founded after the replay, a REASSERT of a KILLED naming its agent; control
-  `a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding`). With the bound taken out
-  (every index known) the engine pair fails, "(1, 0)" against "(0, 1)" and "1" honoured against
-  "0", and the wire test fails, "(0, 1)" against "(0, 0)". They do not compile on the base
-  (`begin_replay`, `replay_honoured`).
+  `a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding`),
+  `a_switch_on_after_a_founding_does_not_make_the_new_herd_one_the_last_session_had` (MODULES off
+  and on after the founding; control inside) and
+  `a_copy_for_a_herd_the_session_began_without_does_not_land_on_its_first_herd` (the old session
+  never saved its herd, so the next starts with none and founds one on handle 0; control
+  `a_copy_for_a_herd_the_session_began_with_lands_on_it`). With the bound taken at `begin_replay`
+  (commit 9128fc3d) the engine tests fail and so do the wire tests: "it lands on nothing" 1
+  against 0 for the no-herd start, and (0, 1) against (0, 0) after the switch-on. They do not
+  compile on the base (`begin_replay`, `replay_honoured`).
 - **RP-85** (a test's herd command waits for the replay end; §4.6; RP-33, RP-66): `Order::HerdCommand`
   (TEST mode; `herds::order_command`) puts a command of any kind straight into the link's queue,
   around the gate, so a test could send a HERD_MATERIALIZE while the replay runs. It is held as

@@ -246,9 +246,6 @@ pub(super) fn found(st: &mut State, n: NewHerd, at: Tick) {
     let at = at.max(st.herds.engine.now()).max(st.phase1.world.now());
     shared::run_to(st, at);
     let (name, species, count, pos) = (n.name.clone(), n.species, n.count, n.pos);
-    // The session's replay begins first, so that the herd is not among those the replay can name
-    // (docs/replay-gate.md §5.7, RP-84).
-    reset_if_due(st);
     let h = st.herds.engine.add_herd(n, at);
     log_info(&format!(
         "herd founded from the world model: {count} {} as {name:?} at ({}, {}): agent {:#x}",
@@ -318,6 +315,10 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     // The first record of the engine's only session: what it holds is its pages as read, so a
     // switch that is off from the start keeps exactly those (no save writes them).
     st.herds.enabled = module_mask & MODULE_HERDS != 0;
+    // The herds this session can name are the ones held now, whether or not they run: a herd
+    // founded later (the world model, a test) is another than the last session's under its handle
+    // (docs/replay-gate.md §5.7, RP-84).
+    st.herds.engine.begin_session();
     st.herds.reset_due = true;
     reset_if_due(st);
 }
@@ -404,17 +405,20 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 }
 
 /// A herd record `Replay` admitted. Switched off, the herds ignore it (U10), but not the epoch it
-/// names: every record that decodes raises the engine's epoch floor first (docs/replay-gate.md
-/// §5.3, RP-81), so that a switch-on later in the session, or after a crash, never decides an
-/// epoch a record already used. A record that does not decode names nothing the engine can read:
-/// it raises no floor, and is skipped with a warning as before.
+/// names: every record that decodes raises the engine's epoch floor first, switched on or off, with
+/// a herd or none (docs/replay-gate.md §5.3, RP-81), so that a switch-on later in the session, a
+/// first herd, or a restart never decides an epoch a record already used. A record that does not
+/// decode names nothing the engine can read: it raises no floor, and is skipped with a warning as
+/// before.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let decoded = boundary::decode_obs(rec.bytes);
+    // Whether the herds are off, or on with no herd yet (their replay begins at the first one,
+    // and the engine folds only while its replay runs), or running.
+    if let Ok((_, _, _, o)) = &decoded {
+        st.herds.engine.fold_epoch(o);
+    }
     if !st.herds.enabled {
         st.herds.ignored += 1;
-        if let Ok((_, _, _, o)) = &decoded {
-            st.herds.engine.fold_epoch(o);
-        }
         return;
     }
     let o = match decoded {
@@ -542,7 +546,6 @@ pub(super) fn order_found(
         .max(st.phase1.world.now());
     // Everything before it happens first.
     shared::run_to(st, at);
-    reset_if_due(st);
     let h = st.herds.engine.add_herd(
         NewHerd {
             name: name.to_string(),

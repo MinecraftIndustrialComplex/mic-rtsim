@@ -4089,17 +4089,42 @@ mod herds {
         assert!(epoch > 9, "epoch {epoch} after a replayed 9");
     }
 
-    /// RP-84: the herd the old session had under a handle its pages lack (founded after the last
-    /// save) is not the herd the next session founds under it: the world model founds in the
-    /// order the world is explored. A copy of the old herd's death (REASSERT, a generation no
-    /// engine heard) that arrives after the new founding names the agent both share. `known`
-    /// aims it at the saved herd instead (the control). Returns (the saved herd's killed count,
-    /// the new herd's) after the copy, and the copies applied.
-    fn a_copy_after_a_founding(name: &str, known: bool) -> ((u64, u64), u64) {
-        use std::sync::atomic::Ordering::Acquire;
-        let old = the_old_session(name, Script::QUIET);
-        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
-        replay_quietly(&e, &mut j);
+    /// A herd of 200 sheep founded and never saved (a fresh world after a crash, or pages that
+    /// could not be read): the next session starts with no herd. `group`: a player beside it, so
+    /// that a group (epoch 1) is decided and journaled before the crash.
+    fn the_old_session_with_no_saved_herd(name: &str, group: bool) -> Old {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 200);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        if group {
+            j.players = vec![(PLAYER, dim, pos)];
+            j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+            j.herd_flush();
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let made = materializations(&j).pop();
+        let gt = j.game_time;
+        let saved = j.crash();
+        Old {
+            dir,
+            saved,
+            gt,
+            agent,
+            pos,
+            group: made,
+            killed: Vec::new(),
+            sheared: Vec::new(),
+        }
+    }
+
+    /// Founds a herd of 60 sheep 2,000 blocks from the old one and returns its agent.
+    fn found_another(e: &Engine, j: &mut Java) -> u64 {
+        let before = e.herd_agents();
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         e.order(vec![Order::HerdFound {
             name: "Newdown flock".into(),
@@ -4112,16 +4137,21 @@ mod herds {
         }])
         .unwrap();
         j.idle();
-        let agents = e.herd_agents();
-        assert_eq!(agents.len(), 2, "the saved herd and the new one");
-        let new = *agents
+        let after = e.herd_agents();
+        assert_eq!(after.len(), before.len() + 1, "one herd founded");
+        *after
             .iter()
-            .find(|a| **a != old.agent)
-            .expect("a new herd");
-        let target = if known { old.agent } else { new };
+            .find(|a| !before.contains(a))
+            .expect("a new herd")
+    }
+
+    /// A holder's copy of a death of member 0 of `agent`, from a generation no engine heard,
+    /// handed over (REASSERT). Returns the copies applied since the engine began.
+    fn a_copy_of_a_death(e: &Engine, j: &mut Java, old: &Old, agent: u64) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
         let mut b = Vec::new();
         let o = O::Killed(hb::Killed {
-            agent: target,
+            agent,
             epoch: 1,
             member: 0,
             by: hb::KillerKind::Player,
@@ -4133,8 +4163,31 @@ mod herds {
         j.reassert(EARLIER_GEN, &b);
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.stats.copies_applied.load(Acquire)
+    }
+
+    /// RP-84: the herd the old session had under a handle its pages lack (founded after the last
+    /// save) is not the herd the next session founds under it: the world model founds in the
+    /// order the world is explored. A copy of the old herd's death (REASSERT, a generation no
+    /// engine heard) that arrives after the new founding names the agent both share. `known`
+    /// aims it at the saved herd instead (the control). `toggle`: the herds are switched off and
+    /// on again after the founding (a MODULES record), which begins their replay again.
+    /// Returns (the saved herd's killed count, the new herd's) after the copy, and the copies
+    /// applied.
+    fn a_copy_after_a_founding(name: &str, known: bool, toggle: bool) -> ((u64, u64), u64) {
+        let old = the_old_session(name, Script::QUIET);
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        let new = found_another(&e, &mut j);
+        if toggle {
+            j.modules(0b1111);
+            j.idle();
+            j.modules(MODULES);
+            j.idle();
+        }
+        let target = if known { old.agent } else { new };
+        let applied = a_copy_of_a_death(&e, &mut j, &old, target);
         let out = (summary(&e, old.agent).1, summary(&e, new).1);
-        let applied = e.stats.copies_applied.load(Acquire);
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
         (out, applied)
@@ -4142,7 +4195,7 @@ mod herds {
 
     #[test]
     fn a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place() {
-        let (killed, applied) = a_copy_after_a_founding("herds-rp90", false);
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-founded", false, false);
         assert_eq!(applied, 1, "the copy was applied by the host");
         assert_eq!(killed, (0, 0), "it lands on neither herd");
     }
@@ -4150,9 +4203,111 @@ mod herds {
     /// Control: the same copy for the saved herd lands.
     #[test]
     fn a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding() {
-        let (killed, applied) = a_copy_after_a_founding("herds-rp90-pages", true);
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-pages", true, false);
         assert_eq!(applied, 1, "the copy was applied by the host");
         assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
+    /// A switch-off and on after the founding begins the replay again: the session's bound
+    /// stays, so the herd founded meanwhile still takes no copy. Control: the saved herd's lands
+    /// after the same switch.
+    #[test]
+    fn a_switch_on_after_a_founding_does_not_make_the_new_herd_one_the_last_session_had() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-toggle", false, true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (0, 0), "it lands on neither herd");
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-toggle-pages", true, true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
+    /// RP-84: the next session starts with no herd (`saved` false: the old one's was never saved)
+    /// or with the old one (the control). The herds do not run without a herd, so their replay
+    /// begins at the first founding, after the replay end; a copy of the old herd's death must not
+    /// land on a herd founded under the same handle. Returns the killed count of the herd after
+    /// the copy, and the copies applied.
+    fn a_copy_with_no_herd_at_the_session_start(name: &str, saved: bool) -> (u64, u64) {
+        let old = if saved {
+            the_old_session(name, Script::QUIET)
+        } else {
+            the_old_session_with_no_saved_herd(name, false)
+        };
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        if !saved {
+            assert!(e.herd_agents().is_empty(), "the pages hold no herd");
+            let again = found(&e, &mut j, 200);
+            assert_eq!(again, old.agent, "handle 0 again");
+        }
+        let applied = a_copy_of_a_death(&e, &mut j, &old, old.agent);
+        let killed = summary(&e, old.agent).1;
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (killed, applied)
+    }
+
+    #[test]
+    fn a_copy_for_a_herd_the_session_began_without_does_not_land_on_its_first_herd() {
+        let (killed, applied) = a_copy_with_no_herd_at_the_session_start("herds-rp84-empty", false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, 0, "it lands on nothing");
+    }
+
+    /// Control: the herd the pages held takes the copy.
+    #[test]
+    fn a_copy_for_a_herd_the_session_began_with_lands_on_it() {
+        let (killed, applied) =
+            a_copy_with_no_herd_at_the_session_start("herds-rp84-empty-pages", true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, 1, "it lands on the saved herd");
+    }
+
+    /// RP-81: the herds are on with no herd (the pages hold none), so their replay has not begun
+    /// when the journal's records of the old herd are applied; each still raises the floor of its
+    /// agent. The herd founded after the replay end, on the same handle, decides an epoch above
+    /// the old one's. Control (`saved`): the old herd in the pages. Returns the epoch of the group
+    /// the player sees, and of the old session's.
+    fn the_epoch_with_no_herd_when_the_journal_replays(name: &str, saved: bool) -> (u32, u32) {
+        let old = if saved {
+            the_old_session(
+                name,
+                Script {
+                    group: Group::AfterSave,
+                    ..Script::QUIET
+                },
+            )
+        } else {
+            the_old_session_with_no_saved_herd(name, true)
+        };
+        let before = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        if !saved {
+            let again = found(&e, &mut j, 200);
+            assert_eq!(again, old.agent, "handle 0 again");
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, old.pos)];
+        let after = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (before, after)
+    }
+
+    #[test]
+    fn an_epoch_replayed_with_no_herd_yet_is_not_decided_again_for_the_first_herd() {
+        let (before, after) =
+            the_epoch_with_no_herd_when_the_journal_replays("herds-rp81-empty", false);
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// Control: the herd in the pages.
+    #[test]
+    fn an_epoch_replayed_with_the_herd_in_the_pages_is_not_decided_again() {
+        let (before, after) =
+            the_epoch_with_no_herd_when_the_journal_replays("herds-rp81-empty-pages", true);
+        assert!(after > before, "epoch {after} after {before}");
     }
 
     /// RP-66's twin for the herds: a test's herd command joins the engine's queue around the

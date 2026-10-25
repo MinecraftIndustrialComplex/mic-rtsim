@@ -271,12 +271,13 @@ pub struct Herds {
     pub(crate) replay_from_pages: bool,
     /// Groups the replay honoured since it began (the replay end's log line); in memory only.
     pub(crate) replay_honoured: u64,
-    /// One past the highest herd handle index at the session's replay begin (RP-84): the handles
-    /// the last session's records can name. A herd founded later takes an index at or above it,
-    /// and may be another herd than the one the last session had under that index (the world
-    /// model founds in the order the world is explored), so neither a replayed
-    /// HERD_MATERIALIZED nor a copy is applied to one. `u32::MAX` before any replay begins
-    /// (every handle counts). In memory only.
+    /// One past the highest herd handle index at the session's start (RP-84): the handles the
+    /// last session's records can name. A herd founded later takes an index at or above it, and
+    /// may be another herd than the one the last session had under that index (the world model
+    /// founds in the order the world is explored), so neither a replayed HERD_MATERIALIZED nor a
+    /// copy is applied to one. Set by [`Herds::begin_session`] and only lowered by
+    /// [`Herds::begin_replay`], which a switch-on or a first herd runs later in the session;
+    /// `u32::MAX` before any session (every handle counts). In memory only.
     pub(crate) replay_bound: u32,
     /// Predator → herds it follows.
     pub(crate) follows: BTreeMap<u64, BTreeSet<HerdId>>,
@@ -2181,15 +2182,24 @@ impl Herds {
     pub fn begin_replay(&mut self, from_pages: bool) {
         self.replay_from_pages = from_pages;
         self.replay_honoured = 0;
-        self.replay_bound = self.herds.next_index();
+        // Never raised: a herd founded since the session began is not one it can name, whenever
+        // the replay begins (a first herd, a switch-on in mid-session).
+        self.replay_bound = self.replay_bound.min(self.herds.next_index());
         self.outbox.begin_replay();
     }
 
-    /// Whether herd `h` existed when the session's replay began (RP-84): only such a herd is the
-    /// one the last session's records name. Nothing founds a herd while replaying (the host holds
-    /// every founding to the replay end), so this is the herds the pages held; it keeps a herd
-    /// founded after the replay end, on a handle the last session also used for another, from
-    /// taking that session's copies.
+    /// A session begins, whether or not the herds run (RP-84): the herds it can name are the ones
+    /// the engine holds now (its pages, and any founded earlier in the process). Nothing founds a
+    /// herd while replaying (the host holds every founding to the replay end), so these are the
+    /// herds the replay sees; a herd founded after, on a handle the last session used for another
+    /// herd, takes none of that session's copies. The replay itself begins later (the first herd,
+    /// a switch-on), and keeps this bound.
+    pub fn begin_session(&mut self) {
+        self.replay_bound = self.herds.next_index();
+    }
+
+    /// Whether herd `h` existed when the session began (RP-84): only such a herd is the one the
+    /// last session's records name.
     fn existed_at_replay(&self, h: HerdId) -> bool {
         h.index() < self.replay_bound
     }
@@ -2243,8 +2253,9 @@ impl Herds {
     /// a copy that names a group's epoch ([`Obs::group_epoch`]) raises the agent's floor,
     /// whatever its kind and whatever the record does after (a refusal, a stale capture, a record
     /// of a herd not held), before any check that drops it. Live records name this session's
-    /// epochs, which the herd holds. rtsim-jni calls it for a record it drops before the
-    /// engine's (none today).
+    /// epochs, which the herd holds. rtsim-jni calls it for every journaled record that decodes,
+    /// before it knows whether the herds run or have a herd yet: the engine's own fold in
+    /// [`Herds::ingest`] only runs while its replay does.
     pub fn fold_epoch(&mut self, o: &Obs) {
         if let Some((agent, epoch)) = o.group_epoch() {
             self.raise_floor(agent, epoch);
@@ -2298,7 +2309,7 @@ impl Herds {
     /// Its group is gone, so a copy matches no body. Every copy raises the floor to the epoch it
     /// names, live or replayed (RP-57). Then HERD_KILLED, HERD_TAKEN and HERD_SHEARED, which go
     /// by member key (and op id) already, as [`Herds::ingest`], to a herd that existed when the
-    /// session's replay began (RP-84; any other counts as late); every other kind (a
+    /// session began (RP-84; any other counts as late); every other kind (a
     /// HERD_MATERIALIZED, a refusal, a capture, an obstacle, a group state) only counts as late.
     pub fn ingest_copy(&mut self, legs: &mut LegIndex, o: &Obs, at: Tick) {
         self.fold_epoch(o);
