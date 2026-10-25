@@ -3702,7 +3702,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     hold sets each tick it runs, good for 3 ticks (`HELD_FRESH`) and dropped in `release`, so a hold that lapses
     without a release (a plugin or lurk table reset) frees the jar's chase again within three ticks, and a body
     that is not held is never touched. While held the Frostmaw's `RandomStrollGoal` and `MoveTowardsRestrictionGoal`
-    are taken out of its goal selector (kept with their priority in a weak map, put back by `release`): the
+    are taken out of its goal selector (kept with their priority in the body's `Lurker.Memo`, put back by `release`; the second re-check's P2 below moved them from a weak map): the
     stroll walks a body up to its restriction radius (2) from the spot's block, which is past `STAND` and toward
     the rail. Not taken out: the jar's attack animations and their turn toward the target (a swipe at a player in
     reach is the jar's own; the strike's bearing is MZB-361's amendment above). The 10 tick throttle stays: with
@@ -3736,6 +3736,22 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     (20 damage by a player 3 blocks west whom it targets; 1 damage of lava), the dodge is seen to pass tick 7, and for
     40 ticks it is never more than `STAND` from its hold point. Expected on the unfixed code: "the puppet never left
     its stand while it dodged: strayed 11.9 of 0.5" (or more).
+  - Amendment (the second re-check's P2, `taken` leaks and pins the server; compiled, not run): the plugin kept the
+    walking goals it took out of a held body in a `WeakHashMap<Mob, List<...>>`, and each goal holds its body (the
+    goal's `mob` field), so the value reached the key and the entry never cleared: a puppet that left the world by any
+    way but a release (`despawn` at a requeue, a recall or `capture`, or a death settled after the body was removed)
+    was held with its level until the server stopped. Fix (the core `Slot` keeps it, as `stripped` is kept):
+    `Lurker.hold(mob, spot, memo)` and `Lurker.release(mob, memo)` get a `Lurker.Memo`, a one-object holder the bridge
+    creates at a slot's first hold and keeps in `Slot.lurkMemo`; `FrostmawLurker` keeps its `Taken(goals)` record in
+    it and empties it in `release`. The bridge empties the memo in `releaseLurk`, which now asks the Lurker for every
+    body it holds, removed from the world or not (it skipped removed ones), and `despawn` calls it first, so a
+    discarded body's stamp, bearing and search time (weak maps whose values do not reach the body, which stay) go too.
+    The interface change touches only `FrostmawLurker` and `Lurkers.DEFAULT` (nothing else implements `Lurker`).
+    `FrostmawLurker.tracked(mob)` (a stamp, a bearing or a search time) is the GameTests' view. Tests: the module-off
+    test also asserts `!tracked(body)` after the discard, and `aKilledHeldPuppetLeavesNothingInTheLurker` (batch
+    `frostmaw_lurk_killed`) kills a held puppet, waits for the casualty and the removal, and asserts that nothing is
+    tracked and the bridge has no member for it. A session stop proper is not made in a GameTest (the session is
+    shared); the module switched off runs the same `capture`.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
@@ -3928,7 +3944,8 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     the hold and clears the spot, and `take` returns before Carry On saves the body, so the saved NBT is the
     released one. The other paths that clear a hold or drop a slot were read and need nothing: `despawn`
     (a requeue, a recall, `capture` at a session's end or the module's switching off, a hand-back) discards
-    the body, so no hold outlives it; a death or a removal by something else leaves a dead or removed body
+    the body, so no hold outlives it (the second re-check found the Lurker's own state did: `despawn` now calls
+    `releaseLurk` first, MZB-361's last amendment); a death or a removal by something else leaves a dead or removed body
     (`forget` now releases a dying one too, which is harmless); a recall or a moved or ended lurk already
     called `releaseLurk`. (Corrected by the re-check's P3; the first draft said a body unloaded with its chunk
     is saved held and the join check discards it as a stale copy. A held body is never saved: it carries the

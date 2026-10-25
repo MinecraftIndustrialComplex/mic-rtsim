@@ -10,12 +10,35 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>The core calls {@link #hold} on {@code ServerTickEvent.Post} for each live lurk puppet, after every
  * level ticked (an awake mob with a target re-paths in its own tick, so the hold's path is the one
- * followed next), and {@link #release} when the lurk ends or the puppet is recalled. The target rule
- * (a puppet with no target gets the nearest player every 20 ticks, MZB-362) is the core's, for every type.
+ * followed next), and {@link #release} when the lurk ends, the puppet is recalled or taken, or the body leaves the
+ * world (killed, despawned, the session over: a removed body is released too, so a Lurker's state for it can go). The
+ * target rule (a puppet with no target gets the nearest player every 20 ticks, MZB-362) is the core's, for every type.
+ *
+ * <p>What a Lurker keeps for one body that references the body (a goal it took out has the body as its {@code mob})
+ * belongs in the {@link Memo} the core hands it: the core keeps the memo on the body's slot, so it dies with the slot
+ * (MZB-361). A map keyed by the body, even a weak one, whose values reach the body is never cleared.
  */
 public interface Lurker {
-    /** Each server tick while it lurks: keep the body at {@code spot}. */
-    void hold(Mob mob, Vec3 spot);
+    /**
+     * What a Lurker keeps for one body it holds: one slot for any object, kept by the core with the body's slot and
+     * dropped by it after {@link Lurker#release}. Empty when the hold has not stored anything (or has released).
+     */
+    final class Memo {
+        private Object state;
+
+        /** The stored object if it is a {@code type}, else null. */
+        public <T> T get(Class<T> type) {
+            return type.isInstance(state) ? type.cast(state) : null;
+        }
+
+        /** Stores {@code state} (null empties the memo). */
+        public void set(Object state) {
+            this.state = state;
+        }
+    }
+
+    /** Each server tick while it lurks: keep the body at {@code spot}. {@code memo} is this body's, the same one each call. */
+    void hold(Mob mob, Vec3 spot, Memo memo);
 
     /**
      * Starts a strike at a carriage point; false if the body is busy. {@code motion} is how far the point moves in
@@ -24,8 +47,8 @@ public interface Lurker {
      */
     boolean strike(Mob mob, Vec3 at, Vec3 motion);
 
-    /** The lurk ended or the body left it: undo what {@link #hold} set. */
-    void release(Mob mob);
+    /** The lurk ended or the body left it (it may be removed from the world by now): undo what {@link #hold} set, and empty {@code memo}. */
+    void release(Mob mob, Memo memo);
 
     /** A train it robbed is gone: the body announces it (a roar). */
     void roar(Mob mob);
