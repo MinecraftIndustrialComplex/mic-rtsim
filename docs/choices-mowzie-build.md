@@ -1407,3 +1407,32 @@ conservative option at its fork.
   code and test only, no dependency on the replay gate: it cherry-picks cleanly onto origin/main
   (428a3311), where the test fails without the fix with the same values and rtsim-conflict and
   rtsim-jni pass with it. The sims are unchanged.
+- **RP-59** (a record that moves a held party ends its hold first; §6.1; RP-23; RP-48; RP-56;
+  fixes6 item 1): a held decision's abstract raid was lost when its band was sent home inside the
+  slack. The hold kept the decision while a sighting at `since` + 300 embodied the band (RP-56);
+  then a wipe-out (`casualties`), its chief's death (`chief_killed`) or Peaceful
+  (`stop_war_parties`) sent it home through `go_home`, whose `bump` left the hold's poll stale at
+  the Ev::Party arm, so the decision never resolved. Those three are every path that moves a held
+  war party: the plan's other bumps are `start_segment`, `wait`, `fight_held` and `start_fight`
+  (the hold's own ends), `resume_envoys` and the envoy branches of `casualties` and `envoy_home`
+  (envoys are never held), and `end_fight` (Fighting, not held). The fix: `Conflict::ingest` calls
+  `release_before` after the op-id dedupe and before it applies the record, and `ingest_copy`
+  before a copied BAND_CASUALTIES. A BAND_CASUALTIES or CHIEF_KILLED for a held party at its epoch
+  or an older one (a copy's at any epoch), or a DIFFICULTY that makes the world Peaceful (every
+  held party), ends the hold: `end_hold` runs `party_event` at the record's tick with
+  `hold_ending` set, which `arrive` and `wait_over` read to decide unwatched inside the slack too;
+  then the record applies. Any count of casualties ends it, not only a wipe-out, so as not to
+  repeat `casualties`' reckoning of one; the decision only comes sooner, as of fewer records. A
+  newer epoch's record is the held fight's (honoured or refused, §6.1). A BAND_DEMATERIALIZED ends
+  nothing: `ConflictBridge.materialize` sends one for the band's older epoch just before the
+  fight's BAND_MATERIALIZED, which would end a fight's hold the moment before it is honoured. Its
+  residual, added to §6.1's losses: a death of a band embodied before the decision, journaled in
+  the tick or two between the fight's command and its BAND_MATERIALIZED, ends the hold unwatched
+  and the fight is lost as RP-56 says (one resolution, never two). Failing first,
+  mowzie_records' `a_held_decision_whose_band_is_sent_home_inside_the_slack_keeps_its_raid` (the
+  checker's scratch case, renamed and widened: a siege's round and its arrival, each wiped out,
+  its chief killed and Peaceful, 50 ticks after the sighting): replayed raids [] against the
+  session that went on's [79270] (round) and [55270] (arrival) in all six, the band Home with
+  `until` 79270 and 24020 against 103270 and 79270 (the next round's tick, booked by the decision's
+  `wait` before the band went home). Now as live, and each raid sent 34 members as live did. The
+  sims are unchanged.

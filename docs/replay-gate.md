@@ -931,6 +931,18 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   (§5.3), so its casualties and loot count against nothing, as the abstract raid's were booked at
   the poll. It is counted once per epoch in `ConflictStats::fights_unheld`, and rtsim-jni warns of
   each (RP-56).
+- **Moved inside the slack** (RP-59). A replayed record that would move a held party ends its hold
+  first, before it is applied: a BAND_CASUALTIES or CHIEF_KILLED for it at its epoch or an older
+  one (a wipe-out or a rout sends it home), a copy of a BAND_CASUALTIES at any epoch (it counts at
+  any), and a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`).
+  The hold's end runs `party_event` at the record's tick with the hold bypassed inside the slack
+  too (`hold_ending`), so the decision resolves unwatched as the session that went on resolved it
+  at the hold's tick, and the record then applies to the band as it did there. Before, the record
+  sent the band home first, which bumped the plan, left the hold's poll stale and lost the
+  decision's abstract raid. A record of a newer epoch is the held decision's own fight, answered
+  as above. A BAND_DEMATERIALIZED ends no hold: Java ends a band's older epoch with one just before
+  its fight's BAND_MATERIALIZED (`ConflictBridge.materialize`), so it would end the hold of a fight
+  about to be honoured.
 - **Not honoured: the replay end.** If the replay ends inside the slack, `replay_done` clears
   `held`, and the poll's next firing runs `arrive()` or `wait_over()` as today. Positions are routed
   only after the modules run in a step (§6 above), so that first decision normally finds no watcher
@@ -963,6 +975,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   refusal's wave is a u32 and the command's a u16, so its high half (bytes 38 and 39) could carry
   the echoed flags as BAND_MATERIALIZED's 44 does (boundary.md's BAND_SPAWN_REJECTED row); the
   coordinator wants no change to that field now.
+- A record that moves a held party before its fight's own record (RP-59): a death or a chief's
+  of a band embodied before the decision, journaled between the fight's command and its
+  BAND_MATERIALIZED (normally 1 to 2 ticks), ends the hold as unwatched, and the fight's record
+  then finds no hold and is lost as RP-56 says. The books hold, one resolution.
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
