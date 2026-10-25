@@ -40,7 +40,11 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
 public final class PuppetSaveGameTests {
     private PuppetSaveGameTests() {}
 
-    /** Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage. */
+    /**
+     * Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage. The
+     * future completes on the world's IO worker, so a test waits for it with {@link ChunkWait#chunks} (real
+     * time): bounded by unthrottled ticks, 400 of them were gone in under a second on a loaded machine.
+     */
     @SuppressWarnings("unchecked")
     static CompletableFuture<List<Entity>> saveAndReadBack(ServerLevel level, ChunkPos... chunks) {
         var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
@@ -69,8 +73,9 @@ public final class PuppetSaveGameTests {
     }
 
     /** A puppet is not in the saved chunk; an ordinary trader standing on the same block is. */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT)
     public static void puppetIsNotSavedAcrossSaveAndReload(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 300);
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
         RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
@@ -83,7 +88,7 @@ public final class PuppetSaveGameTests {
         UUID[] puppet = new UUID[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenWaitUntil(waits.logic(() -> RtsimTests.embodied(agent)))
                 .thenExecute(() -> {
                     Entity p = RtsimTests.member(RtsimTests.group(agent), 0);
                     puppet[0] = p.getUUID();
@@ -94,7 +99,7 @@ public final class PuppetSaveGameTests {
                     check("save() writes the control trader", control.save(new CompoundTag()));
                     read[0] = saveAndReadBack(helper.getLevel(), chunk);
                 })
-                .thenWaitUntil(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone()))
+                .thenWaitUntil(waits.chunks(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone())))
                 .thenExecute(() -> {
                     List<Entity> loaded = read[0].join();
                     record("puppetIsNotSavedAcrossSaveAndReload", "entities read back from chunk " + chunk, loaded.size());
@@ -104,7 +109,7 @@ public final class PuppetSaveGameTests {
                         check("no tagged entity reloads (" + e + ")", !RtsimAttachments.isTagged(e));
                     RtsimTests.engine().despawnGroup(agent, 1);
                 })
-                .thenWaitUntil(() -> check("the puppet was despawned", RtsimTests.group(agent) == null))
+                .thenWaitUntil(waits.logic(() -> check("the puppet was despawned", RtsimTests.group(agent) == null)))
                 .thenExecute(control::discard)
                 .thenSucceed();
     }
@@ -114,8 +119,9 @@ public final class PuppetSaveGameTests {
      * saveWithoutId through saveAsPassenger, never asking shouldBeSaved; a pig in a second boat shows
      * that passengers do reach the disk on this path.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT)
     public static void puppetRidingABoatIsNotSaved(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 300);
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
         RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
@@ -129,7 +135,7 @@ public final class PuppetSaveGameTests {
         UUID[] puppet = new UUID[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenWaitUntil(waits.logic(() -> RtsimTests.embodied(agent)))
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
                     Entity p = RtsimTests.member(g, 0);
@@ -146,7 +152,7 @@ public final class PuppetSaveGameTests {
                     // The arena may straddle a chunk border: read back both boats' chunks.
                     read[0] = saveAndReadBack(helper.getLevel(), chunk, controlBoat.chunkPosition());
                 })
-                .thenWaitUntil(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone()))
+                .thenWaitUntil(waits.chunks(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone())))
                 .thenExecute(() -> {
                     List<Entity> loaded = read[0].join();
                     Entity reBoat = find(loaded, boat.getUUID());
@@ -158,7 +164,7 @@ public final class PuppetSaveGameTests {
                     check("the puppet did not reach the disk", find(loaded, puppet[0]) == null);
                     RtsimTests.engine().despawnGroup(agent, 1);
                 })
-                .thenWaitUntil(() -> check("the puppet was despawned", RtsimTests.group(agent) == null))
+                .thenWaitUntil(waits.logic(() -> check("the puppet was despawned", RtsimTests.group(agent) == null)))
                 .thenExecute(() -> {
                     pig.discard();
                     boat.discard();

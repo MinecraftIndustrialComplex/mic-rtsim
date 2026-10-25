@@ -267,6 +267,9 @@ public final class WorldGameTests {
      * A house goes only on a free plot (C7, PLAN.md §8.8): not over a block a player placed, not over a
      * block entity, not next to another building; on a free plot it is placed whole from the template, its
      * jigsaw block replaced by its final state, and HOUSE_PLACED names the resident slot the jigsaw marked.
+     * The answers come back through the engine's steps, which run on its own thread while the server ticks
+     * on without waiting for them: the waits are paced ({@link RtsimTests#io}), so the 400 ticks are at
+     * least 2 s of the engine's time.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_house")
     public static void aHouseIsPlacedOnlyOnAFreePlot(GameTestHelper helper) {
@@ -293,7 +296,7 @@ public final class WorldGameTests {
         stub.placeHouse(opC, v.id, dim, "mic_rtsim:hut", null, c.getX(), c.getY(), c.getZ(), 0, 0, 0, 0, 3, 0);
 
         helper.startSequence()
-                .thenWaitUntil(() -> check("three answers", result(stub, opA) != null && result(stub, opB) != null && result(stub, opC) != null))
+                .thenWaitUntil(RtsimTests.io(() -> check("three answers", result(stub, opA) != null && result(stub, opB) != null && result(stub, opC) != null)))
                 .thenExecute(() -> {
                     check("not over the player's block", result(stub, opA).aux() == Obs.CommandResult.NOT_FREE);
                     check("the player's block is still there", level.getBlockState(placed).is(Blocks.SNOW));
@@ -317,7 +320,7 @@ public final class WorldGameTests {
                     // And B again, as a rolled-back engine would resend it.
                     stub.placeHouse(opB, v.id, dim, "mic_rtsim:hut", null, b.getX(), b.getY(), b.getZ(), 0, 0, 0, 0, 2, 0);
                 })
-                .thenWaitUntil(() -> check("D answered, B answered again", result(stub, opD) != null && results(stub, opB).size() == 2))
+                .thenWaitUntil(RtsimTests.io(() -> check("D answered, B answered again", result(stub, opD) != null && results(stub, opB).size() == 2)))
                 .thenExecute(() -> {
                     check("not next to another building", result(stub, opD).aux() == Obs.CommandResult.NOT_FREE);
                     check("the resent house is a duplicate", result(stub, opB).aux() == Obs.CommandResult.DUPLICATE_OP);
@@ -469,27 +472,35 @@ public final class WorldGameTests {
      * from vanilla's own entity storage, journal the DIED again with the same op id (the engine applies
      * it once), and the world holds the cargo once: nothing is dropped again.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_crash")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_p1_crash")
     public static void killingALlamaDropsItsCargoExactlyOnceAcrossACrash(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 400);
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1); // llama 1 carries 12 emeralds and 30 wheat
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
         ScriptedEngine stub = RtsimTests.engine();
         ServerLevel level = helper.getLevel();
         long[] op = new long[1];
+        // The DIED's arrivals before the save, and the journal mark then: the save's wait is real time, tens of
+        // thousands of unthrottled ticks on a slow disk, and the received log keeps the last 10,000 records (one
+        // TICK a tick), so the first DIED can be gone from it by the last check.
+        long[] before = new long[2];
         List<ItemEntity> drops = new ArrayList<>();
         Object[] future = new Object[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenWaitUntil(waits.logic(() -> RtsimTests.embodied(agent)))
                 .thenExecute(() -> {
                     TraderLlama llama = (TraderLlama) RtsimTests.member(RtsimTests.group(agent), 1);
                     llama.hurt(level.damageSources().playerAttack(player), 1000f);
                 })
-                .thenWaitUntil(() -> check("DIED reached the engine", !RtsimTests.recordsFor(stub, Obs.DIED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("DIED reached the engine", !RtsimTests.recordsFor(stub, Obs.DIED, agent).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received died = RtsimTests.recordsFor(stub, Obs.DIED, agent).get(0);
                     op[0] = died.view().getLong(Obs.Died.OP_ID);
+                    before[0] = stub.eventOpCount(op[0]);
+                    before[1] = RtsimSession.current().boundary().journal().nextObsSeq();
+                    check("the DIED arrived once before the save (" + before[0] + ")", before[0] == 1);
                     check("killed by the player", new UUID(died.view().getLong(Obs.Died.KILLER_MOST), died.view().getLong(Obs.Died.KILLER_LEAST))
                             .equals(player.getUUID()));
                     check("the cargo lies on the ground once: 30 wheat", RtsimTests.itemsAround(helper, Items.WHEAT, 10) == 30);
@@ -505,7 +516,7 @@ public final class WorldGameTests {
                     // The chunk is saved (as on an unload); the journal is not. Then the server dies.
                     future[0] = PuppetSaveGameTests.saveAndReadBack(level, chunks.toArray(ChunkPos[]::new));
                 })
-                .thenWaitUntil(() -> check("the chunk was saved and read back", ((CompletableFuture<?>) future[0]).isDone()))
+                .thenWaitUntil(waits.chunks(() -> check("the chunk was saved and read back", ((CompletableFuture<?>) future[0]).isDone())))
                 .thenExecute(() -> {
                     @SuppressWarnings("unchecked")
                     List<Entity> fromDisk = ((CompletableFuture<List<Entity>>) future[0]).join();
@@ -521,8 +532,8 @@ public final class WorldGameTests {
                         item.discard(); // the world before the crash is gone; what loads is the saved chunk
                     level.addLegacyChunkEntities(back.stream());
                 })
-                .thenWaitUntil(() -> check("the reloaded drops journaled copies of the DIED",
-                        !RtsimTests.copiesFor(stub, Obs.DIED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("the reloaded drops journaled copies of the DIED",
+                        !RtsimTests.copiesFor(stub, Obs.DIED, agent).isEmpty())))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> died = RtsimTests.recordsFor(stub, Obs.DIED, agent);
                     List<ScriptedEngine.Received> copies = RtsimTests.copiesFor(stub, Obs.DIED, agent);
@@ -530,18 +541,19 @@ public final class WorldGameTests {
                         check("every DIED has the same op id", d.view().getLong(Obs.Died.OP_ID) == op[0]);
                     for (ScriptedEngine.Received c : copies)
                         check("every copy is that DIED, dropped", c.view().getLong(Obs.Died.OP_ID) == op[0] && c.skipped());
-                    check("the death counts once", stub.eventOpCount(op[0]) == 1);
+                    int arrivals = (int) before[0] + stub.eventOpCount(op[0], before[1]);
+                    check("the death counts once (" + arrivals + ")", arrivals == 1);
                     check("the cargo is in the world exactly once: 30 wheat", RtsimTests.itemsAround(helper, Items.WHEAT, 10) == 30);
                     check("and 12 emeralds", RtsimTests.itemsAround(helper, Items.EMERALD, 10) == 12);
                     PuppetGroup g = RtsimTests.group(agent);
                     check("the rest of the caravan stays one group, the dead llama is not back", g != null && g.liveMembers() == 2);
                     record("llamaCargo", "DIED", died.size() + " records and " + copies.size() + " copies, one op id, engine counts "
-                            + stub.eventOpCount(op[0]) + " arrivals of it (applied once)");
+                            + arrivals + " arrivals of it (applied once)");
                     for (ItemEntity item : level.getEntitiesOfClass(ItemEntity.class, new AABB(BlockPos.containing(RtsimTests.centre(helper))).inflate(10)))
                         item.discard();
                     stub.despawnGroup(agent, 1);
                 })
-                .thenWaitUntil(() -> check("the caravan despawned", RtsimTests.group(agent) == null))
+                .thenWaitUntil(waits.logic(() -> check("the caravan despawned", RtsimTests.group(agent) == null)))
                 .thenSucceed();
     }
 }

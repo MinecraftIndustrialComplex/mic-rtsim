@@ -28,6 +28,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
+use rtsim_conflict::engine::StationEnd;
 use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
@@ -589,7 +590,44 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if let Obs::CarriageResult(r) = &t.obs {
         l.complete(r.op);
     }
+    // A train's arrival (or its stop outside every district) names the line its held rail passes
+    // ran (M7, MZB-312). The arrival clears the train's departure, so the line is read first.
+    let rail = rail_line(&l.engine, &t.obs);
     l.ingest(&t);
+    if let Some((train, line)) = rail
+        && super::conflict::running(st)
+        && st.conflict.engine.holds_train(train)
+    {
+        super::conflict::rail_call(st, rec, train, line);
+    }
+}
+
+/// The train an arrival or an unwatched stop is of, and the line it ran: the two stations it left
+/// and reached, as the conflict knows them. None for the line when the train has no departure on
+/// the books, a station is undeclared, both ends are one station, or it stopped outside every
+/// district (an unwatched stop always lets the passes go). None for a record of another kind.
+fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationEnd)>)> {
+    let end = |id| {
+        let d = e.station_decl(id)?;
+        Some(StationEnd {
+            id: d.station.0,
+            dim: d.dim,
+            x: d.pos.x,
+            z: d.pos.z,
+            district: d.district.map(|d| d.0),
+        })
+    };
+    match o {
+        Obs::TrainArrived(c) => {
+            let line = e
+                .last_departure_of(c.train)
+                .filter(|from| *from != c.station)
+                .and_then(|from| Some((end(from)?, end(c.station)?)));
+            Some((c.train.0, line))
+        }
+        Obs::TrainUnwatched(u) => Some((u.train.0, None)),
+        _ => None,
+    }
 }
 
 /// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
