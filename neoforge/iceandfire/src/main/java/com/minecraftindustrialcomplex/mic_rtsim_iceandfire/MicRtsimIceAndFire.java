@@ -104,6 +104,16 @@ public final class MicRtsimIceAndFire {
         if (event.getLevel().isClientSide())
             return;
         if (event.getEntity() instanceof DeathWormEntity w) {
+            if (DragonBridge.INSTANCE.nests.staleCopy(w)) {
+                // A copy of a nest worm its nest spawned again, or that died (RP-242): it never joins. Passengers and a
+                // vehicle are let go and it is marked removed, as core does for a stale puppet (BridgeEvents.onJoin);
+                // being cancelled it never fires a leave or a death, so nothing is journaled for it.
+                event.setCanceled(true);
+                w.ejectPassengers();
+                w.stopRiding();
+                w.discard();
+                return;
+            }
             DragonBridge.INSTANCE.nests.joined(w); // a nest worm saved mid-glide: mended before it ticks
             return;
         }
