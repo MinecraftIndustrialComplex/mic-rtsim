@@ -293,6 +293,8 @@ public final class Camps {
             c.reported = false;
             c.waiting = false;
             c.recount = false;
+            c.strayBodies.clear();
+            c.holdSince = -1;
             attention.add(c);
         }
         held.clear();
