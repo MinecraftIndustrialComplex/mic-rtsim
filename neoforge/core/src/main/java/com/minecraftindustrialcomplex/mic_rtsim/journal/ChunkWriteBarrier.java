@@ -116,6 +116,15 @@ public final class ChunkWriteBarrier {
         @Nullable
         Path regionFolder();
 
+        /**
+         * The region folder, DSYNC or not, whose entries are synced once the files are (a region file made in this
+         * save is a new entry; RP-201); null when unknown.
+         */
+        @Nullable
+        default Path folder() {
+            return regionFolder();
+        }
+
         /** For the log and the GameTests. */
         String kind();
     }
@@ -140,15 +149,18 @@ public final class ChunkWriteBarrier {
         final CompletableFuture<List<ChunkPos>> landed;
         final List<CompletableFuture<?>> cancel;
         final Set<Path> regionFiles;
+        /** The region and entity folders of the round's chunks, synced after the files (RP-201). */
+        final Set<Path> folders;
         final int chunks;
 
         Round(long number, @Nullable String held, CompletableFuture<List<ChunkPos>> landed,
-              List<CompletableFuture<?>> cancel, Set<Path> regionFiles, int chunks) {
+              List<CompletableFuture<?>> cancel, Set<Path> regionFiles, Set<Path> folders, int chunks) {
             this.number = number;
             this.held = held;
             this.landed = landed;
             this.cancel = cancel;
             this.regionFiles = regionFiles;
+            this.folders = folders;
             this.chunks = chunks;
         }
     }
@@ -485,10 +497,11 @@ public final class ChunkWriteBarrier {
         }
         int total = notes.size() + entityNotes.size();
         if (hold != null)
-            return new Round(number, hold, CompletableFuture.completedFuture(List.of()), List.of(), Set.of(), total);
+            return new Round(number, hold, CompletableFuture.completedFuture(List.of()), List.of(), Set.of(), Set.of(), total);
         CompletableFuture<List<ChunkPos>> all = CompletableFuture.completedFuture(List.of());
         List<CompletableFuture<?>> parts = new ArrayList<>(byLevel.size() + entitiesByLevel.size());
         Set<Path> regionFiles = new LinkedHashSet<>();
+        Set<Path> folders = new LinkedHashSet<>();
         int count = 0;
         List<Map.Entry<ServerLevel, List<ChunkPos>>> groups = new ArrayList<>(byLevel.entrySet());
         int firstEntities = groups.size();
@@ -519,8 +532,11 @@ public final class ChunkWriteBarrier {
             if (folder != null)
                 for (ChunkPos p : positions)
                     regionFiles.add(folder.resolve("r." + p.getRegionX() + "." + p.getRegionZ() + ".mca"));
+            Path dir = w.folder();
+            if (dir != null)
+                folders.add(dir);
         }
-        return new Round(number, null, all, parts, regionFiles, count);
+        return new Round(number, null, all, parts, regionFiles, folders, count);
     }
 
     /**
@@ -543,6 +559,9 @@ public final class ChunkWriteBarrier {
                     why = bad.size() + " chunk write(s) failed, " + bad.get(0) + " first";
                 } else {
                     why = fsync(round.regionFiles);
+                    if (why == null)
+                        for (Path d : round.folders)
+                            DirectorySync.sync(d); // a failure (Windows) is logged once, never holds the round
                 }
             } catch (TimeoutException e) {
                 why = round.chunks + " chunk(s) not on disk after " + WAIT_MILLIS + " ms";
@@ -661,6 +680,12 @@ public final class ChunkWriteBarrier {
         return null;
     }
 
+    /** The storage's region folder, DSYNC or not. */
+    @Nullable
+    static Path folderOf(@Nullable RegionFileStorage storage) {
+        return storage == null ? null : ((RegionFileStorageAccessor) (Object) storage).mic_rtsim$folder();
+    }
+
     /** The region folder to fsync, or null when the storage writes with DSYNC already. */
     @Nullable
     static Path folderIfNotSync(@Nullable RegionFileStorage storage) {
@@ -688,6 +713,11 @@ public final class ChunkWriteBarrier {
         @Override
         public Path regionFolder() {
             return folderIfNotSync(worker.mic_rtsim$storage());
+        }
+
+        @Override
+        public Path folder() {
+            return folderOf(worker.mic_rtsim$storage());
         }
 
         @Override
