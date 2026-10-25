@@ -9,7 +9,7 @@ import net.minecraft.gametest.framework.GameTestHelper;
  * simulation distance. Line A is {@link SawShaftsFactory} (the anchor's chunk keeps ticking), line B is
  * {@link MillstoneFlourFactory} {@value #B_DX} blocks along x, in the chunk next to it that loses its tickets
  * (loaded and FULL, not block-ticking: the partial variant of {@link GlassReplayGameTests}, which puts a
- * chunk border between the lines). Run as that variant.
+ * chunk border between the lines, joined across it by {@link GlassCorpus#join}). Run as that variant.
  *
  * <p>Both lines learn while every chunk ticks, as they would in a district whose chunks all tick; then B's
  * chunk stops ticking. While the district is partial A is live, so its unit goes on judging windows, and B's

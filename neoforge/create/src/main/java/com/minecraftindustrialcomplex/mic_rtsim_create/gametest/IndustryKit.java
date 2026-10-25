@@ -18,6 +18,7 @@ import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.common.util.BlockSnapshot;
@@ -152,6 +153,131 @@ public final class IndustryKit {
     /** The middle row of the yard in z, absolute. */
     public static int midZ(GameTestHelper helper) {
         return helper.absolutePos(new BlockPos(0, 0, 16)).getZ();
+    }
+
+    // ---- joins across chunk borders (SECTIONS.md §2.1) --------------------------------------------
+
+    /**
+     * Two of the core's test markers face to face across the chunk border at x {@code bx}, at (bx - 1, y, z)
+     * and (bx, y, z), absolute: the chunks either side are one district by a face touch (J1). Since slice S6
+     * chunks side by side are one district only by a join, never by adjacency. A marker is industrial (a seed
+     * by tag) with no capability and no ticker: it moves and holds nothing, and the glass box never sees it
+     * (its residual is block entities with a capability). Keep the pair clear of the layout.
+     */
+    public static void joinAcrossX(GameTestHelper helper, int bx, int y, int z) {
+        BlockState m = com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MARKER.get().defaultBlockState();
+        set(helper, new BlockPos(bx - 1, y, z), m);
+        set(helper, new BlockPos(bx, y, z), m);
+    }
+
+    /** Yard-relative height of {@link #joinChunks}' markers: above every build (the glass corpus builds up to y 14). */
+    public static final int JOIN_Y = 17;
+
+    /**
+     * Joins into one district the chunks that hold an industrial block entity between the yard-relative corners
+     * {@code from} and {@code to}, wherever the yard's random position puts the chunk borders, for a layout that
+     * means one district and may have no join of its own across a border it straddles (a chain conveyor joins
+     * nothing, nor do two stores side by side or a gap). Each border needed gets a pair of {@link #joinAcrossX}'s
+     * markers across it at yard-relative height {@link #JOIN_Y}, inside the footprint of those block entities.
+     * Chunks only diagonal to each other join through a chunk beside both (the 8-neighbour rule before S6 joined
+     * them). Returns the number of borders joined.
+     */
+    public static int joinChunks(GameTestHelper helper, BlockPos from, BlockPos to) {
+        ServerLevel level = helper.getLevel();
+        BlockPos a = helper.absolutePos(from), b = helper.absolutePos(to);
+        int x0 = Math.min(a.getX(), b.getX()), x1 = Math.max(a.getX(), b.getX());
+        int y0 = Math.min(a.getY(), b.getY()), y1 = Math.max(a.getY(), b.getY());
+        int z0 = Math.min(a.getZ(), b.getZ()), z1 = Math.max(a.getZ(), b.getZ());
+        int y = helper.absolutePos(new BlockPos(0, JOIN_Y, 0)).getY();
+        List<Long> held = new ArrayList<>();
+        // The footprint of the industrial block entities: min x, max x, min z, max z.
+        int[] fp = {Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE};
+        for (int cx = x0 >> 4; cx <= x1 >> 4; cx++)
+            for (int cz = z0 >> 4; cz <= z1 >> 4; cz++) {
+                net.minecraft.world.level.chunk.LevelChunk c = level.getChunkSource().getChunkNow(cx, cz);
+                if (c == null)
+                    continue;
+                boolean any = false;
+                for (net.minecraft.world.level.block.entity.BlockEntity be : c.getBlockEntities().values()) {
+                    BlockPos p = be.getBlockPos();
+                    if (p.getX() < x0 || p.getX() > x1 || p.getY() < y0 || p.getY() > y1 || p.getZ() < z0 || p.getZ() > z1
+                            || !ind().districts().industrialForTest(level, be))
+                        continue;
+                    any = true;
+                    fp[0] = Math.min(fp[0], p.getX());
+                    fp[1] = Math.max(fp[1], p.getX());
+                    fp[2] = Math.min(fp[2], p.getZ());
+                    fp[3] = Math.max(fp[3], p.getZ());
+                }
+                if (any)
+                    held.add(ChunkPos.asLong(cx, cz));
+            }
+        java.util.Map<Long, Long> root = new java.util.HashMap<>();
+        for (long c : held)
+            root.put(c, c);
+        int joined = 0;
+        // Borders between chunks side by side first, then chunks only diagonal to each other.
+        for (int pass = 0; pass < 2; pass++)
+            for (long c : held)
+                for (long n : held) {
+                    int dx = ChunkPos.getX(n) - ChunkPos.getX(c), dz = ChunkPos.getZ(n) - ChunkPos.getZ(c);
+                    boolean wanted = pass == 0 ? (dx == 1 && dz == 0) || (dx == 0 && dz == 1) : dx == 1 && Math.abs(dz) == 1;
+                    if (!wanted || joinRoot(root, c) == joinRoot(root, n))
+                        continue;
+                    if (pass == 0) {
+                        joinPair(helper, c, n, y, fp);
+                        joined++;
+                    } else {
+                        long m = ChunkPos.asLong(ChunkPos.getX(n), ChunkPos.getZ(c));
+                        joinPair(helper, c, m, y, fp);
+                        joinPair(helper, m, n, y, fp);
+                        joined += 2;
+                    }
+                    root.put(joinRoot(root, c), joinRoot(root, n));
+                }
+        return joined;
+    }
+
+    private static long joinRoot(java.util.Map<Long, Long> root, long c) {
+        long r = c;
+        while (root.get(r) != r)
+            r = root.get(r);
+        return r;
+    }
+
+    /** A marker pair across the border of chunks {@code c} and {@code n} (side by side), inside the footprint {@code fp}. */
+    private static void joinPair(GameTestHelper helper, long c, long n, int y, int[] fp) {
+        if (ChunkPos.getX(n) < ChunkPos.getX(c) || ChunkPos.getZ(n) < ChunkPos.getZ(c)) {
+            long t = c;
+            c = n;
+            n = t;
+        }
+        boolean alongX = ChunkPos.getX(n) != ChunkPos.getX(c);
+        int border = (alongX ? ChunkPos.getX(n) : ChunkPos.getZ(n)) << 4;
+        // The other axis: the chunks' shared row (or column), inside the footprint.
+        int row = (alongX ? ChunkPos.getZ(c) : ChunkPos.getX(c)) << 4;
+        int lo = Math.max(row, alongX ? fp[2] : fp[0]), hi = Math.min(row + 15, alongX ? fp[3] : fp[1]);
+        ServerLevel level = helper.getLevel();
+        Block marker = com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MARKER.get();
+        int mid = (lo + hi) >> 1;
+        for (int i = 0; i <= hi - lo; i++) {
+            int o = mid + ((i & 1) == 0 ? i / 2 : -(i / 2 + 1));
+            if (o < lo || o > hi)
+                continue;
+            BlockPos p = alongX ? new BlockPos(border - 1, y, o) : new BlockPos(o, y, border - 1);
+            BlockPos q = alongX ? new BlockPos(border, y, o) : new BlockPos(o, y, border);
+            BlockState sp = level.getBlockState(p), sq = level.getBlockState(q);
+            if ((sp.isAir() || sp.is(marker)) && (sq.isAir() || sq.is(marker))) {
+                if (alongX)
+                    joinAcrossX(helper, border, y, o);
+                else {
+                    set(helper, p, marker.defaultBlockState());
+                    set(helper, q, marker.defaultBlockState());
+                }
+                return;
+            }
+        }
+        throw new GameTestAssertException("no room for a marker pair across the border of chunks " + new ChunkPos(c) + " and " + new ChunkPos(n));
     }
 
     /** Forgets the industry of the yard's chunks (and one ring around them). */

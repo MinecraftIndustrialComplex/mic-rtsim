@@ -799,6 +799,58 @@ fn a_ship_in_view_lays_up_only_after_it_leaves_view() {
     );
 }
 
+/// §9.5 (docs/replay-gate.md §5.6): a ship kept sailing only because it was in view when its port
+/// closed is still believed in view while a session's replay runs, and lays up at the replay end,
+/// when every body is gone (`lay_up_if_waiting`, its epoch bumped as a lay-up bumps it). Seeds 1
+/// to 3: the engine is read back from its pages with the ridden ship waiting to lay up. Control:
+/// the same engine without a replay end keeps it embodied and not laid up.
+#[test]
+fn a_ship_kept_for_its_view_lays_up_at_the_replay_end() {
+    let tun = ShipTunables::default();
+    let mut judged = 0;
+    for seed in 1..=3u64 {
+        let Some((c, _fake, m, _)) = ride_through_closure(
+            seed,
+            &tun,
+            |c, at| c.ships.now() >= at + 3 * TICKS_PER_DAY,
+            50,
+        ) else {
+            continue;
+        };
+        assert!(c.ships.waiting_to_lay_up(m));
+        let epoch = c.ships.ship(m).expect("a ship").epoch;
+        // The control: read back, no replay, no replay end: the ship is still believed in view.
+        let mut ctl = restarted(&c, seed, &tun);
+        let x = ctl.ships.ship(m).expect("a ship");
+        assert!(x.embodied && !x.is_laid_up(), "seed {seed}: {x:?}");
+        ctl.ships.replay_done(&mut ctl.world);
+        let x = ctl.ships.ship(m).expect("a ship");
+        assert!(
+            x.embodied && !x.is_laid_up(),
+            "seed {seed}: replay_done is a no-op without a replay: {x:?}"
+        );
+        // The replay: still embodied while it runs, laid up at its end.
+        let mut r = restarted(&c, seed, &tun);
+        r.ships.begin_replay(true);
+        let x = r.ships.ship(m).expect("a ship");
+        assert!(x.embodied && !x.is_laid_up(), "seed {seed}: {x:?}");
+        r.ships.replay_done(&mut r.world);
+        let x = r.ships.ship(m).expect("a ship");
+        assert!(
+            x.is_laid_up() && !x.embodied,
+            "seed {seed}: laid up at the replay end: {x:?}"
+        );
+        assert_eq!(x.epoch, epoch + 1, "seed {seed}: a lay-up bumps the epoch");
+        assert!(r.ships.take_commands().is_empty());
+        r.ships.check(&r.world).expect("checks");
+        judged += 1;
+    }
+    assert!(
+        judged > 0,
+        "no seed had the ridden ship in view at the closure"
+    );
+}
+
 /// A ship waiting to lay up (in view, its service laid up) that the player sinks is lost as any
 /// sunk merchant is: its hold goes down, and its slot's respawn falls due a few days later. The
 /// port is still closed then, so the slot lays up in port instead of sailing; the reopening
@@ -1528,7 +1580,8 @@ fn a_closure_is_lifted_when_the_ships_switch_off() {
         let dk = &c.ships.docks[home as usize];
         let at_dock = rtsim_settle::Pos::new(dk.frame, dk.x, dk.z);
         c.world.observe_area(PLAYER, at_dock, on, tun.view_radius);
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         let put = c.ships.stats.relaunches_put_off;
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
         c.ships
@@ -1766,7 +1819,8 @@ fn a_long_switch_off_decides_nothing_in_the_missed_time() {
             let st = c.ships.stats;
             let on = off + 60 * TICKS_PER_DAY;
             c.world.run_until(on);
-            c.ships.session_start();
+            c.ships.begin_replay(true);
+            c.ships.replay_done(&mut c.world);
             c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
             c.ships
                 .check(&c.world)
@@ -1887,7 +1941,8 @@ fn a_held_cargo_lands_in_the_catch_up() {
         let on = last + 2 * TICKS_PER_DAY;
         c.world.run_until(on);
         c.world.check_conserved(on).expect("conserved while off");
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
         for &(id, _, _) in &held {
             assert!(
@@ -1976,7 +2031,8 @@ fn a_lift_clears_the_open_spell() {
         );
         let on = c.ships.now() + 10 * TICKS_PER_DAY;
         c.world.run_until(on);
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
         c.ships.check(&c.world).expect("checks");
         let p = *c.ships.port(TARGET).expect("a state");

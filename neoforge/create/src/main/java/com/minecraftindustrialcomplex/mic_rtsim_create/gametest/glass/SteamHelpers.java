@@ -52,11 +52,11 @@ public final class SteamHelpers {
     /**
      * Marks every block entity in the box from {@code from} to {@code to} (absolute, inclusive) as placed by a
      * player, as it would be in play: each becomes a district seed if it is industrial
-     * ({@code Districts}: a player-placed block entity with a capability or that a plugin recognises). A
-     * factory wider than a chunk needs this. {@link GlassCorpus#prepare} seeds only the stores and the
-     * anchor, and a chunk with neither joins only through a face-adjacent industrial neighbour across its
-     * border: a large cog meshing a small cog diagonally, or a gap, leaves it out, and with it the anchor
-     * when the yard's random position puts a chunk border there.
+     * ({@code Districts}: a player-placed block entity with a capability or that a plugin recognises). Before
+     * slice S6 a factory wider than a chunk needed this: {@link GlassCorpus#prepare} seeds only the stores and
+     * the anchor, and a chunk with neither joined only through a face-adjacent industrial neighbour across its
+     * border, while seeded chunks side by side joined by adjacency. Since S6 no chunks join by adjacency, so
+     * the chunks are joined by {@link GlassCorpus#join}; the seeds stay, as a player's own blocks would be.
      */
     public static void seedAll(GameTestHelper h, BlockPos from, BlockPos to) {
         for (BlockPos p : BlockPos.betweenClosed(from, to))

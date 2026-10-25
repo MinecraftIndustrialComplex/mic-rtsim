@@ -213,6 +213,9 @@ public final class ReinstallGameTests {
                         playerPlaced(helper, m);
                         ms[i++] = m;
                     }
+                    // A and C touch across their border (an inert block on each side, J1): one district, X.
+                    set(helper, new BlockPos(a.getMaxBlockX(), floorY(helper), a.getMinBlockZ() + 4), TestMachines.INERT.get().defaultBlockState());
+                    set(helper, new BlockPos(c.getMinBlockX(), floorY(helper), c.getMinBlockZ() + 4), TestMachines.INERT.get().defaultBlockState());
                 })
                 .thenWaitUntil(() -> {
                     District x = districtAt(helper, ms[0]), y = districtAt(helper, ms[2]);

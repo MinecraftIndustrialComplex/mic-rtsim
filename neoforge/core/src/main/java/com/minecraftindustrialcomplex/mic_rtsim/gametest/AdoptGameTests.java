@@ -23,9 +23,11 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.
  * {@code /rtsim district adopt} detects around the chunks it adopted, not over the whole dimension (DS-12). Each
  * test builds the same world, in chunk offsets from the first whole chunk of the yard: district X (0,0) and (1,0), Y
  * (3,0), and a far Z of four chunks at (7..8, 0..1), each with a player-placed machine; and two machines nobody
- * placed: one at (2,0) between X and Y, one alone at (5,3). Adopting around (4,2) with radius 4 must make one district
- * of X, the bridge and Y, a new district of the lone machine, and leave Z as it was, and the districts must be the
- * ones a full detection gives. Every chunk holds 30 inert block entities besides, so a chunk costs 32 to 34 looks.
+ * placed: one at (2,0) between X and Y, one alone at (5,3). X's two chunks touch across their border, and so do Z's
+ * (an inert block on each side, J1, SECTIONS.md §2.1); nothing touches across any other border, so bare adjacency
+ * joins nothing. Adopting around (4,2) with radius 4 must make a district of the bridge's machine and one of the lone
+ * machine, both new, leave X and Y as they are and Z as it was, and the districts must be the ones a full detection
+ * gives. Every chunk holds 30 inert block entities besides, so a chunk costs 32 to 36 looks.
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -37,7 +39,11 @@ public final class AdoptGameTests {
     private static final int FILLER = 30;
     private static final int[][] PLACED = {{0, 0}, {1, 0}, {3, 0}, {7, 0}, {8, 0}, {7, 1}, {8, 1}};
     private static final int[][] UNADOPTED = {{2, 0}, {5, 3}};
-    /** The chunks the adopt changes, and so detects around: X, Y and the two new ones, each a chunk of 34 looks at most (a look as a root, one as a reached chunk). */
+    /** The chunk pairs that touch across their border: X's two, and Z's four sides. */
+    private static final int[][] TOUCHING = {{0, 0, 1, 0}, {7, 0, 8, 0}, {7, 1, 8, 1}, {7, 0, 7, 1}, {8, 0, 8, 1}};
+    /** The most border blocks a chunk holds: two, in Z. */
+    private static final int JOINERS = 2;
+    /** The chunks the adopt changes, and so detects around: X, Y and the two new ones, each a chunk of 36 looks at most (a look as a root, one as a reached chunk). */
     private static final int LOCAL_CHUNKS = 5;
 
     private static BlockPos fill(GameTestHelper helper, int cx, int cz, boolean placed) {
@@ -45,6 +51,15 @@ public final class AdoptGameTests {
         BlockPos origin = new BlockPos(base.getX() + 16 * cx, base.getY(), base.getZ() + 16 * cz);
         for (int i = 0; i < FILLER; i++)
             set(helper, origin.offset(2 + i % 6, 0, 8 + i / 6), TestMachines.INERT.get().defaultBlockState());
+        // An inert block on the border toward each chunk this one touches (the other side has its own).
+        for (int[] t : TOUCHING)
+            for (int side = 0; side < 2; side++) {
+                int ax = t[2 * side], az = t[2 * side + 1], bx = t[2 - 2 * side], bz = t[3 - 2 * side];
+                if (ax != cx || az != cz)
+                    continue;
+                int lx = bx > ax ? 15 : bx < ax ? 0 : 10, lz = bz > az ? 15 : bz < az ? 0 : 6;
+                set(helper, origin.offset(lx, 0, lz), TestMachines.INERT.get().defaultBlockState());
+            }
         BlockPos m = origin.offset(4, 0, 4);
         set(helper, m, TestMachines.MACHINE.get().defaultBlockState());
         if (placed)
@@ -151,15 +166,17 @@ public final class AdoptGameTests {
         long looked = districts.lastRescanLooked(), longest = districts.lastRescanLongestLooked();
         int slices = districts.lastRescanSlices();
         List<String> local = snapshot();
-        District xy = districtAt(helper, ms[0]);
-        check("X, the bridge and Y are one district of four chunks",
-                xy != null && xy.chunks.size() == 4 && xy == districtAt(helper, ms[2]) && xy == districtAt(helper, ms[PLACED.length]) && xy.seeds() == 4);
+        District x = districtAt(helper, ms[0]), y = districtAt(helper, ms[2]), bridge = districtAt(helper, ms[PLACED.length]);
+        check("X is its two chunks with two seeds", x != null && x.chunks.size() == 2 && x == districtAt(helper, ms[1]) && x.seeds() == 2);
+        check("Y is its one chunk", y != null && y != x && y.chunks.size() == 1 && y.seeds() == 1);
+        check("the bridge's machine is a district of its own: nothing joins it to X or Y",
+                bridge != null && bridge != x && bridge != y && bridge.chunks.size() == 1 && bridge.seeds() == 1);
         District lone = districtAt(helper, ms[PLACED.length + 1]);
-        check("the lone machine is a district of its own", lone != null && lone != xy && lone.chunks.size() == 1 && lone.seeds() == 1);
+        check("the lone machine is a district of its own", lone != null && lone != x && lone != bridge && lone.chunks.size() == 1 && lone.seeds() == 1);
         District z = districtAt(helper, ms[3]);
         check("Z is the district it was, not redeclared", z != null && z.id == zId && z.revision == zRevision && z.chunks.size() == 4);
         int n = districtsInYard(helper);
-        check("three districts, not " + n, n == 3);
+        check("five districts, not " + n, n == 5);
 
         districts.rescanNow(helper.getLevel());
         long fullLooked = districts.lastRescanLooked();
@@ -203,7 +220,7 @@ public final class AdoptGameTests {
                     Districts districts = ind().districts();
                     check("spread over at least four ticks, not " + districts.lastRescanSlices(), districts.lastRescanSlices() >= 4);
                     checkTickBudget(districts, level, BUDGET, ms[0]);
-                    checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + 4));
+                    checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + JOINERS + 4));
                     freeChunks(level, forced);
                 })
                 .thenSucceed();
@@ -233,7 +250,7 @@ public final class AdoptGameTests {
                     check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
                     check("done in the call, nothing left running", a.detected() && !ind().districts().rescanning());
                     check("in one tick", ind().districts().lastRescanSlices() == 1);
-                    checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + 4));
+                    checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + JOINERS + 4));
                     freeChunks(level, forced);
                 })
                 .thenSucceed();
@@ -270,9 +287,10 @@ public final class AdoptGameTests {
                     check("the one detection goes on", ind().districts().rescanning());
                 })
                 .thenWaitUntil(() -> {
-                    District xy = districtAt(helper, ms[0][0]);
-                    check("the running detection made the district of X, the bridge and Y",
-                            !ind().districts().rescanning() && xy != null && xy.chunks.size() == 4 && districtAt(helper, ms[0][PLACED.length + 1]) != null);
+                    District bridge = districtAt(helper, ms[0][PLACED.length]);
+                    check("the running detection made the bridge's district and the lone machine's",
+                            !ind().districts().rescanning() && bridge != null && bridge != districtAt(helper, ms[0][0])
+                                    && districtAt(helper, ms[0][PLACED.length + 1]) != null);
                 })
                 .thenExecute(() -> {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
@@ -321,9 +339,10 @@ public final class AdoptGameTests {
                     check("the one detection goes on", ind().districts().rescanning());
                 })
                 .thenWaitUntil(() -> {
-                    District xy = districtAt(helper, ms[0][0]);
-                    check("the running detection made the district of X, the bridge and Y",
-                            !ind().districts().rescanning() && xy != null && xy.chunks.size() == 4 && districtAt(helper, ms[0][PLACED.length + 1]) != null);
+                    District bridge = districtAt(helper, ms[0][PLACED.length]);
+                    check("the running detection made the bridge's district and the lone machine's",
+                            !ind().districts().rescanning() && bridge != null && bridge != districtAt(helper, ms[0][0])
+                                    && districtAt(helper, ms[0][PLACED.length + 1]) != null);
                 })
                 .thenExecute(() -> {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
