@@ -1543,3 +1543,114 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// A raider whose pages are older than its train raid decides it again after a crash, against an
+/// industry engine that is not held (docs/replay-gate.md §3.6; docs/choices-mowzie-build.md
+/// RP-180 to RP-186). The raid's op is its identity, so the world answers DUPLICATE, the link
+/// drops the loot exchange, and the goods leave the train once. The world save holds the raid's
+/// application and its journaled results (both of Java's saves landed after it, J1); the pages
+/// stop before the raid. Against main's derivation the re-decided raid is a new op, the world
+/// gives the loot twice, and its books no longer close.
+#[test]
+fn a_train_raid_decided_again_after_a_crash_is_applied_once() {
+    use rtsim_industry::cmd::CarriageReason;
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-trainraid");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let train = TrainId(1);
+    let laden = |j: &Java| {
+        industry(&j.e, |ie| {
+            ie.legs()
+                .leg_of(train, ie.now())
+                .and_then(|id| ie.legs().get(id))
+                .is_some_and(|l| l.cargo.iter().any(|c| !c.1.is_empty()))
+        })
+    };
+    let loot_ops = |j: &Java| -> Vec<u64> {
+        j.ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) if d.reason == CarriageReason::Loot => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // The pages stop while the train is under way with cargo, before the raid.
+    loop {
+        while !laden(&j) {
+            j.mc_tick();
+            assert!(j.mc().t < day(8.0), "train 1 under way with cargo");
+        }
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(&mut j, through);
+        if laden(&j) {
+            break;
+        }
+    }
+    let through = j.e.durable_obs_seq();
+    let raid = Threat {
+        id: 0xA11,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::Train(train),
+        loads: None,
+        at: j.mc().t,
+    };
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 100, "the raid's loot is written");
+    }
+    let live = loot_ops(&j)[0];
+    for _ in 0..5 {
+        j.mc_tick();
+    }
+    assert!(
+        j.mc().applied_ops().contains(&OpId(live)),
+        "the world applied the raid"
+    );
+    let stolen = industry(&j.e, |ie| ie.books.stolen.total());
+    assert!(stolen > 0, "the raid took something");
+    // The world saves now, after the raid; the pages never save again before the crash.
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    // The journal's results of the live raid come back first (order O2); then the raider, back
+    // from its own older pages, decides the raid again, at industry's later `now`.
+    j.mc_tick();
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 400, "the raid is decided again");
+    }
+    assert_eq!(
+        loot_ops(&j),
+        vec![live],
+        "the raid decided again carries the op the world applied"
+    );
+    iron_run_to_end(&mut j, &cfg);
+    assert_eq!(industry(&j.e, |ie| ie.books.stolen.total()), stolen);
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
