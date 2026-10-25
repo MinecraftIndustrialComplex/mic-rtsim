@@ -45,7 +45,7 @@ scripts that made them.
 
 | Part | Today | With sections |
 |---|---|---|
-| What joins two chunks into one district | a face touch of industrial block entities across the border, a plugin link (fans, Ender channels), and **any 8-neighbour member chunk** (`Districts.commit`, the loop at `Districts.java:910` to `:915`) | a face touch, a plugin link, one inventory spanning the border, rotation across the border that is not a face touch, an arm or ejector reaching across; never bare adjacency (§2.1) |
+| What joins two chunks into one district | a face touch of industrial block entities across the border, a plugin link (fans, Ender channels), and **any 8-neighbour member chunk** (`Districts.commit`'s 8-neighbour union loop before slice S6) | a face touch, a plugin link, one inventory spanning the border, rotation across the border that is not a face touch, an arm or ejector reaching across; never bare adjacency (§2.1) |
 | Chain conveyors | not a link since DS-10, but chunks still join by adjacency, so a short chain usually sits inside one district | never a join; a chain network whose frogports sit in more than one district is a **package store** owned by no district, with a port at each of its frogports (§2.5) |
 | Packages at frogports | not counted (`IndRecords.Port.PACKAGE` is defined and never sent) | on a package store's network, every package leaving or landing is an `IND_PACKAGE` with a new direction (`CHAIN_OUT`, `CHAIN_IN`) booked into the store, never into the district's links (§2.5) |
 | A kinetic network shared by districts | each district's compile decides its driver from its own engines only (`CreateCompile.java:413` to `:418`, `:452`); districts disagree | a **shared network** in Rust: every district reports its own part from its own compile, the network's state is decided over all parts, and the districts on it replay in one cluster (§2.6) |
@@ -98,13 +98,17 @@ are connected only by these joins:
 | J1 | **Face touch** of two industrial block entities across the border, horizontal faces (`Districts.scanChunk`, its touch loop), **except** where either side is a `ChainConveyorBlockEntity` or a `StationBlockEntity`; two stores side by side still do not join (DS-10). A station's touch names J6's candidates and nothing else | the walk; the class test is `IndustryPlugin.touchJoins` (`CreatePlugin.touchJoins`) | one class test per touch |
 | J2 | **Plugin link** (`IndustryPlugin.links`): a fan's stream (`FanLinks`), an Ender channel; new: a mechanical arm's interaction points (`ArmBlockEntity.inputs`, `outputs`, `ArmInteractionPoint.getPos()`, read through the existing `CreateGlassAccess.armInputs` and `armOutputs`) and a weighted ejector's target (`EjectorBlockEntity.getTargetPosition()` :589) when they lie in another chunk. An arm's lists are empty, never null, until its first tick reads its saved points (`ArmBlockEntity.updateInteractionPoints`, read by `CreateGlassAccess.armPointsPending`, PATCHES.md row 84), so the chunk of an arm that has not ticked keeps its saved pairs (`IndustryPlugin.linksKnown`, choice SC157) | `CreatePlugin.links`: `FanLinks`, then `JoinLinks` | the arm's points, the ejector's one target |
 | J3 | **One inventory across chunks:** a store whose canonical position (`canonicalInventory`, `CreatePlugin.canonicalInventory`: an `IMultiBlockEntityContainer`'s controller, a double chest's lower half) lies in another chunk joins the two chunks; an item vault (`ItemVaultBlockEntity`), a fluid tank, a create_connected item silo (`ItemSiloBlockEntity implements IMultiBlockEntityContainer$Inventory`) or fluid vessel | the walk canonicalizes every candidate and records the pair (`Districts.inventoryJoin`), for tagged storage and plugin inventories. `canonicalInventory` returns null when the controller's chunk is not loaded; the saved pair then stands (§2.3) | one pair per such store |
-| J4 | **Rotation across the border that is not a face touch:** diagonal cogs (`KineticBlockEntity.addPropagationLocations` :559 adds 4 diagonal positions when the cog can propagate diagonally, the lambda at its line 565) and any class that overrides `addPropagationLocations` (Ender Transmission's `EnergyTransmitterBlockEntity` :33), confirmed by Create's own rule (`RotationPropagator.isConnected`, public, :403); chain conveyors excluded on both sides (§2.6) | `JoinLinks.rotation` through `CreatePlugin.links`, for kinetic block entities within one block of a border only, and for overriding classes (`StaleKinetics.ownPropagation`, a per-class cache); a target in another chunk only, read through `getChunkNow` | a few neighbour reads per border cog, counted in the DS-11 budget |
+| J4 | **Rotation across the border that is not a face touch:** diagonal cogs (`KineticBlockEntity.addPropagationLocations` :559 adds 4 diagonal positions when a small cog can propagate diagonally, the lambda at its line 565; a large cog is a `SimpleKineticBlockEntity`, whose override :26 to :34 adds all 12 edge diagonals) and any class that overrides `addPropagationLocations` (Ender Transmission's `EnergyTransmitterBlockEntity` :33), confirmed by Create's own rule (`RotationPropagator.isConnected`, public, :403); chain conveyors excluded on both sides (§2.6) | `JoinLinks.rotation` through `CreatePlugin.links`, for kinetic block entities within one block of a border only, and for overriding classes (`StaleKinetics.ownPropagation`, a per-class cache); a target in another chunk only, read through `getChunkNow` | a few neighbour reads per border cog (at most 11 for a large cog at a chunk corner, 7 diagonals and 4 faces), not counted in the DS-11 budget (§7.1) |
 | J5 | **Merge links** (`/rtsim district merge`) and **pins** (`split`), unchanged | `IndustryData` | none |
-| J6 | **A station's chunk** with no seed of its own joins **exactly one** district: the one holding the inventories its docked interfaces reached last, saved as a join pair (station chunk, served chunk) so it outlives a restart; before the first docking, the lowest district id among those 8-adjacent to it or linked by what touches it (DS-10's anchor rule, narrowed to one). `TrainWatch.ports` resolves each inventory its docked interfaces reach by chunk to whichever district holds it; the district holding the most is served (ties to the lowest id), and `Districts.stationServed` saves the pair (choices SC156, SC158). Before S6 it kept only the station's own district's inventories, so it could never learn another district | the commit (`Rescan.stationJoins`); the pair from `TrainWatch.ports` | none |
+| J6 | **A station's chunk** with no seed of its own joins **exactly one** district: the one holding the inventories its docked interfaces reached last, saved per station (its position to the served chunk) so it outlives a restart, and a chunk with several stations goes by the one at the lowest position that has served; before the first docking, the lowest district id among those 8-adjacent to it or linked by what touches it (DS-10's anchor rule, narrowed to one). `TrainWatch.ports` resolves each inventory its docked interfaces reach by chunk to whichever district holds it; the district holding the most is served (ties to the lowest id), and `Districts.stationServed` saves the pair (choices SC156, SC158). Before S6 it kept only the station's own district's inventories, so it could never learn another district | the commit (`Rescan.stationJoins`); the pair from `TrainWatch.ports` | none |
 
 Bare 8-neighbour adjacency is gone (slice S6): the commit's union runs over the joins the walk recorded
-and the saved pairs (§2.3), and the merge links. `Rescan.grown()` still grows an incremental detection's frontier
-by the 8-neighbour districts, because an edit in one chunk can create a join to the next.
+and the saved pairs (§2.3), and the merge links. An incremental detection still starts from the districts
+owning a dirty chunk or a chunk next to it, because an edit in one chunk can create a join to the next
+(the walk then reaches across it). `Rescan.grown()` adds only what the walk reached: each reached chunk's
+own district and pin, the far end of a merge link, and for a station chunk the districts beside it and the
+one holding its served chunk (J6's candidates). An edit in one of two factories side by side does not walk
+the other.
 
 ### 2.2 The cut points, per mod
 
@@ -113,7 +117,7 @@ by the 8-neighbour districts, because an edit in one chunk can create a join to 
 | Create | chain conveyor (`ChainConveyorBlockEntity`) | **cut**: no touch join (J1) and no rotation join (J4); its network is a package store when its frogports sit in more than one district (§2.5), and a shared kinetic network when its rotation reaches another district (§2.6) | not a node | at the frogports |
 | Create | frogport (`FrogportBlockEntity extends PackagePortBlockEntity`) | stays in its district by its touches to its packager and inventory | a `MOVER` node that claims its 18-slot package inventory (`CreateCompile.java:323` to `:324`, `:1056` to `:1063`; `GraphBuilder.java:229` to `:236`): no store, no cut. On a chain wholly inside the district it keeps today's `CHAIN` edges to the other frogports (`CreateCompile.frogportEdges` :1849) | on a package store's network: leaving at `PackagePortTarget$ChainConveyorFrogportTarget.export` :114 (the conveyor's `addLoopingPackage` :122 or `addTravellingPackage` :123, on a call that is not a simulation); landing at `FrogportBlockEntity.tick` :155, the `insertItem` at :212 after the catch animation (`startAnimation` :223, started by `ChainConveyorBlockEntity.exportToPort` :361) |
 | Create | packager (`PackagerBlockEntity`) | **not a cut** (Q6): it joins its target inventory by touch, and by J3 when the target spans chunks | a mover between its target store and its frogport or postbox | its packages, at the frogport or postbox they go through |
-| Create | train station (`StationBlockEntity`) | **never a touch join** (J1); an anchor that joins exactly one district (J6) | not a node; its portable storage interfaces expose the train's storage, and the movers beside them pull and push | `TRAIN_CARGO` at departure: the whole train's change, with no inventory (`TrainWatch.java:316` to `:328`), mapped to sections through `IND_STATION_PORTS` (§4.4) |
+| Create | train station (`StationBlockEntity`) | **never a touch join** (J1); an anchor that joins exactly one district (J6) | not a node; its portable storage interfaces expose the train's storage, and the movers beside them pull and push | `TRAIN_CARGO` at departure: the whole train's change, with no inventory (`TrainWatch.java:366` to `:381`), mapped to sections through `IND_STATION_PORTS` (§4.4) |
 | Create | postbox (`PostboxBlockEntity extends PackagePortBlockEntity`) | a member of its district | a `MOVER` node claiming its inventory, like a frogport: no cut | mail at `GlobalStation.runMailTransfer` :167 (`MailWatch`, `IND_PACKAGE` IN and OUT with the postbox's inventory), unchanged |
 | Create | item vault, fluid tank (`ItemVaultBlockEntity`, `FluidTankBlockEntity`) | J3 across a border | a `STORE`: a cut, unless it is a boiler (a `BOILER` node joins its engines) | at the movers of each section that uses it, when it is shared (§4.2) |
 | Create | chest, barrel (stock tag) | J1 only with a non-store neighbour | a `STORE`: a cut | at the movers; a vanilla hopper uses the `Container` directly and is not counted, so its store makes a judging group (§4.3) |
@@ -134,26 +138,31 @@ by the 8-neighbour districts, because an edit in one chunk can create a join to 
 - **Each district saves its join pairs** (two chunk positions, 16 bytes a pair) next to its seed counts,
   as a set (a pair is stored once, smaller chunk first). A join needs both chunks loaded to be seen, so
   an unloaded member keeps the joins its district last saw: an incremental detection replaces a
-  district's pairs only between chunks it looked at in that detection (`loadedAtTest`), and keeps the
-  rest. Two exceptions keep a pair the walk did not see: an arm that has not ticked (J2; its chunk keeps
+  district's pairs only between chunks it walked in that detection (`visited`), and keeps the
+  rest. A loaded chunk of the district with a saved pair to a member that is not loaded is a root of the
+  walk (`Rescan.joinedToAway`), as one touching an unloaded member across its border is, so a chunk held only
+  by a link that reaches past the border (an ejector's target, an arm's point) stays while the other end is
+  away. Two exceptions keep a pair the walk did not see: an arm that has not ticked (J2; its chunk keeps
   every saved pair it is in, and the walk reaches their other chunks) and a station that has not docked
-  since (J6; its served chunk is saved apart, per dimension, choice SC156). A district keeps the pairs
+  since (J6; its served chunk is saved apart, per station, choice SC156). A district keeps the pairs
   whose two chunks it holds, so a pair whose chunk is no longer a member of the district is dropped at
   the commit (SC157). Before S6 the 8-neighbour rule needed no memory, which is why this is new.
 - The walk records join pairs where it records touches today. A DS-12 incremental detection records
   only its own walk's joins, so the commit unions the recorded pairs with the saved pairs of the
   districts in question, never with the walk's touches alone (a trap met while making the dump).
 - `IndustryData.FORMAT` goes to 4 with join pairs in slice S6 (3 is S4's package stores;
-  `IndustryData.java:45`). The load path for an older format is §6's.
-- `AdoptGameTests`' rule stays: an adopt gives the same districts a full detection gives.
+  `IndustryData.java:52`). The load path for an older format is §6's.
+- `AdoptGameTests`' rule stays: an adopt gives the same districts a full detection gives. An adopt adds
+  seeds, never joins, so it no longer merges two districts through a chunk between them: that chunk, if
+  anything joined it, was a seedless member already.
 
 ### 2.4 Stations
 
 A station is an anchor, not a seed (DS-10), and never a touch join (J1's exception), so a station
 between two factories no longer glues them. Its chunk joins exactly one district (J6): the one its
 docked interfaces serve, which is where its cargo moves. Train cargo is attributed to that district,
-not to the district at the station's chunk as `TrainWatch` does today (`TrainWatch.java:218` at
-arrival, `:305` after a restart); with J6 the station's chunk is a member of that district, so
+not to the district at the station's chunk as `TrainWatch` did before S6 (`TrainWatch.java:236` at
+arrival, `:347` to `:350` after a restart); with J6 the station's chunk is a member of that district, so
 `districtAt` answers it. Inside the district, the cargo goes to sections as §4.4 says.
 
 ### 2.5 Package networks across districts
@@ -445,7 +454,7 @@ another district's clutch is out of scope here (§14).
 ### 2.8 Reads that load chunks
 
 `Level.getBlockEntity` loads a chunk on the server thread (decompiled `Level.java:707` to `:713`). Each
-load runs `Districts.onChunkLoad` (`Districts.java:223` to `:231`) and `Reconciler.chunkLoaded`
+load runs `Districts.onChunkLoad` (`Districts.java:404`) and `Reconciler.chunkLoaded`
 (`Reconciler.java:122`, which sends `IND_CHUNK_LOADED`), and the engine takes the chunk out of the
 replay (`engine.rs:873` to `:878`, I7) until it unloads again. Cut at chains and shafts, these loads
 cross districts: an away district on a chain or a shared network would be partly loaded at every
@@ -820,10 +829,10 @@ whole (§3.6).
   section for a frogport or postbox (they claim their inventory, §2.2). A port into a shared store is
   in no section's `Y` and cancels in the identity of §4.1, except inside a judging group's row, where
   the store is interior.
-- **Train cargo** is the whole train's change at departure, with no inventory (`TrainWatch.java:316` to
-  `:328`). Portable storage interfaces look up no neighbour: they expose the train's storage, and the
+- **Train cargo** is the whole train's change at departure, with no inventory (`TrainWatch.java:366` to
+  `:381`). Portable storage interfaces look up no neighbour: they expose the train's storage, and the
   movers beside them pull and push. The compile claims each interface that reaches a district inventory with no node (SC95), so a mover
-  beside one has no supply in the graph: what it moves is the cargo, booked as the port. `IND_STATION_PORTS` (`TrainWatch.java:394`) names the district
+  beside one has no supply in the graph: what it moves is the cargo, booked as the port. `IND_STATION_PORTS` (`TrainWatch.ports`, `TrainWatch.java:470`, its record at `:502`) names the district
   inventories the docked interfaces reach through conveyance. The units holding one station's ports are joined
   into one (§4.3, SC75), so the cargo is that unit's port, booked once at its first inventory. Cargo
   naming inventories of several units (before the station's ports joined them) or of a unit and of none
@@ -897,12 +906,19 @@ No migration code (no backward compatibility before release; G2-85). On load:
 - J1 adds a class test per touch. J3 adds one pair per store whose controller lies in another chunk,
   from a canonical position the walk already computes.
 - J2 adds the arm's points and the ejector's target for the arms and ejectors the walk already visits.
-- J4 adds, for kinetic block entities within one block of a border only, the 4 diagonal positions
-  Create lists and an `isConnected` test, read through `getChunkNow` (never loading a chunk). These
-  reads count as looked-at block entities in `rescanBlockEntitiesPerTick`.
+- J4 adds, for kinetic block entities within one block of a border only, the diagonal positions
+  Create lists (4 for a small cog, 12 for a large one, of which at most 7 lie outside its chunk) and an
+  `isConnected` test, read through `getChunkNow` (never loading a chunk). These reads, like J1's face
+  reads and J2's target reads, are not counted in `rescanBlockEntitiesPerTick`: the budget counts the
+  chunk's own block entities and its inventory candidates (`scanChunk`'s return).
 - The commit's union becomes cheaper: over the recorded joins instead of nine lookups per member chunk.
-- Worst case: a district made of border cogs. Each costs at most its 4 diagonal neighbours plus its
-  face neighbours, so the budget still bounds a tick to `rescanBlockEntitiesPerTick` plus one chunk.
+- Worst case: a district made of border cogs. Each costs at most 11 neighbour reads (7 diagonals and 4
+  faces for a large cog at a chunk corner) besides itself, so a tick's reads stay within a small multiple
+  of `rescanBlockEntitiesPerTick` plus one chunk; the time limit (`rescanSliceMicros`, R2-11) bounds the
+  tick whatever the reads.
+- `Rescan.grown()` no longer pulls in the 8-neighbour districts of every reached chunk (§2.1), so an
+  incremental detection walks the districts its edit can join, not a whole patch of factories side by
+  side. `Rescan.joinedToAway` reads each district's saved pairs once a detection.
 - Join pairs: 16 bytes each; a district has at most its touches' worth.
 
 ### 7.2 Sections (engine)
@@ -1019,7 +1035,7 @@ inside the yard, as `CreateSeedGameTests`' chain helper does.
 | `aHeldPackageDrawnIsRemovedOnce` | the far district drew a held package | it is never handed on; after the far reconcile it is gone from the chain; after an engine reset before the reconcile its key is stripped and it lands as a normal `CHAIN_IN` |
 | `aPlayerTakesAPackageOffTheChain` | a player takes a package off a store's chain and hangs another | the next census sets the pools; no pool goes below zero |
 | `aNetworkRecountKeepsAnUnloadedSource` (S1's, extended in S5-1) | a motor's network across two districts, the motor's chunk unloaded | the loaded half keeps its speed, is not overstressed and keeps the motor's capacity, 600 ticks on and through a recount, with S1's guard on (§2.6, SC148) |
-| `AdoptGameTests`, `RescanBudgetGameTests`, `DistrictSeedGameTests`, `CreateSeedGameTests` | existing | still pass: adopt equals a full detection, the budget holds |
+| `AdoptGameTests`, `RescanBudgetGameTests`, `DistrictSeedGameTests`, `ReinstallGameTests`, `CreateSeedGameTests` | existing, layouts changed in S6 | adopt equals a full detection, the budget holds. Their chunks side by side were one district by adjacency; S6 gives the budget, adopt and reinstall layouts an inert block on each side of a border that should join (J1), the adopt's bridge chunk becomes a district of its own (an adopt adds seeds, not joins), and the seed test's diagonal marker is a district of its own |
 
 ### 9.2 GameTests, sections (Level 2)
 
@@ -1402,8 +1418,8 @@ The options below stay as the record of what was offered.
 | SC153 | Slice S5-2: a crossing network is a SHARED part in each district's compile (§2.6), its parts joined in Rust by shared source positions (`glass/net.rs`, derived from the compiled graphs, never saved), in each part's frame through the network's anchor. A coupled network's part solves with what the rest gives (`NetInput` per domain, in the regime and its key). One cluster per district: an owner's change settles each reader to that tick and re-runs its parts, up to `NET_ROUNDS` (8) rounds a tick, then oscillating. An incomplete network or one past `industry.clusterDistrictsMax` parts runs decoupled: each part at its compile row, its members bounded (why `SHARED_NETWORK`, 20). After each rebuild the domain check runs across districts (§3.6): a unit whose passed capacity is below its own stress plus the others' at that speed goes stale. Glass pages go to IGL7 (the regimes' and replays' network inputs and published rows); an IGL6 page is read as dropped | one cluster per district keeps the costs S4 bounds and needs no merge for a network (plan review, fix 3); a part per compile keeps each compile reading only its own chunks (S1); positions identify a network where Create's id changes when another source takes over; no compatibility before a release |
 | SC154 | A boiler with water and size but no heat (its burners out: a blaze burner below FADING) is passive, as Create's `BoilerData.isPassive`: its engines run at an efficiency of 1/8 shared by its engines (16 RPM, 128 SU per RPM over the engine count). Each driven source has a 20th row (selector 19, `PASSIVE_SELECTOR`), which the solve takes when every heater under the boiler is out and it has water and size; Java's current row is 19 when Create's boiler is passive | Create keeps a line turning slowly on a passive boiler (`BoilerHeaters.blazeBurner` gives passive heat below FADING); without the row, a burner out stopped the line in the model. Limits: heaters Create counts as passive by tag (a campfire, lava, magma) are not heaters in the model, so a boiler on them alone is not passive there: Java's current row says passive (19), the solve says stopped, and the unit's windows can be expected to fail where its counts move (§14) |
 | SC155 | `IndustryData` format 4 (slice S6) drops the districts as format 3 does (SC98) and keeps the plugins' state when the old format is 3 or newer (`PLUGINS_KEPT_SINCE`): the package stores' ids and frogports | the engine keeps its package stores in pages through `IND_DISTRICT_REMOVED` (SC143); dropping Java's would number new stores from 1 against stores the engine keeps |
-| SC156 | A station's served chunk (J6) is saved per dimension in `IndustryData` (`stationJoins`: the station's chunk to the chunk of the served district's lowest inventory), not among a district's pairs. The commit moves each group of member chunks with no seed that holds a station's chunk to the district holding its served chunk, else to the lowest district id 8-adjacent to its station chunk or touched by its station, else it is no district; the districts here are the seeded ones, so one station group never joins another. An entry goes when a detection looked at either chunk and it is in no district | before the attach the two chunks lie in different districts or none, so the pair has no district to live in; one entry per station chunk keeps "exactly one" |
-| SC157 | Join pairs are replaced at chunk grain: a saved pair goes when the walk looked at both its chunks, unless either holds a block whose links are not known yet (`IndustryPlugin.linksKnown`: an arm before its first tick), whose chunk keeps every saved pair it is in and whose walk reaches their other chunks. Each district keeps the pairs whose two chunks it holds | SC5's rule: what the walk did not see stays as it was last seen, and an arm's empty lists before its first tick are not a sighting |
+| SC156 | A station's served chunk (J6) is saved per dimension in `IndustryData` (`stationJoins`: the station's position to the chunk of the served district's lowest inventory), not among a district's pairs. A chunk with several stations goes by the one at the lowest position (`BlockPos.asLong`) that has an entry (`Districts.servedByChunk`). The commit moves each group of member chunks with no seed that holds a station's chunk to the district holding its served chunk, else to the lowest district id 8-adjacent to its station chunk or touched by its station, else it is no district; the districts here are the seeded ones, so one station group never joins another. An entry goes when a detection looked at either chunk and it is in no district, and only an entry the detection began with (one a departure saved meanwhile waits for the next detection) | before the attach the two chunks lie in different districts or none, so the pair has no district to live in. Keyed by station chunk, two stations of one chunk serving two districts overwrote each other at every departure and moved the chunk to and fro (each move a redeclare and a glass recompile); keyed by station with the lowest one deciding, the chunk stays put and the other station's ports go unlearned (§14) |
+| SC157 | Join pairs are replaced at chunk grain: a saved pair goes when the walk walked both its chunks, unless either holds a block whose links are not known yet (`IndustryPlugin.linksKnown`: an arm with saved points it has not read, PATCHES.md row 84), whose chunk keeps every saved pair it is in and whose walk reaches their other chunks. A loaded chunk with a saved pair to a member that is not loaded roots the walk (`Rescan.joinedToAway`). Each district keeps the pairs whose two chunks it holds | SC5's rule: what the walk did not see stays as it was last seen, and an arm's empty lists before its first tick are not a sighting |
 | SC158 | A station serves the district holding the most of the inventories its docked interfaces reach (ties to the lowest id). `IND_STATION_PORTS` still names the station's own district and its inventories only, where its cargo is booked | the engine matches a call's cargo against the ports of the district its arrival names (the station's chunk's), so a record for another district would join that district's units for cargo that never comes there (SC75) and leave the station's own exchange without ports; after the attach the two are one |
 | SC159 | A touch of a station or a chain conveyor is no touch: it joins nothing and gives no crossing code (`notLearnable` at a split); a station's touch names J6's candidates. Test districts (`addChunkForTest`) join a new chunk to an 8-adjacent member, else to the district's anchor chunk | J1's exceptions; a crossing code describes a join the operator cut, and these never join. The test helper keeps the fixtures' districts whole now adjacency joins nothing |
 
@@ -1471,9 +1487,20 @@ The options below stay as the record of what was offered.
   - J3 is seen from a chunk whose block leads to the controller in another chunk: a vault whose other
     chunks hold nothing the walk reaches stays in its controller's chunk's district alone, and those
     chunks are no members.
-  - J6's attach needs the served district in the detection: `stationServed` marks both chunks when it
-    learns a new served chunk, but a later detection of the station's group alone, while it is in no
-    district, falls back to its neighbours.
+  - J6's attach needs the served district in the detection: `Rescan.grown()` adds the district holding a
+    reached station chunk's served chunk, and `stationServed` marks both chunks when the served chunk
+    changes. A station chunk the walk does not reach (an unloaded member) adds no candidates, so its group
+    attaches among the districts the detection already holds.
+  - Two stations in one seedless chunk that serve two districts: the chunk goes with the station at the
+    lowest position (SC156); the other station's cargo is booked to that district, which holds none of
+    its interfaces' inventories, so it learns no ports there and its cargo stays the district's.
+  - A station chunk in no district never learns where it serves: an arrival there is unwatched
+    (`IND_TRAIN_UNWATCHED`, SG50), so its departure runs no `ports` and calls no `stationServed`. A
+    platform whose station block lies outside every district while its carriages dock in a factory stays
+    outside, as before S6, unless a seeded district is 8-adjacent to the station's chunk or touched by
+    its station (J6's fallback).
+  - An arm in a loaded chunk that does not tick (or whose range is not loaded) keeps its points unread,
+    so its chunk keeps its saved pairs until it ticks (SC157), whatever has changed around it.
 - **Fluid counting** (§4.2): which position names a pipe network's mover is UNVERIFIED. Until it is, a
   store shared by two sections through pipes is a judging group.
 - **Counting at the movers** (§4.2, S3). Verified by GameTest at a vault between two lines
