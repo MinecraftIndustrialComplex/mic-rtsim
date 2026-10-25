@@ -923,6 +923,10 @@ pub struct Conflict {
     /// one for each camp. Saved in the meta page, so the link never walks the factions' rows for
     /// them.
     pub placing: Vec<(u32, Placing)>,
+    /// The factions whose camps owe tribute in the session's replay (RP-134): those that owed at
+    /// its start and those a replayed payment made owe, which a replayed answer to a stack no
+    /// placing holds is looked up in. In memory only, emptied at the replay end.
+    pub(crate) tribute_owing: Vec<u32>,
     /// Whether the session's replay runs on an engine that came back from its pages (RP-31):
     /// only then is a replayed BAND_MATERIALIZED the last session's answer to this engine's
     /// decision (docs/replay-gate.md §5.2). Set by [`Conflict::begin_replay`]; in memory only.
@@ -1075,6 +1079,7 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             placing: Vec::new(),
+            tribute_owing: Vec::new(),
             replay_from_pages: false,
             floors: BTreeMap::new(),
             fill_deaths: BTreeMap::new(),
@@ -5693,6 +5698,8 @@ impl Conflict {
         // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
         self.held.clear();
         self.unheld_fights.clear();
+        // Live, every stack in flight is a placing (RP-134).
+        self.tribute_owing = Vec::new();
         // The world saves reported meanwhile make their answers forgettable now (RP-68).
         self.durable_obs_seq = self
             .durable_obs_seq
