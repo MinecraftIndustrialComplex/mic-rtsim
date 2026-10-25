@@ -283,6 +283,70 @@ public final class ConflictKit {
     }
 
     /**
+     * BAND_MARCH (docs/boundary.md §9.3, MZB-468): the march of {@code agent} as the engine says it, latest by
+     * {@code revision}. {@code units} are body names with their counts, {@code waypoints} are {@code {x, z, tick}}
+     * in the route's chart, {@code flags} are {@link ConflictRecords.March#FLAG_CHIEF} and the like.
+     */
+    public record MarchSpec(long agent, int revision, String dimension, long faction, int kind, int phase, int flags, long musterEnd,
+                            Map<String, Integer> units, List<long[]> waypoints) {}
+
+    public static void march(MarchSpec m) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, m.dimension());
+            int k = m.units().size();
+            int[] bodies = new int[k];
+            int j = 0;
+            for (String body : m.units().keySet())
+                bodies[j++] = out.dict(Obs.DICT_BODY, body);
+            int w = m.waypoints().size();
+            int at = out.reserve(ConflictRecords.BAND_MARCH, ConflictRecords.March.size(k, w), w);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.March.AGENT, m.agent());
+            b.putInt(at + ConflictRecords.March.REVISION, m.revision());
+            b.putInt(at + ConflictRecords.March.DIM, dim);
+            b.putLong(at + ConflictRecords.March.FACTION, m.faction());
+            b.put(at + ConflictRecords.March.KIND, (byte) m.kind());
+            b.put(at + ConflictRecords.March.PHASE, (byte) m.phase());
+            b.put(at + ConflictRecords.March.FLAGS, (byte) m.flags());
+            b.putLong(at + ConflictRecords.March.MUSTER_END, m.musterEnd());
+            b.putInt(at + ConflictRecords.March.UNITS, k);
+            int u = at + ConflictRecords.March.UNIT_LIST;
+            j = 0;
+            for (int count : m.units().values()) {
+                b.putInt(u + ConflictRecords.March.U_BODY, bodies[j++]);
+                b.putInt(u + ConflictRecords.March.U_COUNT, count);
+                u += ConflictRecords.March.UNIT;
+            }
+            for (long[] p : m.waypoints()) {
+                b.putInt(u + ConflictRecords.March.W_X, (int) p[0]);
+                b.putInt(u + ConflictRecords.March.W_Z, (int) p[1]);
+                b.putLong(u + ConflictRecords.March.W_TICK, p[2]);
+                u += ConflictRecords.March.WAYPOINT;
+            }
+        });
+    }
+
+    /** Members the trim has cut this session (MZB-473); the walk-ins and the clamps of a stopped band (MZB-472). */
+    public static long trimmed() {
+        return bridge().trimmed;
+    }
+
+    public static long walkIns() {
+        return bridge().walkIns;
+    }
+
+    public static long clamps() {
+        return bridge().clamps;
+    }
+
+    /** Losses of members of a party the engine had already ended (MZB-466's Java half). */
+    public static long unbookedHomeDeaths() {
+        return bridge().unbookedHomeDeaths;
+    }
+
+    /**
      * OWED_HUNT, as the engine sends a debt of animals a raid on an unwatched district left (docs/boundary.md §9.4):
      * {@code count} animals within {@code radius} of the centre, or {@code rest} when {@code replaced} is the op last applied.
      */
