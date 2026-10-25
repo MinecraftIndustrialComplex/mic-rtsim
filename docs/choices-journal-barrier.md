@@ -190,9 +190,14 @@ to now.
   found and neither is a J3 hazard in these setups; they stay on the deferral for the order's sake
   (above) and because one rule with no exceptions is easier to keep true. Reversible: take them at
   once as before.
-- All kinds of the brief's item 5 (VILLAGE_ADOPTED, BASE, HURT, RESCUE, TALKED) go through `book`
-  with their guards resolved; the quiet-window control (a window with no records changes nothing,
-  the capture matches) and the existing TALK, works and adoption tests cover them.
+- Item 5 (VILLAGE_ADOPTED, BASE, HURT, RESCUE, TALKED) all go through `book` with their guards
+  resolved. HURT and RESCUE of a caravan: `REPORTS 0 (want 2)` on the base. TALKED:
+  `talk_stats().talked 0 (want 1)` on the base, and the same op id again changes nothing. A base
+  marked while off is kept and is a node afterwards (unit test); the adoption is the unit test
+  `a_switched_off_phase1_keeps_its_records_and_catches_up`. HURT, RESCUE and a base of a village (as
+  against a caravan) go through the same `known` guard, which the adoption and base tests exercise;
+  no test sends a RESIDENT_HURT, a resident RESCUE or a base UNMARK while off. A quiet-window control
+  (no records: nothing changes, the capture matches) keeps the comparison honest.
 
 **Left.**
 
