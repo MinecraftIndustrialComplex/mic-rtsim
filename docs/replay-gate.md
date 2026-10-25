@@ -1817,8 +1817,10 @@ its files on disk, the rest from the save before. Two directions:
    journal's file did not, whose resend the engine dropped. Harmless (it can only refuse that op), and the
    cap pushes it out. An entry the cap pushes out before the journal's file holds it is counted as an
    overflow; its resend would be applied again.
-6. **Slice T2's limits** (RP-192, RP-193): an op pushed out of a train's 256-op ring, and the journal's
-   index as the fallback when the ring's mixin did not apply.
+6. **The fixed rings' limits** (RP-192, RP-193, RP-206): an op pushed out of a train's or a port's
+   256-op ring before the journal's file holds it, which a hold lasting hours makes possible (§6.1,
+   "Slice U and the ring's bound"), and the journal's index as the train's fallback when the ring's
+   mixin did not apply.
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 
