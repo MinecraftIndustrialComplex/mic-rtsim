@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
@@ -438,8 +439,9 @@ public final class DragonGameTests {
      * a copy built from the puppet's NBT (its tag included) is discarded as it joins, under another UUID or
      * an older epoch, so a save and reload never makes a second dragon.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 300, batch = "dragon_save")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "dragon_save")
     public static void aPuppetDragonIsNeverSavedAndACopyNeverJoins(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 300);
         String test = "aPuppetDragonIsNeverSavedAndACopyNeverJoins";
         long agent = DragonKit.newAgent();
         Vec3 c = DragonKit.centre(helper);
@@ -452,7 +454,7 @@ public final class DragonGameTests {
         UUID[] id = new UUID[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> body(agent))
+                .thenWaitUntil(waits.logic(() -> body(agent)))
                 .thenExecute(() -> {
                     DragonBaseEntity d = body(agent);
                     id[0] = d.getUUID();
@@ -461,7 +463,7 @@ public final class DragonGameTests {
                     check("the pig is saved", pig.shouldBeSaved());
                     read[0] = DragonKit.saveAndReadBack(helper.getLevel(), chunk);
                 })
-                .thenWaitUntil(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone()))
+                .thenWaitUntil(waits.chunks(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone())))
                 .thenExecute(() -> {
                     List<Entity> loaded = read[0].join();
                     check("the pig reached the disk", loaded.stream().anyMatch(e -> e.getUUID().equals(pig.getUUID())));
@@ -487,7 +489,7 @@ public final class DragonGameTests {
                     pig.discard();
                     DragonKit.depart(agent, 1, 1, 20, c.add(-400, 40, 0));
                 })
-                .thenWaitUntil(() -> check("captured", !about(DragonRecords.DRAGON_DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("captured", !about(DragonRecords.DRAGON_DEMATERIALIZED, agent).isEmpty())))
                 .thenSucceed();
     }
 
