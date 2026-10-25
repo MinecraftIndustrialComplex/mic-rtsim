@@ -843,6 +843,36 @@ fn a_train_passed_is_no_longer_deferred() {
     assert!(!Conflict::later(&o));
 }
 
+/// A TRAIN_PASSED has no op id and Java never copies one (it is journaled at once, with no
+/// holder): a copy, were one ever sent, comes at a later tick, rolls a new slot and could rob the
+/// train a second time, so `ingest_copy` drops it after its epoch's fold (RP-150). The same
+/// record ingested robs, as the control.
+#[test]
+fn a_copied_train_passed_is_dropped_and_robs_nothing() {
+    let mut l = Lurk::raid(89);
+    let mut rails = Rails::new(&l.w, Some(3));
+    l.until_lurking();
+    l.said.clear();
+    l.c.tun.ambush_milli = 1000;
+    let tp = TrainPassed {
+        agent: Party::agent(l.p),
+        epoch: l.c.parties[l.p].epoch,
+        flags: 0,
+        carriage: 0,
+        train: 7,
+    };
+    let at = l.c.now() + 10;
+    l.c.ingest_copy(&mut l.w, &mut rails, &Obs::TrainPassed(tp), at);
+    l.said.extend(l.c.take_commands());
+    assert_eq!((l.c.stats.passes, l.c.stats.lurk_robberies), (0, 0));
+    assert!(rails.threats.is_empty(), "no threat asked");
+    assert!(l.robbed().is_empty());
+    assert!(l.c.lurking(l.p), "the lurk goes on");
+    l.pass_of(&mut rails, tp, 10);
+    assert_eq!((l.c.stats.passes, l.c.stats.lurk_robberies), (1, 1));
+    assert_eq!(l.robbed(), vec![7]);
+}
+
 /// A pass rolls: a hit raids the train (one threat a class) and sends TRAIN_ROBBED; a miss sends
 /// nothing.
 #[test]

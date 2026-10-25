@@ -6408,6 +6408,11 @@ impl Conflict {
             // older chest or free count over a newer one. Dropped, as RP-104 drops RAIL_PASS
             // (RP-130).
             Obs::HavenChest(_) => {}
+            // A TRAIN_PASSED has no op id and Java never copies one (ConflictBridge journals it at
+            // once, with no holder): a copy, were one ever sent, would roll again at its own tick
+            // and could rob the train twice, so it is dropped after the fold, as RP-104 drops
+            // RAIL_PASS (RP-150).
+            Obs::TrainPassed(_) => {}
             _ => self.ingest(w, infra, o, at),
         }
     }
