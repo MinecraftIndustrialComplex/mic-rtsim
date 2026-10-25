@@ -179,6 +179,8 @@ public final class ConflictBridge implements SessionPlugin {
         final Set<Integer> waves = new HashSet<>();
         float speed;
         boolean attack;
+        /** The column's heading (a unit vector, MZB-469): from the head toward the walk's target; a steer turns it. */
+        double hdx = 1.0, hdz = 0.0;
         UUID targetPlayer;
         boolean recalling;
         long recallDeadline;
@@ -242,7 +244,11 @@ public final class ConflictBridge implements SessionPlugin {
         /** The anchor walks from (ax, az) at t0 to (ex, ez) at t1. */
         double ax, az, ex, ez;
         long t0, t1;
-        /** Its place beside the band's target (blocks, x and z). */
+        /** Its place in the column (MZB-469): {@code back} behind the head, {@code side} to its right (blocks). */
+        double back, side;
+        /** The war chief's stack: the chief alone, at the column's rear. */
+        boolean chief;
+        /** Its place beside the band's target (blocks, x and z): {@code -h * back + r * side}, from the column's heading. */
         double offX, offZ;
         /** The way it faces (a unit vector). */
         double hx = 1.0, hz = 0.0;
@@ -1017,51 +1023,42 @@ public final class ConflictBridge implements SessionPlugin {
                 at0[i] = new double[]{cx + radius * Math.cos(a), cz + radius * Math.sin(a)};
             }
         }
-        // The band's heading, from where it appears to its target; stacks side by side across it.
-        double mx = 0, mz = 0;
-        for (double[] q : at0) {
-            mx += q[0] / m;
-            mz += q[1] / m;
+        // The column's heading (MZB-469). Met on the march (radius 0) it is the march's: the record's bearing, from +x
+        // toward +z. On an arc it runs from where the stacks appear to their target.
+        double hx, hz;
+        if (radius == 0) {
+            double[] h = MarchColumn.heading(bearing);
+            hx = h[0];
+            hz = h[1];
+        } else {
+            double mx = 0, mz = 0;
+            for (double[] q : at0) {
+                mx += q[0] / m;
+                mz += q[1] / m;
+            }
+            double hd = Math.hypot(tx - mx, tz - mz);
+            hx = hd > 1e-6 ? (tx - mx) / hd : 1.0;
+            hz = hd > 1e-6 ? (tz - mz) / hd : 0.0;
         }
-        double hd = Math.hypot(tx - mx, tz - mz);
-        double hx = hd > 1e-6 ? (tx - mx) / hd : 1.0, hz = hd > 1e-6 ? (tz - mz) / hd : 0.0;
-        double rx = -hz, rz = hx;
+        p.hdx = hx;
+        p.hdz = hz;
         int first = p.stacks.size();
         Lurk lurk = lurks.get(agent);
         boolean chiefFlag = (pflags & ConflictRecords.Materialize.FLAG_CHIEF) != 0;
+        boolean[] pack = new boolean[m], chief = new boolean[m];
         for (int i = 0; i < m; i++) {
-            boolean chief = chiefFlag && (sflags[i] & ConflictRecords.Materialize.STACK_CHIEF) != 0;
-            if (counts[i] == 0 && !chief)
-                continue; // a chief's stack with no units left is the chief alone
-            Kind k = kinds.get(i);
-            Stack st = new Stack(p, p.stacks.size(), wave);
-            double side = (i - (m - 1) / 2.0) * STACK_SPACING;
-            st.offX = rx * side;
-            st.offZ = rz * side;
-            double sx = at0[i][0], sz = at0[i][1];
-            if (radius == 0) {
-                sx += st.offX;
-                sz += st.offZ;
-            }
-            st.ax = st.ex = sx;
-            st.az = st.ez = sz;
-            st.t0 = st.t1 = now;
-            st.hx = hx;
-            st.hz = hz;
-            for (int g = 0; g < counts[i]; g++)
-                st.slots.add(new Slot(st, false, false, k.body(), k.javaBody(), k.type(), lateral(g, counts[i]), ROW * (g / 2)));
-            if (chief) {
-                // The war chief is no unit of the band (the engine counts it apart): an extra body of the
-                // stack's kind at its rear (MZB-109).
-                st.slots.add(new Slot(st, true, false, k.body(), k.javaBody(), k.type(), 0.0, ROW * ((counts[i] + 1) / 2)));
-            }
-            if ((sflags[i] & ConflictRecords.Materialize.STACK_BARE) != 0)
-                for (Slot sl : st.slots)
-                    sl.bare = true;
-            st.walk(tx + st.offX, tz + st.offZ, p.speed, 0L, now);
-            if (lurk != null)
-                anchorAtSpot(st, lurk, now); // a lurking agent's stack stands at the spot, not on the arc (MZB-360)
-            p.stacks.add(st);
+            pack[i] = ConflictBodies.pack(kinds.get(i).body());
+            chief[i] = chiefFlag && (sflags[i] & ConflictRecords.Materialize.STACK_CHIEF) != 0;
+        }
+        boolean met = radius == 0;
+        for (MarchColumn.Plan pl : MarchColumn.plan(counts, pack, chief, met)) {
+            Kind k = kinds.get(pl.entry());
+            Stack st = columnStack(p, wave, at0[pl.entry()], met, hx, hz, pl.back(), pl.side(), now);
+            st.chief = pl.chief();
+            // The war chief is no unit of the band (the engine counts it apart): an extra body of the entry's kind (MZB-109).
+            for (int g = 0; g < pl.slots(); g++)
+                st.slots.add(new Slot(st, pl.chief(), false, k.body(), k.javaBody(), k.type(), lateral(g, pl.slots()), 0.0));
+            launch(st, (sflags[pl.entry()] & ConflictRecords.Materialize.STACK_BARE) != 0, tx, tz, lurk, now);
         }
         int n = 0;
         for (int i = first; i < p.stacks.size(); i++) {
@@ -1070,6 +1067,39 @@ public final class ConflictBridge implements SessionPlugin {
                 n += st.alive();
         }
         journalMaterialized(p, wave, pflags, n, now);
+    }
+
+    /**
+     * A stack of the column (MZB-469) at {@code back} behind the head and {@code side} to its right, its slots still to
+     * add. Its offset from the head is {@code -h * back + r * side} with {@code r = (-hz, hx)}. Met on the march
+     * ({@code met}) it starts at the head (the arc's centre) plus that offset; on an arc it starts at its entry's arc
+     * point {@code base}, back from there, and walks to the target plus the offset that keeps its side.
+     */
+    private static Stack columnStack(Party p, int wave, double[] base, boolean met, double hx, double hz, double back,
+            double side, long now) {
+        Stack st = new Stack(p, p.stacks.size(), wave);
+        st.back = back;
+        st.side = side;
+        double[] off = MarchColumn.offset(hx, hz, back, side);
+        st.offX = off[0];
+        st.offZ = off[1];
+        st.ax = st.ex = met ? base[0] + st.offX : base[0] - hx * back;
+        st.az = st.ez = met ? base[1] + st.offZ : base[1] - hz * back;
+        st.t0 = st.t1 = now;
+        st.hx = hx;
+        st.hz = hz;
+        return st;
+    }
+
+    /** A column stack with its slots: bare when its entry says so, walking to the target plus its offset, then in the party. */
+    private void launch(Stack st, boolean bare, double tx, double tz, Lurk lurk, long now) {
+        if (bare)
+            for (Slot sl : st.slots)
+                sl.bare = true;
+        st.walk(tx + st.offX, tz + st.offZ, st.party.speed, 0L, now);
+        if (lurk != null)
+            anchorAtSpot(st, lurk, now); // a lurking agent's stack stands at the spot, not on the arc (MZB-360)
+        st.party.stacks.add(st);
     }
 
     /** {@code flags}: the command's, echoed (docs/boundary.md §9.3): a replay tells a fight from a sighting by them. */
@@ -2568,16 +2598,17 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** A stack of a lurking party stands at the spot, its heading toward the rail, in place (the puppets walk there). */
     private static void anchorAtSpot(Stack st, Lurk l, long now) {
-        st.ax = st.ex = l.spot().x;
-        st.az = st.ez = l.spot().z;
-        st.t0 = st.t1 = now;
-        st.offX = st.offZ = 0.0;
         double dx = l.track().x - l.spot().x, dz = l.track().z - l.spot().z;
         double d = Math.hypot(dx, dz);
         if (d > 1e-6) {
             st.hx = dx / d;
             st.hz = dz / d;
         }
+        // The column's rows keep their distance behind the spot (MZB-469); the sides fall together, as an entry's did.
+        st.ax = st.ex = l.spot().x - st.hx * st.back;
+        st.az = st.ez = l.spot().z - st.hz * st.back;
+        st.t0 = st.t1 = now;
+        st.offX = st.offZ = 0.0;
     }
 
     /**
