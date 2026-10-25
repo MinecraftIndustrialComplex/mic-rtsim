@@ -218,6 +218,12 @@ public final class RtsimSession {
     long removedByOther;
     long passNanos;
     long reasserted;
+    /**
+     * Holders whose pending records were journaled in this session (a load's reassert or a carry), so a
+     * camp's census can journal the rest of its footprint's holders first, once each (MZB-174, MZB-201).
+     * Weak: an unloaded holder is journaled again when it loads.
+     */
+    private final java.util.Set<Entity> asserted = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
     /** Pending records a holder brought from an earlier engine life, dropped unjournaled (RG14). */
     long stalePending;
     /** Leaders steered again after a seam folded them (TP11). */
@@ -288,6 +294,26 @@ public final class RtsimSession {
     /** An entity carries journal records until the engine acknowledges {@code lastSeq} (B42). */
     public void carryOnEntity(Entity holder, java.util.List<byte[]> records, long lastSeq) {
         carry(holder, records, lastSeq);
+    }
+
+    /**
+     * The tag of a {@code minecraft:marker} that only holds records (MOWZIE.md §4.9): it is discarded once
+     * the engine has acknowledged what it holds. Saved in the marker's vanilla {@code Tags}, so a world
+     * without rtsim keeps an inert marker (no tick, never sent to a client).
+     */
+    public static final String RECORD_MARKER_TAG = "mic_rtsim.record";
+
+    /**
+     * A camp record rides on a body or a marker (MOWZIE.md §4.9): carried as {@link #carryOnEntity}, and the
+     * journal's next file waits for the holder's entity chunk (ledger 22). The records come with the
+     * generation each was journaled in (docs/boundary.md §3.2, MZB-652): a marker takes over a body's
+     * records from earlier sessions, and a copy of one is judged by the generation that first journaled it,
+     * so it must not be stamped with this session's.
+     */
+    public void carryOnCampHolder(Entity holder, java.util.List<com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry> records, long lastSeq) {
+        carryEntries(holder, records, lastSeq);
+        if (holder.level() instanceof ServerLevel level)
+            journalData.chunks().dependsOnHolder(level, holder);
     }
 
     public Engine engine() {
@@ -904,21 +930,59 @@ public final class RtsimSession {
         }
     }
 
-    /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
+    /**
+     * Adds records journaled in this session to an entity's pending list, to be dropped once {@code lastSeq}
+     * is acknowledged.
+     */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        java.util.List<com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry> entries = new java.util.ArrayList<>(records.size());
+        for (byte[] r : records)
+            entries.add(new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry(boundary.gen(), r));
+        carryEntries(holder, entries, lastSeq);
+    }
+
+    /** As {@link #carry}, for records that already carry the generation they were journaled in. */
+    private void carryEntries(Entity holder, java.util.List<com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry> entries, long lastSeq) {
+        ensureReasserted(holder); // what it carried from disk goes first, under its own sequence
+        asserted.add(holder);
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
-        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), records));
+        if (!old.isEmpty() && old.life() != engineLife)
+            stalePending += old.entries().size(); // of an engine that started over (RG14): left out below, never journaled; counted, not asserted
+        holder.setData(RtsimAttachments.PENDING, old.plusEntries(engineLife, entries));
         dropPendingWhenAcked(holder, lastSeq);
     }
 
+    /**
+     * Once {@code lastSeq} is acknowledged, drops the records the holder carries now (each journaled at or
+     * before it), by identity: a record carried later, under a newer sequence, stays until its own
+     * acknowledgement (MZB-212). A record marker left with none is discarded. It finds the holder among the
+     * visible entities only, so one that is hidden when the acknowledgement comes keeps its records until
+     * its next reassert, which drops them at the next acknowledgement; that is harmless (MZB-241).
+     */
     private void dropPendingWhenAcked(Entity holder, long lastSeq) {
         ResourceKey<Level> dim = holder.level().dimension();
         UUID id = holder.getUUID();
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords now = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
+        java.util.Set<byte[]> acked = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (now != null)
+            acked.addAll(now.records());
         whenAcked(lastSeq, () -> {
             ServerLevel level = server.getLevel(dim);
             Entity e = level == null ? null : level.getEntity(id);
-            if (e != null)
-                e.removeData(RtsimAttachments.PENDING);
+            if (e == null)
+                return; // unloaded: journaled again when it loads
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = e.getExistingDataOrNull(RtsimAttachments.PENDING);
+            if (p != null) {
+                com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords keep = p.filter(r -> !acked.contains(r));
+                if (keep.isEmpty())
+                    e.removeData(RtsimAttachments.PENDING);
+                else if (keep.entries().size() != p.entries().size())
+                    e.setData(RtsimAttachments.PENDING, keep);
+                if (!keep.isEmpty())
+                    return;
+            }
+            if (e instanceof net.minecraft.world.entity.Marker && e.getTags().contains(RECORD_MARKER_TAG))
+                e.discard();
         });
     }
 
@@ -928,6 +992,8 @@ public final class RtsimSession {
      * the entity's chunk, and applies a copy only then) and drop them once the copies are acknowledged.
      */
     public void reassert(Entity holder) {
+        if (!asserted.add(holder))
+            return; // already journaled in this session (a camp's census came first, or a carry)
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
@@ -941,6 +1007,21 @@ public final class RtsimSession {
             last = boundary.reassert(r.gen(), r.bytes());
         reasserted += p.entries().size();
         dropPendingWhenAcked(holder, last);
+    }
+
+    /**
+     * Journals a holder's pending records again unless this session already has (MZB-174): a camp's
+     * census calls it for every holder in its footprint before it is sent, so a holder's answer reaches
+     * the engine before the census whose epoch would make it stale. Idempotent.
+     */
+    public void ensureReasserted(Entity holder) {
+        if (!asserted.contains(holder) && holder.hasData(RtsimAttachments.PENDING))
+            reassert(holder);
+    }
+
+    /** Whether this session has journaled the holder's pending records (GameTests). */
+    public boolean reasserted(Entity holder) {
+        return asserted.contains(holder);
     }
 
     /**
