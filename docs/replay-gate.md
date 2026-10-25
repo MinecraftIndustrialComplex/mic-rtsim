@@ -924,7 +924,8 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   (`DEFAULT_SPAWN_QUOTA` 8 a tick, which holds every later command), a full command buffer or a
   lagging engine stretches it; 600 covers 30 s of stall. The live engine measures it
   (`ConflictStats::fight_record_gap_max`, and rtsim-jni logs each new largest, warning at or past
-  the slack: RP-51), so the value can be set from data. A hold that no record answered by then is
+  the slack: RP-51), so the value can be set from data: to the fight's first record, its first
+  wave's BAND_SPAWN_REJECTED when Java refused it, which the hold reads as the fight (RP-62). A hold that no record answered by then is
   read as not fought: the poll at the slack ends the hold and runs `arrive()` or `wait_over()`,
   which, still replaying and past the slack, take the unwatched branch at once (recall, `resolve`,
   then wait or go home), as the session that went on did. The decision runs with the members the

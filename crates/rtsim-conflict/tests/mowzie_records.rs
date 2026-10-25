@@ -4112,6 +4112,20 @@ fn a_first_wave_refused(crash: bool) -> (FirstWave, u64) {
     read(&back, &walls, watched, cas)
 }
 
+/// fixes6 item 3 (RP-62): a live watched fight's first wave refused. Java's refusal is the
+/// fight's first record, the one a replay's hold reads (RP-54), and the gap is measured to it;
+/// it used to be measured to the next wave's BAND_MATERIALIZED, a wave interval later, past the
+/// hold's slack.
+#[test]
+fn a_refused_first_wave_is_its_fights_first_record() {
+    let (_, gap) = a_first_wave_refused(false);
+    assert!(
+        gap < REPLAY_HOLD_SLACK_TICKS,
+        "the gap to the refusal: {gap}"
+    );
+    assert_eq!(gap, 1, "the plugin answers a command a tick later");
+}
+
 /// fixes6 (RP-61, item 5's replay half): a watched arrival whose first wave alone Java refused,
 /// replayed on an engine from the pages saved before it. The refusal ends the hold as the fight
 /// (RP-54), unembodied; the fight's later waves' BAND_MATERIALIZED embodies the band again, as
