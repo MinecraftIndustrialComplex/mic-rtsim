@@ -4944,8 +4944,9 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
     answer to a stack no placing holds is booked by its op, so the census decides the next stack, not those
     again. The repro is fed its answers as the host replays them and renamed
     `a_crash_after_several_answered_stacks_books_them_and_gifts_nothing`. What is left is RP-134's: the
-    stack in flight at the crash (a gift of at most one stack per camp), and a crash inside a world save
-    between the journal and the chest's chunk (a loss, the class of Java's own dedupe).
+    stack in flight at the crash (a gift of at most one stack per camp). A crash inside a world save
+    between the journal and the chest's chunk loses nothing: the chunk write barrier keeps the journal
+    file off disk until the chest's chunk is written (RP-134, P3-4).
   - Amended at review, P3-6, memory: `Conflict::memory()` counts `placing` (a Vec of at most one stack for
     each grove with a chest, 40 bytes or so each) as "tribute stacks". HUNT_APPLIED left `applied_ops` (see
     MZB-449). CHIEF_PAID and TRADED stay in it, for correctness first: their op ids are the plugin's, one
@@ -6065,9 +6066,10 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   and record the residual. Taken: the fix (RP-134), since it changes no format, no op and no wire field,
   and books by the rule Java's dedupe already keeps (a journaled APPLIED is applied). It moves MZB-446
   R4's accepted bound, which the coordinator settled as a gift: the gift of every stack answered since the
-  save goes, and a crash inside a world save between the journal and the chest's chunk now loses a stack
-  whose re-decided op would have differed (RP-134's residuals). Reverting 98aedab6 and 0ce1f55a and taking
-  the reword is the other branch. The search is bounded by the camps owing tribute in the replay, 8
+  save goes, and nothing takes its place: a crash inside a world save between the journal and the chest's
+  chunk cannot lose a stack, as the chunk write barrier keeps the journal file off disk until the chest's
+  chunk is written (RP-134, P3-4). Reverting 98aedab6 and 0ce1f55a and taking the reword is the other
+  branch. The search is bounded by the camps owing tribute in the replay, 8
   indexes, the goods owed and 64 amounts: about 512 hashes a camp for each COMMAND_RESULT no placing
   holds while replaying, none live.
 
@@ -7868,8 +7870,9 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
     `a_raids_hunt_answered_before_the_save_is_not_sent_again`. Before the fix the first two killed
     16 for 8 (the next session got the hunt under a new op), the never-answered case sent the next
     session another op than the live one, and the two raids killed 24 for 16; the control passed.
-  - Residuals: a watched fight whose hold a HUNT_APPLIED for the same district ends in the 1 to 2
-    ticks before its BAND_MATERIALIZED resolves unwatched (RP-59's class, below in §6.1's losses);
+  - Residuals: a watched fight whose hold a HUNT_APPLIED ends in the 1 to 2 ticks before its
+    BAND_MATERIALIZED resolves unwatched (RP-59's class, wider than its deaths and chief kills:
+    docs/replay-gate.md §6.1's losses, the bullet after RP-59's);
     `resolve`'s industry threat ids still hash the poll's tick (an observation only, never sent).
 - **RP-134** (a tribute stack answered after the save; P3-1). A stack decided and answered
   APPLIED after the pages' save, then a crash: the replay's camps are out, so it decides no stack,
@@ -7889,8 +7892,9 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
   flight is a placing.
   - Why this is the core's own truth: Java answers a TRANSFER_TO_CONTAINER DUPLICATE_OP while the
     journal holds its APPLIED (`Journal.commandOpApplied`, `CommandDispatcher.transferToContainer`),
-    and the journal is in the level save, written before the chunks: an APPLIED that replays was
-    saved with the world that holds the stack.
+    and the journal is in the level save, written before the chunks but kept off disk by the chunk
+    write barrier until the chest's chunk is written: an APPLIED that replays was saved with the
+    world that holds the stack.
   - Tests: tests/grove.rs `a_stack_answered_after_the_save_is_booked_from_its_replayed_answer`
     (before the fix 70 owed after the replay for 40, so the census decided a stack of 64, an op
     Java never saw), `a_replayed_failure_of_a_stack_after_the_save_passes_its_index` (before: 30
@@ -7901,13 +7905,63 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
   - Residuals, each bounded: the stack in flight at the crash, whose answer the journal lacks, is
     decided again at its index, the same op when nothing moved (Java answers DUPLICATE_OP if its
     chunk kept it) and another when the stock or what is owed moved, a gift of at most that one
-    stack per camp (`a_stack_decided_again_from_more_is_another_op`). A crash inside a world save,
-    after the journal's SavedData and before the chest's chunk, books an answer whose stack the
-    chest lost: a loss of the stacks answered since the chest's last save, the class Java's own
-    dedupe has for a re-sent op; before RP-134 such a stack went down again when its re-decided op
-    differed. The replay holds a stack's goods from its decision to its answer, where the session
-    took them at the decision, so a market draw in that window reads a stock that much higher; the
-    booking takes what is left.
+    stack per camp (`a_stack_decided_again_from_more_is_another_op`). The replay holds a stack's
+    goods from its decision to its answer, where the session took them at the decision, so a market
+    draw in that window reads a stock that much higher; the booking takes what is left.
+  - No loss from a crash inside a world save (the re-check's P3-4 struck the residual this bullet
+    first named, and MZB-674's and MZB-446 R4's repeats of it). Vanilla writes the journal's
+    SavedData before the chunks, but `transferToContainer` stores each APPLIED in the chest's chunk
+    (`PendingRecords`) and `RtsimSession.carryInChunk` notes that chunk with
+    `ChunkWriteBarrier.dependsOn`: the journal file stays off disk until the chunk is written, so an
+    APPLIED that replays has its stack in the world. The barrier gives up only after
+    `GIVE_UP_ROUNDS` (3) rounds in a row held, logged and counted (`late`). RP-134 depends on it:
+    were it bypassed, the loss would be every stack answered since the chest's chunk was last
+    written, more than one per camp, which is worse than the gift it replaced
+    (docs/choices-journal-barrier.md, docs/choices-repair.md R21).
+
+### The M9 re-check (RP-135 to RP-136)
+
+The Opus re-check of 42e8fcc3 found no P1 or P2 and four P3s (/tmp/mzbuild/m9-recheck-report.md). P3-1
+and P3-2 are RP-135 and RP-136 below; P3-3 is a bullet in docs/replay-gate.md §6.1's losses and the
+pointer above; P3-4 is the RP-134 wording above. No format change: RTC9 / META 8.
+
+- **RP-135** (the op chain when a later hold ends first; P3-1). RP-133's hunts hash the district, the
+  decision's tick and the op in flight, so each raid's op folds in the one before it. Two bands of
+  one faction raid the refinery unwatched (A at T, B at T + 380, B's hunt replaces A's) and a record
+  names B's hold only: a stray BAND_CASUALTIES for B at its epoch, which `release_before` listed
+  alone, or Peaceful, which listed the holds in handle order, not by `since`. B's hold ended first
+  and owed `op(d, B's arrival, 0)`; A's answer then ended A's hold under `op(d, A's arrival, that)`,
+  a chain the session never sent, and neither answer matched: the next session's plugin was sent a
+  hunt and killed again (24 animals for 16 live). Fixed as the re-check sketched: each listed hold's
+  older holds of the same faction whose party raids the same district (a `Target::District`) join
+  the list, and the whole list ends by `since` (ties by handle), whatever record listed it. Live
+  nothing moves: `held` is empty.
+  - Fork, the conservative one (the re-check's sketch): a hold whose party has a position target
+    takes no older holds with it, since the district its raid lands on is chosen when it resolves.
+    What is left is a position-target hold ended before an older hold of its faction bound to the
+    district it then raids, a case no test builds.
+  - Tests, tests/mowzie_records.rs (122 pass with RP-136's): `a_later_hold_ended_first_by_a_straggler_leaves_the_older_hold_its_live_op`
+    and `peaceful_ends_the_holds_in_the_order_they_were_decided` (the Peaceful variant: the bands'
+    handles run against their arrivals). Both failed before the fix (24 animals for 16, the next
+    session sent a hunt) and pass after.
+- **RP-136** (a decision after the replay end hashes the arrival; P3-2). A raid decided at a poll
+  after a replay's end owed its hunt under an op hashed from the poll's tick, while a later replay
+  of the same journals holds the arrival and decides it at its own tick: S1 owes the hunt at T and
+  crashes; S2's replay ends inside T's slack, a poll after it decides live under `op(d, P, ·)`, and
+  S2's Java applies it; S2 crashes before a page holds that; S3's replay ends the hold under
+  `op(d, T, ·)`, S2's HUNT_APPLIED names another op, and S3's plugin killed the animals again
+  (docs/replay-gate.md §7.4's "More than one crash"). `resolve` now takes the decision's tick, the
+  arrival's or the siege round's (`hold_ending` while a hold ends), `raid_district` passes it and
+  `owe_hunt_decided` hashes it; the public `owe_hunt` keeps its signature and means `hold_ending`
+  or `at`. A live arrival's event runs at its arrival (`arrival` is `times.last().min(at)`, a
+  round is `until.min(at)`), so no op moves: `sim conflict` and `sim mowzie` reproduce byte for
+  byte but for `wall_ms`.
+  - Test, `a_decision_after_the_replay_end_is_owed_under_the_live_op_for_a_second_crash`: three
+    sessions over one raid (the first never applies its hunt, the second's plugin answers it, the
+    third replays both journals from the first pages). Before the fix session 2 sent another op and
+    session 3 was sent the hunt again; after, session 2 sends session 1's op and session 3 nothing.
+  - Residual: `resolve`'s industry threat ids still hash the poll's tick (an observation only, never
+    sent), as RP-133 said.
 
 ### Slice H (herds)
 
