@@ -620,7 +620,10 @@ impl Rig {
 
     /// The engine goes through `how`, between two ticks.
     fn trip(&mut self, how: Trip) {
-        let (replaying, log) = (self.c.replaying, self.c.log_enabled);
+        // Between ticks the replay is over: `restart` ends each one it begins (the host takes no
+        // page while replaying, RP-42).
+        assert!(!self.c.replaying(), "a trip while replaying");
+        let log = self.c.log_enabled;
         match how {
             Trip::Never => {}
             Trip::Blob => {
@@ -657,16 +660,13 @@ impl Rig {
             }
             Trip::Restart => self.restart(),
         }
-        if !matches!(how, Trip::Restart | Trip::PagedRestart) {
-            self.c.replaying = replaying;
-        }
         self.c.log_enabled = log;
     }
 
     /// The session ends: Java's table is gone with it, the engine starts another, and once its
     /// replay is over says every lurk again, which the new table hears at once.
     fn restart(&mut self) {
-        self.c.session_start();
+        self.c.begin_replay(true);
         self.c.resend_notices();
         self.table.clear();
         self.lagged.clear();

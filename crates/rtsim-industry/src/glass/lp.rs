@@ -72,16 +72,22 @@ impl UCaps {
                 }
             })
             .collect();
+        // Each boiler's most level, then each driven domain's rows that some state of its sources
+        // up to those could run at.
+        let mut most: Vec<Option<i64>> = vec![None; n];
         for (b, d) in g.drives.iter().enumerate() {
-            let Some(d) = *d else { continue };
-            let max = s.boiler_level(b as u32, Q::INF, &maybe, true);
-            for (i, l) in g.domains[d as usize].levels.iter().enumerate() {
-                if i64::from(l.selector) <= max && s.running(d, i as u32).is_some() {
-                    levels[d as usize].push(i as u32);
-                }
+            if d.is_some() {
+                most[b] = Some(s.boiler_level(b as u32, Q::INF, &maybe, true));
             }
-            levels[d as usize].sort_unstable();
-            levels[d as usize].dedup();
+        }
+        for (d, dom) in g.domains.iter().enumerate() {
+            // A decoupled part of a shared network keeps its compile row (`solve::domain_state`).
+            if !dom.driven() || dom.shared() && !s.rg.net.contains_key(&(d as u32)) {
+                continue;
+            }
+            levels[d].extend(possible_rows(s, d as u32, &most));
+            levels[d].sort_unstable();
+            levels[d].dedup();
         }
         UCaps {
             levels,
@@ -121,6 +127,107 @@ impl UCaps {
         let heat = s.g.recipes[r as usize].heat;
         best.mul_up(s.heat_factor_with(v, heat, &self.duty))
     }
+}
+
+/// The speed rows driven domain `d` may run at with each boiler `b` at a level up to `most[b]`
+/// (a source of a boiler the solve does not drive keeps its row at compile): a row some allowed
+/// source row gives as the speed, where every source has an allowed row no faster and of no other
+/// sign, and the most capacity those rows give carries the stress there. An upper bound: it may
+/// count a row no one state of the sources reaches, never miss one. A part of a shared network
+/// counts the sources it owns, the rest of the network as one source at its input's speeds, and
+/// the other parts' stress (`solve::part_stress`).
+fn possible_rows(s: &Solver<'_>, d: u32, most: &[Option<i64>]) -> Vec<u32> {
+    use super::records::domain_flags::STRESS_DISABLED;
+    let g = s.g;
+    let dom = &g.domains[d as usize];
+    let net = s.rg.net.get(&d).filter(|_| dom.shared());
+    // Twice the solve's rounding (`solve::speed_row_at`): a source within it of a row there is
+    // within this of the row here, so the bound keeps every row the solve reaches.
+    let tol = |v: f64| 2e-6 * v.abs().max(1.0);
+    // Per source: its allowed rows as (speed in the reference's frame, capacity); a speed of 0
+    // when it gives none.
+    let mut allowed: Vec<Vec<(f64, f64)>> = dom
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(i, src)| {
+            if net.is_some_and(|n| !n.own.get(i).copied().unwrap_or(false)) {
+                return Vec::new();
+            }
+            let max = src
+                .driver
+                .filter(|&b| g.drives[b as usize] == Some(d))
+                .and_then(|b| most[b as usize]);
+            let to_ref = |l: &super::records::DomainLevel| match src.ratio() {
+                Some(r) if r != 0.0 => (l.speed() / r, l.capacity),
+                _ => (0.0, l.capacity),
+            };
+            match max {
+                Some(max) => src
+                    .levels
+                    .iter()
+                    // A passive row (choice SC154) may run whenever a heater can be out.
+                    .filter(|l| {
+                        i64::from(l.selector) <= max
+                            || l.selector == super::records::DomainLevel::PASSIVE
+                    })
+                    .map(to_ref)
+                    .collect(),
+                None => src
+                    .current
+                    .and_then(|c| src.levels.get(c as usize))
+                    .map(to_ref)
+                    .into_iter()
+                    .collect(),
+            }
+        })
+        .collect();
+    // The rest of the network: its speeds fixed by the input, its capacity once.
+    if let Some(n) = net {
+        match (n.fwd > 0.0, n.back > 0.0) {
+            (true, true) => {
+                allowed.push(vec![(n.fwd, n.cap)]);
+                allowed.push(vec![(-n.back, 0.0)]);
+            }
+            (true, false) => allowed.push(vec![(n.fwd, n.cap)]),
+            (false, true) => allowed.push(vec![(-n.back, n.cap)]),
+            (false, false) => allowed.push(vec![(0.0, n.cap)]),
+        }
+    }
+    let mut out = Vec::new();
+    for (i, row) in dom.levels.iter().enumerate() {
+        let v = row.speed();
+        if v == 0.0 {
+            continue;
+        }
+        let gives = allowed
+            .iter()
+            .flatten()
+            .any(|&(sv, _)| (sv - v).abs() <= tol(v));
+        if !gives {
+            continue;
+        }
+        let mut cap = 0.0f64;
+        let mut fits = true;
+        for rows in &allowed {
+            let best = rows
+                .iter()
+                .filter(|&&(sv, _)| sv == 0.0 || (sv * v > 0.0 && sv.abs() <= v.abs() + tol(v)))
+                .map(|&(_, c)| c)
+                .fold(None, |a: Option<f64>, c| Some(a.map_or(c, |a| a.max(c))));
+            match best {
+                Some(c) => cap += c,
+                None if rows.is_empty() => {}
+                None => fits = false,
+            }
+        }
+        if fits
+            && (dom.flags & STRESS_DISABLED != 0 || cap >= super::solve::part_stress(dom, v, net))
+        {
+            out.push(i as u32);
+        }
+    }
+    out
 }
 
 /// The linear relaxation: per slot, an upper bound on its flow.

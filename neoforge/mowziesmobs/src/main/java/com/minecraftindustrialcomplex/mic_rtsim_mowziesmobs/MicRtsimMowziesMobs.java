@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 
+import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.mojang.logging.LogUtils;
@@ -46,6 +47,12 @@ public final class MicRtsimMowziesMobs {
         BodyKinds.registerStandIn(WARRIOR, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
+        // A Frostmaw robbed of its crystal raids without it (review C): the jar's finalizeSpawn gives every new
+        // Frostmaw one, so the core's bare flag has the crystal taken off after the body is made.
+        BodyKinds.registerBare(FROSTMAW, m -> {
+            if (m instanceof EntityFrostmaw f)
+                f.setHasCrystal(false);
+        });
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
         // A Frostmaw party lies in wait by a rail awake, swipes a carriage's riders and roars at a robbed train's call (M8, MZB-361)

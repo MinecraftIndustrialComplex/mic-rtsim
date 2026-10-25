@@ -16,7 +16,7 @@ use rtsim_industry::engine::{Engine, Inspection, LineEdge, ProcessPeek};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::StationDecl;
 use rtsim_industry::persist::{
-    self, CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist,
+    self, CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, STORE_TABLE,
 };
 use rtsim_industry::threat::Leg;
 use rtsim_industry::tunables::Tunables;
@@ -88,7 +88,13 @@ impl IndustryView {
         let globals = match source.read(gkey) {
             Ok(Some(b)) => b,
             Ok(None) => {
-                for t in [DISTRICT_TABLE, CLUSTER_TABLE, GLASS_TABLE, LEG_TABLE] {
+                for t in [
+                    DISTRICT_TABLE,
+                    CLUSTER_TABLE,
+                    GLASS_TABLE,
+                    LEG_TABLE,
+                    STORE_TABLE,
+                ] {
                     if source.table_ids(t).map(|i| !i.is_empty()).unwrap_or(true) {
                         return Err("industry pages without their globals page".into());
                     }

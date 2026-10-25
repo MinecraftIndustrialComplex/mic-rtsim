@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 
 import java.io.ByteArrayOutputStream;
@@ -250,10 +251,18 @@ public final class GlassExitKit {
             out.add(sb.toString());
         }
         for (GlassKit.Domain d : g.domains()) {
-            StringBuilder sb = new StringBuilder("d" + d.index() + " current " + d.current() + " driver " + d.driver() + " flags " + d.flags()
-                    + " live " + d.liveStress() + "/" + d.liveCapacity() + " levels");
+            StringBuilder sb = new StringBuilder("d" + d.index() + " current " + d.current() + " flags " + d.flags()
+                    + " live " + d.liveStress() + "/" + d.liveCapacity() + " speeds");
             for (GlassKit.Level l : d.levels())
-                sb.append(" [s").append(l.selector()).append(' ').append(l.rpm()).append("rpm ").append(l.capacity()).append("SU]");
+                sb.append(' ').append(l.rpm()).append("rpm");
+            sb.append(" sources");
+            for (GlassKit.Source s : d.sources()) {
+                sb.append(" [").append(BlockPos.of(s.pos()).toShortString()).append(" driver ").append(s.driver()).append(" ratio ")
+                        .append(s.ratioKnown() ? s.ratioNum() + "/" + s.ratioDen() : "?").append(" current ").append(s.current()).append(" rows");
+                for (GlassKit.Level l : s.rows())
+                    sb.append(" (s").append(l.selector()).append(' ').append(l.rpm()).append("rpm ").append(l.capacity()).append("SU)");
+                sb.append(']');
+            }
             sb.append(" members");
             for (GlassKit.Member m : d.members())
                 sb.append(" n").append(m.node()).append('x').append(m.count()).append('@').append(m.ratioNum()).append('/').append(m.ratioDen())

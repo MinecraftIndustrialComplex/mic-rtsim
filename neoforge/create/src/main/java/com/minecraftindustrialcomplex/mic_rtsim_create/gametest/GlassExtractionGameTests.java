@@ -183,8 +183,11 @@ public final class GlassExtractionGameTests {
 
                     check("the millstone is in a domain", m.domain() != GlassRecords.NONE);
                     GlassKit.Domain d = g.domains().get(m.domain());
-                    check("one level at 64 RPM: " + d.levels(), d.levels().size() == 1 && d.levels().get(0).rpm() == 64.0);
-                    check("the capacity is the motor's", d.levels().get(0).capacity() > 0);
+                    check("one speed row at 64 RPM: " + d.levels(), d.levels().size() == 1 && d.levels().get(0).rpm() == 64.0 && d.current() == 0);
+                    check("one source, the motor, fixed at 64 RPM: " + d.sources(), d.sources().size() == 1 && d.driven().isEmpty()
+                            && d.sources().get(0).ratioNum() == d.sources().get(0).ratioDen() && d.sources().get(0).rows().size() == 1
+                            && d.sources().get(0).rows().get(0).rpm() == 64.0 && d.sources().get(0).current() == 0);
+                    check("the capacity is the motor's", d.sources().get(0).rows().get(0).capacity() > 0);
                     check("the millstone is a member at ratio 1", d.members().stream().anyMatch(x -> x.node() == m.index() && x.ratioNum() == x.ratioDen()));
 
                     int wheat = good(new ItemStack(Items.WHEAT));
@@ -364,7 +367,7 @@ public final class GlassExtractionGameTests {
         if (m.domain() == GlassRecords.NONE)
             return "no domain";
         GlassKit.Domain d = g.domains().get(m.domain());
-        StringBuilder b = new StringBuilder("levels " + d.levels() + " ratio");
+        StringBuilder b = new StringBuilder("speeds " + d.levels() + " sources " + d.sources() + " ratio");
         for (GlassKit.Member x : d.members())
             if (x.node() == m.index())
                 b.append(' ').append(x.ratioNum()).append('/').append(x.ratioDen());

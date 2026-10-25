@@ -30,6 +30,31 @@ public final class FakePlayers {
 
     /** A player with a given id: the same player logging in again is a new entity with the old id. */
     public static ServerPlayer add(ServerLevel level, Vec3 at, String name, UUID id) {
+        ServerPlayer p = make(level, at, name, id);
+        level.players().add(p);
+        return p;
+    }
+
+    /**
+     * A player that every reader sees (review C): joined through {@code level.addNewPlayer}, so it is in the
+     * entity manager ({@code getPlayersNearby}, {@code getEntities}) as well as in {@code level.players()}
+     * (the goals' {@code NearestAttackableTargetGoal}, {@code LookAtPlayerGoal}), which {@link #add}'s player is
+     * not: that one is only in the list. A real player stands in both. It loads chunks round itself as a
+     * player does, so remove it with {@link #removeSeen}, not {@link #remove}, and before releasing chunks.
+     * UNVERIFIED on a running server (compiled only).
+     */
+    public static ServerPlayer addSeen(ServerLevel level, Vec3 at, String name) {
+        ServerPlayer p = make(level, at, name, UUID.randomUUID());
+        level.addNewPlayer(p);
+        return p;
+    }
+
+    /** Takes out a player {@link #addSeen} joined: out of the entity manager and the list at once. */
+    public static void removeSeen(ServerPlayer p) {
+        p.serverLevel().removePlayerImmediately(p, net.minecraft.world.entity.Entity.RemovalReason.DISCARDED);
+    }
+
+    private static ServerPlayer make(ServerLevel level, Vec3 at, String name, UUID id) {
         GameProfile profile = new GameProfile(id, name);
         CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
         ServerPlayer p = new ServerPlayer(level.getServer(), level, profile, cookie.clientInformation());
@@ -38,7 +63,6 @@ public final class FakePlayers {
         new ServerGamePacketListenerImpl(level.getServer(), connection, p, cookie);
         p.setGameMode(GameType.SURVIVAL);
         p.moveTo(at.x, at.y, at.z);
-        level.players().add(p);
         return p;
     }
 

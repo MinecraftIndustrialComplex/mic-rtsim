@@ -15,6 +15,18 @@
 //! - The page starts with [`GLASS_MAGIC`], so an older format fails by name. A page that does not
 //!   decode makes the whole restore fail, as any other industry page does (the host then starts
 //!   the industry engine afresh and says so).
+//! - **Sections** (SECTIONS.md §5, slice S2): the compile's sections are not saved but recomputed
+//!   from its records, and the page keeps their fingerprints and a hash of its counted stores
+//!   (slice S3). A page whose keys are not those its compile cuts into now (a changed
+//!   `glass.sectionsMax` or `glass.countedStoresMax`, or a changed fold), or one of
+//!   the format before sections ([`GLASS_MAGIC_IGL1`]), before unit windows
+//!   ([`GLASS_MAGIC_IGL2`]), before the station discards ([`GLASS_MAGIC_IGL3`]), before the
+//!   counted stores' window bases ([`GLASS_MAGIC_IGL4`]), before domain sources
+//!   ([`GLASS_MAGIC_IGL5`]) or before shared networks ([`GLASS_MAGIC_IGL6`]), drops that
+//!   district's glass state
+//!   alone ([`PageRead::Dropped`]): the district learns again. The judging units are recomputed
+//!   with the sections (a row cap's cut held, `DistrictGlass::sections_cap`), their bounds from
+//!   the solve, and their saved windows are checked against them.
 
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 
@@ -22,36 +34,139 @@ use super::GlassStats;
 use super::check::DistrictGlass;
 use super::graph::Graph;
 use super::records::{
-    DomainLevel, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe,
-    Member, NodeKind, RateEntry, Term,
+    DomainLevel, DomainSource, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode,
+    GraphRecipe, Member, NodeKind, RateEntry, Term,
 };
-use super::solve::{GoodBound, Regime, Solution};
+use super::solve::{GoodBound, NetInput, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-/// The glass page's magic ("IGL1": the first glass page format, G2-9).
-pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL1");
+/// The glass page's magic ("IGL7": the glass page with judging units' windows, the station
+/// discards' count, each unit window's base at its counted stores, SECTIONS.md §4.2, §5,
+/// domains with sources and speed rows, slice S5-1, and shared networks' parts and inputs,
+/// slice S5-2).
+pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL7");
 
-/// A district's glass page.
+/// The magic of the glass page before shared networks (slice S5-2): read as a dropped district,
+/// never decoded.
+pub const GLASS_MAGIC_IGL6: u32 = u32::from_le_bytes(*b"IGL6");
+
+/// The magic of the glass page before domain sources (slice S5): read as a dropped district,
+/// never decoded.
+pub const GLASS_MAGIC_IGL5: u32 = u32::from_le_bytes(*b"IGL5");
+
+/// The magic of the glass page before counted stores (slice S2d): read as a dropped district,
+/// never decoded.
+pub const GLASS_MAGIC_IGL4: u32 = u32::from_le_bytes(*b"IGL4");
+
+/// The magic of the glass page before the station discards' count (slices S2b, S2c): read as a
+/// dropped district, never decoded.
+pub const GLASS_MAGIC_IGL3: u32 = u32::from_le_bytes(*b"IGL3");
+
+/// The magic of the glass page before sections (G2-9): read as a dropped district, never decoded.
+pub const GLASS_MAGIC_IGL1: u32 = u32::from_le_bytes(*b"IGL1");
+
+/// The magic of the glass page with sections but no unit windows (slice S2a): read as a dropped
+/// district, never decoded.
+pub const GLASS_MAGIC_IGL2: u32 = u32::from_le_bytes(*b"IGL2");
+
+/// A district's glass page: the state, then its compile's cut keys (`Sections::cut_keys`: the
+/// section fingerprints and its counted stores; none without a compile).
 pub fn district_page(dg: &DistrictGlass) -> Vec<u8> {
     let mut w = Writer::new();
     w.u32(GLASS_MAGIC);
     dg.put(&mut w);
+    dg.compiled
+        .as_ref()
+        .map(|c| c.sections.cut_keys())
+        .put(&mut w);
     w.into_bytes()
 }
 
-/// The glass state a [`district_page`] holds.
-pub fn read_district_page(b: &[u8]) -> Result<DistrictGlass> {
+/// What a glass page reads back to.
+#[derive(Debug)]
+pub enum PageRead {
+    /// The district's glass state, boxed: it is large and a dropped read carries only why.
+    Kept(Box<DistrictGlass>),
+    /// The district's glass state is dropped, and why.
+    Dropped(&'static str),
+}
+
+impl PageRead {
+    /// The state, or None for a dropped one.
+    pub fn kept(self) -> Option<DistrictGlass> {
+        match self {
+            PageRead::Kept(dg) => Some(*dg),
+            PageRead::Dropped(_) => None,
+        }
+    }
+}
+
+/// The glass state a [`district_page`] holds, its sections recomputed with `sections_max`
+/// (`glass.sectionsMax`) and `counted_max` (`glass.countedStoresMax`). An error only for a page
+/// that does not decode.
+pub fn read_district_page(b: &[u8], sections_max: usize, counted_max: usize) -> Result<PageRead> {
     let mut r = Reader::new(b);
     let magic = r.u32()?;
+    if magic == GLASS_MAGIC_IGL1 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before sections (IGL1)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL2 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before unit windows (IGL2)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL3 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before the station discards (IGL3)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL4 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before counted stores (IGL4)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL5 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before domain sources (IGL5)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL6 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before shared networks (IGL6)",
+        ));
+    }
     if magic != GLASS_MAGIC {
         return Err(CodecError::Invalid(format!(
-            "glass page magic {magic:#010x}, not {GLASS_MAGIC:#010x}: an older format"
+            "glass page magic {magic:#010x}, not {GLASS_MAGIC:#010x}: another format"
         )));
     }
-    let dg = DistrictGlass::get(&mut r)?;
+    let mut dg = DistrictGlass::get(&mut r)?;
+    let stored = Option::<Vec<u64>>::get(&mut r)?;
     r.finish()?;
-    Ok(dg)
+    match (dg.compiled.as_mut(), stored) {
+        (None, None) => {}
+        (Some(c), Some(fps)) => {
+            // A row cap's cut holds below `glass.sectionsMax` (choice SC57).
+            let max = dg
+                .sections_cap
+                .map_or(sections_max, |cap| (cap as usize).min(sections_max));
+            c.sections =
+                super::sections::Sections::cut_counted(&c.graph, max, sections_max, counted_max);
+            if c.sections.cut_keys() != fps {
+                return Ok(PageRead::Dropped(
+                    "sections that are not those its compile cuts into now",
+                ));
+            }
+            if !c.restore_units() {
+                return invalid("glass unit windows of other units");
+            }
+        }
+        _ => return invalid("glass page sections without their compile"),
+    }
+    Ok(PageRead::Kept(Box::new(dg)))
 }
 
 // ---- the compile's records (records.rs) ----------------------------------------------------
@@ -156,16 +271,26 @@ persist_struct!(Member {
     ratio_den,
     impact
 });
+persist_struct!(DomainSource {
+    driver,
+    levels,
+    current,
+    ratio_num,
+    ratio_den,
+    pos
+});
 persist_struct!(GraphDomain {
     head,
     network,
     current,
-    driver,
     flags,
     live_stress,
     live_capacity,
     levels,
-    members
+    sources,
+    foreign,
+    members,
+    peers
 });
 persist_struct!(GraphEnd {
     district,
@@ -217,6 +342,14 @@ persist_struct!(Assembler { asm });
 
 // ---- the solve (solve.rs) -------------------------------------------------------------------
 
+persist_struct!(NetInput {
+    own,
+    fwd,
+    back,
+    cap,
+    stress,
+    tail
+});
 persist_struct!(Regime {
     held,
     room,
@@ -224,7 +357,8 @@ persist_struct!(Regime {
     gate_off,
     derate,
     demoted,
-    burning
+    burning,
+    net
 });
 persist_struct!(GoodBound {
     good,
@@ -241,6 +375,14 @@ persist_struct!(GoodBound {
     batch,
     why
 });
+persist_struct!(StoreEdge {
+    edge,
+    good,
+    flow,
+    into,
+    class,
+    why
+});
 persist_struct!(Solution {
     goods,
     per_store,
@@ -251,8 +393,12 @@ persist_struct!(Solution {
     store_edges,
     edge_goods,
     dom_level,
+    dom_cap,
+    src_row,
     duty,
     fed,
+    src_var,
+    roll_var,
     has_unbounded,
     lp_solves,
     lp_skipped,
@@ -294,6 +440,10 @@ impl Persist for DistrictGlass {
         self.replay_since.put(w);
         self.fallback.put(w);
         self.numbers_reset.put(w);
+        self.sections_cap.put(w);
+        self.stopped.put(w);
+        self.away.put(w);
+        self.joins.put(w);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self> {
         let dg = DistrictGlass {
@@ -309,6 +459,10 @@ impl Persist for DistrictGlass {
             replay_since: Persist::get(r)?,
             fallback: Persist::get(r)?,
             numbers_reset: Persist::get(r)?,
+            sections_cap: Persist::get(r)?,
+            stopped: Persist::get(r)?,
+            away: Persist::get(r)?,
+            joins: Persist::get(r)?,
         };
         // The replay indexes its compile's nodes: a page whose two disagree is refused.
         if let (Some(c), Some(rp)) = (&dg.compiled, &dg.replay)

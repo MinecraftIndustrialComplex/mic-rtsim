@@ -23,7 +23,7 @@ public final class FarLegs implements FarSource {
 
     /** FAR_LEG's fields (docs/boundary.md §12.1). */
     public static final int AGENT = 16, BODY = 24, DIM = 28, KIND = 32, VARIANT = 33, STAGE = 34, Y = 36, X0 = 40,
-            Z0 = 44, X1 = 48, Z1 = 52, T0 = 56, T1 = 64, RADIUS = 72;
+            Z0 = 44, X1 = 48, Z1 = 52, T0 = 56, T1 = 64, RADIUS = 72, AGE = 76;
 
     /**
      * How a body's look is drawn: its style number, colours per variant, and how far above its feet its middle
@@ -64,10 +64,11 @@ public final class FarLegs implements FarSource {
 
     /**
      * One dragon's last record, and the way its last flown leg went ({@code hx}, {@code hz}, a unit vector; 0, 0
-     * while none was seen): a client draws a dragon that stopped flying facing that way.
+     * while none was seen): a client draws a dragon that stopped flying facing that way. {@code ageDays} is its
+     * age in whole days at the record's time, as Ice and Fire counts it (DECISIONS.md DH-7).
      */
     public record Rec(long agent, FarState state, String body, String dimension, int variant, int stage, int y,
-            int x0, int z0, int x1, int z1, long t0, long t1, int radius, double hx, double hz) {
+            int x0, int z0, int x1, int z1, long t0, long t1, int radius, int ageDays, double hx, double hz) {
     }
 
     private final Map<Long, Rec> legs = new HashMap<>();
@@ -124,8 +125,11 @@ public final class FarLegs implements FarSource {
             hx = (x1 - x0) / n;
             hz = (z1 - z0) / n;
         }
+        // A u32 on the wire: held to an int's range
+        int age = (int) Math.min(Integer.MAX_VALUE, Integer.toUnsignedLong(b.getInt(at + AGE)));
         legs.put(agent, new Rec(agent, state, body, dim, b.get(at + VARIANT) & 0xFF, b.get(at + STAGE) & 0xFF,
-                b.getInt(at + Y), x0, z0, x1, z1, b.getLong(at + T0), b.getLong(at + T1), b.getInt(at + RADIUS), hx, hz));
+                b.getInt(at + Y), x0, z0, x1, z1, b.getLong(at + T0), b.getLong(at + T1), b.getInt(at + RADIUS), age,
+                hx, hz));
         return true;
     }
 
@@ -161,11 +165,12 @@ public final class FarLegs implements FarSource {
                 continue;
             Style s = style(r.body);
             int x1 = r.state == FarState.FLY ? r.x1 : r.x0, z1 = r.state == FarState.FLY ? r.z1 : r.z0;
-            // The engine's y is the feet; the mover's is the middle, where the body's samples put it
+            // The engine's y is the feet; the mover's is the middle, where the body's samples put it. The age sizes
+            // the far model between stages as the body is sized (DH-7)
             int y = r.y + (int) Math.round(s.centre(r.stage));
             out.accept(new FarItem(r.agent, FarKind.DRAGON, s.style(), r.variant, r.stage, s.rgb(r.variant), r.state,
                     null, new FarItem.Leg(y, r.x0, r.z0, x1, z1, r.t0, r.t1, r.state == FarState.HUNT ? r.radius : 0),
-                    -1, 0));
+                    -1, 0, null, r.ageDays));
         }
     }
 }

@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 556.1306099999999,
+      "wall_ms": 214.965706,
       "checks": [
         {
           "name": "conservation",
@@ -317,6 +317,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 1,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -331,12 +333,7 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0,
-        "lurks": 0,
-        "lurks_ended": 0,
-        "passes": 0,
-        "passes_watched": 0,
-        "lurk_robberies": 0
+        "rail_stale": 0
       },
       "log": [
         {
@@ -533,7 +530,7 @@
           "day": 14.372458333333332,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "invasion home with 19 left and 0 items for the haven"
+          "what": "invasion home with 20 left and 0 items for the haven"
         },
         {
           "tick": 458980,
@@ -617,7 +614,7 @@
           "day": 21.587666666666667,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "raid home with 7 left and 0 items for the haven"
+          "what": "raid home with 8 left and 0 items for the haven"
         },
         {
           "tick": 529078,
@@ -721,9 +718,9 @@
           "BAND_RECALL: recall 4300000400000001, reason 4"
         ]
       ],
-      "wire_bytes": 3080,
+      "wire_bytes": 3104,
       "state_hashes": [
-        "66ed59d6d5ed954d",
+        "1cb6eb4c57e1715c",
         "d450929438383fb2"
       ],
       "archive": {
@@ -771,7 +768,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 548.5165010000001,
+      "wall_ms": 209.062105,
       "checks": [
         {
           "name": "conservation",
@@ -980,6 +977,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -994,12 +993,7 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0,
-        "lurks": 0,
-        "lurks_ended": 0,
-        "passes": 0,
-        "passes_watched": 0,
-        "lurk_robberies": 0
+        "rail_stale": 0
       },
       "log": [
         {
@@ -1301,7 +1295,7 @@
       ],
       "wire_bytes": 2480,
       "state_hashes": [
-        "baa0db57b2567274",
+        "b360d5080562882b",
         "a7cefff0accd3c46"
       ],
       "archive": {
@@ -1342,7 +1336,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 485.223867,
+      "wall_ms": 221.071648,
       "checks": [
         {
           "name": "conservation",
@@ -1529,6 +1523,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -1543,12 +1539,7 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0,
-        "lurks": 0,
-        "lurks_ended": 0,
-        "passes": 0,
-        "passes_watched": 0,
-        "lurk_robberies": 0
+        "rail_stale": 0
       },
       "log": [
         {
@@ -1755,7 +1746,7 @@
       ],
       "wire_bytes": 1344,
       "state_hashes": [
-        "30f70364a3e8a805",
+        "b42ee1a0f30ab136",
         "2c2221234256e7c3"
       ],
       "archive": {
@@ -1800,7 +1791,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 66ed59d6d5ed954d, world d450929438383fb2 (uninterrupted 66ed59d6d5ed954d, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict 1cb6eb4c57e1715c, world d450929438383fb2 (uninterrupted 1cb6eb4c57e1715c, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,

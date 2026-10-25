@@ -1093,10 +1093,14 @@ fn census(st: &mut State, key: u64, residents: u32, golems: u32) {
 /// hand-over of several ticks had not run yet would meet a world already past them, which the
 /// ships take for time they missed while switched off (PC103) and the world for a change before
 /// its anchor.
+///
+/// While replaying with a module that shares the world, the input is held at the replay clock
+/// as the step's run is (docs/replay-gate.md §3.6): at the hand-over's time it would run the
+/// world, and with it every module, past the replayed records still to come.
 fn input_now(st: &mut State, input: Input) -> log::Applied {
-    let at = st.phase1.wt(st.game_time);
-    shared::run_to(st, Tick(at));
-    st.phase1.input(input, at)
+    let at = shared::hand_over_target(st);
+    shared::run_to(st, at);
+    st.phase1.input(input, at.0)
 }
 
 /// The works catalogue a WORK_CATALOG record holds (docs/boundary.md §4.1, SINK.md §4.2), its
@@ -1861,26 +1865,33 @@ pub(super) fn simulate(st: &mut State) {
         st.phase1.stats[stat::WORLD_TICK] = st.phase1.world.now().0;
         return;
     }
-    let target = st.phase1.wt(st.game_time);
+    // Held at the replay clock while replaying with a module that shares the world (§3.6).
+    let target = shared::hand_over_target(st).0;
     if target > st.phase1.world.now().0 {
         st.phase1.world.run_until(Tick(target));
     }
     take_world_commands(st);
-    let near: Vec<SpawnNear> = std::mem::take(&mut st.phase1.spawn_near);
-    for s in near {
-        spawn_near(st, s);
-    }
-    let gt = st.game_time;
-    if st.phase1.last_interest == i64::MIN || gt - st.phase1.last_interest >= INTEREST_TICKS {
-        st.phase1.last_interest = gt;
-        interest(st);
-    }
-    if !st.phase1.market_dirty.is_empty()
-        || st.phase1.last_market == i64::MIN
-        || gt - st.phase1.last_market >= MARKET_TICKS
-    {
-        st.phase1.last_market = gt;
-        markets(st);
+    // Nothing is materialized and no market is sent while the session's replay runs
+    // (docs/replay-gate.md §6, RP-44): the world is the replayed past (held at the replay clock
+    // when a module shares it, §3.6), and the records still to come change what a player would
+    // see there. The first step after the replay end runs both, and a test's P1_SPAWN_NEAR waits.
+    if !st.replaying {
+        let near: Vec<SpawnNear> = std::mem::take(&mut st.phase1.spawn_near);
+        for s in near {
+            spawn_near(st, s);
+        }
+        let gt = st.game_time;
+        if st.phase1.last_interest == i64::MIN || gt - st.phase1.last_interest >= INTEREST_TICKS {
+            st.phase1.last_interest = gt;
+            interest(st);
+        }
+        if !st.phase1.market_dirty.is_empty()
+            || st.phase1.last_market == i64::MIN
+            || gt - st.phase1.last_market >= MARKET_TICKS
+        {
+            st.phase1.last_market = gt;
+            markets(st);
+        }
     }
     let l = &mut st.phase1;
     l.stats[stat::VILLAGES] = l.nodes.len() as u64;

@@ -309,11 +309,13 @@ public final class IndustryCommands {
                         + ind.districts.lastRescanPhases() + "), longest tick " + ind.districts.maxSliceNanos / 1000 + " us: "
                         + ind.districts.maxSliceWhat + "), declarations " + ind.districts.declared + ", detection "
                         + (ind.districts.rescanning() ? "under way or waiting" : "idle"),
+                "last detection: " + ind.districts.lastRescanCold(),
                 "sweeps: " + s.sweeps + " (" + s.liveSweeps + " live), inventories read " + s.inventoriesRead + ", slots " + s.slotsRead
                         + ", read time " + s.readNanos / 1000 + " us (slowest inventory " + s.maxInventoryNanos / 1000 + " us), records "
                         + s.recordsSent + " sent, " + s.recordsDropped + " dropped",
                 "reconciles: " + r.applied + " applied, " + r.duplicates + " duplicates, " + r.held() + " held, " + r.shortfalls
-                        + " short deltas, " + r.blocksBroken + " blocks broken, " + r.blocksSkipped + " skipped",
+                        + " short deltas, " + r.blocksBroken + " blocks broken, " + r.blocksSkipped + " skipped, " + r.staleEpochs
+                        + " epochs of an earlier engine life dropped (engine life " + Long.toHexString(ind.engineLife()) + ")",
                 "ports: sessions " + p.sessionPorts + ", tosses " + p.tossPorts + ", pickups " + p.pickupPorts + ", broken stock " + p.brokenPorts
                         + ", unattributed sessions " + p.unattributed,
                 "commands applied " + ind.commandsApplied + ", failed " + ind.commandsFailed));

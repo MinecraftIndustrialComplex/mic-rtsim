@@ -23,6 +23,13 @@ use rtsim_kernel::handle::Handle;
 use rtsim_settle::Pos;
 use rtsim_world::World;
 
+/// A fresh op id for each casualty record (MZB-589).
+fn next_op() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    (1 << 63) | (N.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 /// The track point, a hundred blocks east of the den.
 fn rail() -> Pos {
     Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z)
@@ -292,6 +299,7 @@ fn a_band_wiped_out_at_its_track_takes_its_lurk_down_once() {
                 body,
                 count,
                 killer: (0, 0),
+                op: next_op(),
             }),
             at,
         );
@@ -323,18 +331,18 @@ fn a_band_wiped_out_at_its_track_takes_its_lurk_down_once() {
     assert_eq!(l.c.stats.lurks_ended, 1);
 }
 
-/// `session_start` drops the agent commands and Java's table lives for one session: the lurk
-/// goes again from `resend_notices`, at the band's epoch of now. A call replaces a lurk still
-/// queued (one a replayed record made again) instead of doubling it, so the engine holds at most
-/// one per lurk however often it is called before the queue drains. That it goes once a SESSION is
-/// the host's: it calls `resend_notices` once, when its `notices_due` flag says the replay has
-/// caught up (rtsim-jni's protocol test).
+/// `begin_replay` drops the agent commands still queued (the gate's queued "drop") and Java's
+/// table lives for one session: the lurk goes again from `resend_notices`, at the replay end, at
+/// the band's epoch of now. A call replaces a lurk still queued instead of doubling it, so the
+/// engine holds at most one per lurk however often it is called before the queue drains. That it
+/// goes once a SESSION is the host's: it calls `resend_notices` once, at the replay end
+/// (rtsim-jni's `replay_end` and its protocol test).
 #[test]
 fn a_session_forgets_the_lurk_and_the_resend_says_it_once() {
     let mut l = Lurk::raid(68);
     l.until_lurking();
     l.said.clear();
-    l.c.session_start();
+    l.c.begin_replay(true);
     l.c.resend_notices();
     let again = l.c.take_commands();
     let spots: Vec<AmbushSpot> = again
@@ -358,7 +366,7 @@ fn a_session_forgets_the_lurk_and_the_resend_says_it_once() {
     );
     // A session start between a start and a resend drops the queued one first.
     l.c.resend_lurks();
-    l.c.session_start();
+    l.c.begin_replay(true);
     assert!(
         l.c.take_commands()
             .iter()
@@ -376,7 +384,7 @@ fn only_a_lurking_band_is_resent() {
     l.run(Tick(1_000));
     assert!(!l.c.lurking(l.p));
     l.said.clear();
-    l.c.session_start();
+    l.c.begin_replay(true);
     l.c.resend_notices();
     assert!(
         l.c.take_commands()
@@ -387,7 +395,7 @@ fn only_a_lurking_band_is_resent() {
     l.until_lurking();
     l.until_over();
     l.run(Tick::from_days(40));
-    l.c.session_start();
+    l.c.begin_replay(true);
     l.c.resend_notices();
     assert!(
         l.c.take_commands()
@@ -407,7 +415,8 @@ fn a_fight_at_the_track_is_still_a_lurk_and_a_session_turns_it_back_to_waiting()
     l.said.clear();
     l.c.parties[l.p].phase = Phase::Fighting;
     assert!(l.c.lurking(l.p));
-    l.c.session_start();
+    l.c.begin_replay(true);
+    l.c.replay_done();
     assert_eq!(l.c.parties[l.p].phase, Phase::Waiting);
     assert!(l.c.lurking(l.p), "a recall does not end a lurk");
     assert!(
@@ -447,7 +456,7 @@ fn a_kept_row_never_reads_as_a_lurk() {
     assert!(!l.c.lurking(l.p));
     assert_eq!(l.removals(), 1, "the removal went at the turn, once");
     l.said.clear();
-    l.c.session_start();
+    l.c.begin_replay(true);
     l.c.resend_notices();
     assert!(
         l.c.take_commands()
