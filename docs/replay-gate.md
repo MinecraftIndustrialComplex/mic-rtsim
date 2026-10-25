@@ -615,9 +615,11 @@ live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mo
   build reads 8"), `every_gametest_save_carries_and_matches_each_modules_hash` and
   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
-- **The check's fixes** (RP-133, RP-134, MZB-672 amended, MZB-673). A raid held while replaying
+- **The check's fixes** (RP-133, RP-134, MZB-672 amended, MZB-673; the re-check's RP-135 and
+  RP-136). A raid held while replaying
   owes its hunt under the op the session that went on sent, and a replayed HUNT_APPLIED for its
-  district ends the hold first, so the hunt kills once (RP-133, §6.1, §7.4). A tribute stack
+  district ends the hold first, so the hunt kills once (RP-133, §6.1, §7.4); the holds end in the
+  order they were decided and a decision after the replay end hashes the arrival (RP-135, RP-136). A tribute stack
   answered after the pages' save is booked from its replayed answer, so the census does not put
   it down again (RP-134, §4.4). The faction row boxes M9's hunts (216 bytes, MZB-672). No format
   change: RTC9 / META 8.
@@ -1359,7 +1361,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   any), a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`), and
   a HUNT_APPLIED for a district a held party of its faction raids (its target, or a district within
   64 blocks of a position target), oldest hold first (RP-133): the held raid owes its hunt before
-  the answer that spends it.
+  the answer that spends it. Whatever the record, the holds it ends go by `since`, and each takes
+  the faction's older holds bound for the same district with it (RP-135): the hunts' ops fold in
+  the one in flight, so a later raid's hold ended alone, or first (a casualty for the later band,
+  Peaceful's handle order), would owe an op chain the session never sent.
   The hold's end runs `party_event` at the record's tick with the hold bypassed inside the slack
   too (`hold_ending`), so the decision resolves unwatched as the session that went on resolved it
   at the hold's tick, and the record then applies to the band as it did there. Before, the record
@@ -1404,6 +1409,14 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   of a band embodied before the decision, journaled between the fight's command and its
   BAND_MATERIALIZED (normally 1 to 2 ticks), ends the hold as unwatched, and the fight's record
   then finds no hold and is lost as RP-56 says. The books hold, one resolution.
+- A HUNT_APPLIED in that window (RP-133), wider than RP-59's deaths and chief kills: any answer
+  of the band's faction for the district it raids ends the hold, an older hunt's answer too, and so
+  does one for any district within 64 blocks of a position target (the answer's district need not
+  be the one its raid lands on: `resolve` takes the first unwatched district near the position,
+  while the bound test ignores whether a district is watched). The held decision then resolves
+  unwatched, as above: the cost is an abstract raid on the district, and a hunt the session that
+  went on never owed (it fought), which the next session's plugin kills after the replay end. It
+  stays rare: the window is normally 1 to 2 ticks, and Java checks its hunts every 20.
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
@@ -1481,7 +1494,12 @@ or at the replay end, later than the session that went on decided it. The hunt's
 decision's tick, so `owe_hunt` takes the hold's tick (`hold_ending`), and a replayed HUNT_APPLIED for
 a held raid's district ends that hold first (RP-133): the hunt is owed under the op that session
 sent and its replayed answer spends it, where before the answer found no hunt and the hunt went
-again under a new op at the replay end, killing twice. Live ops are M9's.
+again under a new op at the replay end, killing twice. Live ops are M9's. The tick hashed is the
+arrival's or the siege round's whoever decides it (RP-136): a poll after the replay end decides a
+held arrival live, and hashed from the poll's tick its op would not be the one a second crash's
+replay owes at the hold's, so the answer that session's plugin journaled would name no hunt and the
+hunt would go to a third plugin. The holds a record ends go by `since` with the older holds bound
+for the same district (RP-135).
 
 ## 8. Formats
 
