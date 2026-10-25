@@ -698,7 +698,8 @@ ahead:
   (`Ev::Ambush`, `raid_train`) still run in the replayed window, as today, and are abstract (no
   body). Dragons' and pirates' raids are slices D's and S's check. **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
-  industry's own replay); the long-replay tests run with industry on and off.
+  industry's own replay); the long-replay tests run with industry on and off. Slice R found that a replay of several hand-overs then derives different industry op ids
+  (RP-262, RP-263 in docs/choices-mowzie-build.md).
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
   `industry::journaled` after `shared::catch_up` to the record's time, so they follow the records
   like every other journaled record (§4.4's note).

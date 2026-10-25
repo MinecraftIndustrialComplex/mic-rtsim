@@ -7268,3 +7268,96 @@ changed; the lead runs `gametest.sh iceandfire`.
   gate counting the drop; the live report after the end re-adopts at epoch 2 with the dragon
   count unchanged; a third report while embodied adds nothing): the base sent the ADOPT in the
   replay (epoch 1). Control: `a_live_untagged_dragon_is_adopted_at_once`.
+
+### Slice R (industry op ids, live and replayed)
+
+Step 1 is a proof; no engine code changed. Engine-level tests: crates/rtsim-industry/tests/replay_ids.rs
+(one `Industry` live, one restored from the pages of a step boundary with only the journaled records
+after them and no `advance_to` between; the commands compared by content, then by op id). Across the
+crash: crates/rtsim-jni/tests/industry.rs. Base bc669502. Two failures are real (RP-262, RP-263); both are
+`#[ignore = "slice R: ..."]`, and fail without the attribute.
+
+- **RP-260** (the derive sites and the tick each takes): every site passes `self.now` or a local `at`.
+  `self.now` at the site: `reconcile_round`'s immediate commands (engine.rs:3325) and ChunkReconcile
+  (3347); `apply_trims` ChunkReconcile (3662; the function has `at`); CarriageDelta Exchange in
+  `train_arrived` (3896; has `at`) and Loot in `attack_train` (5241; has `t.at`). Already `at`:
+  `store_write_wake` (2295), `write_packages` (3036), `pollution_wake` (4774). Step 2 changes the first
+  five to the decision's own tick. Which tick is path independent: `at` of a wake or breakpoint is (it
+  is the event's own tick; `fire_until` sets `now` to it for a wake). `at` of a record is
+  `max(t.at, now)` (engine.rs:843), so it follows the history of calls exactly when a record is stale
+  (RP-262). The flush tick is `now` at the flush, which is path independent only when RP-262 and RP-263
+  do not apply (RP-264). The decision's tick is therefore path independent if `ingest_obs` takes a
+  record's tick from `t.at` alone, and `reconcile_round`'s `at` is passed on to every derive.
+- **RP-261** (candidate a, a breakpoint after the previous G; reasoned, holds with one untested path):
+  `after_cluster(h, bp_at)` (engine.rs:2392) leaves `now` unchanged, but the paths out of it derive with
+  the breakpoint's `at` (`write_packages` 3036, WriteChain 2295, pollution 4774) or not at all
+  (`season_boundary` -> `restart_sim`). The black-box path agrees: `now` at a first-record breakpoint is
+  the last record's tick on both runs. The one reachable derive with a stale `now` is glass-only:
+  `after_cluster` -> `glass_step` -> `glass_fallback` (2716) -> `sync_coverage` (1587) ->
+  `reconcile_round(Part)`, which derives with `self.now` while `at` is the breakpoint tick (and a glass
+  breakpoint can leave dirty marks that the live run flushes at G_k and the replay at the next record).
+  A glass fixture is heavy; no test drives it, so this is reachable and unproven. Step 2's change to
+  `at` closes it by construction.
+- **RP-262** (candidate e, proven): a round from a record whose `t.at < self.now` live. Java's
+  `Journal.drainInto` (Journal.java:238) leaves records that do not fit the buffer for the next
+  hand-over, and a REASSERT keeps the original's GAME_TIME, so a record can reach hand-over k+1 stamped
+  before G_k. Live, `ingest_obs` takes it at `at = G_k`; replayed (no `advance_to` between), at `t.at`.
+  Tests (both fail): `a_round_from_a_record_stamped_before_the_last_hand_over_is_rederived_with_the_same_id`
+  (chunks loaded at 8,000 after G = 9,000: the content differs, live delta 445 against replayed 395, the
+  ends of `now` being 9,500 and 8,000) and `a_stale_record_gives_the_same_command_another_op_id_in_the_replay`
+  (the owed theft loaded at 8,000: the same content, live op 0x492cd7d0fd2f3291, replayed
+  0x49be17700102776d). The path driven is `set_presence(Live)` (1509, 1533). Controls that pass:
+  `a_round_from_a_record_stamped_after_the_last_hand_over_is_rederived_with_the_same_id`,
+  `a_stale_record_in_the_first_hand_over_after_the_pages_is_rederived_with_the_same_id` (the first
+  hand-over after the pages has the same `now` both ways). `approach` (4682, 4705) is a latest-wins
+  record and is never replayed (RP-267).
+- **RP-263** (candidate f, found, proven): a replay of several hand-overs. Industry is not held
+  while replaying (docs/replay-gate.md §3.6, decided 2026-10-24), so `industry::simulate`
+  (rtsim-jni engine/industry.rs:778) runs on the first replayed hand-over: `begin_session` /
+  `session_start(present)` and `advance_to(present)`. The records of the later replayed hand-overs
+  are then taken at `max(t.at, present)`, as stale records. Test:
+  `a_replay_of_several_hand_overs_rederives_the_same_op_ids` (crates/rtsim-jni/tests/industry.rs,
+  ignored: 9 replay hand-overs on a minimum-size buffer with 8,000 fillers; the first run's ops
+  [4994e1dfa6787bdb, 49ddf5d62b413118], re-derived [495f4b06faf87903, 49bf652fc1cd5a75]; nothing applied
+  again and pending 0 in this fixture: the test did not find out why the restored world did not
+  apply the new ids, so a double apply is not excluded in other cases). Control that passes:
+  `a_one_hand_over_replay_rederives_the_same_op_ids` (1 replay hand-over, the same ids). The existing
+  `pages_behind_the_world_save_rederive_the_same_reconcile` (tests/industry.rs:913) only ever replays
+  one hand-over and asserts nothing about the ids. Step 2 fix: the same `at` change (RP-262), plus
+  `ingest_obs` taking the record's own `t.at` for the derive tick.
+- **RP-264** (candidate b, the flush tick; holds): test
+  `the_flush_at_a_hand_overs_end_and_at_the_next_hand_overs_first_record_agree`. Live, `advance_to(G)`
+  flushes the dirty marks at the last record's tick T_last (flush_dirty 1568, called from `advance_to`
+  786 and `ingest_obs` 846); replayed, the next record's `ingest_obs` flushes at the old `now`
+  (T_last) before `fire_until`. Both flush at the same `now`, so `sync_coverage`'s round derives with
+  the same tick. It holds while the record is not stale (RP-262).
+- **RP-265** (candidate c, latest-wins records moving `now`; holds): tests
+  `a_deferred_stock_sample_between_two_records_does_not_move_the_ids` and
+  `a_deferred_sample_after_the_last_record_flushes_the_marks_at_the_records_tick`. A deferred
+  StockSample at tick s between two journaled records raises `now` to s live, but `ingest_obs` flushes
+  at the old `now` before moving it (846), and the next journaled record's own `at` sets `now`
+  again before its handler. No derive sees s unless the sample is the last thing before a stale
+  record (RP-262).
+- **RP-266** (candidate d, threats; holds, and the war-band crash test misses the case):
+  `a_raid_delivered_at_the_hand_overs_time_is_rederived_with_the_same_id`. `threat_with` (4892) takes
+  `at = t.at.max(self.now)` and runs `advance_to(at)`; a re-delivered threat carries the same `t.at`,
+  so the raid derives at the same tick. A replayed hand-over does not re-decide a threat at all
+  (conflict's raids are held, the dragons' and pirates' are other slices), so the live raid's ids are
+  carried by the journal's records and the pages. `a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash`
+  (tests/industry.rs:1061) passes because the pages it restores already contain the raid and its
+  reconcile: it never re-derives, so it pins the landing once but not the id equality.
+- **RP-267** (limits, not defects of step 1): `IndustryOps` is not persisted, so the 256-entry recent
+  window that breaks ties by ordinal restarts empty after a crash; two equal commands in one tick get
+  ordinals 0 and 1 live, and the replay re-decides them in the same order only if both are re-decided.
+  And the Approach round (latest-wins, 0x40..0x5F) is never replayed, so its Ahead round is never
+  re-decided (W3's documented limit).
+- **RP-268** (fix sketch for step 2): derive from the decision's own tick. Pass `at` (never `self.now`)
+  to every derive in the five `self.now` sites (RP-260). Have `ingest_obs` take `at = t.at` for the
+  derive tick and keep `max(t.at, now)` only for moving the clock. A per-district round counter is
+  not needed: the failures here are the tick alone. Hold industry's `simulate` (no `session_start`, no
+  `advance_to`) until the replay ends, or run it with the replayed records' own ticks (RP-263).
+- **RP-269** (new traps): `Java::open` resets game time to 1000, below every replayed record, so the
+  harness hides RP-263 unless the test sets `j.game_time` to the present before running; fillers
+  (Damaged records of a ship the engine never had, about 56 bytes) span a minimum-size buffer
+  (`wire::MIN_CAPACITY`) into many replay hand-overs; the fixture's one reconcile is the vault chunk
+  (assert that a round ran: a pass without it proves nothing).
