@@ -3098,11 +3098,11 @@ mod ack_never_resends {
     /// RP-285: a restart with industry off leaves the engine's clock where the switch froze it, so
     /// an answer kept for the switch is booked at its own tick. Industry goes off at day 3 and stays
     /// off for 500 ticks; a page save lands, Java reads its ack, and the engine crashes with the
-    /// module still off and restarts off. At 9bbf1569 `simulate` ran `begin_session` ahead of its
+    /// module still off and restarts off. At 2a751255 `simulate` ran `begin_session` ahead of its
     /// switch gate, so the restart ran the engine's own session start at the restart's game time
     /// with the module off: every breakpoint and wake of the time it had been off fired, and their
-    /// decisions waited in the engine's out for the switch (the FAILED case's clock went from
-    /// 72,800 to 72,803). Now the session start waits for the switch, which runs its own.
+    /// decisions waited in the engine's out for the switch (this case's clock went from 72,000 to
+    /// 72,502). Now the session start waits for the switch, which runs its own.
     #[test]
     fn a_restart_with_industry_off_leaves_the_engine_clock_where_the_switch_froze_it() {
         let mut r = Rig::new("ack-off-clock", false);
@@ -3137,9 +3137,9 @@ mod ack_never_resends {
     /// and APPLIED (MODULES ahead of both). Off, the engine keeps the result with its tick: X stays
     /// pending until the switch books it there. Then [`crash_while_off_after_the_ack`] (the pages
     /// hold X pending, the result kept), and on again: the switch books the result before Java's
-    /// announce, and no reconcile of X's chunk and epoch goes out again, under X's op or another
-    /// (a second one is a second booking in Destroy's PollutionLedger). At 9bbf1569 the result was
-    /// ignored off, X stayed pending past the switch, and its booking waited for a ChunkLoaded.
+    /// announce, and no reconcile of X's chunk and epoch goes out again, under X's op or another.
+    /// At 2a751255 the result was ignored off, X stayed pending past the switch, and its booking
+    /// waited for a ChunkLoaded.
     #[test]
     fn a_reconcile_result_heard_with_industry_off_is_booked_once_across_a_crash_while_off() {
         let mut r = Rig::new("ack-off-reconcile", false);
@@ -3209,9 +3209,10 @@ mod ack_never_resends {
     /// move leaves the carriage (burned in the world's books), so Java moves less than asked.
     /// Industry goes off in the tick Java applies X (MODULES ahead of its IND_CARRIAGE_RESULT and
     /// APPLIED). Off, the engine keeps the result; the switch, after a crash while off, books it at
-    /// its tick, so the district's stock is corrected by the shortfall once. At 9bbf1569 the APPLIED
-    /// heard while off dropped the exchange unbooked, and the district kept goods Java never moved:
-    /// the world's books do not close.
+    /// its tick, so the district's stock is corrected by the shortfall once. At 2a751255 the result
+    /// was ignored off and the exchange stayed pending past the switch, waiting for a result Java
+    /// had already sent, so the district kept goods Java never moved: the world's books do not
+    /// close. (On slice T, whose APPLIED heard off dropped the exchange, it was dropped unbooked.)
     #[test]
     fn a_short_carriage_result_heard_with_industry_off_is_corrected_once_across_a_crash_while_off()
     {
@@ -3254,7 +3255,7 @@ mod ack_never_resends {
     /// `CHAIN_IN` carrying the write's op, then its APPLIED, and industry goes off in that tick.
     /// Off, the engine keeps the `CHAIN_IN`; after a crash while off, the frogport's chunk
     /// journals it again (REASSERT), and the switch takes it once: the store counts two packages
-    /// written, whatever the copy. At 9bbf1569 the `CHAIN_IN` was ignored off, so nothing lowered
+    /// written, whatever the copy. At 2a751255 the `CHAIN_IN` was ignored off, so nothing lowered
     /// what the store owed or its pools, and an engine write past ten periods went again under a
     /// new op (SC113): the engine-level case in `chain_replay.rs` shows that write; this one shows
     /// the record booked.
