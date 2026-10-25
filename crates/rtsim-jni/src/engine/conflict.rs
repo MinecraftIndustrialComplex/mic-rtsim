@@ -53,9 +53,12 @@
 //!   mode its state hash beside the meta page, checked on load. The conflict lives in the phase 1 world (havens are its
 //!   nodes, marches its legs), so while it is active the phase 1 link snapshots at every save, in
 //!   the same commit; a page without the world it was saved with is dropped loudly.
-//! - **The switch** (C25, U10): `Module.CONFLICT` (bit 5). Off, the conflict ignores its records,
-//!   runs nothing, writes nothing and keeps the page it had; on again, its bodies of before are
-//!   gone (its session reset) and it runs on from where it stopped.
+//! - **The switch** (C25, U10 as RP-292 amends it): `Module.CONFLICT` (bit 5). Off, the conflict
+//!   runs nothing, writes nothing and keeps the page it had; the journaled records it hears are
+//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in its
+//!   session reset before its replay end, each after its own catch-up (docs/replay-gate.md 9.7),
+//!   their epochs with them (RP-293). On again, its bodies of before are gone and it runs on from
+//!   where it stopped.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -1326,6 +1329,8 @@ pub(super) fn save(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConflictLinkStats {
     pub records: u64,
+    /// Records heard while switched off: not applied then, the journaled ones kept for the
+    /// switch-on (RP-292).
     pub ignored: u64,
     pub commands_written: u64,
     pub band_states: u64,

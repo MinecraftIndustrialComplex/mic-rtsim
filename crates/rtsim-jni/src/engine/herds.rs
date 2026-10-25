@@ -26,9 +26,12 @@
 //!   mode their state hash beside the meta page, checked on load. The herds book legs in the
 //!   phase 1 world, so while they run the phase 1 link snapshots at every save (S4), in the same
 //!   commit; pages without the world they were saved with are dropped loudly.
-//! - **The switch** (C25, U10): `Module.ECOLOGY` (bit 4), as the dragons. Off, the herds ignore
-//!   their records, run nothing, write nothing and keep the page they had; on again, the bodies
-//!   of before are gone (their session reset) and they run on from where they stopped.
+//! - **The switch** (C25, U10 as RP-292 amends it): `Module.ECOLOGY` (bit 4), as the dragons.
+//!   Off, the herds run nothing, write nothing and keep the page they had; the journaled records
+//!   they hear are kept (a page beside the meta page, `paging::Kept`) and applied at the
+//!   switch-on, in their session reset before its replay end, each at its own tick on their clock
+//!   after its own catch-up (docs/replay-gate.md 9.7). On again, the bodies of before are gone and
+//!   they run on from where they stopped.
 //!
 //! **Where herds come from** (X2-11): the world model (`engine/worldmodel.rs`) founds one herd
 //! per suitable region when the core's habitat sampler has reported enough of it ([`found`]), and
@@ -793,8 +796,9 @@ impl super::Engine {
         (st.herds.restore_diverged, st.herds.dropped_pages)
     }
 
-    /// The herds' counters, and how many herd records went through the link, how many it
-    /// ignored and how many commands it wrote.
+    /// The herds' counters, and how many herd records went through the link, how many it heard
+    /// while switched off (not applied then; the journaled ones kept for the switch-on, RP-292)
+    /// and how many commands it wrote.
     pub fn herd_stats(&self) -> (HerdStats, u64, u64, u64) {
         let st = super::lock(&self.state);
         (
