@@ -7986,6 +7986,35 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   abstract, at the replay end. Taken the conservative way: the tests pin what the engine does now and say
   where it is a gap, rather than building a fight record the engine does not have.
 
+- **MZB-497** (the four rtsim-jni protocol tests of M10, and where the `lose_units` one lives; forks): in
+  tests/protocol.rs's conflict module, beside the replayed-casualty tests, each with the live player out of
+  the band's view until the replay has caught up (MZB-484):
+  - `a_session_start_sends_each_party_its_march_after_the_replay_has_caught_up`: 4,000 fillers make the
+    replay several hand-overs on a minimum-size buffer; after each hand-over that leaves records to send,
+    no BAND_MARCH has been sent (`reopen_watching` steps one hand-over at a time with `Java::flush`, since
+    `idle` is two); then one record for every party, at the page's revision plus one, with the units the
+    replayed casualties left.
+  - `a_casualty_on_the_walk_home_across_a_restart_counts_once_and_the_next_march_carries_it`: a routed raid
+    walking home in bodies, a casualty journaled after the pages and the crash before any step, so its
+    march record was never built; the replay counts it once and the session's record carries it.
+  - `an_invasion_from_a_grove_that_comes_in_sends_no_march_and_keeps_the_cap` (test 28's engine half):
+    the grove comes in at the muster's end, the band's revision and record count stay put until its
+    arrival, which is a record, and a raid is refused while the invasion holds 8 of the grove's 9 and goes
+    once they are home; pool plus away never pass the cap. The band had no war chief in this harness (a
+    grove's strays carry no chief byte), so what the test pins is that no flag of the record changed;
+    run 11 and the GameTests carry the chief's cases.
+  - Fork, `lose_units` across a restart: the JNI harness has no village to raid (a village needs
+    `adopt`, a market and a player placed 170 blocks from it), so the test is the engine's, in
+    crates/rtsim-conflict/tests/mowzie_march.rs
+    (`the_dead_of_an_abstract_fight_in_bodies_are_counted_once_at_the_recall_and_across_a_restart`): a raid
+    walks to Ashby in bodies, a second player 170 blocks off re-binds it, the village's defence takes 4 of
+    12, `spawned` follows (8), the watcher leaves and the recall's stack is the 8; one dies on the walk off;
+    Java's despawn leaves 7, not the 3 an unclamped stack would leave. Its second arm saves the engine
+    after the recall and replays the despawn from the pages. It fails with the clamp removed. The
+    journal path of a restart is the same code (`Dematerialized` on a recalled stack), so the JNI
+    harness would add only the wire.
+  - No crash or reassert copy test is added: M10 adds no holder-carried record (MZB-467).
+
 ## M11 Aloft
 
 (none yet)

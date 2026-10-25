@@ -3,6 +3,8 @@
 //! keeps Java's map of every band (BAND_MARCH, MZB-451 to MZB-455), the walk home in bodies, the
 //! re-binding of a watcher that walks off, and a band that walks into its fight.
 
+use std::collections::BTreeMap;
+
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind};
 use rtsim_conflict::engine::{Conflict, Party, Phase, Target, body_id};
@@ -13,6 +15,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
+use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 
 /// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589).
@@ -1145,4 +1148,132 @@ fn the_fake_plugin_keeps_the_latest_march_and_trims_its_held_body() {
         })
         .expect("the recall's answer");
     assert_eq!(survivors, alive, "the body was trimmed by the record");
+}
+
+// ---- the books of a band resolved abstractly while it stands in bodies (MZB-462, MZB-466) ------
+
+/// The survivors a despawn or a recall would count for `band`: its units alive by body id, as
+/// Java would hold them once it has trimmed the puppets to the members left (MZB-473).
+fn alive_by_body(r: &Run, band: Handle<Party>) -> Vec<(u32, u32)> {
+    let c = r.c.cultures.get(0).clone();
+    r.c.parties[band]
+        .units
+        .iter()
+        .filter(|e| e.1 > 0)
+        .map(|&(u, n)| (body_id(&r.c.cultures, &c.unit(u).body), n))
+        .collect()
+}
+
+/// MZB-462 (the design's `lose_units` test): a band that walked to a village in bodies and is
+/// resolved abstractly there (its watcher is 170 blocks off, so it is re-bound, MZB-460) loses
+/// members to the village's defence; the bodies the books hold follow the members left. When
+/// that watcher leaves, the band is recalled with those bodies, and Java's despawn counts only
+/// the one that died on the walk off: the band keeps the members the village left it less that
+/// one, not none (the recalled stack was the band that went out, and its survivors would all
+/// have counted dead). The same when the engine is saved after the recall and the despawn is
+/// replayed from the pages (the replay keeps the recalled stack, MZB-138).
+#[test]
+fn the_dead_of_an_abstract_fight_in_bodies_are_counted_once_at_the_recall_and_across_a_restart() {
+    for crash in [false, true] {
+        let mut r = Run::new(63);
+        let ashby = r.w.node_of_key(4).expect("Ashby");
+        let there = r.w.nodes[ashby].pos;
+        // Something to take at Ashby: 20 items over each line's target (CL-D58).
+        let m = r.w.market(ashby);
+        let rich: BTreeMap<GoodId, i64> =
+            r.w.goods
+                .ids()
+                .map(|g| (g, m.line(g).target + 20 * MILLI - m.stock(g)))
+                .filter(|e| e.1 > 0)
+                .collect();
+        r.w.stock_from_players(ashby, &rich, Tick(10));
+        let band =
+            r.c.order_party(
+                &mut r.w,
+                synth::CAMP,
+                PartyKind::Raid,
+                Target::Node(ashby),
+                Some(r.p),
+                Tick(20),
+            )
+            .unwrap();
+        r.flush(Tick(21));
+        let muster = r.c.parties[band].until;
+        r.run(muster + 1);
+        assert_eq!(r.c.parties[band].phase, Phase::Out);
+        let epoch = embody(&mut r, band);
+        let n = r.c.parties[band].alive();
+        let arrive = *r.c.parties[band].times.last().unwrap();
+        r.run(Tick(arrive.0 - 200));
+        let watcher = r.c.observe_player(
+            &mut r.w,
+            OTHER,
+            at_pos((there.x + 170, there.z)),
+            Tick(arrive.0 - 200),
+        );
+        r.run(arrive + 10);
+        let x = &r.c.parties[band];
+        assert_eq!(
+            r.c.stats.raids_village, 1,
+            "the village was raided abstractly"
+        );
+        let left = x.alive();
+        assert!(
+            left >= 2 && left < n,
+            "the village took some: {n} -> {left}"
+        );
+        assert!(
+            x.embodied && x.epoch == epoch,
+            "still in bodies, walking home"
+        );
+        assert_eq!(
+            x.spawned.iter().map(|s| s.1).sum::<u32>(),
+            left,
+            "the bodies the books hold follow the members left"
+        );
+        // The watcher leaves: nobody else is near, so the band is recalled with its bodies.
+        let mark = r.cmds.len();
+        let t = r.c.now();
+        r.c.player_left(&mut r.w, watcher);
+        r.flush(t);
+        let (_, recalls) = orders_since(&r, Party::agent(band), mark);
+        assert_eq!(recalls.len(), 1, "{recalls:?}");
+        let x = &r.c.parties[band];
+        assert!(!x.embodied && x.spawned.is_empty(), "recalled");
+        assert_eq!(
+            x.recalled,
+            vec![(epoch, x.units.clone())],
+            "the recalled stack is what the members left, not the band that went out"
+        );
+        if crash {
+            // The pages hold the recall; the despawn comes from the journal.
+            restart(&mut r);
+        }
+        // One of the bodies dies on the walk off: Java's despawn counts the rest.
+        let mut survivors = alive_by_body(&r, band);
+        survivors[0].1 -= 1;
+        let at = r.c.now() + 1;
+        r.ingest(
+            Obs::Dematerialized(boundary::BandDematerialized {
+                agent: Party::agent(band),
+                epoch,
+                reason: boundary::RECALL_PLAYER_LEFT,
+                survivors,
+            }),
+            at,
+        );
+        if crash {
+            r.c.replay_done();
+        }
+        let x = &r.c.parties[band];
+        assert_eq!(
+            x.alive(),
+            left - 1,
+            "crash {crash}: the one that died, no more"
+        );
+        assert!(
+            x.recalled.is_empty(),
+            "crash {crash}: the despawn is answered"
+        );
+    }
 }
