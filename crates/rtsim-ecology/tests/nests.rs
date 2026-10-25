@@ -681,6 +681,158 @@ fn nests_restore_exactly_from_the_resident_save_and_from_pages() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+// ---- the replay gate: the renewal serial (docs/replay-gate.md §7.1, RP-14) ---------------------------
+
+/// A nest that hatched, lost one of its two worms to a player, and waits to renew it: the wait
+/// ends some days on, and the renewal is one worm. Java's world is `r.iaf` (FakeIaf, which owes
+/// the worms as Nests.java does: `owed += count`, for a serial above the last applied).
+fn waiting_nest(seed: u64) -> (Run, u64) {
+    let (mut r, id) = one_nest(seed, tun());
+    r.days(3);
+    let k = u32::from(r.d.tun.oil.nest.k);
+    assert_eq!(r.worms(id), k, "hatched");
+    assert_eq!(r.renews().len(), 1, "the first brood is one renewal");
+    r.kill(id, 1);
+    (r, id)
+}
+
+/// The days after the kill that the renewal takes in `waiting_nest(seed)`.
+fn days_to_the_renewal(seed: u64) -> u64 {
+    let (mut r, _) = waiting_nest(seed);
+    r.until(400, |r| r.renews().len() == 2)
+        .expect("the nest renews its lost worm")
+}
+
+/// The pages of `d` in a store of their own, and an engine opened from them (a restart from its
+/// pages, docs/replay-gate.md §5). `d` goes on with the store attached, as in a live run.
+fn from_pages(d: &mut Dragons, t: DragonTunables, name: &str) -> Dragons {
+    let dir = std::env::temp_dir().join(format!("rtsim-nests-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = Arc::new(RwLock::new(
+        PageStore::open(&dir, Durability::NoSync).expect("the store opens"),
+    ));
+    d.attach_store(store.clone(), 1 << 20);
+    let mut b = SaveBatch::new();
+    let tickets = d.save_paged(&mut b, META);
+    store.write().unwrap().commit(b, 0).expect("commits");
+    d.saved(tickets);
+    let back = Dragons::open_paged(store.clone(), 1 << 20, META, t).expect("the pages open");
+    drop(store);
+    std::fs::remove_dir_all(&dir).unwrap();
+    back
+}
+
+/// The serial of each renewal the engine sent, in order.
+fn serials(cmds: &[boundary::NestRenew]) -> Vec<u32> {
+    cmds.iter().map(|n| n.serial).collect() // serial
+}
+
+/// RP-14, the audit's D5 (engine 1 worm, world 2): the last session decided a renewal after its
+/// last page save, and Java applied it and saved its Nests (direction B: Nests newer than the
+/// pages). The restored engine decides the renewal again, from the pages' nest row, and it
+/// carries the serial the first run's did, so Java owes the worms once. Both routes of the
+/// decision are run: inside the replayed window (the catch-up, the gate sends the renewal) and
+/// live after the replay end (the window held no record past the save).
+///
+/// On the base there is no serial: the world's count is the engine's plus the renewal again
+/// (the audit's number, and the renewal arrives twice); after the fix the repeat is dropped.
+#[test]
+fn a_renewal_after_the_save_is_not_owed_twice_after_a_restore() {
+    let seed = 21;
+    let t = tun();
+    let to_renewal = days_to_the_renewal(seed);
+    for route in ["the catch-up", "after the replay end"] {
+        let (mut a, id) = waiting_nest(seed);
+        a.days(to_renewal - 1);
+        assert_eq!(a.renews().len(), 1, "not renewed at the save");
+        let saved_at = a.t;
+        let pages = from_pages(&mut a.d, t.clone(), "d5");
+        // The first run decides the renewal after the save, and Java applies it.
+        a.days(1);
+        let first = a.renews();
+        assert_eq!(first.len(), 2, "{route}: the renewal after the save");
+        assert_eq!(serials(&first), vec![1, 2], "{route}"); // serial
+        let (engine, world) = (a.worms(id), a.iaf.nests[&id]);
+        assert_eq!(engine, world, "{route}: one run agrees with its world");
+        // The crash. Java kept the renewal; the engine comes back from the pages before it.
+        let mut java = a.iaf.clone();
+        java.due(Tick(u64::MAX));
+        let mut b = Run {
+            w: synth::world(seed).0,
+            d: pages,
+            iaf: java,
+            pumps: a.pumps.clone(),
+            t: saved_at,
+            cmds: Vec::new(),
+        };
+        assert_eq!(b.worms(id), engine - 1, "the pages are from before the renewal");
+        b.d.begin_replay(true);
+        if route == "the catch-up" {
+            b.days(1);
+            assert!(b.d.replaying());
+            b.d.replay_done(&mut b.w, b.t);
+        } else {
+            b.d.replay_done(&mut b.w, b.t);
+            b.days(1);
+        }
+        let again = b.renews();
+        assert_eq!(again.len(), 1, "{route}: the engine decides the renewal again");
+        assert_eq!(serials(&again), vec![2], "{route}: the first run's serial"); // serial
+        assert_eq!(again[0].count, first[1].count, "{route}");
+        assert_eq!(b.worms(id), engine, "{route}: the engine is where the first run was");
+        assert_eq!(
+            b.iaf.nests[&id], world,
+            "{route}: Java owes the renewal once (engine {engine}, world {})",
+            b.iaf.nests[&id]
+        );
+        assert_eq!(b.iaf.renewals_repeated, 1, "{route}: the repeat was dropped"); // serial
+        // Not over-dropped: the next renewal it decides is a new serial, and is owed.
+        b.kill(id, 1);
+        let next = b.until(400, |r| r.renews().len() == 2).expect("it renews again");
+        assert!(next > 0);
+        assert_eq!(serials(&b.renews()), vec![2, 3], "{route}"); // serial
+        assert_eq!(b.iaf.nests[&id], b.worms(id), "{route}: the third renewal is owed");
+        b.d.check(&b.w, None).unwrap();
+    }
+}
+
+/// The control: a run with no restore. Its renewals carry one serial each, rising by one from 1
+/// (the first brood is the nest's first), and Java owes every one of them: no renewal is dropped
+/// that the engine decided once.
+#[test]
+fn two_renewals_carry_two_serials_and_both_are_owed() {
+    let (mut r, id) = waiting_nest(21);
+    r.until(400, |r| r.renews().len() == 2).expect("the first renewal");
+    let after_first = r.iaf.nests[&id];
+    assert_eq!(after_first, r.worms(id));
+    r.kill(id, 1);
+    r.until(400, |r| r.renews().len() == 3).expect("the second renewal");
+    let all = r.renews();
+    assert_eq!(serials(&all), vec![1, 2, 3]); // serial
+    assert_eq!(all.iter().map(|n| n.count).collect::<Vec<_>>(), vec![2, 1, 1]);
+    assert_eq!(r.iaf.nests[&id], r.worms(id), "the world owes what the engine renewed");
+    assert_eq!(r.iaf.renewals_repeated, 0); // serial
+    // The serial is the nest's own count of renewals decided.
+    assert_eq!(r.d.nests.get(id).unwrap().renewals, 3); // serial
+}
+
+/// RP-14: the serial is a field of the saved nest row (the count of renewals the nest has
+/// decided), so the resident save and the pages give it back: a restored engine numbers its next
+/// renewal from where the saved row was.
+#[test]
+fn the_serial_is_saved_with_the_nest_row() {
+    let t = tun();
+    let (mut r, id) = waiting_nest(22);
+    r.until(400, |r| r.renews().len() == 2).expect("a renewal");
+    let want = r.d.nests.get(id).unwrap().renewals; // serial
+    assert_eq!(want, 2); // serial
+    let resident = Dragons::load(t.clone(), &r.d.save()).expect("the resident save loads");
+    assert_eq!(resident.nests.get(id).unwrap().renewals, want); // serial
+    let paged = from_pages(&mut r.d, t, "row");
+    assert_eq!(paged.nests.get(id).unwrap().renewals, want); // serial
+    assert_eq!(paged.state_hash(), r.d.state_hash());
+}
+
 // ---- the industry link ----------------------------------------------------------------------------
 
 #[test]

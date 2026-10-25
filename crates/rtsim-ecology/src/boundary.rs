@@ -1685,6 +1685,31 @@ mod tests {
         }
     }
 
+    /// NEST_RENEW's renewal serial (docs/boundary.md §6.4, RP-14) is the u32 at offset 32, in the
+    /// slot that was reserved, so the record stays 40 bytes: the offsets DragonRecords.NestRenew
+    /// reads (NEST 16, DIM 24, STAGE 28, SERIAL 32, SIZE 40).
+    #[test]
+    fn nest_renew_carries_its_serial_at_offset_32_and_stays_40_bytes() {
+        let dict = SpeciesDict::default();
+        let c = Cmd::NestRenew(NestRenew {
+            nest: 0x0001_0000_0000_0007,
+            dimension: 3,
+            count: 2,
+            stage: 3,
+            serial: 0xA1B2_C3D4,
+        });
+        let mut buf = Vec::new();
+        encode_cmd(9, &c, &dict, &mut buf);
+        assert_eq!(buf.len(), 40);
+        assert_eq!(c.size(), 40);
+        let u32_at = |at: usize| u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
+        assert_eq!(u64::from_le_bytes(buf[16..24].try_into().unwrap()), 0x0001_0000_0000_0007);
+        assert_eq!((u32_at(24), u32_at(28), u32_at(32)), (3, 3, 0xA1B2_C3D4));
+        assert_eq!(u32_at(36), 0, "the last four bytes stay reserved");
+        let (_, _, back) = decode_cmd(&buf, &dict).unwrap();
+        assert_eq!(back, c);
+    }
+
     proptest! {
         #[test]
         fn hoard_records_of_any_length_round_trip(n in 0u32..200) {
