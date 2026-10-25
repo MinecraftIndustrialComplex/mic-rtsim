@@ -25,6 +25,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CensusBody;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
@@ -2541,11 +2542,21 @@ public final class MowzieGameTests {
                                 + (camps.pollChanges - n[0]) + " chunks moved");
                     // Where no ticket event fired (C2ME) the chunks may still hold a holder above FULL when they are
                     // unloaded to memory, so only that the camp reads them out is asserted (MZB-663).
-                    for (int l : den.site().levels()) {
-                        if (events[0][0] > 0)
+                    int[] stored = den.site().levels();
+                    List<ChunkPos> chunks = den.site().footprintChunks();
+                    ChunkMapInvoker map = (ChunkMapInvoker) level.getChunkSource().chunkMap;
+                    for (int i = 0; i < stored.length; i++) {
+                        int l = stored[i];
+                        if (events[0][0] > 0) {
                             check("every footprint level reads as no holder (" + l + ")", l == Camps.NO_HOLDER);
-                        else
+                        } else {
                             check("every footprint level reads above FULL (" + l + ")", l > Camps.FULL);
+                            // and is the holder's own level now (Camps.norm), not a stale one
+                            var h = map.mic_rtsim$updating(chunks.get(i).toLong());
+                            int now = h == null ? Camps.NO_HOLDER : (h.getTicketLevel() > net.minecraft.server.level.ChunkLevel.MAX_LEVEL
+                                    ? Camps.NO_HOLDER : h.getTicketLevel());
+                            check("footprint chunk " + i + " stores the holder's current level (" + l + " against " + now + ")", l == now);
+                        }
                     }
                     record(test, "agree", events[0][0] + " ticket events, " + (camps.pollChanges - n[0]) + " chunk levels found by the poll after the unload");
                 })
@@ -2666,6 +2677,8 @@ public final class MowzieGameTests {
                     ConflictKit.onEnd(helper, () -> {
                         if (level.hasChunk(cp.x, cp.z))
                             manager.updateChunkStatus(cp, FullChunkStatus.ENTITY_TICKING);
+                        if (f[0] != null)
+                            f[0].discard();
                     });
                 })
                 .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
@@ -2674,7 +2687,7 @@ public final class MowzieGameTests {
                 .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
-                    manager.updateChunkStatus(cp, FullChunkStatus.INACCESSIBLE);
+                    hide(level, cp);
                     check("the chunk's entities are still loaded", level.areEntitiesLoaded(cp.toLong()));
                     check("but a level query no longer finds the Frostmaw", level.getEntity(f[0].getUUID()) == null && !f[0].isRemoved());
                     check("the camp is still in", den.site().in());
@@ -2683,6 +2696,7 @@ public final class MowzieGameTests {
                 })
                 .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
                 .thenExecute(() -> {
+                    check("the chunk stayed hidden and loaded until the line (an autosave stores it)", level.areEntitiesLoaded(cp.toLong()));
                     MowzieKit.allOutcomes("a TAKE while the chunk is hidden", ConflictKit.outcomes(den.faction, op[1]), STALE);
                     check("the Frostmaw stays and nothing was taken", !f[0].isRemoved() && MowzieKit.camps().taken == taken[0]
                             && MowzieKit.tagged(f[0], den.faction, 0, 1));
@@ -2731,6 +2745,8 @@ public final class MowzieGameTests {
                     ConflictKit.onEnd(helper, () -> {
                         if (level.hasChunk(out.x, out.z))
                             manager.updateChunkStatus(out, FullChunkStatus.ENTITY_TICKING);
+                        if (w[0] != null)
+                            w[0].discard();
                     });
                 })
                 .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
@@ -2742,19 +2758,102 @@ public final class MowzieGameTests {
                     Vec3 away = grove.at(80, 0);
                     w[0].teleportTo(away.x, away.y, away.z);
                     check("the warrior stands in the forced chunk", w[0].chunkPosition().equals(out));
-                    manager.updateChunkStatus(out, FullChunkStatus.INACCESSIBLE);
+                    hide(level, out);
                     check("a level query no longer finds it, and the camp still indexes it", level.getEntity(id[0]) == null && !w[0].isRemoved()
                             && MowzieKit.camps().held(grove.faction).contains(w[0]));
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.WARRIOR, REMOVE, 0, id[0])));
                 })
                 .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
                 .thenExecute(() -> {
+                    check("the chunk stayed hidden and loaded until the line (an autosave stores it)", level.areEntitiesLoaded(out.toLong()));
                     MowzieKit.allOutcomes("REMOVE by UUID of a body in a hidden chunk", ConflictKit.outcomes(grove.faction, op[1]), DONE);
                     check("the warrior is removed", w[0].isRemoved());
                     manager.updateChunkStatus(out, FullChunkStatus.ENTITY_TICKING);
                     MowzieKit.discardRecordMarkers(level, new AABB(out.getMinBlockX() - 1, level.getMinBuildHeight(), out.getMinBlockZ() - 1,
                             out.getMaxBlockX() + 2, level.getMaxBuildHeight(), out.getMaxBlockZ() + 2));
                     record(test, "hidden elsewhere", "REMOVE by UUID found the hidden body through the camp's index");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * Puts an entity chunk in the state C2ME leaves when it drops an unload (MZB-660): HIDDEN with its entities
+     * LOADED, and not queued to unload. {@code updateChunkStatus(INACCESSIBLE)} alone also queues the chunk, so
+     * vanilla's next {@code processUnloads} would store it (and a level query could never see the difference
+     * between a fixed and an unfixed build); the queue entry is taken out right after.
+     */
+    private static void hide(ServerLevel level, ChunkPos cp) {
+        var manager = (EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+        ((net.minecraft.world.level.entity.PersistentEntitySectionManager<?>) manager).updateChunkStatus(cp, FullChunkStatus.INACCESSIBLE);
+        manager.mic_rtsim$chunksToUnload().remove(cp.toLong());
+    }
+
+    /**
+     * A stray in a hidden chunk inside the stray radius is not skipped (MZB-660): an untagged Frostmaw joins in a
+     * chunk 32 blocks east that is hidden with its entities loaded. Its join asked for a recount, but a census
+     * now would not see it and would clear the watch (the engine would then SPAWN a second Frostmaw beside it),
+     * so the census waits: none is made while the chunk is hidden, and once it shows the census lists the stray
+     * as a chief. A REMOVE by UUID of that stray after its chunk is hidden again finds it through the census's
+     * stray index (MZB-661) and it goes.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_stray", skyAccess = true)
+    public static void aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows(GameTestHelper helper) {
+        String test = "aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2];
+        ChunkPos east = new ChunkPos(den.cx + 2, den.cz);
+        var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> den.force(1))
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay(1).declare();
+                    ConflictKit.onEnd(helper, () -> {
+                        if (level.hasChunk(east.x, east.z))
+                            manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
+                        if (f[0] != null)
+                            f[0].discard();
+                    });
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> {
+                    check("census 1 lists no one", MowzieKit.census(den.faction, 1).aux() == 0);
+                    f[0] = MowzieKit.frostmaw(level, den.at(32, 0.5), true);
+                    check("the Frostmaw stands in the east chunk", f[0].chunkPosition().equals(east));
+                    hide(level, east);
+                    check("a level query does not find it", level.getEntity(f[0].getUUID()) == null);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    check("the chunk stayed hidden and loaded (an autosave stores it)", level.areEntitiesLoaded(east.toLong()));
+                    check("no census was made while it is hidden (" + MowzieKit.censusCount(den.faction) + ")", MowzieKit.censusCount(den.faction) == 1);
+                    manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
+                })
+                .thenWaitUntil(() -> check("census 2 once the chunk shows", MowzieKit.censusCount(den.faction) >= 2))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
+                    List<CensusBody> bodies = ConflictKit.censusBodies(c);
+                    check("census 2 lists the stray as a chief (" + bodies.size() + ")", bodies.size() == 1
+                            && bodies.get(0).uuid().equals(f[0].getUUID())
+                            && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
+                    hide(level, east);
+                    check("hidden again, a level query does not find it", level.getEntity(f[0].getUUID()) == null && !f[0].isRemoved());
+                    op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(c),
+                            List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, REMOVE, 0, f[0].getUUID())));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    check("the chunk stayed hidden and loaded until the line (an autosave stores it)", level.areEntitiesLoaded(east.toLong()));
+                    MowzieKit.allOutcomes("REMOVE by UUID of a stray in a hidden chunk", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("the stray is removed", f[0].isRemoved());
+                    manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
+                    MowzieKit.discardRecordMarkers(level, new AABB(east.getMinBlockX() - 1, level.getMinBuildHeight(), east.getMinBlockZ() - 1,
+                            east.getMaxBlockX() + 2, level.getMaxBuildHeight(), east.getMaxBlockZ() + 2));
+                    record(test, "hidden stray", "the census waited for the hidden chunk and then listed the stray; a REMOVE found it hidden again");
                 })
                 .thenSucceed();
     }
