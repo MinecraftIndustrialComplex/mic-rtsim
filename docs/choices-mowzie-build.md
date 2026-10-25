@@ -3658,3 +3658,10 @@ conservative option at its fork.
   `a_conflict_command_ordered_while_replaying_waits_for_the_replay_end` (eight hand-overs of
   fillers): "not written while the replay runs". `Order::HerdCommand` is the same kind of route
   for the herds; it is not this slice's.
+- **RP-67** (`obs_seq` before the `later` path; the M5 merge check's item 3): rtsim-jni's
+  `journaled` set the engine's `obs_seq` only on its last path, so a `later` record (and the
+  refused copy of a casualty) was ingested with the previous record's. It is now set right after
+  the record decodes, on every path. No test can fail on it today: the only reader is
+  `camp_bodies` (an answer is kept with it, MZB-177), and CAMP_BODIES is neither `later` nor a
+  casualty. The records the host makes itself (`reject`'s BAND_SPAWN_REJECTED) carry no
+  sequence and keep the last one set; they read none.
