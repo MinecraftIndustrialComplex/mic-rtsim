@@ -1998,6 +1998,44 @@ The crash GameTests read the region and `.dat` files at one instant of the journ
 chain and restart from them, the journal's knowledge of the op included; an fsync call is not taken
 as proof of anything.
 
+### 9.7 The module switch gates only new decisions (the coordinator's rule, 2026-10-25)
+
+**The rule.** A module's switch gates only new decisions. The engine hears every record of what
+already happened, in every module, for every puppet or body still embodied or despawning: Java's
+answers to commands the engine sent, and Java's reports of goods, bodies and blocks that changed in
+the world. A record heard while the module is off goes in at its own tick, never at the frozen clock:
+its command (if any) leaves the outbox or the queue at once, so nothing is sent again, and its effect
+is kept and applied at the record's tick at the switch-on, as a replay with the module on would apply
+it. A frozen-clock effect feeds later tick-derived op ids (`ops.derive(world_seed, at, ..)`) that a
+crash and a restart with the module on derive differently, so Java could not refuse them (J3). The ring
+rule (saving, loading and pruning a ring never depend on the switch, RP-209, RP-257) is the Java side
+of the same rule, and RP-285 is its industry case.
+
+Why it matters: Java drops what refuses a repeat (the journal's applied index, a chunk's carried
+answer, a store's op ring) at the engine's acknowledgement of the answer, whatever the switch. An
+engine that acknowledges a record it ignored, and then sends the op again or decides the same goods
+again at the switch-on, applies them twice.
+
+**The preamble order stays.** A hand-over's preamble writes MODULES ahead of the journal's drain
+(`BoundarySession.flushPreamble`), so every record of the switch's tick reaches the engine after the
+switch. Under the rule that order no longer matters for correctness; do not reorder it to "fix" a hole,
+fix the module's off path instead. There is no Java-side freeze of puppets at the switch either: the
+engine's own capture (the despawn it sends) ends a puppet, and what happens to it before then is heard.
+
+**The modules** (a sweep at fdfa88e0; each row is updated when its slice lands):
+
+| Module | Ops it sends | Off, and the records of what already happened | State |
+|---|---|---|---|
+| industry | CarriageDelta, DepositDelta, WritePackage, WriteChain, ChunkReconcile | Every answer (COMMAND_RESULT, IND_CARRIAGE_RESULT, IND_RECONCILE_RESULT, a CHAIN_IN with an engine op) completes its command at once; its effect is applied at its own tick at the switch-on (RP-285) | closed (slice U-a) |
+| dragons: tribute | the tribute coin (TRANSFER_TO_CONTAINER, core outbox) | Off, `after_core` and `answered_again` ignore its answer while the core outbox drops the op; `placing` survives `begin_replay`; `write_tribute` writes it again under its old op after Java's journal and chunk carry dropped it at the acknowledgement (MSC55's "Java answers DUPLICATE_OP" no longer holds) | open: slice U-c |
+| dragons and conflict bodies | (no op; bodies by epoch) | Kills, and a hoard's or a body's goods taken between the switch and the despawn | to check: slice U-d |
+| phase 1: gossip, houses, residents | WRITE_GOSSIP, PLACE_HOUSE, SPAWN_RESIDENT | Answers are taken in every state (PR13); kept commands wait unsequenced; Java's own refusals outlive the acknowledgement (the gossip ring and village marks, `houseOwner`) | no hole; HOUSE_PLACED's frozen clock checked against the rule in slice U-d |
+| phase 1: caravans | (no op; puppets by agent and epoch) | TAKEN, DIED, TRADE and CARGO_CHANGED are ignored between MODULES and the despawn; the caravan's row keeps goods the player took or bought and materializes them again at the switch-on (`check_capture` only logs) | open: slice U-d |
+| conflict: camps | CAMP_RECONCILE | Java refuses by the site's epoch and the bodies' slot and generation tags, not an acknowledged set; the next census is the truth. An off and on in one session with no save between can make a re-derived op meet an old `Camp.answered` entry: an answer lost, not a double | no hole |
+| conflict: bands | (no op) | BAND_LOOTED ignored while off: goods that left the player's world are not credited to the band, a loss | recorded, left |
+| ships | SHIP_CARGO (by epoch) | Every record ignored, queue dropped, bodies reset at the switch-on; no Java plugin consumes SHIP_CARGO today | no hole today; a future plugin must not refuse it by an acknowledged set |
+| herds, talk, worldmodel | none | Nothing an acknowledgement could drop | no hole |
+
 ## 10. Questions for Ben
 
 Gameplay trade-offs at the forks, recommendation first. The coordinator decided all three on
