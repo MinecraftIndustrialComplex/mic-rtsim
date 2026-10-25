@@ -844,6 +844,48 @@ fn both_mowzie_cultures_resolve_from_json() {
     assert!(names.contains_key("frostmaw") && names.contains_key("umvuthana"));
 }
 
+/// The rail kind (M7, MZB-301): its number and name are fixed, the Frostmaw minds trains at the
+/// designed weight and tolerance, and a culture with no rail entry has weight 0 for it.
+#[test]
+fn rail_parses_and_a_missing_entry_is_weight_zero() {
+    assert_eq!(SignalKind::Rail as u8, 6);
+    assert_eq!(SignalKind::COUNT, 7);
+    assert_eq!(SignalKind::Rail.name(), "rail");
+    assert_eq!(SignalKind::from_name("rail"), Some(SignalKind::Rail));
+    assert_eq!(SignalKind::from_u32(6), Some(SignalKind::Rail));
+    let c = Cultures::from_json(&[FROSTMAW_JSON, UMVUTHANA_JSON, GOBLIN_JSON]).unwrap();
+    let rail = |name: &str| {
+        let i = c.list.iter().position(|x| x.name() == name).unwrap();
+        c.list[i].signals[SignalKind::Rail.index()]
+    };
+    assert_eq!(rail("frostmaw").weight, 1.0);
+    assert_eq!(rail("frostmaw").tolerance_per_day, 2.0);
+    assert_eq!(rail("umvuthana").weight, 0.0);
+    assert_eq!(rail("goblin").weight, 0.0);
+}
+
+/// A grove does not mind trains: its TERRITORY mask lacks the rail bit, a den's has it, so Java
+/// samples trains only for dens (MZB-301).
+#[test]
+fn umvuthana_minds_no_rail() {
+    let territory_mask = |culture: &str| {
+        let (_w, mut c, f) = setup_with(
+            7,
+            Cultures::from_json(&[FROSTMAW_JSON, UMVUTHANA_JSON]).unwrap(),
+            culture,
+        );
+        c.take_commands()
+            .into_iter()
+            .find_map(|cmd| match cmd {
+                Cmd::Territory(t) if t.faction == c.factions[f as usize].key => Some(t.signals),
+                _ => None,
+            })
+            .expect("a TERRITORY command")
+    };
+    assert_eq!(territory_mask("umvuthana") & SignalKind::Rail.bit(), 0);
+    assert_ne!(territory_mask("frostmaw") & SignalKind::Rail.bit(), 0);
+}
+
 /// An Umvuthana grove's first demand, its haven's market pricing gold nuggets at `price` (none:
 /// no price), after a kill worth `times` Envoy's threshold. Returns the demand and what it should
 /// be: `tribute_per_grievance` times the grievance at the climb, bent, times the nuggets a coin
