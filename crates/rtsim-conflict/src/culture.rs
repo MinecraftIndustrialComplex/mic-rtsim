@@ -357,6 +357,11 @@ pub struct CultureDef {
     /// as a lair, `NodeKind::Lair` (ledger 13). True when absent.
     #[serde(default = "yes")]
     pub haven: bool,
+    /// Whether the camp's members have bodies at home that a census counts (MOWZIE.md §4.9): the
+    /// camp keeps a ledger of slots, and a FACTION_FOUND that counts its bodies sets its pool and
+    /// its cap. False for a camp whose warriors have no bodies until a party materializes.
+    #[serde(default)]
+    pub camp_bodies: bool,
 }
 
 fn one() -> f64 {

@@ -340,6 +340,61 @@ fn a_pool_short_of_a_whole_warrior_waits_for_it() {
     );
 }
 
+/// MOWZIE.md ledger 6 holds for every culture, not only the two with a ledger (review of
+/// 408d4a07, item 5): the pool refills only to the camp's cap less the members away, so a camp
+/// never fields more than its cap between its pool and its parties, and a band's survivors come
+/// home to a pool with room for them (M2's refill went to the cap while the band was out and
+/// clamped the survivors off at the homecoming). A goblin camp of cap 20 sends raids of 12; its
+/// pool and its members away never pass 20 over 60 days, and a pool above the room is clamped to
+/// it.
+#[test]
+fn every_cultures_pool_refills_only_to_its_cap_less_the_members_away() {
+    let cultures = goblins_with(&["raid"], |d| {
+        d.pool_cap = 20;
+        d.repeat_days = Some(1.0);
+        d.linger_days = 6.0;
+    });
+    let (mut w, mut c, f) = setup_with(24, cultures, "goblin");
+    assert_eq!(c.factions[f as usize].cap, 20);
+    let p = c.player(&mut w, synth::PLAYER);
+    let raid = theta(&c, f, Step::Raid);
+    let amount = 2.0 * raid * (1.0 - 0.5f64.powf(1.0 / 6.0)) / 8.0;
+    let (mut t, to) = (Tick(10), Tick::from_days(60));
+    let mut hours_out = 0;
+    while t < to {
+        if (t.0 - 10).is_multiple_of(TICKS_PER_DAY) {
+            kill(&mut c, &mut w, p, amount, t);
+        }
+        t = Tick(t.0 + HOUR);
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        let (pool, away) = (c.pool_at(f, t), f64::from(c.factions[f as usize].away));
+        assert!(
+            pool + away <= 20.0 + 1e-9,
+            "{t:?}: pool {pool}, {away} away"
+        );
+        hours_out += usize::from(away > 0.0);
+    }
+    assert!(
+        c.stats.parties[PartyKind::Raid.index()] >= 2,
+        "raids went: {:?}",
+        c.stats.parties
+    );
+    assert!(
+        hours_out > 4 * 24,
+        "raids were out for days: {hours_out} hours"
+    );
+    c.check(&w).expect("books");
+    // The room, directly: refilled only to 20 less the 12 away, and a pool above it clamped.
+    let x = &mut c.factions[f as usize];
+    (x.away, x.pool, x.pool_at) = (12, 5.0, t);
+    assert!((c.pool_at(f, Tick(t.0 + 10 * TICKS_PER_DAY)) - 8.0).abs() < 1e-9);
+    c.factions[f as usize].pool = 15.0;
+    assert!(
+        (c.pool_at(f, t) - 8.0).abs() < 1e-9,
+        "above the room: the room"
+    );
+}
+
 /// `sim mowzie` run 5's M2 part: the grove's ladder goes Notice, Envoy (a demand in gold
 /// nuggets), Scouts, Raid, Invasion, and never Siege (it has no siege party).
 #[test]

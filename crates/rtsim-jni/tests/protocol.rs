@@ -4770,29 +4770,24 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the camp's, the rail's,
-    /// the chief's) is decoded, counted as deferred and dropped; one with an op id spends it, so
-    /// the same record again is not counted twice.
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the chief's, the rail's,
+    /// the tribute's; the camp's came with M4) is decoded, counted as deferred and dropped; one with
+    /// an op id spends it, so the same record again is not counted twice.
     #[test]
     fn later_slices_records_are_counted_and_dropped() {
         let (_dir, e, mut j) = camp("conflict-deferred");
         let casualties = e.with_conflict(|c, _| c.stats.casualties);
-        let death = O::CampDeath(cb::CampDeath {
+        let paid = O::ChiefPaid(cb::ChiefPaid {
             faction: CAMP,
-            by: cb::BY_PLAYER,
-            body: 0,
-            flags: 0,
             slot: 3,
             generation: 1,
-            killer: PLAYER,
+            flags: 0,
+            player: PLAYER,
             op: (1 << 63) | 0xDEAD,
+            items: Vec::new(),
         });
-        j.conflict_obs(&death);
-        j.conflict_obs(&death);
-        j.conflict_obs(&O::CampOut(cb::CampOut {
-            faction: CAMP,
-            epoch: 7,
-        }));
+        j.conflict_obs(&paid);
+        j.conflict_obs(&paid);
         j.conflict_obs(&O::ChiefState(cb::ChiefState {
             faction: CAMP,
             flags: 1,
@@ -4801,7 +4796,7 @@ mod conflict {
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let (_, link) = e.conflict_stats();
-        assert_eq!((link.deferred, link.ignored), (3, 0), "{link:?}");
+        assert_eq!((link.deferred, link.ignored), (2, 0), "{link:?}");
         assert!(
             e.with_conflict(|c, _| c.op_applied((1 << 63) | 0xDEAD)),
             "the engine spent the op id, as Conflict::ingest does (MZB-23)"
@@ -4811,6 +4806,590 @@ mod conflict {
             casualties,
             "nothing reached the conflict"
         );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- M4: the camp reconciler through the journal ----------------------------------------------
+
+    /// The Umvuthana's warrior, as Java names it.
+    const WARRIOR: &str = "mic_rtsim:conflict/umvuthana/warrior";
+
+    /// A grove (FACTION_FOUND with the Umvuthana's structure) with `strays` of its own bodies standing
+    /// in it, as the jar places them, in the fake plugin's camp world; the camp is out.
+    fn grove(name: &str, strays: u16) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+        j.players = vec![(PLAYER, dim, base)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        let _ = e.conflict_log(true);
+        j.idle();
+        let structure = j.dict_id(wire::DICT_STRUCTURE, "mowziesmobs:umvuthana_grove");
+        let body = j.dict_id(wire::DICT_BODY, WARRIOR);
+        for _ in 0..strays {
+            j.conflict_plugin.camp_stray(CAMP, body);
+        }
+        j.conflict_obs(&O::FactionFound(cb::FactionFound {
+            faction: CAMP,
+            flags: 0,
+            dimension: dim,
+            structure,
+            pos: (CAMP_AT.0, 64, CAMP_AT.1),
+            home_bodies: strays,
+            census: 0,
+        }));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (dir, e, j)
+    }
+
+    /// The camp's slots by state (body, owed, left, gone, dead).
+    fn slots(e: &Engine) -> [u32; 5] {
+        e.with_conflict(|c, _| {
+            let mut n = [0; 5];
+            if let Some(f) = c.faction_of_key(CAMP)
+                && let Some(camp) = c.camp(f)
+            {
+                for s in &camp.slots {
+                    n[s.state as usize] += 1;
+                }
+            }
+            n
+        })
+    }
+
+    fn reconciles(j: &Java) -> Vec<cb::CampReconcile> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::Reconcile(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The camp comes in (its census journaled at the present game time).
+    fn camp_in(j: &mut Java) -> u64 {
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        let epoch = j.conflict_plugin.camp_in(CAMP, at);
+        j.conflict_flush();
+        j.idle();
+        epoch
+    }
+
+    /// Waits (the answers journaled as the plugin sends them) until `done`.
+    fn camp_until(j: &mut Java, what: &str, mut done: impl FnMut(&mut Java) -> bool) {
+        advance_until(j, 50, 2 * DAY, what, |j| done(j));
+    }
+
+    /// MOWZIE.md §4.9 through the journal: a census (CAMP_CENSUS) is journaled, the engine orders
+    /// (CAMP_RECONCILE, with the engine's body ids in Java's) an adoption for each stray, the plugin
+    /// applies them and answers (CAMP_BODIES, journaled), and the slots are booked home, body; the
+    /// same answer twice (a replay) books once.
+    #[test]
+    fn a_census_is_reconciled_and_its_answer_booked_through_the_journal() {
+        let (_dir, e, mut j) = grove("camp-census", 3);
+        assert_eq!(
+            slots(&e),
+            [0, 3, 0, 0, 0],
+            "found with its bodies counted: owed"
+        );
+        let body = j.java_id(wire::DICT_BODY, WARRIOR).expect("named");
+        j.conflict_plugin.replay_answers = true;
+        let epoch = camp_in(&mut j);
+        camp_until(&mut j, "the adoptions answered", |_| {
+            slots(&e) == [3, 0, 0, 0, 0]
+        });
+        let orders = reconciles(&j);
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].epoch, epoch);
+        assert_eq!(orders[0].lines.len(), 3);
+        assert!(
+            orders[0]
+                .lines
+                .iter()
+                .all(|l| l.action == cb::ACTION_ADOPT && l.body == body),
+            "adopt lines in Java's body id: {orders:?}"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (camps, answers, deaths) = e.with_conflict(|c, _| {
+            (
+                c.stats.camp_censuses,
+                c.stats.camp_answers,
+                c.stats.camp_deaths,
+            )
+        });
+        assert_eq!(
+            (camps, answers, deaths),
+            (1, 3, 0),
+            "the replayed answer booked once"
+        );
+        assert!(e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A body killed at the camp is CAMP_DEATH, journaled under its own sequence: the member is gone
+    /// from its slot and the pool, once, and a second copy of the record (a replay's) books nothing,
+    /// because the slot's generation is retired at the first (the death keeps no op id).
+    #[test]
+    fn a_death_is_booked_through_the_journal_once() {
+        let (_dir, e, mut j) = grove("camp-death", 3);
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoptions answered", |_| {
+            slots(&e) == [3, 0, 0, 0, 0]
+        });
+        let b = j.conflict_plugin.camps[&CAMP].bodies[0];
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        assert!(j.conflict_plugin.camp_kill(CAMP, b.uuid, cb::BY_PLAYER, at));
+        let record = j.conflict_plugin.drop_queued();
+        assert_eq!(record.len(), 1);
+        j.conflict_obs(&record[0]);
+        j.conflict_obs(&record[0]);
+        j.idle();
+        assert_eq!(slots(&e), [2, 0, 0, 0, 0]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_deaths),
+            1,
+            "once: the second copy finds the slot's generation retired"
+        );
+        let (pool, cap) = e.with_conflict(|c, _| {
+            let f = &c.factions[c.faction_of_key(CAMP).unwrap() as usize];
+            (f.pool.floor() as u32, f.cap)
+        });
+        assert_eq!((pool, cap), (2, 3));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// One op's answer comes as several records (a holder's, journaled again, and held lines answered
+    /// later): each (op, line) is booked once through the journal, a line twice (a holder's record
+    /// again) booked once, and the camp's records keep no op id (the engine acknowledges by
+    /// sequence).
+    #[test]
+    fn an_answer_in_two_records_books_every_line_and_a_repeated_line_once() {
+        let (_dir, e, mut j) = grove("camp-split", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0]);
+        let record = j
+            .conflict_plugin
+            .queued()
+            .into_iter()
+            .find_map(|o| match o {
+                O::CampBodies(b) => Some(b),
+                _ => None,
+            })
+            .expect("the answer, on its way");
+        let _ = j.conflict_plugin.drop_queued();
+        assert_eq!(record.lines.len(), 3);
+        assert!(record.lines.iter().all(|l| l.action == cb::ACTION_ADOPT));
+        let part = |lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+        j.conflict_obs(&part(&record.lines[..1]));
+        j.conflict_obs(&part(&record.lines[1..]));
+        j.conflict_obs(&part(&record.lines[..1]));
+        j.idle();
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0], "all three lines booked");
+        assert_eq!(e.with_conflict(|c, _| c.stats.camp_answers), 3, "once each");
+        assert!(
+            !e.with_conflict(|c, _| c.op_applied(record.op)),
+            "no op id kept"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A world save that makes an answer's record durable lets the camp forget it (MZB-177): the
+    /// ledger keeps (op, line) with the record's sequence, a copy before the save is skipped, and one
+    /// after it is booked again, by its slot's state (here the adopted body stays one body).
+    #[test]
+    fn a_durable_world_save_lets_the_camp_forget_the_answers_it_covers() {
+        let (_dir, e, mut j) = grove("camp-forget", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        let record = j
+            .conflict_plugin
+            .queued()
+            .into_iter()
+            .find_map(|o| match o {
+                O::CampBodies(b) => Some(b),
+                _ => None,
+            })
+            .expect("the answer, on its way");
+        let _ = j.conflict_plugin.drop_queued();
+        let part = |lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+        let kept = || {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .unwrap()
+                    .answered
+                    .iter()
+                    .map(|a| (a.line, a.seq))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let first = j.conflict_obs(&part(&record.lines[..2]));
+        let copy = j.conflict_obs(&part(&record.lines[..1]));
+        j.idle();
+        assert_eq!(slots(&e), [2, 1, 0, 0, 0]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_answers),
+            2,
+            "the copy skipped"
+        );
+        assert_eq!(
+            kept(),
+            vec![(record.lines[0].line, copy), (record.lines[1].line, first)],
+            "kept with the record's sequence, a copy's included"
+        );
+        // A save durable through the first record only: the copy keeps line 0.
+        let durable = |j: &mut Java, through: u64| {
+            let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+                panic!()
+            };
+            wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, through);
+            j.idle();
+        };
+        durable(&mut j, first);
+        j.conflict_obs(&part(&record.lines[2..]));
+        j.idle();
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(
+            kept().iter().map(|k| k.0).collect::<Vec<_>>(),
+            vec![record.lines[0].line, record.lines[2].line],
+            "line 1 (first record only) forgotten, line 0 kept by its copy"
+        );
+        // A save past the copy: the next answer forgets it too, and its copy books again.
+        let now = j.next_obs - 1;
+        durable(&mut j, now);
+        let again = j.conflict_obs(&part(&record.lines[..1]));
+        j.idle();
+        assert_eq!(kept(), vec![(record.lines[0].line, again)]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_answers),
+            4,
+            "the copy after the save is booked again, by state"
+        );
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0], "nothing moves");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A camp's record carried on a holder comes back as a REASSERT (docs/boundary.md section 3.2,
+    /// MZB-652), and the engine judges the copy by the generation that journaled it, not by the
+    /// record's (op, line): a copy of a record it applied is dropped even where the camp has
+    /// forgotten the line; a copy from a generation it never heard is booked once, under the copy's
+    /// own sequence; and a copy journaled in the last session and replayed stays inside the replay
+    /// window, so the replayed census after it still only marks its camp out.
+    #[test]
+    fn a_camp_record_a_holder_journals_again_is_judged_by_its_generation() {
+        use std::sync::atomic::Ordering;
+        /// A generation no engine heard: the one a crash lost with its journal.
+        const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+        let copies = |e: &Engine| {
+            (
+                e.stats.copies_applied.load(Ordering::Acquire),
+                e.stats.copies_dropped.load(Ordering::Acquire),
+            )
+        };
+        let answers = |e: &Engine| e.with_conflict(|c, _| c.stats.camp_answers);
+        let kept = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .unwrap()
+                    .answered
+                    .iter()
+                    .map(|a| (a.line, a.seq))
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The record as a holder kept it: one op's answer, split in lines, journaled by a session
+        // the engine never heard (its sequence is that session's).
+        let held = |j: &Java, o: &O, seq: u64| {
+            let mut b = Vec::new();
+            cb::encode_obs(0, j.game_time, o, &mut b);
+            wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+            b
+        };
+        let answer = |j: &mut Java| {
+            let record = j
+                .conflict_plugin
+                .queued()
+                .into_iter()
+                .find_map(|o| match o {
+                    O::CampBodies(b) => Some(b),
+                    _ => None,
+                })
+                .expect("the answer, on its way");
+            let _ = j.conflict_plugin.drop_queued();
+            record
+        };
+        let part = |record: &cb::CampBodies, lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+
+        // A dropped copy books nothing, and an unknown one is booked once.
+        let (_dir, e, mut j) = grove("camp-copies", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        let record = answer(&mut j);
+        assert_eq!(record.lines.len(), 3);
+        let first = j.conflict_obs(&part(&record, &record.lines[..1]));
+        let original = j.journaled(first).unwrap();
+        let nonce = j.nonce;
+        j.idle();
+        assert_eq!((answers(&e), slots(&e)), (1, [1, 2, 0, 0, 0]));
+        // A save durable through it, and the camp's next answer forgets the line (MZB-177): a plain
+        // resend of the line would book it again, by state (the test above).
+        let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+            panic!()
+        };
+        wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, first);
+        j.idle();
+        j.conflict_obs(&part(&record, &record.lines[2..]));
+        j.idle();
+        assert_eq!((answers(&e), slots(&e)), (2, [2, 1, 0, 0, 0]));
+        assert_eq!(
+            kept(&e).iter().map(|k| k.0).collect::<Vec<_>>(),
+            vec![record.lines[2].line],
+            "line 0 forgotten"
+        );
+        let before = kept(&e);
+        j.reassert(nonce, &original);
+        j.idle();
+        assert_eq!(copies(&e), (0, 1), "a copy of the open generation's record");
+        assert_eq!(
+            answers(&e),
+            2,
+            "dropped: nothing booked, though the line is forgotten"
+        );
+        assert_eq!(slots(&e), [2, 1, 0, 0, 0]);
+        assert_eq!(kept(&e), before);
+
+        // A record of an earlier generation, whose original the crash lost: the copy is all of it.
+        let lost = held(&j, &part(&record, &record.lines[1..2]), 7);
+        let copy = j.reassert(EARLIER_GEN, &lost);
+        j.idle();
+        assert_eq!(copies(&e), (1, 1));
+        assert_eq!((answers(&e), slots(&e)), (3, [3, 0, 0, 0, 0]));
+        assert_eq!(
+            kept(&e).iter().find(|k| k.0 == record.lines[1].line),
+            Some(&(record.lines[1].line, copy)),
+            "booked under the copy's sequence, not the record's own (7)"
+        );
+        j.reassert(EARLIER_GEN, &lost);
+        j.idle();
+        assert_eq!(copies(&e), (1, 2), "the second copy of it is dropped");
+        assert_eq!((answers(&e), slots(&e)), (3, [3, 0, 0, 0, 0]));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A copy the last session journaled, replayed: inside the replay window.
+        let (dir, e, mut j) = grove("camp-copies-replay", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        save(&e, &mut j);
+        camp_in(&mut j);
+        let record = answer(&mut j);
+        let lost = held(&j, &part(&record, &record.lines[..1]), 7);
+        j.reassert(EARLIER_GEN, &lost);
+        // A later census, journaled after the copy: live, it would order a reconcile.
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.camp_out(CAMP, at);
+        j.conflict_flush();
+        j.idle();
+        camp_in(&mut j);
+        assert_eq!(
+            copies(&e),
+            (1, 0),
+            "applied in the session that journaled it"
+        );
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        let _ = plugin.drop_queued();
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.conflict_plugin = plugin;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0], "the pages predate the census");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(copies(&e), (1, 0), "the replay applied the copy, once");
+        assert_eq!(
+            slots(&e),
+            [1, 2, 0, 0, 0],
+            "the copy's line, booked by state"
+        );
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the census after the copy was replayed, not live"
+        );
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "its camp is out"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// CAMP_OUT ends the epoch: the lines in flight are void, and a late answer for them is booked by
+    /// the world fact it reports, not dropped, and a CAMP_OUT for another epoch ends nothing.
+    #[test]
+    fn a_camp_out_voids_the_lines_and_a_late_answer_is_booked_by_state() {
+        let (_dir, e, mut j) = grove("camp-out", 3);
+        j.conflict_plugin.answer_ticks = 5_000;
+        let epoch = camp_in(&mut j);
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0], "the answers are on their way");
+        let in_flight =
+            || e.with_conflict(|c, _| c.camp(c.faction_of_key(CAMP).unwrap()).unwrap().in_flight());
+        assert_eq!(in_flight(), 3);
+        // A CAMP_OUT for an older epoch: nothing.
+        j.conflict_obs(&O::CampOut(cb::CampOut {
+            faction: CAMP,
+            epoch: epoch + 1,
+        }));
+        j.idle();
+        assert_eq!(in_flight(), 3);
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.camp_out(CAMP, at);
+        j.conflict_flush();
+        j.idle();
+        assert_eq!(in_flight(), 0, "void");
+        assert!(!e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())));
+        camp_until(&mut j, "the late answers", |_| slots(&e) == [3, 0, 0, 0, 0]);
+        assert_eq!(reconciles(&j).len(), 1, "nothing was ordered again");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A crash with lines in flight (MOWZIE.md §4.9's crash table): the pages keep the lines, the
+    /// restart voids them and marks every camp out; the journal's census, replayed, only marks the
+    /// camp out and orders nothing; the camp's next census finds the adopted bodies (the plugin's
+    /// world applied them, the answers were lost) and books them by state, with no second order.
+    #[test]
+    fn a_crash_with_lines_in_flight_is_repaired_by_the_next_census() {
+        let (dir, e, mut j) = grove("camp-crash", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0]);
+        assert_eq!(reconciles(&j).len(), 1);
+        save(&e, &mut j);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        // The plugin's world keeps what it applied; the answers die with the session.
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        let _ = plugin.drop_queued();
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        plugin.answer_ticks = 0;
+        j.conflict_plugin = plugin;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "out"
+        );
+        assert_eq!(
+            e.with_conflict(|c, _| c.camp(c.faction_of_key(CAMP).unwrap()).unwrap().in_flight()),
+            0,
+            "void"
+        );
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the replayed census ordered nothing"
+        );
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0]);
+        // The camp comes in again: the bodies the lost lines adopted are found.
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0], "found, booked by state");
+        assert_eq!(reconciles(&j).len(), 0, "no second order for them");
+        assert_eq!(j.conflict_plugin.camps[&CAMP].bodies.len(), 3);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The crash table's journal rows through the real replay: the pages predate the census, the
+    /// journal holds the census and the answers; after the crash the replayed census only marks its
+    /// camp out (it orders nothing: its bodies are not the world as it is now), the replayed answers
+    /// are booked by state, and the camp's next census finds the books and the world agree.
+    #[test]
+    fn a_replayed_census_orders_nothing_and_its_answers_are_booked_by_state() {
+        let (dir, e, mut j) = grove("camp-replay", 3);
+        save(&e, &mut j);
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoptions answered", |_| {
+            slots(&e) == [3, 0, 0, 0, 0]
+        });
+        assert_eq!(reconciles(&j).len(), 1);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.conflict_plugin = plugin;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0], "the pages predate the census");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the replayed census ordered nothing"
+        );
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "out"
+        );
+        assert_eq!(
+            slots(&e),
+            [3, 0, 0, 0, 0],
+            "the replayed answers, booked by state"
+        );
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(reconciles(&j).len(), 0, "nothing to order");
+        assert_eq!(j.conflict_plugin.camps[&CAMP].bodies.len(), 3);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
