@@ -1221,7 +1221,7 @@ impl Dragons {
         }
         let mut cmds = Vec::new();
         let dict = SpeciesDict::default();
-        for c in &self.outbox {
+        for c in self.outbox.iter() {
             boundary::encode_cmd(0, c, &dict, &mut cmds);
         }
         w.var_u64(self.outbox.len() as u64);
@@ -1357,7 +1357,7 @@ impl Dragons {
         for _ in 0..n {
             let (size, _, c) = boundary::decode_cmd(cmds, &dict)
                 .map_err(|e| CodecError::Invalid(format!("a queued dragon command: {e:?}")))?;
-            d.outbox.push(c);
+            d.outbox.restore(c);
             cmds = &cmds[size..];
         }
         if !cmds.is_empty() {

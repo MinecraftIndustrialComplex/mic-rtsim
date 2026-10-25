@@ -83,8 +83,18 @@ pub(super) struct Link {
     queue: VecDeque<Cmd>,
     pub(super) enabled: bool,
     /// The dragons' session reset (bodies of an earlier session or of before a switch-off are
-    /// gone) is due the next time they run.
+    /// gone) is due the next time they run, or a record reaches them.
     reset_due: bool,
+    /// The engine came back from its pages ([`Link::load`]), not fresh: only such an engine
+    /// honours a replayed DRAGON_MATERIALIZED (docs/replay-gate.md §5.2, RP-31). Not saved.
+    from_pages: bool,
+    /// The dragons' replay end (`replay_done`) is due: set by their reset (`begin_replay`), run by
+    /// [`replay_end`] at the session's replay end, or at once when no replay runs
+    /// (docs/replay-gate.md §3.2). Not saved.
+    replay_end_due: bool,
+    /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
+    /// §4.3). Not saved.
+    never_logged: u64,
     /// What the saves owe the dragons' pages (a save while switched off, a purge at start).
     pub(super) pager: Pager,
     /// The Java ids of the species bodies and lair structures, from Java's dictionary (built when
@@ -136,6 +146,9 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
+            from_pages: false,
+            replay_end_due: false,
+            never_logged: 0,
             pager: Pager::default(),
             java_species: None,
             items_defined: BTreeSet::new(),
@@ -207,6 +220,7 @@ impl Link {
         let mut l = Link::empty();
         l.engine = engine;
         l.restore_diverged = diverged;
+        l.from_pages = true;
         Ok(l)
     }
 
@@ -275,13 +289,22 @@ fn define_items(st: &mut State, ids: &[u32]) {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
-/// The session's replay end (docs/replay-gate.md §3.2): nothing yet. Its bodies still end at
-/// SESSION_START (`session_start`), until slice D moves that work into its engine's `replay_done`.
-pub(super) fn replay_end(_st: &mut State) {}
+/// The dragons' replay end (docs/replay-gate.md §3.2, §5.6), when due and the dragons are
+/// switched on: every dragon the engine thought embodied is abstract again where it was last
+/// seen, at the replay clock (§3.6, RP-24). Switched off, it stays due; the reset on switch-on
+/// runs it.
+pub(super) fn replay_end(st: &mut State) {
+    end_replay(st, st.replay_clock);
+}
 
-/// SESSION_START: every dragon the engine thought embodied is abstract again where it was last
-/// seen (puppets never outlive a session; the reset runs as soon as the dragons run, now or when
-/// switched on), and Java forgot the engine's dictionary.
+/// The replay gate's counts for the replay end's log line (docs/replay-gate.md §4.3).
+pub(super) fn gate_counts(st: &State) -> rtsim_ecology::GateCounts {
+    st.dragons.engine.replay_gate_counts()
+}
+
+/// SESSION_START: the dragons' reset is due (their engine's replay begins as soon as they run or
+/// a record reaches them; every dragon the engine thought embodied is abstract again at the
+/// replay end, since puppets never outlive a session), and Java forgot the engine's dictionary.
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.dragons.queue.clear();
     st.dragons.far.clear();
@@ -314,18 +337,44 @@ fn set_enabled(st: &mut State, on: bool) {
     reset_if_due(st);
 }
 
-/// Bodies of an earlier session (or of before a switch-off) are gone: every dragon is abstract
-/// again where it was last seen.
+/// The session's reset, once the dragons run (docs/replay-gate.md §3.2): their engine's replay
+/// begins (`begin_replay`, told whether it came back from its pages, RP-31) and its end is due.
+/// With no replay running (a switch-on) that end runs at once, at the hand-over's time.
 fn reset_if_due(st: &mut State) {
     if st.dragons.reset_due && running(st) {
-        st.dragons.reset_due = false;
-        let at = shared::hand_over_target(st);
-        let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
-        d.session_start(w, at.max(d.now()));
-        // Java's far table is per session: every dragon goes out again (far.rs).
-        d.set_far_feed(true);
-        st.phase1.taint();
+        reset(st);
     }
+}
+
+/// [`reset_if_due`] for the dragons as they are: a record reaches an engine nothing has made
+/// active yet, and the gate must hold from the record that does (docs/replay-gate.md §4.1).
+fn reset(st: &mut State) {
+    st.dragons.reset_due = false;
+    let from_pages = st.dragons.from_pages;
+    st.dragons.engine.begin_replay(from_pages);
+    st.dragons.replay_end_due = true;
+    st.phase1.taint();
+    take_commands(st);
+    if !st.replaying {
+        let at = shared::hand_over_target(st);
+        end_replay(st, at);
+    }
+}
+
+/// The dragons' replay end at `clock`: bodies of an earlier session (or of before a switch-off)
+/// are gone, so every dragon is abstract again where it was last seen, and Java's far table,
+/// which is per session, hears every dragon again (far.rs).
+fn end_replay(st: &mut State, clock: Tick) {
+    if !st.dragons.replay_end_due || !st.dragons.enabled {
+        return;
+    }
+    st.dragons.replay_end_due = false;
+    let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
+    let at = clock.max(d.now()).max(w.now());
+    d.replay_done(w, at);
+    d.set_far_feed(true);
+    st.phase1.taint();
+    take_commands(st);
 }
 
 /// A record that is not journaled: Java's DICT entries (they may rename species and lairs),
@@ -378,6 +427,12 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.dragons.enabled {
         st.dragons.ignored += 1;
+        // Ignored, but the epoch it names is taken all the same (docs/replay-gate.md §5.3, RP-57,
+        // RP-75): the dragons' next body, once they run again, is above it.
+        let dict = java_species(st);
+        if let Ok((_, _, _, o)) = boundary::decode_obs(rec.bytes, &dict) {
+            st.dragons.engine.fold_epoch(&o);
+        }
         return;
     }
     // Everything before it happens first: the ships, the dragons and the world, in time order.
@@ -473,8 +528,20 @@ pub(super) fn nest_day(st: &mut State, ticks: u64) {
 /// the clock may reach it, `shared::hand_over_target`).
 fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.dragons.records += 1;
+    if st.dragons.reset_due && st.dragons.enabled {
+        reset(st);
+    }
     let at = at.max(st.dragons.engine.now()).max(st.phase1.world.now());
-    with_infra(st, |d, w, infra| d.ingest(w, infra, o, at));
+    // A copy (REASSERT) of an ended session's record is applied by identity, never against a
+    // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
+    let copy = st.applying_copy.is_some();
+    with_infra(st, |d, w, infra| {
+        if copy {
+            d.ingest_copy(w, infra, o, at)
+        } else {
+            d.ingest(w, infra, o, at)
+        }
+    });
     st.phase1.taint();
     reset_if_due(st);
     take_commands(st);
@@ -551,7 +618,19 @@ pub(super) fn simulate(st: &mut State) {
     shared::run_to(st, at);
 }
 
+/// Takes what the dragons decided into the link's queue. A rise in the gate's "never" count is
+/// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 fn take_commands(st: &mut State) {
+    let counts = st.dragons.engine.replay_gate_counts();
+    if counts.never > st.dragons.never_logged {
+        let (code, name) = counts.last_never.unwrap_or((0, "?"));
+        log_error(&format!(
+            "the dragons decided a {name} ({code:#06x}) while replaying ({} since the last take): \
+             skipped, a bug (docs/replay-gate.md §4)",
+            counts.never - st.dragons.never_logged
+        ));
+        st.dragons.never_logged = counts.never;
+    }
     let cmds = st.dragons.engine.take_commands();
     st.dragons.queue.extend(cmds);
     let now = st.dragons.engine.now();
