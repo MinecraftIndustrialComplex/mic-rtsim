@@ -51,6 +51,7 @@ pub mod tunables;
 pub use dragon::{Dragon, DragonId, Lair, LairId, LairKind, Lairs};
 pub use engine::{Chest, DragonStats, Dragons, NewDragon, Placing, TRIBUTE_STACK, TributeRow};
 pub use outbox::GateCounts;
+pub use persist::TABLES as DRAGON_PAGE_TABLES;
 pub use persist::{DragonsPaging, DragonsTickets};
 pub use species::{Gender, Species};
 pub use tunables::{DragonTunables, PreyKind};

@@ -80,7 +80,7 @@ const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
 const META_VERSION: u16 = 7;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
-const TABLES: [u16; 9] = [
+pub const TABLES: [u16; 9] = [
     FACTION_TABLE,
     FEUD_TABLE,
     SOURCE_TABLE,
