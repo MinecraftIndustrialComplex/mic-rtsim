@@ -8,9 +8,11 @@ import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
@@ -22,13 +24,17 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.JigsawReplace
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlaceSettings;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureProcessorList;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
+import net.neoforged.neoforge.attachment.AttachmentHolder;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Village growth from a mod's own house templates (C7, PLAN.md §8.8, P17's recommendation): one
@@ -71,6 +77,10 @@ public final class HouseBuilder {
     public static final int RING_STEP = 4;
     /** How far below a house the client-sync sweep looks for pillar blocks (PLACEHOLDER). */
     public static final int PILLAR_SWEEP = 32;
+    /** How long a searching build waits for the saved chunks of its plots to be read before it goes on without them. */
+    public static final long PLOT_READ_WAIT_NANOS = 10_000_000_000L;
+    /** Ticks between looks at a searching build's chunk reads (PLACEHOLDER). */
+    public static final int PLOT_READ_RETRY = 2;
 
     private final RtsimSession session;
     private final VillageRegistry villages;
@@ -78,9 +88,13 @@ public final class HouseBuilder {
     private final Map<Long, Integer> searchIndex = new HashMap<>();
     private final Map<Long, String> lastRefusal = new HashMap<>();
     private final Map<Long, List<int[]>> ringCache = new HashMap<>();
+    /** Each searching build's look for its op in the chunks of all its plots (not saved: a reload looks again). */
+    private final Map<Long, OpLook> looks = new HashMap<>();
     long placedBlocks;
     long completed;
     long refused;
+    /** Chunks of plots read from disk; builds found already standing by the look; looks that went on without every read. */
+    long plotReads, foundByLook, looksCut;
 
     public HouseBuilder(RtsimSession session, VillageRegistry villages) {
         this.session = session;
@@ -93,6 +107,11 @@ public final class HouseBuilder {
 
     public long refused() {
         return refused;
+    }
+
+    /** The look for a searching build's op across its plots (RP-211): chunks read, builds found standing, looks cut short. */
+    public String lookCounts() {
+        return "plot chunks read " + plotReads + ", found standing " + foundByLook + ", looks cut short " + looksCut;
     }
 
     /** A PLACE_HOUSE was accepted. Duplicates were already answered by the caller. */
@@ -161,6 +180,10 @@ public final class HouseBuilder {
                 b.nextTry = now + RETRY_TICKS;
                 return blocks;
             }
+            if (r == Search.READING) {
+                b.nextTry = now + PLOT_READ_RETRY;
+                return blocks;
+            }
             if (r == Search.BUILT) {
                 finish(b, Obs.CommandResult.DUPLICATE_OP, null, null, null, now);
                 return blocks;
@@ -207,7 +230,15 @@ public final class HouseBuilder {
         return blocks;
     }
 
-    private enum Search { FOUND, NOT_FREE, WAIT, MORE, BUILT }
+    private enum Search { FOUND, NOT_FREE, WAIT, MORE, BUILT, READING }
+
+    /** The chunk reads a searching build waits for, by chunk ({@link ChunkPos#toLong}). */
+    private static final class OpLook {
+        final Map<Long, CompletableFuture<Optional<CompoundTag>>> reads = new HashMap<>();
+        final long since = System.nanoTime();
+        int unread;
+        boolean done;
+    }
 
     /** A block a player placed or a block entity in what is still to be built, or null. */
     static String takenSince(ServerLevel level, BoundingBox rest) {
@@ -231,6 +262,11 @@ public final class HouseBuilder {
         int y = ((b.flags & com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd.PlaceHouse.FLAG_Y_FROM_VILLAGE) != 0 ? v.baseY : b.y) + b.yOffset;
         boolean searching = (b.flags & com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd.PlaceHouse.FLAG_SEARCH) != 0;
         List<int[]> candidates = searching ? ringCache.computeIfAbsent(b.op, k -> rings(b)) : List.of(new int[] {b.x, b.z});
+        if (searching) {
+            Search look = lookForOp(level, b, t, s, y, candidates);
+            if (look != null)
+                return look;
+        }
         int i = searchIndex.getOrDefault(b.op, 0);
         boolean unloaded = false;
         for (; i < candidates.size() && budget[0] > 0; i++) {
@@ -245,7 +281,8 @@ public final class HouseBuilder {
             if (carriesOp(level, box, b.op)) {
                 // This op's house already stands here: a chunk of its box was saved after the house was
                 // built and before the world save that would have recorded it (the registry rolled back).
-                // Every chunk of the box carries the result (finish, RP-211).
+                // Every chunk of the box carries the result (finish, RP-211). A searching build's look found
+                // it before any plot was tried; this is the fixed plot of a build that does not search.
                 searchIndex.remove(b.op);
                 return Search.BUILT;
             }
@@ -266,6 +303,91 @@ public final class HouseBuilder {
             MicRtsim.LOGGER.info("[mic_rtsim] house {} for village {}: no free plot among {} candidates; the last was refused for {}",
                     b.op, b.village, candidates.size(), lastRefusal.remove(b.op));
         return unloaded ? Search.WAIT : Search.NOT_FREE;
+    }
+
+    /**
+     * Before a searching build takes any plot, it looks for its op in every chunk its candidate plots touch (C3,
+     * RP-211): this op's house may stand on any of them. After a crash a resend searches from the first candidate
+     * again, and the plot the house stands on may be unloaded, or an earlier one loaded and free, so a look at the
+     * candidate in hand would miss it. A loaded chunk is looked at as it is ({@code chunkCarriesOp}); one not loaded
+     * is read as saved ({@code ChunkStorage.read}, off the server thread) and the build held until the reads are in,
+     * at most {@link #PLOT_READ_WAIT_NANOS}, after which it goes on without the rest (logged and counted). BUILT when
+     * a chunk carries the op, READING while reads are out, null when the search can go on.
+     */
+    private Search lookForOp(ServerLevel level, VillageRegistry.Build b, StructureTemplate t, StructurePlaceSettings s, int y, List<int[]> candidates) {
+        OpLook look = looks.get(b.op);
+        if (look != null && look.done)
+            return null;
+        if (look == null) {
+            look = new OpLook();
+            looks.put(b.op, look);
+            Set<Long> chunks = new LinkedHashSet<>();
+            for (int[] c : candidates) {
+                BoundingBox box = t.getBoundingBox(s, centred(t, s, c[0], y, c[1]));
+                for (int cx = box.minX() >> 4; cx <= box.maxX() >> 4; cx++)
+                    for (int cz = box.minZ() >> 4; cz <= box.maxZ() >> 4; cz++)
+                        chunks.add(ChunkPos.asLong(cx, cz));
+            }
+            for (long p : chunks) {
+                LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(p), ChunkPos.getZ(p));
+                if (chunk != null) {
+                    if (RtsimSession.chunkCarriesOp(chunk, b.op))
+                        return foundByLook(b, new ChunkPos(p));
+                    continue;
+                }
+                try {
+                    look.reads.put(p, level.getChunkSource().chunkMap.read(new ChunkPos(p)).thenApply(HouseBuilder::attachmentsOnly));
+                    plotReads++;
+                } catch (RuntimeException e) {
+                    look.unread++;
+                }
+            }
+        }
+        for (var it = look.reads.entrySet().iterator(); it.hasNext(); ) {
+            var e = it.next();
+            if (!e.getValue().isDone())
+                continue;
+            it.remove();
+            Optional<CompoundTag> tag;
+            try {
+                tag = e.getValue().join();
+            } catch (RuntimeException ex) {
+                look.unread++;
+                continue;
+            }
+            if (tag.isPresent() && RtsimSession.opsCarriedInChunkTag(tag.get(), level.registryAccess()).contains(b.op))
+                return foundByLook(b, new ChunkPos(e.getKey()));
+        }
+        if (!look.reads.isEmpty()) {
+            if (System.nanoTime() - look.since < PLOT_READ_WAIT_NANOS)
+                return Search.READING;
+            look.unread += look.reads.size();
+            look.reads.clear();
+        }
+        look.done = true;
+        if (look.unread > 0) {
+            looksCut++;
+            MicRtsim.LOGGER.warn("[mic_rtsim] house {}: {} chunks of its plots were not read in {} s; the search goes on without them "
+                    + "(docs/choices-journal-barrier.md RP-211)", b.op, look.unread, PLOT_READ_WAIT_NANOS / 1_000_000_000L);
+        }
+        return null;
+    }
+
+    private Search foundByLook(VillageRegistry.Build b, ChunkPos where) {
+        foundByLook++;
+        looks.remove(b.op);
+        searchIndex.remove(b.op);
+        MicRtsim.LOGGER.info("[mic_rtsim] house {}: chunk {} carries its result, so it stands already", b.op, where);
+        return Search.BUILT;
+    }
+
+    /** The NeoForge attachments of a chunk's saved data, all a look needs of it (the rest is let go on the IO thread). */
+    private static Optional<CompoundTag> attachmentsOnly(Optional<CompoundTag> chunk) {
+        return chunk.map(tag -> {
+            CompoundTag keep = new CompoundTag();
+            keep.put(AttachmentHolder.ATTACHMENTS_NBT_KEY, tag.getCompound(AttachmentHolder.ATTACHMENTS_NBT_KEY));
+            return keep;
+        });
     }
 
     /** Candidate centres on rings around (x, z), out to the radius, starting at an angle from the seed. */
@@ -404,6 +526,7 @@ public final class HouseBuilder {
         villages.builds.remove(b.op);
         searchIndex.remove(b.op);
         ringCache.remove(b.op);
+        looks.remove(b.op);
         villages.setDirty();
         ServerLevel level = session.server().getLevel(b.dimension);
         if (status == Obs.CommandResult.APPLIED && v != null && box != null) {
