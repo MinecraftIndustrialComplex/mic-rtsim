@@ -8754,11 +8754,25 @@ mod conflict {
             peak > total,
             "over the budget while replaying: {peak} B of {total} B"
         );
-        for _ in 0..8 {
+        // The budget save is committed on the IO lane, and its result comes back to a later step,
+        // which evicts the saved pages: wait for both by their condition, not a count of
+        // hand-overs (under load the lane falls behind the steps; 8 idles failed 23 runs in 190
+        // beside 24 busy loops).
+        let deadline = Instant::now() + DURABLE_WAIT;
+        let (resident, after) = loop {
             j.idle();
-        }
-        let resident = e.with_conflict(|c, _| c.resident_bytes());
-        let after = e.stats.pressure_saves.load(Acquire);
+            let resident = e.with_conflict(|c, _| c.resident_bytes());
+            let after = e.stats.pressure_saves.load(Acquire);
+            if after > pressure && resident <= total {
+                break (resident, after);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "after the replay end, within {DURABLE_WAIT:?}: {} budget saves, rows {resident} B \
+                 of {total} B",
+                after - pressure
+            );
+        };
         eprintln!(
             "a replay of {hand_overs} hand-overs under {total} B: rows {peak} B at peak while \
              replaying, {resident} B after; {} budget saves after the replay end",
