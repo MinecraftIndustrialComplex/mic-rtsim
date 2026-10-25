@@ -990,3 +990,198 @@ fn stale_records_rederive_their_rounds_deposit_deltas() {
         "the same rounds: {what}"
     );
 }
+
+/// A district with a vault and a frogport `x0` blocks east of the mill's, live, learned to draw
+/// `oil` a tick from a diesel well on the mill's vault chunk ([`chunks`]`[0]`), which it shares.
+fn oil_district(e: &mut Engine, d: DistrictId, x0: i32, oil: f64) {
+    let send = |e: &mut Engine, rec: Timed| e.ingest(&rec);
+    send(
+        e,
+        t(
+            0,
+            Obs::District(DistrictDecl {
+                district: d,
+                revision: 1,
+                dim: 0,
+                name: 0,
+                not_learnable: None,
+                inventory_count: 2,
+            }),
+        ),
+    );
+    let at = |p: BlockPos| BlockPos::new(p.x + x0, p.y, p.z);
+    for (index, pos, slots) in [(VAULT, at(vault_pos()), 100u32), (1, at(frog_pos()), 18)] {
+        send(
+            e,
+            t(
+                0,
+                Obs::Inventory(InventoryDecl {
+                    district: d,
+                    revision: 1,
+                    index,
+                    pos,
+                    kind: InvKind(InvKind::ITEMS),
+                    item_slots: slots,
+                    fluid_capacity: 0,
+                    energy_capacity: 0,
+                }),
+            ),
+        );
+    }
+    for c in district_chunks(x0) {
+        send(
+            e,
+            t(
+                0,
+                Obs::ChunkLoaded {
+                    district: d,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ),
+        );
+    }
+    send(e, district_load(0, d, LoadState::Live, 2));
+    for inventory in [VAULT, 1] {
+        send(
+            e,
+            t(
+                10,
+                Obs::StockSample {
+                    district: d,
+                    inventory,
+                    sweep: 1,
+                    goods: GoodVec::from_pairs([(IRON, 100)]),
+                },
+            ),
+        );
+    }
+    send(
+        e,
+        t(
+            10,
+            Obs::DepositSample(DepositSample {
+                district: d,
+                good: OIL,
+                plugin: DepositPluginId::DieselOil,
+                chunk: chunks()[0],
+                remaining: 1_000_000,
+                infinite: false,
+                sweep: 1,
+            }),
+        ),
+    );
+    send(
+        e,
+        t(
+            10,
+            Obs::SweepEnd(SweepEnd {
+                district: d,
+                sweep: 1,
+                records: 3,
+                inventories: 2,
+                live: true,
+                creative: false,
+                overstressed: false,
+            }),
+        ),
+    );
+    e.adopt_model(
+        d,
+        Learned {
+            at: Tick(20),
+            window_ticks: 12_000,
+            rates: vec![(OIL, oil)],
+            links: vec![],
+            confidence: 1.0,
+            points: 0,
+            longest_gap: 0,
+            latency_ticks: 0,
+        },
+        vec![],
+    );
+}
+
+fn district_chunks(x0: i32) -> Vec<ChunkPos> {
+    let mut v: Vec<ChunkPos> = [vault_pos(), frog_pos()]
+        .iter()
+        .map(|p| ChunkPos {
+            dim: 0,
+            x: (p.x + x0) >> 4,
+            z: p.z >> 4,
+        })
+        .collect();
+    v.dedup();
+    v
+}
+
+fn district_load(at: u64, d: DistrictId, state: LoadState, ticking: u32) -> Timed {
+    t(
+        at,
+        Obs::LoadState {
+            district: d,
+            state,
+            ticking_chunks: ticking,
+            total_chunks: 2,
+        },
+    )
+}
+
+/// The review's table (RP-272): two different decisions under one key at one tick, in a live
+/// run. A Mail pool's packages cannot be (RP-272 says why); deposit deltas can: two districts
+/// drawing on one diesel well both load at one tick, and one `flush_dirty` writes back both
+/// draws, the same plugin, chunk and good. On 2a975cc3 they had one key and the ordinal told
+/// them apart; since RP-275 the district is in the key. Either way two ops: Java, which guards a
+/// deposit delta by its op alone, applies both.
+#[test]
+fn two_districts_on_one_well_write_back_at_one_tick_and_both_apply() {
+    const WELL: DistrictId = DistrictId(3);
+    let mut e = Engine::new(SEED, Tunables::default(), Tick(0));
+    e.define_good(IRON, GoodInfo::item("iron", 64));
+    e.define_good(OIL, GoodInfo::deposit("diesel:oil/00000000000000aa"));
+    oil_district(&mut e, MILL, 0, -0.5);
+    oil_district(&mut e, WELL, 64, -0.3);
+    e.advance_to(Tick(50));
+    let _ = e.drain_commands();
+    for d in [MILL, WELL] {
+        e.ingest(&district_load(100, d, LoadState::Unloaded, 0));
+    }
+    e.advance_to(Tick(5_000));
+    let _ = e.drain_commands();
+    for (d, x0) in [(MILL, 0), (WELL, 64)] {
+        for c in district_chunks(x0) {
+            e.ingest(&t(
+                5_000,
+                Obs::ChunkLoaded {
+                    district: d,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ));
+        }
+        e.ingest(&district_load(5_000, d, LoadState::Live, 2));
+    }
+    e.advance_to(Tick(5_001));
+    let out = e.drain_commands();
+    let wells: Vec<&rtsim_industry::cmd::DepositDelta> = out
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::DepositDelta(x) => Some(x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        wells.len(),
+        2,
+        "both districts write back their draw: {out:?}"
+    );
+    assert_eq!(
+        (wells[0].plugin, wells[0].chunk, wells[0].good),
+        (wells[1].plugin, wells[1].chunk, wells[1].good),
+        "one well"
+    );
+    assert_ne!(wells[0].delta, wells[1].delta, "two different decisions");
+    // Java's guard is the op id alone: both apply.
+    let applied: std::collections::HashSet<u64> = wells.iter().map(|x| x.op.0).collect();
+    assert_eq!(applied.len(), 2, "two ops: {wells:?}");
+}

@@ -1451,4 +1451,43 @@ mod tests {
         assert_eq!(o, l.outbox);
         assert!(decode_link(&encode_link(&l)[..5]).is_err());
     }
+
+    /// The slice R review's P1-2 for a chain write (RP-259): Java answered an IND_WRITE_CHAIN
+    /// FAILED before its save, and the replay hears that answer before its wake decides the write
+    /// again (a COMMAND_RESULT runs no `fire_until`). Java keeps only the ops it applied, so a copy
+    /// written after the replay end would be written into the frogport. The first drain after the
+    /// end leaves it unsent, with the copy of an op answered APPLIED, and writes the rest.
+    #[test]
+    fn a_command_heard_answered_while_replaying_is_never_written() {
+        use rtsim_industry::cmd::WriteChain;
+        use rtsim_industry::ids::{BlockPos, GoodVec, StoreId};
+        let mut l = Link::empty();
+        let op = |n: u64| OpId((0x49 << 56) | n);
+        let chain = |n: u64| {
+            Cmd::WriteChain(WriteChain {
+                op: op(n),
+                store: StoreId(1),
+                district: DistrictId(2),
+                inventory: 1,
+                frogport: 0,
+                pos: BlockPos::new(0, 64, 0),
+                count: 2,
+                goods: GoodVec::from_pairs([(Good(1), 64)]),
+            })
+        };
+        // Heard first, decided after: the order the replay gives a chain write.
+        l.heard.insert(op(5), obs::command_result::FAILED);
+        l.heard.insert(op(6), obs::command_result::APPLIED);
+        l.queue.push_back(chain(5));
+        l.queue.push_back(chain(7));
+        l.queue.push_back(chain(6));
+        unsent_answered(&mut l);
+        let left: Vec<OpId> = l.queue.iter().filter_map(Cmd::op).collect();
+        assert_eq!(left, vec![op(7)], "only the command Java never answered");
+        assert_eq!(l.stats.answered_unsent, 2);
+        assert!(
+            l.heard.is_empty(),
+            "memory only, emptied at the first drain"
+        );
+    }
 }
