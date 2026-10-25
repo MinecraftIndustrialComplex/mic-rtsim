@@ -5104,7 +5104,9 @@ impl Conflict {
         self.held.clear();
         self.unheld_fights.clear();
         // The world saves reported meanwhile make their answers forgettable now (RP-68).
-        self.durable_obs_seq = self.durable_obs_seq.max(std::mem::take(&mut self.durable_held));
+        self.durable_obs_seq = self
+            .durable_obs_seq
+            .max(std::mem::take(&mut self.durable_held));
         // Every party is abstract now: the floors become the epochs, for the pages (§5.3).
         for (agent, floor) in std::mem::take(&mut self.floors) {
             if let Some(p) = Party::of_agent(agent).filter(|p| self.parties.contains(*p)) {
