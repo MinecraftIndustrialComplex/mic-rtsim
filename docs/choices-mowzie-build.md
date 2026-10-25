@@ -7712,15 +7712,33 @@ audit's D rows, so it is not edited; the rows are named here.
   OilFieldGameTests: `aPlacedLairIsOnDiskBeforeItsRoostCanBe`,
   `aLairWhoseStartIsMissingIsPlacedAgainOnce`; DragonGameTests:
   `anAdoptAtANewerEpochReleasesTheOlderPuppet`, `anAdoptOfAGoneDragonReleasesTheOlderPuppetAndFails`)
-  are written and compiled, not run, each in its own batch. `chunk_waits.py` (the brief asks for
-  `python3 -I neoforge/tools/chunk_waits.py` over each touched GameTest file) is on origin/main and not
-  yet in this branch: the merge of origin/main waits for the lead's go (slice N lands first), and the
-  reviewer's five site-load waits that need `--chunk 'chunks loaded'` (NestGameTests.java:752, 844 and
-  913, OilFieldGameTests.java:572 and 648) are to be run and recorded here then. The D6 tests copy a
-  worm with `EntityType.loadEntityRecursive` and add it with `addFreshEntity`, which fires the same
-  cancellable join event a load does. The D4 test needs a nest id whose spot list has a spot exactly six
-  above or below the first (it draws ids until it has one) and asserts that the second chamber fits, so
-  it fails without the fix.
+  are written and compiled, not run, each in its own batch (the chunk waits above are on `ChunkWait`
+  since the merge). The chunk waits: `neoforge/tools/chunk_waits.py` came in with the merge of
+  origin/main (slice N landed at 4e694452, merge f3f92fa9, no conflict). Run as `python3 -I
+  neoforge/tools/chunk_waits.py --chunk 'chunks loaded'` over NestGameTests, OilFieldGameTests and
+  DragonGameTests it converted the seven GameTests whose site-load wait is `check("the site's chunks
+  loaded", ...)`: in NestGameTests `aRenewalDecidedAgainIsNotOwedTwice` (slice N's),
+  `aNestPlacedAgainFindsItsChamber`, `aWormTheSavedCountLostIsAdopted`,
+  `aStaleWormCopyIsDiscardedAndJournalsNothing` and `aWormLoadedBeforeItsNestWasFoundIsSettled`, in
+  OilFieldGameTests `aPlacedLairIsOnDiskBeforeItsRoostCanBe` and
+  `aLairWhoseStartIsMissingIsPlacedAgainOnce`. Each now has a `ChunkWait waits` (timeoutTicks
+  `ChunkWait.NO_TICK_TIMEOUT`, its old timeout the logic budget), the site-load wait on `waits.chunks`
+  (120 s of wall-clock time, no ticks) and the rest on `waits.logic`. Those are the reviewer's five
+  (NestGameTests 752, 844 and 913, OilFieldGameTests 572 and 648) plus the two the tool also found.
+  DragonGameTests has no such wait and is unchanged. The tool refuses the whole run (writes nothing in
+  any file) on three methods that have no chunk wait at all: `surveyAnswersWithTheOilWithinItsRadius`
+  (OilFieldGameTests), `aPlayersHitIsHurtAndAKillIsDiedWithTheKiller` and
+  `tributeLandsInALairChestWhenTheLairLoads` (DragonGameTests), with "already has a `waits` that is no
+  ChunkWait". It is a false refusal: its test is `\bwaits\b` over the method body, so the word "waits"
+  in a check message or a comment ("the corpse waits, tagged", "the tribute waits") trips it before the
+  tool looks for a chunk wait. The run was therefore made with `--only` for the seven methods above,
+  which skips the others before that test; the tool is another slice's and was not changed. One
+  site-load wait stays in the old form, OilDangerGameTests.java:337 (`check("the site's chunks loaded",
+  DragonKit.ready(level, sc, FORCE))`), a file this slice does not touch. The D6 tests copy a worm with
+  `EntityType.loadEntityRecursive` and add it with `addFreshEntity`, which fires the same cancellable
+  join event a load does. The D4 test needs a nest id whose spot list has a spot exactly six above or
+  below the first (it draws ids until it has one) and asserts that the second chamber fits, so it fails
+  without the fix.
 - **RP-249** (formats, and the whole of what changed for a world with the module off): the Nests
   SavedData gains `spawned` and `holes` per nest and the placed lairs' SavedData gains `start` per lair;
   an older file loads `spawned` 0, no holes and `start` absent, which are the "no ordinal yet", "nothing

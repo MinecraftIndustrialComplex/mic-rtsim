@@ -568,8 +568,9 @@ public final class OilFieldGameTests {
      * (one structure start in the loaded chunks, one placement). Fails without the fix: the file written by the autosave
      * would not yet hold the placement.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_lair_durable")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "oil_lair_durable")
     public static void aPlacedLairIsOnDiskBeforeItsRoostCanBe(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         String test = "aPlacedLairIsOnDiskBeforeItsRoostCanBe";
         ServerLevel level = helper.getLevel();
         BlockPos site = DragonKit.farSite();
@@ -591,19 +592,19 @@ public final class OilFieldGameTests {
             DragonConfig.Test.reset();
         });
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5)))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5))))
                 .thenExecute(() -> {
                     before[0] = placer.savedNow;
                     before[1] = placer.placedCount;
                     placer.request(field, dim, ROOST, site.getX(), site.getZ(), 100);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = placements0; i < placer.placements.size(); i++)
                         if (placer.placements.get(i).field() == field)
                             got[0] = placer.placements.get(i);
                     check("the roost placed (" + placer.requests + " requests, " + placer.sitesTried + " sites tried, " + placer.sitesFailed
                             + " failed)", got[0] != null);
-                })
+                }))
                 .thenExecute(() -> {
                     LairPlacer.Placed p = got[0];
                     check("one write counted at the placement (" + (placer.savedNow - before[0]) + ")", placer.savedNow == before[0] + 1);
@@ -647,8 +648,9 @@ public final class OilFieldGameTests {
      * of the field stays in L, LAIR_FOUND was sent once, and the box holds exactly one dragon, the one from the first
      * placement, at the end and after a further 80 ticks, which place nothing more.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_lair_replace")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "oil_lair_replace")
     public static void aLairWhoseStartIsMissingIsPlacedAgainOnce(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         String test = "aLairWhoseStartIsMissingIsPlacedAgainOnce";
         ServerLevel level = helper.getLevel();
         BlockPos site = DragonKit.farSite();
@@ -669,18 +671,18 @@ public final class OilFieldGameTests {
             DragonConfig.Test.reset();
         });
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5)))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5))))
                 .thenExecute(() -> {
                     roost[0] = level.registryAccess().registryOrThrow(Registries.STRUCTURE).get(ResourceLocation.parse(ROOST));
                     before[0] = placer.placedCount;
                     placer.request(field, dim, ROOST, site.getX(), site.getZ(), 100);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = placements0; i < placer.placements.size(); i++)
                         if (placer.placements.get(i).field() == field)
                             got[0] = placer.placements.get(i);
                     check("the roost placed (" + placer.requests + " requests, " + placer.sitesTried + " sites tried)", got[0] != null);
-                })
+                }))
                 .thenExecute(() -> {
                     check("its start chunk is recorded", got[0].start() != null);
                     before[1] = placer.replaced;
@@ -712,8 +714,8 @@ public final class OilFieldGameTests {
                     before[3] = placer.placedCount;
                     placer.unverifyForTest();
                 })
-                .thenWaitUntil(() -> check("the lair placed again (" + placer.replaced + " replaced, " + placer.replaceFailed + " failed)",
-                        placer.replaced == before[2] + 1))
+                .thenWaitUntil(waits.logic(() -> check("the lair placed again (" + placer.replaced + " replaced, " + placer.replaceFailed + " failed)",
+                        placer.replaced == before[2] + 1)))
                 .thenExecute(() -> {
                     LevelChunk home = level.getChunk(got[0].start().x, got[0].start().z);
                     StructureStart again = home.getStartForStructure(roost[0]);
