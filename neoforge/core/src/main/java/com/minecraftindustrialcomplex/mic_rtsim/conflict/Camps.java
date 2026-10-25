@@ -119,6 +119,8 @@ public final class Camps {
         boolean waiting, recount, reported;
         /** A body of the kind joined beyond the footprint: the next census looks wide for strays (MZB-232). */
         boolean strayWatch;
+        /** The tick a census began being held for a hidden stray chunk (-1 when not held), and the tick of the last scan for one. */
+        long holdSince = -1, holdScan;
         /**
          * The strays the last census listed, by UUID (MZB-661): a REMOVE or ADOPT of a stray whose chunk went
          * hidden after the census finds it here, as the index finds a tagged body. Rebuilt by each census,
@@ -700,7 +702,7 @@ public final class Camps {
                 return true;
             }
         }
-        if ((!c.in() || c.recount) && strayChunkHidden(level, c)) {
+        if ((!c.in() || c.recount) && strayHold(level, c, now)) {
             // A chunk inside the stray radius is hidden with its entities loaded (MZB-660): a census now would
             // not list a stray there, clear the watch, and the engine would SPAWN a second body beside it. The
             // census waits for the chunk to show (or to unload); a camp that is in stays in meanwhile.
@@ -712,6 +714,24 @@ public final class Camps {
             census(level, c, now);
         c.recount = false;
         return false;
+    }
+
+    /**
+     * {@link #strayChunkHidden}, kept as a hold: never a census past a hidden stray (a double body is worse than
+     * a late den), but once a hold is {@link #HOLD_MAX} ticks old (saving is off, so nothing makes the chunk
+     * show) the scan runs once every 100 ticks instead of each tick (MZB-660).
+     */
+    private boolean strayHold(ServerLevel level, Site c, long now) {
+        if (c.holdSince >= 0 && now - c.holdSince >= HOLD_MAX && now - c.holdScan < 100)
+            return true;
+        c.holdScan = now;
+        if (!strayChunkHidden(level, c)) {
+            c.holdSince = -1;
+            return false;
+        }
+        if (c.holdSince < 0)
+            c.holdSince = now;
+        return true;
     }
 
     /**
