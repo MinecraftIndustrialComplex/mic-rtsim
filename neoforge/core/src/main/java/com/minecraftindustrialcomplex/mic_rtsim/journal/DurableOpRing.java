@@ -78,6 +78,25 @@ public final class DurableOpRing {
         return r;
     }
 
+    /**
+     * The key of one part of an op, for a store an op writes more than once (a reconcile's deposits, one per good):
+     * the op id mixed with the part's name (FNV-1a, then a 64-bit finalizer).
+     */
+    public static long keyOf(long op, String part) {
+        long h = 0xcbf29ce484222325L;
+        for (int i = 0; i < part.length(); i++) {
+            h ^= part.charAt(i);
+            h *= 0x100000001b3L;
+        }
+        long x = op ^ Long.rotateLeft(h, 29);
+        x ^= x >>> 33;
+        x *= 0xff51afd7ed558ccdL;
+        x ^= x >>> 33;
+        x *= 0xc4ceb9fe1a85ec53L;
+        x ^= x >>> 33;
+        return x;
+    }
+
     /** Runs when an entry is added: the store's {@code setDirty}. */
     public void onChange(Runnable onChange) {
         this.onChange = onChange;

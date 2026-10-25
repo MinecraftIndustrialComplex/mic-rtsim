@@ -62,6 +62,14 @@ public final class RtsimAttachments {
             TYPES.register("camp_member", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember.NONE)
                     .serialize(com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember.CODEC, m -> !m.isNone()).build());
 
+    /**
+     * {@code mic_rtsim:applied_ops} on a level: the engine ops applied to that level's own attachments, kept in the
+     * same file as them (docs/choices-journal-barrier.md RP-207; {@code DurableOpRings.SERIALIZER}).
+     */
+    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing>> LEVEL_APPLIED_OPS =
+            TYPES.register("applied_ops", () -> AttachmentType.builder(() -> new com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing())
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings.SERIALIZER).build());
+
     /** The entity's camp tag, or null for a body no camp holds. */
     public static com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember campMember(Entity entity) {
         com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember m = entity.getExistingDataOrNull(CAMP_MEMBER);

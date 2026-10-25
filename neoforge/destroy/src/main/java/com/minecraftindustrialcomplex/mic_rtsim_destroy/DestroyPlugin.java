@@ -6,12 +6,15 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import petrolpark.mc.destroy.DestroyAttachmentTypes;
+import petrolpark.mc.destroy.DestroyRegistries;
 import petrolpark.mc.destroy.content.oil.ChunkCrudeOil;
 import petrolpark.mc.destroy.content.oil.pumpjack.PumpjackBlockEntity;
 
@@ -64,8 +67,31 @@ public final class DestroyPlugin implements IndustryPlugin {
         }
     }
 
+    /**
+     * Level pollution's applied ops (RP-207): a level type is Destroy's {@code LEVEL_POLLUTION} level attachment,
+     * which NeoForge saves with the level's other attachments in its {@code neoforge_data_attachments}, so its ring
+     * is a level attachment too ({@code mic_rtsim:applied_ops}). Crude oil and the chunk types are in the chunk, with
+     * the reconcile's epoch: no ring.
+     */
+    @Override
+    public DurableOpRing depositRing(ServerLevel level, int chunkX, int chunkZ, String good) {
+        ResourceLocation type = pollutionType(level, chunkX, chunkZ, good);
+        return type != null && DestroyRegistries.LEVEL_POLLUTION_TYPES.get(type) != null ? level.getData(RtsimAttachments.LEVEL_APPLIED_OPS) : null;
+    }
+
+    private static ResourceLocation pollutionType(ServerLevel level, int chunkX, int chunkZ, String good) {
+        Industry ind = IndustryApi.current();
+        District d = ind == null ? null : ind.districtAt(level.dimension(), ChunkPos.asLong(chunkX, chunkZ));
+        return d == null ? null : Deposits.kindFor(good, pollutionKey(d.id));
+    }
+
     @Override
     public Long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta) {
+        return applyDeposit(level, chunkX, chunkZ, good, delta, null);
+    }
+
+    @Override
+    public Long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta, DepositOp op) {
         if (CRUDE.equals(Deposits.kindIn(good, level.dimension(), chunkX, chunkZ))) {
             LevelChunk chunk = level.getChunkSource().getChunkNow(chunkX, chunkZ);
             ChunkCrudeOil oil = chunk == null ? null : chunk.getExistingDataOrNull(DestroyAttachmentTypes.CHUNK_CRUDE_OIL.get());
@@ -84,6 +110,6 @@ public final class DestroyPlugin implements IndustryPlugin {
         if (type == null)
             return null;
         LevelChunk chunk = level.getChunkSource().getChunkNow(chunkX, chunkZ);
-        return PollutionLedger.get(level).apply(level, chunk, d.id, type, delta);
+        return PollutionLedger.get(level).apply(level, chunk, d.id, type, delta, good, op);
     }
 }

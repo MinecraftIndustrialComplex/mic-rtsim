@@ -353,15 +353,15 @@ public final class Industry {
     // ---- deposits and level-store commands (overnight agent 14) ---------------------------------
 
     /**
-     * Applies a deposit delta through the plugin that owns the good (I11). Returns what was applied (the
-     * sign of {@code delta}); 0 when no plugin owns it, so the engine keeps it owed.
+     * Applies a deposit delta through the plugin that owns the good (I11), for the reconcile {@code op}. Returns
+     * what was applied (the sign of {@code delta}); 0 when no plugin owns it, so the engine keeps it owed.
      */
-    public long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta) {
+    public long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta, IndustryPlugin.DepositOp op) {
         if (good == null || delta == 0)
             return 0;
         for (IndustryPlugin p : IndustryApi.PLUGINS) {
             try {
-                Long applied = p.applyDeposit(level, chunkX, chunkZ, good, delta);
+                Long applied = p.applyDeposit(level, chunkX, chunkZ, good, delta, op);
                 if (applied != null)
                     return applied;
             } catch (RuntimeException e) {
@@ -404,11 +404,12 @@ public final class Industry {
             ring.add(opId, commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP));
             return;
         }
+        DepositWrite write = new DepositWrite(opId);
         Long applied = null;
         if (level != null && good != null) {
             for (IndustryPlugin p : IndustryApi.PLUGINS) {
                 try {
-                    applied = p.applyDeposit(level, cx, cz, good, delta);
+                    applied = p.applyDeposit(level, cx, cz, good, delta, write);
                 } catch (RuntimeException e) {
                     fail("IND_DEPOSIT_DELTA " + delta + " of " + good, e);
                     applied = null;
@@ -427,6 +428,46 @@ public final class Industry {
             long seq = commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
             if (ring != null)
                 ring.add(opId, seq);
+            write.stamp(seq);
+        }
+    }
+
+    /**
+     * One deposit write's op ({@link IndustryPlugin.DepositOp}): the rings a plugin asked to keep it in, stamped with
+     * the op's answer in the same tick (RP-207).
+     */
+    public static final class DepositWrite implements IndustryPlugin.DepositOp {
+        private final long id;
+        private java.util.List<com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing> rings;
+        private long[] keys;
+
+        public DepositWrite(long id) {
+            this.id = id;
+        }
+
+        @Override
+        public long id() {
+            return id;
+        }
+
+        @Override
+        public void keepIn(com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing ring, long key) {
+            if (rings == null) {
+                rings = new java.util.ArrayList<>(2);
+                keys = new long[2];
+            } else if (rings.size() == keys.length) {
+                keys = java.util.Arrays.copyOf(keys, keys.length * 2);
+            }
+            keys[rings.size()] = key;
+            rings.add(ring);
+        }
+
+        /** The op's answer is journaled at {@code seq}: every ring asked for keeps it until the journal on disk does. */
+        public void stamp(long seq) {
+            if (rings == null)
+                return;
+            for (int i = 0; i < rings.size(); i++)
+                rings.get(i).add(keys[i], seq);
         }
     }
 
