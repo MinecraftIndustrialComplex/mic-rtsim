@@ -7909,6 +7909,14 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   home" (a replayed band is recalled while the live one walks, MZB-484), and the refused-fight helper runs on
   until the band's row is gone so it meets the fallback recall's epoch. No test of a seam on the way home was
   written: no engine test builds an edge_stop topology.
+- **MZB-490** (`seen` skips a band with nobody alive; amends MZB-457): `seen` no longer skips a Home band, and
+  it now also skips any band whose `alive()` is 0. A band wiped out on the road or in a fight is routed home
+  with its dead and walks the row home abstract (or in bodies that are all gone); materializing it would embody a
+  party with no member to place (`spawn_wave`'s fill is empty, the epoch moves and `spawned` is cleared), and
+  tests/frostmaw.rs's chief-killed-then-counted-out case met exactly that with the player's area still valid
+  after the fight. Before this step Home was skipped whole, so this guard did not exist; Out and Waiting bands
+  always have a member alive. `march_bearing` is MZB-457 as designed (Out and Home toward the segment's end, or
+  along the segment when standing on it; Waiting the way it came; else 0).
 
 ## M11 Aloft
 

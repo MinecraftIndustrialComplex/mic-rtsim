@@ -12,6 +12,7 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::ActorId;
+use rtsim_settle::Pos;
 use rtsim_world::World;
 
 /// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589).
@@ -671,4 +672,175 @@ fn a_bored_siege_in_bodies_walks_home() {
     );
     assert!(!steers.is_empty() && steers.iter().all(|s| s.1 == epoch));
     assert!(recalls.is_empty(), "{recalls:?}");
+}
+
+// ---- met on the road, and the way it faces (MZB-457) -------------------------------------------
+
+/// The route and segment of `band` and the way the engine should face it there, in degrees from
+/// +x toward +z: toward the segment's end.
+fn heading(r: &Run, band: Handle<Party>) -> f32 {
+    let x = &r.c.parties[band];
+    let s = (x.seg as usize).min(x.route.len() - 2);
+    let (a, b) = (x.route[s], x.route[s + 1]);
+    ((b.1 - a.1) as f64).atan2((b.0 - a.0) as f64).to_degrees() as f32
+}
+
+/// The band's materialize command (the first sent at its epoch) and the steer after it.
+fn met_orders(r: &Run, band: Handle<Party>) -> (boundary::BandMaterialize, boundary::BandSteer) {
+    let agent = Party::agent(band);
+    let epoch = r.c.parties[band].epoch;
+    let m = r
+        .cmds
+        .iter()
+        .find_map(|(_, c)| match c {
+            Cmd::Materialize(m) if m.agent == agent && m.epoch == epoch => Some(m.clone()),
+            _ => None,
+        })
+        .expect("materialized");
+    let s = r
+        .cmds
+        .iter()
+        .find_map(|(_, c)| match c {
+            Cmd::Steer(s) if s.agent == agent && s.epoch == epoch => Some(*s),
+            _ => None,
+        })
+        .expect("steered");
+    (m, s)
+}
+
+/// MZB-457: a band met on its way out or on its way home is materialized in one group (no arc)
+/// facing its march, and steered along the segment it is on; a home band is no longer skipped.
+#[test]
+fn a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered() {
+    for home in [false, true] {
+        let mut r = Run::new(46);
+        let band = r.raid();
+        r.flush(Tick(21));
+        let mut t = r.c.now();
+        let want = if home { Phase::Home } else { Phase::Out };
+        while r.c.parties[band].phase != want {
+            t = t + 200;
+            r.run(t);
+            assert!(t < Tick(20 * 24_000), "the band never reached {want:?}");
+        }
+        // The player stands on the end of the segment the band walks.
+        let x = &r.c.parties[band];
+        let s = (x.seg as usize).min(x.route.len() - 2);
+        let ahead = x.route[s + 1];
+        let epoch = x.epoch;
+        let at_the_end = Pos::new(0, ahead.0, ahead.1);
+        while r.c.stats.seen == 0 {
+            r.c.observe_player(&mut r.w, synth::PLAYER, at_the_end, t);
+            t = t + 600;
+            r.run(t);
+            assert!(
+                r.c.parties.contains(band),
+                "home {home}: the band was never met"
+            );
+        }
+        let x = &r.c.parties[band];
+        assert!(x.embodied && x.phase == want, "home {home}");
+        assert_eq!(x.epoch, epoch + 1);
+        let face = heading(&r, band);
+        let (m, steer) = met_orders(&r, band);
+        assert_eq!(m.arc_radius, 0, "home {home}: one group, no arc");
+        assert!(
+            (m.bearing_deg - face).abs() < 0.5,
+            "home {home}: it faces {} and its march is {face}",
+            m.bearing_deg
+        );
+        let x = &r.c.parties[band];
+        let s = (x.seg as usize).min(x.route.len() - 2);
+        let end = x.route[s + 1];
+        assert_eq!(
+            (steer.pos.0, steer.pos.2),
+            (f64::from(end.0), f64::from(end.1))
+        );
+        assert_eq!(
+            steer.flags, 0,
+            "home {home}: met on the road, attacking nothing"
+        );
+    }
+}
+
+/// MZB-457: a band met waiting at its target faces the way it came, from the last waypoint
+/// before the target.
+#[test]
+fn a_band_met_waiting_faces_the_way_it_came() {
+    let mut r = Run::new(47);
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.flush(Tick(21));
+    let mut t = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        t = t + 600;
+        r.run(t);
+        assert!(t < Tick(20 * 24_000), "the siege never reached its target");
+    }
+    let x = &r.c.parties[band];
+    let (before, target) = (x.route[x.route.len() - 2], *x.route.last().unwrap());
+    assert!(r.c.stats.seen == 0 && !x.embodied);
+    let there = Pos::new(0, target.0, target.1);
+    while r.c.stats.seen == 0 {
+        r.c.observe_player(&mut r.w, synth::PLAYER, there, t);
+        t = t + 600;
+        r.run(t);
+        assert!(t < Tick(20 * 24_000), "the waiting band was never met");
+    }
+    assert!(r.c.parties[band].embodied, "met at its target");
+    let (epoch, agent) = (r.c.parties[band].epoch, Party::agent(band));
+    let m = r
+        .cmds
+        .iter()
+        .find_map(|(_, c)| match c {
+            Cmd::Materialize(m) if m.agent == agent && m.epoch == epoch => Some(m.clone()),
+            _ => None,
+        })
+        .expect("materialized");
+    let centre = (m.arc_centre.0 as i32, m.arc_centre.1 as i32);
+    let came = ((centre.1 - before.1) as f64)
+        .atan2((centre.0 - before.0) as f64)
+        .to_degrees() as f32;
+    assert_eq!(m.arc_radius, 0);
+    assert!(
+        (m.bearing_deg - came).abs() < 0.5,
+        "it faces {} and came by {came}",
+        m.bearing_deg
+    );
+}
+
+/// MZB-490: a band that walks home with none of its members alive (routed after its wipe-out) is
+/// not met on the road: there is nobody to place.
+#[test]
+fn a_band_that_walks_home_with_none_alive_is_not_met() {
+    let mut r = Run::new(46);
+    let band = r.raid();
+    r.flush(Tick(21));
+    let mut t = r.c.now();
+    while r.c.parties[band].phase != Phase::Home {
+        t = t + 200;
+        r.run(t);
+        assert!(t < Tick(20 * 24_000), "the band never walked home");
+    }
+    for e in &mut r.c.parties[band].units {
+        e.1 = 0;
+    }
+    let x = &r.c.parties[band];
+    let ahead = x.route[(x.seg as usize).min(x.route.len() - 2) + 1];
+    let there = Pos::new(0, ahead.0, ahead.1);
+    while r.c.parties.contains(band) {
+        r.c.observe_player(&mut r.w, synth::PLAYER, there, t);
+        t = t + 600;
+        r.run(t);
+        assert_eq!(r.c.stats.seen, 0, "nobody to meet");
+        assert!(t < Tick(20 * 24_000));
+    }
 }
