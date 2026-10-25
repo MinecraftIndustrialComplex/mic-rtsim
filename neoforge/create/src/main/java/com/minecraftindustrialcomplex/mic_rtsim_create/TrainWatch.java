@@ -656,8 +656,11 @@ public final class TrainWatch {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
-        // Train cargo and the journal reach disk at the same save (RailwaySavedData and the journal are
-        // both SavedData), so the journal's op index is the dedup (choice H17).
+        // The journal's op index is the dedup (choice H17). Train cargo (create_tracks.dat, RailwaySavedData)
+        // and the journal (mic_rtsim_journal.dat) are separate SavedData files, written one after the other
+        // on the IO chain, and the chunk barrier can hold the journal's to a later save, so a crash can keep
+        // one without the other: the goods gone with the op forgotten applies a re-decided op again, the op
+        // kept with the goods restored loses it (docs/choices-mowzie-build.md RP-184, RP-185).
         if (ind.opApplied(opId)) {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
             return true;
