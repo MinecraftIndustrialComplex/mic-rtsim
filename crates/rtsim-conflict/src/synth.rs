@@ -28,7 +28,7 @@ use rtsim_world::{World, WorldConfig};
 
 use crate::boundary::{self, Cmd, Obs, Uuid};
 use crate::culture::Cultures;
-use crate::engine::{Conflict, body_names, item_of};
+use crate::engine::{Conflict, RailCall, StationEnd, body_names, item_of};
 use crate::tunables::ConflictTunables;
 
 /// The goblin camp's key and place.
@@ -1606,6 +1606,47 @@ pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
     (w, c)
 }
 
+/// The key of the first den of [`many_dens`]; den `k` is `DEN_KEY + k`.
+pub const DEN_KEY: u64 = 0xDE50_0000;
+
+/// A grid world of `villages` villages with `dens` Frostmaw dens between them, found at the
+/// start and spaced as [`many`]'s camps are (544 blocks or more apart), with their positions.
+/// No source, no player and no feud: the rail bench's trains make them. Nobody watches.
+pub fn many_dens(villages: usize, dens: usize, seed: u64) -> (World, Conflict, Vec<(u64, Pos)>) {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    let mut data = rtsim_world::synth::grid(villages, seed);
+    let side = (villages as f64).sqrt().ceil() as i32;
+    let span = side * 544;
+    let fside = (dens as f64).sqrt().ceil() as i32;
+    let at = |k: usize| {
+        let (gx, gz) = ((k as i32) % fside, (k as i32) / fside);
+        let step = span / fside.max(1);
+        Pos::new(0, step / 2 + gx * step, step / 2 + gz * step)
+    };
+    for k in 0..dens {
+        data.push(rtsim_world::NodeData {
+            key: DEN_KEY + k as u64,
+            kind: rtsim_settle::NodeKind::Haven(rtsim_settle::Culture::Human),
+            pos: at(k),
+            pop: 10,
+            resources: BTreeMap::new(),
+        });
+    }
+    let mut w = World::build(world_config(seed), goods, book, data);
+    let mut c = conflict(seed, &w);
+    let mut out = Vec::with_capacity(dens);
+    for k in 0..dens {
+        let key = DEN_KEY + k as u64;
+        if c.add_faction(&mut w, key, "frostmaw", at(k), Tick::ZERO)
+            .is_some()
+        {
+            out.push((key, at(k)));
+        }
+    }
+    (w, c, out)
+}
+
 // ---- a camp against the emulated plugin (MOWZIE.md §4.9) --------------------------------------
 
 /// Dictionary kind 4's id the camp runs name their structure by.
@@ -2212,4 +2253,240 @@ impl CampRun {
             self.audit();
         }
     }
+}
+
+// ---- the rail (M7): synthetic lines and the passes their trains make ----------------------------
+
+/// A chief seed whose Temperament is (128, 128, 128): its Aggressive bend is exactly 1, so the
+/// thresholds of a den's ladder are the culture's own (MOWZIE.md 4.3's runs are "middling").
+/// Found by searching seeds from 0 (13 below 2^28; this is the smallest), asserted by
+/// `the_middling_seed_is_middling` (MZB-330, MZB-339).
+pub const MIDDLING: u64 = 20_376_233;
+
+/// A train's speed on the synthetic track: Create's top speed, 28 blocks a second.
+pub const TRAIN_SPEED: f64 = 1.4;
+/// The sampler's period, 20 ticks (MOWZIE.md 4.3).
+pub const SAMPLE_TICKS: u64 = 20;
+
+/// How a line is run from `from` on: `per_day` legs a day (0 stops it) on `paths[path]`.
+#[derive(Clone, Copy, Debug)]
+pub struct Service {
+    pub from: Tick,
+    pub per_day: f64,
+    pub path: usize,
+}
+
+/// A synthetic line: a polyline between two stations with a headway and an owner. Legs alternate
+/// between the two directions.
+#[derive(Clone, Debug)]
+pub struct RailLine {
+    pub a: StationEnd,
+    pub b: StationEnd,
+    /// Polylines from `a` to `b` in blocks (x, z), one for each routing a service can use.
+    pub paths: Vec<Vec<(f64, f64)>>,
+    /// The track's height.
+    pub y: f64,
+    pub owner: Uuid,
+    /// Sorted by `from`: each entry runs until the next.
+    pub service: Vec<Service>,
+}
+
+impl RailLine {
+    /// A line on one path, run at `per_day` legs a day from the start.
+    pub fn steady(
+        a: StationEnd,
+        b: StationEnd,
+        path: Vec<(f64, f64)>,
+        owner: Uuid,
+        per_day: f64,
+    ) -> RailLine {
+        RailLine {
+            a,
+            b,
+            paths: vec![path],
+            y: 66.0,
+            owner,
+            service: vec![Service {
+                from: Tick::ZERO,
+                per_day,
+                path: 0,
+            }],
+        }
+    }
+}
+
+/// A den's circle as the sampler tests it, known to the sampler from `since`.
+#[derive(Clone, Copy, Debug)]
+pub struct RailDen {
+    pub key: u64,
+    pub x: i32,
+    pub z: i32,
+    pub radius: u32,
+    pub since: Tick,
+}
+
+/// What a synthetic train does: passes a den's range, or arrives where its leg ends.
+#[derive(Clone, Copy, Debug)]
+pub enum RailEvent {
+    Pass(boundary::RailPass),
+    Arrive(RailCall),
+}
+
+/// One den's crossing of one leg's track: when the sampler first and last sees the train inside
+/// the circle, counted in ticks from the departure, and the sample nearest the den.
+#[derive(Clone, Copy, Debug)]
+struct Crossing {
+    den: usize,
+    entry: u64,
+    exit: u64,
+    at: (f64, f64),
+}
+
+/// A leg's geometry against the dens, from a departure at 0: its length in ticks, and where
+/// the sampler (every 20 ticks) sees it in each circle.
+fn leg_shape(path: &[(f64, f64)], dens: &[RailDen]) -> (f64, Vec<Crossing>) {
+    let len: f64 = path
+        .windows(2)
+        .map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1))
+        .sum();
+    let step = SAMPLE_TICKS as f64 * TRAIN_SPEED;
+    let mut best: Vec<Option<(Crossing, f64)>> = vec![None; dens.len()];
+    let (mut seg, mut before) = (0usize, 0.0f64);
+    let mut k = 0u64;
+    while (k as f64) * step <= len {
+        let d = (k as f64) * step;
+        while seg + 2 < path.len() {
+            let l = (path[seg + 1].0 - path[seg].0).hypot(path[seg + 1].1 - path[seg].1);
+            if before + l >= d {
+                break;
+            }
+            before += l;
+            seg += 1;
+        }
+        let (p, q) = (path[seg], path[seg + 1]);
+        let l = (q.0 - p.0).hypot(q.1 - p.1).max(1e-9);
+        let f = ((d - before) / l).clamp(0.0, 1.0);
+        let at = (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
+        for (i, den) in dens.iter().enumerate() {
+            let dist = (at.0 - f64::from(den.x)).hypot(at.1 - f64::from(den.z));
+            if dist > f64::from(den.radius) {
+                continue;
+            }
+            let t = k * SAMPLE_TICKS;
+            match &mut best[i] {
+                None => {
+                    best[i] = Some((
+                        Crossing {
+                            den: i,
+                            entry: t,
+                            exit: t,
+                            at,
+                        },
+                        dist,
+                    ));
+                }
+                Some((c, nearest)) => {
+                    c.exit = t;
+                    if dist < *nearest {
+                        c.at = at;
+                        *nearest = dist;
+                    }
+                }
+            }
+        }
+        k += 1;
+    }
+    (
+        len / TRAIN_SPEED,
+        best.into_iter().flatten().map(|b| b.0).collect(),
+    )
+}
+
+/// SplitMix64, for the headway jitter.
+struct Jitter(u64);
+
+impl Jitter {
+    fn next(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Every pass and arrival the `lines` make before `to`, in time order. Each train's headway is
+/// jittered uniformly by up to `jitter` of itself (MZB-330 uses 0.4), from `seed`; a pass is the
+/// sample nearest the den, reported when the train leaves the circle, for every den the sampler
+/// knows by then; the arrival names the leg's two stations, as rtsim-jni's capture does.
+pub fn rail_events(
+    lines: &[RailLine],
+    dens: &[RailDen],
+    seed: u64,
+    jitter: f64,
+    to: Tick,
+) -> Vec<(Tick, RailEvent)> {
+    let mut out: Vec<(Tick, RailEvent)> = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        let mut rng = Jitter(seed ^ (li as u64 + 1).wrapping_mul(0xD6E8_FEB8_6659_FD93));
+        let shapes: Vec<[(f64, Vec<Crossing>); 2]> = line
+            .paths
+            .iter()
+            .map(|p| {
+                let back: Vec<(f64, f64)> = p.iter().rev().copied().collect();
+                [leg_shape(p, dens), leg_shape(&back, dens)]
+            })
+            .collect();
+        let mut leg = 0u64;
+        for (si, s) in line.service.iter().enumerate() {
+            let end = line.service.get(si + 1).map_or(to, |n| n.from.min(to));
+            if s.per_day <= 0.0 {
+                continue;
+            }
+            let h = TICKS_PER_DAY as f64 / s.per_day;
+            let mut t = s.from.0 as f64 + h * rng.next();
+            while t < end.0 as f64 {
+                let back = (leg % 2) as usize;
+                leg += 1;
+                let depart = t.round() as u64;
+                let train = ((li as u64 + 1) << 40) | leg;
+                let (duration, hits) = &shapes[s.path][back];
+                for c in hits {
+                    let den = dens[c.den];
+                    let exit = depart + c.exit;
+                    if exit < den.since.0 {
+                        continue;
+                    }
+                    out.push((
+                        Tick(exit),
+                        RailEvent::Pass(boundary::RailPass {
+                            faction: den.key,
+                            train,
+                            owner: line.owner,
+                            dimension: 0,
+                            pos: (c.at.0, line.y, c.at.1),
+                            entry: (depart + c.entry) as i64,
+                            exit: exit as i64,
+                        }),
+                    ));
+                }
+                let (from, to_end) = if back == 0 {
+                    (line.a, line.b)
+                } else {
+                    (line.b, line.a)
+                };
+                out.push((
+                    Tick(depart + duration.ceil() as u64),
+                    RailEvent::Arrive(RailCall {
+                        train,
+                        line: Some((from, to_end)),
+                    }),
+                ));
+                t += h * (1.0 + jitter * (2.0 * rng.next() - 1.0));
+            }
+        }
+    }
+    out.sort_by_key(|e| e.0);
+    out
 }

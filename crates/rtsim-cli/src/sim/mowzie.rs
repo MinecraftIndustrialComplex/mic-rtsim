@@ -19,6 +19,8 @@
 //!
 //! Exit 1 if a check fails, 64 on bad arguments.
 
+mod rail;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -50,12 +52,27 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         1,
         "a line through a range: notice, raid, repeat, invasion; ambushes; a kill and the heir",
-        "M2, the ladder on kills: notice, raid, repeat, invasion",
-        "the meter M7, ambushes M8",
+        "M2, the ladder on kills: notice, raid, repeat, invasion; M7, the meter on 4, 12, 24 and 50 legs a day and a trunk of 14 lines",
+        "ambushes M8",
     ),
-    (2, "cut service and stopped service", "", "M7"),
-    (3, "reroute", "", "M7"),
-    (4, "two dens on one line", "", "M7"),
+    (
+        2,
+        "cut service and stopped service",
+        "M7, 12 then 24 legs a day, cut to 4 or stopped on day 12",
+        "",
+    ),
+    (
+        3,
+        "reroute",
+        "M7, the track moved off the circle and within it",
+        "",
+    ),
+    (
+        4,
+        "two dens on one line",
+        "M7, two dens and a third found on day 10",
+        "",
+    ),
     (
         5,
         "the tribe: envoy, raids, invasion, plunder, the grove in and out",
@@ -82,7 +99,12 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
         "M4, a reconcile in flight: saved and loaded, voided by a restart and ordered again",
         "the lurk, a cowed time and a meter's decay M8",
     ),
-    (9, "a trunk of 14 lines", "", "M7"),
+    (
+        9,
+        "a trunk of 14 lines",
+        "M7, 14 lines against one, the busy line's point, two owners on one line",
+        "",
+    ),
     (
         10,
         "the camp reconciler",
@@ -196,7 +218,15 @@ fn main(o: Opts) -> i32 {
     for n in &o.runs {
         let (_, _, _, slice) = RUNS[*n as usize - 1];
         let out = match n {
-            1 => den_ladder(o.seed, slice),
+            1 => {
+                let mut out = den_ladder(o.seed, slice);
+                rail::meter(&mut out.checks);
+                out
+            }
+            2 => rail_run(2, slice, rail::cut),
+            3 => rail_run(3, slice, rail::reroute),
+            4 => rail_run(4, slice, rail::two_dens),
+            9 => rail_run(9, slice, rail::trunk),
             5 => grove_ladder(o.seed, slice),
             6 => {
                 let mut o = den_renewal(slice);
@@ -240,6 +270,22 @@ fn main(o: Opts) -> i32 {
     }
     let failed = res.runs.iter().flat_map(|r| &r.checks).any(|c| !c.ok);
     i32::from(failed)
+}
+
+/// A run of M7's rail: its checks, and nothing else to show (the rail's runs print their medians
+/// in the checks' details).
+fn rail_run(n: u32, slice: &'static str, f: fn(&mut Vec<Check>)) -> RunOut {
+    let mut checks = Vec::new();
+    f(&mut checks);
+    RunOut {
+        run: n,
+        built: slice.is_empty(),
+        slice,
+        checks,
+        rungs: Vec::new(),
+        stats: None,
+        log: Vec::new(),
+    }
 }
 
 fn print_report(r: &Results, quiet: bool) {

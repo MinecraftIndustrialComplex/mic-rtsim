@@ -7,7 +7,8 @@
     "logging": { "weight": 0.0, "tolerance_per_day": 0.0 },
     "mining": { "weight": 0.0, "tolerance_per_day": 0.0 },
     "killing": { "weight": 8.0, "tolerance_per_day": 0.0 },
-    "building": { "weight": 0.05, "tolerance_per_day": 0.0 }
+    "building": { "weight": 0.05, "tolerance_per_day": 0.0 },
+    "rail": { "weight": 1.0, "tolerance_per_day": 2.0 }
   },
   "half_life_days": 6.0,
   "thresholds": [10.0, 30.0, 50.0, 70.0, 140.0, 260.0],

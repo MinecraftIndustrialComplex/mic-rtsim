@@ -21,15 +21,45 @@ use rtsim_kernel::clock::Tick;
 
 use crate::culture::SignalKind;
 
+/// The kinds a grievance projects: one component for each [`SignalKind`].
 pub const K: usize = SignalKind::COUNT;
 
+/// The kinds a grievance keeps inline: all but [`SignalKind::Rail`], the last. A feud that has no
+/// rail signal pays for six components as before M7; the Rail kind's three numbers ride in
+/// [`RailTail`], which only a feud with a rail signal has (MZB-313, amended by the lead for
+/// MZB-331's gate).
+pub const KB: usize = K - 1;
+
+const _: () = assert!(SignalKind::Rail.index() == KB);
+
+/// The Rail kind's components of a feud: its level and inflow rate, which the grievance projects
+/// with the rest, and its raw rate (`Feud::raw_of`), kept here so that a feud carries one
+/// pointer for the three. `None` while all three are zero.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct RailTail {
+    pub level: f64,
+    pub rate: f64,
+    pub raw: f64,
+}
+
+impl RailTail {
+    fn is_zero(&self) -> bool {
+        self.level == 0.0 && self.rate == 0.0 && self.raw == 0.0
+    }
+}
+
 /// One feud's grievance: levels at the anchor and inflow rates per tick.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Grievance {
     pub anchor: Tick,
-    pub level: [f64; K],
-    /// Effective inflow per tick (weighted, over tolerance).
-    pub rate: [f64; K],
+    /// The levels of the kinds before Rail, by [`SignalKind::index`]; see [`Grievance::level_of`]
+    /// for any kind.
+    pub level: [f64; KB],
+    /// Effective inflow per tick (weighted, over tolerance) of the kinds before Rail; see
+    /// [`Grievance::rate_of`].
+    pub rate: [f64; KB],
+    /// The Rail kind's components, if the feud has any.
+    pub rail: Option<Box<RailTail>>,
 }
 
 fn decay(lambda: f64, dt: u64) -> f64 {
@@ -44,27 +74,76 @@ impl Grievance {
     pub fn new(at: Tick) -> Self {
         Grievance {
             anchor: at,
-            level: [0.0; K],
-            rate: [0.0; K],
+            level: [0.0; KB],
+            rate: [0.0; KB],
+            rail: None,
+        }
+    }
+
+    /// The level of `k` at the anchor.
+    pub fn level_of(&self, k: SignalKind) -> f64 {
+        match self.level.get(k.index()) {
+            Some(l) => *l,
+            None => self.rail.as_ref().map_or(0.0, |t| t.level),
+        }
+    }
+
+    /// The inflow of `k` per tick.
+    pub fn rate_of(&self, k: SignalKind) -> f64 {
+        match self.rate.get(k.index()) {
+            Some(r) => *r,
+            None => self.rail.as_ref().map_or(0.0, |t| t.rate),
+        }
+    }
+
+    /// The Rail kind's components, made if the feud has none yet.
+    fn rail_mut(&mut self) -> &mut RailTail {
+        self.rail.get_or_insert_with(Default::default)
+    }
+
+    /// Drops the Rail components once all three are zero, so that a feud with none is the same
+    /// value whichever way it got there.
+    pub(crate) fn trim_rail(&mut self) {
+        if self.rail.as_ref().is_some_and(|t| t.is_zero()) {
+            self.rail = None;
+        }
+    }
+
+    /// The Rail kind's raw rate (before weight and tolerance; see `Feud::raw_of`).
+    pub(crate) fn raw_rail(&self) -> f64 {
+        self.rail.as_ref().map_or(0.0, |t| t.raw)
+    }
+
+    pub(crate) fn set_raw_rail(&mut self, raw: f64) {
+        if raw != 0.0 || self.rail.is_some() {
+            self.rail_mut().raw = raw;
+            self.trim_rail();
         }
     }
 
     /// Each component at `t` (at or after the anchor; earlier reads the anchor).
     pub fn project(&self, t: Tick, lambda: f64) -> [f64; K] {
+        let mut out = [0.0; K];
+        let rail = self.rail.as_deref().copied().unwrap_or_default();
         let dt = t.0.saturating_sub(self.anchor.0);
         if dt == 0 {
-            return self.level;
+            out[..KB].copy_from_slice(&self.level);
+            out[KB] = rail.level;
+            return out;
         }
         let e = decay(lambda, dt);
-        let mut out = [0.0; K];
-        for (k, o) in out.iter_mut().enumerate() {
+        let one = |level: f64, rate: f64| {
             let inflow = if lambda <= 0.0 {
-                self.rate[k] * dt as f64
+                rate * dt as f64
             } else {
-                self.rate[k] / lambda * (1.0 - e)
+                rate / lambda * (1.0 - e)
             };
-            *o = (self.level[k] * e + inflow).max(0.0);
+            (level * e + inflow).max(0.0)
+        };
+        for (k, o) in out.iter_mut().enumerate().take(KB) {
+            *o = one(self.level[k], self.rate[k]);
         }
+        out[KB] = one(rail.level, rail.rate);
         out
     }
 
@@ -73,11 +152,11 @@ impl Grievance {
     }
 
     pub fn level_sum(&self) -> f64 {
-        self.level.iter().sum()
+        self.level.iter().sum::<f64>() + self.rail.as_ref().map_or(0.0, |t| t.level)
     }
 
     pub fn rate_sum(&self) -> f64 {
-        self.rate.iter().sum()
+        self.rate.iter().sum::<f64>() + self.rail.as_ref().map_or(0.0, |t| t.rate)
     }
 
     /// Moves the anchor to `t` (an event).
@@ -85,23 +164,36 @@ impl Grievance {
         if t.0 <= self.anchor.0 {
             return;
         }
-        self.level = self.project(t, lambda);
+        let p = self.project(t, lambda);
+        self.level.copy_from_slice(&p[..KB]);
+        if let Some(r) = self.rail.as_mut() {
+            r.level = p[KB];
+        }
         self.anchor = t;
     }
 
     /// An impulse of `amount` (negative takes away, never below zero).
     pub fn add(&mut self, k: SignalKind, amount: f64, t: Tick, lambda: f64) {
         self.commit(t, lambda);
-        let l = &mut self.level[k.index()];
+        let l = match self.level.get_mut(k.index()) {
+            Some(l) => l,
+            None => &mut self.rail_mut().level,
+        };
         *l = (*l + amount).max(0.0);
+        self.trim_rail();
     }
 
     /// Scales every component by `factor` (a tribute or a gift takes a share away).
     pub fn scale(&mut self, factor: f64, t: Tick, lambda: f64) {
         self.commit(t, lambda);
-        for l in &mut self.level {
+        for l in self
+            .level
+            .iter_mut()
+            .chain(self.rail.as_mut().map(|t| &mut t.level))
+        {
             *l = (*l * factor.max(0.0)).max(0.0);
         }
+        self.trim_rail();
     }
 
     /// Takes `amount` away, spread over the components in proportion to their levels.
@@ -112,14 +204,28 @@ impl Grievance {
             return;
         }
         let f = (1.0 - amount / total).max(0.0);
-        for l in &mut self.level {
+        for l in self
+            .level
+            .iter_mut()
+            .chain(self.rail.as_mut().map(|t| &mut t.level))
+        {
             *l *= f;
         }
+        self.trim_rail();
     }
 
     pub fn set_rate(&mut self, k: SignalKind, per_tick: f64, t: Tick, lambda: f64) {
         self.commit(t, lambda);
-        self.rate[k.index()] = per_tick.max(0.0);
+        let v = per_tick.max(0.0);
+        match self.rate.get_mut(k.index()) {
+            Some(r) => *r = v,
+            // A rail signal of nothing makes no components.
+            None if v == 0.0 && self.rail.is_none() => {}
+            None => {
+                self.rail_mut().rate = v;
+                self.trim_rail();
+            }
+        }
     }
 
     /// The level the total tends to with the current inflow.
@@ -206,6 +312,69 @@ mod tests {
 
     const LAMBDA: f64 = std::f64::consts::LN_2 / (6.0 * TICKS_PER_DAY as f64);
 
+    /// The Rail kind rides in a tail the other kinds do not, and every method treats it as one
+    /// more kind: the same operations on Rail and on Killing give the same numbers, bit for bit.
+    #[test]
+    fn the_rail_kind_projects_as_any_other_kind_does() {
+        fn run(kind: SignalKind) -> (Grievance, [f64; K]) {
+            let mut g = Grievance::new(Tick(0));
+            g.add(kind, 40.0, Tick(10), LAMBDA);
+            g.set_rate(kind, 3.0 / TICKS_PER_DAY as f64, Tick(2_000), LAMBDA);
+            g.add(SignalKind::Logging, 7.0, Tick(3_000), LAMBDA);
+            g.relieve(5.0, Tick(4_000), LAMBDA);
+            g.scale(0.5, Tick(5_000), LAMBDA);
+            let at = Tick::from_days(2);
+            (g.clone(), g.project(at, LAMBDA))
+        }
+        let (a, pa) = run(SignalKind::Killing);
+        let (b, pb) = run(SignalKind::Rail);
+        let (ka, kb) = (SignalKind::Killing.index(), SignalKind::Rail.index());
+        assert_eq!(pa[ka].to_bits(), pb[kb].to_bits());
+        assert_eq!(pa[kb], 0.0);
+        assert_eq!(pb[ka], 0.0);
+        assert_eq!(
+            a.level_of(SignalKind::Killing),
+            b.level_of(SignalKind::Rail)
+        );
+        assert_eq!(a.rate_of(SignalKind::Killing), b.rate_of(SignalKind::Rail));
+        assert_eq!(a.level_sum().to_bits(), b.level_sum().to_bits());
+        assert_eq!(a.rate_sum().to_bits(), b.rate_sum().to_bits());
+        assert_eq!(
+            a.total_at(Tick::from_days(2), LAMBDA).to_bits(),
+            pa.iter().sum::<f64>().to_bits()
+        );
+        assert_eq!(
+            a.crossing_up(30.0, LAMBDA),
+            b.crossing_up(30.0, LAMBDA),
+            "the same crossing"
+        );
+        assert_eq!(a.dominant(Tick::from_days(2), LAMBDA), SignalKind::Killing);
+        assert_eq!(b.dominant(Tick::from_days(2), LAMBDA), SignalKind::Rail);
+    }
+
+    /// Only a grievance with a Rail component has the tail, and it is the same value whichever
+    /// way it got there.
+    #[test]
+    fn the_tail_is_made_by_a_rail_component_and_dropped_with_the_last() {
+        let mut g = Grievance::new(Tick(0));
+        g.add(SignalKind::Logging, 10.0, Tick(0), LAMBDA);
+        g.set_rate(SignalKind::Rail, 0.0, Tick(5), LAMBDA);
+        g.add(SignalKind::Rail, 0.0, Tick(6), LAMBDA);
+        assert!(g.rail.is_none(), "nothing of Rail makes no tail");
+        g.set_rate(SignalKind::Rail, 1e-3, Tick(10), LAMBDA);
+        assert_eq!(g.rail.as_deref().map(|t| t.rate), Some(1e-3));
+        g.set_rate(SignalKind::Rail, 0.0, Tick(20), LAMBDA);
+        assert!(g.rail.is_some(), "the inflow left a level");
+        assert!(g.level_of(SignalKind::Rail) > 0.0);
+        g.relieve(1e9, Tick(20), LAMBDA);
+        assert!(g.rail.is_none(), "all zero again");
+        g.set_raw_rail(2.0);
+        assert_eq!(g.raw_rail(), 2.0);
+        assert!(g.rail.is_some(), "a raw rate keeps the tail");
+        g.set_raw_rail(0.0);
+        assert!(g.rail.is_none());
+    }
+
     #[test]
     fn halves_in_its_half_life_and_tends_to_rate_over_lambda() {
         let mut g = Grievance::new(Tick(0));
@@ -257,7 +426,7 @@ mod tests {
             let mut a = Grievance::new(Tick(0));
             a.add(SignalKind::Mining, l0, Tick(0), LAMBDA);
             a.set_rate(SignalKind::Smog, r / TICKS_PER_DAY as f64, Tick(0), LAMBDA);
-            let mut b = a;
+            let mut b = a.clone();
             b.commit(Tick(t1), LAMBDA);
             let (va, vb) = (a.total_at(Tick(t2), LAMBDA), b.total_at(Tick(t2), LAMBDA));
             prop_assert!((va - vb).abs() <= 1e-9 * va.abs().max(1.0));

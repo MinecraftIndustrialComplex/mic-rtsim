@@ -5726,11 +5726,12 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the rail's: RAIL_PASS
-    /// and TRAIN_PASSED; the camp's came with M4, the chief's state with M6, the grove's with M9) is
-    /// decoded, counted as deferred and dropped. CHIEF_STATE is counted as its own and given to the
-    /// engine (a camp with no bodies to count ignores it), and a CHIEF_PAID is the grove's: it
-    /// reaches the engine and spends its op id, so the same record again changes nothing.
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the lurking party's
+    /// TRAIN_PASSED; the camp's came with M4, the chief's state with M6, the rail's RAIL_PASS with
+    /// M7, the grove's with M9) is decoded, counted as deferred and dropped. CHIEF_STATE is counted
+    /// as its own and given to the engine (a camp with no bodies to count ignores it), and a
+    /// CHIEF_PAID is the grove's: it reaches the engine and spends its op id, so the same record
+    /// again changes nothing.
     #[test]
     fn later_slices_records_are_counted_and_dropped() {
         let (_dir, e, mut j) = camp("conflict-deferred");
@@ -5746,14 +5747,12 @@ mod conflict {
         });
         j.conflict_obs(&paid);
         j.conflict_obs(&paid);
-        j.conflict_obs(&O::RailPass(cb::RailPass {
-            faction: CAMP,
+        j.conflict_obs(&O::TrainPassed(cb::TrainPassed {
+            agent: 0,
+            epoch: 0,
+            flags: 0,
+            carriage: 0,
             train: 7,
-            owner: (0, 0),
-            dimension: 0,
-            pos: (900.0, 64.0, 1000.0),
-            entry: 100,
-            exit: 200,
         }));
         j.conflict_obs(&O::ChiefState(cb::ChiefState {
             faction: CAMP,
@@ -5775,6 +5774,470 @@ mod conflict {
             "nothing reached the conflict"
         );
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- M7: the rail through the journal ----------------------------------------------------------
+
+    /// MOWZIE.md 4.3 (MZB-310 to 312): RAIL_PASS is live, not deferred, held per train until the
+    /// train's arrival; the industry module's arrival names the line (the station it left, read
+    /// before the arrival clears it, and the one it reached) and the pass is credited to it; an
+    /// unwatched stop, an arrival with no departure on the books and a leg that ends where it began
+    /// name none and the passes are let go.
+    #[test]
+    fn rail_passes_wait_for_the_arrival_and_its_line() {
+        use rtsim_industry::ids::BlockPos;
+        use rtsim_industry::ids::{DistrictId, StationId, TrainId};
+        use rtsim_industry::obs::{
+            CargoFrom, Obs as IO, StationDecl, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+        };
+        use rtsim_kernel::clock::Tick;
+
+        const WEST: StationId = StationId(10);
+        const EAST: StationId = StationId(11);
+        let (_dir, e, mut j) = den("conflict-rail", 0);
+        j.modules(MODULES | MODULE_INDUSTRY);
+        j.idle();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.game_time += 60_000;
+        for (station, district, x) in [(WEST, 1, 600), (EAST, 2, 1300)] {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::Station(StationDecl {
+                    station,
+                    district: Some(DistrictId(district)),
+                    dim,
+                    pos: BlockPos::new(x, 64, 1000),
+                    name: 0,
+                }),
+            });
+        }
+        let depart = |j: &mut Java, train: u64, from: StationId, to: StationId| {
+            let (district, destination) = (DistrictId(from.0 - 9), Some(to));
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainDeparted(TrainDeparture {
+                    train: TrainId(train),
+                    station: from,
+                    district,
+                    destination,
+                    eta_ticks: 2_000,
+                    carriages: Vec::new(),
+                }),
+            });
+        };
+        let arrive = |j: &mut Java, train: u64, at: StationId| {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainArrived(TrainCall {
+                    train: TrainId(train),
+                    station: at,
+                    district: DistrictId(at.0 - 9),
+                    simulated: false,
+                    cargo_from: CargoFrom::Approach,
+                    carriages: Vec::new(),
+                }),
+            });
+        };
+        let passed = |j: &mut Java, train: u64, owner: (u64, u64), exit: i64| {
+            j.conflict_obs(&O::RailPass(cb::RailPass {
+                faction: CAMP,
+                train,
+                owner,
+                dimension: dim,
+                pos: (980.5, 66.25, 1000.5),
+                entry: exit - 100,
+                exit,
+            }));
+        };
+        let meter = |e: &Engine| {
+            e.with_conflict_mut(|c, w| {
+                let f = c.faction_of_key(CAMP).expect("the den");
+                let a = w.player_uuid(PLAYER.0, PLAYER.1);
+                c.factions.row(f).rail_meter(a).cloned()
+            })
+        };
+
+        // Train 77 leaves the west station, passes the den (owned), reaches the east station.
+        depart(&mut j, 77, WEST, EAST);
+        j.game_time += 500;
+        let exit = j.game_time - 50;
+        passed(&mut j, 77, PLAYER, exit);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.deferred, 0, "RAIL_PASS is live: {link:?}");
+        let (passes, held, holds) =
+            e.with_conflict(|c, _| (c.stats.rail_passes, c.held_passes(), c.holds_train(77)));
+        assert_eq!((passes, held, holds), (1, 1, true));
+        let m = meter(&e).expect("the owner's meter, counted at the pass");
+        assert!(
+            m.lines.is_empty(),
+            "no line before the train arrives: {m:?}"
+        );
+        assert_eq!(m.t_ref, Tick(exit as u64), "the pass's own time");
+
+        j.game_time += 1_500;
+        arrive(&mut j, 77, EAST);
+        j.idle();
+        let (calls, held) = e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes()));
+        assert_eq!((calls, held), (1, 0), "the arrival called the rail");
+        let m = meter(&e).unwrap();
+        assert_eq!(m.lines.len(), 1, "{m:?}");
+        let line = &m.lines[0];
+        assert_eq!((line.a, line.b), (WEST.0, EAST.0), "the line the train ran");
+        assert_eq!(line.t_ref, Tick(exit as u64));
+        assert!((line.n - 1.0).abs() < 1e-9, "one leg: {line:?}");
+        assert_eq!(
+            line.near.map(|n| n.1),
+            Some(DistrictId(2)),
+            "the east station is nearer the point"
+        );
+
+        // The passes of a train that names no line are let go, three ways. (Not a stale station:
+        // the other module knows both.)
+        let let_go = |e: &Engine| e.with_conflict(|c, _| c.stats.rail_let_go);
+        for (train, case) in [
+            (78u64, "unwatched"),
+            (79, "no departure"),
+            (80, "round trip"),
+        ] {
+            j.game_time += 100;
+            if case != "no departure" {
+                depart(&mut j, train, WEST, EAST);
+            }
+            j.game_time += 100;
+            let exit = j.game_time - 10;
+            passed(&mut j, train, PLAYER, exit);
+            j.idle();
+            assert!(e.with_conflict(|c, _| c.holds_train(train)), "{case}");
+            let before = let_go(&e);
+            j.game_time += 100;
+            match case {
+                "unwatched" => j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::TrainUnwatched(UnwatchedStop {
+                        train: TrainId(train),
+                        station: EAST,
+                    }),
+                }),
+                "no departure" => arrive(&mut j, train, EAST),
+                _ => arrive(&mut j, train, WEST),
+            }
+            j.idle();
+            assert_eq!(let_go(&e), before + 1, "{case}");
+            assert!(!e.with_conflict(|c, _| c.holds_train(train)), "{case}");
+        }
+        let (calls, held) = e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes()));
+        assert_eq!((calls, held), (4, 0));
+        let m = meter(&e).unwrap();
+        assert_eq!(
+            m.lines.len(),
+            1,
+            "no line from a call that named none: {m:?}"
+        );
+        assert!((m.lines[0].n - 1.0).abs() < 1e-9);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- M7 review fixes: the rail across a session start ------------------------------------------
+
+    /// A den with the industry module on, a line between two declared stations, and the owner on
+    /// it; the dimension's id in Java's dictionary.
+    mod rail_session {
+        use super::*;
+        use rtsim_industry::ids::{BlockPos, DistrictId, StationId, TrainId};
+        use rtsim_industry::obs::{
+            CargoFrom, Obs as IO, StationDecl, Timed, TrainCall, TrainDeparture,
+        };
+        use rtsim_kernel::clock::Tick;
+
+        const WEST: StationId = StationId(10);
+        const EAST: StationId = StationId(11);
+
+        fn line(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u32) {
+            let (dir, e, mut j) = den(name, 0);
+            j.modules(MODULES | MODULE_INDUSTRY);
+            j.idle();
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            j.game_time += 60_000;
+            for (station, district, x) in [(WEST, 1, 600), (EAST, 2, 1300)] {
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::Station(StationDecl {
+                        station,
+                        district: Some(DistrictId(district)),
+                        dim,
+                        pos: BlockPos::new(x, 64, 1000),
+                        name: 0,
+                    }),
+                });
+            }
+            (dir, e, j, dim)
+        }
+
+        fn depart(j: &mut Java, train: u64, from: StationId, to: StationId) {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainDeparted(TrainDeparture {
+                    train: TrainId(train),
+                    station: from,
+                    district: DistrictId(from.0 - 9),
+                    destination: Some(to),
+                    eta_ticks: 2_000,
+                    carriages: Vec::new(),
+                }),
+            });
+        }
+
+        fn arrive(j: &mut Java, train: u64, at: StationId) {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainArrived(TrainCall {
+                    train: TrainId(train),
+                    station: at,
+                    district: DistrictId(at.0 - 9),
+                    simulated: false,
+                    cargo_from: CargoFrom::Approach,
+                    carriages: Vec::new(),
+                }),
+            });
+        }
+
+        fn passed(j: &mut Java, dim: u32, train: u64, owner: (u64, u64), exit: i64) {
+            j.conflict_obs(&O::RailPass(cb::RailPass {
+                faction: CAMP,
+                train,
+                owner,
+                dimension: dim,
+                pos: (980.5, 66.25, 1000.5),
+                entry: exit - 100,
+                exit,
+            }));
+        }
+
+        /// The notices the plugin was sent, in order.
+        fn notices(j: &Java) -> Vec<cb::Notice> {
+            cmds(j)
+                .filter_map(|c| match c {
+                    C::Notice(n) => Some(*n),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// MZB-375: the conflict's replay-end trigger runs before the rail call, as it does before
+        /// any conflict record. A session whose first record is a TRAIN_ARRIVED for a train the
+        /// conflict holds passes for (held across the restart), and whose catch-up makes the
+        /// owner's feud escalate to its Notice, sends the plugin that notice once, after the
+        /// territory, and keeps it until it is played.
+        #[test]
+        fn a_session_whose_first_record_is_an_arrival_keeps_its_notice() {
+            let (dir, e, mut j, dim) = line("conflict-rail-notice");
+            j.conflict_plugin.play_notices = false;
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 200;
+            let exit = j.game_time - 50;
+            for _ in 0..60 {
+                passed(&mut j, dim, 77, PLAYER, exit);
+            }
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (held, kept) = e.with_conflict(|c, _| (c.held_passes(), c.kept_notices()));
+            assert_eq!(held, 60, "the train's passes wait for its arrival");
+            assert!(kept.is_empty(), "no notice yet: {kept:?}");
+            save(&e, &mut j);
+            let (gt, saved) = (j.game_time, j.world_save());
+            let _ = j.crash();
+
+            // The next session: its first record is the arrival, half a day on, by which time the
+            // rail's grievance has climbed to the Notice.
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES | MODULE_INDUSTRY;
+            j.game_time = gt + 12_000;
+            j.conflict_plugin.play_notices = false;
+            arrive(&mut j, 77, EAST);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (calls, held, replaying) =
+                e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes(), c.replaying()));
+            assert_eq!((calls, held), (1, 0), "the arrival called the rail");
+            assert!(
+                !replaying,
+                "the replay ended with the session's first record"
+            );
+            let kept = e.with_conflict(|c, _| c.kept_notices());
+            assert_eq!(kept.len(), 1, "the feud's notice is kept: {kept:?}");
+            assert_eq!(notices(&j), kept, "the plugin was sent it, once");
+            let order: Vec<&str> = cmds(&j)
+                .filter(|c| matches!(c, C::Territory(_) | C::Notice(_)))
+                .map(|c| c.name())
+                .collect();
+            assert_eq!(order, vec!["TERRITORY", "FACTION_NOTICE"]);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+
+        /// MZB-375, failing first: the replay-end trigger runs before the rail call, not after it.
+        /// The session's first record is a TRAIN_ARRIVED 60 days on, so its catch-up climbs the
+        /// owner's feud to the Notice and lets it fall away again (the feud ends about day 41 to
+        /// 45); the resend at the replay's end strips every queued NOTICE and sends the notices the
+        /// feuds keep, so a trigger that came after the catch-up would find the feud gone and send
+        /// nothing. With the trigger first the notice is queued after the resend and sent. With the
+        /// call removed the plugin was sent 0 notices, not 1.
+        #[test]
+        fn a_notice_the_first_arrivals_catch_up_makes_is_sent_though_its_feud_ends_there() {
+            const DAYS: i64 = 60;
+            let (dir, e, mut j, dim) = line("conflict-rail-notice-gone");
+            j.conflict_plugin.play_notices = false;
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 200;
+            let exit = j.game_time - 50;
+            for _ in 0..60 {
+                passed(&mut j, dim, 77, PLAYER, exit);
+            }
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            save(&e, &mut j);
+            let (gt, saved) = (j.game_time, j.world_save());
+            let _ = j.crash();
+
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES | MODULE_INDUSTRY;
+            j.game_time = gt + DAYS * 24_000;
+            j.conflict_plugin.play_notices = false;
+            arrive(&mut j, 77, EAST);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (calls, held, kept, feuds) = e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).expect("the den");
+                (
+                    c.stats.rail_calls,
+                    c.held_passes(),
+                    c.kept_notices(),
+                    c.feuds_of(f).len(),
+                )
+            });
+            assert_eq!((calls, held), (1, 0), "the arrival called the rail");
+            assert!(
+                kept.is_empty() && feuds == 0,
+                "the feud climbed and ended in the catch-up: {feuds} feuds, kept {kept:?}"
+            );
+            let sent = notices(&j);
+            assert_eq!(
+                sent.len(),
+                1,
+                "the notice the catch-up made was sent once: {sent:?}"
+            );
+            assert_eq!(sent[0].step, 1, "the Notice rung");
+            let order: Vec<&str> = cmds(&j)
+                .filter(|c| matches!(c, C::Territory(_) | C::Notice(_)))
+                .map(|c| c.name())
+                .collect();
+            assert_eq!(order, vec!["TERRITORY", "FACTION_NOTICE"]);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+
+        /// MZB-345: a pass's entry and exit are game time, translated to the engine's clock
+        /// (the world tick, the phase 1 test offset added) before the conflict sees them. With an
+        /// offset of three days the meter's decay reference is the exit plus the offset, not
+        /// the bare game time (which the engine would clamp to a pass in its far past).
+        #[test]
+        fn a_pass_is_counted_on_the_worlds_clock() {
+            const OFFSET: u64 = 3 * 24_000;
+            let (_dir, e, mut j, dim) = line("conflict-rail-offset");
+            e.order(vec![Order::Phase1Advance(OFFSET)]).unwrap();
+            j.idle();
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 500;
+            let exit = j.game_time - 50;
+            passed(&mut j, dim, 77, PLAYER, exit);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let meter = e.with_conflict_mut(|c, w| {
+                let f = c.faction_of_key(CAMP).expect("the den");
+                let a = w.player_uuid(PLAYER.0, PLAYER.1);
+                c.factions.row(f).rail_meter(a).cloned()
+            });
+            let meter = meter.expect("the pass made a meter");
+            assert_eq!(
+                meter.t_ref.0,
+                exit as u64 + OFFSET,
+                "the exit, on the world's clock"
+            );
+            assert!(
+                meter.t_ref.0 <= e.with_conflict(|c, _| c.now().0),
+                "and not ahead of it"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+
+        /// A pass held for its train when the server saves is still held after the restart: the
+        /// train's arrival, journaled after the save and replayed, credits it to the line as it did
+        /// before the crash (MZB-312, RTC8).
+        #[test]
+        fn a_held_pass_crosses_a_restart_to_the_replayed_arrival() {
+            let (dir, e, mut j, dim) = line("conflict-rail-held");
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 500;
+            let exit = j.game_time - 50;
+            passed(&mut j, dim, 77, PLAYER, exit);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            assert_eq!(
+                e.with_conflict(|c, _| c.held_passes()),
+                1,
+                "held for train 77"
+            );
+            save(&e, &mut j);
+
+            // The arrival comes after the save: journaled, not in the pages.
+            j.game_time += 1_500;
+            arrive(&mut j, 77, EAST);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let meter = |e: &Engine| {
+                e.with_conflict_mut(|c, w| {
+                    let f = c.faction_of_key(CAMP).expect("the den");
+                    let a = w.player_uuid(PLAYER.0, PLAYER.1);
+                    c.factions
+                        .row(f)
+                        .rail_meter(a)
+                        .map(|m| (m.n.to_bits(), m.t_ref, m.lines.len()))
+                })
+            };
+            let counts = |e: &Engine| e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes()));
+            assert_eq!(counts(&e), (1, 0), "the arrival called the rail");
+            let before = meter(&e).expect("the meter");
+            assert_eq!(before.2, 1, "and the pass is credited to the line");
+            let (gt, saved) = (j.game_time, j.world_save());
+            let _ = j.crash();
+
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES | MODULE_INDUSTRY;
+            j.game_time = gt;
+            assert_eq!(
+                e.conflict_restore_check(),
+                (None, false),
+                "the pages read back"
+            );
+            j.idle();
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            assert_eq!(
+                counts(&e),
+                (1, 0),
+                "the replayed arrival called the rail once"
+            );
+            assert_eq!(
+                meter(&e),
+                Some(before),
+                "and left the meter as it was before the crash"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
     }
 
     // ---- M4: the camp reconciler through the journal ----------------------------------------------

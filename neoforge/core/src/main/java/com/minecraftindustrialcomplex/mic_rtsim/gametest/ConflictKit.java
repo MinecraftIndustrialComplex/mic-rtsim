@@ -604,6 +604,21 @@ public final class ConflictKit {
         return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.FACTION_FOUND, ConflictRecords.FactionFound.FACTION, faction);
     }
 
+    /** RAIL_PASS records of one faction (the faction at offset 24), in the order received (M7, MZB-325). */
+    public static List<ScriptedEngine.Received> railPasses(long faction) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.RAIL_PASS, ConflictRecords.RailPass.FACTION, faction);
+    }
+
+    /** A RAIL_PASS decoded: train, owner (null: none), dimension id, the point, and entry and exit in game time. */
+    public record RailPassRecord(long train, UUID owner, int dimension, double x, double y, double z, long entry, long exit) {}
+
+    public static RailPassRecord railPass(ScriptedEngine.Received r) {
+        ByteBuffer b = r.view();
+        return new RailPassRecord(b.getLong(ConflictRecords.RailPass.TRAIN), uuidAt(r, ConflictRecords.RailPass.OWNER_MOST),
+                b.getInt(ConflictRecords.RailPass.DIM), b.getDouble(ConflictRecords.RailPass.X), b.getDouble(ConflictRecords.RailPass.Y),
+                b.getDouble(ConflictRecords.RailPass.Z), b.getLong(ConflictRecords.RailPass.ENTRY), b.getLong(ConflictRecords.RailPass.EXIT));
+    }
+
     /** TERRITORY_SIGNAL records of one kind by one player. */
     public static List<ScriptedEngine.Received> signals(int signal, UUID player) {
         List<ScriptedEngine.Received> out = new ArrayList<>();

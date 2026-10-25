@@ -6,7 +6,7 @@
 //! - **Factions** (table 0x4310, keyed by the faction's index, which is never reused: factions
 //!   are never removed): the faction, its feuds (folded into its row, PM-C2: a faction's feuds are
 //!   few and every one of them is read with the faction's culture and chief) and the sources that
-//!   reach it (folded, PM-C3: the old `source_index`).
+//!   reach it (folded, PM-C3: the old `source_index`) and its rail meters (M7, MZB-304).
 //! - **Sources** (table 0x4312, keyed by a source id handed out in order and never reused): a
 //!   continuous emitter, its key and kind, whom it counts against and the factions it reaches.
 //!   A resident index from (key, kind) to the id and the rate (PM-C4) finds it.
@@ -23,7 +23,7 @@ use rtsim_kernel::rows::{PagedRows, Row};
 use rtsim_knowledge::ActorId;
 
 use crate::culture::SignalKind;
-use crate::engine::{Faction, Feud, Source};
+use crate::engine::{Faction, Feud, LineCount, RailMeter, Source};
 use crate::presence::ChunkKey;
 
 /// Row tables take the conflict's table (0x4300) plus 0x10 and up, so rtsim-jni's per-table
@@ -64,6 +64,12 @@ pub struct FactionRow {
     pub feuds: Vec<(ActorId, Feud)>,
     /// The sources that reach this faction, by (kind, source id), sorted (PM-C3).
     pub reach: Vec<(SignalKind, u32)>,
+    /// The rail meters, one per actor, sorted by actor (M7, MZB-304). Boxed, and `None` while
+    /// there are none (never an empty list), so that a faction of a world with no rail pays one
+    /// pointer resident and one byte encoded (MZB-313, amended by the lead for MZB-331's gate).
+    /// Read it through [`FactionRow::rail`].
+    #[allow(clippy::box_collection)]
+    pub(crate) rail: Option<Box<Vec<RailMeter>>>,
 }
 
 impl FactionRow {
@@ -72,7 +78,57 @@ impl FactionRow {
             x,
             feuds: Vec::new(),
             reach: Vec::new(),
+            rail: None,
         }
+    }
+
+    /// The rail meters, one per actor, sorted by actor.
+    pub fn rail(&self) -> &[RailMeter] {
+        self.rail.as_deref().map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn rail_at(&self, a: ActorId) -> Result<usize, usize> {
+        self.rail().binary_search_by(|m| m.actor.cmp(&a))
+    }
+
+    /// The rail meter of `a`, if it has one.
+    pub fn rail_meter(&self, a: ActorId) -> Option<&RailMeter> {
+        self.rail_at(a).ok().map(|i| &self.rail()[i])
+    }
+
+    pub(crate) fn rail_meter_mut(&mut self, a: ActorId) -> Option<&mut RailMeter> {
+        let i = self.rail_at(a).ok()?;
+        self.rail.as_mut().map(|v| &mut v[i])
+    }
+
+    /// The rail meter of `a`, made if it has none.
+    pub(crate) fn rail_entry(&mut self, a: ActorId) -> &mut RailMeter {
+        let i = match self.rail_at(a) {
+            Ok(i) => i,
+            Err(i) => {
+                self.rail
+                    .get_or_insert_with(Default::default)
+                    .insert(i, RailMeter::new(a));
+                i
+            }
+        };
+        &mut self.rail.as_mut().expect("just made")[i]
+    }
+
+    /// Drops the meter at `i` (a place [`FactionRow::rail_at`] found); the last one takes the
+    /// list with it.
+    pub(crate) fn rail_remove(&mut self, i: usize) {
+        if let Some(v) = self.rail.as_mut() {
+            v.remove(i);
+            if v.is_empty() {
+                self.rail = None;
+            }
+        }
+    }
+
+    /// Replaces the meters, `None` for an empty list.
+    pub(crate) fn set_rail(&mut self, meters: Vec<RailMeter>) {
+        self.rail = (!meters.is_empty()).then(|| Box::new(meters));
     }
 
     pub(crate) fn feud_at(&self, a: ActorId) -> Result<usize, usize> {
@@ -86,6 +142,11 @@ impl FactionRow {
             .iter()
             .take_while(move |e| e.0 == kind)
             .map(|e| e.1)
+    }
+
+    /// [`FactionRow::reach_of`] collected.
+    pub fn reach_ids(&self, kind: SignalKind) -> Vec<u32> {
+        self.reach_of(kind).collect()
     }
 
     pub(crate) fn add_reach(&mut self, kind: SignalKind, id: u32) {
@@ -109,6 +170,16 @@ impl Row for FactionRow {
                 * std::mem::size_of::<crate::boundary::Notice>()
             + self.reach.capacity() * std::mem::size_of::<(SignalKind, u32)>()
             + self.x.hunts.capacity() * std::mem::size_of::<crate::engine::Hunt>()
+            + self.feuds.iter().map(|e| e.1.tail_bytes()).sum::<usize>()
+            + self.rail.as_deref().map_or(0, |v| {
+                std::mem::size_of::<Vec<RailMeter>>()
+                    + v.capacity() * std::mem::size_of::<RailMeter>()
+            })
+            + self
+                .rail()
+                .iter()
+                .map(|m| m.lines.capacity() * std::mem::size_of::<LineCount>())
+                .sum::<usize>()
             + self
                 .x
                 .camp
@@ -197,6 +268,11 @@ impl Row for SourceRow {
     fn heap_bytes(&self) -> usize {
         self.s.affects.capacity() * std::mem::size_of::<(u32, f64)>()
             + self.s.chunks.capacity() * std::mem::size_of::<ChunkKey>()
+            + self
+                .s
+                .pin
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<crate::engine::Pin>())
     }
 }
 

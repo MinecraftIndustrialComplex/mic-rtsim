@@ -43,10 +43,10 @@ use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus,
-    Heir, Line, Party, Phase, Placing, Retired, Slot, SlotState, Source, TRADED_CAP, Target,
-    Throne,
+    Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired, Slot,
+    SlotState, Source, TRADED_CAP, Target, Throne,
 };
-use crate::grievance::{Grievance, K};
+use crate::grievance::{Grievance, KB, RailTail};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
 use crate::tables::{
     FACTION_CELL_TABLE, FACTION_KEY_TABLE, FACTION_TABLE, FACTIONS_PER_PAGE, FEUD_TABLE,
@@ -64,18 +64,25 @@ use crate::tunables::ConflictTunables;
 /// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
 /// arrival (M6, MZB-271); a party ends with the op ids of the casualties it counted (MZB-589).
-/// RTC8: a camp's ledger goes on with its heir, its chief's trade memory, the tribute it owes
-/// and is placing and the heir's pair in flight, a faction ends with its owed hunts, and the
-/// wheel's events may be a camp heir (M9, MZB-437).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC8");
+/// RTC8: a focus may keep its track, a source its pin, a party's target may
+/// be a track, a faction carries its rail meters, the wheel's events may be a rail wake and the
+/// resident state ends with the passes held for a line (M7, MZB-302). So that a world with no
+/// rail pays base's bytes, the Rail kind's grievance components ride after a feud's flags byte
+/// (bit 1), a focus's track after a focus tag of 2, and a source's pin after a flags byte (bit 1)
+/// that also says whether it has a district (MZB-331's gate, MZB-313, MZB-314). RTC9: a camp's
+/// ledger goes on with its heir, its chief's trade memory, the tribute it owes and is placing and
+/// the heir's pair in flight, a faction ends with its owed hunts, the wheel's events may be a camp
+/// heir, and the resident state ends with the tribute stacks being placed after the held passes
+/// (M9, MZB-437, MZB-448).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC9");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
-/// event may differ. 6: a camp carries its pressure and arrival (M6). 7: a camp carries its heir,
-/// memory and tribute, and a faction its hunts (M9).
+/// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7). 8: a
+/// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 7;
+const META_VERSION: u16 = 8;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -302,15 +309,17 @@ fn put_grievance(w: &mut Writer, g: &Grievance) {
 
 fn get_grievance(r: &mut Reader<'_>) -> codec::Result<Grievance> {
     let anchor = Tick(r.u64()?);
-    let mut level = [0.0; K];
-    let mut rate = [0.0; K];
+    let mut level = [0.0; KB];
+    let mut rate = [0.0; KB];
     for v in level.iter_mut().chain(rate.iter_mut()) {
         *v = r.f64()?;
     }
+    // The Rail kind's components come with the feud's (`get_feud`).
     Ok(Grievance {
         anchor,
         level,
         rate,
+        rail: None,
     })
 }
 
@@ -621,18 +630,65 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
     })
 }
 
-fn put_focus(w: &mut Writer, f: &Focus) {
+fn put_station(w: &mut Writer, (pos, d): &(Pos, DistrictId)) {
+    put_pos(w, *pos);
+    w.u64(d.0);
+}
+
+fn get_station(r: &mut Reader<'_>) -> codec::Result<(Pos, DistrictId)> {
+    Ok((get_pos(r)?, DistrictId(r.u64()?)))
+}
+
+fn put_pin(w: &mut Writer, p: &Pin) {
+    w.var_i64(i64::from(p.y));
+    put_opt(w, &p.station, put_station);
+}
+
+fn get_pin(r: &mut Reader<'_>) -> codec::Result<Pin> {
+    Ok(Pin {
+        y: get_i32(r)?,
+        station: get_opt(r, get_station)?,
+    })
+}
+
+/// A feud's focus: a tag of 0 (none), 1 (a focus with no track) or 2 (with one, written last),
+/// so that a world with no rail pays no byte for the track.
+fn put_focus(w: &mut Writer, f: &Option<Focus>) {
+    let Some(f) = f else {
+        w.u8(0);
+        return;
+    };
+    w.u8(if f.track.is_some() { 2 } else { 1 });
     put_pos(w, f.pos);
     put_opt(w, &f.district, |w, d| w.u64(d.0));
     w.f64(f.weight);
+    if let Some(t) = &f.track {
+        put_pin(w, t);
+    }
 }
 
-fn get_focus(r: &mut Reader<'_>) -> codec::Result<Focus> {
-    Ok(Focus {
-        pos: get_pos(r)?,
-        district: get_opt(r, |r| Ok(DistrictId(r.u64()?)))?,
-        weight: r.f64()?,
-    })
+fn get_focus(r: &mut Reader<'_>) -> codec::Result<Option<Focus>> {
+    let tag = r.u8()?;
+    if tag == 0 {
+        return Ok(None);
+    }
+    if tag > 2 {
+        return bad(format!("focus tag {tag}"));
+    }
+    let pos = get_pos(r)?;
+    let district = get_opt(r, |r| Ok(DistrictId(r.u64()?)))?;
+    let weight = r.f64()?;
+    let track = if tag == 2 {
+        Some(Box::new(get_pin(r)?))
+    } else {
+        None
+    };
+    Ok(Some(Focus {
+        pos,
+        district,
+        weight,
+        track,
+    }))
 }
 
 fn put_demand(w: &mut Writer, d: &Demand) {
@@ -669,7 +725,7 @@ fn put_feud(w: &mut Writer, x: &Feud) {
     put_opt(w, &x.demand, put_demand);
     put_opt(w, &x.party, |w, p| w.u64(p.to_bits()));
     w.var_u64(u64::from(x.stamp));
-    put_opt(w, &x.focus, put_focus);
+    put_focus(w, &x.focus);
     w.u64(x.wait_until.0);
     w.var_u64(u64::from(x.raids));
     put_opt(w, &x.notice, |w, n| {
@@ -677,32 +733,58 @@ fn put_feud(w: &mut Writer, x: &Feud) {
         boundary::encode_cmd(0, &Cmd::Notice(**n), &mut b);
         w.bytes(&b);
     });
-    w.u8(u8::from(x.envoy_again));
+    // Flags: the envoy is held (bit 0); the Rail kind's level, rate and raw rate follow (bit 1).
+    w.u8(u8::from(x.envoy_again) | (u8::from(x.g.rail.is_some()) << 1));
+    if let Some(t) = &x.g.rail {
+        w.f64(t.level);
+        w.f64(t.rate);
+        w.f64(t.raw);
+    }
 }
 
 fn get_feud(r: &mut Reader<'_>) -> codec::Result<Feud> {
-    let g = get_grievance(r)?;
-    let mut raw = [0.0; K];
+    let mut g = get_grievance(r)?;
+    let mut raw = [0.0; KB];
     for v in &mut raw {
         *v = r.f64()?;
     }
     let s = r.u8()?;
+    let step = Step::from_u8(s).ok_or_else(|| CodecError::Invalid(format!("step {s}")))?;
+    let since = Tick(r.u64()?);
+    let demand = get_opt(r, get_demand)?;
+    let party = get_opt(r, handle)?;
+    let stamp = get_u32(r)?;
+    let focus = get_focus(r)?;
+    let wait_until = Tick(r.u64()?);
+    let raids = get_u32(r)?;
+    let notice = get_opt(r, |r| match boundary::decode_cmd(r.bytes()?) {
+        Ok((_, Cmd::Notice(n), _)) => Ok(Box::new(n)),
+        _ => bad("a kept notice that is not FACTION_NOTICE".into()),
+    })?;
+    let flags = r.u8()?;
+    if flags > 3 {
+        return bad(format!("feud flags {flags}"));
+    }
+    if flags & 2 != 0 {
+        g.rail = Some(Box::new(RailTail {
+            level: r.f64()?,
+            rate: r.f64()?,
+            raw: r.f64()?,
+        }));
+    }
     Ok(Feud {
         g,
         raw,
-        step: Step::from_u8(s).ok_or_else(|| CodecError::Invalid(format!("step {s}")))?,
-        since: Tick(r.u64()?),
-        demand: get_opt(r, get_demand)?,
-        party: get_opt(r, handle)?,
-        stamp: get_u32(r)?,
-        focus: get_opt(r, get_focus)?,
-        wait_until: Tick(r.u64()?),
-        raids: get_u32(r)?,
-        notice: get_opt(r, |r| match boundary::decode_cmd(r.bytes()?) {
-            Ok((_, Cmd::Notice(n), _)) => Ok(Box::new(n)),
-            _ => bad("a kept notice that is not FACTION_NOTICE".into()),
-        })?,
-        envoy_again: r.u8()? != 0,
+        step,
+        since,
+        demand,
+        party,
+        stamp,
+        focus,
+        wait_until,
+        raids,
+        notice,
+        envoy_again: flags & 1 != 0,
     })
 }
 
@@ -721,6 +803,12 @@ fn put_target(w: &mut Writer, t: &Target) {
             w.u8(2);
             put_pos(w, *p);
         }
+        Target::Track { track, spot, y } => {
+            w.u8(3);
+            put_pos(w, *track);
+            put_pos(w, *spot);
+            w.var_i64(i64::from(*y));
+        }
     }
 }
 
@@ -729,6 +817,11 @@ fn get_target(r: &mut Reader<'_>) -> codec::Result<Target> {
         0 => Target::District(DistrictId(r.u64()?), get_pos(r)?),
         1 => Target::Node(get_usize(r)?),
         2 => Target::Pos(get_pos(r)?),
+        3 => Target::Track {
+            track: get_pos(r)?,
+            spot: get_pos(r)?,
+            y: get_i32(r)?,
+        },
         t => return bad(format!("target tag {t}")),
     })
 }
@@ -915,6 +1008,16 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::Rail {
+            faction,
+            actor,
+            stamp,
+        } => {
+            w.u8(10);
+            w.var_u64(u64::from(faction));
+            w.u64(actor.to_bits());
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -961,6 +1064,11 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         },
         9 => Ev::CampHeir {
             faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        10 => Ev::Rail {
+            faction: get_u32(r)?,
+            actor: handle(r)?,
             stamp: get_u32(r)?,
         },
         t => return bad(format!("event tag {t}")),
@@ -1048,6 +1156,13 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.tribute_stacks,
         s.hunts_owed,
         s.hunts_killed,
+        s.rail_passes,
+        s.rail_pushes,
+        s.rail_wakes,
+        s.rail_let_go,
+        s.rail_unknown,
+        s.rail_calls,
+        s.rail_stale,
     ]);
     v
 }
@@ -1109,13 +1224,24 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.tribute_stacks = n();
     s.hunts_owed = n();
     s.hunts_killed = n();
+    s.rail_passes = n();
+    s.rail_pushes = n();
+    s.rail_wakes = n();
+    s.rail_let_go = n();
+    s.rail_unknown = n();
+    s.rail_calls = n();
+    s.rail_stale = n();
     s
 }
 
 /// A continuous source's fields (its key and kind are the row's).
 fn put_source(w: &mut Writer, s: &Source) {
     put_pos(w, s.pos);
-    put_opt(w, &s.district, |w, d| w.u64(d.0));
+    // Flags: a district follows (bit 0); a pin ends the source (bit 1).
+    w.u8(u8::from(s.district.is_some()) | (u8::from(s.pin.is_some()) << 1));
+    if let Some(d) = &s.district {
+        w.u64(d.0);
+    }
     w.f64(s.rate);
     put_usize(w, s.affects.len());
     for (f, fall) in &s.affects {
@@ -1127,11 +1253,22 @@ fn put_source(w: &mut Writer, s: &Source) {
     for c in &s.chunks {
         put_chunk(w, *c);
     }
+    if let Some(p) = &s.pin {
+        put_pin(w, p);
+    }
 }
 
 fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
     let pos = get_pos(r)?;
-    let district = get_opt(r, |r| Ok(DistrictId(r.u64()?)))?;
+    let flags = r.u8()?;
+    if flags > 3 {
+        return bad(format!("source flags {flags}"));
+    }
+    let district = if flags & 1 != 0 {
+        Some(DistrictId(r.u64()?))
+    } else {
+        None
+    };
     let rate = r.f64()?;
     let m = r.len_prefix(9)?;
     let affects = (0..m)
@@ -1150,6 +1287,11 @@ fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
         affects,
         actor,
         chunks,
+        pin: if flags & 2 != 0 {
+            Some(Box::new(get_pin(r)?))
+        } else {
+            None
+        },
     })
 }
 
@@ -1166,7 +1308,80 @@ impl Encode for FactionRow {
             w.u8(*k as u8);
             w.var_u64(u64::from(*id));
         }
+        put_usize(w, self.rail().len());
+        self.rail().iter().for_each(|m| put_meter(w, m));
     }
+}
+
+fn put_meter(w: &mut Writer, m: &RailMeter) {
+    w.u64(m.actor.to_bits());
+    w.f64(m.n);
+    w.u64(m.t_ref.0);
+    w.f64(m.pushed);
+    put_opt(w, &m.pushed_at, |w, t| w.u64(t.0));
+    w.var_u64(u64::from(m.stamp));
+    w.var_u64(m.wake.0);
+    put_opt(w, &m.last, |w, (pos, y)| {
+        put_pos(w, *pos);
+        w.var_i64(i64::from(*y));
+    });
+    put_usize(w, m.lines.len());
+    for l in &m.lines {
+        w.u64(l.a);
+        w.u64(l.b);
+        w.f64(l.n);
+        w.u64(l.t_ref.0);
+        put_pos(w, l.point);
+        w.var_i64(i64::from(l.y));
+        put_opt(w, &l.near, put_station);
+    }
+}
+
+fn get_meter(r: &mut Reader<'_>) -> codec::Result<RailMeter> {
+    let mut m = RailMeter::new(handle(r)?);
+    m.n = r.f64()?;
+    m.t_ref = Tick(r.u64()?);
+    m.pushed = r.f64()?;
+    m.pushed_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
+    m.stamp = get_u32(r)?;
+    m.wake = Tick(r.var_u64()?);
+    m.last = get_opt(r, |r| Ok((get_pos(r)?, get_i32(r)?)))?;
+    // A line is at least two ids, two words and a position.
+    let n = r.len_prefix(30)?;
+    for _ in 0..n {
+        let l = LineCount {
+            a: r.u64()?,
+            b: r.u64()?,
+            n: r.f64()?,
+            t_ref: Tick(r.u64()?),
+            point: get_pos(r)?,
+            y: get_i32(r)?,
+            near: get_opt(r, get_station)?,
+        };
+        if l.a > l.b || m.lines.last().is_some_and(|p| (p.a, p.b) >= (l.a, l.b)) {
+            return bad("a meter's lines out of order".into());
+        }
+        m.lines.push(l);
+    }
+    Ok(m)
+}
+
+fn put_held(w: &mut Writer, h: &HeldPass) {
+    w.var_u64(u64::from(h.faction));
+    put_opt(w, &h.actor, |w, a| w.u64(a.to_bits()));
+    w.u64(h.exit.0);
+    put_pos(w, h.point);
+    w.var_i64(i64::from(h.y));
+}
+
+fn get_held(r: &mut Reader<'_>) -> codec::Result<HeldPass> {
+    Ok(HeldPass {
+        faction: get_u32(r)?,
+        actor: get_opt(r, handle)?,
+        exit: Tick(r.u64()?),
+        point: get_pos(r)?,
+        y: get_i32(r)?,
+    })
 }
 
 impl Decode for FactionRow {
@@ -1190,7 +1405,23 @@ impl Decode for FactionRow {
             }
             reach.push(e);
         }
-        Ok(FactionRow { x, feuds, reach })
+        let n = r.len_prefix(36)?;
+        let mut rail: Vec<RailMeter> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let m = get_meter(r)?;
+            if rail.last().is_some_and(|l| l.actor >= m.actor) {
+                return bad("a faction's rail meters out of order".into());
+            }
+            rail.push(m);
+        }
+        let mut row = FactionRow {
+            x,
+            feuds,
+            reach,
+            rail: None,
+        };
+        row.set_rail(rail);
+        Ok(row)
     }
 }
 
@@ -1312,6 +1543,12 @@ impl Conflict {
         w.u8(u8::from(self.peaceful));
         w.u64(self.peaceful_since.0);
         w.var_u64(u64::from(self.notice_serial));
+        put_usize(w, self.rail_held.len());
+        for (train, v) in &self.rail_held {
+            w.u64(*train);
+            put_usize(w, v.len());
+            v.iter().for_each(|h| put_held(w, h));
+        }
         put_usize(w, self.placing.len());
         for (f, p) in &self.placing {
             w.var_u64(u64::from(*f));
@@ -1370,6 +1607,27 @@ impl Conflict {
         c.peaceful = r.u8()? != 0;
         c.peaceful_since = Tick(r.u64()?);
         c.notice_serial = get_u32(r)?;
+        for _ in 0..r.len_prefix(9)? {
+            let train = r.u64()?;
+            // A held pass is at least a faction, a flag, an exit, a position and a y.
+            let m = r.len_prefix(12)?;
+            let mut v: Vec<HeldPass> = Vec::with_capacity(m);
+            for _ in 0..m {
+                let h = get_held(r)?;
+                if v.last().is_some_and(|p| p.exit > h.exit) {
+                    return bad("a train's held passes out of order".into());
+                }
+                v.push(h);
+            }
+            let Some(first) = v.first() else {
+                return bad("a train that holds nothing".into());
+            };
+            c.rail_held_oldest.insert((first.exit, train));
+            c.rail_held_n += v.len();
+            if c.rail_held.insert(train, v).is_some() {
+                return bad("a train held twice".into());
+            }
+        }
         let n = r.len_prefix(8)?;
         for _ in 0..n {
             let f = get_u32(r)?;
@@ -1427,6 +1685,14 @@ impl Conflict {
             || self.cells.keys().any(|e| e.1 as usize >= n)
         {
             return bad("an index names a faction past the table".into());
+        }
+        if self
+            .rail_held
+            .values()
+            .flatten()
+            .any(|h| h.faction as usize >= n)
+        {
+            return bad("a held pass names a faction past the table".into());
         }
         if self.sources.rows.len() != self.sources.ids.len() as u64 {
             return bad("source rows and their index disagree".into());
@@ -1755,5 +2021,101 @@ mod tests {
         let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &b).unwrap();
         assert_eq!(back.state_hash(), c.state_hash());
         assert_eq!(back.save(), b);
+    }
+
+    fn encoded(f: impl FnOnce(&mut Writer)) -> usize {
+        let mut w = Writer::with_capacity(256);
+        f(&mut w);
+        w.into_bytes().len()
+    }
+
+    fn at(x: i32) -> Pos {
+        Pos { frame: 0, x, z: -x }
+    }
+
+    /// The bytes a feud, a focus and a source take with no rail in them, as measured at f6321fa5,
+    /// the base before M7 (MZB-331's gate: a world with no rail pays what base paid).
+    #[test]
+    fn a_world_with_no_rail_encodes_what_it_did_before_m7() {
+        let mut f = Feud::new(Tick(5));
+        assert_eq!(encoded(|w| put_feud(w, &f)), 176);
+        f.focus = Some(Focus {
+            pos: at(40),
+            district: Some(DistrictId(3)),
+            weight: 2.0,
+            track: None,
+        });
+        assert_eq!(encoded(|w| put_feud(w, &f)), 197);
+        let mut s = Source {
+            pos: at(40),
+            district: None,
+            rate: 1.0,
+            affects: vec![(0, 1.0)],
+            actor: ActorId::from_bits(0x0B0B),
+            chunks: vec![],
+            pin: None,
+        };
+        assert_eq!(encoded(|w| put_source(w, &s)), 32);
+        s.district = Some(DistrictId(3));
+        assert_eq!(encoded(|w| put_source(w, &s)), 40);
+    }
+
+    /// A feud with the Rail kind's components, a focus with a track and a source with a pin come
+    /// back as they went, in every mix of the flags.
+    #[test]
+    fn the_rail_parts_of_a_feud_focus_and_source_round_trip() {
+        let pin = Pin {
+            y: -12,
+            station: Some((at(7), DistrictId(9))),
+        };
+        for tail in [false, true] {
+            for envoy_again in [false, true] {
+                for focus in [None, Some(None), Some(Some(pin))] {
+                    let mut f = Feud::new(Tick(5));
+                    f.envoy_again = envoy_again;
+                    f.raw[2] = 0.5;
+                    f.g.level[1] = 3.0;
+                    f.g.rate[3] = 0.25;
+                    if tail {
+                        f.g.rail = Some(Box::new(RailTail {
+                            level: 1.5,
+                            rate: 0.0,
+                            raw: 2.5e-4,
+                        }));
+                    }
+                    f.focus = focus.map(|t| Focus {
+                        pos: at(11),
+                        district: t.is_none().then_some(DistrictId(2)),
+                        weight: 4.0,
+                        track: t.map(Box::new),
+                    });
+                    let mut w = Writer::with_capacity(256);
+                    put_feud(&mut w, &f);
+                    let b = w.into_bytes();
+                    let mut r = Reader::new(&b);
+                    assert_eq!(get_feud(&mut r).unwrap(), f);
+                    assert!(r.finish_check().is_ok());
+                }
+            }
+        }
+        for district in [None, Some(DistrictId(4))] {
+            for pin in [None, Some(Box::new(pin))] {
+                let s = Source {
+                    pos: at(3),
+                    district,
+                    rate: 0.125,
+                    affects: vec![(1, 1.0), (4, 0.5)],
+                    actor: ActorId::from_bits(0x0B0B),
+                    chunks: vec![],
+                    pin,
+                };
+                let mut w = Writer::with_capacity(256);
+                put_source(&mut w, &s);
+                let b = w.into_bytes();
+                let mut r = Reader::new(&b);
+                assert_eq!(get_source(&mut r).unwrap(), s);
+                assert!(r.finish_check().is_ok());
+            }
+        }
     }
 }
