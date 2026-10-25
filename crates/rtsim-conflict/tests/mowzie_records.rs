@@ -4131,7 +4131,7 @@ fn a_held_raids_hunt(gaps: &[u64], answer: Option<u64>, save_after: bool, end: H
             killed: r.plugin.animals_killed,
             live,
             next: Vec::new(),
-            owed: r.c.factions[r.f as usize].hunts.len(),
+            owed: r.c.factions[r.f as usize].hunts().len(),
         };
     }
     // Java journals other records all along: one past the bands'.
@@ -4174,7 +4174,7 @@ fn a_held_raids_hunt(gaps: &[u64], answer: Option<u64>, save_after: bool, end: H
         killed: r.plugin.animals_killed + next.plugin.animals_killed,
         live,
         next: sent(&next.plugin),
-        owed: next.c.factions[next.f as usize].hunts.len(),
+        owed: next.c.factions[next.f as usize].hunts().len(),
     }
 }
 

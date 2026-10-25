@@ -6036,6 +6036,11 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   (a world with no rail pays one pointer for M7) still holds, and the 24 are M9's base. M9 itself
   pinned no size. Not taken: boxing `hunts` as M7 boxed its meters; a design change for M9's owner,
   not the merge's.
+  Amended by the M9 check (P3-4): `hunts` is boxed as M7's meters are (`Option<Box<Vec<Hunt>>>`,
+  `None` while a faction owes none, never an empty list; read through `Faction::hunts`), so the row
+  is 216 and the pin is 200 + 8 + 8: M9's base is one pointer, as M7's is. The encoding is the
+  list's (a length, then the hunts), so no format change; the load makes an empty list `None`, and
+  the heap count adds the Vec's own 24 bytes for a boxed list.
 
 ## M10 March
 

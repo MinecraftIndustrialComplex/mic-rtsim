@@ -1983,7 +1983,7 @@ impl Infrastructure for Open {
 /// The hunts the grove owes: (district, count, op).
 fn hunts(r: &CampRun) -> Vec<(u64, u32, u64)> {
     r.c.factions[r.f as usize]
-        .hunts
+        .hunts()
         .iter()
         .map(|h| (h.district.0, h.count, h.op))
         .collect()
@@ -2158,7 +2158,7 @@ fn a_hunt_applied_while_a_second_raid_replaces_it_is_not_paid_twice() {
     r.round_trip();
     assert_eq!(hunts(&r), [(5, 8, op2)]);
     assert_eq!(
-        r.c.factions[r.f as usize].hunts[0].replaced,
+        r.c.factions[r.f as usize].hunts()[0].replaced,
         Some((op1, 3)),
         "the replaced op and the 3 the second raid owes alone"
     );
