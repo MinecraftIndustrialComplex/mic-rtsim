@@ -1539,9 +1539,10 @@ body mod is verified: it is the contract a plugin would have to meet.
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
 plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
-CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178); that of the
-rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
-deferred and drops them, and sends none of their commands.
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178), and so is
+CHIEF_STATE's (slice M6, the Frostmaw, MZB-250 to MZB-299); that of the rest comes with a later
+slice (§9.6), and until then the engine decodes them, counts them as deferred and drops them, and
+sends none of their commands.
 
 ### 9.1 Kind ranges (reserved)
 
@@ -1614,7 +1615,7 @@ are untouched.
 | 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 u32 flags (the BAND_MATERIALIZE's flags, echoed: 8 a fight's wave; without 8 a sighting's; 0 an envoy's; a replay tells a held fight from a sighting by them, docs/replay-gate.md §6.1, RP-56) | 48 |
 | 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq. No free bytes, so unlike BAND_MATERIALIZED it does not echo the command's flags (8 a fight's wave): a replay reads a sighting refused inside a held fight's slack as the fight's refusal, which loses that fight's live parity, not its books (accepted residual, docs/replay-gate.md §6.1, RP-54). For whoever next changes this layout, the option not taken: `wave` is a u32 here and BAND_MATERIALIZE's a u16, so its high half (bytes 38 and 39) could carry the echoed flags | 48 |
 | 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
-| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
+| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId (a Java op id: the top bit set, committed with `commitWithOpId`, MZB-589) | 72 |
 | 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0808 | ENVOY_ANSWER | 1 accepted, 2 refused, 3 attacked | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast | 56 |
 | 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
@@ -1623,7 +1624,7 @@ are untouched.
 | 0x080C | RAIL_PASS | 0 | 24 u64 faction, 32 u64 train, 40 u64 ownerMost, 48 u64 ownerLeast ((0, 0): none), 56 u32 dimension, 60 reserved, 64 f64 x, 72 y, 80 z (the sampled point nearest the camp), 88 i64 entryTick, 96 i64 exitTick | 104 |
 | 0x080D | TRAIN_PASSED | flags: 1 watched | 24 u64 agent, 32 u32 epoch, 36 u32 carriage (the nearest the track point, from 0), 40 u64 train | 48 |
 | 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
-| 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief; u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
+| 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief, 8 the crystal is on this body (a chief body only); u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
 | 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
@@ -1632,9 +1633,9 @@ are untouched.
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
 All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN and the camp records
-(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the rest are deferred
-(§9.6).
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, CHIEF_STATE (0x0091) and
+the camp records (0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the
+rest are deferred (§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1666,6 +1667,25 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   when the engine's `Replay` has applied every record before the session's first live one, however
   many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
   counts off the bodies kept for its epoch live and replayed alike (MZB-142).
+- **BAND_CASUALTIES carries an op id (OP_ID at 64, size 72; MZB-589) and the engine counts a copy
+  once.** The entity's death listener commits it on the dead body's entity, and the reassert of a
+  record journaled on an unloaded chunk or entity commits it again under a new OBS_SEQ with the same
+  bytes; the engine's replay forgets the op at WORLD_SAVED, so without an op the second copy took
+  another member of the band. Java commits it with `commitWithOpId`, so every record has its own
+  random op and a copy has the same one. The engine skips a copy **per party** and not through the
+  world's applied ops (`Obs::op()`, which holds every op of the world's life and is saved at every
+  save: one entry per member death would never shrink): `Party.casualty_ops` lists the op of each
+  record the party counted, saved with the party (RTC7, a length-prefixed list at the end of the
+  party record), and `casualties()` returns at once for an op in it, whether the band is in view
+  or a recalled stack of its epoch is being counted off. Only a record that took a unit is listed,
+  so the list holds at most `start_units` ops, and it is counted in the party's memory estimate. It
+  goes with the party: a copy that comes after the band has ended carries the old agent id and finds
+  no party (`party_of` checks the handle's generation and the epoch; `handle.rs` retires a slot
+  before its u16 generation would wrap, so an old agent id never names a later party), and a copy
+  after the despawn took the epoch's stack is no death as before. A crash is covered by the
+  journal and not by the list: the pages that survive predate the casualty, so the replay applies
+  it once and the reasserted copy is skipped. Two records for the same body with two ops are two
+  deaths.
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
   that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
   flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
@@ -1674,6 +1694,32 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   MZB-146); the plugin still journals it when that body dies (nothing else comes of it on the Java
   side: the death and its drops are the mob's own, and the in-world news is a no-op until it lands:
   MZB-147).
+  **A boss's chief is the band's one unit.** Of the cultures with a boss renewal (`renewal.boss`, the
+  Frostmaw), the chief is the band's only body, and CHIEF_KILLED takes that unit off the band and
+  counts one casualty, with no second bump of the pressure (MZB-295, amended at review). BAND_MATERIALIZE
+  therefore sends a boss's chief stack with `count` one less than its unit count, so one Frostmaw
+  makes a stack of count 0 with MEMBER_CHIEF (MZB-127: the chief alone), and Java makes exactly one
+  body, the den's own. Another culture's chief is an extra body outside the units (MZB-109): its
+  stack is the units' count, Java makes that many unit slots and one more for the chief, and its
+  death takes no unit. BAND_DEMATERIALIZED never counts the chief among the survivors, so for a boss
+  band the engine adds the living chief back into the first unit's survivors (MZB-295, amended at
+  review C).
+  **A robbed Frostmaw's raid** has no crystal to give. A stack whose units fight as their bare row
+  (the culture's `without_crystal` row, taken when the faction's crystal is gone) carries
+  MEMBER_BARE (flag 2); Java makes each body of the stack without its crystal, after it makes it
+  and before a den body's own state is copied over it, so a body handed off from its den keeps its
+  own. The flag is a bit of the stack, not a body id of its own, so that a body's identity never
+  depends on the crystal's state: the claim, the hand-back, the casualties and a member's death all
+  go by the body id (MZB-250 to MZB-299, amended at review C). The core knows only the generic
+  flag; the plugin registers the bare form of a body kind (`BodyKinds.registerBare`).
+  **The killer.** CHIEF_KILLED's and CAMP_DEATH's killer kind come from vanilla's kill credit
+  (`getKillCredit`: a player's hit or a pet's within 100 ticks, else the last mob that hurt it), not
+  from the damage source alone (MZB-261, corrected at review C). A real player's credit is
+  BY_PLAYER with its UUID. A machine (a NeoForge FakePlayer) that strikes the killing blow replaces
+  vanilla's `lastHurtByPlayer`, so its kill is BY_OTHER with no killer (a zero UUID in the record),
+  not the credit of a player whose hit came earlier. BY_OTHER and BY_NONE count as the player's loss
+  for a boss's camp (EQUILIBRIUM.md §2.2), so a machine's kill of a Frostmaw still bumps the
+  pressure.
   Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
@@ -1695,10 +1741,24 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   acknowledged, and journaled again at load. One reconcile can therefore have several CAMP_BODIES
   records (a holder's, journaled again, and held lines answered later), each with its lines'
   indexes: the engine books each (op, line) once.
-- **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5);
-  **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`), with that body's
-  slot and generation; **TRADED** a masked trade with the grove's minions; **HAVEN_CHEST** a grove
-  chest tribute can go into.
+  **The crystal in a census.** The engine reads a camp's crystal off the chief body's own BODY_CRYSTAL
+  bit, not off the record's flags (flag 2, crystal held, which Java still sets from the chief body
+  nearest the spot). It looks only at a body flagged BODY_CHIEF that its own books keep (a matched
+  Body or Left slot, or an adopted stray) and only when the record's flag 1 says a chief is present.
+  A chief-kind body that no slot keeps (the leftover of a Dead slot, such as a robbed Frostmaw that
+  died away) says nothing, so it cannot flip a new Frostmaw's crystal; with no kept chief body the
+  engine keeps the crystal its books have (MZB-269, amended at review C). FACTION_FOUND's census byte
+  (flag 2) is still the byte of the first chief body found, since discovery keeps no chief: a
+  residue (MZB-289).
+- **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5). The
+  plugin sends it with flags 0 when the steal takes the crystal (flag 1, crystal held, is for a body
+  that has it); it is latest-wins, so a crash can lose it, and the next CAMP_CENSUS corrects the
+  engine's crystal from the kept chief body's own BODY_CRYSTAL bit (MZB-269, MZB-298). The engine
+  ignores one for a faction it does not know or a culture with no camp bodies, and notes only a change
+  of the crystal. One that comes while the engine replays waits for the replay end, the latest for each
+  faction (docs/replay-gate.md §5.6, RP-100). **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`),
+  with that body's slot and generation; **TRADED** a masked trade with the grove's minions;
+  **HAVEN_CHEST** a grove chest tribute can go into.
 - **RAIL_PASS** is one Create train's pass through a camp's range, at the sampled point nearest the
   camp (MOWZIE.md §4.3); **TRAIN_PASSED** a train passing a lurking party's AMBUSH_SPOT (§4.4).
 
@@ -1709,7 +1769,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
 | 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
-| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
@@ -1860,7 +1920,7 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
 - **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud holds on Envoy to the old
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
-- **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
+- **Deferred kinds.** The engine halves of HAVEN_CHEST, TRADED and CHIEF_PAID
   (M9), RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
   not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
   (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module

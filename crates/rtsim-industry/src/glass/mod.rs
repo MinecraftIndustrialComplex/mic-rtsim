@@ -254,6 +254,7 @@ impl Glass {
                         comp.probes.clear();
                         // and the last session's count sample, whose sweep numbers it may collide with.
                         comp.counts = None;
+                        comp.counted_res.clear();
                         if let Some(rp) = dg.replay.as_mut() {
                             rp.renumber(c.end.compile);
                         }
@@ -826,6 +827,8 @@ impl Glass {
                 c.discard(at, tun);
                 // A new session's sweep numbers start over: the last session's sample is not theirs.
                 c.counts = None;
+                // and the last session's residue: a report before the next compile shows none.
+                c.counted_res.clear();
             }
             dg.asm = store::Assembler::default();
             dg.ticking.clear();

@@ -292,7 +292,8 @@ public final class IndustryGameTests {
     // ---- I3: the boundary stock sampler ---------------------------------------------------------
 
     /**
-     * A chest and a Create vault (two chunks, one district) and a postbox holding a package: a sweep
+     * A chest and a Create vault (two chunks, one district: two test markers face to face across the border join
+     * them, as no bare adjacency does since S6) and a postbox holding a package: a sweep
      * reports every boundary inventory, the package by its contents, ends with IND_SWEEP_END whose record
      * count matches, and is live. With an unloaded chunk in the district the next sweep is not live.
      */
@@ -307,6 +308,7 @@ public final class IndustryGameTests {
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         set(helper, postPos, block("create:white_postbox").defaultBlockState());
+        joinAcrossX(helper, bx, y + 2, z);
         chest(helper, chestPos).setItem(0, new ItemStack(Items.IRON_INGOT, 10));
         chest(helper, chestPos).setItem(1, new ItemStack(Items.GOLD_INGOT, 5));
         playerPlaced(helper, chestPos);
@@ -1164,7 +1166,7 @@ public final class IndustryGameTests {
                     check("district", d != null);
                     id[0] = d.id;
                 })
-                .thenWaitUntil(() -> check("Java worked out its load state", ind().district(id[0]).loadState() >= 0))
+                .thenWaitUntil(() -> check("Java worked out its load state", stillThere(id[0]).loadState() >= 0))
                 // Java journals the district and its load state in the tick it notices them, and the engine
                 // receives them only at a later publish (the native engine a step later still): the mark must
                 // come after the engine has everything journaled so far, or this district's own first records
@@ -1174,9 +1176,9 @@ public final class IndustryGameTests {
                         engine().maxObsSeq() >= through[0] && receivedThrough(through[0])))
                 .thenExecute(() -> {
                     mark[0] = lastReceived();
-                    stateAtMark[0] = ind().district(id[0]).loadState();
+                    District d = stillThere(id[0]);
+                    stateAtMark[0] = d.loadState();
                     ind().diagnostics().warn(id[0], "test", "a test warning");
-                    District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
                     for (var c : ind().diagnostics().debugLines(d))
                         sb.append(c.getString()).append(" / ");
@@ -1218,9 +1220,73 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     int sent = sentSince(mark[0], id[0]);
                     check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since;"
-                            + " load state " + stateAtMark[0] + " at the mark, " + ind().district(id[0]).loadState() + " now)", sent == 0);
+                            + " load state " + stateAtMark[0] + " at the mark, " + stillThere(id[0]).loadState() + " now)", sent == 0);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * {@code /rtsim district sections} without a report (SECTIONS.md §8.1, S7). The command needs permission 2, and
+     * a district with no report says why in one line and returns 0: on the scripted (stub) engine, which has no
+     * glass box, that is the stub note, and {@code info} carries no glass lines. A district on the native engine
+     * with a report is covered where sections exist, by the vault-between-mixers fixture in the replay harness
+     * ({@code VaultBetweenMixersFactory.sectionsCommand}, namespace {@code mic_rtsim_create_sec1fx}); this test
+     * checks nothing about a native district's lines, since a lone vault compiles to no sections.
+     */
+    // Its own batch: forget() forgets every district in the level, so a test sharing a batch would lose its
+    // district mid-run (it shared industry_10 once, and theDebugOutputShowsWhatJavaKnows's district went).
+    @GameTest(template = YARD, batch = "industry_26", timeoutTicks = 600)
+    public static void theSectionsCommandSaysSoWithoutAReport(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos vaultPos = new BlockPos(bx + 2, y, z);
+        set(helper, vaultPos, block("create:item_vault").defaultBlockState());
+        playerPlaced(helper, vaultPos);
+        long[] id = {0};
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, vaultPos);
+                    check("district", d != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    District d = ind().district(id[0]);
+                    var fetch = ind().diagnostics().glassReportOf(d);
+                    check("this test is for a district with no report (a lone vault compiles to no sections): " + fetch.note(),
+                            fetch.report() == null || fetch.report().sections().isEmpty());
+                    var said = IndustryKit.say(helper.getLevel(), vaultPos,
+                            "rtsim district sections");
+                    record("theSectionsCommandSaysSoWithoutAReport", "sections", said.lines().toString());
+                    check("the command printed one line (" + said.lines() + ")", said.lines().size() == 1);
+                    check("that line names the district", said.lines().get(0).startsWith("district " + id[0] + " '"));
+                    check("it returns 0", said.ran() == 0);
+                    if (fetch.stub()) {
+                        check("the stub engine is named", said.lines().get(0).contains("stub engine"));
+                        StringBuilder info = new StringBuilder();
+                        for (var c : ind().diagnostics().debugLines(d))
+                            info.append(c.getString()).append(" / ");
+                        check("the info output carries no glass sections line", !info.toString().contains("glass sections"));
+                    }
+                    boolean refused = false;
+                    try {
+                        helper.getLevel().getServer().getCommands().getDispatcher().execute("rtsim district sections", source(helper, vaultPos).withPermission(1));
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                        refused = true;
+                    }
+                    check("below permission 2 the command is refused", refused);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The district {@code id}, failing the test (not throwing out of the tick, which stops the whole server) when it
+     * is gone: another test's {@code forget()} forgets every district in the level.
+     */
+    private static District stillThere(long id) {
+        District d = ind().district(id);
+        check("district " + id + " is still there (another test's forget() forgets every district)", d != null);
+        return d;
     }
 
     /** True once the engine's received log holds a record at or past {@code seq} (it arrives in sequence order). */
@@ -1311,6 +1377,7 @@ public final class IndustryGameTests {
         BlockPos vaultPos = new BlockPos(bx + 2, y, z);
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
+        joinAcrossX(helper, bx, y + 2, z); // the chest's chunk and the vault's: one district by a join (J1)
         playerPlaced(helper, chestPos);
         playerPlaced(helper, vaultPos);
         Industry[] industry = {null};
@@ -1401,11 +1468,12 @@ public final class IndustryGameTests {
                     set(helper, p, vault);
                     blocks.add(p);
                 }
-        // within 15 blocks of every vault block, so the three never sit two chunks apart (which would be two districts)
         BlockPos single = new BlockPos(o.getX() + 14, y, o.getZ() + 14);
         BlockPos chestPos = new BlockPos(o.getX() + 16, y, o.getZ() + 14);
         set(helper, single, vault);
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        // The three are one district wherever the yard's chunk borders fall: stores side by side join no chunks (S6).
+        joinChunks(helper, new BlockPos(0, 1, 0), new BlockPos(33, 6, 33));
         net.minecraft.world.item.Item[] kinds = {Items.IRON_INGOT, Items.GOLD_INGOT, Items.COPPER_INGOT, Items.COBBLESTONE, Items.DIRT,
                 Items.OAK_LOG, Items.REDSTONE, Items.COAL, Items.DIAMOND, Items.EMERALD, Items.QUARTZ, Items.GRAVEL, Items.SAND,
                 Items.STONE, Items.ANDESITE, Items.GRANITE, Items.DIORITE, Items.LAPIS_LAZULI, Items.BONE, Items.STRING};

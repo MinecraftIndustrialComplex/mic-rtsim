@@ -30,10 +30,24 @@ use rtsim_ships::engine::Role;
 use rtsim_travel::edge::Medium;
 use rtsim_world::{Via, World};
 
-pub use industry::{DistrictMark, IndustrySource, Table};
+pub use industry::{DistrictMark, IndustrySource, NetMark, SectionMark, StoreMark, Table};
 
 /// Java's dictionary kind for names (rtsim-jni's `DICT_NAME`).
 pub const DICT_NAME: u32 = 0x11;
+
+/// The most sections a district draws (the glass box's `sections_max`, 64 by default; choice
+/// SC178).
+pub const SECTION_ROWS: u64 = 64;
+/// The most chain links a package store draws (choice SC178): a chain of `n` frogports links
+/// `n - 1`, and a store with more is drawn by its first links.
+pub const STORE_LINKS: u64 = 16;
+/// The most edges a shared network draws (choice SC178): the glass box couples at most
+/// `cluster_districts_max` (16) parts, one edge from the first to each of the others.
+pub const NET_EDGES: u64 = 16;
+/// Keys a unit holds so that a full unit stays under [`rtsim_parts::MAX_ROWS`] rows.
+const fn keys_per_unit(rows_per_key: u64) -> u64 {
+    rtsim_parts::MAX_ROWS as u64 / rows_per_key
+}
 
 /// Layer groups, in panel order.
 pub const GROUPS: [(&str, &str); 7] = [
@@ -649,6 +663,86 @@ pub fn specs() -> Vec<Spec> {
             false,
             trains,
             |s, per| industry_units(s, Table::Legs, per),
+        ),
+        s(
+            LayerDesc::new(
+                "industry.sections",
+                "industry",
+                "Sections",
+                "area",
+                "#2a8a82",
+            )
+            .describe(
+                "A district's working lines between stores (the glass box's sections), as boxes, \
+                 coloured by what the check has made of each; drawn at a block a pixel and closer",
+            )
+            .zoom(0.0, 1.0)
+            .priority(9)
+            .legend_st(&[
+                ("Learning", "#b7791f", Some("dash")),
+                ("Passed", "#2a8a82", None),
+                ("Failed its window", "#d1242f", Some("bad")),
+                ("Stale: edited since it was learned", "#d1242f", Some("bad")),
+                ("Frozen: its replay fell back", "#57606a", Some("dot")),
+                ("Replaying while the district is away", "#2e8b57", None),
+            ])
+            .fields(&["State", "Nodes", "Stores"]),
+            "industry",
+            keys_per_unit(SECTION_ROWS),
+            true,
+            sections,
+            |s, per| industry_units(s, Table::Sections, per),
+        ),
+        s(
+            LayerDesc::new(
+                "industry.stores",
+                "industry",
+                "Package stores",
+                "edge",
+                "#b7791f",
+            )
+            .describe(
+                "Packages in transit on a chain whose frogports sit in more than one district: an \
+                 edge between frogports that follow one another along the chain, wider with more \
+                 packages held",
+            )
+            // Over the track and the lines, under the stations.
+            .priority(83)
+            .line("chain")
+            .fields(&["Packages", "Frogports"]),
+            "industry",
+            keys_per_unit(STORE_LINKS),
+            true,
+            stores,
+            |s, per| industry_units(s, Table::Stores, per),
+        ),
+        s(
+            LayerDesc::new(
+                "industry.networks",
+                "industry",
+                "Shared networks",
+                "edge",
+                "#7c5cbf",
+            )
+            .describe(
+                "A Create kinetic network whose blocks lie in several districts: an edge from its \
+                 first part's source to each other part's, a ring where only one part is known",
+            )
+            .priority(81)
+            .legend_st(&[
+                ("Coupled: the parts solve as one network", "#7c5cbf", None),
+                (
+                    "Not coupled: a part missing or disagreeing",
+                    "#d1242f",
+                    Some("bad"),
+                ),
+            ])
+            .fields(&["Status", "Parts"]),
+            "industry",
+            keys_per_unit(NET_EDGES),
+            true,
+            networks,
+            |s, per| industry_units(s, Table::Networks, per),
         ),
     ]
 }
@@ -1364,6 +1458,124 @@ fn lines(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
     Some("no train ran between two known stations".into())
 }
 
+fn sections(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
+    let v = cx.industry?;
+    v.sections(sel.range(), &mut |m| {
+        if u64::from(m.index) >= SECTION_ROWS {
+            return;
+        }
+        let mark = Mark::rect(Some(format!("{}.{}", m.district, m.index)), m.block_box)
+            .with_ci(m.state as u16)
+            .with_st(industry::section_st(m.state))
+            .with_label(format!(
+                "Section {} of district {}: {}",
+                m.index,
+                m.district,
+                industry::section_state_words(m.state)
+            ));
+        out.push_with(
+            m.district,
+            m.dim,
+            &mark,
+            &[
+                (0, Value::Str(industry::section_state_words(m.state).into())),
+                (1, Value::I64(i64::from(m.nodes))),
+                (2, Value::I64(i64::from(m.stores))),
+            ],
+        );
+    });
+    Some(
+        v.glass_why()
+            .unwrap_or_else(|| "no compiled district has sections in this save".into()),
+    )
+}
+
+fn stores(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
+    let v = cx.industry?;
+    v.stores(sel.range(), &mut |s| {
+        // Wider with the packages held: 2 for an empty store, up to 7.
+        let w = (2.0 + 2.0 * (1.0 + s.packages as f64).log10()).min(7.0);
+        for &(i, j) in s.links.iter().take(STORE_LINKS as usize) {
+            let (Some(a), Some(b)) = (s.ports.get(usize::from(i)), s.ports.get(usize::from(j)))
+            else {
+                continue;
+            };
+            out.push_with(
+                s.id,
+                s.dim,
+                &Mark::Edge {
+                    id: Some(format!("{}:{i}-{j}", s.id)),
+                    a: [a.x, a.z],
+                    b: [b.x, b.z],
+                    w: Some(w),
+                    ci: None,
+                    c: None,
+                },
+                &[
+                    (0, Value::I64(s.packages as i64)),
+                    (1, Value::I64(s.ports.len() as i64)),
+                ],
+            );
+        }
+    });
+    Some(
+        v.stores_why()
+            .unwrap_or_else(|| "no package store in this save".into()),
+    )
+}
+
+fn networks(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
+    let v = cx.industry?;
+    v.networks(sel.range(), &mut |n| {
+        let ci = u16::from(!n.coupled);
+        let fields = [
+            (0, Value::Str(n.status.into())),
+            (1, Value::I64(n.parts.len() as i64)),
+        ];
+        let Some(first) = n.parts.first() else {
+            return;
+        };
+        if n.parts.len() == 1 {
+            out.push_with(
+                n.id,
+                n.dim,
+                &Mark::Point {
+                    id: format!("{}", n.id),
+                    x: first.x,
+                    z: first.z,
+                    ci: Some(ci),
+                    c: None,
+                    g: None,
+                    s: None,
+                    l: Some(format!("Network {}: {}", n.id, n.status)),
+                    ring: true,
+                },
+                &fields,
+            );
+            return;
+        }
+        for (k, p) in n.parts.iter().enumerate().skip(1).take(NET_EDGES as usize) {
+            out.push_with(
+                n.id,
+                n.dim,
+                &Mark::Edge {
+                    id: Some(format!("{}:{k}", n.id)),
+                    a: [first.x, first.z],
+                    b: [p.x, p.z],
+                    w: Some(3.0),
+                    ci: Some(ci),
+                    c: None,
+                },
+                &fields,
+            );
+        }
+    });
+    Some(
+        v.glass_why()
+            .unwrap_or_else(|| "no kinetic network spans two districts in this save".into()),
+    )
+}
+
 fn trains(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
     let v = cx.industry?;
     v.legs(sel.range(), &mut |id, l| {
@@ -1386,6 +1598,9 @@ fn trains(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtsim_industry::engine::LineEdge;
+    use rtsim_industry::obs::StationDecl;
+    use rtsim_industry::threat::Leg;
 
     /// Every layer's unit holds at most `MAX_ROWS` keys, ids are unique, and a layer bucketed as
     /// another build did covers its keys with the other build's units.
@@ -1408,6 +1623,238 @@ mod tests {
             assert_eq!(other.stay_put, s.stay_put);
             assert_eq!(other.keys(1), s.per_unit * 3..s.per_unit * 6);
             assert_eq!(s.with_per_unit(0).per_unit, 1);
+        }
+    }
+
+    /// An industry source that holds only slice S7's three tables.
+    struct Reach {
+        sections: Vec<SectionMark>,
+        stores: Vec<StoreMark>,
+        nets: Vec<NetMark>,
+    }
+
+    impl IndustrySource for Reach {
+        fn districts(&self, _: Range<u64>, _: &mut dyn FnMut(DistrictMark)) {}
+        fn stations(&self, _: Range<u64>, _: &mut dyn FnMut(&StationDecl)) {}
+        fn station(&self, _: u64) -> Option<&StationDecl> {
+            None
+        }
+        fn lines(&self, _: Range<u64>, _: &mut dyn FnMut((u64, u64), &LineEdge)) {}
+        fn legs(&self, _: Range<u64>, _: &mut dyn FnMut(u64, &Leg)) {}
+        fn sections(&self, ids: Range<u64>, f: &mut dyn FnMut(&SectionMark)) {
+            for s in self.sections.iter().filter(|s| ids.contains(&s.district)) {
+                f(s);
+            }
+        }
+        fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
+            for s in self.stores.iter().filter(|s| ids.contains(&s.id)) {
+                f(s);
+            }
+        }
+        fn networks(&self, ids: Range<u64>, f: &mut dyn FnMut(&NetMark)) {
+            for s in self.nets.iter().filter(|s| ids.contains(&s.id)) {
+                f(s);
+            }
+        }
+        fn next_key(&self, t: Table, from: u64) -> Option<u64> {
+            let keys: Vec<u64> = match t {
+                Table::Sections => self.sections.iter().map(|s| s.district).collect(),
+                Table::Stores => self.stores.iter().map(|s| s.id).collect(),
+                Table::Networks => self.nets.iter().map(|s| s.id).collect(),
+                _ => Vec::new(),
+            };
+            keys.into_iter().filter(|&k| k >= from).min()
+        }
+    }
+
+    fn section(district: u64, index: u32, state: u32) -> SectionMark {
+        SectionMark {
+            district,
+            dim: 0,
+            index,
+            state,
+            working: true,
+            nodes: 12,
+            stores: 3,
+            shared_stores: 1,
+            unit: Some(0),
+            block_box: [0.0, 0.0, 10.0, 10.0],
+        }
+    }
+
+    fn port(x: f64, district: u64) -> industry::StorePort {
+        industry::StorePort {
+            x,
+            z: 0.0,
+            district: Some(district),
+            star: false,
+            packages: 4,
+        }
+    }
+
+    fn layer<'a>(specs: &'a [Spec], id: &str) -> (usize, &'a Spec) {
+        specs
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.desc.id == id)
+            .unwrap_or_else(|| panic!("layer {id}"))
+    }
+
+    /// Slice S7's layers draw one box a section, an edge a linked pair of frogports and an edge
+    /// a part of a shared network; the sections only at a block a pixel and closer.
+    #[test]
+    fn the_reach_layers_draw_sections_stores_and_networks() {
+        let names: BTreeMap<(u32, u32), String> = BTreeMap::new();
+        let reach = Reach {
+            sections: vec![section(1, 0, 1), section(1, 1, 2), section(2, 0, 0)],
+            stores: vec![StoreMark {
+                id: 7,
+                dim: 0,
+                ports: vec![port(0.0, 1), port(100.0, 2), port(200.0, 3)],
+                links: vec![(0, 1), (1, 2), (0, 9)],
+                packages: 12,
+                residue_packages: 0,
+            }],
+            nets: vec![
+                NetMark {
+                    id: 0,
+                    dim: 0,
+                    status: "coupled",
+                    coupled: true,
+                    parts: (1..=3)
+                        .map(|d| industry::NetPart {
+                            district: d,
+                            x: d as f64 * 50.0,
+                            z: 0.0,
+                        })
+                        .collect(),
+                },
+                NetMark {
+                    id: 1,
+                    dim: 0,
+                    status: "not coupled",
+                    coupled: false,
+                    parts: vec![industry::NetPart {
+                        district: 4,
+                        x: 0.0,
+                        z: 0.0,
+                    }],
+                },
+            ],
+        };
+        let src = Src {
+            world: None,
+            dragons: None,
+            herds: None,
+            ships: None,
+            conflict: None,
+            industry: Some(&reach),
+            names: &names,
+            wnow: Tick(0),
+            offset: 0,
+        };
+        let specs = specs();
+        let rows = |id: &str| {
+            let (i, s) = layer(&specs, id);
+            let mut out = s.writer(i as u16);
+            s.build(&src, &Sel::All, &mut out);
+            out.rows()
+        };
+        assert_eq!(rows("industry.sections"), 3, "a box a section");
+        // Two links with both ends known; the third names a port the store does not have.
+        assert_eq!(rows("industry.stores"), 2, "an edge a linked pair");
+        // Three parts make two edges from the first; one part makes a ring.
+        assert_eq!(rows("industry.networks"), 3);
+        let (_, s) = layer(&specs, "industry.sections");
+        assert!(s.desc.max_bpp <= 1.0, "sections draw below a block a pixel");
+        // Each layer's units cover its keys.
+        let tables = [
+            ("industry.sections", vec![1, 2]),
+            ("industry.stores", vec![7]),
+            ("industry.networks", vec![0, 1]),
+        ];
+        for (id, keys) in tables {
+            let (_, s) = layer(&specs, id);
+            let units = s.units(&src);
+            let covered: Vec<u64> = keys
+                .iter()
+                .copied()
+                .filter(|&k| units.iter().any(|&u| s.keys(u).contains(&k)))
+                .collect();
+            assert_eq!(covered, keys, "{id}: its units cover its keys");
+        }
+    }
+
+    /// A full unit of each reach layer stays under `MAX_ROWS` rows, not only under that many keys:
+    /// the caps on a district's sections, a store's links and a network's edges hold it.
+    #[test]
+    fn a_full_unit_of_the_reach_layers_stays_under_max_rows() {
+        let names: BTreeMap<(u32, u32), String> = BTreeMap::new();
+        let specs = specs();
+        let per = |id: &str| layer(&specs, id).1.per_unit;
+        // Past the caps on every key: 80 sections a district, 40 frogports all linked in pairs,
+        // 30 parts a network.
+        let n_sec = per("industry.sections");
+        let n_sto = per("industry.stores");
+        let n_net = per("industry.networks");
+        let reach = Reach {
+            sections: (0..n_sec)
+                .flat_map(|d| (0..80).map(move |i| section(d, i, 1)))
+                .collect(),
+            stores: (0..n_sto)
+                .map(|id| StoreMark {
+                    id,
+                    dim: 0,
+                    ports: (0..40).map(|i| port(f64::from(i) * 10.0, 1)).collect(),
+                    links: (0..40u16)
+                        .flat_map(|i| (i + 1..40).map(move |j| (i, j)))
+                        .collect(),
+                    packages: 1,
+                    residue_packages: 0,
+                })
+                .collect(),
+            nets: (0..n_net)
+                .map(|id| NetMark {
+                    id,
+                    dim: 0,
+                    status: "coupled",
+                    coupled: true,
+                    parts: (0..30)
+                        .map(|d| industry::NetPart {
+                            district: d,
+                            x: d as f64,
+                            z: 0.0,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+        let src = Src {
+            world: None,
+            dragons: None,
+            herds: None,
+            ships: None,
+            conflict: None,
+            industry: Some(&reach),
+            names: &names,
+            wnow: Tick(0),
+            offset: 0,
+        };
+        for (id, per_key) in [
+            ("industry.sections", SECTION_ROWS),
+            ("industry.stores", STORE_LINKS),
+            ("industry.networks", NET_EDGES),
+        ] {
+            let (i, s) = layer(&specs, id);
+            let mut out = s.writer(i as u16);
+            s.build(&src, &Sel::All, &mut out);
+            let max = u64::from(rtsim_parts::MAX_ROWS);
+            assert_eq!(
+                out.rows() as u64,
+                s.per_unit * per_key,
+                "{id}: the caps bind"
+            );
+            assert!(out.rows() as u64 <= max, "{id}: {} rows a unit", out.rows());
         }
     }
 }

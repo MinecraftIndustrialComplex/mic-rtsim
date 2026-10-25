@@ -184,6 +184,121 @@ pub struct Report {
     pub goods: Vec<GoodReport>,
     /// The judging units, by index; empty with one unit or none (SECTIONS.md §3.4, choice SC74).
     pub units: Vec<UnitReport>,
+    /// The compile's sections, by index (SECTIONS.md §8.1, choice SC165). With one unit or none
+    /// their state is the district's own window and replay.
+    pub sections: Vec<SectionReport>,
+    /// The stores shared by sections, by store node (SECTIONS.md §4.2, §8.1).
+    pub shared: Vec<SharedReport>,
+}
+
+/// The state of a section, as `/rtsim district sections` names it (choice SC166).
+pub mod section_state {
+    /// No pass yet, or nothing to say: the window is still being taken.
+    pub const LEARNING: u32 = 0;
+    /// A window passed and nothing since changed it, but it does not replay now.
+    pub const PASSED: u32 = 1;
+    /// Its last concluded window failed.
+    pub const FAILED: u32 = 2;
+    /// An edit inside its box came after its pass.
+    pub const STALE: u32 = 3;
+    /// A fallback froze it in the current replay.
+    pub const FROZEN: u32 = 4;
+    /// The district is replaying in glass and this section is part of it.
+    pub const REPLAYING: u32 = 5;
+}
+
+/// One section in a [`Report`] (SECTIONS.md §8.1, choice SC165).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SectionReport {
+    /// Its judging unit; None with one unit or none (the district's window judges).
+    pub unit: Option<u32>,
+    /// Its judging group, named by the group's lowest section.
+    pub group: u32,
+    pub nodes: u32,
+    /// The inventories of the stores it touches, interior and shared: (inventory, shared with
+    /// another section); None for a store with no inventory (a tank the sampler does not read).
+    pub stores: Vec<(Option<u32>, bool)>,
+    pub domains: u32,
+    /// A working section (a machine, heater, boiler, sink or source), else a storage system.
+    pub working: bool,
+    /// Its node box, grown by one block (§3.3).
+    pub bbox: Option<(BlockPos, BlockPos)>,
+    /// Its lowest node position, which names it.
+    pub low: Option<BlockPos>,
+    pub fingerprint: u64,
+    /// [`section_state`].
+    pub state: u32,
+    pub passed: bool,
+    pub stale: bool,
+    pub may_replay: bool,
+    pub frozen: bool,
+    /// Its last concluded window's verdict ([`verdict`]), strikes in a row, windows completed and
+    /// the open window's ticks so far; of its unit, else of the district.
+    pub verdict: u32,
+    pub strikes: u32,
+    pub windows_completed: u32,
+    pub window_ticks: u64,
+    /// The failed good of the last window that missed its band by the most (choice SC167).
+    pub worst: Option<WorstGood>,
+}
+
+/// A failed good of a window, for [`SectionReport::worst`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorstGood {
+    pub good: u32,
+    pub measured: f64,
+    pub predicted: f64,
+    /// How far the measured slope lies beyond the good's band (an exact good's band is its
+    /// prediction), per tick, before the tolerance.
+    pub excess: f64,
+}
+
+/// One store shared by sections in a [`Report`] (SECTIONS.md §4.2, §8.1, choice SC168).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SharedReport {
+    /// Its node in the compile.
+    pub node: u32,
+    pub inventory: Option<u32>,
+    pub pos: Option<BlockPos>,
+    /// The sections that touch it, ascending.
+    pub sections: Vec<u32>,
+    /// Its moves are counted at its movers (it lies between units); else a unit holds it.
+    pub counted: bool,
+    /// The (mover, store) pairs Java counts at it.
+    pub pairs: u32,
+    /// The latest count sample covered every pair at it.
+    pub counted_now: bool,
+    /// The sweep of Java's latest count sample (-1 none).
+    pub sample_sweep: Option<u32>,
+    /// Its residue per good since it was first counted under the current counters: its stock less
+    /// the ports into it and every counted move there, as it changed. Goods with none are absent.
+    pub residue: Vec<(u32, i64)>,
+}
+
+/// A district's compile as a saved page shows it (SECTIONS.md §8.3, slice S7): the sections and the
+/// stores they share, as the live report builds them. A save holds no live count sample, so its
+/// shared stores read as not counted this sweep and have no residue. The viewer draws this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DistrictSections {
+    pub sections: Vec<SectionReport>,
+    pub shared: Vec<SharedReport>,
+    /// Its judging units (0 or 1: the district's own window judges).
+    pub units: u32,
+    /// The compile's number.
+    pub compile: u32,
+}
+
+impl DistrictSections {
+    /// The sections of `dg`'s compile; None before its first complete compile.
+    pub fn of(dg: &super::check::DistrictGlass) -> Option<DistrictSections> {
+        let c = dg.compiled.as_ref()?;
+        Some(DistrictSections {
+            sections: c.section_reports(dg),
+            shared: c.shared_reports(),
+            units: c.unit_state.len() as u32,
+            compile: c.graph.end.compile,
+        })
+    }
 }
 
 /// One judging unit in a [`Report`] (choice SC74).
@@ -270,6 +385,37 @@ pub const GOOD_STRIDE: usize = 16;
 pub const HEADER: usize = 42;
 /// Values per unit in [`Report::to_f64s`]'s tail.
 pub const UNIT_STRIDE: usize = 15;
+/// Values per section in [`Report::to_f64s`]'s sections part.
+pub const SECTION_STRIDE: usize = 27;
+/// Values per (section, store) entry of the sections part's store list.
+pub const SECTION_STORE_STRIDE: usize = 3;
+/// Values per shared store in [`Report::to_f64s`]'s shared-stores part.
+pub const SHARED_STRIDE: usize = 12;
+/// Values per (shared store, section) link of the shared-stores part.
+pub const SHARED_LINK_STRIDE: usize = 2;
+/// Values per (shared store, good) residue of the shared-stores part.
+pub const SHARED_RESIDUE_STRIDE: usize = 3;
+
+impl SectionReport {
+    /// The flag bits in slot 6 of a section.
+    pub const PASSED: u32 = 1;
+    pub const STALE: u32 = 2;
+    pub const MAY_REPLAY: u32 = 4;
+    pub const FROZEN: u32 = 8;
+    pub const WORKING: u32 = 16;
+    pub const BOX: u32 = 32;
+    pub const LOW: u32 = 64;
+
+    fn flags(&self) -> u32 {
+        (if self.passed { Self::PASSED } else { 0 })
+            | (if self.stale { Self::STALE } else { 0 })
+            | (if self.may_replay { Self::MAY_REPLAY } else { 0 })
+            | (if self.frozen { Self::FROZEN } else { 0 })
+            | (if self.working { Self::WORKING } else { 0 })
+            | (if self.bbox.is_some() { Self::BOX } else { 0 })
+            | (if self.low.is_some() { Self::LOW } else { 0 })
+    }
+}
 
 fn opt(x: Option<u64>) -> f64 {
     x.map_or(-1.0, |v| v as f64)
@@ -299,7 +445,25 @@ impl Report {
     /// - then the units' count, and per unit ([`UNIT_STRIDE`], choice SC74): 0 sections, 1 nodes,
     ///   2 has a box (0 or 1), 3 to 5 the box's low corner, 6 to 8 its high corner, 9 open window
     ///   ticks, 10 windows completed, 11 last verdict, 12 strikes, 13 flags ([`UnitReport`]'s bits:
-    ///   passed, stale, may replay, frozen, unbounded), 14 ready at (tick).
+    ///   passed, stale, may replay, frozen, unbounded), 14 ready at (tick);
+    /// - then the sections' count, and per section ([`SECTION_STRIDE`], choice SC165): 0 unit (-1
+    ///   none), 1 judging group, 2 nodes, 3 stores, 4 stores shared with another section, 5
+    ///   domains, 6 flags ([`SectionReport`]'s bits: passed, stale, may replay, frozen, working,
+    ///   has a box, has a low position), 7 state ([`section_state`]), 8 to 10 the box's low
+    ///   corner, 11 to 13 its high corner, 14 to 16 the lowest node position, 17 and 18 the
+    ///   fingerprint's high and low 32 bits, 19 last verdict, 20 strikes, 21 windows completed,
+    ///   22 open window ticks, 23 worst good (-1 none), 24 its measured slope, 25 its predicted,
+    ///   26 its excess beyond the band;
+    /// - then the store list: its count, and per entry ([`SECTION_STORE_STRIDE`]) 0 section,
+    ///   1 inventory (-1 none), 2 shared (0 or 1), the entries of one section in its store order;
+    /// - then the shared stores' count, and per store ([`SHARED_STRIDE`], choice SC168): 0 store
+    ///   node, 1 inventory (-1 none), 2 has a position, 3 to 5 the position, 6 sections, 7 counted
+    ///   between units (0 or 1), 8 pairs, 9 counted in the latest sweep (0 or 1), 10 that sweep (-1
+    ///   none), 11 goods with a residue;
+    /// - then the links' count and per link ([`SHARED_LINK_STRIDE`]) 0 store (index in the list),
+    ///   1 section;
+    /// - then the residues' count and per residue ([`SHARED_RESIDUE_STRIDE`]) 0 store (index in the
+    ///   list), 1 good, 2 amount.
     pub fn to_f64s(&self) -> Vec<f64> {
         let mut v = Vec::with_capacity(HEADER + GOOD_STRIDE * self.goods.len());
         v.extend_from_slice(&[
@@ -389,7 +553,90 @@ impl Report {
                 u.ready_at as f64,
             ]);
         }
+        self.put_sections(&mut v);
+        self.put_shared(&mut v);
         v
+    }
+
+    fn put_sections(&self, v: &mut Vec<f64>) {
+        v.push(self.sections.len() as f64);
+        for s in &self.sections {
+            let (lo, hi) = s.bbox.unwrap_or_default();
+            let low = s.low.unwrap_or_default();
+            let w = s.worst;
+            v.extend_from_slice(&[
+                s.unit.map_or(-1.0, f64::from),
+                f64::from(s.group),
+                f64::from(s.nodes),
+                s.stores.len() as f64,
+                s.stores.iter().filter(|x| x.1).count() as f64,
+                f64::from(s.domains),
+                f64::from(s.flags()),
+                f64::from(s.state),
+                f64::from(lo.x),
+                f64::from(lo.y),
+                f64::from(lo.z),
+                f64::from(hi.x),
+                f64::from(hi.y),
+                f64::from(hi.z),
+                f64::from(low.x),
+                f64::from(low.y),
+                f64::from(low.z),
+                (s.fingerprint >> 32) as f64,
+                (s.fingerprint & 0xFFFF_FFFF) as f64,
+                f64::from(s.verdict),
+                f64::from(s.strikes),
+                f64::from(s.windows_completed),
+                s.window_ticks as f64,
+                w.map_or(-1.0, |w| f64::from(w.good)),
+                w.map_or(0.0, |w| w.measured),
+                w.map_or(0.0, |w| w.predicted),
+                w.map_or(0.0, |w| w.excess),
+            ]);
+        }
+        v.push(self.sections.iter().map(|s| s.stores.len()).sum::<usize>() as f64);
+        for (i, s) in self.sections.iter().enumerate() {
+            for &(inv, shared) in &s.stores {
+                v.extend_from_slice(&[
+                    i as f64,
+                    inv.map_or(-1.0, f64::from),
+                    if shared { 1.0 } else { 0.0 },
+                ]);
+            }
+        }
+    }
+
+    fn put_shared(&self, v: &mut Vec<f64>) {
+        v.push(self.shared.len() as f64);
+        for h in &self.shared {
+            let p = h.pos.unwrap_or_default();
+            v.extend_from_slice(&[
+                h.node as f64,
+                h.inventory.map_or(-1.0, f64::from),
+                if h.pos.is_some() { 1.0 } else { 0.0 },
+                f64::from(p.x),
+                f64::from(p.y),
+                f64::from(p.z),
+                h.sections.len() as f64,
+                if h.counted { 1.0 } else { 0.0 },
+                f64::from(h.pairs),
+                if h.counted_now { 1.0 } else { 0.0 },
+                h.sample_sweep.map_or(-1.0, f64::from),
+                h.residue.len() as f64,
+            ]);
+        }
+        v.push(self.shared.iter().map(|h| h.sections.len()).sum::<usize>() as f64);
+        for (i, h) in self.shared.iter().enumerate() {
+            for &s in &h.sections {
+                v.extend_from_slice(&[i as f64, f64::from(s)]);
+            }
+        }
+        v.push(self.shared.iter().map(|h| h.residue.len()).sum::<usize>() as f64);
+        for (i, h) in self.shared.iter().enumerate() {
+            for &(g, x) in &h.residue {
+                v.extend_from_slice(&[i as f64, f64::from(g), x as f64]);
+            }
+        }
     }
 }
 
@@ -462,10 +709,76 @@ mod tests {
                 unbounded: true,
                 ready_at: 700,
             }],
+            sections: vec![
+                SectionReport {
+                    unit: Some(0),
+                    group: 0,
+                    nodes: 9,
+                    stores: vec![(Some(4), true), (None, false)],
+                    domains: 1,
+                    working: true,
+                    bbox: Some((
+                        BlockPos { x: -3, y: 60, z: 4 },
+                        BlockPos { x: 5, y: 64, z: 9 },
+                    )),
+                    low: Some(BlockPos { x: -2, y: 61, z: 5 }),
+                    fingerprint: 0xDEAD_BEEF_0123_4567,
+                    state: section_state::REPLAYING,
+                    passed: true,
+                    stale: false,
+                    may_replay: true,
+                    frozen: false,
+                    verdict: verdict::PASS,
+                    strikes: 0,
+                    windows_completed: 1,
+                    window_ticks: 300,
+                    worst: None,
+                },
+                SectionReport {
+                    unit: None,
+                    group: 0,
+                    nodes: 2,
+                    stores: vec![(Some(4), true)],
+                    state: section_state::FAILED,
+                    verdict: verdict::FAIL,
+                    strikes: 2,
+                    worst: Some(WorstGood {
+                        good: 7,
+                        measured: 0.05,
+                        predicted: 0.1,
+                        excess: 0.05,
+                    }),
+                    ..SectionReport::default()
+                },
+            ],
+            shared: vec![SharedReport {
+                node: 12,
+                inventory: Some(4),
+                pos: Some(BlockPos { x: 1, y: 62, z: 3 }),
+                sections: vec![0, 1],
+                counted: true,
+                pairs: 2,
+                counted_now: true,
+                sample_sweep: Some(41),
+                residue: vec![(7, -68)],
+            }],
             ..Report::default()
         };
         let v = r.to_f64s();
-        assert_eq!(v.len(), HEADER + GOOD_STRIDE + 1 + UNIT_STRIDE);
+        let tail = HEADER + GOOD_STRIDE + 1 + UNIT_STRIDE;
+        assert_eq!(
+            v.len(),
+            tail + 1
+                + 2 * SECTION_STRIDE
+                + 1
+                + 3 * SECTION_STORE_STRIDE
+                + 1
+                + SHARED_STRIDE
+                + 1
+                + 2 * SHARED_LINK_STRIDE
+                + 1
+                + SHARED_RESIDUE_STRIDE
+        );
         assert_eq!(v[0], 3.0);
         assert_eq!(v[2], 1.0);
         assert_eq!(v[12], 1.0);
@@ -488,11 +801,58 @@ mod tests {
         let t = HEADER + GOOD_STRIDE;
         assert_eq!(v[t], 1.0);
         assert_eq!(
-            &v[t + 1..],
+            &v[t + 1..t + 1 + UNIT_STRIDE],
             &[
                 2.0, 9.0, 1.0, -3.0, 60.0, 4.0, 5.0, 64.0, 9.0, 300.0, 1.0, 1.0, 0.0, 21.0, 700.0
             ]
         );
-        assert_eq!(Report::default().to_f64s().len(), HEADER + 1);
+        assert_eq!(Report::default().to_f64s().len(), HEADER + 1 + 2 + 3);
+        // The sections part: a count, 27 values per section, then the store list.
+        assert_eq!(v[tail], 2.0);
+        let a = &v[tail + 1..tail + 1 + SECTION_STRIDE];
+        assert_eq!(
+            &a[..8],
+            &[
+                0.0,
+                0.0,
+                9.0,
+                2.0,
+                1.0,
+                1.0,
+                1.0 + 16.0 + 32.0 + 64.0 + 4.0,
+                5.0
+            ]
+        );
+        assert_eq!(
+            &a[8..17],
+            &[-3.0, 60.0, 4.0, 5.0, 64.0, 9.0, -2.0, 61.0, 5.0]
+        );
+        assert_eq!(a[17], f64::from(0xDEAD_BEEF_u32));
+        assert_eq!(a[18], f64::from(0x0123_4567_u32));
+        assert_eq!(&a[19..23], &[1.0, 0.0, 1.0, 300.0]);
+        assert_eq!(&a[23..27], &[-1.0, 0.0, 0.0, 0.0]);
+        let b = &v[tail + 1 + SECTION_STRIDE..tail + 1 + 2 * SECTION_STRIDE];
+        assert_eq!(&b[..8], &[-1.0, 0.0, 2.0, 1.0, 1.0, 0.0, 0.0, 2.0]);
+        assert_eq!(&b[19..27], &[2.0, 2.0, 0.0, 0.0, 7.0, 0.05, 0.1, 0.05]);
+        let l = tail + 1 + 2 * SECTION_STRIDE;
+        assert_eq!(v[l], 3.0);
+        assert_eq!(
+            &v[l + 1..l + 1 + 3 * SECTION_STORE_STRIDE],
+            &[0.0, 4.0, 1.0, 0.0, -1.0, 0.0, 1.0, 4.0, 1.0]
+        );
+        // The shared part: stores, links, residues.
+        let h = l + 1 + 3 * SECTION_STORE_STRIDE;
+        assert_eq!(v[h], 1.0);
+        assert_eq!(
+            &v[h + 1..h + 1 + SHARED_STRIDE],
+            &[
+                12.0, 4.0, 1.0, 1.0, 62.0, 3.0, 2.0, 1.0, 2.0, 1.0, 41.0, 1.0
+            ]
+        );
+        let k = h + 1 + SHARED_STRIDE;
+        assert_eq!(v[k], 2.0);
+        assert_eq!(&v[k + 1..k + 5], &[0.0, 0.0, 0.0, 1.0]);
+        let q = k + 1 + 2 * SHARED_LINK_STRIDE;
+        assert_eq!(&v[q..], &[1.0, 0.0, 7.0, -68.0]);
     }
 }

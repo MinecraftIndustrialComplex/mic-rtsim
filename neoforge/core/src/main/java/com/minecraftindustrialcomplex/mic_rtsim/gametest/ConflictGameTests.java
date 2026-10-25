@@ -457,6 +457,14 @@ public final class ConflictGameTests {
                     ScriptedEngine.Received byPlayer = first(cs, ConflictRecords.BY_PLAYER), byNone = first(cs, ConflictRecords.BY_NONE),
                             byMob = first(cs, ConflictRecords.BY_MOB), byOther = first(cs, ConflictRecords.BY_OTHER);
                     check("one of each killer kind", byPlayer != null && byNone != null && byMob != null && byOther != null);
+                    // Each casualty carries its own Java op id (MZB-589), so the engine counts a copy of one once.
+                    java.util.Set<Long> casualtyOps = new java.util.HashSet<>();
+                    for (ScriptedEngine.Received dead : cs) {
+                        long op = dead.view().getLong(ConflictRecords.Casualties.OP_ID);
+                        check("a casualty carries a Java op id", op != 0 && op < 0);
+                        casualtyOps.add(op);
+                    }
+                    check("the casualties' op ids differ (" + casualtyOps.size() + ")", casualtyOps.size() == cs.size());
                     check("a player's kill names the player", player[0].getUUID().equals(ConflictKit.uuidAt(byPlayer, ConflictRecords.Casualties.KILLER_MOST)));
                     check("of an archer", byPlayer.view().getInt(ConflictRecords.Casualties.BODY) == archer
                             && byPlayer.view().getInt(ConflictRecords.Casualties.COUNT) == 1);

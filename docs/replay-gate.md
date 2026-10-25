@@ -400,6 +400,87 @@ sides' stats kept) and the `Conflict` fields and `Conflict::new` (both sides' ke
      epoch (RP-65).
    None is left unwritten.
 
+**The M6 merge** (feat/mowzie-m6 at fd8eff01 merging main f66cb736, this slice; RP-100, RP-101).
+Six files conflicted:
+
+1. **engine.rs `spawn_wave`:** main's body (the §6 early return, `wave_fill(p, 0)` and `place`,
+   BAND_FIGHT in the flags) with M6's two stack fields: a boss's chief stack is one short of its
+   count (`renewal.boss`), and a stack made without its crystal carries MEMBER_BARE (review C).
+2. **engine.rs `casualties`:** main's body (the party by agent, the stack by epoch, RP-27; a copy
+   from no stack, RP-9, with RP-25's cap; `fill_deaths`) with M6's MZB-589 dedupe first: a record
+   whose op the party has counted (`Party::casualty_ops`) is dropped. The op is kept only when the
+   record took a unit (git's merge).
+3. **synth.rs:** the emulated BAND_MATERIALIZED carries M6's `spawned` (the chief counted) and
+   main's `flags`.
+4. **tests/mowzie_records.rs:** both sides' tests kept. Main's six BAND_CASUALTIES literals take
+   `op: next_op()`, each its own: the record is 72 bytes on M6, its op at 64 (MZB-589). M6's
+   `a_casualty_copy_after_a_save_and_reopen_counts_once` expected the restart to fold the embodied
+   band into a recalled stack, as M6's `session_start` did; here the bodies stay embodied at their
+   epoch for the replay (§5.1, RP-5), so its restart leg asserts that instead, and the replay's copy
+   still counts nothing.
+5. **rtsim-jni tests/protocol.rs:** main's `grove_with(name, strays, pages_first)` (RP-69) over
+   M6's `camp_of(name, structure, body, strays, census)`, which gains `pages_first`; M6's `den`
+   passes false. Slice C's `fillers` take M6's `next_casualty_op()`, and two comments there and in
+   M6's filler loop now say 72 bytes. At 72 bytes 4,000 fillers no longer fit one 256 KiB
+   hand-over, so the two replays that count one hand-over for the whole tail (RP-42's
+   `a_close_while_replaying_keeps_the_pages` and the held arrival across a second session, both
+   cases) take `ONE_HAND_OVER`, 1 MiB.
+6. **docs/boundary.md** (the 0x8803 row) and **ConflictRecords.java:** main's flag 8 (FLAG_FIGHT)
+   and M6's stack flag 2 (STACK_BARE), both.
+
+What the merge checked:
+
+1. **The gate:** M6 adds no `Cmd` kind and no push site. The ten pushes in engine.rs and
+   camp.rs's `send_lines` are main's, so every command of M6's goes through `push`. M6's new routes
+   all reach them:
+   - `camp_arrival` (a Frostmaw's wait ran out) orders its SPAWN only at a camp that is in;
+   - the census's crystal mend asks the lines again from inside a live `camp_census`;
+   - `camp_refill` needs `is_in`;
+   - a stray reaches the engine only as a census line;
+   - the chief's fall, at the camp and away (`chief_killed_by`, `chief_killed_at_camp`), sends
+     Recall through `go_home` and `end_fight`, which drop while replaying, and replans through
+     `plan_feud`, whose embodies return early (§6).
+   Reconcile's "never" holds by construction, as at the M5 merge: every camp is out from
+   `begin_replay` to `replay_done`, and only a live census, which comes after the replay end, brings
+   one in. §4.4 lists the sites.
+2. **The camp hold:** Java's `Camps.sessionStarted` clears every camp's `recount`, `strayBodies`,
+   `holdSince` and held lines, and looks at each again. The census it then takes is live (its
+   sequence is at or past `session_first`, §2.2), so the engine reads it after the replay end. M6's
+   recount hold (`c.recount` holds every SPAWN, `strayHold` up to HOLD_MAX with a rescan every 100
+   ticks) holds lines of that live epoch only. The replayed CAMP_* records keep §5's rules:
+   - CAMP_CENSUS only marks its camp out (RP-64, RP-65): its bodies, M6's strays and BODY_CRYSTAL
+     among them, are dropped;
+   - CAMP_BODIES is booked by state (MZB-177, RP-65);
+   - CAMP_OUT is honoured;
+   - CAMP_DEATH is honoured by its slot and generation. With DEATH_CHIEF it runs the chief's fall,
+     whose pushes are dropped (item 1) and whose pressure bump is state only;
+   - an arrival that falls due meanwhile adds its owed slot, which the next live census fills.
+3. **The floors** (RP-57): M6 changes BAND_CASUALTIES, which now carries an op. `ingest` and
+   `ingest_copy` fold the epoch before `casualties` runs its dedupe, so a casualty the party has
+   counted already still raises the floor. The sweep has the case: with the dedupe ahead of the
+   fold, its Pages and Fresh paths stay at epoch 0. CHIEF_KILLED goes through M6's `chief_killed_by`
+   with the record's epoch, after the fold. CHIEF_STATE, now read, CAMP_CENSUS's BODY_CRYSTAL and
+   CAMP_DEATH's DEATH_CHIEF name no party epoch. RP-57's table says so.
+4. **CHIEF_STATE** (RP-100): latest-wins, never journaled, given to the engine at once (rtsim-jni
+   `observe_state`), so it is newer than every replayed record. While the outbox replays it now
+   waits for `replay_done`, the latest for each faction, as RP-68's world save does. Before, a
+   replayed FACTION_FOUND's census byte undid it, or it found its faction unknown and was dropped.
+   It is held while the host replays too (`st.replaying`), since the engine's own replay begins only once
+   the conflict is in the world, after a replayed FACTION_FOUND.
+5. **RP-66:** M6 adds no `Order::ConflictCommand` test in Rust. Its GameTests order reconciles
+   and materializes through `ConflictKit` in the middle of a session, after no restart. One ordered
+   while a server's start replays waits for the replay end.
+6. **Formats:** M6's RTC7 and META 6 are kept, with no migration (nothing is released). The
+   rtsim-view fixtures hold conflict meta page 5, and the five tests that read them fail until they
+   are regenerated: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
+   `the_create_gametest_save_draws_every_layer_and_writes_nothing`,
+   `every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`,
+   and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` (the conflict's pages
+   dropped). The worktree's run-gametest worlds are deleted.
+7. **Residual (RP-101):** M6's `chief_unit_lost` picks its stack by M6's own rule, not RP-27's,
+   and takes from a stack for a copy too. It cannot matter today, because a boss band is its one
+   unit.
+
 ## 3. The flag
 
 ### 3.1 Where it is set and cleared (rtsim-jni)
@@ -645,6 +726,13 @@ Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
 table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
 March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
+M6 (the M6 merge, §2.7) adds no `Cmd` kind and no push site either. Its routes reach main's:
+- `camp_arrival`, `camp_refill` and the census's crystal mend order lines through `send_lines`,
+  which orders only a camp that is in;
+- the chief's fall (`chief_killed_by`, `chief_killed_at_camp`) sends Recall through `go_home` and
+  `end_fight`, and replans through `plan_feud`.
+So the Reconcile row's "never" covers M6's SPAWN lines (an arrival, a refill, a recount), and
+the Recall row covers the chief's.
 
 One route goes around the gate, and it is a test's: rtsim-jni engine/conflict.rs `order_command`
 (`Order::ConflictCommand`, TEST mode only) puts a command of any kind straight into the host's
@@ -916,7 +1004,8 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   every recalled stack dropped, `replaying` false; every player's presence span ended
   (`presence.left`, P14's counter: the replay's gap is no time spent); the epoch floors folded
   (§5.3) and the fill's death counts (§5.2) cleared; the held set cleared, its parties' polls left
-  to run (§6.1); then the kept notices go (`resend_notices`).
+  to run (§6.1); the CHIEF_STATE records held meanwhile applied, the latest for each faction
+  (RP-100); then the kept notices go (`resend_notices`).
 - **Dragons:** every embodied dragon resumed where it was last seen (`resume(.., left: true)`),
   `by_entity` cleared, every player's interest leg cancelled, the epoch floors folded into the
   dragons' epochs (§5.3); the floor of an agent nothing has allocated stays, for a dragon born there
