@@ -1667,6 +1667,146 @@ fn a_train_raid_decided_again_after_a_crash_is_applied_once() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// A train raid against Java's two files saved apart (docs/choices-mowzie-build.md RP-196, RP-199),
+/// through the host: the raider's and industry's pages stop before the raid, the raid is applied,
+/// and the restart reads one of Java's files from after the raid and the other from before it.
+/// The fake world saves its applied op set with its trains, so `mc.saved()` is the tracks file
+/// with the ring (RP-190: the goods and the ring are one file) and `world_save()` the journal's.
+/// J3 keeps the trains and loses the journal: the raid decided again is answered DUPLICATE by the
+/// ring, and since the journal lost the live answers, `Replay` hears it as a new answer, so it
+/// reaches `command_result`, which must drop the loot exchange. J4 keeps the journal and loses the
+/// trains: the ring came back without the op, so the raid is applied again to the goods the
+/// restart restored, and its result takes the exchange.
+fn a_train_raid_across_javas_two_files(case: &str) {
+    use rtsim_industry::cmd::CarriageReason;
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir(&format!("ind-twofiles-{case}"));
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let train = TrainId(1);
+    let laden = |j: &Java| {
+        industry(&j.e, |ie| {
+            ie.legs()
+                .leg_of(train, ie.now())
+                .and_then(|id| ie.legs().get(id))
+                .is_some_and(|l| l.cargo.iter().any(|c| !c.1.is_empty()))
+        })
+    };
+    let loot_ops = |j: &Java| -> Vec<u64> {
+        j.ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) if d.reason == CarriageReason::Loot => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // The pages stop while the train is under way with cargo, before the raid.
+    loop {
+        while !laden(&j) {
+            j.mc_tick();
+            assert!(j.mc().t < day(8.0), "train 1 under way with cargo");
+        }
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(&mut j, through);
+        if laden(&j) {
+            break;
+        }
+    }
+    let through = j.e.durable_obs_seq();
+    let jsave_before = j.world_save();
+    let msave_before = j.mc().saved();
+    let raid = Threat {
+        id: 0xA11,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::Train(train),
+        loads: None,
+        at: j.mc().t,
+    };
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 100, "the raid's loot is written");
+    }
+    let live = loot_ops(&j)[0];
+    for _ in 0..5 {
+        j.mc_tick();
+    }
+    assert!(j.mc().applied_ops().contains(&OpId(live)));
+    let stolen = industry(&j.e, |ie| ie.books.stolen.total());
+    assert!(stolen > 0);
+    let jsave_after = j.world_save();
+    let msave_after = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let (jsave, msave) = match case {
+        // J3: the trains (with their ring) from after the raid, the journal from before it.
+        "j3" => (jsave_before, msave_after),
+        // J4: the journal from after the raid, the trains from before it (the chunks from after:
+        // the chunk barrier holds the journal, never the chunks).
+        "j4" => (jsave_after, msave_before.with_chunks_of(&msave_after)),
+        _ => unreachable!(),
+    };
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    j.mc_tick();
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 400, "the raid is decided again");
+    }
+    assert_eq!(
+        loot_ops(&j),
+        vec![live],
+        "the raid decided again carries the live op"
+    );
+    iron_run_to_end(&mut j, &cfg);
+    let pending = industry(&j.e, |ie| ie.exchange_pending(OpId(live)));
+    let stolen_after = industry(&j.e, |ie| ie.books.stolen.total());
+    eprintln!(
+        "{case}: stolen live {stolen}, after {stolen_after}, loot exchange pending {pending}, outbox {}",
+        j.e.with_industry(|_, l| l.outbox)
+    );
+    assert!(
+        !pending,
+        "{case}: the loot exchange of op {live:#x} is still pending"
+    );
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// J3 through the host: the ring's DUPLICATE reaches `command_result` (the journal lost the live
+/// APPLIED), which drops the loot exchange; without that drop the exchange stays pending.
+#[test]
+fn a_crash_that_kept_the_trains_and_not_the_journal_takes_a_train_raid_once() {
+    a_train_raid_across_javas_two_files("j3");
+}
+
+/// J4 through the host: the raid is applied again to the restored goods and the books close.
+#[test]
+fn a_crash_that_kept_the_journal_and_not_the_trains_takes_a_train_raid_once() {
+    a_train_raid_across_javas_two_files("j4");
+}
+
 /// A station exchange the engine derived from a simulated arrival, applied by Java, then lost with
 /// the journal (J3: the trains and their ring saved after the application, the journal before it,
 /// with the arrival and without the application's IND_CARRIAGE_RESULT; the pages older than the
