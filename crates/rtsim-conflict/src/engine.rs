@@ -3740,7 +3740,7 @@ impl Conflict {
                         let epoch = self.parties[p].epoch;
                         self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
                     }
-                    self.resolve(w, infra, p, at);
+                    self.resolve(w, infra, p, self.hold_ending.unwrap_or(arrival), at);
                     // A siege's next round runs from its arrival, as in the session that went on
                     // (RP-48).
                     let alive = self.parties[p].alive();
@@ -4057,7 +4057,7 @@ impl Conflict {
                 self.start_fight(w, p, player, at);
                 return;
             }
-            self.resolve(w, infra, p, at);
+            self.resolve(w, infra, p, self.hold_ending.unwrap_or(round), at);
             if self.parties[p].alive() > 0 && round < self.parties[p].bored_at {
                 let next = round + days_to_ticks(self.culture(f).def.siege_interval_days);
                 self.wait(w, p, next, at);
@@ -4099,19 +4099,23 @@ impl Conflict {
     }
 
     /// An unwatched raid, resolved abstractly: through the industry threat interface for a
-    /// district (C16 to C18), through the world's markets for a village or a haven.
+    /// district (C16 to C18), through the world's markets for a village or a haven. `decided` is
+    /// the tick the decision was due, the arrival's or the siege round's (`hold_ending` while a
+    /// held decision ends): the same as `at` on a live arrival, earlier when a poll after the
+    /// replay end makes it. The hunt it owes hashes it (RP-136).
     fn resolve(
         &mut self,
         w: &mut World,
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
+        decided: Tick,
         at: Tick,
     ) {
         let f = self.parties[p].faction;
         let target = self.parties[p].target;
         let before = self.parties[p].alive();
         let (stolen, blocks) = match target {
-            Target::District(d, _) => self.raid_district(w, infra, p, d, at),
+            Target::District(d, _) => self.raid_district(w, infra, p, d, decided, at),
             Target::Node(i) => (self.raid_node(w, p, i, at), 0),
             Target::Pos(pos) => {
                 // Nothing of the player's here that the sim knows: look for a district near it.
@@ -4124,7 +4128,7 @@ impl Conflict {
                 match sites.iter().find(|s| !s.watched) {
                     Some(s) => {
                         self.parties[p].target = Target::District(s.id, s.pos);
-                        self.raid_district(w, infra, p, s.id, at)
+                        self.raid_district(w, infra, p, s.id, decided, at)
                     }
                     None => {
                         self.note(at, Some(f), "raid", "finds nothing to raid".into());
@@ -4198,6 +4202,7 @@ impl Conflict {
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
         d: DistrictId,
+        decided: Tick,
         at: Tick,
     ) -> (i64, u32) {
         let f = self.parties[p].faction;
@@ -4271,7 +4276,7 @@ impl Conflict {
         if hunts > 0
             && let Target::District(_, pos) = self.parties[p].target
         {
-            self.owe_hunt(f, d, pos, hunts, at);
+            self.owe_hunt_decided(f, d, pos, hunts, decided, at);
         }
         (stolen_items, blocks)
     }
@@ -4300,10 +4305,27 @@ impl Conflict {
     /// (`min(cap, count)`): if the plugin applied the replaced hunt before it read this one, it
     /// kills `rest` and not the sum (review P3-8 and the re-check, OWED_HUNT's `replaced` and
     /// `rest`). Nothing is owed on Peaceful, nor by a culture with no cap. The op is hashed from
-    /// the district, the decision's tick and the op in flight: `at` live, the hold's tick when a
-    /// held decision ends while replaying (RP-133), so a live raid's op is M9's.
-    /// Public so that a test can stand in for a raid on a district (`with_conflict_mut`).
+    /// the district, the decision's tick and the op in flight: the arrival's or round's tick
+    /// (`at` live), the hold's when a held decision ends while replaying (RP-133), and not the
+    /// tick of the poll that made a decision after the replay end (RP-136), so a live raid's op
+    /// is M9's and every session that owes the hunt owes it under one op.
+    /// Public so that a test can stand in for a raid on a district (`with_conflict_mut`): its
+    /// decision is `at`, or the hold's tick while one ends.
     pub fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
+        let decided = self.hold_ending.unwrap_or(at);
+        self.owe_hunt_decided(f, d, pos, count, decided, at);
+    }
+
+    /// [`owe_hunt`](Self::owe_hunt) for a decision due at `decided`, made at `at`.
+    fn owe_hunt_decided(
+        &mut self,
+        f: u32,
+        d: DistrictId,
+        pos: Pos,
+        count: u32,
+        decided: Tick,
+        at: Tick,
+    ) {
         let cap = self.culture(f).def.hunt_cap;
         if cap == 0 || self.peaceful {
             return;
@@ -4315,11 +4337,11 @@ impl Conflict {
             .iter()
             .find(|h| h.district == d)
             .map_or(0, |h| h.op);
-        // The decision's tick: `at`, or a held decision's own (RP-133). The replay resolves a
-        // held raid at its slack or before a record, later than the session that went on did
-        // at the hold's tick; hashed from that tick, the hunt is owed under the op that session
-        // sent, which its replayed HUNT_APPLIED names.
-        let decided = self.hold_ending.unwrap_or(at);
+        // The decision's tick, not the poll's (RP-133, RP-136). The replay resolves a held raid
+        // at its slack or before a record, and a poll after the replay end decides one later
+        // than the session that went on did at the arrival; hashed from the arrival, the hunt
+        // is owed under the op that session sent, which its replayed HUNT_APPLIED names, in
+        // every session that owes it.
         let slot = fnv1a64(
             &[
                 d.0.to_le_bytes(),
