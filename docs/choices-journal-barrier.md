@@ -100,3 +100,134 @@ no longer grows with the backlog.
 4. **The fsync of noted region files when DSYNC is off (JB3).** It only matters for a power cut or an OS
    crash, not a JVM crash. Options: (a) keep it (recommended: one to four files per autosave, on an IO
    thread); (b) skip it and accept that a power cut can leave the journal ahead of a chunk under C2ME.
+
+## RP-285: an industry answer heard with the module off (slice A, SEC-1's option A)
+
+Written for main, ahead of slices T and U-a; the same record on test/engine-ack-never-resends speaks
+of U-a's op rings. It amends U10's industry rule (IR15 in docs/choices-indrework.md, and the switch
+bullet of docs/industry-boundary.md, which still say an answer heard while off is ignored; their
+amendments come with U-a, as does docs/replay-gate.md 9.7).
+
+- *Chosen.* With `Module.INDUSTRY` off, the native link still hears every record that answers a command
+  the engine sent: a COMMAND_RESULT for an industry op, an IND_CARRIAGE_RESULT, an IND_RECONCILE_RESULT,
+  and an IND_CHAIN_PACKAGE `CHAIN_IN` that carries a nonzero engine op (the write it answers, SC113).
+  Every other industry record is still ignored (U10).
+  - An answer takes its command at once (`industry::keep_answer`): out of the outbox
+    (`Link::complete`), out of the queue that the switch or a session start with the module off moved it
+    back to (`set_enabled`, `write_resends`), or out of the engine's commands not drained yet
+    (`Link::unqueue`, through rtsim-industry's new `Engine::take_out`).
+  - Its book effect waits. The whole record, with its own game time, is kept in the link page
+    (`Link::answers`; `LINK_VERSION` 2) and booked at that game time, in the order Java journaled it,
+    before the engine's own session start: at the switch on (`set_enabled`), and, for answers an earlier
+    session kept and saved while off, at a session start with the module on, ahead of the replay
+    (`session_start`; both through `book_kept_answers`). An APPLIED books nothing beyond the taking and
+    is not kept.
+  - A REASSERT copy of a chunk's carried answer (`Industry.commandResultInChunk`, the chunk's
+    `mic_rtsim:pending` record, journaled again by `RtsimSession.reassert` at the chunk's load) takes
+    the same path, and so does an answer heard again (`answered_again`): a DUPLICATE is kept, and the
+    switch books it as `command_result` does with the module on. On main that only takes the command;
+    slice T's RP-199 adds the drop of a station exchange refused DUPLICATE, and with T this path drops it
+    at the switch.
+  - The engine's own session start never runs with the module off. `simulate` called `begin_session`
+    ahead of its switch gate, so a restart with the module off ran the session start at the restart's
+    game time and moved the frozen clock (72,000 to 72,502 in the clock case). `begin_session` now
+    returns while off: a restart while off no longer starts the engine's session until the switch on,
+    which sets its own game time.
+  - `set_enabled` still sends the whole outbox again under new sequences once on: what is left there has
+    no answer from Java.
+- *Why.* Java trims its journal at the engine's acknowledgement whatever the switch (`Journal.trim`),
+  and with it the journal's op index that refuses an op Java applied (`Journal.commandOpApplied`,
+  `forgetOp`); a chunk that carries an answer drops it at the acknowledgement too
+  (`dropFromChunkWhenAcked`). An answer that reached the engine with the module off was acknowledged and
+  dropped, its command kept, and the switch on sent it again: a second application of an op Java no
+  longer knew. Answers do reach an engine that is off: the switch comes in a hand-over's preamble
+  (MODULES) ahead of the journal's drain, so every answer not drained yet lands behind it, and the core
+  journals a loaded chunk's carried answers again (REASSERT) whatever the industry module, then drops
+  them at the acknowledgement.
+  - Every kind of answer counts, not only the COMMAND_RESULT that this record's first form took
+    (2a751255; the U-a review's P1-1, P2-1 and P2-2). A chain write's CHAIN_IN is the only thing that
+    lowers its store's debt and its cluster's pool (`chain_written`): a write whose CHAIN_IN went unheard
+    was written again under a new op once its ten periods ran out (`WRITE_ANSWER_PERIODS`), a second set
+    of packages. A reconcile whose IND_RECONCILE_RESULT went unheard stayed pending past the switch, its
+    booking waiting for a ChunkLoaded. A carriage's IND_CARRIAGE_RESULT heard off was lost (IR15's stated
+    cost), so the exchange stayed pending past the switch, waiting for a result Java had already sent,
+    and a carriage short of its request left the district holding goods Java never moved.
+  - The deferral. Booked at once, at the engine's frozen time, an answer would land ahead of the
+    breakpoints and wakes due before it, and every decision after it would part from those of a restart
+    that replays the same answer with the module on, op ids included, since they derive from their ticks
+    (J3). Booked at its own tick before the catch-up, it lands where the module on would have put it.
+  - Across a crash while off: `take_save` calls `industry::save` with the module off (the engine's
+    changed pages, and the link page with its outbox, queue and kept answers), and `Link::load` reads
+    them whatever the switch, so the pages that cover an answer hold both its taking and its kept effect.
+- *The switch on in Java.* Main has no op rings (RP-209), so the U-a review's P3-1 (the rings' forget of
+  this session's answers at the switch on, now only cautious) has no counterpart here: main's switch on
+  forgets only what industry announced (`Industry.forgetAnnounced`), which this record does not change.
+- *Cost.* Answers heard while off wait in the link page until the switch, at most one record per command
+  in flight.
+- *Found on the way.* The link's `TABLES` (the tables a restart loads and a fresh start deletes) lacked
+  the package stores' table (0x4906), so every restart dropped every store with its debts, pools and
+  write marks, and a fresh start left old store pages behind. Fixed in its own commit (4fb70332); found
+  by the chain case.
+- *Tests.* rtsim-jni `tests/industry.rs`, module `ack_never_resends`, with the checker of the engine's
+  promise that it never sends an op again past the acknowledgement of its live answer (the module's doc
+  says how it models main's journal op index).
+  - `an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack`: the switch
+    in the tick of a station exchange X's APPLIED; at the read of the ack past it the probe drops X from
+    the fake world's applied set (`FakeWorld::forget_applied`, as slice T has it), as the journal's op
+    index forgets it. Failing first at 37b2dcfb (the checker only): the engine sent X again after the
+    ack, the world applied it twice (APPLIED at sequences 384 and 413), and the checker flagged the
+    command. Its IND_CARRIAGE_RESULT is kept and booked at the switch.
+  - `a_failed_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off`: taken back once,
+    at the switch, at its tick.
+  - `a_duplicate_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off`: a J3
+    re-derivation refused live in the tick industry goes off; it leaves the outbox at once and the
+    exchange still waits after the switch, as with the module on (T's RP-199 drops it).
+  - `a_carried_answer_heard_with_industry_off_takes_its_queued_command`: a chunk's carried APPLIED for an
+    ordered package write (the live answer's own bytes, as `commandResultInChunk` carries them),
+    journaled again as a REASSERT in a session that starts off.
+  - `a_restart_with_industry_off_leaves_the_engine_clock_where_the_switch_froze_it`.
+  - `a_reconcile_result_heard_with_industry_off_is_booked_once_across_a_crash_while_off` (P2-1): booked
+    once at the switch, and no reconcile goes again.
+  - `a_short_carriage_result_heard_with_industry_off_is_corrected_once_across_a_crash_while_off` (P2-2):
+    a carriage holding half of its unload; the district is corrected once.
+  - `a_chain_write_answered_with_industry_off_is_taken_once_across_a_crash_while_off` (P1-1): a W17
+    WriteChain to a declared store, its CHAIN_IN journaled ahead of its APPLIED as Java journals them;
+    the store's two packages are written once, booked at the switch, after a crash and a restart while
+    off.
+  - The crash cases restart off on a minimum-size buffer, the replay over at least two hand-overs. Each
+    checks that the effect is booked once and that no command with the same effect (same op or new) goes
+    out after the switch on.
+  - `a_restart_with_industry_off_books_its_replayed_answers_as_a_restart_with_it_on`: one crash snapshot
+    (a station exchange cut short, and a tick whose journaled records are only Java's answers, with
+    industry switched off and a page save right before them). From copies of the page directory and the
+    world save, B restarts with the module on and A restarts off and switches on in its second hand-over;
+    both run 24,000 ticks, and the industry pages, the clock and the op ids Java received must match. Two
+    B restarts are the control and run first. It covers the replay-while-off path; the cases above cover
+    the live one.
+  - Against the first form's link (2a751255) the probe (on its kept IND_CARRIAGE_RESULT) and the FAILED,
+    clock, reconcile, short carriage, chain (first at the store's page, which 4fb70332 fixes) and
+    determinism cases fail; the DUPLICATE and carried cases pass, since the first form already took
+    their commands. The carried case fails against the link at 37b2dcfb (the command stays queued).
+  - Two of the checker's cases wait for slice T and are ignored here
+    (`a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after` and its control,
+    `the_checker_flags_the_replayed_answer_under_a_java_that_registers_replayed_acks`): they need T's
+    keyed loot op (RP-180); on main a raid decided again carries a new op, so X never goes again.
+  - rtsim-industry `tests/chain_replay.rs`,
+    `a_write_answered_while_industry_is_off_is_taken_at_its_tick_before_the_catch_up`, stands in for a
+    native learned-chain fixture. The native iron line learns no chain link, so the native chain case
+    orders its write (W17) and never shows the engine writing again on its own. In the engine test Java
+    answers a write while industry is off and the switch on comes thirty periods later: booked at its
+    tick before the session start, the write counts once and Java is handed what the mine sent; never
+    heard (the control, as the link before 35a8294b did), the catch-up hands Java the write's 64 iron a
+    second time under new ops. `a_command_not_drained_yet_is_taken_out_by_its_op` covers `take_out`.
+- *Adapted from U-a's form.* No `command_duplicate` (T's drop of a station exchange at an APPLIED heard
+  off, and at a DUPLICATE); `FakeWorld::forget_applied` and `Engine::exchange_pending` copied from T
+  with the same text; the tests derive an ordered command's op at its tick (`IndustryOps::derive`)
+  instead of T's `derive_keyed`.
+- *Left.*
+  - No test answers a deposit delta while off on a running line (the iron line decides only exchanges,
+    loot and reconciles).
+  - A chain write the link still holds in its queue when the module goes off was marked handed on at
+    that drain (`handed_on`), so a catch-up past its ten periods writes the same goods again under a new
+    op while the queued one goes too at the switch on. It is an unanswered write, not an unheard answer,
+    and predates this record; found here and left to its owner.
