@@ -5416,8 +5416,8 @@ pages are older than a train raid it made replays its window and raids the same 
 `attack_train` derived the CarriageDelta's op from industry's present (`derive(world_seed, now,
 &cmd)`): a new op, which TrainWatch applied again. The coordinator's decision A: derive the op
 from the threat's identity. The rtsim-industry change is confined to `attack_train`'s op and the
-loot exchange's drop on DUPLICATE (RP-180, RP-182, RP-183); rtsim-jni's `command_result` passes the
-DUPLICATE on. No page, record or wire format changes (RP-180), no fixture moves, and no Java is
+loot exchange's drop on DUPLICATE (RP-180, RP-182, RP-183); rtsim-jni passes the DUPLICATE on
+(`answered_again`, RP-182). No page, record or wire format changes (RP-180), no fixture moves, and no Java is
 built: RP-185 proposes the Java change. Tests: rtsim-industry `tests/train_raid_ops.rs` (4) and
 `cmd.rs` (2 unit tests), one crash test file per raider on main through a shared harness
 (rtsim-ecology `tests/common/train_raid.rs`, included by path; dragons 3, conflict 2, ships 3), and
@@ -5476,8 +5476,14 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   `rev_a_replayed_scan_finds_a_train_that_left_after_the_live_one`); without the filter the replay
   raids train 8 where the live run raided train 7.
 - **RP-182** (DUPLICATE drops a loot exchange; the brief's item 2): `Engine::command_duplicate(op)`
-  removes the pending exchange of `op` when it is loot, and rtsim-jni's `command_result` calls it
-  on DUPLICATE_OP (after `complete`, as before). The goods left the train once, at the first
+  removes the pending exchange of `op` when it is loot, and rtsim-jni calls it on DUPLICATE_OP
+  (after `complete`, as before) in `command_result` and in `answered_again`. The host takes the
+  second (review P2-A): Replay heard the live application's APPLIED, replayed from the journal, so
+  Java's DUPLICATE for the same op is refused as an answered op (`op_of`, `Verdict::DuplicateOp`)
+  and reaches `answered_again`, never `command_result`; until 941b52e9 the drop did not run in the
+  host. Test: rtsim-jni `a_train_raid_decided_again_after_a_crash_is_applied_once` asserts the
+  exchange is gone (the review's `rev_the_duplicate_drops_the_loot_exchange_in_the_host`, folded
+  in); without the call it fails at tests/industry.rs:1660. The goods left the train once, at the first
   application, so the books keep what the re-decision booked; no IND_CARRIAGE_RESULT comes for the
   op. A station exchange is left alone (conservative: a DUPLICATE there is a copy of a command
   whose result is journaled and comes, and dropping it would lose that result's correction). The
