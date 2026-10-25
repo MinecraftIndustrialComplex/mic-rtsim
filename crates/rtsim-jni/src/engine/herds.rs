@@ -78,9 +78,19 @@ pub(super) struct Link {
     /// Commands not written yet (per session).
     queue: VecDeque<Cmd>,
     pub(super) enabled: bool,
-    /// The herds' session reset (bodies of an earlier session or of before a switch-off are gone)
-    /// is due the next time they run.
+    /// The herds' session reset (docs/replay-gate.md §3.2): their engine's replay begins the next
+    /// time they run.
     reset_due: bool,
+    /// The engine's replay end is due: its `replay_done` runs at the session's replay end (the
+    /// bodies of the last session, or of before a switch-off, are gone), or at once when no replay
+    /// runs ([`replay_end`]).
+    replay_end_due: bool,
+    /// The engine came back from its pages ([`Link::load`], RP-31): only then does its replay
+    /// honour a replayed HERD_MATERIALIZED (docs/replay-gate.md §5.2).
+    from_pages: bool,
+    /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
+    /// §4.3). Not saved.
+    never_logged: u64,
     /// What the saves owe the herds' pages (a save while switched off, a purge at start).
     pub(super) pager: Pager,
     /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
@@ -135,6 +145,9 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
+            replay_end_due: false,
+            from_pages: false,
+            never_logged: 0,
             pager: Pager::default(),
             dropped_pages: false,
             restore_diverged: None,
@@ -199,6 +212,7 @@ impl Link {
         ));
         let mut l = Link::empty(world);
         l.engine = engine;
+        l.from_pages = true;
         l.restore_diverged = diverged;
         Ok(l)
     }
@@ -258,18 +272,53 @@ pub(super) fn running(st: &State) -> bool {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
-/// The session's replay end (docs/replay-gate.md §3.2): nothing yet. Its bodies still end at
-/// SESSION_START (`session_start`), until slice H moves that work into its engine's `replay_done`.
-pub(super) fn replay_end(_st: &mut State) {}
+/// The session's replay end (docs/replay-gate.md §3.2, §5.6, RP-26): the engine's `replay_done`,
+/// when due and the herds run. Every group of the last session (the pages', and those the replay
+/// honoured) becomes abstract, the players' areas and puppet counts go, and the epoch floors
+/// become the herds' epochs. It runs at the replay clock: the held part of the hand-over's time
+/// runs at the next run of the clock. Switched off, it stays due; the reset on switch-on runs it.
+pub(super) fn replay_end(st: &mut State) {
+    let at = st.replay_clock;
+    end_replay(st, at);
+}
 
-/// SESSION_START: every group the herds thought embodied is abstract again (puppets never
-/// outlive a session; the reset runs as soon as the herds run, now or when switched on), and
-/// Java forgot the engine's dictionary.
+/// [`replay_end`] at `at` (at least the engine's present).
+fn end_replay(st: &mut State, at: Tick) {
+    if !st.herds.replay_end_due || !running(st) {
+        return;
+    }
+    st.herds.replay_end_due = false;
+    let at = at.max(st.herds.engine.now());
+    let (w, h) = (&mut st.phase1.world, &mut st.herds.engine);
+    h.replay_done(&mut w.legs, at);
+    st.phase1.taint();
+    take_commands(st);
+}
+
+/// The replay gate's counts for the replay end's log line (docs/replay-gate.md §4.3).
+pub(super) fn gate_counts(st: &State) -> rtsim_ecology::herds::GateCounts {
+    st.herds.engine.replay_gate_counts()
+}
+
+/// Groups the session's replay honoured (docs/replay-gate.md §5.2), for the replay end's log line.
+pub(super) fn honoured(st: &State) -> u64 {
+    st.herds.engine.replay_honoured()
+}
+
+/// SESSION_START: Java forgot the engine's dictionary and every body of the last session. The
+/// queue of unwritten commands is that session's and goes. The herds' replay begins as soon as
+/// they run, now or when switched on (`reset_if_due`); their groups end at the replay end
+/// ([`replay_end`]), so that the journal's records of the last session's bodies count against the
+/// bodies they were (RP-5).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.herds.queue.clear();
     // The first record of the engine's only session: what it holds is its pages as read, so a
     // switch that is off from the start keeps exactly those (no save writes them).
     st.herds.enabled = module_mask & MODULE_HERDS != 0;
+    // The herds this session can name are the ones held now, whether or not they run: a herd
+    // founded later (the world model, a test) is another than the last session's under its handle
+    // (docs/replay-gate.md §5.7, RP-84).
+    st.herds.engine.begin_session();
     st.herds.reset_due = true;
     reset_if_due(st);
 }
@@ -294,16 +343,23 @@ fn set_enabled(st: &mut State, on: bool) {
     }
 }
 
-/// Bodies of an earlier session (or of before a switch-off) are gone: every group is abstract
-/// again, and the legs the herds booked for players go.
+/// The session's reset, once the herds run (docs/replay-gate.md §3.2): their engine's replay
+/// begins (`begin_replay`, told whether it came back from its pages, RP-31), which changes no
+/// group, and its replay end is due. With no replay running (a switch-on, a first herd in the
+/// middle of a session) that end runs at once: the bodies of before a switch-off are gone, every
+/// group is abstract again, and the legs the herds booked for players go.
 fn reset_if_due(st: &mut State) {
     if st.herds.reset_due && running(st) {
         st.herds.reset_due = false;
-        let at = shared::hand_over_target(st).max(st.herds.engine.now());
-        let (w, h) = (&mut st.phase1.world, &mut st.herds.engine);
-        h.session_start(&mut w.legs, at);
-        let _ = h.take_commands();
+        let from_pages = st.herds.from_pages;
+        st.herds.engine.begin_replay(from_pages);
+        st.herds.replay_end_due = true;
         st.phase1.taint();
+        take_commands(st);
+        if !st.replaying {
+            let at = shared::hand_over_target(st);
+            end_replay(st, at);
+        }
     }
 }
 
@@ -348,13 +404,24 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A herd record `Replay` admitted. Switched off, the herds ignore it (U10).
+/// A herd record `Replay` admitted. Switched off, the herds ignore it (U10), but not the epoch it
+/// names: every record that decodes raises the engine's epoch floor first, switched on or off, with
+/// a herd or none (docs/replay-gate.md §5.3, RP-81), so that a switch-on later in the session, a
+/// first herd, or a restart never decides an epoch a record already used. A record that does not
+/// decode names nothing the engine can read: it raises no floor, and is skipped with a warning as
+/// before.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    let decoded = boundary::decode_obs(rec.bytes);
+    // Whether the herds are off, or on with no herd yet (their replay begins at the first one,
+    // and the engine folds only while its replay runs), or running.
+    if let Ok((_, _, _, o)) = &decoded {
+        st.herds.engine.fold_epoch(o);
+    }
     if !st.herds.enabled {
         st.herds.ignored += 1;
         return;
     }
-    let o = match boundary::decode_obs(rec.bytes) {
+    let o = match decoded {
         Ok((_, _, _, o)) => o,
         Err(e) => {
             log_warn(&format!(
@@ -377,8 +444,15 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.herds.records += 1;
     reset_if_due(st);
     let at = at.max(st.herds.engine.now());
+    // A copy (REASSERT) of an ended session's record is applied by identity, never against a
+    // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9, RP-84).
+    let copy = st.applying_copy.is_some();
     let (w, h) = (&mut st.phase1.world, &mut st.herds.engine);
-    h.ingest(&mut w.legs, o, at);
+    if copy {
+        h.ingest_copy(&mut w.legs, o, at);
+    } else {
+        h.ingest(&mut w.legs, o, at);
+    }
     st.phase1.taint();
     take_commands(st);
 }
@@ -410,8 +484,19 @@ pub(super) fn simulate(st: &mut State) {
     shared::run_to(st, at);
 }
 
-/// Takes what the herds decided into the link's queue.
+/// Takes what the herds decided into the link's queue. A rise in the gate's "never" count is
+/// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 pub(super) fn take_commands(st: &mut State) {
+    let counts = st.herds.engine.replay_gate_counts();
+    if counts.never > st.herds.never_logged {
+        let (code, name) = counts.last_never.unwrap_or((0, "?"));
+        log_error(&format!(
+            "herds decided a {name} ({code:#06x}) while replaying ({} since the last take): \
+             skipped, a bug (docs/replay-gate.md §4)",
+            counts.never - st.herds.never_logged
+        ));
+        st.herds.never_logged = counts.never;
+    }
     let cmds = st.herds.engine.take_commands();
     st.herds.queue.extend(cmds);
 }
@@ -420,6 +505,8 @@ pub(super) fn take_commands(st: &mut State) {
 
 /// A herd command a test ordered (`Order::HerdCommand`, the vanilla herd adapter's GameTests): it
 /// joins the queue as if the herds had decided it, so it takes their sequences and DICT records.
+/// It goes around the engine's gate (docs/replay-gate.md §4.6), so the engine holds the order to
+/// the replay end (`waits_for_the_replay_end`, RP-85): it is never taken while a replay runs.
 /// Its species ids are Java's, named by `names`; its dimension is Java's id, the herds' own
 /// frame. The herds themselves know nothing of it unless its agent is one of theirs: records Java
 /// sends back about an agent they do not have are counted late and ignored.

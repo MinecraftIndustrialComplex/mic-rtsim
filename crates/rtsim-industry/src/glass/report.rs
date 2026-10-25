@@ -56,6 +56,9 @@ pub mod why {
     pub const PART_DUTY: u32 = 18;
     /// A priority node with two out-edges of one order (GB103).
     pub const PRIORITY_TIE: u32 = 19;
+    /// A part of a shared kinetic network that is not coupled (SEC-1 S5-2): its network is
+    /// incomplete or spans too many districts, so it runs at its compile speed.
+    pub const SHARED_NETWORK: u32 = 20;
 }
 
 /// Why a district's open window was thrown away or a sweep not counted (`Report` slots 24 to 32).

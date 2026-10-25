@@ -216,6 +216,24 @@ impl Obs {
             Obs::Obstacle(x) => x.agent,
         }
     }
+
+    /// The group epoch the record names, as (agent, epoch): the engine's own numbering, which a
+    /// replayed record or a copy folds into the herd's epoch floor, so that no epoch is used
+    /// twice (docs/replay-gate.md §5.3, RP-57, RP-81). Every kind names one; agent 0 (a record
+    /// of no herd) gives none. Listed kind by kind, so a new kind must say.
+    pub fn group_epoch(&self) -> Option<(u64, u32)> {
+        let (agent, epoch) = match self {
+            Obs::GroupState(x) => (x.agent, x.epoch),
+            Obs::Materialized(x) => (x.agent, x.epoch),
+            Obs::SpawnRejected(x) => (x.agent, x.epoch),
+            Obs::Dematerialized(x) => (x.agent, x.epoch),
+            Obs::Killed(x) => (x.agent, x.epoch),
+            Obs::Sheared(x) => (x.agent, x.epoch),
+            Obs::Taken(x) => (x.agent, x.epoch),
+            Obs::Obstacle(x) => (x.agent, x.epoch),
+        };
+        (agent != 0).then_some((agent, epoch))
+    }
 }
 
 /// One member to materialize: its identity, look and age.
@@ -302,6 +320,15 @@ impl Cmd {
             Cmd::Materialize(m) => m.epoch,
             Cmd::Steer(s) => s.epoch,
             Cmd::Despawn(d) => d.epoch,
+        }
+    }
+
+    /// The record's name in docs/boundary.md §8, for logs and the replay gate's counts.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Cmd::Materialize(_) => "HERD_MATERIALIZE",
+            Cmd::Steer(_) => "HERD_STEER",
+            Cmd::Despawn(_) => "HERD_DESPAWN",
         }
     }
 }
@@ -747,10 +774,10 @@ pub fn decode_cmd(b: &[u8], dict: &HerdDict) -> Result<(usize, u64, Cmd), CodecE
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn obs() -> Vec<Obs> {
+    pub(crate) fn obs() -> Vec<Obs> {
         let a = 0x48 << 56 | 7;
         vec![
             Obs::GroupState(GroupState {
@@ -846,10 +873,9 @@ mod tests {
         assert!(b.is_empty());
     }
 
-    #[test]
-    fn commands_round_trip() {
-        let dict = HerdDict::default();
-        let cmds = vec![
+    /// One value of each command kind.
+    pub(crate) fn cmds() -> Vec<Cmd> {
+        vec![
             Cmd::Materialize(Materialize {
                 agent: 0x48 << 56 | 7,
                 epoch: 3,
@@ -886,7 +912,13 @@ mod tests {
                 epoch: 3,
                 reason: 1,
             }),
-        ];
+        ]
+    }
+
+    #[test]
+    fn commands_round_trip() {
+        let dict = HerdDict::default();
+        let cmds = cmds();
         let mut buf = Vec::new();
         for (i, c) in cmds.iter().enumerate() {
             encode_cmd(i as u64 + 10, c, &dict, &mut buf);
