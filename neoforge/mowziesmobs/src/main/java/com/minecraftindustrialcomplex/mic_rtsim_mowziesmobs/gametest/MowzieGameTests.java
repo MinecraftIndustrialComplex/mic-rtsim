@@ -16,6 +16,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
@@ -2288,6 +2290,98 @@ public final class MowzieGameTests {
                     check("no new epoch", den.site().in() && den.site().epoch() == was[3]);
                     record(test, "puppet", "the SET_OUT puppet joined at " + p.position() + " and the den neither watched nor recounted");
                 })
+                .thenSucceed();
+    }
+
+    // ---- M8: a refused lurk claims no camp body ----------------------------------------------------
+
+    /**
+     * A lurk refused at its placing claims no camp body (M8, the second re-check's P3): an adopted Frostmaw, an
+     * AMBUSH_SPOT for an agent, then in one hand-over a SET_OUT of its slot and a one-unit Frostmaw band for that
+     * agent, while the rail provider knows no direction and says a rail is near the spot, so {@code holdPoint}
+     * refuses. The refusal comes before the hand-off is claimed: the SET_OUT is not handed off (the counter does not
+     * move, no puppet stands), the tick's end resolves it as a take (DONE, one taken, the camp holds nothing and its
+     * body is gone with its records on a marker), and the bridge counted the refusal. On the code before, the body
+     * was claimed and handed to a puppet (handedOff 1), which {@code holdLurks} then found no hold point for and
+     * discarded: "no hand-off was made (1)". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_lurk_refused", skyAccess = true)
+    public static void aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake(GameTestHelper helper) {
+        String test = "aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2], agent = new long[1], was = new long[4];
+        RailAxes before = LurkSpots.axes();
+        LurkSpots.register(new RailAxes() {
+            @Override
+            public Vec3 at(ServerLevel lv, Vec3 point) {
+                return null;
+            }
+
+            @Override
+            public boolean trackNear(ServerLevel lv, Vec3 point, double radius) {
+                return true;
+            }
+        });
+        ConflictKit.onEnd(helper, () -> LurkSpots.register(before));
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.ambushSpot(agent[0], 1, den.faction, RtsimTests.dimension(helper),
+                            new double[] {den.spot.x, den.spot.y, den.spot.z - 4.0}, new double[] {den.spot.x, den.spot.y, den.spot.z}, 8.0f);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent[0]))))
+                .thenExecute(() -> {
+                    Camps c = MowzieKit.camps();
+                    was[0] = c.handedOff;
+                    was[1] = c.taken;
+                    was[2] = ConflictKit.bridge().lurksRefused;
+                    ConflictKit.Band b = ConflictKit.band(agent[0], den.faction, RtsimTests.dimension(helper));
+                    b.arcX = den.spot.x;
+                    b.arcZ = den.spot.z;
+                    b.targetX = den.spot.x;
+                    b.targetY = den.spot.y;
+                    b.targetZ = den.spot.z - 4.0;
+                    b.speed = 0f;
+                    ConflictKit.together(() -> {
+                        op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(
+                                CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, agent[0], b.epoch)));
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
+                    });
+                })
+                .thenWaitUntil(() -> {
+                    MowzieKit.answered(den.faction, op[1], 1);
+                    check("the bridge refused the lurk (" + (ConflictKit.bridge().lurksRefused - was[2]) + " times)", ConflictKit.bridge().lurksRefused > was[2]);
+                })
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
+                    Camps c = MowzieKit.camps();
+                    check("no hand-off was made (" + (c.handedOff - was[0]) + ")", c.handedOff == was[0]);
+                    check("the unclaimed SET_OUT was a take (" + (c.taken - was[1]) + ")", c.taken - was[1] == 1);
+                    check("the camp holds nothing now", MowzieKit.held(den.faction).isEmpty());
+                    check("and its body is gone", f[0].isRemoved());
+                    check("no puppet of the agent stands", RtsimApi.lurkBody(agent[0]) == null);
+                    check("and no Frostmaw puppet is in the den's area", level.getEntitiesOfClass(EntityFrostmaw.class,
+                            new AABB(den.spot.x - 40, den.spot.y - 12, den.spot.z - 40, den.spot.x + 40, den.spot.y + 12, den.spot.z + 40),
+                            e -> RtsimApi.isPuppet(e) && !e.isRemoved()).isEmpty());
+                    record(test, "refused", "the lurk was refused " + (ConflictKit.bridge().lurksRefused - was[2]) + " times before the SET_OUT was claimed: taken, not handed off, nothing discarded after a hand-off");
+                    ConflictKit.ambushRemoved(agent[0], 1, den.faction, RtsimTests.dimension(helper));
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent[0]))))
                 .thenSucceed();
     }
 

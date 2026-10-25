@@ -3636,6 +3636,23 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       `FrostmawGameTests` (a cutting on the den's side stands the body on the other; no axis and a rail near is
       refused with the radius and point asserted, then the engine's spot once none is near), `RailDirectionsGameTests`
       (`trackNear` at a crossing, the corner of two lines, a fake track block, 3 blocks of height and bare ground).
+  - Amendment (the second re-check's P3, a refusal after the claim; compiled, not run): `spawn` computed the hold point
+    only in the branch with no camp body to hand off, and after `reconciler.claim`. A refusal there left the SET_OUT
+    it had claimed (the current slot's, when the claimed body was not a `Mob`) marked done for the tick, and the
+    hand-off branch never asked for a hold point at all: a camp Frostmaw a player can see was handed to a puppet,
+    which `holdLurks` then found no point for and discarded (its camp body already removed with its records on a
+    marker). Now `spawn` asks `holdPoint` first for every slot of a lurking party, and refuses the whole stack
+    (`lurksRefused`, the made bodies discarded, the earlier slots' claims released, `RETRY_FAILED`) before it claims a
+    camp body. The SET_OUT is then unclaimed, and the tick's end resolves it as the take it is for a line no
+    materialize claimed (§4.9: the engine gets fresh puppets when the party is seen later). A hand-off with a lurk
+    sets the hold point at spawn (the puppet starts where the camp body stood and the hold walks it to the point).
+    `holdLurks` keeps its own refusal for a body that stood before its lurk was known (or whose spot moved), a body
+    a player may see as well; it despawns and requeues as before (the lurk arriving after a placed party is not a
+    case the engine makes: AMBUSH_SPOT precedes BAND_MATERIALIZE). Fork: the take instead of the hand-off is the
+    only outcome a refused hold can have, since the camp body cannot both stay in the camp and be handed over; the
+    alternative, keeping the SET_OUT claimed and answering it later, would hold the camp's count open for the
+    retry. Test (written and compiled, not run): `MowzieGameTests.aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake`
+    (no hand-off made, one taken, the camp holds nothing, no puppet stands, the refusal counted).
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
