@@ -22,9 +22,7 @@ use rtsim_industry::cmd::{ChunkReconcile, Cmd};
 use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::learn::Learned;
-use rtsim_industry::obs::{
-    DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd, Timed,
-};
+use rtsim_industry::obs::{DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd, Timed};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
@@ -491,7 +489,11 @@ fn a_stale_record_in_the_first_hand_over_after_the_pages_is_rederived_with_the_s
     ];
     steps.push(load);
     let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
-    assert_same(&o, 1, "stale chunks right after the pages (now = G of the save)");
+    assert_same(
+        &o,
+        1,
+        "stale chunks right after the pages (now = G of the save)",
+    );
 }
 
 // ---- (c) latest-wins records moving `now` --------------------------------------------------
@@ -550,7 +552,10 @@ fn a_deferred_stock_sample_between_two_records_does_not_move_the_ids() {
 fn a_deferred_sample_after_the_last_record_flushes_the_marks_at_the_records_tick() {
     let mut steps = base_steps();
     let mut load = Step::new(9_500);
-    load.journaled = vec![load_state(8_000, LoadState::Partial, 1), chunk_loaded(8_000, 0)];
+    load.journaled = vec![
+        load_state(8_000, LoadState::Partial, 1),
+        chunk_loaded(8_000, 0),
+    ];
     load.deferred = vec![t(
         9_300,
         Obs::StockSample {
@@ -563,7 +568,10 @@ fn a_deferred_sample_after_the_last_record_flushes_the_marks_at_the_records_tick
     steps.push(load);
     // The next hand-over's first record, the frogport's chunk, closes the district.
     let mut close = Step::new(9_900);
-    close.journaled = vec![chunk_loaded(9_600, 1), load_state(9_600, LoadState::Live, 2)];
+    close.journaled = vec![
+        chunk_loaded(9_600, 1),
+        load_state(9_600, LoadState::Live, 2),
+    ];
     steps.push(close);
     let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
     assert_same(&o, 1, "a sample at 9,300 after the partial load at 8,000");
@@ -579,10 +587,16 @@ fn a_deferred_sample_after_the_last_record_flushes_the_marks_at_the_records_tick
 fn the_flush_at_a_hand_overs_end_and_at_the_next_hand_overs_first_record_agree() {
     let mut steps = base_steps();
     let mut part = Step::new(9_000);
-    part.journaled = vec![load_state(8_000, LoadState::Partial, 1), chunk_loaded(8_000, 0)];
+    part.journaled = vec![
+        load_state(8_000, LoadState::Partial, 1),
+        chunk_loaded(8_000, 0),
+    ];
     steps.push(part);
     let mut rest = Step::new(9_500);
-    rest.journaled = vec![chunk_loaded(9_100, 1), load_state(9_100, LoadState::Live, 2)];
+    rest.journaled = vec![
+        chunk_loaded(9_100, 1),
+        load_state(9_100, LoadState::Live, 2),
+    ];
     steps.push(rest);
     let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
     assert_same(&o, 1, "a partial round flushed across the hand-over's end");
