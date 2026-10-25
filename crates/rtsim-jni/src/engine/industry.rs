@@ -330,6 +330,11 @@ impl Link {
         }
     }
 
+    /// Kept commands still to resend this session (all of them right after [`Self::resume`]).
+    pub(super) fn resend_len(&self) -> usize {
+        self.resend.len()
+    }
+
     fn gauges(&mut self) {
         self.stats.outbox = self.outbox.len() as u64;
         self.stats.queued = self.queue.len() as u64;

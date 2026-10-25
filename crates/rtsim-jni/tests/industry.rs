@@ -869,6 +869,11 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
     mc.restore(&msave);
     let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
     let mut j = Java::open(e, jsave);
+    // The start counts every module's resends for Java's perf line (RP-205).
+    assert!(
+        j.e.stats_array()[16] >= 1,
+        "the start counts the kept delta among its resends"
+    );
     j.mc = Some(mc);
     j.module_mask = MODULE_INDUSTRY;
     j.mc_tick();

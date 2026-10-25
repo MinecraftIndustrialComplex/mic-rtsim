@@ -58,9 +58,17 @@ import java.util.concurrent.atomic.AtomicLong;
  * (JB2). The journal's write, a task on NeoForge's SavedData IO chain, first waits for them, at most
  * {@link #WAIT_MILLIS} ({@link #await}). If they are all on disk, the file is written. If not, it is not: the
  * file stays as it was (older than the chunks, the safe order: the chunks carry their records until the engine
- * acknowledges them), and the next world save writes it, with every note still unconfirmed (JB1). Only after
- * {@link #GIVE_UP_ROUNDS} rounds in a row held does a write go ahead without its chunks, logged and counted
- * ({@link #late}).
+ * acknowledges them), and the next world save writes it, with every note still unconfirmed (JB1).
+ *
+ * <p>A round held for a reason a later save can clear (a write not on disk within the wait, a write that failed
+ * while its chunk is still loaded, an fsync that failed) is held at every world save, with no limit
+ * (docs/choices-journal-barrier.md RP-205): the file on disk only grows older, the safe side. A note no later save
+ * can clear is given up alone, at the arm, and the round goes on without it: a chunk that left its level after its
+ * write failed, at once; a chunk that cannot be serialized, an entity chunk that cannot be stored, or a chunk not
+ * loaded whose unload is never seen, after {@link #GIVE_UP_ROUNDS} world saves in a row. Each is logged and counted
+ * ({@link #late}): its chunk on disk may lack what the journal's file then claims, a loss, never a second copy. A
+ * flush save (the stop, {@code /save-all flush}) whose round is held tries once more after every chunk is flushed,
+ * then keeps the older file ({@link JournalSavedData}, {@link WorldSaveOrder}).
  *
  * <p>Entity chunks are noted the same way ({@link #dependsOnEntities}; MOWZIE.md ledger 22): a camp record rides
  * on a body or a marker, which vanilla stores apart from its chunk, in the {@code entities/} region files through
@@ -84,7 +92,11 @@ public final class ChunkWriteBarrier {
      */
     public static final long WAIT_MILLIS = 10_000;
 
-    /** World saves in a row whose journal write is held before one goes ahead without its chunks (PLACEHOLDER, JB4). */
+    /**
+     * World saves in a row a note no later save can clear (its chunk cannot be serialized or stored, or its unload is
+     * never seen) holds the journal's file before it is given up (PLACEHOLDER, JB4, RP-205). A held round for any
+     * other reason has no limit.
+     */
     public static final int GIVE_UP_ROUNDS = 3;
 
     /** How often the C2ME strategy looks at its storage thread's cache, in ms. */
@@ -134,6 +146,8 @@ public final class ChunkWriteBarrier {
         boolean unloadSeen;
         /** Its write failed after it left its level: what it held is not on disk, and cannot be saved again. */
         boolean lost;
+        /** World saves in a row it held for a reason no later save is likely to clear ({@link #GIVE_UP_ROUNDS}). */
+        int stuck;
 
         Note(long round) {
             this.round = round;
@@ -194,8 +208,6 @@ public final class ChunkWriteBarrier {
     private long nextRound = 1;
     /** The last round whose notes are written (or given up on); set on the IO chain, read at the arm. */
     private volatile long confirmedRound;
-    /** Rounds held in a row (IO chain only). */
-    private int heldInARow;
     private boolean warnedScanner;
 
     // counters (the GameTests read them); the server thread's
@@ -208,13 +220,21 @@ public final class ChunkWriteBarrier {
     private long holdersRemembered;
     private long holdersUnresolved;
     private long rounds;
+    /** Notes given up on (the server thread's, read by the IO chain's GameTest looks). */
+    private final AtomicLong late = new AtomicLong();
     // the IO chain's
     private final AtomicLong held = new AtomicLong();
-    private final AtomicLong late = new AtomicLong();
+    /** Rounds held in a row; 0 once one is written. */
+    private final AtomicLong heldInARow = new AtomicLong();
     private final AtomicLong failedWrites = new AtomicLong();
     private final AtomicLong lastWaitMillis = new AtomicLong(-1);
     private final AtomicLong maxWaitMillis = new AtomicLong(-1);
     private volatile String lastHeld = "";
+    /**
+     * GameTests: when set, every round of this barrier is held for this reason after its wait, as a round whose
+     * chunks were not on disk in time is (a hold a later save can clear).
+     */
+    public volatile String holdForTest;
 
     /**
      * A record just committed to the journal speaks for {@code chunk}'s contents: the journal's next file waits
@@ -352,7 +372,15 @@ public final class ChunkWriteBarrier {
         return lastHeld;
     }
 
-    /** Journal writes that went ahead without their chunks (after {@link #GIVE_UP_ROUNDS} held rounds). */
+    /** Rounds held in a row, now: 0 once the journal's file is written. */
+    public long heldInARow() {
+        return heldInARow.get();
+    }
+
+    /**
+     * Notes given up on (RP-205): a chunk or entity chunk the journal's file went ahead without, since no later save
+     * could write it.
+     */
     public long late() {
         return late.get();
     }
@@ -379,10 +407,11 @@ public final class ChunkWriteBarrier {
 
     /**
      * The journal's snapshot is being taken (server thread): sends the noted chunks on their way to disk. Null
-     * when no chunk is noted: the journal is written at once.
+     * when no chunk is noted: the journal is written at once. {@code forced}: a flush save's second try
+     * ({@link JournalSavedData}), which does not count toward a note's {@link #GIVE_UP_ROUNDS}.
      */
     @Nullable
-    Round arm() {
+    Round arm(boolean forced) {
         for (LevelChunk c; (c = offThreadUnloads.poll()) != null; ) {
             Note n = notes.get(c);
             if (n != null)
@@ -416,7 +445,7 @@ public final class ChunkWriteBarrier {
         }
         for (Failed f; (f = failed.poll()) != null; ) {
             // a write that failed: the chunk is saved again (vanilla cleared its unsaved flag before writing); one
-            // that has left its level cannot be, and holds every round until the valve
+            // that has left its level cannot be, and is given up below
             for (Map.Entry<LevelChunk, Note> e : notes.entrySet()) {
                 LevelChunk c = e.getKey();
                 if (c.getLevel() != f.level() || !c.getPos().equals(f.pos()))
@@ -440,9 +469,13 @@ public final class ChunkWriteBarrier {
                 it.remove(); // a level that is not saving writes no chunk; nothing to wait for
                 continue;
             }
+            Note note = e.getValue();
+            String where = "chunk " + c.getPos() + " in " + level.dimension().location();
             boolean loaded = ((LevelChunkAccessor) c).mic_rtsim$loaded();
-            if (e.getValue().lost && !loaded) {
-                hold = "chunk " + c.getPos() + " in " + level.dimension().location() + " was unloaded and its write failed";
+            if (note.lost && !loaded) {
+                // what it held is in no file and no longer in memory: no save can write it
+                giveUp(where + " was unloaded and its write failed", 0);
+                it.remove();
                 continue;
             }
             if (loaded && c.isUnsaved()) {
@@ -456,23 +489,37 @@ public final class ChunkWriteBarrier {
                 if (!saved) {
                     // vanilla logged why and cleared the flag; the next world save tries again
                     c.setUnsaved(true);
-                    hold = "chunk " + c.getPos() + " in " + level.dimension().location() + " could not be serialized";
+                    String why = where + " could not be serialized";
+                    if (stuck(note, forced)) {
+                        giveUp(why, note.stuck);
+                        it.remove();
+                    } else {
+                        hold = why;
+                    }
                     continue;
                 }
                 forcedSaves++;
-            } else if (!loaded && !e.getValue().unloadSeen) {
+            } else if (!loaded && !note.unloadSeen) {
                 // Not loaded and its unload not seen: C2ME's async unload is serializing it, and nothing has been
-                // handed to the storage yet (or a chunk that was never in its level).
-                hold = "chunk " + c.getPos() + " in " + level.dimension().location() + " is being unloaded";
+                // handed to the storage yet (or a chunk that was never in its level, or an unload never seen).
+                String why = where + " is being unloaded";
+                if (stuck(note, forced)) {
+                    giveUp(why, note.stuck);
+                    it.remove();
+                } else {
+                    hold = why;
+                }
                 continue;
             }
+            note.stuck = 0;
             // Loaded and saved, or unloaded: its latest write was handed to the storage before now (a store is
             // queued on the server thread, in ChunkMap.save).
             byLevel.computeIfAbsent(level, k -> new ArrayList<>()).add(c.getPos());
         }
         Map<ServerLevel, List<ChunkPos>> entitiesByLevel = new LinkedHashMap<>();
         for (Iterator<Map.Entry<EntityChunk, Note>> it = entityNotes.entrySet().iterator(); it.hasNext(); ) {
-            EntityChunk k = it.next().getKey();
+            Map.Entry<EntityChunk, Note> en = it.next();
+            EntityChunk k = en.getKey();
             ServerLevel level = k.level();
             if (level.noSave()) {
                 it.remove();
@@ -487,11 +534,18 @@ public final class ChunkWriteBarrier {
                     stored = false;
                 }
                 if (!stored) {
-                    hold = "entity chunk " + new ChunkPos(k.pos()) + " in " + level.dimension().location() + " could not be stored";
+                    String why = "entity chunk " + new ChunkPos(k.pos()) + " in " + level.dimension().location() + " could not be stored";
+                    if (stuck(en.getValue(), forced)) {
+                        giveUp(why, en.getValue().stuck);
+                        it.remove();
+                    } else {
+                        hold = why;
+                    }
                     continue;
                 }
                 entityStores++;
             }
+            en.getValue().stuck = 0;
             // Loaded and stored now, or unloaded: its entities were stored at the unload, on the server thread.
             entitiesByLevel.computeIfAbsent(level, x -> new ArrayList<>()).add(new ChunkPos(k.pos()));
         }
@@ -540,13 +594,30 @@ public final class ChunkWriteBarrier {
     }
 
     /**
+     * One more world save in a row {@code note} holds for a reason no later save is likely to clear; true once that
+     * makes {@link #GIVE_UP_ROUNDS}. A flush save's second try is the same world save: not counted.
+     */
+    private static boolean stuck(Note note, boolean forced) {
+        if (!forced)
+            note.stuck++;
+        return note.stuck >= GIVE_UP_ROUNDS;
+    }
+
+    /** A note no save can clear goes (RP-205): the round, and the journal's file, go on without it. */
+    private void giveUp(String why, int saves) {
+        late.incrementAndGet();
+        MicRtsim.LOGGER.error("[mic_rtsim] the journal's file goes on without a chunk it speaks for: {}{}; a crash before that chunk's"
+                + " next write loses what its records carry there (counted late in rtsim perf)", why, saves > 0 ? " (" + saves + " world saves in a row)" : "");
+    }
+
+    /**
      * On the IO chain, right before the journal's write: waits for the round's chunks. True to write the file,
      * false to hold it to the next world save. Never throws (an exception in a task of NeoForge's chain would
      * skip every SavedData write after it), and never leaves the thread interrupted.
      */
     boolean await(@Nullable Round round) {
         if (round == null) {
-            heldInARow = 0;
+            heldInARow.set(0);
             return true;
         }
         long start = System.nanoTime();
@@ -574,6 +645,8 @@ public final class ChunkWriteBarrier {
             } catch (RuntimeException e) {
                 why = e.toString();
             }
+            if (why == null)
+                why = holdForTest;
             for (CompletableFuture<?> f : round.cancel)
                 f.cancel(false); // stops a C2ME poll; a vanilla write still runs, early
             long ms = (System.nanoTime() - start) / 1_000_000;
@@ -581,21 +654,15 @@ public final class ChunkWriteBarrier {
             maxWaitMillis.accumulateAndGet(ms, Math::max);
         }
         if (why == null) {
-            heldInARow = 0;
+            heldInARow.set(0);
             confirmedRound = round.number;
             return true;
         }
+        // held, with no limit (RP-205): the file on disk only grows older; the notes stay for the next round
         held.incrementAndGet();
         lastHeld = why;
-        if (++heldInARow >= GIVE_UP_ROUNDS) {
-            heldInARow = 0;
-            late.incrementAndGet();
-            confirmedRound = round.number; // given up on: these notes go
-            MicRtsim.LOGGER.error("[mic_rtsim] the journal's file has waited {} world saves for the chunks it speaks for ({}); it is written without them",
-                    GIVE_UP_ROUNDS, why);
-            return true;
-        }
-        MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file is kept as it was until the next world save: {}", why);
+        long inARow = heldInARow.incrementAndGet();
+        MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file is kept as it was until the next world save ({} in a row): {}", inARow, why);
         return false;
     }
 
