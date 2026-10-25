@@ -12,7 +12,7 @@ use rtsim_industry::glass::records::{
     GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NodeKind,
     ProbeSample, ProbeSet, RateEntry, Term,
 };
-use rtsim_industry::ids::{ChunkPos, Good};
+use rtsim_industry::ids::{ChunkPos, DistrictId, Good};
 use rtsim_industry::obs::{Obs, Timed};
 
 use super::{Fields, Gen, Sign, begin, cmd, district, game_time, goods, obs, pos, table};
@@ -347,6 +347,10 @@ pub fn fixtures() -> String {
                 impact: f64f(&mut f, &format!("member{i}.impact"), f64v(&mut g)),
             })
             .collect();
+        f.sym("n_peers", 2);
+        let peers: Vec<DistrictId> = (0..2)
+            .map(|i| DistrictId(f.u64(&format!("peer{i}"), g.u64())))
+            .collect();
         let o = GlassObs::Domain(GraphDomain {
             head,
             network,
@@ -358,6 +362,7 @@ pub fn fixtures() -> String {
             sources,
             foreign,
             members,
+            peers,
         });
         glass_obs(&mut out, name, gc::IND_GRAPH_DOMAIN, 0, at, o, &f);
     }
