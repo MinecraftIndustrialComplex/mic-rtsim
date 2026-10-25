@@ -1227,6 +1227,60 @@ fn a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost() {
     }
 }
 
+/// A sinking that names a ship as the doer (RP-100) books the archive row's doer only if the
+/// pages held that ship: a handle the replay allocated may be another ship than the live run's, so
+/// the row names nobody. The merchant is lost either way (its own record is the pages' ship).
+/// Control: the pirate in the pages is named.
+#[test]
+fn a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody() {
+    let seed = 5;
+    let sunk_by = |agent: u64, ship: u64| {
+        Obs::Sunk(boundary::Sunk {
+            agent,
+            epoch: 1,
+            by: By::Ship,
+            dimension: 0,
+            player: (0, 0),
+            ship,
+            op: 1 << 63 | 4,
+            pos: (0.0, 64.0, 0.0),
+        })
+    };
+    let doers = |s: &Ships| -> Vec<u64> {
+        rtsim_archive::record::rows_on(&s.tape)
+            .into_iter()
+            .filter_map(|(k, _, r)| match r {
+                rtsim_archive::Row::Event(e) if k == rtsim_archive::kinds::SHIPS_LOST => {
+                    Some(e.object.value)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    // The control: the pirate is in the pages.
+    let (mut l, mut s) = held(seed, true);
+    s.tape.set_on(true);
+    let (m, p) = (l.merchant, l.pirate.unwrap());
+    s.ingest(&mut l.w, &sunk_by(Ship::agent(m), Ship::agent(p)), &l.mask, Tick::ZERO);
+    assert!(!s.ship(m).unwrap().is_active(), "control");
+    assert_eq!(doers(&s), vec![p.to_bits()], "control: the pirate is named");
+
+    // The pages hold the network; the haven joins inside the replayed window.
+    let (mut l, _) = held(seed, false);
+    let mut s = Ships::load(ShipTunables::default(), &l.s.save()).expect("loads");
+    s.tape.set_on(true);
+    s.begin_session();
+    s.begin_replay(true);
+    let pages = s.ships.meta().1;
+    let data = l.data.clone();
+    s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
+    let (m, p) = (l.merchant, s.havens[0].ships[0]);
+    assert!(p.index() >= pages, "the replay's pirate is past the pages' ships");
+    s.ingest(&mut l.w, &sunk_by(Ship::agent(m), Ship::agent(p)), &l.mask, Tick::ZERO);
+    assert!(!s.ship(m).unwrap().is_active(), "the merchant is lost all the same");
+    assert_eq!(doers(&s), vec![0], "and the row names nobody");
+}
+
 /// A replayed fight names its two ships by bare handle (RP-100). Handles the replay allocated may
 /// be other ships than the live run's: a fight between the live run's pirate and merchant 0 would
 /// be booked to the replay's last merchant and its pirate. Lost instead. Control: pages that hold
