@@ -908,3 +908,29 @@ fn a_corrupt_epoch_does_not_wrap_the_next_epoch_to_zero() {
     c.ships.ingest(&mut c.world, &o, &c.mask, t);
     assert_eq!(c.ships.next_epoch(id), 1, "held at 1, not 0");
 }
+
+/// The arm's leave of a player's area (the host's `leave_area`, RP-26) reaches the ships through
+/// `Viewer::player_left`, which the ships do not override: it does not end any body (docs/replay-gate.md
+/// §9.5: ships are left out of the arm's `player_left`). Control: the ships' own `player_left`
+/// cancels the player's own interest, and no body either.
+#[test]
+fn a_player_leaving_the_arm_ends_no_ship_body() {
+    use rtsim_world::interest::Viewer;
+    let mut s = Scene::new(3);
+    let embodied = |s: &Scene| s.c.ships.ships.iter().any(|(_, x)| x.embodied);
+    assert!(s.pump_until(Tick::from_days(6), embodied));
+    let set = |s: &Scene| -> Vec<u64> {
+        s.c.ships
+            .ships
+            .iter()
+            .filter(|(_, x)| x.embodied)
+            .map(|(id, _)| Ship::agent(id))
+            .collect()
+    };
+    let before = set(&s);
+    let p = s.c.ships.player(&mut s.c.world, PLAYER);
+    Viewer::player_left(&mut s.c.ships, &mut s.c.world, p);
+    assert_eq!(set(&s), before, "the arm's leave ends no body");
+    s.c.ships.player_left(&mut s.c.world, p);
+    assert_eq!(set(&s), before, "nor does the ships' own");
+}
