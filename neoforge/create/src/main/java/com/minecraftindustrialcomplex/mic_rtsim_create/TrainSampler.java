@@ -88,22 +88,25 @@ public final class TrainSampler {
     public static final double STRIKE_REACH = 6.0;
     /**
      * Mirror of {@code SPOT_BLOCKS} in the engine's {@code crates/rtsim-conflict/src/engine/rail.rs}: how far from the
-     * track point (blocks, toward the den, whole blocks) the engine puts a lurking body's spot. The engine owns the
-     * number and a Rust test pins it (lurk.rs); change both, and the contract below, together (MZB-374).
+     * track point (blocks, toward the den, whole blocks) the engine puts a lurking body's spot, and the distance from the
+     * rail's centre line at which Java stands the body (core {@code LurkSpots}, which holds the number). The engine owns
+     * the number and a Rust test pins it (lurk.rs); change both, and the contract below, together (MZB-374).
      */
-    public static final double SPOT_BLOCKS = 5.0;
+    public static final double SPOT_BLOCKS = com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.SPOT_BLOCKS;
     /** The nearest a lurking body's box may come to the rail's centre line (blocks): clear of the carriages' boxes (MZB-370). */
     public static final double RAIL_CLEARANCE = 1.5;
 
     /**
      * The spot-distance contract (MZB-374, one rule in two inequalities), for a Lurker that rests its body within
-     * {@code stand} blocks of the spot and whose body is {@code halfWidth} blocks across to its side: the far side of
-     * its stand is still inside the strike reach ({@code SPOT_BLOCKS + stand <= STRIKE_REACH}) and the near side of its
-     * box is still off the rail ({@code SPOT_BLOCKS - stand - halfWidth >= RAIL_CLEARANCE}). Null when both hold, else
-     * the one that fails, as a sentence.
+     * {@code stand} blocks of the hold point, which Java puts within {@code LATERAL_SLACK} of {@code SPOT_BLOCKS} from
+     * the rail's centre line (a block centre), and whose body is {@code halfWidth} blocks across to its side: the far
+     * side of its stand is still inside the strike reach ({@code SPOT_BLOCKS + slack + stand <= STRIKE_REACH}) and the
+     * near side of its box is still off the rail ({@code SPOT_BLOCKS - slack - stand - halfWidth >= RAIL_CLEARANCE}).
+     * Null when both hold, else the one that fails, as a sentence.
      */
     public static String spotContract(double stand, double halfWidth) {
-        double far = SPOT_BLOCKS + stand, near = SPOT_BLOCKS - stand - halfWidth;
+        double slack = com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.LATERAL_SLACK;
+        double far = SPOT_BLOCKS + slack + stand, near = SPOT_BLOCKS - slack - stand - halfWidth;
         if (far > STRIKE_REACH)
             return "the far side of the stand is " + far + " blocks from the track point, past the strike reach (" + STRIKE_REACH + ")";
         if (near < RAIL_CLEARANCE)

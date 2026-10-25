@@ -3557,6 +3557,57 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     anchor on the spot, offsets zeroed, the heading toward the track), not walked there. BAND_STEER is
     ignored while the agent has a lurk. A new AMBUSH_SPOT for a live party re-anchors its stacks, and
     releases and re-holds its puppets only if the spot moved.
+  - Amendment (the re-check's P2, the spot contract covered one geometry only; compiled and the JUnit run, the
+    GameTests not run): the engine's spot (`spot_toward`: 5 whole blocks along the line from the track point
+    to the den) is 5 from the rail and square to it only for a rail along an axis and a den square to it.
+    For a rail on a diagonal a due-north den puts it 3.5 off the rail; a den off the line by 4 puts it 4 off;
+    a den within a block of the line gives 5 along +x, which is on the rail for an east-west one. The numbers
+    of MZB-365's contract are about the body's distance to the rail's centre line, so Java now places the
+    body and the engine's spot only says which side of the rail:
+    - Core `RailAxes` (`Vec3 at(ServerLevel, Vec3 point)`: the rail's horizontal direction at the point, any
+      length or sign, or null), registered with `RtsimApi.registerRailAxes` (kept in `LurkSpots`). The core
+      cannot name Create; the create plugin registers `RailDirections`. Nothing registered, or null: the
+      engine's spot with the floor scan above, as before.
+    - `LurkGeometry.candidates` (pure doubles, so JUnit runs it: `LurkSpotsTest`) returns block centres, best
+      first. A body's centre can rest only on a block's centre (the navigation ends a wide body's path there,
+      the wide-body fix in MZB-361's amendment), so the point is the block centre whose distance to the rail's
+      centre line is within `LATERAL_SLACK` (0.4) of `SPOT_BLOCKS` and whose offset along the rail from the
+      track point is at most `ALONG_MAX` (1.5; the strike does not care where along the rail), nearest to both
+      first, ties by x then z. On the den's side first (the sign of the spot's offset from the line along the
+      normal `(-az, ax)`), then the other. A spot within `ON_LINE` (0.5) of the line takes the left-hand
+      normal first. Why 0.4: the block centres of a diagonal's side lie on lines `1/sqrt 2` = 0.707 apart,
+      so the nearest is up to 0.354 off for a line that misses the lattice (a JUnit test sweeps the track
+      point's fraction). Create's own rails run through block centres, so the real figures are exact: 5.0
+      for XO and ZO, 4.95 (7/sqrt 2) for PD and ND.
+    - `ConflictBridge.holdPoint` takes the first candidate that is standable (`standAt`: the column's chunk
+      ticks entities, a block with a sturdy top face between the track's y + 4 and y - 8 with the body's box
+      free above it, no heightmap fallback) plus the slot's offset in its stack. It is used at spawn
+      (`spawn` makes the body there: no walk) and by `holdLurks` for a body that has no hold point yet.
+      `Slot.holdAt` is set at spawn; `Slot.place` and `Slot.lag` use it, so `ConflictFollowGoal` (LEASH
+      6.0) does not walk a member back to the engine's spot. `RtsimApi.lurkHold(agent)` reads it (GameTests).
+    - Refused: neither side has a standable candidate. At spawn `spawn` returns false, the stack is tried
+      again after `RETRY_FAILED` (100) ticks, and `lurksRefused` counts each; at `holdLurks` the body is
+      despawned and the stack waits `REQUEUE_COOLDOWN` (200). There was no refusal before: the choice is
+      new (a lurk with no floor beside the rail costs the party its ambush, as a stack with no floor costs
+      it its placing).
+    - Create's `RailDirections` scans the 3 x 3 x 3 blocks about the track point for `ITrackBlock`
+      pieces (`TrackShape.getAxes()`: XO, ZO, PD, ND, the slopes and the portal shapes have one axis, the
+      `CR_*` crossings two) and takes the line through a block's centre nearest the point, its horizontal
+      direction; null when the nearest line is farther than `ON_RAIL` (0.75), when a crossing is within it,
+      when two lines of different directions are as near as each other (`TIE` 0.05), or the chunk is not
+      loaded. Known gap: a bezier curve's middle has no block of its own, so a lurk on a curve keeps the
+      engine's spot (the contract holds there only as far as the engine's spot happens to be square to
+      the rail); a lurk at a curve's end piece uses that piece's axis.
+    - Tests (written and compiled, not run): `LurkSpotsTest` (JUnit, run: nine cases: square, oblique, on
+      the line, both diagonals over a sweep of fractions, order, no axis), `FrostmawGameTests` (an oblique
+      den, a den on the line, the den's side without a floor, neither side with a floor then the south laid
+      again: four tests with a stub `RailAxes` for an east-west rail), `RailDirectionsGameTests` (real
+      track blocks of each shape), and test 9's three variants in `RailFrostmawGameTests` (MZB-370).
+    - Forks: the hold point is the nearest block centre within 0.4 of 5.0, not exactly 5.0 (a body cannot
+      rest between blocks); "refused" is as above; the diagonal is covered by the JUnit geometry and the
+      provider's GameTest, not by a pass of test 9 on a diagonal rail (a diagonal fixture is a larger
+      job than the value of it); the other slots of a stack keep their stack offset about the hold point
+      (the contract is for the first body).
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
@@ -3658,6 +3709,9 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     the chase gated it only limits repeated tiny searches when the body rests just beyond `STAND` (the navigation
     ends a path within 0.5 on each axis, so a rest at 0.55 to 0.7 is possible; the round decides whether a rest
     within `STAND` is reliable, and the steady-stretch check allows `STEADY_PATHS` = 2 new paths).
+  - Amendment (the re-check's P2; see MZB-360's): the `spot` the hold is given is the hold point, not the
+    engine's spot (`Slot.holdAt`, set at spawn), so the restriction, the walk-back and the leash are about the
+    place Java chose beside the rail.
     `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget` (mowziesmobs, batch `frostmaw_lurk_chase`): a held
     puppet with no crystal is moved 2 blocks north of its spot and set on a hovering 1000 health player 8
     blocks west (past the jar's 5.5 and 6.5); it must be within `STAND` of the spot within 200 ticks, never
@@ -3781,6 +3835,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     TrainSampler.SPOT_BLOCKS`, so the test lays the engine's spot by construction. A fourth variant pins the
     puppet at the far side of its stand and asserts the strike at 1.4 blocks a tick (MZB-370's amendment).
     A Lurker of another body kind registers its own `stand()`, and its own gate if its reach differs.
+  - Amendment (the re-check's P2; compiled, not run): the contract is about the hold point's distance to the rail's
+    centre line, which Java now sets (MZB-360's amendment), within `LurkSpots.LATERAL_SLACK` (0.4) of
+    `SPOT_BLOCKS`. `spotContract` counts the slack: `SPOT_BLOCKS + slack + stand <= STRIKE_REACH` (5.0 + 0.4 + 0.5
+    = 5.9 <= 6.0) and `SPOT_BLOCKS - slack - stand - halfWidth >= RAIL_CLEARANCE` (5.0 - 0.4 - 0.5 - 2.0 = 2.1 >=
+    1.5). The slack is the worst case; Create's rails put the body at exactly 5.0 (XO, ZO) or 4.95 (PD, ND), so
+    the real far side is 5.5 (5.45). A lurk on a curve keeps the engine's spot (no axis there) and so only the
+    engine's own geometry.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -3952,6 +4013,15 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
         and without it the pinned puppet, 6.5 from the rail, would see the landing no nearer than 6.5 and never
         strike ("the lurk struck at 1.4 (0)"). With the stand at 0.5 the landing comes to 5.5 at the nearest,
         inside the gate.
+    - Amendment (the re-check's P2; written and compiled, not run): test 9 takes a `Den` (where the den lies, so
+      the engine's spot) and a rest point (where the hold must stand the body): `SQUARE` is the earlier test
+      (spot 5 north, rest the spot); `OBLIQUE`, the den 4 east and 4 north (spot +4, -4; rest 5 north of the
+      track point); `ON_LINE`, the den on the rail (spot 5 along +x; rest 5 south, the left-hand side). Every
+      run checks that `RtsimApi.lurkHold(agent)` is the rest point and the body was made within its stand of it.
+      The hold phase's stray, clearance, pin and bait use the rest point (the bait is placed on the body's side
+      of the rail, `away()`). Two new tests for the oblique den (`rail_frostmaw_lurk_oblique`, speed 1.0, and
+      `_oblique_far`, 1.4 with the body pinned at the far side of its stand) and one for the den on the line
+      (`_online`, 1.0); they skip the bait, hold and hearer as the other short runs do.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
@@ -4100,6 +4170,11 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     checked rule of MZB-365's fourth amendment: `SPOT_BLOCKS + stand <= STRIKE_REACH` and `SPOT_BLOCKS - stand -
     halfWidth >= RAIL_CLEARANCE`, with the stand 0.5, `SPOT_BLOCKS` mirrored in the sampler and pinned in Rust,
     and the body's real rest looked at by the GameTest rather than assumed.
+  - Amendment (the re-check's P2): boundary.md's AMBUSH_SPOT section says where Java stands the body (the rail's
+    normal through `track`, `SPOT_BLOCKS` off the rail's centre line, the spot giving the side; refused when
+    neither side is standable; the engine's spot when no rail direction is known), and the contract's two
+    inequalities count `LATERAL_SLACK` (MZB-360's and MZB-365's amendments). The wire is unchanged: `spot` is
+    still the engine's point.
 
 ### M8 design for the implementer
 

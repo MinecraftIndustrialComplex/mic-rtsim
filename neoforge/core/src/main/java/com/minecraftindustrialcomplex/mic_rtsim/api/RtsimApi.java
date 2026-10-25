@@ -296,6 +296,20 @@ public final class RtsimApi {
     }
 
     /**
+     * Registers what knows which way a rail runs at a point (the create plugin's), so a lurking body is placed on the
+     * rail's normal at the spot distance and not on the engine's rounded spot (MZB-360, the re-check's P2). With none
+     * registered the engine's spot stands. Call during mod construction.
+     */
+    public static void registerRailAxes(com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes axes) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.register(axes);
+    }
+
+    /** Where the lurk puppet of an agent is held (the hold point, not the engine's spot), or null while it is not held. */
+    public static net.minecraft.world.phys.Vec3 lurkHold(long agent) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.lurkHold(agent);
+    }
+
+    /**
      * The war parties lying in wait by a rail, by agent: the engine's AMBUSH_SPOTs of this session, an unmodifiable
      * view (read only; M8's train sampler reads it every sample, so it allocates nothing).
      */
