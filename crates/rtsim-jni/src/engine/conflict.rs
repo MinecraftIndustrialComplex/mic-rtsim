@@ -479,14 +479,14 @@ pub(super) fn claims(rec: &Rec<'_>) -> bool {
     journaled_kind(rec.kind)
 }
 
-/// Op ids `Replay` applies once: a chief's death and what the plugin moved (Java's, §9.2).
+/// Op ids `Replay` applies once: a chief's death and what the plugin moved (Java's, §9.2). A camp
+/// body's death has none: the engine skips it by its slot and generation.
 pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     let (at, size) = match rec.kind {
         boundary::CHIEF_KILLED => (56, 64),
         boundary::TRIBUTE_PAID => (64, 72),
         boundary::GIFT_GIVEN => (48, 56),
         boundary::BAND_LOOTED => (40, 48),
-        boundary::CAMP_DEATH => (64, 72),
         boundary::TRADED => (56, 64),
         boundary::CHIEF_PAID => (64, 72),
         _ => return 0,
@@ -613,6 +613,11 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
+    // The records of an earlier session are the ones before the session's `replay_done`: the
+    // engine's replay window (its outbox's, from `begin_replay`) covers them (a camp's census among
+    // them only marks its camp out, MOWZIE.md §4.9). Their sequences are below `session_first`, a
+    // replayed copy's too (its OBS_SEQ is the REASSERT's own); a live record's are at or past it.
+    st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
     ingest(st, &o, at);
 }
 

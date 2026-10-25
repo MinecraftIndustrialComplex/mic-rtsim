@@ -32,6 +32,13 @@ public final class ConflictRecords {
     /** M1: a kept FACTION_NOTICE was played (aux = its notice serial, {@link Notice#SERIAL}). */
     public static final int NOTICE_SHOWN = 0x0811;
 
+    /** M5: the camp reconciler's records (MOWZIE.md §4.9; docs/boundary.md §9, with M4's CAMP_BODIES action). */
+    public static final int CAMP_DEATH = 0x080E;
+    public static final int CAMP_CENSUS = 0x080F;
+    public static final int CAMP_BODIES = 0x0812;
+    public static final int CAMP_OUT = 0x0813;
+    public static final int CAMP_RECONCILE = 0x8808;
+
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
     public static final int ENVOY_MATERIALIZE = 0x8802;
@@ -250,9 +257,80 @@ public final class ConflictRecords {
         public static final int FACTION = 16, AGENT = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, SIGNAL = 48, SIZE = 56;
     }
 
+    // ---- the camp reconciler (M5; docs/boundary.md §9) -------------------------------------------
+
+    /** CAMP_DEATH's killer kind (aux): BY_* above, and a body carried off (Carry On). */
+    public static final int BY_TAKEN = 4;
+
+    /** CAMP_DEATH (aux = killer kind): once per body UUID, carried on a marker where it died. */
+    public static final class CampDeath {
+        public static final int FACTION = 24, BODY = 32, FLAGS = 36, SLOT = 40, GENERATION = 44, KILLER_MOST = 48,
+                KILLER_LEAST = 56, OP_ID = 64, SIZE = 72;
+        public static final int FLAG_CHIEF = 1, FLAG_STRAY = 2;
+    }
+
+    /** CAMP_CENSUS (aux = bodies n): the camp came in at a new epoch. */
+    public static final class CampCensus {
+        public static final int FACTION = 24, EPOCH = 32, FLAGS = 40, HEALTH = 44, THRONE_X = 48, THRONE_Y = 56, THRONE_Z = 64,
+                DIRECTION = 72, TRADED = 76, TRADED_SLOT = 80, TRADED_GENERATION = 84, BODIES = 88, BODY = 32, TRADER = 16;
+        /** Per body. */
+        public static final int B_BODY = 0, B_FLAGS = 4, B_SLOT = 8, B_GENERATION = 12, B_UUID_MOST = 16, B_UUID_LEAST = 24;
+        public static final int CHIEF = 1, CRYSTAL = 2, THRONE = 4;
+        public static final int BODY_STRAY = 1, BODY_ELSEWHERE = 2, BODY_CHIEF = 4;
+
+        public static int size(int n, int t) {
+            return BODIES + BODY * n + TRADER * t;
+        }
+    }
+
+    /** CAMP_BODIES (aux = lines n): the answer to a CAMP_RECONCILE, each line with the action it answers. */
+    public static final class CampBodies {
+        public static final int FACTION = 24, EPOCH = 32, OP_ID = 40, LINES = 48, LINE = 16;
+        public static final int L_LINE = 0, L_SLOT = 4, L_GENERATION = 8, L_ACTION = 12, L_OUTCOME = 13;
+        public static final int DONE = 1, NOTHING = 2, STALE = 3;
+
+        public static int size(int n) {
+            return LINES + LINE * n;
+        }
+    }
+
+    /** CAMP_OUT (aux 0): a footprint chunk dropped below FULL and the epoch ended. */
+    public static final class CampOut {
+        public static final int FACTION = 24, EPOCH = 32, SIZE = 40;
+    }
+
+    /** CAMP_RECONCILE (command, aux = lines n). */
+    public static final class CampReconcile {
+        public static final int FACTION = 16, EPOCH = 24, OP_ID = 32, THRONE_X = 40, THRONE_Y = 48, THRONE_Z = 56, DIRECTION = 64,
+                FLAGS = 68, LINES = 72, LINE = 32;
+        public static final int L_SLOT = 0, L_GENERATION = 4, L_BODY = 8, L_ACTION = 12, L_FLAGS = 13, L_A = 16, L_B = 24;
+        public static final int SPAWN = 1, ADOPT = 2, TAKE = 3, SET_OUT = 4, HAND_BACK = 5, REMOVE = 6, SEAT_HEIR = 7;
+        /** A line's flags: the slot is the camp's chief; the body holds its crystal. */
+        public static final int LINE_CHIEF = 1, LINE_CRYSTAL = 2;
+        public static final int FLAG_THRONE = 1;
+
+        public static int size(int n) {
+            return LINES + LINE * n;
+        }
+
+        public static String actionName(int action) {
+            return switch (action) {
+                case SPAWN -> "spawn";
+                case ADOPT -> "adopt";
+                case TAKE -> "take";
+                case SET_OUT -> "set out";
+                case HAND_BACK -> "hand back";
+                case REMOVE -> "remove";
+                case SEAT_HEIR -> "seat heir";
+                default -> "action " + action;
+            };
+        }
+    }
+
     /** The smallest a command of this kind can be (a shorter one is malformed). */
     public static int minSize(int kind) {
         return switch (kind) {
+            case CAMP_RECONCILE -> CampReconcile.LINES;
             case TERRITORY -> Territory.SIZE;
             case FACTION_NOTICE -> Notice.SIZE;
             case ENVOY_MATERIALIZE -> Envoy.MEMBERS;

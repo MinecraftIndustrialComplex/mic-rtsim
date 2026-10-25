@@ -1,9 +1,11 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.client;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarObjects;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarState;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.MicRtsimIceAndFire;
 import com.mojang.blaze3d.vertex.PoseStack;
 import java.util.Collections;
@@ -22,16 +24,18 @@ import net.minecraft.world.entity.Entity;
  * A dragon's body as it arrives on the client (docs/choices-dh-feed.md DHT68). Ice and Fire's controllers
  * (GeckoLib's) start a body's animation with a transition from the model's rest pose, 2 ticks at their speed of
  * 0.4, so for the first 5 ticks a new body is drawn it unfolds its wings and neck from that pose, where a moment
- * before the far model was flying. So for {@link #HOLD_TICKS} of its own from its first render, a body a far
- * mover names is held:
+ * before the far model was flying; and its flight loop would then start at its own first render, anywhere in the
+ * far model's beat. So for {@link #HOLD_TICKS} of its own from its first render, a body a far mover names is held:
  *
  * <ul>
  *   <li>vanilla's render of its model is cancelled, through GeckoLib's cancelable {@code GeoRenderEvent.Entity.Pre},
  *       posted on NeoForge's bus (no mixin; Ice and Fire's renderer is GeckoLib's, not a LivingEntityRenderer, so
- *       NeoForge's own RenderLivingEvent never fires for it). Its name tag, leash and shadow are not the model's
- *       and are still drawn;</li>
+ *       NeoForge's own RenderLivingEvent never fires for it). Its name tag goes too, through NeoForge's
+ *       RenderNameTagEvent ({@link #holds}); its leash and shadow have no event and are still drawn;</li>
  *   <li>its renderer runs once a frame into nothing ({@link #warm}), so its animation goes through the transition
- *       unseen, on its own clock;</li>
+ *       unseen. A flying body's first warm renders are the ones a live stand-in starts with
+ *       ({@code DragonLook.startOnBakeClock}), at its own ticks as far back as its far model's loop started, so its
+ *       flight loop starts in phase with the far model's beat, and a render at each loop's end keeps it there;</li>
  *   <li>the far renderer draws the far model as if the body were not there yet ({@link DragonLook#holds}).</li>
  * </ul>
  *
@@ -47,12 +51,16 @@ final class DragonArrivals {
     static final double HOLD_TICKS = 5.0;
     /** And at most this long in wall time from its arrival, for a game that pauses or freezes its ticks. */
     static final long HOLD_NANOS = 1_000_000_000L;
+    private static final long NONE = Long.MIN_VALUE, LOOP = (long) DragonLook.LOOP,
+            STEP = (long) (DragonLook.LOOP / DragonLook.FRAMES);
 
     private static final class Arrival {
         final DragonBaseEntity body;
         final long joined;
         /** The body's tick and partial tick at its first warm render, NaN before it. */
         double first = Double.NaN;
+        /** The body's tick its flight loop last started at, on its far model's beat; NONE when not put on it. */
+        long loop = NONE;
 
         Arrival(DragonBaseEntity body, long joined) {
             this.body = body;
@@ -66,8 +74,8 @@ final class DragonArrivals {
     /** A warm render is running: its own GeckoLib event goes through. */
     private boolean warming;
     private int errors;
-    /** Bodies held, and frames they were held for, since the last stats. */
-    private long bodies, frames;
+    /** Bodies held, those put on their far model's beat, and frames they were held for, since the last stats. */
+    private long bodies, onBeat, frames;
 
     /** A dragon joined a client level (EntityJoinLevelEvent). */
     void joined(Entity e) {
@@ -102,25 +110,28 @@ final class DragonArrivals {
                 continue;
             }
             // Vanilla draws it from now on: so it is never held after it was seen
-            if (!named(d.getId()) || !mayCopy.test(d) || d.isVehicle() || !warm(d, partial)) {
+            FarMover m = named(d.getId());
+            if (m == null || !mayCopy.test(d) || d.isVehicle() || !warm(a, m, partial)) {
                 it.remove();
                 continue;
             }
             if (Double.isNaN(a.first)) {
                 a.first = t;
                 bodies++;
+                if (a.loop != NONE)
+                    onBeat++;
             }
             held.add(d);
             frames++;
         }
     }
 
-    /** Whether a far mover of the feed names entity {@code id}: else there is no far model to show instead. */
-    private static boolean named(int id) {
+    /** The far mover of the feed that names entity {@code id}, null if none: then there is no far model to show. */
+    private static FarMover named(int id) {
         for (FarMover m : FarObjects.movers())
             if (m.entity() == id && m.kind() == FarKind.DRAGON)
-                return true;
-        return false;
+                return m;
+        return null;
     }
 
     private static float partial(Entity e) {
@@ -128,11 +139,47 @@ final class DragonArrivals {
                 .getGameTimeDeltaPartialTick(!e.level().tickRateManager().isEntityFrozen(e));
     }
 
-    /** One render of {@code d} into nothing, as vanilla would draw it this frame; false when it threw. */
-    private boolean warm(DragonBaseEntity d, float partial) {
+    /**
+     * One render of the body into nothing, as vanilla would draw it this frame, after any renders at its past
+     * ticks that keep its flight loop on {@code m}'s far beat; false when one threw.
+     *
+     * <p>GeckoLib reads a body's clock from its {@code tickCount} ({@code GeoEntity.getTick}, which Ice and Fire
+     * keeps) plus the render's partial tick, and a model's clock moves by the change in it from the last render of
+     * any of its entities, so a render with the tick set back is, to this body's controller, a render at that tick
+     * (the stand-ins rely on the same). Its far time is {@code far = FarClock.ticks() + beatOffset}, {@code far -
+     * real} ticks ahead of the body's own; the far model's loop started at {@code DragonLook.loopStart(far)}, so the
+     * body's starts at that less the same gap. Its first warm renders that ({@link DragonLook#WARM} renders a step
+     * apart, ending there, as a live stand-in's do): the 2-tick transition at 0.4 ends at the second, where the
+     * loop starts. GeckoLib starts the next loop at the first render past a loop's end, dropping what it ran over,
+     * so a render at the end itself keeps the beat (the stand-ins do the same). Only a body that plays the flight
+     * loop ({@link #inFlight}) for a far model that flies: one at rest plays no loop (Ice and Fire's ground pose has
+     * no length), and the blast's charge or a breath would play out of sight. The flight animation has no
+     * sound, particle or instruction keyframes, so the renders at past ticks start nothing. Not under {@code /tick
+     * freeze}: the far clock runs on while the body's ticks do not.
+     */
+    private boolean warm(Arrival a, FarMover m, float partial) {
+        DragonBaseEntity d = a.body;
+        int real = d.tickCount;
         warming = true;
         try {
             EntityRenderer<DragonBaseEntity> r = DragonLook.renderer(d);
+            if (Double.isNaN(a.first) && m.state() != FarState.ROOST && inFlight(d)
+                    && !d.level().tickRateManager().isEntityFrozen(d)) {
+                long far = FarClock.ticks() + DragonLook.beatOffset(m);
+                long start = DragonLook.loopStart(far) - (far - real);
+                for (int s = 0; s < DragonLook.WARM; s++) {
+                    long at = start + (s + 1 - DragonLook.WARM) * STEP;
+                    // A controller takes up its animation only at a time other than its -1 before any (GeckoLib's
+                    // lastPollTime); any first render at or before start - STEP still ends the transition at start
+                    renderAt(r, d, s == 0 && at == -1 ? at - 1 : at);
+                }
+                a.loop = start;
+            }
+            if (a.loop != NONE && real - a.loop >= LOOP) {
+                a.loop += (real - a.loop) / LOOP * LOOP;
+                renderAt(r, d, a.loop);
+            }
+            d.tickCount = real;
             r.render(d, Mth.lerp(partial, d.yRotO, d.getYRot()), partial, new PoseStack(), DragonLook.NULL_SOURCE,
                     DragonLook.SKY_LIGHT);
             return true;
@@ -141,8 +188,27 @@ final class DragonArrivals {
                 MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] a new dragon's body would not warm up; drawn as it is", e);
             return false;
         } finally {
+            d.tickCount = real;
             warming = false;
         }
+    }
+
+    /**
+     * Whether Ice and Fire's controller plays the flight loop for {@code d}, as its {@code selectGeckoAnimation}
+     * decides: the airborne pool (not dead, not swimming, flying or hovering or part way into either), and in it
+     * neither the blast's charge nor a fire breath. Any other action, and none, plays the flight loop; a body new
+     * to the client has no action at all ({@code getAnimation} null, not {@code NO_ANIMATION}).
+     */
+    private static boolean inFlight(DragonBaseEntity d) {
+        return !d.isModelDead() && !(d.isSwimming || d.isInWater() && d.swimProgress > 0f)
+                && (d.isFlying() || d.isHovering() || d.flyProgress > 0f || d.hoverProgress > 0f)
+                && !d.isBreathingFire() && d.getAnimation() != DragonBaseEntity.ANIMATION_FIRECHARGE;
+    }
+
+    /** A render of {@code d} into nothing at its tick {@code tick}, partial 0. */
+    private static void renderAt(EntityRenderer<DragonBaseEntity> r, DragonBaseEntity d, long tick) {
+        d.tickCount = (int) tick;
+        r.render(d, d.yRotO, 0f, new PoseStack(), DragonLook.NULL_SOURCE, DragonLook.SKY_LIGHT);
     }
 
     /** Whether the far renderer draws the far model for {@code body} this frame, vanilla's render held back. */
@@ -177,8 +243,9 @@ final class DragonArrivals {
 
     /** What it did since the last call, for the bench's log. */
     String stats() {
-        String s = "arrivals: " + bodies + " bodies held for " + frames + " frames, " + arrivals.size() + " waiting";
-        bodies = frames = 0;
+        String s = "arrivals: " + bodies + " bodies held (" + onBeat + " on the far beat) for " + frames + " frames, "
+                + arrivals.size() + " waiting";
+        bodies = onBeat = frames = 0;
         return s;
     }
 }

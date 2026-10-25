@@ -130,9 +130,9 @@ pub const BODY_STRAY: u32 = 1;
 pub const BODY_ELSEWHERE: u32 = 2;
 pub const BODY_CHIEF: u32 = 4;
 /// CAMP_BODIES outcomes, per line.
-pub const LINE_DONE: u32 = 1;
-pub const LINE_NOTHING: u32 = 2;
-pub const LINE_STALE: u32 = 3;
+pub const LINE_DONE: u8 = 1;
+pub const LINE_NOTHING: u8 = 2;
+pub const LINE_STALE: u8 = 3;
 /// CHIEF_PAID flags.
 pub const PAID_STRAY: u32 = 1;
 /// CHIEF_STATE and CHIEF_BODY flags.
@@ -445,8 +445,11 @@ pub struct LineAnswer {
     pub line: u32,
     pub slot: u32,
     pub generation: u32,
+    /// The action of the line this answers (`ACTION_*`): the answer carries it, so the engine books
+    /// the world fact by it even when the slot's line is no longer in flight.
+    pub action: u8,
     /// `LINE_DONE`, `LINE_NOTHING`, `LINE_STALE`.
-    pub outcome: u32,
+    pub outcome: u8,
 }
 
 /// The answer to a CAMP_RECONCILE.
@@ -544,15 +547,15 @@ impl Obs {
         self.kind() >= 0x0100
     }
 
-    /// The plugin's op id, for the records that move items, trade or kill (applied once).
-    /// CAMP_BODIES carries the engine's op id of the reconcile it answers, booked by state.
+    /// The plugin's op id, for the records that move items or trade (applied once). The camp's
+    /// records have none to skip by: CAMP_DEATH is idempotent by its slot and generation, and
+    /// CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
     pub fn op(&self) -> Option<u64> {
         match self {
             Obs::ChiefKilled(c) => Some(c.op),
             Obs::TributePaid(t) => Some(t.op),
             Obs::GiftGiven(g) => Some(g.op),
             Obs::Looted(l) => Some(l.op),
-            Obs::CampDeath(d) => Some(d.op),
             Obs::Traded(t) => Some(t.op),
             Obs::ChiefPaid(c) => Some(c.op),
             _ => None,
@@ -1228,7 +1231,9 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
                 w.u32(o, l.line);
                 w.u32(o + 4, l.slot);
                 w.u32(o + 8, l.generation);
-                w.u32(o + 12, l.outcome);
+                w.u8(o + 12, l.action);
+                w.u8(o + 13, l.outcome);
+                w.u16(o + 14, 0);
             }
             w.finish(CAMP_BODIES, lines.len() as u32, 48 + 16 * lines.len());
         }
@@ -1461,7 +1466,8 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
                         line: r.u32(o)?,
                         slot: r.u32(o + 4)?,
                         generation: r.u32(o + 8)?,
-                        outcome: r.u32(o + 12)?,
+                        action: r.u8(o + 12)?,
+                        outcome: r.u8(o + 13)?,
                     })
                 })
                 .collect::<Result<Vec<_>, CodecError>>()?;
@@ -2036,12 +2042,14 @@ pub(crate) mod tests {
                         line: 0,
                         slot: 2,
                         generation: 1,
+                        action: ACTION_SPAWN,
                         outcome: LINE_DONE,
                     },
                     LineAnswer {
                         line: 1,
                         slot: 0,
                         generation: 0,
+                        action: ACTION_REMOVE,
                         outcome: LINE_STALE,
                     },
                 ],
@@ -2423,6 +2431,7 @@ pub(crate) mod tests {
                         line: i,
                         slot: i,
                         generation: 1,
+                        action: ACTION_TAKE,
                         outcome: LINE_DONE,
                     })
                     .collect();
