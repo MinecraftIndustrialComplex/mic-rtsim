@@ -107,7 +107,7 @@ pub struct JavaTrain {
     /// Carriage 0's goods.
     pub goods: GoodVec,
     /// The train's ring (`mic_rtsim:applied_ops`): every carriage delta applied to it, saved with
-    /// its goods. Unbounded here: the real ring keeps the last 64 (RP-192).
+    /// its goods. Unbounded here: the real ring keeps the last 256 (RP-192).
     pub ring: BTreeSet<rtsim_kernel::journal::OpId>,
     /// The journal's op index (`appliedCmdOps`): every carriage delta applied.
     pub ops: BTreeSet<rtsim_kernel::journal::OpId>,

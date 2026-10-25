@@ -635,10 +635,14 @@ ahead:
   DUPLICATE and the goods leave once, wherever the raid is re-decided (in the replay, or live after
   its end when the replay clock stopped short of it, RP-188). That holds while Java's two saves
   agree (RP-184): the train's goods (`create_tracks.dat`) and the journal's op index
-  (`mic_rtsim_journal.dat`) are separate files and can part. Goods on disk without the journal
-  is still a double, and the journal without the goods a dupe (Java remembers the op, so the
-  restored train keeps its goods while the raider is credited again; the review's P1-1); §6.1
-  lists both, and RP-185 (a) closes both. **Decided by the coordinator,
+  (`mic_rtsim_journal.dat`) are separate files and can part. On the journal's index, goods on
+  disk without the journal is still a double, and the journal without the goods a dupe (Java
+  remembers the op, so the restored train keeps its goods while the raider is credited again; the
+  review's P1-1). Slice T2 (RP-190 to RP-196) closes both: Java dedups a train's carriage deltas by
+  a ring of the ops applied to it, saved in the train's own NBT in `create_tracks.dat`, so the
+  goods and the ops that moved them are kept or lost together and the raid is taken once in all
+  four cases; only if the ring's mixin did not apply does Java fall back to the journal's index
+  (§6.1). **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
   industry's own replay); the long-replay tests run with industry on and off.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
@@ -1236,14 +1240,17 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   (RP-183): booked once, and the raider is credited nothing. Unreachable with the host's one save
   batch; the op window's guard is for the tests' hand-built case and any later change to it.
 
-**What slice T alone leaves** (RP-184): J3, a double: the train's goods on disk after the raid,
-the journal on disk from before it (the tracks file written first and the server dead before the
+**What slices T and T2 leave** (RP-184, RP-196): with T2's ring the four durability cases are exact,
+since the train's goods and the ops applied to them are one file. Left: an op pushed out of a
+train's ring by 256 later carriage deltas to it inside the replay window, then sent again (applied
+twice; RP-192), and, only when the ring's mixin did not apply (logged once, RP-193), what slice T
+alone leaves on the journal's index: J3, a double: the train's goods on disk after the raid, the
+journal on disk from before it (the tracks file written first and the server dead before the
 journal's, or the journal held by the chunk barrier for up to `GIVE_UP_ROUNDS` saves); the
 re-decided raid's op is one Java forgot, and it is applied again. J4, a dupe: the journal on disk
 after the raid, the train's goods from before it (the journal's file written first and the server
 dead before the tracks', a window of milliseconds); Java remembers the op and answers DUPLICATE,
-so the restored train keeps its goods while the re-decided raid credits the raider again. RP-185
-(a), the applied ops saved with the train, makes both exact.
+so the restored train keeps its goods while the re-decided raid credits the raider again.
 
 **More than one crash** (the fix round's item 8). A held arrival stays held until its slack or the
 replay end of the first session that reaches one, whichever comes first. A session that crashes or

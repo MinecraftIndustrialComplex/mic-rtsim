@@ -5417,8 +5417,8 @@ pages are older than a train raid it made replays its window and raids the same 
 &cmd)`): a new op, which TrainWatch applied again. The coordinator's decision A: derive the op
 from the threat's identity. The rtsim-industry change is confined to `attack_train`'s op and the
 loot exchange's drop on DUPLICATE (RP-180, RP-182, RP-183); rtsim-jni passes the DUPLICATE on
-(`answered_again`, RP-182). No page, record or wire format changes (RP-180), no fixture moves, and no Java is
-built: RP-185 proposes the Java change. Tests: rtsim-industry `tests/train_raid_ops.rs` (4) and
+(`answered_again`, RP-182). No page, record or wire format changes (RP-180), no fixture moves, and no Java in
+this slice: RP-185 proposed the Java change, built as slice T2 on this branch (below, RP-190 to RP-196). Tests: rtsim-industry `tests/train_raid_ops.rs` (4) and
 `cmd.rs` (2 unit tests), one crash test file per raider on main through a shared harness
 (rtsim-ecology `tests/common/train_raid.rs`, included by path; dragons 3, conflict 2, ships 3), and
 rtsim-jni `tests/industry.rs`'s `a_train_raid_decided_again_after_a_crash_is_applied_once`. M8's
@@ -5511,13 +5511,13 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   build the case by hand. The case table (the raider's pages older than the raid, Java as RP-184
   names its saves):
 
-  | Industry's pages | Java's op index | Java's goods | Main | With A (slice T alone) |
-  | --- | --- | --- | --- | --- |
-  | older than the raid (one batch) | remembered | gone (J1) | twice | once (DUPLICATE, the exchange dropped) |
-  | older | forgotten | restored (J2) | once | once |
-  | older | forgotten | gone (J3) | twice | twice |
-  | older | remembered | restored (J4) | once | a dupe: never off the train, while the raider is credited again (review P1-1, RP-184) |
-  | newer (holds the raid) | either | either | twice past the cooldown (a new op), skipped inside it | nothing booked or sent (`knows_key`) |
+  | Industry's pages | Java's op index | Java's goods | Main | With A (slice T alone) | With A and T2's ring (RP-196) |
+  | --- | --- | --- | --- | --- | --- |
+  | older than the raid (one batch) | remembered | gone (J1) | twice | once (DUPLICATE, the exchange dropped) | once (DUPLICATE) |
+  | older | forgotten | restored (J2) | once | once | once |
+  | older | forgotten | gone (J3) | twice | twice | once (DUPLICATE: the ring came back with the goods) |
+  | older | remembered | restored (J4) | once | a dupe: never off the train, while the raider is credited again (review P1-1, RP-184) | once (applied to the restored goods: the ring came back without the op) |
+  | newer (holds the raid) | either | either | twice past the cooldown (a new op), skipped inside it | nothing booked or sent (`knows_key`) | the same |
 
   The guard's memory is the window (`RECENT`, 256 derivations): once 256 later ops have pushed the
   key's tag out, `knows_key` no longer sees it and a raider meeting the raid again books it again
@@ -5555,14 +5555,15 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   `rev_j4_the_band_carries_goods_that_never_left_the_train`, which counts the goods across the
   train and the band together). The harness (`JavaTrain`) dedups by `Dedup::Journal` for slice T
   alone and by `Dedup::Ring` for RP-185 (a), so the Rust tests pin both: the J4 dupe is T's
-  residual alone, and (a) closes it.
+  residual alone, and (a) closes it. Slice T2 built (a): once in all four cases (RP-196, with the
+  GameTests that pin each row on Create's own save code, RP-195).
 - **RP-185** (the Java change, proposed, not built): (a), recommended: TrainWatch keeps for each
   train a bounded ring (about 64) of the carriage delta ops it applied, saved with the train in
   `create_tracks.dat` (a mixin on `Train.write` and `Train.read`, one long array tag), and
   dedups IND_CARRIAGE_DELTA by that ring instead of the journal's index. The goods and the op that
   moved them are then one file, so J3 is a DUPLICATE (once) and J4 applies the op again to the
   restored goods (once): exact in every case. 64 ops a train is far more than a raider's window
-  between two page saves can re-decide. (b), smaller: never let `create_tracks.dat` reach disk
+  between two page saves can re-decide (built with 256: station exchanges count too, RP-192). (b), smaller: never let `create_tracks.dat` reach disk
   ahead of the journal (a mixin on `RailwaySavedData`'s save that waits on the journal's round, as
   the barrier waits on chunks), which turns J3 into J4. This record called that "a loss, never a
   double"; it is backwards (review P1-1): J4 is a dupe under A, so (b) would make the dupe the only
@@ -5630,3 +5631,122 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   dupe (the journal without the oil file: the tanks hold the oil and the deposit keeps it). Slice U
   owns the deposit claim and its fix; this slice leaves Industry.java and DieselOilPlugin.java
   alone.
+
+### Slice T2 (the train op ring)
+
+RP-185 (a), the coordinator's choice: Java's dedup of IND_CARRIAGE_DELTA moves from the journal's op
+index to a ring of applied op ids saved in each Create train's own NBT, beside its goods, so slice T's
+J3 double and J4 dupe (RP-184) both go. Built on the same branch as slice T, which lands with it. Java
+only (the create plugin, one core test helper); no Rust, wire, page or record change (the Rust harness
+already modelled the ring, `Dedup::Ring`, RP-184). Create facts are from cfr on Create 6.0.10, the jar
+neoforge/create compiles and runs against (`create_packMods`: deep-time/smoke/mic/server/mods/
+create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and `TrainRingGameTests`
+(7 GameTests).
+
+- **RP-190** (the ring and its key; the brief's item 1): `AppliedOpRing` (create, pure Java) holds a
+  train's applied IND_CARRIAGE_DELTA op ids, oldest first. It lives on Create's `Train` as a field
+  `ringmixin.TrainRingMixin` adds (`@Unique`, made on the first delta), reached through
+  `AppliedOpsHolder`, an interface outside the mixin package that the mixin implements (no bespoke
+  entity, D3). It is saved as one long array under `mic_rtsim:applied_ops` (`TrainRing.KEY`) in the
+  compound `Train.write(DimensionPalette, HolderLookup.Provider)` returns (an `@Inject` at RETURN) and
+  read back by an `@Inject` at RETURN of the static `Train.read(CompoundTag, HolderLookup.Provider,
+  Map, DimensionPalette)`, onto the train it returns. Full descriptors, `remap = false` as TrainMixin.
+  cfr: `Train.write` (Train.java:1093) builds a new `CompoundTag` and puts only Create's keys, so
+  Create drops any key it does not write; `Train.read` (:1145) reads only its own. Their only callers
+  are `RailwaySavedData.save` (`t.write(dimensions, registries)` for each train of
+  `Create.RAILWAYS.trains`, :61) and `RailwaySavedData.load` (`Train.read(c, registries,
+  sd.trackNetworks, dimensions)`, :81), the overworld's `create_tracks` SavedData: of the jar's
+  classes, only Train, Carriage and RailwaySavedData hold the write descriptor, and only Train and
+  RailwaySavedData the read one. Every carriage delta goes through `TrainWatch.carriageDelta` (station
+  exchanges and loot, reasons 1 and 2), so the ring holds them all. The key is written only while it
+  holds an op and `RtsimConfig.on(Module.INDUSTRY)` (the switch, not the session: a save at the
+  server's stop still writes it), RP-194.
+- **RP-191** (the dedup is the ring alone; item 2): `carriageDelta` looks the train up first. A train
+  that exists, with the ring on (RP-193), is answered DUPLICATE_OP when its ring holds the op and the
+  journal's index is not asked; otherwise the delta is applied (removals first, as before) and the op
+  goes into the ring at once, after the storage changed and before the IND_CARRIAGE_RESULT and
+  APPLIED, in the same call on the server thread. A SavedData compound is built on the server thread
+  between ticks, so no save falls between the goods and the op. A train Create no longer has keeps the
+  journal's index (DUPLICATE when it knows the op, else FAILED with nothing applied, as before):
+  nothing is applied to it either way, so it can neither double nor dupe. Where the goods reach disk
+  (the brief's check): only through `create_tracks.dat`. `CarriageContraptionEntity.shouldBeSaved()`
+  is false (:732), so the carriage entity is never in an entity chunk; `CarriageContraption.writeStorage`
+  returns unless it writes a spawn packet (:338), so the contraption NBT in the carriage's serialised
+  entity holds no storage; and the cargo (`TrainCargoManager`) is written only by
+  `Carriage.DimensionalCarriageEntity.write` (`Carriage.this.storage.write(tag, registries, false)`,
+  :574), each entry of `Carriage.write`'s EntityPositioning list, inside `Train.write`, and read back
+  by `DimensionalCarriageEntity.read`. So the goods and the ring are one call's output in one file: a
+  crash keeps both or neither, and no chunk write can save the goods without the ring. (A train
+  disassembled at a station puts its goods into blocks, and is then the train Create no longer has.)
+- **RP-192** (the bound; item 3): 256 ops a train, not 64; the oldest falls out first, and an op
+  already held is not added again (a resend). The ring must hold every op the engine can send again
+  after a crash: the ones applied between the engine's last durable save and Create's last write of the
+  tracks file. That window is one autosave interval normally (6,000 ticks; rtsim-jni `window_grows`:
+  "Normally it is one vanilla autosave interval at most"), up to four while the chunk barrier holds the
+  journal, and with it the engine's ack, back (`GIVE_UP_ROUNDS` 3): 24,000 ticks. One train takes in
+  it at most one station exchange op per simulated arrival (`train_arrived` derives one exchange op per
+  call at a station of an unloaded district; a loaded stop exchanges through Create's interfaces,
+  no carriage delta) and one loot op per raid, which the per-train, per-class cooldown
+  (`cooldown_ticks`, 24,000 by default, 5 classes) holds to about 5 to 10 in the window; a resend
+  (W4) reuses its op. Arrivals dominate: 64 covers one every 375 ticks (19 s) over 24,000 ticks, which a
+  short shuttle beats; 256 covers one every 94 ticks (under 5 s) over the worst window and one every 23
+  ticks over one autosave. The cost: 8 bytes an op, at most 2 KiB of NBT a train in create_tracks.dat
+  and in memory (the array grows from 8 on demand), and a scan of at most 256 longs a delta. Past the
+  bound, an op pushed out by 256 later deltas to the same train inside the window and then sent again
+  is applied again (a double); accepted. Not built: pruning on the engine's ack (`Industry.whenAcked`)
+  would bound the ring by the window instead of a count, but needs the ack of each op.
+  `AppliedOpRingTest` pins the bound and the order.
+- **RP-193** (the fallback; item 4): the ring mixin has its own config,
+  `mic_rtsim_create_ring.mixins.json` ("required": false, injectors `defaultRequire` 0, each `@Inject`
+  `require = 0`), a second `[[mixins]]` entry in create's neoforge.mods.toml, in its own package
+  (`ringmixin`, apart from `mixin`). The project had no optional mixin to follow: every other config
+  is required with `defaultRequire` 1, and there is no C2ME skip plugin (ChunkWriteBarrier picks its
+  C2ME strategy at run time, by reflection). An injection that finds no target throws at
+  `defaultRequire` 1 even in a config that is not required, hence the 0s. The mixin can then apply in
+  part without a word, so detection is by function: `TrainRing.available(server)` probes once, on the
+  first carriage delta, that `Train` implements `AppliedOpsHolder` and that a probe train (no
+  carriages, no graph) with a probe op keeps it through `Train.write` then `Train.read`. If not, it logs
+  one WARN naming what broke ("the train op ring is off (...)") and `carriageDelta` dedups by the
+  journal's index: slice T's dedup, J3 a double and J4 a dupe (RP-196). On, it logs one INFO.
+  Tests: the two fallback GameTests (RP-195) switch the ring off (`TrainRing.fallbackForTest`) and run
+  that branch, and check the WARN is logged once for the probe and two deltas.
+- **RP-194** (UR-1 and the module switch): with industry off the key is not written, so the next save
+  of each train drops it and keeps every key of Create's; the train loads as Create would, its ring
+  read but unused. The ring stays on the train in memory, so a switch back on before a restart saves
+  it again. A restart with industry off loses the rings; no op from before it can be sent again after
+  it, since that restart's own save moved the engine past it. With the plugin removed the mixin is
+  gone, Create's `Train.read` ignores the key and its `Train.write` drops it (RP-190). Undoing the
+  slice is removing the ring config. Test: `withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing`.
+- **RP-195** (the GameTests; item 5): `TrainRingGameTests` (namespace `mic_rtsim_create`, batches
+  `train_ring_1` to `train_ring_7`, one test each) emulate a crash on a synthetic train of 32 iron
+  (IndustryGameTests' `syntheticTrain`, given a dimensional entry, since a carriage saves its storage
+  only in those, and found through `TrainWatch.seenForTest`). The tracks file is what
+  `RailwaySavedData.save` writes for the train (Create's own `Train.write`, a dimension palette, the
+  compound through a compressed NBT file's bytes), and the restart is Create's own `Train.read` of it,
+  the new train taking the old one's id; the journal's file is its op index
+  (`Journal.forgetAppliedForTest` for a journal from before the op, the new
+  `Journal.rememberAppliedForTest` for one saved while its COMMAND_RESULT was unacknowledged, which a
+  live GameTest cannot hold: the engine acks within ticks). A raid of 10 (one IND_CARRIAGE_DELTA, loot)
+  is applied, the crash taken, and the raid sent again under the same op, as the replay re-decides it
+  (slice T's key). The raider holds the 10 the surviving decision credits it, so the goods are
+  conserved when the train and the raider hold 32 between them. RESULTS
+- **RP-196** (the four cases, J1 to J4; the coordinator's table): which of Java's two saves landed
+  after the raid's application (RP-184), the raider's pages older than the raid:
+
+  | Case | Pinning tests | Main | Slice T alone | T and T2 (the ring) |
+  | --- | --- | --- | --- | --- |
+  | J1, both saved | Rust: `which_of_javas_saves_landed_by_the_ring_and_by_the_journal` (rtsim-ecology), rtsim-jni `a_train_raid_decided_again_after_a_crash_is_applied_once`; GameTest: `aCrashThatKeptBothFilesTakesATrainOpOnce` | twice (a new op) | once (DUPLICATE) | once (DUPLICATE: the ring holds the op) |
+  | J2, neither saved | Rust: `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`; GameTest: `aCrashThatKeptNeitherFileTakesATrainOpOnce` | once | once | once (applied: the ring is from before the op) |
+  | J3, goods saved, journal not | Rust: `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`; GameTests: `aCrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpOnce` (T2), `withoutTheRingACrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpTwice` (T alone) | twice | twice (applied again on goods that lost it) | once (DUPLICATE: the ring came back with the goods) |
+  | J4, journal saved, goods not | Rust: `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`, `a_bands_ambush_after_a_crash_carries_what_left_the_train` (rtsim-conflict, counts the train and the band together); GameTests: `aCrashThatKeptTheJournalAndNotTheGoodsTakesATrainOpOnce` (T2), `withoutTheRingACrashThatKeptTheJournalAndNotTheGoodsLeavesThemOnTheTrain` (T alone) | once (a new op on the restored goods) | a dupe (DUPLICATE on restored goods, the raider credited again) | once (applied to the restored goods: the ring came back without the op) |
+
+  The Rust tests run both dedups through the harness (`Dedup::Ring`, `Dedup::Journal`); the GameTests
+  run Java's own on Create's own save code. With the ring's mixin not applied (RP-193), T and T2 give
+  slice T alone's column. What is left: an op past the ring's bound (RP-192), and the deposit deltas'
+  own two files (slice U, RP-189).
+- **RP-197** (the docs): docs/replay-gate.md §3.6's industry bullet says T2 closes J3 and J4 and §6.1's
+  "What slice T alone leaves" is now what T and T2 leave (the ring's bound, and slice T's two cases
+  only when the ring's mixin did not apply); docs/industry-boundary.md §4.3's IND_CARRIAGE_DELTA
+  bullet names the ring as the dedup; TrainWatch's comment at the dedup says the same. RP-183's case
+  table has a column for the ring. docs/boundary.md does not describe the carriage delta's dedup (it
+  defers industry's records to industry-boundary.md), so it is unchanged.
