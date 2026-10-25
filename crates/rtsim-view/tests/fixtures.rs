@@ -144,3 +144,53 @@ fn the_create_gametest_save_draws_every_layer_and_writes_nothing() {
         &["ecology.herds", "industry.districts", "industry.stations"],
     );
 }
+
+/// Slice S7's layers on the create GameTest save: it holds package stores (frogports with no
+/// district, from the S4 GameTests) that draw as edges and have cards; its glass pages are in an
+/// older format, so the sections layer is empty and says so, and the viewer names the pages it
+/// left out.
+#[test]
+fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
+    let dir = data("create");
+    let before = snapshot(&dir);
+    let view = View::open(&dir, Limits::default()).expect("the save opens");
+    let drawing = every_layer_draws_or_says_why(&view);
+    assert!(
+        drawing.iter().any(|d| d == "industry.stores"),
+        "the stores draw: {drawing:?}"
+    );
+    let n = view
+        .saved()
+        .industry
+        .as_ref()
+        .expect("industry")
+        .stores
+        .len();
+    assert_eq!(n, 6, "the save holds six package stores");
+    for l in ["industry.sections", "industry.networks"] {
+        if !drawing.iter().any(|d| d == l) {
+            assert!(view.reasons().contains_key(l), "{l} says why it is empty");
+        }
+    }
+    let id = view.saved().industry.as_ref().unwrap().stores[0].id.0;
+    let view = Arc::new(view);
+    let app = mic_viewer::viewer::App::new(Arc::clone(&view));
+    let card: mic_viewer::api::Card =
+        get_json(&app, &format!("/api/thing/industry.stores/{id}"), "");
+    assert_eq!(card.layer, "industry.stores");
+    assert!(card.sections.iter().any(|s| s.title == "Frogports"));
+    let (status, _) = get(&app, "/api/thing/industry.stores/999999", "");
+    assert_eq!(status, 404, "a store the save lacks has no card");
+    let layers: mic_viewer::api::Layers = get_json(&app, "/api/layers", "");
+    let sections = layers
+        .layers
+        .iter()
+        .find(|l| l.id == "industry.sections")
+        .expect("the sections layer");
+    assert!(
+        sections.max_bpp <= 1.0,
+        "sections draw at a block a pixel and closer"
+    );
+    drop(view);
+    assert_same(&before, &snapshot(&dir));
+}

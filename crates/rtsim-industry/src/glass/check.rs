@@ -2607,7 +2607,7 @@ impl Compiled {
 
     /// Each section as the report shows it (SECTIONS.md §8.1, choice SC165): its state is its
     /// unit's, and with one unit or none the district's own window and replay.
-    fn section_reports(&self, dg: &DistrictGlass) -> Vec<report::SectionReport> {
+    pub fn section_reports(&self, dg: &DistrictGlass) -> Vec<report::SectionReport> {
         let glass_replay = dg.replay.is_some() && dg.replay_model == report::replay_model::GLASS;
         let frozen = dg.replay.as_ref().map(|r| r.frozen());
         let active = self.units.active();
@@ -2707,7 +2707,7 @@ impl Compiled {
     }
 
     /// Each store shared by sections as the report shows it (SECTIONS.md §4.2, §8.1, choice SC168).
-    fn shared_reports(&self) -> Vec<report::SharedReport> {
+    pub fn shared_reports(&self) -> Vec<report::SharedReport> {
         let take = self.counts.as_ref();
         self.sections
             .shared

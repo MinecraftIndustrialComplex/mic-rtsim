@@ -13,18 +13,23 @@ use std::ops::Range;
 use rtsim_industry::cluster::Cluster;
 use rtsim_industry::district::District;
 use rtsim_industry::engine::{Engine, Inspection, LineEdge, ProcessPeek};
+use rtsim_industry::glass::net::{Nets, PartId};
+use rtsim_industry::glass::page::{PageRead, read_district_page};
+use rtsim_industry::glass::report::DistrictSections;
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::StationDecl;
 use rtsim_industry::persist::{
     self, CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, STORE_TABLE,
 };
+use rtsim_industry::stores::{PackageStore, read_store_page};
 use rtsim_industry::threat::Leg;
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::Reader;
 use rtsim_kernel::page::PageKey;
 use rtsim_kernel::rows::PageSource;
-use rtsim_layers::{DistrictMark, IndustrySource, Table};
+use rtsim_layers::industry::{NetPart, store_mark};
+use rtsim_layers::{DistrictMark, IndustrySource, NetMark, SectionMark, StoreMark, Table};
 
 /// What a district's map mark needs, kept for every district.
 #[derive(Clone, Debug)]
@@ -78,6 +83,14 @@ pub struct IndustryView {
     pub cluster_of: BTreeMap<u64, u64>,
     /// A hash of every industry page read (the engine has no state hash of its own).
     pub pages_hash: u64,
+    /// The glass pages' sections per district with a complete compile, by district id (slice S7).
+    pub sections: Vec<(u64, DistrictSections)>,
+    /// The package stores, by id (slice S7).
+    pub stores: Vec<PackageStore>,
+    /// The shared kinetic networks the compiles make, in the registry's order (slice S7).
+    pub nets: Vec<NetMark>,
+    /// Glass pages that did not read, as "district N: why" (the layers draw without them).
+    pub glass_unread: Vec<String>,
     globals: Vec<u8>,
 }
 
@@ -162,6 +175,9 @@ impl IndustryView {
                 };
             }
         }
+        let tun = Tunables::default();
+        let (sections, nets, glass_unread) = read_glass(source, &districts, &tun)?;
+        let stores = read_stores(source)?;
         Ok(Some(IndustryView {
             now: e.now().0 as i64,
             goods: e.goods().clone(),
@@ -175,6 +191,10 @@ impl IndustryView {
             districts,
             cluster_of,
             pages_hash: hash.0,
+            sections,
+            stores,
+            nets,
+            glass_unread,
             globals,
         }))
     }
@@ -209,6 +229,31 @@ impl IndustryView {
             Some(rtsim_industry::ids::GoodClass::Fluid) => "mB",
             Some(rtsim_industry::ids::GoodClass::Item) | None => "items",
             Some(_) => "units",
+        }
+    }
+
+    /// A view over nothing but what the test hands it: the glass and store tables of slice S7.
+    #[cfg(test)]
+    pub(crate) fn synthetic(
+        districts: Vec<DistrictSummary>,
+        sections: Vec<(u64, DistrictSections)>,
+        stores: Vec<PackageStore>,
+        nets: Vec<NetMark>,
+    ) -> IndustryView {
+        IndustryView {
+            now: 0,
+            goods: BTreeMap::new(),
+            stations: Vec::new(),
+            lines: Vec::new(),
+            legs: Vec::new(),
+            districts,
+            cluster_of: BTreeMap::new(),
+            pages_hash: 0,
+            sections,
+            stores,
+            nets,
+            glass_unread: Vec::new(),
+            globals: Vec::new(),
         }
     }
 
@@ -255,6 +300,138 @@ impl IndustryView {
             processes: e.processes_peek(d).unwrap_or_default(),
         })
     }
+}
+
+/// The glass pages' sections and the networks the compiles make. A page that does not decode or
+/// the save's format dropped is left out and named; only a listing failure fails the load.
+#[allow(clippy::type_complexity)]
+fn read_glass(
+    source: &dyn PageSource,
+    districts: &[DistrictSummary],
+    tun: &Tunables,
+) -> Result<(Vec<(u64, DistrictSections)>, Vec<NetMark>, Vec<String>), String> {
+    let ids = source
+        .table_ids(GLASS_TABLE)
+        .map_err(|e| format!("cannot list the glass pages: {e}"))?;
+    let mut sections = Vec::new();
+    let mut unread = Vec::new();
+    let mut parts: Vec<(PartId, u32, rtsim_industry::glass::records::GraphDomain)> = Vec::new();
+    for id in ids {
+        let Some(dim) = districts
+            .binary_search_by_key(&id, |d| d.id)
+            .ok()
+            .map(|i| districts[i].dim)
+        else {
+            continue;
+        };
+        let b = match source.read(PageKey::new(GLASS_TABLE, id)) {
+            Ok(Some(b)) => b,
+            Ok(None) => continue,
+            Err(e) => {
+                unread.push(format!("district {id}: {e}"));
+                continue;
+            }
+        };
+        let dg = match read_district_page(&b, tun.glass.sections_max, tun.glass.counted_stores_max)
+        {
+            Ok(PageRead::Kept(dg)) => dg,
+            Ok(PageRead::Dropped(why)) => {
+                unread.push(format!("district {id}: {why}"));
+                continue;
+            }
+            Err(e) => {
+                unread.push(format!("district {id}: {e}"));
+                continue;
+            }
+        };
+        let Some(c) = dg.compiled.as_ref() else {
+            continue;
+        };
+        for (i, dom) in c.graph.domains.iter().enumerate() {
+            if dom.shared() {
+                parts.push((
+                    PartId {
+                        district: DistrictId(id),
+                        domain: i as u32,
+                    },
+                    dim,
+                    dom.clone(),
+                ));
+            }
+        }
+        if let Some(ds) = DistrictSections::of(&dg) {
+            sections.push((id, ds));
+        }
+    }
+    let refs: Vec<_> = parts.iter().map(|(p, d, g)| (*p, *d, g)).collect();
+    let nets = Nets::build(&refs, tun.replay.cluster_districts_max);
+    let centre = |d: u64| {
+        districts
+            .binary_search_by_key(&d, |x| x.id)
+            .ok()
+            .map_or((0.0, 0.0), |i| districts[i].centre())
+    };
+    let marks = (0..nets.len())
+        .filter_map(|i| nets.get(i).map(|n| (i, n)))
+        .map(|(i, n)| {
+            let mut dim = 0;
+            let parts: Vec<NetPart> = n
+                .parts()
+                .map(|p| {
+                    let (d, source) = parts
+                        .iter()
+                        .find(|(q, _, _)| *q == p)
+                        .map_or((0, None), |(_, dm, g)| {
+                            (*dm, g.sources.first().map(|s| s.pos))
+                        });
+                    dim = d;
+                    let (x, z) = source.map_or_else(
+                        || centre(p.district.0),
+                        |pos| (f64::from(block_x(pos)), f64::from(block_z(pos))),
+                    );
+                    NetPart {
+                        district: p.district.0,
+                        x,
+                        z,
+                    }
+                })
+                .collect();
+            NetMark {
+                id: i as u64,
+                dim,
+                status: n.status.words(),
+                coupled: n.status == rtsim_industry::glass::net::Status::Coupled,
+                parts,
+            }
+        })
+        .collect();
+    Ok((sections, marks, unread))
+}
+
+/// `BlockPos.asLong`'s x: the top 26 bits, signed.
+fn block_x(pos: i64) -> i32 {
+    (pos >> 38) as i32
+}
+
+/// `BlockPos.asLong`'s z: the middle 26 bits, signed.
+fn block_z(pos: i64) -> i32 {
+    ((pos << 26) >> 38) as i32
+}
+
+/// The package stores, by id. A page that does not decode fails the load, as a district page does.
+fn read_stores(source: &dyn PageSource) -> Result<Vec<PackageStore>, String> {
+    let ids = source
+        .table_ids(STORE_TABLE)
+        .map_err(|e| format!("cannot list the store pages: {e}"))?;
+    let mut out = Vec::new();
+    for id in ids {
+        let b = source
+            .read(PageKey::new(STORE_TABLE, id))
+            .map_err(|e| format!("cannot read store page {id}: {e}"))?
+            .ok_or_else(|| format!("store page {id} is listed and missing"))?;
+        out.push(read_store_page(id, &b).map_err(|e| format!("store page {id}: {e}"))?);
+    }
+    Ok(out)
 }
 
 /// What a district's card shows beyond its summary ([`IndustryView::inspect`]).
@@ -336,8 +513,63 @@ impl IndustrySource for IndustryView {
         }
     }
 
+    fn sections(&self, ids: Range<u64>, f: &mut dyn FnMut(&SectionMark)) {
+        let lo = self.sections.partition_point(|(d, _)| *d < ids.start);
+        for (d, ds) in self.sections[lo..].iter().take_while(|(d, _)| *d < ids.end) {
+            let Some(dim) = self.district(*d).map(|x| x.dim) else {
+                continue;
+            };
+            for (i, s) in ds.sections.iter().enumerate() {
+                let Some((a, b)) = s.bbox else {
+                    continue;
+                };
+                f(&SectionMark {
+                    district: *d,
+                    dim,
+                    index: i as u32,
+                    state: s.state,
+                    working: s.working,
+                    nodes: s.nodes,
+                    stores: s.stores.len() as u32,
+                    shared_stores: s.stores.iter().filter(|x| x.1).count() as u32,
+                    unit: s.unit,
+                    block_box: [
+                        f64::from(a.x),
+                        f64::from(a.z),
+                        f64::from(b.x) + 1.0,
+                        f64::from(b.z) + 1.0,
+                    ],
+                });
+            }
+        }
+    }
+
+    fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
+        let lo = self.stores.partition_point(|s| s.id.0 < ids.start);
+        for s in self.stores[lo..].iter().take_while(|s| s.id.0 < ids.end) {
+            f(&store_mark(s));
+        }
+    }
+
+    fn networks(&self, ids: Range<u64>, f: &mut dyn FnMut(&NetMark)) {
+        let lo = (ids.start as usize).min(self.nets.len());
+        let hi = (ids.end.min(self.nets.len() as u64)) as usize;
+        for n in &self.nets[lo..hi.max(lo)] {
+            f(n);
+        }
+    }
+
     fn next_key(&self, t: Table, from: u64) -> Option<u64> {
         match t {
+            Table::Sections => {
+                let i = self.sections.partition_point(|(d, _)| *d < from);
+                self.sections.get(i).map(|(d, _)| *d)
+            }
+            Table::Stores => {
+                let i = self.stores.partition_point(|s| s.id.0 < from);
+                self.stores.get(i).map(|s| s.id.0)
+            }
+            Table::Networks => (from < self.nets.len() as u64).then_some(from),
             Table::Districts => {
                 let i = self.districts.partition_point(|d| d.id < from);
                 self.districts.get(i).map(|d| d.id)
