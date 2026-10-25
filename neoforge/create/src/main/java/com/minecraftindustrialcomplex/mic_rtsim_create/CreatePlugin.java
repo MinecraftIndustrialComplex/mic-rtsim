@@ -298,18 +298,20 @@ public final class CreatePlugin implements IndustryPlugin {
     public void tick(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry, long now) {
         TrainWatch.tick(industry, now);
         PackageStores.of(industry).tick(now);
+        // The train rings' prunes run in their session hook's end of tick, with the module on or off (RP-257).
     }
 
     @Override
     public String perfLine() {
         com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
-        return ind == null ? TrainWatch.perfLine() : TrainWatch.perfLine() + ", " + PackageStores.of(ind).perfLine();
+        return (ind == null ? TrainWatch.perfLine() : TrainWatch.perfLine() + ", " + PackageStores.of(ind).perfLine()) + "; " + TrainRing.perfLine();
     }
 
     /** The engine forgot what it was told: every package store is declared again (SECTIONS.md §2.5). */
     @Override
     public void announce(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry) {
         PackageStores.of(industry).announce();
+        TrainRing.announce();
     }
 
     @Override

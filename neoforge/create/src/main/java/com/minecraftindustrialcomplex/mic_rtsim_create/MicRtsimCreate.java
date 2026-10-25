@@ -31,6 +31,8 @@ public final class MicRtsimCreate {
         IndustryApi.register(new CreateDefencePlugin());
         IndustryApi.register(new RepairSchematics());
         IndustryApi.registerCommand(IndRecords.IND_CARRIAGE_DELTA, TrainWatch::carriageDelta);
+        // The train rings settle at each session's start (docs/choices-mowzie-build.md RP-251)
+        com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerPlugin(new TrainRing.SessionHook());
         IndustryApi.registerCommand(IndRecords.IND_WRITE_PACKAGE, WritePackages::accept);
         IndustryApi.registerCommand(IndRecords.IND_WRITE_CHAIN, WriteChains::accept);
         IndustryApi.registerCommand(IndRecords.IND_HELD_DRAW, Frontier::heldDraw);

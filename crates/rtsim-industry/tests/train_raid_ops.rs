@@ -227,7 +227,7 @@ fn the_key_parts_the_attacks_it_should() {
         }),
         base
     );
-    // A station exchange's DUPLICATE is not the loot's: nothing to drop under an unknown op.
+    // A DUPLICATE for an op the engine holds no exchange for drops nothing.
     let mut e = engine();
     assert!(!e.command_duplicate(OpId(0x4900_0000_0000_0001)));
 }

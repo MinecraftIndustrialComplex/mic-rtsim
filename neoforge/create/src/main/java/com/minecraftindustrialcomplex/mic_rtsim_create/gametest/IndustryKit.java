@@ -127,7 +127,9 @@ public final class IndustryKit {
     /** Test pacing: short sweeps and detection right after an edit. Clears test switches a failed test left on. */
     public static void fastConfig() {
         com.minecraftindustrialcomplex.mic_rtsim_create.Frontier.ignoreReturnsForTest = false;
-        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.fallbackForTest(false);
+        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.breakForTest(com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.BreakForTest.NONE);
+        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.holdPrunesForTest(false);
+        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.viewForTest(null);
         com.minecraftindustrialcomplex.mic_rtsim_create.PortRing.fallbackForTest(false);
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
