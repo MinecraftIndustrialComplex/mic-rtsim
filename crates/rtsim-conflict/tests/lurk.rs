@@ -224,10 +224,11 @@ fn a_band_that_gets_bored_takes_its_lurk_down_once() {
     assert!(!l.c.lurking(l.p), "a handle that is gone is no lurk");
 }
 
-/// A band in Minecraft: its removal goes before its recall, so the plugin forgets the spot
-/// before it hears the band go.
+/// A band in Minecraft: its removal goes before its order home, so the plugin forgets the spot
+/// before it hears the band go. A band that is bored walks home in its bodies (MZB-456): the order
+/// is a steer, not a recall.
 #[test]
-fn the_removal_goes_before_the_recall() {
+fn the_removal_goes_before_the_order_home() {
     let mut l = Lurk::raid(65);
     l.until_lurking();
     l.embody();
@@ -238,12 +239,21 @@ fn the_removal_goes_before_the_recall() {
         .iter()
         .position(|c| matches!(c, Cmd::AmbushSpot(a) if a.flags & AMBUSH_REMOVED != 0))
         .expect("a removal");
-    let at_recall = l
+    let at_order = l
         .said
         .iter()
-        .position(|c| matches!(c, Cmd::Recall(r) if r.agent == Party::agent(l.p)))
-        .expect("a recall");
-    assert!(at_remove < at_recall, "{:?}", l.said);
+        .position(|c| match c {
+            Cmd::Steer(s) => s.agent == Party::agent(l.p),
+            Cmd::Recall(r) => r.agent == Party::agent(l.p),
+            _ => false,
+        })
+        .expect("an order home");
+    assert!(at_remove < at_order, "{:?}", l.said);
+    assert!(
+        matches!(l.said[at_order], Cmd::Steer(_)),
+        "bored, it walks home in its bodies: {:?}",
+        l.said
+    );
     assert_eq!(l.removals(), 1);
 }
 
