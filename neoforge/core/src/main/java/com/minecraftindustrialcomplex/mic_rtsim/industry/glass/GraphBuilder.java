@@ -664,6 +664,17 @@ public final class GraphBuilder {
         public final List<Level> levels = new ArrayList<>();
         public final List<Source> sources = new ArrayList<>();
         public final List<Member> members = new ArrayList<>();
+        /**
+         * A shared part's members in no district's chunks (the tail, one part of the network counts it): sent after
+         * {@link #members} as one list, N_FOREIGN of them.
+         */
+        public final List<Member> tail = new ArrayList<>();
+        /**
+         * A shared part's peers: the other districts holding a listed member or source of the network or a chunk it
+         * reaches, ascending (as unsigned ids, the engine's order), never the compile's own. Empty unless
+         * {@link GlassRecords.Domain#SHARED}.
+         */
+        public final LongArrayList peers = new LongArrayList();
 
         Domain(int index, long network) {
             this.index = index;
@@ -680,16 +691,30 @@ public final class GraphBuilder {
 
         /** Adds a member, merging it into an equal one without a node (same ratio and impact). */
         public void member(int node, Rat ratio, double impact) {
+            add(members, node, ratio, impact);
+        }
+
+        /** Adds a tail member (in no district's chunks), merged as {@link #member} does, apart from the members. */
+        public void tail(int node, Rat ratio, double impact) {
+            add(tail, node, ratio, impact);
+        }
+
+        /** The members the record carries: the district's own, then the tail. */
+        public int memberRecords() {
+            return members.size() + tail.size();
+        }
+
+        private static void add(List<Member> list, int node, Rat ratio, double impact) {
             if (node == NONE) {
-                for (int i = 0; i < members.size(); i++) {
-                    Member m = members.get(i);
+                for (int i = 0; i < list.size(); i++) {
+                    Member m = list.get(i);
                     if (m.node() == NONE && m.ratio().equals(ratio) && m.impact() == impact) {
-                        members.set(i, new Member(NONE, m.count() + 1, ratio, impact));
+                        list.set(i, new Member(NONE, m.count() + 1, ratio, impact));
                         return;
                     }
                 }
             }
-            members.add(new Member(node, 1, ratio, impact));
+            list.add(new Member(node, 1, ratio, impact));
         }
     }
 
@@ -756,18 +781,33 @@ public final class GraphBuilder {
                 return "domain " + d.index + " current speed row " + d.current + " of " + d.levels.size();
             if (d.levels.size() > GlassRecords.Domain.MAX_SPEED_ROWS)
                 return "domain " + d.index + " has " + d.levels.size() + " speed rows";
+            boolean shared = (d.flags & GlassRecords.Domain.SHARED) != 0;
             for (Source s : d.sources) {
                 if (s.driver != NONE && (s.driver < 0 || s.driver >= n))
                     return "domain " + d.index + " source driver " + s.driver;
                 if (s.current != NONE && (s.current < 0 || s.current >= s.levels.size()))
                     return "domain " + d.index + " source current row " + s.current + " of " + s.levels.size();
+                // A foreign source (no rows) is a shared part's alone, and has neither a boiler nor a row now.
+                if (s.levels.isEmpty() && (!shared || s.driver != NONE || s.current != NONE))
+                    return "domain " + d.index + " has a source with no rows" + (shared ? " but a driver or a current row" : " and is not shared");
             }
             for (Member m : d.members)
                 if (m.node() != NONE && (m.node() < 0 || m.node() >= n))
                     return "domain " + d.index + " member node " + m.node();
-            if (GlassRecords.Domain.size(d.levels.size(), d.sources.size(), d.sourceLevels(), d.members.size()) > MAX_RECORD)
+            for (Member m : d.tail)
+                if (m.node() != NONE)
+                    return "domain " + d.index + " tail member names node " + m.node();
+            if (!shared && (!d.tail.isEmpty() || !d.peers.isEmpty()))
+                return "domain " + d.index + " is not shared but has " + d.tail.size() + " tail members and " + d.peers.size() + " peers";
+            for (int i = 0; i < d.peers.size(); i++) {
+                if (d.peers.getLong(i) == district.id)
+                    return "domain " + d.index + " names its own district as a peer";
+                if (i > 0 && Long.compareUnsigned(d.peers.getLong(i - 1), d.peers.getLong(i)) >= 0)
+                    return "domain " + d.index + " peers are not ascending and distinct";
+            }
+            if (GlassRecords.Domain.size(d.levels.size(), d.sources.size(), d.sourceLevels(), d.memberRecords(), d.peers.size()) > MAX_RECORD)
                 return "domain " + d.index + " has " + d.levels.size() + " speed rows, " + d.sources.size() + " sources with "
-                        + d.sourceLevels() + " rows and " + d.members.size() + " members";
+                        + d.sourceLevels() + " rows, " + d.memberRecords() + " members and " + d.peers.size() + " peers";
         }
         return null;
     }
@@ -848,7 +888,8 @@ public final class GraphBuilder {
         }
         for (Domain d : domains) {
             int nsl = d.sourceLevels();
-            ByteBuffer b = buf(GlassRecords.Domain.size(d.levels.size(), d.sources.size(), nsl, d.members.size()));
+            int nm = d.memberRecords();
+            ByteBuffer b = buf(GlassRecords.Domain.size(d.levels.size(), d.sources.size(), nsl, nm, d.peers.size()));
             head(b, districtId, compile, d.index);
             b.putLong(GlassRecords.Domain.NETWORK, d.network);
             b.putInt(GlassRecords.Domain.N_LEVELS, d.levels.size());
@@ -858,7 +899,8 @@ public final class GraphBuilder {
             b.putDouble(GlassRecords.Domain.LIVE_CAPACITY, d.liveCapacity);
             b.putInt(GlassRecords.Domain.N_SOURCES, d.sources.size());
             b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
-            b.putInt(GlassRecords.Domain.N_FOREIGN, 0);
+            b.putInt(GlassRecords.Domain.N_FOREIGN, d.tail.size());
+            b.putInt(GlassRecords.Domain.N_PEERS, d.peers.size());
             for (int i = 0; i < d.levels.size(); i++)
                 putLevel(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, d.levels.get(i));
             int s0 = GlassRecords.Domain.sources(d.levels.size());
@@ -879,8 +921,8 @@ public final class GraphBuilder {
                     putLevel(b, r0 + (first++) * GlassRecords.Domain.LEVEL, l);
             }
             int m0 = GlassRecords.Domain.members(d.levels.size(), d.sources.size(), nsl);
-            for (int i = 0; i < d.members.size(); i++) {
-                Member m = d.members.get(i);
+            for (int i = 0; i < nm; i++) {
+                Member m = i < d.members.size() ? d.members.get(i) : d.tail.get(i - d.members.size());
                 Rat q = m.ratio().fitSigned();
                 int at = m0 + i * GlassRecords.Domain.MEMBER;
                 b.putInt(at + GlassRecords.Domain.M_NODE, m.node());
@@ -889,7 +931,10 @@ public final class GraphBuilder {
                 b.putInt(at + GlassRecords.Domain.M_RATIO_DEN, (int) q.den());
                 b.putDouble(at + GlassRecords.Domain.M_IMPACT, m.impact());
             }
-            out.add(new Encoded(GlassRecords.IND_GRAPH_DOMAIN, d.members.size(), b.array()));
+            int p0 = GlassRecords.Domain.peers(d.levels.size(), d.sources.size(), nsl, nm);
+            for (int i = 0; i < d.peers.size(); i++)
+                b.putLong(p0 + i * GlassRecords.Domain.PEER, d.peers.getLong(i));
+            out.add(new Encoded(GlassRecords.IND_GRAPH_DOMAIN, nm, b.array()));
         }
         return out;
     }

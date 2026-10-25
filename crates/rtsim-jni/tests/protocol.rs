@@ -3602,6 +3602,795 @@ mod herds {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    // ---- the replay gate (docs/replay-gate.md §9.4, RP-80 to RP-89) ---------------------------
+
+    /// A buffer that holds a whole long replay in one hand-over.
+    const ONE_HAND_OVER: usize = 1024 * 1024;
+
+    /// Filler a replay must read through: `count` obstacle reports of a herd the engine never
+    /// had (56 bytes each, so eight thousand span a dozen minimum-size hand-overs).
+    fn fillers(j: &mut Java, count: usize) {
+        for _ in 0..count {
+            j.herd_obs(&O::Obstacle(hb::Obstacle {
+                agent: 0,
+                epoch: 0,
+                failures: 0,
+                present: 0,
+                stuck: (0, 0),
+                target: (0, 0),
+            }));
+        }
+    }
+
+    /// The replay ends this engine ran, and the last one's hand-overs.
+    fn replay_counts(e: &Engine) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Acquire;
+        (
+            e.stats.replays_ended.load(Acquire),
+            e.stats.replay_handovers.load(Acquire),
+        )
+    }
+
+    /// Hands the journal over one step at a time until the replay has ended. No herd command may
+    /// have been written by a step that ended while the replay still ran. Returns the steps.
+    fn replay_quietly(e: &Engine, j: &mut Java) -> u32 {
+        let mut steps = 0;
+        while replay_counts(e).0 == 0 {
+            j.flush();
+            steps += 1;
+            if replay_counts(e).0 == 0 {
+                assert!(
+                    j.herds.is_empty(),
+                    "a herd command written while the replay runs (step {steps}): {:?}",
+                    j.herds
+                );
+            }
+            assert!(steps < 200, "the replay never ended");
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        steps
+    }
+
+    /// Whether the old session's group is in view at its last save.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Group {
+        /// Never: the herd is founded and saved, and nothing is in view.
+        None,
+        /// The pages hold the group embodied.
+        InPages,
+        /// The player arrives after the save: the group is decided and answered in the journal.
+        AfterSave,
+    }
+
+    /// What the old session (the one that crashes) does, in order.
+    #[derive(Clone, Copy)]
+    struct Script {
+        group: Group,
+        /// Filler records right after the save, so that the replay spans hand-overs.
+        fillers: usize,
+        /// Sheep the player kills after the fillers.
+        kills: usize,
+        /// One sheep shorn.
+        shear: bool,
+        /// The player leaves: the group is captured, in the journal.
+        despawn: bool,
+    }
+
+    impl Script {
+        const QUIET: Script = Script {
+            group: Group::None,
+            fillers: 0,
+            kills: 0,
+            shear: false,
+            despawn: false,
+        };
+    }
+
+    /// What the old session left.
+    struct Old {
+        dir: std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        agent: u64,
+        pos: [f64; 3],
+        /// The group Java was commanded, when there was one.
+        group: Option<hb::Materialize>,
+        killed: Vec<u64>,
+        sheared: Vec<u64>,
+    }
+
+    /// A herd of 200 sheep founded, a player beside it, and `s` played after the last save; then
+    /// the crash. The journal holds what the pages lack.
+    fn the_old_session(name: &str, s: Script) -> Old {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 200);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        let in_view = |j: &mut Java| {
+            j.players = vec![(PLAYER, dim, pos)];
+            j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+            j.idle();
+        };
+        if s.group == Group::InPages {
+            in_view(&mut j);
+        }
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        fillers(&mut j, s.fillers);
+        if s.group == Group::AfterSave {
+            in_view(&mut j);
+        }
+        let group = materializations(&j).pop();
+        let killed = j.herd_plugin.kill(agent, s.kills, PLAYER);
+        let sheared = if s.shear {
+            j.herd_plugin.shear(agent, 1, PLAYER)
+        } else {
+            Vec::new()
+        };
+        j.herd_flush();
+        j.idle();
+        if s.despawn {
+            j.players.clear();
+            flush_until(&mut j, "the group captured", 1_000, |j| {
+                j.herds
+                    .iter()
+                    .any(|(_, c)| matches!(c, H::Despawn(d) if d.agent == agent))
+            });
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let bytes = j
+            .world_save()
+            .journal
+            .iter()
+            .filter(|(q, _)| *q >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        if s.fillers >= 8_000 {
+            assert!(
+                bytes > 3 * wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+        Old {
+            dir,
+            saved,
+            gt,
+            agent,
+            pos,
+            group,
+            killed,
+            sheared,
+        }
+    }
+
+    /// The next session over the old one's pages and journal, a player standing where the old
+    /// one did when `player`; its journal not handed over.
+    fn next_session(old: &Old, capacity: usize, player: bool) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(&old.dir, capacity);
+        let mut j = Java::open(e.clone(), old.saved.clone());
+        j.module_mask = MODULES;
+        j.game_time = old.gt;
+        if player {
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            j.players = vec![(PLAYER, dim, old.pos)];
+        }
+        (e, j)
+    }
+
+    /// The first group the next session commands, once the player has been seen.
+    fn the_group_again(j: &mut Java) -> hb::Materialize {
+        j.run_until("the group again", |j| !materializations(j).is_empty());
+        j.idle();
+        materializations(j).remove(0)
+    }
+
+    /// §9.4 test 1 (scratch audit :3533): the group in view at the save, three sheep killed behind
+    /// 8,000 fillers, a player standing at the herd as the next session starts. Nothing is
+    /// written while the replay runs, and no group the player sees afterwards holds a sheep the
+    /// replay killed. `capacity`: the next session's buffer.
+    fn a_long_replay_at_the_herd(name: &str, capacity: usize) {
+        let script = Script {
+            group: Group::InPages,
+            fillers: 8_000,
+            kills: 3,
+            ..Script::QUIET
+        };
+        let old = the_old_session(name, script);
+        assert_eq!(old.killed.len(), 3);
+        let epoch = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, capacity, true);
+        let steps = replay_quietly(&e, &mut j);
+        let (ended, hand_overs) = replay_counts(&e);
+        assert_eq!(ended, 1, "the replay ended");
+        if capacity == wire::MIN_CAPACITY {
+            assert!(hand_overs >= 3, "a replay of {hand_overs} hand-overs");
+            assert!(steps >= 3, "{steps} steps");
+        } else {
+            assert_eq!(hand_overs, 1, "a replay of one hand-over");
+        }
+        let m = the_group_again(&mut j);
+        for g in materializations(&j) {
+            for b in &g.members {
+                assert!(
+                    !old.killed.contains(&b.member),
+                    "a sheep the replay killed is sent again: {} in {:?}",
+                    b.member,
+                    g.members.iter().map(|b| b.member).collect::<Vec<_>>()
+                );
+            }
+        }
+        assert!(m.epoch > epoch, "a new epoch: {} after {epoch}", m.epoch);
+        let size = old.group.as_ref().expect("a group").members.len();
+        assert_eq!(m.members.len(), size, "the group is the size it was");
+        let counts = e.with_herds(|h, _| h.replay_gate_counts());
+        assert_eq!(counts.never, 0, "nothing embodied while replaying");
+        assert_eq!(counts.last_never, None);
+        let (_, killed, taken, lost, dead) = summary(&e, old.agent);
+        assert_eq!(
+            (killed, taken, lost, dead),
+            (3, 0, 0, 3),
+            "each kill booked once"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_long_replay_with_a_player_at_the_herd_never_sends_a_killed_sheep() {
+        a_long_replay_at_the_herd("herds-rp80-long", wire::MIN_CAPACITY);
+    }
+
+    /// Control: the same replay in one hand-over.
+    #[test]
+    fn a_one_hand_over_replay_with_a_player_at_the_herd_never_sends_a_killed_sheep() {
+        a_long_replay_at_the_herd("herds-rp80-one", ONE_HAND_OVER);
+    }
+
+    /// §9.4 test 2: the epoch of a group decided after the pages and answered in the journal is
+    /// not decided again after a crash. Returns (the old epoch, the next session's first).
+    fn the_epoch_after_a_crash(name: &str, group: Group) -> (u32, u32) {
+        let old = the_old_session(name, Script { group, ..Script::QUIET });
+        let before = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let m = the_group_again(&mut j);
+        assert_eq!(m.agent, old.agent);
+        assert_eq!(info(&e, old.agent)[8], u64::from(m.epoch));
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (before, m.epoch)
+    }
+
+    /// Today the live session decides epoch 1 and the restart decides 1 again: the pages predate
+    /// the group and its HERD_MATERIALIZED is a no-op.
+    #[test]
+    fn a_group_decided_after_the_pages_does_not_have_its_epoch_decided_again_after_a_crash() {
+        let (before, after) = the_epoch_after_a_crash("herds-rp81", Group::AfterSave);
+        assert_eq!(before, 1, "the old session's first group");
+        assert_eq!(after, 2, "the next session's is above it");
+    }
+
+    /// Control: the pages hold the group, so its epoch is theirs.
+    #[test]
+    fn a_group_in_the_pages_does_not_have_its_epoch_decided_again_after_a_crash() {
+        let (before, after) = the_epoch_after_a_crash("herds-rp81-pages", Group::InPages);
+        assert_eq!((before, after), (1, 2));
+    }
+
+    /// §9.4 test 3: a group decided after the save, shorn once, then captured (its player left):
+    /// the next session's replay reads it as the old one did, so the capture lands on its
+    /// members. `group`: where the group was at the save.
+    fn a_replayed_capture(name: &str, group: Group) {
+        let script = Script {
+            group,
+            shear: true,
+            despawn: true,
+            ..Script::QUIET
+        };
+        let old = the_old_session(name, script);
+        let g = old.group.as_ref().expect("a group");
+        assert_eq!(old.sheared.len(), 1, "one sheep shorn");
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        let (st, ..) = e.herd_stats();
+        assert_eq!(st.captures, 1, "the capture was applied: {st:?}");
+        assert_eq!(st.sheared, 1, "and the shearing: {st:?}");
+        let seen = e.with_herds(|h, _| {
+            h.herd(rtsim_ecology::herds::herd::herd_of(old.agent).unwrap())
+                .unwrap()
+                .seen
+                .clone()
+        });
+        for b in &g.members {
+            let s = seen
+                .get(&b.member)
+                .unwrap_or_else(|| panic!("member {} is not seen", b.member));
+            assert_eq!(
+                s.sheared_at.is_some(),
+                b.member == old.sheared[0],
+                "only the shorn sheep is shorn"
+            );
+        }
+        let lasts: std::collections::BTreeSet<u64> = g
+            .members
+            .iter()
+            .map(|b| seen[&b.member].last.0)
+            .collect();
+        assert_eq!(lasts.len(), 1, "every member captured at one time: {lasts:?}");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_replayed_capture_of_a_group_decided_after_the_save_lands_on_its_members() {
+        a_replayed_capture("herds-rp82", Group::AfterSave);
+    }
+
+    /// Control: a group the pages held.
+    #[test]
+    fn a_replayed_capture_of_a_group_the_pages_held_lands_on_its_members() {
+        a_replayed_capture("herds-rp82-pages", Group::InPages);
+    }
+
+    /// An epoch that ended in the replayed window (the group captured) is not decided again
+    /// (docs/replay-gate.md §5.3, rule 5): the player is back as the next session starts.
+    fn an_epoch_that_ended(name: &str, group: Group) {
+        let script = Script {
+            group,
+            despawn: true,
+            ..Script::QUIET
+        };
+        let old = the_old_session(name, script);
+        let ended = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let m = the_group_again(&mut j);
+        assert!(m.epoch > ended, "epoch {} after {ended} ended", m.epoch);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn an_epoch_that_ended_in_the_replayed_window_is_not_decided_again() {
+        an_epoch_that_ended("herds-rp83", Group::AfterSave);
+    }
+
+    /// Control: the group was in the pages, ended in the window.
+    #[test]
+    fn an_epoch_that_ended_after_the_pages_held_it_is_not_decided_again() {
+        an_epoch_that_ended("herds-rp83-pages", Group::InPages);
+    }
+
+    /// A generation no engine heard: the one a crash lost with its journal.
+    const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+
+    /// A REASSERT of `rec` under generation `nonce`, at the record's own sequence: what
+    /// `Java::reassert` journals, in place of the original.
+    fn as_copy(rec: &[u8], nonce: u64) -> Vec<u8> {
+        let len = obs::reassert::INNER + rec.len();
+        let mut r = vec![0u8; len];
+        wire::put_u16(&mut r, wire::R_KIND, obs::REASSERT);
+        wire::put_u16(&mut r, wire::R_SIZE, len as u16);
+        wire::put_i64(&mut r, obs::GAME_TIME, wire::i64_at(rec, obs::GAME_TIME));
+        wire::put_u64(&mut r, obs::reassert::GEN, nonce);
+        r[obs::reassert::INNER..].copy_from_slice(rec);
+        wire::put_u64(&mut r, obs::OBS_SEQ, wire::u64_at(rec, obs::OBS_SEQ));
+        r
+    }
+
+    /// RP-84: a group decided after the save and answered in the journal, the answer replayed as
+    /// the record itself (`copy` false: honoured) or as a holder's copy of it (REASSERT, from a
+    /// generation no engine heard: not honoured, only its epoch counted). Returns (groups
+    /// honoured, copies applied, the epoch the group had, the epoch of the one the player sees
+    /// after the replay).
+    fn a_replayed_materialization(name: &str, copy: bool) -> (u64, u64, u32, u32) {
+        use std::sync::atomic::Ordering::Acquire;
+        let mut old = the_old_session(
+            name,
+            Script {
+                group: Group::AfterSave,
+                ..Script::QUIET
+            },
+        );
+        let before = old.group.as_ref().expect("a group").epoch;
+        if copy {
+            let mut made = 0;
+            for (_, r) in old.saved.journal.iter_mut() {
+                if wire::u16_at(r, wire::R_KIND) == hb::HERD_MATERIALIZED {
+                    *r = as_copy(r, EARLIER_GEN);
+                    made += 1;
+                }
+            }
+            assert_eq!(made, 1, "one materialization in the journal");
+        }
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let honoured = e.with_herds(|h, _| h.replay_honoured());
+        let copies = e.stats.copies_applied.load(Acquire);
+        let after = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (honoured, copies, before, after)
+    }
+
+    /// RP-84 (the host routes a copy to `ingest_copy`, never to `ingest`): a materialization
+    /// carried by a holder and replayed embodies nothing, and its epoch is not decided again.
+    /// Before, the host applied the copy as the record itself, and the replay honoured it.
+    #[test]
+    fn a_replayed_copy_of_a_materialization_is_not_honoured_but_its_epoch_is_counted() {
+        let (honoured, copies, before, after) = a_replayed_materialization("herds-rp84", true);
+        assert_eq!((honoured, copies), (0, 1), "a copy honours no group");
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// Control: the record itself, replayed, is honoured.
+    #[test]
+    fn a_replayed_materialization_the_journal_holds_is_honoured() {
+        let (honoured, copies, before, after) = a_replayed_materialization("herds-rp84-own", false);
+        assert_eq!((honoured, copies), (1, 0), "the record's group is honoured");
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// RP-81: a record the herds ignore (they are switched off while the journal replays) still
+    /// names an epoch their engine must not decide again once they are switched on. The old
+    /// session journals a HERD_MATERIALIZED of epoch 9 for the saved herd and crashes; the next
+    /// session starts with the herds `off` (or on, the control), replays it, switches them on if
+    /// they were off, and a player stands at the herd. Returns the epoch of the group he sees.
+    fn the_epoch_after_a_replay_with_the_herds(name: &str, off: bool) -> u32 {
+        let mut old = the_old_session(name, Script::QUIET);
+        let mut b = Vec::new();
+        let o = O::Materialized(hb::Materialized {
+            agent: old.agent,
+            epoch: 9,
+            dimension: 0,
+            spawned: 3,
+        });
+        hb::encode_obs(0, old.gt, &o, &mut b);
+        let seq = old.saved.next_obs;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        old.saved.journal.push_back((seq, b));
+        old.saved.next_obs += 1;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        if off {
+            j.module_mask = 0b1111;
+        }
+        replay_quietly(&e, &mut j);
+        if off {
+            j.modules(MODULES);
+            j.idle();
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, old.pos)];
+        let epoch = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epoch
+    }
+
+    #[test]
+    fn a_record_replayed_while_the_herds_are_off_still_raises_their_epoch_floor() {
+        let epoch = the_epoch_after_a_replay_with_the_herds("herds-rp81-off", true);
+        assert!(epoch > 9, "epoch {epoch} after a replayed 9");
+    }
+
+    /// Control: the herds on all along.
+    #[test]
+    fn a_record_replayed_while_the_herds_are_on_raises_their_epoch_floor() {
+        let epoch = the_epoch_after_a_replay_with_the_herds("herds-rp81-on", false);
+        assert!(epoch > 9, "epoch {epoch} after a replayed 9");
+    }
+
+    /// A herd of 200 sheep founded and never saved (a fresh world after a crash, or pages that
+    /// could not be read): the next session starts with no herd. `group`: a player beside it, so
+    /// that a group (epoch 1) is decided and journaled before the crash.
+    fn the_old_session_with_no_saved_herd(name: &str, group: bool) -> Old {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 200);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        if group {
+            j.players = vec![(PLAYER, dim, pos)];
+            j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+            j.herd_flush();
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let made = materializations(&j).pop();
+        let gt = j.game_time;
+        let saved = j.crash();
+        Old {
+            dir,
+            saved,
+            gt,
+            agent,
+            pos,
+            group: made,
+            killed: Vec::new(),
+            sheared: Vec::new(),
+        }
+    }
+
+    /// Founds a herd of 60 sheep 2,000 blocks from the old one and returns its agent.
+    fn found_another(e: &Engine, j: &mut Java) -> u64 {
+        let before = e.herd_agents();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Newdown flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: AT.0 + 2_000,
+            z: AT.1,
+            count: 60,
+            seed: 0,
+        }])
+        .unwrap();
+        j.idle();
+        let after = e.herd_agents();
+        assert_eq!(after.len(), before.len() + 1, "one herd founded");
+        *after
+            .iter()
+            .find(|a| !before.contains(a))
+            .expect("a new herd")
+    }
+
+    /// A holder's copy of a death of member 0 of `agent`, from a generation no engine heard,
+    /// handed over (REASSERT). Returns the copies applied since the engine began.
+    fn a_copy_of_a_death(e: &Engine, j: &mut Java, old: &Old, agent: u64) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        let mut b = Vec::new();
+        let o = O::Killed(hb::Killed {
+            agent,
+            epoch: 1,
+            member: 0,
+            by: hb::KillerKind::Player,
+            killer: PLAYER,
+            op: 1 << 62 | 77,
+        });
+        hb::encode_obs(0, old.gt, &o, &mut b);
+        wire::put_u64(&mut b, obs::OBS_SEQ, old.saved.next_obs + 1_000);
+        j.reassert(EARLIER_GEN, &b);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.stats.copies_applied.load(Acquire)
+    }
+
+    /// RP-84: the herd the old session had under a handle its pages lack (founded after the last
+    /// save) is not the herd the next session founds under it: the world model founds in the
+    /// order the world is explored. A copy of the old herd's death (REASSERT, a generation no
+    /// engine heard) that arrives after the new founding names the agent both share. `known`
+    /// aims it at the saved herd instead (the control). `toggle`: the herds are switched off and
+    /// on again after the founding (a MODULES record), which begins their replay again.
+    /// Returns (the saved herd's killed count, the new herd's) after the copy, and the copies
+    /// applied.
+    fn a_copy_after_a_founding(name: &str, known: bool, toggle: bool) -> ((u64, u64), u64) {
+        let old = the_old_session(name, Script::QUIET);
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        let new = found_another(&e, &mut j);
+        if toggle {
+            j.modules(0b1111);
+            j.idle();
+            j.modules(MODULES);
+            j.idle();
+        }
+        let target = if known { old.agent } else { new };
+        let applied = a_copy_of_a_death(&e, &mut j, &old, target);
+        let out = (summary(&e, old.agent).1, summary(&e, new).1);
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (out, applied)
+    }
+
+    #[test]
+    fn a_copy_for_a_herd_the_pages_lacked_does_not_land_on_the_herd_founded_in_its_place() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-founded", false, false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (0, 0), "it lands on neither herd");
+    }
+
+    /// Control: the same copy for the saved herd lands.
+    #[test]
+    fn a_copy_for_a_herd_the_pages_held_lands_on_it_after_a_founding() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-pages", true, false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
+    /// A switch-off and on after the founding begins the replay again: the session's bound
+    /// stays, so the herd founded meanwhile still takes no copy. Control: the saved herd's lands
+    /// after the same switch.
+    #[test]
+    fn a_switch_on_after_a_founding_does_not_make_the_new_herd_one_the_last_session_had() {
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-toggle", false, true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (0, 0), "it lands on neither herd");
+        let (killed, applied) = a_copy_after_a_founding("herds-rp84-toggle-pages", true, true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, (1, 0), "it lands on the saved herd only");
+    }
+
+    /// RP-84: the next session starts with no herd (`saved` false: the old one's was never saved)
+    /// or with the old one (the control). The herds do not run without a herd, so their replay
+    /// begins at the first founding, after the replay end; a copy of the old herd's death must not
+    /// land on a herd founded under the same handle. Returns the killed count of the herd after
+    /// the copy, and the copies applied.
+    fn a_copy_with_no_herd_at_the_session_start(name: &str, saved: bool) -> (u64, u64) {
+        let old = if saved {
+            the_old_session(name, Script::QUIET)
+        } else {
+            the_old_session_with_no_saved_herd(name, false)
+        };
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        if !saved {
+            assert!(e.herd_agents().is_empty(), "the pages hold no herd");
+            let again = found(&e, &mut j, 200);
+            assert_eq!(again, old.agent, "handle 0 again");
+        }
+        let applied = a_copy_of_a_death(&e, &mut j, &old, old.agent);
+        let killed = summary(&e, old.agent).1;
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (killed, applied)
+    }
+
+    #[test]
+    fn a_copy_for_a_herd_the_session_began_without_does_not_land_on_its_first_herd() {
+        let (killed, applied) = a_copy_with_no_herd_at_the_session_start("herds-rp84-empty", false);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, 0, "it lands on nothing");
+    }
+
+    /// Control: the herd the pages held takes the copy.
+    #[test]
+    fn a_copy_for_a_herd_the_session_began_with_lands_on_it() {
+        let (killed, applied) =
+            a_copy_with_no_herd_at_the_session_start("herds-rp84-empty-pages", true);
+        assert_eq!(applied, 1, "the copy was applied by the host");
+        assert_eq!(killed, 1, "it lands on the saved herd");
+    }
+
+    /// RP-81: the herds are on with no herd (the pages hold none), so their replay has not begun
+    /// when the journal's records of the old herd are applied; each still raises the floor of its
+    /// agent. The herd founded after the replay end, on the same handle, decides an epoch above
+    /// the old one's. Control (`saved`): the old herd in the pages. Returns the epoch of the group
+    /// the player sees, and of the old session's.
+    fn the_epoch_with_no_herd_when_the_journal_replays(name: &str, saved: bool) -> (u32, u32) {
+        let old = if saved {
+            the_old_session(
+                name,
+                Script {
+                    group: Group::AfterSave,
+                    ..Script::QUIET
+                },
+            )
+        } else {
+            the_old_session_with_no_saved_herd(name, true)
+        };
+        let before = old.group.as_ref().expect("a group").epoch;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        replay_quietly(&e, &mut j);
+        if !saved {
+            let again = found(&e, &mut j, 200);
+            assert_eq!(again, old.agent, "handle 0 again");
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, old.pos)];
+        let after = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (before, after)
+    }
+
+    #[test]
+    fn an_epoch_replayed_with_no_herd_yet_is_not_decided_again_for_the_first_herd() {
+        let (before, after) =
+            the_epoch_with_no_herd_when_the_journal_replays("herds-rp81-empty", false);
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// Control: the herd in the pages.
+    #[test]
+    fn an_epoch_replayed_with_the_herd_in_the_pages_is_not_decided_again() {
+        let (before, after) =
+            the_epoch_with_no_herd_when_the_journal_replays("herds-rp81-empty-pages", true);
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// RP-66's twin for the herds: a test's herd command joins the engine's queue around the
+    /// gate, so one ordered while the replay runs waits for the replay end. A STEER is a kind
+    /// the gate drops while replaying; the command is Java's, though, not the engine's.
+    /// Returns (the replay still ran when it was ordered, it was written within a step of the
+    /// order, it was written once the replay had ended).
+    fn a_herd_command_ordered(name: &str, fillers: usize) -> (bool, bool, bool) {
+        let old = the_old_session(
+            name,
+            Script {
+                fillers,
+                ..Script::QUIET
+            },
+        );
+        let (e, mut j) = next_session(&old, wire::MIN_CAPACITY, false);
+        j.idle();
+        let replaying = replay_counts(&e).0 == 0;
+        let mut dict = hb::HerdDict { body: [0; 5] };
+        dict.body[0] = 9;
+        let mut record = Vec::new();
+        hb::encode_cmd(
+            0,
+            &H::Steer(hb::Steer {
+                agent: old.agent,
+                epoch: 99,
+                speed: 0.02,
+                target: (40, -12),
+                arrive: 90_000,
+            }),
+            &dict,
+            &mut record,
+        );
+        e.order(vec![Order::HerdCommand {
+            names: vec![(wire::DICT_BODY, 9, "minecraft:sheep".into())],
+            record,
+        }])
+        .unwrap();
+        let written = |j: &Java| {
+            j.herds
+                .iter()
+                .any(|(_, c)| matches!(c, H::Steer(s) if s.agent == old.agent && s.epoch == 99))
+        };
+        j.idle();
+        let at_once = written(&j);
+        assert_eq!(
+            replay_counts(&e).0 == 0,
+            replaying,
+            "the replay still runs after the order's idle"
+        );
+        // The whole journal handed over: the replay ends.
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        let after = written(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (replaying, at_once, after)
+    }
+
+    #[test]
+    fn a_herd_command_ordered_while_replaying_waits_for_the_replay_end() {
+        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp85", 8_000);
+        assert!(replaying, "the replay runs past its first hand-over");
+        assert!(!at_once, "not written while the replay runs");
+        assert!(after, "written once it has ended");
+    }
+
+    /// Control: with no replay to wait for the command is written at once.
+    #[test]
+    fn a_herd_command_ordered_without_a_replay_is_written_at_once() {
+        let (replaying, at_once, after) = a_herd_command_ordered("herds-rp85-none", 0);
+        assert!(!replaying, "nothing to replay");
+        assert!(at_once && after, "written at once");
+    }
+
     /// C25 (U10): with the ecology module switched off the herds ignore their records (an
     /// obstacle), decide nothing (a player by the herd sees no group) and keep the page they
     /// had; switched on again, the player sees the herd.
