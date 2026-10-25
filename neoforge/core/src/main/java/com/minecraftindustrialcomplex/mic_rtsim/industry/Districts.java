@@ -1309,10 +1309,11 @@ public final class Districts {
                     members.add(e.getLongKey());
             members.removeAll(excluded);
 
-            // Joins (SECTIONS.md §2.1 and §2.3, choices SC1 and SC5): what this walk saw, and the saved joins of the
-            // districts in question that it could not see again. A saved join is replaced when the walk looked at
-            // both its chunks, unless one of them holds a block whose links are not known yet (an arm before its
-            // first tick, SC4); an unloaded member keeps the joins its district saw. Bare 8-adjacency joins nothing.
+            // Joins (SECTIONS.md §2.1 and §2.3, choices SC1, SC5 and SC157): what this walk saw, and the saved
+            // joins of the districts in question that it could not see again. A saved join is replaced when the
+            // walk looked at both its chunks, unless one of them holds a block whose links are not known yet (an
+            // arm before its first tick); an unloaded member keeps the joins its district saw. Bare 8-adjacency
+            // joins nothing.
             Set<District.Join> joins = new HashSet<>();
             for (long[] j : scan.joins)
                 if (j[0] != j[1])
