@@ -419,7 +419,7 @@ fn met_leaving_its_camp(r: &mut CampRun) -> Option<(Handle<Party>, Tick)> {
     let mut t = r.c.now();
     while r.c.stats.seen == 0 && t < at + 20 * TICKS_PER_DAY {
         r.c.observe_player(&mut r.w, synth::PLAYER, synth::CAMP_POS, t);
-        t = t + 100;
+        t += 100;
         r.run(t);
     }
     let x = r.c.parties.get(p)?;
@@ -844,7 +844,8 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
     let mut lines = Vec::new();
     // The stepped runs' own checks are not read: a step of 20 ticks moves the plugin's and the
     // watching player's clocks, so their figures differ. The audit's verdict is what counts.
-    let runs: [(&str, Box<dyn FnOnce() + '_>); 4] = [
+    type Stepped<'a> = Box<dyn FnOnce() + 'a>;
+    let runs: [(&str, Stepped<'_>); 4] = [
         (
             "1",
             Box::new(move || {
@@ -1015,7 +1016,7 @@ fn seam(out: &mut Vec<Check>, what: &'static str, topo: Topology, target: Pos) {
     let mut t = muster;
     let mut stood = 0u64;
     while t < end {
-        t = t + 1;
+        t += 1;
         step(&mut c, &mut w, t);
         if !c.parties.contains(band) {
             break;
@@ -1045,7 +1046,7 @@ fn seam(out: &mut Vec<Check>, what: &'static str, topo: Topology, target: Pos) {
     let mut t = muster;
     let first_over = crossed.unwrap_or(end);
     while t < Tick(first_over.0 + (end.0 - first_over.0) / 4) {
-        t = t + 1;
+        t += 1;
         step(&mut c, &mut w, t);
     }
     let (here, before) = (
@@ -1090,7 +1091,7 @@ fn seam(out: &mut Vec<Check>, what: &'static str, topo: Topology, target: Pos) {
     let mut home_ok = true;
     let mut u = t;
     while u < home_end {
-        u = u + 1;
+        u += 1;
         step(&mut c, &mut w, u);
         if !c.parties.contains(band) {
             break;
