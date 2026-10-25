@@ -5404,6 +5404,121 @@ mod replay_path {
             assert_eq!(c.extra_rows(), 0);
         }
 
+        /// A saved page gives the viewer its sections: the district's page written and read back
+        /// (the viewer's path) shows each section's state as the live report does.
+        #[test]
+        fn a_saved_page_gives_the_viewer_the_same_sections() {
+            use crate::glass::page::{PageRead, district_page, read_district_page};
+            use crate::glass::report::{DistrictSections, section_state as ss};
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let (sa, sb) = (
+                c.sections.section_of[p0 as usize] as usize,
+                c.sections.section_of[p1 as usize] as usize,
+            );
+            let dg = crate::glass::check::DistrictGlass {
+                compiled: Some(c),
+                ..Default::default()
+            };
+            let live = DistrictSections::of(&dg).expect("a compile");
+            assert_eq!(live.sections.len(), 2);
+            assert_eq!(live.units, 2);
+            let bytes = district_page(&dg);
+            let PageRead::Kept(back) =
+                read_district_page(&bytes, tun.sections_max, tun.counted_stores_max)
+                    .expect("the page reads")
+            else {
+                panic!("the page was dropped");
+            };
+            let saved = DistrictSections::of(&back).expect("a compile in the page");
+            assert_eq!(saved.sections.len(), 2);
+            assert_eq!(saved.units, 2);
+            assert_eq!(saved.compile, live.compile);
+            assert_eq!(saved.sections[sa].state, ss::PASSED);
+            assert_eq!(saved.sections[sb].state, ss::FAILED);
+            for i in 0..2 {
+                let (l, s) = (&live.sections[i], &saved.sections[i]);
+                assert_eq!(
+                    (l.nodes, l.bbox, l.fingerprint, l.state, l.unit),
+                    (s.nodes, s.bbox, s.fingerprint, s.state, s.unit)
+                );
+                assert!(s.bbox.is_some(), "a drawn section has a box");
+            }
+            assert!(saved.shared.is_empty());
+            // no compile, no sections
+            let none = crate::glass::check::DistrictGlass::default();
+            assert!(DistrictSections::of(&none).is_none());
+        }
+
+        /// The report's sections follow their unit: the fast line's section passed, the slow one's
+        /// failed and names the good it missed by the most; a stale unit shows stale, a replaying
+        /// glass district shows its passing section replaying and a frozen unit frozen. Neither
+        /// has a shared store.
+        #[test]
+        fn the_report_gives_each_section_its_units_state_and_worst_good() {
+            use crate::glass::report::section_state as ss;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let mut dg = crate::glass::check::DistrictGlass::default();
+            let r = c.report(&dg);
+            assert_eq!(r.sections.len(), 2);
+            assert!(r.shared.is_empty());
+            let (sa, sb) = (
+                &r.sections[c.sections.section_of[p0 as usize] as usize],
+                &r.sections[c.sections.section_of[p1 as usize] as usize],
+            );
+            assert_eq!(
+                (sa.unit, sb.unit),
+                (Some(u32::from(ua)), Some(u32::from(ub)))
+            );
+            assert_eq!((sa.state, sb.state), (ss::PASSED, ss::FAILED));
+            assert!(sa.worst.is_none() && sa.may_replay && !sb.may_replay);
+            let w = sb.worst.expect("the slow line missed a good");
+            assert!(w.good == ORE.0 || w.good == CRUSHED.0);
+            assert!(w.predicted != w.measured && w.excess > 0.0);
+            assert_eq!(
+                (sb.verdict, sb.strikes, sb.windows_completed),
+                (verdict::FAIL, 1, 1)
+            );
+            assert_eq!(
+                sa.fingerprint,
+                c.sections.list[c.sections.section_of[p0 as usize] as usize].fingerprint
+            );
+            // While the district replays in glass, the passing section replays.
+            dg.replay_model = crate::glass::report::replay_model::GLASS;
+            // (no replay object here: a replay model alone does not make a section replay)
+            assert_eq!(c.report(&dg).sections[0].state, ss::PASSED);
+            // An edit inside the slow line's box stales it, whatever its last verdict.
+            let at = c.sections.list[c.sections.section_of[p0 as usize] as usize]
+                .low
+                .expect("a position");
+            c.edit(Tick(3300), Some(at), &tun);
+            let r = c.report(&dg);
+            let a = &r.sections[c.sections.section_of[p0 as usize] as usize];
+            assert_eq!((a.state, a.stale, a.may_replay), (ss::STALE, true, false));
+        }
+
         /// Two lines of the same goods: a line whose own window passes still may not replay while
         /// the district's last window failed on a good it touches (§3.4).
         #[test]
@@ -6407,6 +6522,72 @@ mod replay_path {
                 ));
             }
             deltas(&cmds)
+        }
+
+        /// The report's sections follow the running replay: the unit that replays shows replaying,
+        /// the one gated off keeps its failed verdict, and one that passes later is not replaying
+        /// until the replay starts again.
+        #[test]
+        fn the_report_names_the_units_a_running_replay_runs() {
+            use crate::glass::report::section_state as ss;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+            let c = comp(&e.glass, D);
+            let (sa, sb) = (
+                c.sections.section_of[p0 as usize] as usize,
+                c.sections.section_of[p1 as usize] as usize,
+            );
+            // Before the replay starts nothing replays, whatever may.
+            let r = c.report(&e.glass.districts[&D]);
+            assert_eq!(
+                (r.sections[sa].state, r.sections[sb].state),
+                (ss::PASSED, ss::FAILED)
+            );
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let dg = &e.glass.districts[&D];
+            let r = comp(&e.glass, D).report(dg);
+            assert_eq!(r.sections[sa].state, ss::REPLAYING, "{:?}", r.sections[sa]);
+            assert_eq!(r.sections[sb].state, ss::FAILED, "{:?}", r.sections[sb]);
+            assert!(r.sections[sa].may_replay && !r.sections[sb].may_replay);
+            // The slow line passes a later window: it may replay now, but the running replay left
+            // it gated off, so it is not replaying.
+            judge(&mut e, &[(p1, verdict::PASS)]);
+            let r = comp(&e.glass, D).report(&e.glass.districts[&D]);
+            assert!(r.sections[sb].may_replay);
+            assert_eq!(r.sections[sb].state, ss::PASSED, "{:?}", r.sections[sb]);
+            assert_eq!(r.sections[sa].state, ss::REPLAYING);
+        }
+
+        /// A report built over a compile the running replay does not run reads none of the
+        /// replay's per-unit flags: nothing replays or froze by it, and the verdicts still show.
+        #[test]
+        fn a_report_over_another_compile_reads_no_running_replay() {
+            use crate::glass::report::section_state as ss;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let dg = &e.glass.districts[&D];
+            let rp = dg.replay.as_ref().expect("replaying");
+            let c = comp(&e.glass, D);
+            let (sa, sb) = (
+                c.sections.section_of[p0 as usize] as usize,
+                c.sections.section_of[p1 as usize] as usize,
+            );
+            assert!(rp.same_layout(c));
+            assert_eq!(c.report(dg).sections[sa].state, ss::REPLAYING);
+            let mut other = c.clone();
+            other.graph.end.compile = other.graph.end.compile.wrapping_add(1);
+            assert!(!rp.same_layout(&other));
+            let r = other.report(dg);
+            assert_eq!(r.sections[sa].state, ss::PASSED, "{:?}", r.sections[sa]);
+            assert_eq!(r.sections[sb].state, ss::FAILED, "{:?}", r.sections[sb]);
+            assert!(r.sections[sa].may_replay && !r.sections[sb].may_replay);
         }
 
         /// A unit that may not replay is gated off while the other replays (§3.5): its press runs
@@ -7787,6 +7968,101 @@ mod replay_path {
                 }
             }
 
+            /// The report names the sections, the counted vault between them and its residue
+            /// (SECTIONS.md §8.1): a steady run leaves no residue and both sections passed; a
+            /// player taking sheets leaves the residue of what was taken, fails both sections and
+            /// names sheets as each one's worst good. A sweep without a count sample is not
+            /// counted.
+            #[test]
+            fn the_report_names_the_sections_the_counted_vault_and_its_residue() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let tun = GlassTunables::default();
+                let dg = crate::glass::check::DistrictGlass::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                drive_v(&mut c, ids, 0, 3200, steady, &tun);
+                let r = c.report(&dg);
+                assert_eq!(r.sections.len(), 2);
+                for s in &r.sections {
+                    assert_eq!(s.state, crate::glass::report::section_state::PASSED);
+                    assert!(s.unit.is_some() && s.passed && s.may_replay && !s.stale);
+                    assert!(s.worst.is_none());
+                    assert!(s.stores.contains(&(Some(1), true)), "{:?}", s.stores);
+                }
+                assert_ne!(r.sections[0].unit, r.sections[1].unit);
+                assert!(r.sections[0].low.is_some() && r.sections[0].bbox.is_some());
+                assert_ne!(r.sections[0].fingerprint, r.sections[1].fingerprint);
+                assert_eq!(r.shared.len(), 1);
+                let h = &r.shared[0];
+                assert_eq!(
+                    (h.node, h.inventory, h.sections.clone()),
+                    (v, Some(1), vec![0, 1])
+                );
+                assert_eq!(h.pos, Some(BlockPos::new(20, 64, 0)));
+                assert!(h.counted && h.counted_now && h.pairs == 2);
+                assert_eq!(h.sample_sweep, Some(32));
+                assert!(h.residue.is_empty(), "{:?}", h.residue);
+                // The flat form carries the same: sections and the shared store after the units.
+                let flat = r.to_f64s();
+                let t = crate::glass::report::HEADER
+                    + crate::glass::report::GOOD_STRIDE * r.goods.len();
+                let units_end = t + 1 + 2 * crate::glass::report::UNIT_STRIDE;
+                assert_eq!(flat[t], 2.0);
+                assert_eq!(flat[units_end], 2.0);
+                let secs_end = units_end + 1 + 2 * crate::glass::report::SECTION_STRIDE;
+                assert_eq!(
+                    flat[secs_end], 4.0,
+                    "each section: its input store and the vault"
+                );
+                // A sweep that sends no count sample leaves the store uncounted now.
+                let mut d = c.clone();
+                let inv = vault_invs(steady(3300));
+                let goods = goods();
+                let ports = GoodVec::new();
+                let view = View {
+                    revision: 1,
+                    sweep: 33,
+                    inventories: &inv,
+                    ports: &ports,
+                };
+                d.sweep(Tick(3300), &view, &goods, &tun);
+                assert!(!d.report(&dg).shared[0].counted_now);
+                let _ = (c0, f1);
+
+                // A player takes sheets from the vault from tick 1500.
+                let taken = |t: u64| {
+                    if t < 1500 {
+                        0
+                    } else {
+                        ((t - 1500) / 100 * 4) as i64
+                    }
+                };
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                drive_v(
+                    &mut c,
+                    ids,
+                    0,
+                    3200,
+                    |t| {
+                        let s = steady(t);
+                        At {
+                            stock: s.stock - taken(t),
+                            ..s
+                        }
+                    },
+                    &tun,
+                );
+                let r = c.report(&dg);
+                assert_eq!(r.shared[0].residue, vec![(SHEET.0, -68)]);
+                for s in &r.sections {
+                    assert_eq!(s.state, crate::glass::report::section_state::FAILED);
+                    assert_eq!(s.verdict, verdict::FAIL);
+                    let w = s.worst.expect("sheets failed");
+                    assert_eq!(w.good, SHEET.0);
+                    assert!(w.excess > 0.0 && w.measured != w.predicted);
+                }
+            }
+
             /// A pair whose counters started again (Java forgot them) starts every window at its
             /// store again from that sweep, with no warm-up; a sweep whose sample lacks a pair
             /// loses them, and they open again after a warm-up.
@@ -8514,5 +8790,94 @@ mod replay_path {
         let st = e.sim_stock(D).expect("replaying");
         assert!((196..=200).contains(&st.get(SHEET)), "{st:?}");
         e.check_books().expect("books");
+    }
+}
+
+/// The counted stores' residue as the report shows it (SECTIONS.md §8.1, choices SC168, SC177).
+mod store_residue {
+    use std::collections::BTreeMap;
+
+    use crate::glass::check::{CountTake, StoreRes, note_residue};
+    use crate::glass::units::Units;
+    use crate::ids::Good;
+
+    const H: u32 = 5;
+    const G: Good = Good(3);
+
+    fn units(pairs: &[(u32, u32)]) -> Units {
+        Units {
+            counted: vec![H],
+            pairs: pairs.to_vec(),
+            ..Units::default()
+        }
+    }
+
+    /// A sample holding each pair whole, with its `since`.
+    fn take(sweep: u32, pairs: &[((u32, u32), i64)]) -> CountTake {
+        let mut t = CountTake {
+            sweep,
+            ..CountTake::default()
+        };
+        for &(p, since) in pairs {
+            t.since.insert(p, since);
+            t.stated.insert(p, 1);
+            t.got.insert(p, 1);
+        }
+        t
+    }
+
+    fn at(v: i64) -> BTreeMap<(u32, Good), i64> {
+        BTreeMap::from([((H, G), v)])
+    }
+
+    #[test]
+    fn residue_is_the_change_since_the_baseline() {
+        let u = units(&[(1, H)]);
+        let mut res = BTreeMap::new();
+        note_residue(&mut res, &u, &take(1, &[((1, H), 10)]), &at(7));
+        assert!(
+            res[&H].residue().is_empty(),
+            "the first sweep is the baseline"
+        );
+        note_residue(&mut res, &u, &take(2, &[((1, H), 10)]), &at(12));
+        assert_eq!(res[&H].residue(), vec![(G, 5)]);
+        // Java forgot the pair: its `since` moved, the baseline starts again.
+        note_residue(&mut res, &u, &take(3, &[((1, H), 99)]), &at(20));
+        assert!(res[&H].residue().is_empty());
+        note_residue(&mut res, &u, &take(4, &[((1, H), 99)]), &at(21));
+        assert_eq!(res[&H].residue(), vec![(G, 1)]);
+    }
+
+    #[test]
+    fn a_store_with_no_pairs_takes_a_baseline_too() {
+        let u = units(&[]);
+        let mut res = BTreeMap::new();
+        note_residue(&mut res, &u, &take(1, &[]), &at(7));
+        assert!(res[&H].residue().is_empty(), "not the raw residue");
+        note_residue(&mut res, &u, &take(2, &[]), &at(9));
+        assert_eq!(res[&H].residue(), vec![(G, 2)]);
+    }
+
+    #[test]
+    fn a_partial_sweep_leaves_the_store_as_it_was() {
+        let u = units(&[(1, H), (2, H)]);
+        let mut res = BTreeMap::new();
+        let both = [((1, H), 10), ((2, H), 10)];
+        note_residue(&mut res, &u, &take(1, &both), &at(7));
+        note_residue(&mut res, &u, &take(2, &both), &at(9));
+        // The second pair is missing from this sweep: nothing changes.
+        note_residue(&mut res, &u, &take(3, &[((1, H), 10)]), &at(50));
+        assert_eq!(res[&H].residue(), vec![(G, 2)]);
+    }
+
+    #[test]
+    fn a_sweep_that_changes_nothing_keeps_the_store_equal() {
+        let u = units(&[(1, H)]);
+        let mut res = BTreeMap::new();
+        let t = take(1, &[((1, H), 10)]);
+        note_residue(&mut res, &u, &t, &at(7));
+        let before: StoreRes = res[&H].clone();
+        note_residue(&mut res, &u, &t, &at(7));
+        assert_eq!(res[&H], before);
     }
 }

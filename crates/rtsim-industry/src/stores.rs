@@ -46,6 +46,9 @@ use crate::persist::{Persist, persist_struct};
 /// A store page starts with this, so a page of another format fails by name.
 pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST4");
 
+/// Java's hop count for a pair its walk did not reach (`PackageStores.UNKNOWN_HOPS`).
+pub const UNKNOWN_HOPS: u16 = 0xFFFF;
+
 /// Packages and the goods inside them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pool {
@@ -273,9 +276,14 @@ impl PackageStore {
         }
     }
 
-    /// Hops between frogports `i` and `j` along the chain.
+    /// Hops between frogports `i` and `j` along the chain, [`UNKNOWN_HOPS`] included.
     pub fn hops_between(&self, i: usize, j: usize) -> Option<u16> {
         crate::obs::hops_between(&self.hops, self.frogports.len(), i, j)
+    }
+
+    /// Hops between frogports `i` and `j` that Java measured: none for [`UNKNOWN_HOPS`].
+    pub fn known_hops(&self, i: usize, j: usize) -> Option<u16> {
+        self.hops_between(i, j).filter(|&h| h != UNKNOWN_HOPS)
     }
 
     /// The frogport at `pos`, by index.
@@ -304,12 +312,14 @@ impl PackageStore {
         let i = self.port_of(d, inventory)?;
         let j = self.index_of(to)?;
         self.frogports[j].district?;
-        let hops = i64::from(self.hops_between(i, j)?);
+        // A pair Java's walk did not reach has no route (its 0xFFFF hops would read as a chain
+        // of 65,535 conveyors: room past any batch, a travel of days).
+        let hops = i64::from(self.known_hops(i, j)?);
         // Drawn packages are no pool's but wait on the chain too.
         let drawn: u64 = self.drawn_toward(to).iter().map(|h| h.packages).sum();
         let held = self.pools.get(j).map_or(0, |p| p.packages as i64) + drawn as i64;
         let farthest = (0..self.frogports.len())
-            .filter_map(|k| self.hops_between(j, k))
+            .filter_map(|k| self.known_hops(j, k))
             .max()
             .unwrap_or(0);
         Some(ChainRoute {

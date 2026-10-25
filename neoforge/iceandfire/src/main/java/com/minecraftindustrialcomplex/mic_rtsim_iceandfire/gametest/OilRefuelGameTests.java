@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
@@ -49,8 +50,9 @@ public final class OilRefuelGameTests {
      * refuel is its own. If the engine flew it off first (its visit ran out: DEMATERIALIZED reason 1), a
      * visitor leaving a player's view leaves without drinking, and the record says that path ran.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 9000, batch = "oil_refuel")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "oil_refuel")
     public static void aVisitorThatBreathedDrinksAtItsFieldOutOfView(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
         String test = "aVisitorThatBreathedDrinksAtItsFieldOutOfView";
         if (!DragonKit.nativeEngine()) {
             record(test, "skipped", "on the stub: refuelling is the engine's");
@@ -73,7 +75,7 @@ public final class OilRefuelGameTests {
         long[][] before = {null}; // the engine's counters in the last step the dragon was in the sim
         long[][] after = {null}; // and in the step it left
         Vec3 high = new Vec3(site.getX() + 0.5, 70, site.getZ() + 0.5);
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (fight[0])
                 OilGameTests.nudge(OilGameTests.bodyOrNull(agent[0]), p[0], OilGameTests.Fire.SCORCH);
             if (ticks[0]++ % 20 == 0 && p[0] != null)
@@ -89,7 +91,7 @@ public final class OilRefuelGameTests {
             }
         });
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, force)))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, force))))
                 .thenExecute(() -> {
                     List<int[]> field = new ArrayList<>();
                     for (int dx = -1; dx <= 1; dx++)
@@ -100,7 +102,7 @@ public final class OilRefuelGameTests {
                     p[0] = OilGameTests.guardedPlayer(helper, high, "oil_refuel");
                     t[0] = level.getGameTime();
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     int want = DragonRecords.Materialize.FLAG_HOSTILE | DragonRecords.Materialize.FLAG_OIL;
                     for (ScriptedEngine.Received r : engine().received(DragonRecords.DRAGON_MATERIALIZED)) {
                         long a = r.view().getLong(DragonRecords.Materialized.AGENT);
@@ -110,7 +112,7 @@ public final class OilRefuelGameTests {
                     }
                     check("a field flight's dragon materialized hostile with its oil", agent[0] != 0);
                     DragonKit.body(agent[0]);
-                })
+                }))
                 .thenExecute(() -> {
                     DragonKit.oilConfig(0); // this one visitor and no other
                     t[1] = level.getGameTime();
@@ -119,11 +121,11 @@ public final class OilRefuelGameTests {
                     at[2] = OilGameTests.breathsSent(agent[0]);
                     fight[0] = true;
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     int sent = OilGameTests.breathsSent(agent[0]) - at[2];
                     check("it breathed " + SPEND + " times (" + sent + ")",
                             sent >= SPEND || (sent == 0 && level.getGameTime() - t[1] >= NO_BREATH));
-                })
+                }))
                 .thenExecute(() -> {
                     DragonBaseEntity d = OilGameTests.bodyOrNull(agent[0]);
                     int sent = OilGameTests.breathsSent(agent[0]) - at[2];
@@ -139,8 +141,8 @@ public final class OilRefuelGameTests {
                     p[0] = null;
                 })
                 // Every breath flushed (the bridge sends them every 20 ticks) and taken in an engine step.
-                .thenWaitUntil(() -> check("the breaths flushed",
-                        bridge().body(agent[0]) == null || bridge().pendingBreathsOf(agent[0]) == 0))
+                .thenWaitUntil(waits.logic(() -> check("the breaths flushed",
+                        bridge().body(agent[0]) == null || bridge().pendingBreathsOf(agent[0]) == 0)))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     int sent = OilGameTests.breathsSent(agent[0]) - at[2];
@@ -157,12 +159,12 @@ public final class OilRefuelGameTests {
                     unforce.run();
                     t[3] = level.getGameTime();
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     List<ScriptedEngine.Received> gone = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
                     check("DRAGON_DEMATERIALIZED", !gone.isEmpty());
                     t[4] = gone.get(gone.size() - 1).view().getLong(Obs.GAME_TIME);
-                })
-                .thenWaitUntil(() -> check("it left the sim", after[0] != null))
+                }))
+                .thenWaitUntil(waits.logic(() -> check("it left the sim", after[0] != null)))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> gone = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
                     int reason = gone.get(gone.size() - 1).aux();

@@ -552,7 +552,10 @@ public final class DragonKit {
 
     // ---- vanilla's own entity-chunk save --------------------------------------------------------
 
-    /** Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage. */
+    /**
+     * Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage; the
+     * future completes on the world's IO worker, so a test waits for it in real time ({@code ChunkWait.chunks}).
+     */
     @SuppressWarnings("unchecked")
     public static CompletableFuture<List<Entity>> saveAndReadBack(ServerLevel level, ChunkPos... chunks) {
         var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();

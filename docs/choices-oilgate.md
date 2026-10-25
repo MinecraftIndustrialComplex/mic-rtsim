@@ -334,9 +334,10 @@ under a stone roof. A flyer of strength 8, then a siege of 20, sent as INDUSTRY_
 
 **OGC38. A GameTest server catches its clock up.** A GameTest server makes fresh level data (game time
 0) but keeps the world's pages, so a resumed engine stood ahead of the game and its wheel never turned.
-On GameTest servers only, the Ice and Fire plugin moves the game time up to the engine's clock before
-the first test (`GameTestClock`). The same stall made 7 glass exit tests fail on a reused create world;
-fresh worlds pass (OGC42).
+On GameTest servers only, the core moves the game time up to the latest module's clock before the
+first test (`GameTestClock`, from `NativeEngine.clocks`; the Ice and Fire plugin first did it for the
+dragons' clock alone). The same stall made 7 glass exit tests fail on a reused create world, and herd
+tests wait for a materialization booked at the old clock; fresh worlds pass (OGC42).
 
 **OGC39. A mock player's spawn grace ends.** A mock player is never ticked, so its 60-tick spawn grace
 never ran out and `ServerPlayer.hurt` refused every bite, claw and fire before the damage event: no blow

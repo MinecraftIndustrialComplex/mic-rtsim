@@ -287,7 +287,7 @@ public final class HabitatGameTests {
      * engine founds one herd for the region, of a plains species, on the land half. A player beside it sees
      * the herd materialize: every animal on land, and none walks into the sea while the player watches.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "habitat_herd")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "habitat_herd")
     public static void aHerdFoundedFromTheHabitatWalksOnLand(GameTestHelper helper) {
         String test = "aHerdFoundedFromTheHabitatWalksOnLand";
         if (!(RtsimTests.engine() instanceof NativeEngine e)) {
@@ -296,16 +296,25 @@ public final class HabitatGameTests {
             return;
         }
         ServerLevel level = helper.getLevel();
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         int x0 = 512 * (7_900 + ThreadLocalRandom.current().nextInt(0, 2_000) * 4);
         int z0 = 512 * (-7_900 - ThreadLocalRandom.current().nextInt(0, 2_000) * 4);
         int sea = x0 + 128; // west of it: sea
         int dim = RtsimTests.session().dimId(level.dimension());
         List<ChunkPos> forced = new ArrayList<>();
         ServerPlayer[] player = new ServerPlayer[1];
+        // However the test ends: its quarter region would otherwise stay forced, and ticking, in every later run.
+        waits.onEnd(() -> {
+            forced.forEach(p -> level.setChunkForced(p.x, p.z, false));
+            forced.clear();
+            if (player[0] != null)
+                FakePlayers.remove(player[0]);
+            player[0] = null;
+        });
         boolean[] watching = {false};
         long[] agent = {0};
         int[] seen = {0};
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (player[0] != null && RtsimTests.session().gameTime() % 20 == 0)
                 reportPlayer(player[0]);
             if (watching[0] && agent[0] != 0)
@@ -317,7 +326,7 @@ public final class HabitatGameTests {
                 }
         });
         helper.startSequence()
-                .thenWaitUntil(() -> check("the sampler has the engine's list", HabitatSampler.INSTANCE.synced()))
+                .thenWaitUntil(waits.engine(() -> check("the sampler has the engine's list", HabitatSampler.INSTANCE.synced())))
                 .thenExecute(() -> {
                     forced.addAll(load(level, x0, z0, x0 + 256, z0 + 256));
                     BlockState water = Blocks.WATER.defaultBlockState();
@@ -325,8 +334,16 @@ public final class HabitatGameTests {
                         for (int z = z0; z < z0 + 256; z++)
                             paint(level, x, z, water);
                 })
-                .thenWaitUntil(() -> check("a herd founded for the region",
-                        e.habitatInfo(dim, sea + 64, z0 + 64)[NativeEngine.HABITAT_REGION_HERD] != 0))
+                .thenWaitUntil(waits.engine(() -> {
+                    long[] land = e.habitatInfo(dim, sea + 64, z0 + 64);
+                    // What the world model holds when there is none yet: a region marked judged with no herd
+                    // was found barren; one not marked waits for its cells (or the herds' switch).
+                    check("a herd founded for the region (marks " + land[NativeEngine.HABITAT_REGION_MARKS] + ", the cell known "
+                            + land[NativeEngine.HABITAT_KNOWN_CELL] + " land " + Long.toHexString(land[NativeEngine.HABITAT_LAND])
+                            + ", cells " + land[NativeEngine.HABITAT_CELLS] + ", records " + land[NativeEngine.HABITAT_RECORDS]
+                            + ", herds founded " + land[NativeEngine.HABITAT_HERDS_FOUNDED] + ")",
+                            land[NativeEngine.HABITAT_REGION_HERD] != 0);
+                }))
                 .thenExecute(() -> {
                     long[] land = e.habitatInfo(dim, sea + 64, z0 + 64);
                     long[] wet = e.habitatInfo(dim, x0 + 8, z0 + 8);
@@ -341,7 +358,7 @@ public final class HabitatGameTests {
                     int y = top(level, (int) hx, (int) hz) + 1;
                     player[0] = FakePlayers.add(level, new Vec3(hx + 0.5, y, hz + 0.5), "habitat_watcher");
                 })
-                .thenWaitUntil(RtsimTests.io(() -> check("the herd materialized", HerdBridge.INSTANCE.group(agent[0]) != null
+                .thenWaitUntil(waits.engine(() -> check("the herd materialized", HerdBridge.INSTANCE.group(agent[0]) != null
                         && !HerdBridge.INSTANCE.bodies(agent[0]).isEmpty())))
                 .thenExecute(() -> {
                     watching[0] = true;
@@ -355,8 +372,7 @@ public final class HabitatGameTests {
                     FakePlayers.remove(player[0]);
                     player[0] = null;
                 })
-                .thenWaitUntil(() -> check("taken back once the player is gone", HerdBridge.INSTANCE.group(agent[0]) == null))
-                .thenExecute(() -> forced.forEach(p -> level.setChunkForced(p.x, p.z, false)))
+                .thenWaitUntil(waits.engine(() -> check("taken back once the player is gone", HerdBridge.INSTANCE.group(agent[0]) == null)))
                 .thenSucceed();
     }
 }

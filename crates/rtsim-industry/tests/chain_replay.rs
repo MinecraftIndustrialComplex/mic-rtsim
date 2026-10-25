@@ -312,6 +312,39 @@ fn both_ends_away_replay_as_one_cluster_and_conserve_the_iron() {
     assert_eq!(owed(&e), 0);
 }
 
+/// A pair Java's walk did not reach (0xFFFF hops) is no route: the replay sends nothing along it,
+/// where 65,535 hops read as a chain room past any batch and a travel of days.
+#[test]
+fn a_pair_of_unknown_hops_replays_no_chain_link() {
+    let mut e = engine(Tunables::default());
+    let mut decl = store();
+    decl.hops = vec![rtsim_industry::stores::UNKNOWN_HOPS];
+    send(&mut e, 0, Obs::PackageStore(decl));
+    district(&mut e, MINE, 1_000, 0.05, -0.05);
+    district(&mut e, MILL, 0, -0.04, 0.05);
+    send(&mut e, 15, chain(MINE, ChainDirection::Out, 1, None));
+    let held = e.stores()[&S].held().packages;
+    away(&mut e, MINE, 100);
+    away(&mut e, MILL, 100);
+    e.advance_to(Tick(100 + 24_000));
+    // No pool joins their clusters, and the mine keeps the day's 1,200 it would have sent.
+    assert!(e.replays(MINE) && e.replays(MILL));
+    assert_eq!(e.cluster_count(), 2, "no chain pool joins their clusters");
+    let mine = e.sim_stock(MINE).expect("mine").get(IRON);
+    let mill = e.sim_stock(MILL).map_or(0, |s| s.get(IRON));
+    assert!(
+        (2_160..=2_240).contains(&mine),
+        "the mine sends nothing down the chain: {mine}"
+    );
+    assert_eq!(mill, 0, "the mill gets nothing by the chain");
+    assert_eq!(
+        e.stores()[&S].held().packages,
+        held,
+        "the replay put no package on the chain"
+    );
+    e.check_books().expect("books");
+}
+
 #[test]
 fn an_importer_that_loads_first_is_written_what_the_exporter_still_sends() {
     let mut e = pair(Tunables::default());
