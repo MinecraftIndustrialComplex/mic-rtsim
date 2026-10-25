@@ -8015,6 +8015,56 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
     harness would add only the wire.
   - No crash or reassert copy test is added: M10 adds no holder-carried record (MZB-467).
 
+- **MZB-498** (the march audit, run 13; forks): `rtsim_conflict::synth::march` (crates/rtsim-conflict/src/synth/march.rs)
+  is the map Java keeps of marches, built from the engine's own `Cmd::March` records, and held against the
+  engine, step by step. Design:
+  - **It lives beside `CampRun`, not in the engine.** A thread-local state, off unless a run turns it `on()`;
+    `advance(c, w, infra, to)` is `run_until` and `take_commands` when off (run 1, 5, 10 and 11 are what they
+    were), and 20-tick steps (`begin`, run, `took`, `end`) when on. `CampRun::run`, `flush` and `decide`
+    carry the same hooks, so a stepped run of CampRun is audited without a change of its script.
+  - **What a step checks.** A party unchanged across the step (same `plan` and `march_rev`, no mark pending) has
+    `BandMarch::chart_pos(t)` of the latest record equal `Conflict::party_chart_pos` at every tick of the step,
+    which is the shared position rule read from both ends (`party_chart_pos` is now `pub`). A changed party
+    is compared at the step's end: position, phase, the units' sum, the end of the route. A change of route,
+    phase, count or chief flag has a record taken in its step. A party that left the engine has no record
+    left in the map; a revision never goes down.
+  - **Fork: a party with no one alive and no chief.** The engine keeps the shell until it is reaped, but its
+    record says ENDED and Java drops it (`march_record`'s `alive() == 0 && !chief`). The audit expects no held
+    record for it and counts the shell-steps rather than comparing a position. Without this rule the first
+    run of the audit failed on every such shell.
+  - **Fork: a new engine.** A sim run builds many engines and Java's map starts empty for each (MZB-451). The
+    audit takes an engine whose clock is behind the last step's for a new one (`State::sync`) and
+    `restart_to_replay` calls `session()`. The conservative alternative, an explicit reset in every builder,
+    would have meant touching every sim run; the clock rule costs nothing to the runs that do not audit.
+  - **Fork: no position check while a replay runs.** No record is built then (MZB-484), so a party with a mark
+    pending is counted as `pending` and not compared.
+  - Run 13's other checks: no census ends a party (ten `camp_out`/`camp_in` cycles of an Invasion out send no
+    ENDED, and one is sent at its end), and the seams: on an x-wrapped world and on a glued (Petroff-Guyou)
+    one a band that crosses the seam and routs has its cell the fold of its block centre at every tick, no
+    jump out or home, a rout route that is `here` plus the road it came by without a lap, a first segment as
+    long as its walk, and the walk home as long as the engine says.
+
+- **MZB-499** (run 11, the grove's Invasion with its chief; forks): the run drives the engine the way the
+  host does and sets fields by hand only where a test must stand a band in bodies with nobody tracking it.
+  - Players are moved by `Conflict::observe_player` (the host's entry), not `set_player_pos`, and leave by
+    `player_left`. Where a case needs the band embodied with no one watching, the run sets `embodied`,
+    `epoch += 1` and `spawned = units` as a watched fight leaves them (tests/mowzie_march.rs does the same).
+  - The grove is `fast_grove`: six-day heir wait and a 12.0-day clock (`grove_cultures(6.0, 192.0, 6.0)`),
+    plunder off, nine found, so the chief's slot runs Left, Gone and freed inside one run. The led Invasion
+    draws the Umvuthi (strength 12.6 against the raid's 3.8), and its march record's kind byte is 4, not
+    5: the byte is `PartyKind`'s, not `Step`'s.
+  - A chief killed away routs the band (`chief_killed_by`): the record goes Home with no chief flag, the feud
+    steps Invasion to Scouts (`chief_rout_steps` 2), and the slot is Dead for a Left chief and freed for a
+    Gone one (`chief_died_away`); the heir comes due at 12.0 days.
+  - Where the muster ends before a camp comes in, the run goes to the muster's end first, so the chief is
+    Gone when the camp returns and the throne body is the held one.
+  - The held set-out is answered stale with one removal (the camp left while its set-out was held); the
+    seat waits on a fight past `HOLD_MAX` (6,000 ticks) and then sits; the three re-binds (walked off,
+    followed, logged out) send no recall and with nobody there one `RECALL_PASSING`.
+  - The arrival with the only player 170 blocks off is abstract and walked home; at 150 it is a fight.
+  - The abstract fight's dead are counted once: 8 of 12, 6 left, 5 after the despawn, the same across a
+    save/load restart.
+
 ## M11 Aloft
 
 (none yet)
