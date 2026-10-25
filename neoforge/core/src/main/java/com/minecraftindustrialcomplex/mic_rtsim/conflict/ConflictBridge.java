@@ -2560,9 +2560,10 @@ public final class ConflictBridge implements SessionPlugin {
 
     /**
      * A train's carriage point is in reach of the lurk puppet: the held puppet of the agent nearest to {@code at}
-     * starts its strike through its {@link Lurker}. True when one started (counted in {@link #lurkStrikes}).
+     * starts its strike through its {@link Lurker}, given the point's motion per tick. True when one started
+     * (counted in {@link #lurkStrikes}).
      */
-    public boolean strike(long agent, Vec3 at) {
+    public boolean strike(long agent, Vec3 at, Vec3 motion) {
         Party p = byAgent.get(agent);
         if (p == null || p.recalling)
             return false;
@@ -2579,7 +2580,7 @@ public final class ConflictBridge implements SessionPlugin {
                     best = m;
                 }
             }
-        if (best == null || !Lurkers.of(best).strike(best, at))
+        if (best == null || !Lurkers.of(best).strike(best, at, motion))
             return false;
         lurkStrikes++;
         return true;

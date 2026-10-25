@@ -32,7 +32,7 @@ public final class Lurkers {
         }
 
         @Override
-        public boolean strike(Mob mob, Vec3 at) {
+        public boolean strike(Mob mob, Vec3 at, Vec3 motion) {
             return false;
         }
 
