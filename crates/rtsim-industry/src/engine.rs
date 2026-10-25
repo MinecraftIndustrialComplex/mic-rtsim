@@ -756,19 +756,20 @@ impl Engine {
         out
     }
 
-    /// A chain write the host held while its module was switched off goes to Java again at `at`,
-    /// the switch-on (docs/choices-journal-barrier.md RP-294): its answer is awaited from then. The
-    /// host calls this before the switch-on's session start, whose catch-up over the time the
-    /// switch held the write would otherwise take its answer as lost ten periods after the drain
-    /// that first handed it on (`WRITE_ANSWER_PERIODS`, choice SC113) and write the frogport
-    /// again under a new op while the held write goes too. Returns whether a store sent `op`.
-    pub fn hand_on_again(&mut self, op: OpId, at: Tick) -> bool {
-        for s in self.stores.values_mut() {
-            if s.write_handed_on_again(op, at) {
-                return true;
-            }
+    /// A chain write `op` of `store` that the host still holds goes to Java again at `at`, its
+    /// session start (docs/choices-journal-barrier.md RP-294): its answer is awaited from then.
+    /// The host calls this before [`Engine::session_start`], whose catch-up over a stretch with
+    /// the module switched off would otherwise take the answer as lost ten periods after the drain
+    /// that first handed the write on (`WRITE_ANSWER_PERIODS`, choice SC113) and write the
+    /// frogport again under a new op while the held write goes too. Returns whether the store
+    /// still awaited `op` (an answered or superseded write is left as it is).
+    pub fn hand_on_again(&mut self, store: StoreId, op: OpId, at: Tick) -> bool {
+        if !self.stores.get(&store).is_some_and(|s| s.awaits_write(op)) {
+            return false;
         }
-        false
+        self.stores
+            .get_mut(&store)
+            .is_some_and(|s| s.write_handed_on_again(op, at))
     }
 
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the

@@ -215,8 +215,22 @@ impl Link {
 
     /// The engine's own session start, once: after the replayed journal (whose records keep their
     /// game times), before anything of this session (W19).
+    ///
+    /// The chain writes the link holds go to Java from here on: resent from the outbox at a
+    /// restart, or written from the queue, where the switch-on moved the outbox. The engine awaits
+    /// their answers from this session start (RP-294, docs/replay-gate.md 9.7: the switch gates
+    /// only new decisions). Else, after a stretch with the module off (a switch-off in a session,
+    /// or a stop with it off and a start with it on), the catch-up would take each as lost ten
+    /// periods after the drain that first handed it on (SC113) and write its frogport again under
+    /// a new op, and Java would write the same goods twice.
     fn begin_session(&mut self) {
         if let Some(t) = self.session_start_at.take() {
+            let held = self.queue.iter().chain(self.outbox.iter().map(|(_, c)| c));
+            for c in held {
+                if let Cmd::WriteChain(w) = c {
+                    self.engine.hand_on_again(w.store, w.op, t);
+                }
+            }
             self.engine.session_start(t);
         }
     }
@@ -465,19 +479,16 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
 /// them again; Java announces its districts and load states again when the module turns on, as
 /// at a session start.
 ///
-/// The chain writes the link held while off (queued, or kept in the outbox) go to Java now, so
-/// the engine awaits their answers from now (RP-294, docs/replay-gate.md 9.7: the switch gates
-/// only new decisions): else the catch-up would take each as lost ten periods after the drain
-/// that first handed it on (SC113) and write its frogport again under a new op, and Java would
-/// write the same goods twice.
+/// The chain writes the link held while off (queued, or kept in the outbox) go to Java now: the
+/// engine's session start awaits their answers from its game time (`Link::begin_session`,
+/// RP-294).
 fn set_enabled(st: &mut State, on: bool) {
     let gt = tick(st.game_time);
     let l = &mut st.industry;
     let was = l.enabled;
     l.enabled = on;
     if on && !was {
-        let at = gt.max(l.engine.now());
-        l.session_start_at = Some(at);
+        l.session_start_at = Some(gt.max(l.engine.now()));
         // An answer that came while off was ignored: every kept command goes again, under a new
         // sequence (Java skips any at or below the last it applied), and Java answers it by op id
         // (DUPLICATE if it had applied it), so none waits in the outbox for an answer already gone.
@@ -485,11 +496,6 @@ fn set_enabled(st: &mut State, on: bool) {
         l.resend.clear();
         for c in kept.into_iter().rev() {
             l.queue.push_front(c);
-        }
-        for c in &l.queue {
-            if let Cmd::WriteChain(w) = c {
-                l.engine.hand_on_again(w.op, at);
-            }
         }
         l.gauges();
     }
