@@ -233,6 +233,17 @@ public interface IndustryPlugin {
         return null;
     }
 
+    /**
+     * The applied ops kept in the same file as the deposit {@code good} in chunk (chunkX, chunkZ), or null when the
+     * good is not this plugin's (docs/choices-journal-barrier.md RP-204). IND_DEPOSIT_DELTA's dedup is this ring or
+     * the journal: the store's file can be newer on disk than the journal's after a crash, and its ring then still
+     * refuses the op's resend. A plugin whose {@link #applyDeposit} writes a store outside the chunk returns its
+     * ring here, saved in that store's file and read back with it ({@code DurableOpRings}).
+     */
+    default com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing depositRing(ServerLevel level, int chunkX, int chunkZ, String good) {
+        return null;
+    }
+
     // ---- damage (C18, I23) and repair (I1) -----------------------------------------------------
 
     /**

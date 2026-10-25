@@ -30,6 +30,7 @@ import java.util.function.Consumer;
  * on disk never claims what a chunk on disk lacks. In a world save it is the last SavedData written, behind every
  * level's ({@link WorldSaveOrder}), with the levels' {@code data/} directories synced first: the file on disk never
  * claims what another SavedData file of the same save lacks either (docs/choices-journal-barrier.md RP-200, RP-201).
+ * Only a world save writes it: a level saved by itself leaves it dirty for the next world save (RP-203).
  */
 public final class JournalSavedData extends SavedData {
     public static final String FILE = "mic_rtsim_journal";
@@ -39,7 +40,10 @@ public final class JournalSavedData extends SavedData {
     /** The last write was held or failed (set on the IO chain). */
     private volatile boolean retry;
     private volatile long writtenThrough;
+    /** The last sequence the file held when this start read it (0 for a new journal): {@link DurableOpRing#trim}. */
+    private long durableAtLoad;
     private final AtomicLong writes = new AtomicLong();
+    private final AtomicLong skipped = new AtomicLong();
 
     /**
      * GameTests: run once, on the IO chain, right before the journal's next write (its chunks on disk), with the
@@ -85,6 +89,10 @@ public final class JournalSavedData extends SavedData {
     public void save(File file, HolderLookup.Provider registries) {
         if (!isDirty())
             return;
+        if (!WorldSaveOrder.saving()) {
+            skip();
+            return;
+        }
         retry = false;
         ChunkWriteBarrier.Round round = chunks.arm();
         Journal.Snapshot s = journal.snapshot();
@@ -123,6 +131,25 @@ public final class JournalSavedData extends SavedData {
         }
     }
 
+    /**
+     * The overworld saved by itself, outside {@code MinecraftServer.saveAllChunks} (a mod's own
+     * {@code ServerLevel.save}, or a save off the server thread): the other levels' SavedData are not being written,
+     * so a file written now could claim an effect that lives in one of them (Diesel's {@code cdg_oil_chunks} in the
+     * nether) while that file is older on disk (RP-203). The journal stays dirty, its barrier keeps its notes, and
+     * the next world save writes it. Vanilla saves a level only inside saveAllChunks; the first skip is logged, with
+     * where it came from, and every one is counted ({@link #skipped}).
+     */
+    private void skip() {
+        if (skipped.incrementAndGet() == 1)
+            MicRtsim.LOGGER.info("[mic_rtsim] the overworld saved outside a world save (thread {}): the journal's file waits for the"
+                    + " next world save; logged once, counted in rtsim perf", Thread.currentThread().getName(), new Throwable("where the save came from"));
+    }
+
+    /** Saves of the overworld outside a world save that left the journal's file to the next one (RP-203). */
+    public long skipped() {
+        return skipped.get();
+    }
+
     private static void forTest(AtomicReference<Consumer<Path>> hook, File file) {
         Consumer<Path> h = hook.getAndSet(null);
         if (h == null)
@@ -146,6 +173,11 @@ public final class JournalSavedData extends SavedData {
      */
     public long writtenThrough() {
         return writtenThrough;
+    }
+
+    /** The last observation sequence the file held when this start read it; 0 for a journal this start made. */
+    public long durableAtLoad() {
+        return durableAtLoad;
     }
 
     /** Files written since the server started (the GameTests read it). */
@@ -195,6 +227,7 @@ public final class JournalSavedData extends SavedData {
                 tag.getLong("lastAppliedCmdSeq"), tag.getLong("nextObsSeq"), seqs, records, kinds, names,
                 tag.contains("pinnedGen", Tag.TAG_BYTE_ARRAY) ? tag.getByteArray("pinnedGen") : null)));
         d.writtenThrough = Math.max(0, tag.getLong("nextObsSeq") - 1);
+        d.durableAtLoad = d.writtenThrough;
         return d;
     }
 

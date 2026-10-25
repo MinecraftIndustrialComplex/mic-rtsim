@@ -26,8 +26,9 @@ import java.util.List;
  * {@code data/} directories before its write, so a power loss cannot keep the journal's rename and lose theirs
  * (RP-201). The chunks the journal speaks for are not SavedData: {@link ChunkWriteBarrier} orders them.
  *
- * <p>Server thread only. Outside saveAllChunks (a mod saving a level itself) a task is queued at once, as before.
- * If saveAllChunks throws, the held tasks go on the chain at the next one's return: later, the safe side.
+ * <p>Server thread only. The journal's file is written only inside saveAllChunks (RP-203: a level saved by itself
+ * leaves it dirty); the marker of such a save is queued at once, and reports the file it finds on disk. If
+ * saveAllChunks throws, the held tasks go on the chain at the next one's return: later, the safe side.
  */
 public final class WorldSaveOrder {
     private WorldSaveOrder() {}
@@ -79,7 +80,20 @@ public final class WorldSaveOrder {
             IOUtilities.waitUntilIOWorkerComplete();
     }
 
-    /** GameTests: whether a world save is under way on the server thread. */
+    /**
+     * GameTests: runs {@code save} (a test journal's own {@code save(File, ...)}) as saveAllChunks runs its levels'
+     * saves, between its start and its return, without saving anything else.
+     */
+    public static void asWorldSaveForTest(MinecraftServer server, Runnable save) {
+        begin(server);
+        try {
+            save.run();
+        } finally {
+            end(false);
+        }
+    }
+
+    /** Whether a world save is under way on the server thread. */
     public static boolean saving() {
         return saving;
     }
