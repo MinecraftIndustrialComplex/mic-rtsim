@@ -2,6 +2,9 @@ package com.minecraftindustrialcomplex.mic_rtsim.mixin;
 
 import net.minecraft.world.level.entity.EntityPersistentStorage;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
+import net.minecraft.world.level.entity.Visibility;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
@@ -16,6 +19,22 @@ import java.util.function.Consumer;
 public interface EntitySectionManagerAccessor {
     @Accessor("permanentStorage")
     EntityPersistentStorage<?> mic_rtsim$permanentStorage();
+
+    /**
+     * The visibility of each entity chunk (HIDDEN where absent). A camp reads it beside
+     * {@code areEntitiesLoaded}: under C2ME a chunk can be HIDDEN with its entities loaded (MZB-660), and
+     * the census does not see a hidden entity.
+     */
+    @Accessor("chunkVisibility")
+    Long2ObjectMap<Visibility> mic_rtsim$chunkVisibility();
+
+    /**
+     * The entity chunks queued for unloading. {@code updateChunkStatus(INACCESSIBLE)} queues the chunk, and the
+     * next {@code processUnloads} stores it (HIDDEN and LOADED), so a GameTest that forces the state C2ME leaves
+     * (HIDDEN, entities loaded, not queued) takes the chunk out of this set right after the status change (MZB-660).
+     */
+    @Accessor("chunksToUnload")
+    LongSet mic_rtsim$chunksToUnload();
 
     /**
      * {@code storeChunkSections} (private): vanilla's own store of one entity chunk, as its autosave does it,

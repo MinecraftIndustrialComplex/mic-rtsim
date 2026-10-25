@@ -5,7 +5,9 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Rat;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
+import com.minecraftindustrialcomplex.mic_rtsim_create.PackageStores;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import com.simibubi.create.content.contraptions.actors.psi.PortableStorageInterfaceBlockEntity;
 import com.simibubi.create.content.fluids.FluidTransportBehaviour;
 import com.simibubi.create.content.fluids.drain.ItemDrainBlockEntity;
 import com.simibubi.create.content.fluids.pump.PumpBlock;
@@ -48,6 +50,8 @@ import com.simibubi.create.content.logistics.funnel.BeltFunnelBlock;
 import com.simibubi.create.content.logistics.funnel.FunnelBlock;
 import com.simibubi.create.content.logistics.funnel.FunnelBlockEntity;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
+import com.simibubi.create.content.logistics.packagePort.PackagePortTarget;
+import com.simibubi.create.content.logistics.packagePort.frogport.FrogportBlockEntity;
 import com.simibubi.create.content.logistics.packager.PackagerBlock;
 import com.simibubi.create.content.logistics.packager.PackagerBlockEntity;
 import com.simibubi.create.content.logistics.tunnel.BeltTunnelBlockEntity;
@@ -130,7 +134,9 @@ final class CreateCompile implements GlassExtractor.Compile {
     enum K {
         MILLSTONE, CRUSHER, PRESS, MIXER, SAW, DEPLOYER, FAN, CRAFTER, SPOUT, DRAIN, BASIN, BELT, FUNNEL, TUNNEL,
         ARM, DEPOT, CHUTE, PUMP, BOILER, ENGINE, BURNER, SWITCH, PACKAGER, FROGPORT, CHAIN, HOPPER, FURNACE,
-        CRATE, CREATIVE_TANK, PIPE, KINETIC
+        CRATE, CREATIVE_TANK, PIPE, KINETIC,
+        /** A portable storage interface: claimed with no node (SECTIONS.md §4.4, choice SC95). */
+        INTERFACE
     }
 
     /** How a node's goods change on the way through it (the reach propagation, step 5). */
@@ -331,6 +337,15 @@ final class CreateCompile implements GlassExtractor.Compile {
             return K.HOPPER;
         if (be instanceof AbstractFurnaceBlockEntity)
             return K.FURNACE;
+        // A station's interface exposes a docked train's storage, whose change is the station's cargo, booked
+        // on the inventories IND_STATION_PORTS names (SECTIONS.md §4.4). Claimed with no node when its conveying
+        // walk reaches a district inventory, so the movers beside it have no supply in the graph; left to the
+        // residual, it was a black box that left every station-fed unit unbounded (choice SC95). One that reaches
+        // none (an interface onto a belt into a machine) stays residual: its cargo is booked nowhere, and a
+        // black box keeps what it feeds from failing every window
+        if (be instanceof PortableStorageInterfaceBlockEntity)
+            return com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch.reachesAnInventory(level, g.district, be.getBlockPos())
+                    ? K.INTERFACE : null;
         if (be instanceof KineticBlockEntity)
             return K.KINETIC;
         if (BlockEntityBehaviour.get(be, FluidTransportBehaviour.TYPE) != null)
@@ -389,6 +404,18 @@ final class CreateCompile implements GlassExtractor.Compile {
             return t;
         BlockPos c = t.getController();
         return c != null && blockAt(c) instanceof FluidTankBlockEntity x ? x : null;
+    }
+
+    /** An engine's shaft as {@code getShaft} finds it, through {@link #blockAt} ({@code getShaft} reads the level). */
+    private PoweredShaftBlockEntity engineShaft(SteamEngineBlockEntity e) {
+        Direction facing = com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock.getFacing(e.getBlockState());
+        return blockAt(e.getBlockPos().relative(facing, 2)) instanceof PoweredShaftBlockEntity ps && ps.canBePoweredBy(e.getBlockPos()) ? ps : null;
+    }
+
+    /** An engine's tank controller as {@code getTank} finds it, through {@link #blockAt} and {@link #tankController}. */
+    private FluidTankBlockEntity engineTank(SteamEngineBlockEntity e) {
+        Direction facing = com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock.getFacing(e.getBlockState());
+        return blockAt(e.getBlockPos().relative(facing.getOpposite())) instanceof FluidTankBlockEntity t ? tankController(t) : null;
     }
 
     /** {@code Level.getBlockState} where the chunk is loaded; null (a stop, counted) where it is not. */
@@ -470,14 +497,32 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (net != null)
                 networks.put(id.longValue(), net);
         }
-        // Boilers driving each network: engines' shafts that are sources of it.
-        Long2ObjectOpenHashMap<List<SteamEngineBlockEntity>> enginesByNet = new Long2ObjectOpenHashMap<>();
+        // Boilers drive their engines' shafts (SEC-1 S5-1): a claimed tank is a boiler node, and the shaft of each of
+        // its engines is a driven source of the shaft's network. A shaft is driven by the engine Create powers it from.
+        LongOpenHashSet boilerTanks = new LongOpenHashSet();
+        for (BlockEntity be : all(K.BOILER))
+            if (((FluidTankBlockEntity) be).isController())
+                boilerTanks.add(be.getBlockPos().asLong());
+        Long2ObjectOpenHashMap<FluidTankBlockEntity> tankOfShaft = new Long2ObjectOpenHashMap<>();
+        Long2ObjectOpenHashMap<LongOpenHashSet> tankNetworks = new Long2ObjectOpenHashMap<>();
         for (BlockEntity be : all(K.ENGINE)) {
             SteamEngineBlockEntity e = (SteamEngineBlockEntity) be;
-            PoweredShaftBlockEntity shaft = e.getShaft();
-            if (shaft != null && shaft.network != null)
-                enginesByNet.computeIfAbsent(shaft.network.longValue(), x -> new ArrayList<>()).add(e);
+            PoweredShaftBlockEntity shaft = engineShaft(e);
+            FluidTankBlockEntity tank = engineTank(e);
+            if (shaft == null || tank == null || !boilerTanks.contains(tank.getBlockPos().asLong()))
+                continue;
+            long sp = shaft.getBlockPos().asLong();
+            boolean powers = shaft.getBlockPos().subtract(e.getBlockPos()).equals(shaft.enginePos);
+            if (powers || !tankOfShaft.containsKey(sp))
+                tankOfShaft.put(sp, tank);
+            if (shaft.network != null && networks.containsKey(shaft.network.longValue()))
+                tankNetworks.computeIfAbsent(tank.getBlockPos().asLong(), x -> new LongOpenHashSet()).add(shaft.network.longValue());
         }
+        // a tank whose engines turn shafts of two networks: each boiler drives at most one domain, so both are unstable
+        LongOpenHashSet splitNetworks = new LongOpenHashSet();
+        for (LongOpenHashSet nets : tankNetworks.values())
+            if (nets.size() > 1)
+                splitNetworks.addAll(nets);
         long[] ids = networks.keySet().toLongArray();
         java.util.Arrays.sort(ids);
         for (long id : ids) {
@@ -499,14 +544,17 @@ final class CreateCompile implements GlassExtractor.Compile {
             // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
             // every other district on it (choice SC11), the boiler's district included. Members whose chunk
             // has not loaded this session are not listed, so the test is structural (choice SC44): a listed
-            // member outside, or a link out of the district from a listed member inside (reachesOut)
+            // member outside, or a link out of the district from a listed member inside (reachesOut). The
+            // chunks outside it reaches are kept for edits there (choice SC77).
             boolean crossing = false;
             float capacity = 0, stress = 0;
+            List<KineticBlockEntity> sources = new ArrayList<>();
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
                 if (listed(net, s)) {
                     capacity += e.getValue() * Math.abs(s.getGeneratedSpeed());
-                    crossing |= outside(s);
+                    crossing |= reached(s.getBlockPos());
+                    sources.add(s);
                 }
             }
             for (var e : net.members.entrySet()) {
@@ -514,55 +562,86 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (listed(net, m)) {
                     stress += e.getValue() * Math.abs(m.getTheoreticalSpeed());
                     overstressed |= m.isOverStressed();
-                    crossing |= outside(m);
+                    crossing |= reached(m.getBlockPos());
                 }
             }
-            if (!crossing)
-                crossing = reachesOut(id, net);
+            crossing |= reachesOut(id, net);
             d.liveCapacity = capacity;
             d.liveStress = stress;
             if (overstressed)
                 d.flags |= GlassRecords.Domain.OVERSTRESSED;
             if (!stressEnabled)
                 d.flags |= GlassRecords.Domain.STRESS_DISABLED;
-            List<Rat> speeds = new ArrayList<>();
-            List<SteamEngineBlockEntity> engines = enginesByNet.get(id);
-            FluidTankBlockEntity boiler = engines == null ? null : singleBoiler(engines);
-            if (!crossing && boiler != null && root instanceof PoweredShaftBlockEntity rootShaft && rootShaft.capacityKey != null) {
-                // A boiler drives the domain: tabulate every level 0..18 (G-B5, §9.3 "Boiler").
-                int engineCount = boiler.boiler.attachedEngines;
-                double otherCapacity = 0;
-                for (var e : net.sources.entrySet())
-                    if (!(e.getKey() instanceof PoweredShaftBlockEntity))
-                        otherCapacity += e.getValue() * Math.abs(e.getKey().getGeneratedSpeed());
-                int dir = rootShaft.movementDirection;
-                for (int l = 0; l <= 18; l++) {
-                    float eff = Cycles.boilerEfficiency(l, engineCount, false);
-                    float sp = eff > 0 ? dir * Cycles.engineSpeed(eff) : 0;
-                    double cap = otherCapacity;
-                    for (var e : net.sources.entrySet())
-                        if (e.getKey() instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null)
-                            cap += Cycles.engineCapacityPerRpm(eff, com.simibubi.create.api.stress.BlockStressValues.getCapacity(ps.capacityKey))
-                                    * Math.abs(sp);
-                    Rat speed = Rat.ofFloat(sp);
-                    d.levels.add(new GraphBuilder.Level(l, speed, cap));
-                    speeds.add(speed);
-                }
-                int current = Cycles.boilerLevel(boiler.boiler.activeHeat, boiler.getTotalTankSize(), boiler.boiler.waterSupply);
-                d.current = Math.max(0, Math.min(18, current));
-                // the driver (the boiler node) is set when the node exists (step 1)
-                d.driver = NONE;
-                boilerDomains.put(boiler.getBlockPos().asLong(), d.index);
-                if (rootSpeed == 0)
-                    rootSpeed = Cycles.engineSpeed(1f) * dir; // ratios are relative to the root at any level
-            } else {
-                Rat speed = Rat.ofFloat(rootSpeed);
-                d.levels.add(new GraphBuilder.Level(0, speed, capacity));
-                d.current = 0;
-                speeds.add(speed);
-                if ((engines != null && boiler == null) || crossing)
-                    unstableDomains.add(d.index); // engines of several boilers, or a shared network: the current level only
+            sources.sort(Comparator.comparingLong(x -> x.getBlockPos().asLong()));
+            // one source per position: inside a deferred join the network lists the kept old object and the new
+            // one at the same place (Loaded.keptFor); the one there now is the source
+            for (int i = sources.size() - 1; i > 0; i--) {
+                KineticBlockEntity a = sources.get(i - 1), b = sources.get(i);
+                if (a.getBlockPos().equals(b.getBlockPos()))
+                    sources.remove(blockAt(b.getBlockPos()) == b ? i - 1 : i);
             }
+            boolean unstable = crossing || splitNetworks.contains(id);
+            Rat reference = Rat.ofFloat(rootSpeed);
+            Rat[] ratios = new Rat[sources.size()];
+            FluidTankBlockEntity[] tanks = new FluidTankBlockEntity[sources.size()];
+            boolean forward = false, backward = false;
+            for (int i = 0; i < ratios.length; i++) {
+                KineticBlockEntity s = sources.get(i);
+                ratios[i] = sourceRatio(s, reference, rootSpeed);
+                if (s instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null) {
+                    tanks[i] = tankOfShaft.get(s.getBlockPos().asLong());
+                    // an engine's shaft whose tank or engine this district does not model (outside it, or not
+                    // loaded): its speed follows a boiler the solve cannot see
+                    unstable |= tanks[i] == null;
+                }
+                // a driven source whose speed is not related to the reference cannot be tabulated
+                unstable |= tanks[i] != null && ratios[i] == null;
+                float generated = s.getGeneratedSpeed();
+                if (ratios[i] != null && generated != 0) {
+                    // the reference speed that source implies: Create breaks a block where they disagree in sign
+                    if ((generated > 0) == (ratios[i].num() > 0))
+                        forward = true;
+                    else
+                        backward = true;
+                }
+            }
+            unstable |= forward && backward;
+            List<GraphBuilder.Source> built = new ArrayList<>();
+            List<Rat> speeds = null;
+            if (!unstable) {
+                boolean anyDriven = false;
+                for (int i = 0; i < ratios.length; i++) {
+                    anyDriven |= tanks[i] != null;
+                    built.add(tanks[i] == null ? fixedSource(net, sources.get(i), ratios[i])
+                            : drivenSource((PoweredShaftBlockEntity) sources.get(i), tanks[i], ratios[i]));
+                }
+                if (anyDriven) {
+                    speeds = speedRows(built);
+                    unstable = speeds == null || speeds.isEmpty();
+                }
+            }
+            if (unstable) {
+                built.clear();
+                for (int i = 0; i < ratios.length; i++)
+                    built.add(fixedSource(net, sources.get(i), ratios[i]));
+                speeds = null;
+                unstableDomains.add(d.index); // a shared network, or sources that do not add up: the current speed only
+            }
+            // the row the reference turns at now (none: stopped, or a speed no source gives); with no driven
+            // source the one row is the reference's own speed
+            int current = 0;
+            if (speeds == null)
+                speeds = List.of(reference);
+            else if ((current = speeds.indexOf(reference.fitSigned())) < 0)
+                current = NONE;
+            for (Rat speed : speeds)
+                d.levels.add(new GraphBuilder.Level(0, speed, 0));
+            d.sources.addAll(built);
+            d.current = current;
+            if (!unstable)
+                for (int i = 0; i < tanks.length; i++)
+                    if (tanks[i] != null)
+                        boilerDriven.computeIfAbsent(tanks[i].getBlockPos().asLong(), x -> new ArrayList<>()).add(new int[] {d.index, i});
             levelSpeeds.add(speeds);
             domainRoot.put(d.index, rootSpeed);
             for (var e : net.members.entrySet()) {
@@ -578,6 +657,84 @@ final class CreateCompile implements GlassExtractor.Compile {
             }
         }
         walk();
+    }
+
+    /**
+     * A source's speed over the reference's (Create's theoretical speeds, as the members' ratios are), null when
+     * either is zero: a stopped network relates nothing.
+     */
+    private static Rat sourceRatio(KineticBlockEntity s, Rat reference, float rootSpeed) {
+        float turning = s.getTheoreticalSpeed();
+        if (turning == 0 || rootSpeed == 0)
+            return null;
+        try {
+            Rat r = Rat.ofFloat(turning).div(reference).fitSigned();
+            return r.isZero() ? null : r;
+        } catch (ArithmeticException e) {
+            return null;
+        }
+    }
+
+    /** A source that gives the speed it has now and nothing else (SEC-1 S5-1): one row, capacity as Create sums it. */
+    private GraphBuilder.Source fixedSource(com.simibubi.create.content.kinetics.KineticNetwork net, KineticBlockEntity s, Rat ratio) {
+        GraphBuilder.Source out = new GraphBuilder.Source(s.getBlockPos().asLong());
+        out.ratio = ratio;
+        float speed = s.getGeneratedSpeed();
+        out.levels.add(new GraphBuilder.Level(0, Rat.ofFloat(speed), net.sources.get(s) * Math.abs(speed)));
+        out.current = 0;
+        return out;
+    }
+
+    /**
+     * An engine's shaft on a boiler (SEC-1 S5-1): a row per boiler level 0 to 18 with the speed and capacity the
+     * engines give there (G-B5, §9.3 "Boiler"); the boiler node becomes its driver in step 1.
+     */
+    private GraphBuilder.Source drivenSource(PoweredShaftBlockEntity shaft, FluidTankBlockEntity tank, Rat ratio) {
+        GraphBuilder.Source out = new GraphBuilder.Source(shaft.getBlockPos().asLong());
+        out.ratio = ratio;
+        int engines = tank.boiler.attachedEngines;
+        double perRpm = com.simibubi.create.api.stress.BlockStressValues.getCapacity(shaft.capacityKey);
+        for (int l = 0; l <= 18; l++) {
+            float eff = Cycles.boilerEfficiency(l, engines, false);
+            // Create's getGeneratedSpeed: no speed without capacity (a capacity of 0 in the config too)
+            float sp = (float) (eff * perRpm) > 0 ? shaft.movementDirection * Cycles.engineSpeed(eff) : 0;
+            out.levels.add(new GraphBuilder.Level(l, Rat.ofFloat(sp), Cycles.engineCapacityPerRpm(eff, perRpm) * Math.abs(sp)));
+        }
+        int level = Cycles.boilerLevel(tank.boiler.activeHeat, tank.getTotalTankSize(), tank.boiler.waterSupply);
+        out.current = Math.max(0, Math.min(18, level));
+        return out;
+    }
+
+    /**
+     * The domain's speed rows: the reference speeds its sources can give, each nonzero row speed over the
+     * source's ratio, distinct, by absolute value ascending and a negative before a positive of the same size.
+     * Null when a speed has no exact row on the wire or there are more rows than a domain has (unstable).
+     */
+    private static List<Rat> speedRows(List<GraphBuilder.Source> sources) {
+        List<Rat> rows = new ArrayList<>();
+        try {
+            for (GraphBuilder.Source s : sources) {
+                if (s.ratio == null)
+                    continue;
+                for (GraphBuilder.Level l : s.levels) {
+                    if (l.speed().isZero())
+                        continue;
+                    Rat r = l.speed().div(s.ratio);
+                    if (!r.equals(r.fitSigned()) || !l.speed().equals(l.speed().fitSigned()))
+                        return null;
+                    if (!rows.contains(r))
+                        rows.add(r);
+                }
+            }
+        } catch (ArithmeticException e) {
+            return null;
+        }
+        rows.sort((x, y) -> {
+            int c = java.math.BigInteger.valueOf(Math.abs(x.num())).multiply(java.math.BigInteger.valueOf(y.den()))
+                    .compareTo(java.math.BigInteger.valueOf(Math.abs(y.num())).multiply(java.math.BigInteger.valueOf(x.den())));
+            return c != 0 ? c : Long.compare(Long.signum(x.num()), Long.signum(y.num()));
+        });
+        return rows.size() > GlassRecords.Domain.MAX_SPEED_ROWS ? null : rows;
     }
 
     /**
@@ -619,24 +776,50 @@ final class CreateCompile implements GlassExtractor.Compile {
      * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
      * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
      * may hold members that never loaded this session) or to a kinetic block entity of the same network.
-     * Reads only loaded chunks.
+     * Each chunk it links into is kept (choice SC77), and so is each loaded chunk outside the district across
+     * a face that any listed member, inside or out, may turn, though nothing is there yet: a part a player
+     * places there joins the network (review M3). Reads only loaded chunks.
      */
     private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
+        boolean out = false;
         for (KineticBlockEntity m : net.members.keySet()) {
-            if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+            if (!listed(net, m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
+            boolean in = !outside(m);
+            int lx = p.getX() & 15, lz = p.getZ() & 15;
+            if (!in && lx != 0 && lx != 15 && lz != 0 && lz != 15)
+                continue; // outside and off its chunk's border: no face leaves its chunk
             BlockState state = m.getBlockState();
             IRotate block = state.getBlock() instanceof IRotate r ? r : null;
-            for (Direction f : Direction.values())
-                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f), block != null && connects(block, p, state, f)))
-                    return true;
-            if (block != null)
+            for (Direction f : Direction.values()) {
+                if (f.getAxis() == Direction.Axis.Y)
+                    continue;
+                BlockPos n = p.relative(f);
+                boolean may = block != null && connects(block, p, state, f);
+                if (in && linksOutTo(id, n, may))
+                    out |= reached(n);
+                else if (may && ((n.getX() >> 4) != (p.getX() >> 4) || (n.getZ() >> 4) != (p.getZ() >> 4)) && Loaded.at(level, n))
+                    reached(n);
+            }
+            if (in && block != null)
                 for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
                     if (linksOutTo(id, n, true))
-                        return true;
+                        out |= reached(n);
         }
-        return false;
+        return out;
+    }
+
+    /**
+     * Whether {@code p} lies outside the district's chunks; if so its chunk is kept as one a network of the
+     * compile reaches (choice SC77: a player's edit there, in no district, is this district's too).
+     */
+    private boolean reached(BlockPos p) {
+        long c = net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4);
+        if (g.district.chunks.contains(c))
+            return false;
+        g.reachedChunks.add(c);
+        return true;
     }
 
     /**
@@ -783,22 +966,10 @@ final class CreateCompile implements GlassExtractor.Compile {
         return walkedSpeed.containsKey(p) ? walkedSpeed.get(p) : k.getTheoreticalSpeed();
     }
 
-    private final Long2IntOpenHashMap boilerDomains = intMap();
+    /** Per boiler tank (controller position): the (domain, source) pairs of the shafts it drives. */
+    private final Long2ObjectOpenHashMap<List<int[]>> boilerDriven = new Long2ObjectOpenHashMap<>();
     private final IntOpenHashSet unstableDomains = new IntOpenHashSet();
     private final it.unimi.dsi.fastutil.longs.Long2DoubleOpenHashMap memberImpact = new it.unimi.dsi.fastutil.longs.Long2DoubleOpenHashMap();
-
-    private static FluidTankBlockEntity singleBoiler(List<SteamEngineBlockEntity> engines) {
-        FluidTankBlockEntity found = null;
-        for (SteamEngineBlockEntity e : engines) {
-            FluidTankBlockEntity t = e.getTank();
-            if (t == null)
-                return null;
-            if (found != null && found != t)
-                return null;
-            found = t;
-        }
-        return found;
-    }
 
     /** Attaches a node to the kinetic domain of the block entity at {@code pos}. */
     private void attachKinetic(Info info, BlockPos pos) {
@@ -1038,9 +1209,10 @@ final class CreateCompile implements GlassExtractor.Compile {
         var b = t.boiler;
         i.node.params(t.getTotalTankSize(), b.attachedEngines, b.activeHeat, Math.round((double) b.waterSupply * 1000));
         acceptFluid.put(t.getBlockPos().asLong(), i.node.index);
-        int d = boilerDomains.get(t.getBlockPos().asLong());
-        if (d != NONE)
-            g.domains().get(d).driver = i.node.index;
+        List<int[]> driven = boilerDriven.get(t.getBlockPos().asLong());
+        if (driven != null)
+            for (int[] ds : driven)
+                g.domains().get(ds[0]).sources.get(ds[1]).driver = i.node.index;
     }
 
     private void funnelNode(FunnelBlockEntity f) {
@@ -2069,22 +2241,39 @@ final class CreateCompile implements GlassExtractor.Compile {
     private void frogportEdges(Info i) {
         PackagePortBlockEntity port = (PackagePortBlockEntity) i.be;
         BlockPos p = port.getBlockPos();
+        BlockPos chain = port.target == null ? null : p.offset(port.target.relativePos);
+        // A package store's frogport (SECTIONS.md §2.5, slice S4a): its chain is the store's, owned by no
+        // district, and its inventory is the port. Packages from an adjacent packager go into the inventory,
+        // and an adjacent unpacking packager takes them from there; nothing crosses to the store's other
+        // frogports inside this district's graph.
+        boolean onStore = chain != null && port instanceof FrogportBlockEntity
+                && port.target instanceof PackagePortTarget.ChainConveyorFrogportTarget
+                && PackageStores.of(g.ind).compileStore(g.level, chain, p, g.district.id, storeWalks) != null;
+        int store = onStore ? g.storeAt(p) : NONE;
+        if (store != NONE) {
+            g.nodes().get(store).flag(GlassRecords.Node.CHAIN_PORT);
+            edge(GlassRecords.Edge.ADJACENCY, i.node.index, store);
+        }
+        int unpackFrom = store != NONE ? store : i.node.index;
         // Packages from an adjacent packager go out on the chain; packages for this port come off it
         // into an adjacent packager, which unpacks them (BOUNDED: addresses are not modelled).
         for (Direction d : Direction.values()) {
             BlockPos n = p.relative(d);
             int unpack = unpackAt.get(n.asLong());
             if (unpack != NONE)
-                edge(GlassRecords.Edge.ADJACENCY, i.node.index, unpack);
+                edge(GlassRecords.Edge.ADJACENCY, unpackFrom, unpack);
             if (blockAt(n) instanceof PackagerBlockEntity)
                 edge(GlassRecords.Edge.ADJACENCY, supplyItem.get(n.asLong()), i.node.index);
         }
-        if (port.target == null)
+        if (chain == null || onStore)
             return;
-        BlockPos chain = p.offset(port.target.relativePos);
         LongOpenHashSet network = chainNetwork(chain);
+        PackageStores stores = PackageStores.of(g.ind);
         for (BlockEntity be : all(K.FROGPORT)) {
             if (be == port || !(be instanceof PackagePortBlockEntity other) || other.target == null)
+                continue;
+            // A store's frogport is a port, never a chain edge's end (its store moves the packages).
+            if (stores.storeOfPort(g.level.dimension(), other.getBlockPos()) != null)
                 continue;
             if (network.contains(other.getBlockPos().offset(other.target.relativePos).asLong())) {
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.CHAIN, i.node.index, acceptItem.get(other.getBlockPos().asLong()));
@@ -2093,6 +2282,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             }
         }
     }
+
+    /** The chain networks this compile walked for package stores, by conveyor. */
+    private final Long2ObjectOpenHashMap<PackageStores.Observed> storeWalks = new Long2ObjectOpenHashMap<>();
 
     private LongOpenHashSet chainNetwork(BlockPos start) {
         LongOpenHashSet seen = new LongOpenHashSet();
@@ -2756,8 +2948,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             }
             Info arm = takers.get(0);
             i.handOff = l -> {
-                float rpm = arm.domain == NONE ? arm.rpmNow
-                        : rpmAt(arm, arm.domain == i.domain ? l : Math.max(0, g.domains().get(arm.domain).current));
+                int row = arm.domain == NONE ? NONE : arm.domain == i.domain ? l : g.domains().get(arm.domain).current;
+                // no row: the arm's domain is stopped (or at a speed no source gives), so no hand-off rate
+                float rpm = arm.domain == NONE ? arm.rpmNow : row == NONE ? 0 : rpmAt(arm, row);
                 if (!(rpm > 0))
                     return null;
                 Cycles.Ratio h = Cycles.chuteHandOff(motion, Cycles.armMoveTicks(rpm), false);

@@ -491,7 +491,7 @@ fn a_press_on_a_belt_passes_what_it_does_not_press() {
 // ---- boilers and kinetics (§2.5, §9.3) -----------------------------------------------------------
 
 /// A boiler fed by a pump of `pump` mB per tick drives a domain whose press makes sheets: level 4
-/// selects the fast level, level 2 the slow one, which is overstressed.
+/// selects the fast row (32 RPM), level 2 the slow one (16 RPM), which is overstressed.
 fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
     let mut b = B::default();
     let input = b.store(0);
@@ -527,11 +527,11 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
         node_flags::ANY_OUTPUT_BLOCKS,
         vec![
             RateEntry {
-                level: 1,
+                level: 0,
                 ..entry(Some(press), 1, 20)
             },
             RateEntry {
-                level: 2,
+                level: 1,
                 ..entry(Some(press), 1, 10)
             },
         ],
@@ -543,21 +543,21 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
     b.edges[he as usize].param = 4;
     b.edge(input, m);
     b.edge(m, out);
-    let level = |selector: u32, speed: i32, capacity: f64| DomainLevel {
-        selector,
-        speed_num: speed,
-        speed_den: 1,
-        capacity,
-    };
     b.domains.push(GraphDomain {
         head: head(0),
         network: 1,
-        current: 2,
-        driver: Some(boiler),
+        current: Some(1),
         flags,
         live_stress: 0.0,
         live_capacity: 0.0,
-        levels: vec![level(0, 0, 0.0), level(2, 16, 1000.0), level(4, 32, 4096.0)],
+        levels: vec![DomainLevel::speed_row(16), DomainLevel::speed_row(32)],
+        sources: vec![DomainSource::driven(
+            boiler,
+            0,
+            &[(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)],
+            2,
+        )],
+        foreign: 0,
         members: vec![
             Member {
                 node: Some(m),
@@ -584,7 +584,9 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
 fn the_boiler_level_selects_the_domain_level() {
     let (g, rg, _) = steam(40, 0);
     let s = run(&g, &rg);
-    assert_eq!(s.dom_level, vec![Some(2)]);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.src_row, vec![Some(2)]);
+    assert_eq!(s.dom_cap, vec![4096.0]);
     assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
 }
 
@@ -596,11 +598,12 @@ fn less_water_drops_the_level_into_overstress_and_the_members_stop() {
     assert_eq!(s.dom_level, vec![None]);
     assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
     assert!(s.converged);
-    // Water stopped altogether: level 0, where the press has no entry.
+    // Water stopped altogether: level 0, where the engine gives no speed.
     let (g, mut rg, pump) = steam(40, 0);
     rg.gate_off[pump as usize] = true;
     let s = run(&g, &rg);
-    assert_eq!(s.dom_level, vec![Some(0)]);
+    assert_eq!(s.dom_level, vec![None]);
+    assert_eq!(s.src_row, vec![Some(0)]);
     assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
 }
 
@@ -608,8 +611,187 @@ fn less_water_drops_the_level_into_overstress_and_the_members_stop() {
 fn stress_disabled_domains_never_overstress() {
     let (g, rg, _) = steam(20, domain_flags::STRESS_DISABLED);
     let s = run(&g, &rg);
-    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.dom_level, vec![Some(0)]);
     assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 20));
+}
+
+/// Two tanks on one shaft (SECTIONS.md §2.6): boilers A and B, each fed by its own pump of
+/// `pumps[i]` mB per tick, drive engines (sources at positions 0 and 1, each 16 RPM and 1,000 SU at
+/// boiler level 2, 32 RPM and 4,096 SU at level 4) on one network, B's shaft turning at `ratio_b`
+/// times the reference. `speeds` are the domain's speed rows; the press makes a sheet per 320 / v
+/// ticks at reference speed v, and `load` loads of 16 SU per RPM sit elsewhere on the network.
+/// Returns the graph, its regime and the two pumps.
+fn two_tanks(
+    pumps: [u32; 2],
+    ratio_b: (i32, u32),
+    speeds: &[i32],
+    load: u32,
+) -> (Graph, Regime, [u32; 2]) {
+    let mut b = B::default();
+    let input = b.store(0);
+    let out = b.store(1);
+    let rows = [(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)];
+    let mut sources = Vec::new();
+    let mut ps = [0; 2];
+    for (i, &pump) in pumps.iter().enumerate() {
+        let water = b.node(
+            NodeKind::Source,
+            model::WATER_SOURCE,
+            node_flags::FLUID,
+            Vec::new(),
+        );
+        let p = b.node(
+            NodeKind::Mover,
+            model::PUMP,
+            node_flags::FLUID,
+            vec![RateEntry {
+                flags: rate_flags::SHARED,
+                ..entry(None, pump, 1)
+            }],
+        );
+        let boiler = b.node(
+            NodeKind::Boiler,
+            model::BOILER,
+            node_flags::FLUID,
+            Vec::new(),
+        );
+        b.nodes[boiler as usize].params = [16, 1, 0, 0];
+        let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+        b.nodes[h as usize].params = [0, i64::from(heat::KINDLED), 0, 0];
+        b.edge_k(EdgeKind::Pipe, water, p, &[WATER]);
+        b.edge_k(EdgeKind::Pipe, p, boiler, &[WATER]);
+        let he = b.edge_k(EdgeKind::Heat, h, boiler, &[]);
+        b.edges[he as usize].param = 4;
+        let mut src = DomainSource::driven(boiler, i as i64, &rows, 2);
+        if i == 1 {
+            (src.ratio_num, src.ratio_den) = ratio_b;
+        }
+        sources.push(src);
+        ps[i] = p;
+    }
+    let press = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+    let rates = speeds
+        .iter()
+        .enumerate()
+        .map(|(k, &v)| RateEntry {
+            level: k as u32,
+            ..entry(Some(press), 1, 320 / v.unsigned_abs())
+        })
+        .collect();
+    let m = b.node(
+        NodeKind::Machine,
+        model::PRESS,
+        node_flags::ANY_OUTPUT_BLOCKS,
+        rates,
+    );
+    b.nodes[m as usize].domain = Some(0);
+    b.edge(input, m);
+    b.edge(m, out);
+    let member = |node: Option<u32>, count: u32, impact: f64| Member {
+        node,
+        count,
+        ratio_num: 1,
+        ratio_den: 1,
+        impact,
+    };
+    b.domains.push(GraphDomain {
+        head: head(0),
+        network: 1,
+        current: None,
+        flags: 0,
+        live_stress: 0.0,
+        live_capacity: 0.0,
+        levels: speeds.iter().map(|&v| DomainLevel::speed_row(v)).collect(),
+        sources,
+        foreign: 0,
+        members: vec![member(Some(m), 1, 8.0), member(None, load, 16.0)],
+    });
+    let g = b.graph();
+    let rg = regime(&g, &[(input, &[BRASS])]);
+    (g, rg, ps)
+}
+
+/// The faster tank sets the network's speed and both add their capacity, the slower one at its own
+/// speed (choice SC144): 4,096 + 1,000 SU at 32 RPM, whichever tank is the faster.
+#[test]
+fn two_tanks_on_one_shaft_run_at_the_faster_and_add_their_capacities() {
+    for (pumps, rows) in [
+        ([40, 20], [Some(2), Some(1)]),
+        ([20, 40], [Some(1), Some(2)]),
+    ] {
+        let (g, rg, _) = two_tanks(pumps, (1, 1), &[16, 32], 4);
+        let s = run(&g, &rg);
+        assert_eq!(s.src_row, rows, "{pumps:?}");
+        assert_eq!(s.dom_level, vec![Some(1)], "{pumps:?}");
+        assert_eq!(s.dom_cap, vec![5096.0], "{pumps:?}");
+        assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10), "{pumps:?}");
+    }
+    // B's shaft turns twice as fast as the reference: at level 4 it gives the reference 16 RPM,
+    // A's level 2 as well; with A at level 4 too, A's 32 is the faster.
+    let speeds = [8, 16, 32];
+    let (g, rg, _) = two_tanks([20, 40], (2, 1), &speeds, 4);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.dom_cap, vec![5096.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 20));
+    let (g, rg, _) = two_tanks([40, 40], (2, 1), &speeds, 4);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(2)]);
+    assert_eq!(s.dom_cap, vec![8192.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+}
+
+/// Sources that would turn the network both ways stop it (Create breaks a block there); with B's
+/// water stopped, B gives no speed and A runs the network alone.
+#[test]
+fn sources_turning_against_each_other_stop_the_network() {
+    let (g, rg, ps) = two_tanks([40, 40], (-1, 1), &[-16, 16, -32, 32], 4);
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(2), Some(2)]);
+    assert_eq!(s.dom_level, vec![None]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
+    let mut rg = rg;
+    rg.gate_off[ps[1] as usize] = true;
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(2), Some(0)]);
+    assert_eq!(s.dom_level, vec![Some(3)]);
+    assert_eq!(s.dom_cap, vec![4096.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+}
+
+/// A driven domain needs a speed row for each speed its sources give (Java builds them so): one
+/// missing is refused, not run at a row it does not have.
+#[test]
+fn a_driven_domain_missing_a_sources_speed_row_is_refused() {
+    let (g, _, _) = two_tanks([40, 40], (2, 1), &[8, 16, 32], 4);
+    // B's 8 RPM row goes, and the press's rate there
+    let mut domains = g.domains.clone();
+    domains[0].levels.remove(0);
+    let mut nodes = g.nodes.clone();
+    for n in &mut nodes {
+        n.rates.retain(|r| r.level != 0);
+        for r in &mut n.rates {
+            r.level -= 1;
+        }
+    }
+    let built = Graph::build(g.end, nodes, g.edges.clone(), g.recipes.clone(), domains);
+    assert_eq!(built.err(), Some(super::graph::Invalid::Level(0)));
+}
+
+/// A load only both tanks carry: 4,352 SU at 32 RPM, past A's 4,096 alone. B's 1,000 at 16 RPM
+/// carries it; with B's water stopped the network is overstressed.
+#[test]
+fn a_load_only_the_second_tanks_share_carries() {
+    let (g, mut rg, ps) = two_tanks([40, 20], (1, 1), &[16, 32], 8);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+    rg.gate_off[ps[1] as usize] = true;
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![None]);
+    assert_eq!(s.dom_cap, vec![4096.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
+    assert!(s.converged);
 }
 
 #[test]
@@ -625,17 +807,13 @@ fn an_overstressed_domain_without_a_driver_stops_its_members() {
     let dom = |capacity: f64, flags: u32| GraphDomain {
         head: head(0),
         network: 1,
-        current: 0,
-        driver: None,
+        current: Some(0),
         flags,
         live_stress: 0.0,
         live_capacity: 0.0,
-        levels: vec![DomainLevel {
-            selector: 0,
-            speed_num: 64,
-            speed_den: 1,
-            capacity,
-        }],
+        levels: vec![DomainLevel::speed_row(64)],
+        sources: vec![DomainSource::fixed(0, 64, capacity)],
+        foreign: 0,
         members: vec![Member {
             node: Some(m),
             count: 1,
@@ -949,6 +1127,7 @@ fn drive(
         invs.insert(1, inventory(1, &[(SHEET, m)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1019,6 +1198,7 @@ fn a_slow_press_fails_the_window_and_is_derated_and_probed() {
         invs.insert(1, inventory(1, &[(SHEET, m)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1093,6 +1273,7 @@ fn a_controller_switches_with_hysteresis_at_each_sweep() {
         invs.insert(2, inventory(2, &[(MARKER, level)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1127,6 +1308,7 @@ fn a_window_spanning_two_regimes_predicts_their_time_average() {
         invs.insert(2, inventory(2, &[(MARKER, if on(t) { 150 } else { 10 })]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1212,6 +1394,7 @@ fn a_heater_lit_at_the_compile_runs_on_its_burn_then_goes_out() {
         invs.insert(1, inventory(1, &[(BRASS, 2 * k)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1269,6 +1452,7 @@ fn a_heater_takes_fuel_once_its_burn_falls_to_the_threshold() {
         invs.insert(1, inventory(1, &[]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1403,6 +1587,7 @@ fn coal_view_sweep(c: &mut Compiled, t: u64, coal: i64, tun: &GlassTunables) {
     invs.insert(0, inventory(0, &[(COAL, coal)]));
     let view = View {
         revision: 1,
+        sweep: 0,
         inventories: &invs,
         ports: &ports,
     };
@@ -1490,6 +1675,7 @@ fn the_inverted_flag_is_display_only() {
         invs.insert(2, inventory(2, &[(MARKER, level)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -2122,6 +2308,9 @@ fn a_not_compilable_end_drops_the_held_compile() {
         Some((2, not_compilable::TOO_BIG))
     );
 }
+
+/// `glass.countedStoresMax`, its default.
+const CMAX: usize = 256;
 
 mod engine_path {
     use super::*;
@@ -4049,7 +4238,9 @@ mod replay_path {
     /// of its glass replay replays exactly as one that never stopped, page for page.
     mod paging {
         use super::*;
-        use crate::glass::page::{GLASS_MAGIC, district_page, read_district_page};
+        use crate::glass::page::{
+            GLASS_MAGIC, GLASS_MAGIC_IGL1, PageRead, district_page, read_district_page,
+        };
         use crate::persist::GLASS_TABLE;
         use rtsim_kernel::page::PageKey;
 
@@ -4112,9 +4303,9 @@ mod replay_path {
             c.ticket.len()
         }
 
-        /// The engine the disk holds; the restored engine saves the same pages.
-        fn restored(disk: &Disk) -> Engine {
-            let r = Engine::restore(disk.clone(), Tunables::default()).expect("restore");
+        /// The engine the disk holds, on tunables `tun`; the restored engine saves the same pages.
+        fn restored(disk: &Disk, tun: &Tunables) -> Engine {
+            let r = Engine::restore(disk.clone(), tun.clone()).expect("restore");
             let pages: Disk = r.snapshot().into_iter().collect();
             assert!(
                 pages == *disk,
@@ -4132,6 +4323,16 @@ mod replay_path {
             acts: &[Act],
             cuts: &[usize],
         ) -> (Pages, Vec<Cmd>, Vec<u32>, Vec<usize>) {
+            run_with(&Tunables::default(), start, acts, cuts)
+        }
+
+        /// [`run`] on tunables `tun` (the engine `start` makes runs on them too).
+        fn run_with(
+            tun: &Tunables,
+            start: &dyn Fn() -> Engine,
+            acts: &[Act],
+            cuts: &[usize],
+        ) -> (Pages, Vec<Cmd>, Vec<u32>, Vec<usize>) {
             let mut e = start();
             let mut disk = Disk::new();
             let mut writes = vec![save(&mut e, &mut disk)];
@@ -4139,7 +4340,7 @@ mod replay_path {
             let mut models = Vec::new();
             for (i, a) in acts.iter().enumerate() {
                 if cuts.contains(&i) {
-                    e = restored(&disk);
+                    e = restored(&disk, tun);
                 }
                 match a {
                     To(t) => e.advance_to(Tick(*t)),
@@ -4155,7 +4356,12 @@ mod replay_path {
 
         /// The run whole, and cut before each act in turn and before all of them at once.
         fn exact(start: &dyn Fn() -> Engine, acts: &[Act]) -> Vec<u32> {
-            let whole = run(start, acts, &[]);
+            exact_with(&Tunables::default(), start, acts)
+        }
+
+        /// [`exact`] on tunables `tun`.
+        fn exact_with(tun: &Tunables, start: &dyn Fn() -> Engine, acts: &[Act]) -> Vec<u32> {
+            let whole = run_with(tun, start, acts, &[]);
             assert!(
                 whole.2.contains(&replay_model::GLASS),
                 "a glass replay: {:?}",
@@ -4163,7 +4369,7 @@ mod replay_path {
             );
             let every: Vec<usize> = (0..acts.len()).collect();
             for cuts in every.iter().map(|&i| vec![i]).chain([every.clone()]) {
-                let cut = run(start, acts, &cuts);
+                let cut = run_with(tun, start, acts, &cuts);
                 assert_eq!(cut.2, whole.2, "models, cut at {cuts:?}");
                 assert!(cut.1 == whole.1, "commands, cut at {cuts:?}");
                 assert_eq!(cut.0.len(), whole.0.len(), "pages, cut at {cuts:?}");
@@ -4188,6 +4394,47 @@ mod replay_path {
                 feed(&mut e, t);
             }
             e
+        }
+
+        /// A replay by unit, cut before each step (§9.3): a unit frozen by a fallback and the
+        /// unit replaying on are paged, and the restored replay books what the whole run does.
+        #[test]
+        fn a_restored_replay_by_unit_freezes_as_one_that_never_stopped() {
+            use super::units::{engine_with, judge, lines, two_lines};
+            let mut tun = Tunables::default();
+            tun.glass.breakpoints_per_event_max = 0;
+            let start = {
+                let tun = tun.clone();
+                move || {
+                    let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                    let mut e = engine_with(&b, tun.clone(), &lines(500, (ORE, 2000)));
+                    judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::PASS)]);
+                    feed(&mut e, &load_state(200, LoadState::Unloaded));
+                    e
+                }
+            };
+            let mut acts = vec![
+                To(201),
+                To(5000),
+                To(5300),
+                To(8000),
+                To(15_000),
+                To(25_000),
+                Feed(load_state(25_000, LoadState::Live)),
+            ];
+            for x in [0, 40] {
+                acts.push(Feed(at(
+                    25_000,
+                    Obs::ChunkLoaded {
+                        district: D,
+                        chunk: BlockPos::new(x, 64, 0).chunk(0),
+                        applied_epoch: 0,
+                    },
+                )));
+            }
+            let models = exact_with(&tun, &start, &acts);
+            assert_eq!(models[3], replay_model::GLASS, "{models:?}");
+            assert_ne!(models[5], replay_model::GLASS, "{models:?}");
         }
 
         fn back(t: u64) -> [Act; 2] {
@@ -4578,16 +4825,17 @@ mod replay_path {
                 .expect("a glass page");
             assert_eq!(gk.id(), D.0);
             assert!(gb == district_page(&e.glass.districts[&D]));
-            read_district_page(&gb).expect("the page itself");
+            let read = |b: &[u8]| read_district_page(b, MAX, CMAX);
+            assert!(read(&gb).expect("the page itself").kept().is_some());
             for n in 0..gb.len() {
-                assert!(read_district_page(&gb[..n]).is_err(), "cut at {n}");
+                assert!(read(&gb[..n]).is_err(), "cut at {n}");
             }
             let mut long = gb.clone();
             long.push(0);
-            assert!(read_district_page(&long).is_err());
+            assert!(read(&long).is_err());
             let mut other = gb.clone();
             other[..4].copy_from_slice(&(GLASS_MAGIC + 1).to_le_bytes());
-            assert!(read_district_page(&other).is_err());
+            assert!(read(&other).is_err());
             for bad in [
                 Vec::new(),
                 gb[..gb.len() / 2].to_vec(),
@@ -4611,7 +4859,140 @@ mod replay_path {
             e.advance_to(Tick(6000));
             let mut dg = e.glass.districts[&D].clone();
             dg.compiled.as_mut().expect("a compile").graph = switched_line().graph();
-            assert!(read_district_page(&district_page(&dg)).is_err());
+            assert!(read_district_page(&district_page(&dg), MAX, CMAX).is_err());
+        }
+
+        /// `glass.sectionsMax` as the engine's tunables have it.
+        const MAX: usize = 64;
+
+        /// The glass pages of a snapshot, by key.
+        fn glass_pages(pages: &Pages) -> Vec<(PageKey, Vec<u8>)> {
+            pages
+                .iter()
+                .filter(|(k, _)| k.table() == GLASS_TABLE)
+                .cloned()
+                .collect()
+        }
+
+        /// A glass page of the format before sections (IGL1), or one whose section fingerprints
+        /// are not those its compile cuts into now, drops its district's glass state alone
+        /// (SECTIONS.md §5): the restore goes on, says which district and why, and the next save
+        /// deletes the page. The district then learns again as one with no glass page.
+        #[test]
+        fn a_glass_page_of_the_old_format_or_other_sections_drops_its_district_alone() {
+            assert_eq!(Tunables::default().glass.sections_max, MAX);
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let pages = e.snapshot();
+            let (gk, gb) = glass_pages(&pages).pop().expect("a glass page");
+            let compiled = e.glass.districts[&D].compiled.as_ref().expect("a compile");
+            assert!(!compiled.sections.is_empty(), "the press is a section");
+            // The page as written: its fingerprints are its compile's.
+            let PageRead::Kept(dg) = read_district_page(&gb, MAX, CMAX).expect("decodes") else {
+                panic!("the page as written is kept");
+            };
+            assert_eq!(
+                dg.compiled
+                    .as_ref()
+                    .expect("a compile")
+                    .sections
+                    .fingerprints(),
+                compiled.sections.fingerprints()
+            );
+            // An IGL1 page: dropped by its magic alone, whatever follows.
+            let mut old = gb.clone();
+            old[..4].copy_from_slice(&GLASS_MAGIC_IGL1.to_le_bytes());
+            assert!(matches!(
+                read_district_page(&old, MAX, CMAX),
+                Ok(PageRead::Dropped(_))
+            ));
+            assert!(matches!(
+                read_district_page(&old[..4], MAX, CMAX),
+                Ok(PageRead::Dropped(_))
+            ));
+            // Fingerprints not the compile's: the last byte is the last fingerprint's.
+            let mut other = gb.clone();
+            *other.last_mut().expect("bytes") ^= 1;
+            assert!(matches!(
+                read_district_page(&other, MAX, CMAX),
+                Ok(PageRead::Dropped(_))
+            ));
+            for bad in [old, other] {
+                let p: Pages = pages
+                    .iter()
+                    .map(|(k, b)| (*k, if *k == gk { bad.clone() } else { b.clone() }))
+                    .collect();
+                let mut disk: Disk = p.iter().cloned().collect();
+                let mut r = Engine::restore(p, Tunables::default()).expect("the restore goes on");
+                assert!(!r.glass.districts.contains_key(&D), "dropped");
+                assert_eq!(
+                    r.glass
+                        .dropped_on_restore
+                        .iter()
+                        .map(|d| d.0)
+                        .collect::<Vec<_>>(),
+                    vec![D]
+                );
+                assert!(r.district(D).is_some(), "the district itself is kept");
+                save(&mut r, &mut disk);
+                assert!(!disk.contains_key(&gk), "the next save deletes the page");
+                // The district goes on as one restored without its glass page.
+                r.advance_to(Tick(7000));
+                r.check_books().expect("books");
+            }
+        }
+
+        /// A different `glass.sectionsMax` that cuts the compile otherwise drops the page; one
+        /// that cuts it the same keeps it.
+        #[test]
+        fn a_changed_sections_cap_drops_a_page_only_when_it_cuts_otherwise() {
+            // Two presses in a row on a middle store: two sections, which a cap of one merges.
+            let mut b = B::default();
+            let (input, mid, out) = (b.store(0), b.store(1), b.store(2));
+            let r1 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+            let r2 = b.recipe(&[(SHEET, 1)], &[(COPPER, 1)]);
+            let p1 = b.machine(model::PRESS, r1, 1, 10);
+            let p2 = b.machine(model::PRESS, r2, 1, 10);
+            b.edge(input, p1);
+            b.edge(p1, mid);
+            b.edge(mid, p2);
+            b.edge(p2, out);
+            b.window = 2000;
+            let mut s = setup_n(&b, 3, 5);
+            for k in 1..=35u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[&[(BRASS, 1000 - m)], &[(SHEET, 5)], &[(COPPER, m)]],
+                );
+            }
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let (_, gb) = glass_pages(&e.snapshot()).pop().expect("a glass page");
+            let n = e.glass.districts[&D]
+                .compiled
+                .as_ref()
+                .expect("a compile")
+                .sections
+                .len();
+            assert_eq!(n, 2, "a section per press");
+            assert!(matches!(
+                read_district_page(&gb, n, CMAX),
+                Ok(PageRead::Kept(_))
+            ));
+            assert!(matches!(
+                read_district_page(&gb, 64, CMAX),
+                Ok(PageRead::Kept(_))
+            ));
+            assert!(matches!(
+                read_district_page(&gb, n - 1, CMAX),
+                Ok(PageRead::Dropped(_))
+            ));
         }
 
         /// Without its glass page (rtsim-view's inspect restores one district alone), a glass span
@@ -4630,6 +5011,2939 @@ mod replay_path {
             r.advance_to(Tick(8000));
             assert_eq!(model(&r), 0);
             r.check_books().expect("books");
+        }
+    }
+
+    /// Judging units (SECTIONS.md §3.4 to §3.6, §4, §7.2; slice S2b): each line of a district
+    /// learns on its own window beside the district's.
+    mod units {
+        use super::*;
+        use crate::glass::check::{Liveness, UnitState};
+        use crate::glass::page::{
+            GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4, GLASS_MAGIC_IGL5,
+        };
+        use crate::glass::page::{PageRead, district_page, read_district_page};
+        use crate::glass::replay::Replay;
+        use crate::glass::report::discard;
+        use crate::ids::ChunkPos;
+
+        /// Two press lines apart, each a section and a unit: brass (inventory 0) into press A
+        /// into sheets (1) at x 0 to 2 (chunk 0), and `b_in` (2) into press B into `b_out` (3) at
+        /// x 40 to 42 (chunk 2), each a press per 10 ticks (B's per `b_ticks`). Returns the
+        /// builder and the two presses.
+        pub(super) fn two_lines(b_in: Good, b_out: Good, b_ticks: u32) -> (B, u32, u32) {
+            let mut b = B::default();
+            let (i0, o0, i1, o1) = (b.store(0), b.store(1), b.store(2), b.store(3));
+            let r0 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+            let r1 = b.recipe(&[(b_in, 1)], &[(b_out, 1)]);
+            let p0 = b.machine(model::PRESS, r0, 1, 10);
+            let p1 = b.machine(model::PRESS, r1, 1, b_ticks);
+            b.edge(i0, p0);
+            b.edge(p0, o0);
+            b.edge(i1, p1);
+            b.edge(p1, o1);
+            for (v, x) in [(i0, 0), (p0, 1), (o0, 2), (i1, 40), (p1, 41), (o1, 42)] {
+                b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+            }
+            b.window = 2000;
+            (b, p0, p1)
+        }
+
+        /// The two lines' inventories when A made `a` and B made `bm`.
+        fn invs(b_in: Good, b_out: Good, a: i64, bm: i64) -> VecMap<u32, Inventory> {
+            let mut v = VecMap::new();
+            v.insert(0, inventory(0, &[(BRASS, 100_000 - a)]));
+            v.insert(1, inventory(1, &[(SHEET, a)]));
+            v.insert(2, inventory(2, &[(b_in, 100_000 - bm)]));
+            v.insert(3, inventory(3, &[(b_out, bm)]));
+            v
+        }
+
+        /// Sweeps a compile every 100 ticks from `from` to `to` (both included).
+        #[allow(clippy::too_many_arguments)]
+        fn drive2(
+            c: &mut Compiled,
+            from: u64,
+            to: u64,
+            (b_in, b_out): (Good, Good),
+            a: impl Fn(u64) -> i64,
+            bm: impl Fn(u64) -> i64,
+            tun: &GlassTunables,
+        ) {
+            let goods = goods();
+            let ports = GoodVec::new();
+            let mut t = from;
+            while t <= to {
+                let inv = invs(b_in, b_out, a(t), bm(t));
+                let view = View {
+                    revision: 1,
+                    sweep: 0,
+                    inventories: &inv,
+                    ports: &ports,
+                };
+                if t == 0 {
+                    c.start(&view, &goods, tun);
+                }
+                c.sweep(Tick(t), &view, &goods, tun);
+                t += 100;
+            }
+        }
+
+        fn unit_of(c: &Compiled, v: u32) -> u16 {
+            c.units.of_node[v as usize]
+        }
+
+        fn verdict_of(st: &UnitState) -> u32 {
+            st.last.as_ref().map_or(verdict::NONE, |r| r.verdict)
+        }
+
+        /// The compile's records for district `d`.
+        fn records_for(b: &B, compile: u32, d: DistrictId) -> Vec<GlassObs> {
+            let mut out = b.records(compile);
+            for r in out.iter_mut() {
+                match r {
+                    GlassObs::Node(n) => n.head.district = d,
+                    GlassObs::Edge(e) => e.head.district = d,
+                    GlassObs::Recipe(x) => x.head.district = d,
+                    GlassObs::Domain(x) => x.head.district = d,
+                    GlassObs::End(e) => e.district = d,
+                    _ => {}
+                }
+            }
+            out
+        }
+
+        fn ingest_all(g: &mut Glass, t: u64, recs: &[GlassObs], tun: &GlassTunables) {
+            let goods = goods();
+            for r in recs {
+                g.ingest(Tick(t), r, None, &goods, tun);
+            }
+        }
+
+        /// [`ingest_all`] with the district's inventories known, as the engine has them after
+        /// its IND_DISTRICT: a recompile carries the units it keeps only then.
+        fn ingest_seen(
+            g: &mut Glass,
+            t: u64,
+            recs: &[GlassObs],
+            inv: &VecMap<u32, Inventory>,
+            tun: &GlassTunables,
+        ) {
+            let goods = goods();
+            let ports = GoodVec::new();
+            let view = View {
+                revision: 1,
+                sweep: 0,
+                inventories: inv,
+                ports: &ports,
+            };
+            for r in recs {
+                g.ingest(Tick(t), r, Some(&view), &goods, tun);
+            }
+        }
+
+        /// One sweep of district `d` through [`Glass::sweep`].
+        #[allow(clippy::too_many_arguments)]
+        fn glass_sweep(
+            g: &mut Glass,
+            d: DistrictId,
+            t: u64,
+            inv: &VecMap<u32, Inventory>,
+            ports: &GoodVec,
+            live: &Liveness<'_>,
+            tun: &GlassTunables,
+        ) {
+            let goods = goods();
+            let view = View {
+                revision: 1,
+                sweep: 0,
+                inventories: inv,
+                ports,
+            };
+            g.sweep(Tick(t), d, &view, live, &goods, tun);
+        }
+
+        fn comp(g: &Glass, d: DistrictId) -> &Compiled {
+            g.districts[&d].compiled.as_ref().expect("a compile")
+        }
+
+        /// IND_CHUNK_TICKING for chunk (`x`, 0) of district `d`.
+        pub(super) fn ticking(d: DistrictId, x: i32, on: bool) -> GlassObs {
+            GlassObs::ChunkTicking(crate::glass::records::ChunkTicking {
+                district: d,
+                chunk: ChunkPos { dim: 0, x, z: 0 },
+                ticking: on,
+            })
+        }
+
+        /// Two lines with goods of their own: each is judged on its own window, so the slow one
+        /// fails its window and the other passes and may replay, while the district's window (the
+        /// checksum over both) fails on the slow line's goods alone.
+        #[test]
+        fn two_lines_are_judged_apart_and_the_slow_one_fails_alone() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            assert!(c.units.active() && c.units.len() == 2);
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            assert_ne!(ua, ub);
+            // B makes half what its press is compiled to.
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let (a, bs) = (&c.unit_state[ua as usize], &c.unit_state[ub as usize]);
+            assert_eq!(verdict_of(a), verdict::PASS);
+            assert_eq!(verdict_of(bs), verdict::FAIL);
+            assert_eq!((a.windows_completed, a.strikes), (1, 0));
+            assert_eq!((bs.windows_completed, bs.strikes), (1, 1));
+            assert_eq!(a.passed, Some((Tick(1200), 2000)));
+            let ra = a.last.as_ref().expect("judged");
+            let sheet = ra
+                .goods
+                .iter()
+                .find(|g| g.good == SHEET)
+                .expect("sheet row");
+            assert!(close(sheet.measured, 0.1) && close(sheet.predicted, 0.1));
+            assert!(ra.goods.iter().all(|g| g.good == BRASS || g.good == SHEET));
+            // The district's window fails on B's goods only.
+            let d = c.last.as_ref().expect("the district judged");
+            assert_eq!(d.verdict, verdict::FAIL);
+            for g in &d.goods {
+                let failed = g.verdict == verdict::FAIL;
+                assert_eq!(failed, g.good == ORE || g.good == CRUSHED, "{:?}", g.good);
+            }
+            assert!(c.unit_may_replay(ua));
+            assert!(!c.unit_may_replay(ub));
+            assert!(c.section_may_replay(c.sections.section_of[p0 as usize]));
+            assert!(!c.section_may_replay(c.sections.section_of[p1 as usize]));
+            // Each unit's next window opened where its last concluded.
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            // Goods of their own cost no extra rows (§7.2).
+            assert_eq!(c.extra_rows(), 0);
+        }
+
+        /// Two lines of the same goods: a line whose own window passes still may not replay while
+        /// the district's last window failed on a good it touches (§3.4).
+        #[test]
+        fn a_unit_does_not_replay_on_a_good_the_district_failed() {
+            let (b, p0, p1) = two_lines(BRASS, SHEET, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (BRASS, SHEET),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert_eq!(verdict_of(&c.unit_state[ub as usize]), verdict::FAIL);
+            assert_eq!(c.last.as_ref().map(|r| r.verdict), Some(verdict::FAIL));
+            assert!(!c.unit_may_replay(ua), "the district failed on sheets");
+            assert!(!c.unit_may_replay(ub));
+            // Each unit holds a row per good, two goods past one row each.
+            assert_eq!(c.extra_rows(), 2);
+        }
+
+        /// Both lines at their compiled rates: a unit's window and the district's both pass.
+        fn both_passed(goods_b: (Good, Good)) -> (Compiled, u32, u32, GlassTunables) {
+            let (b, p0, p1) = two_lines(goods_b.0, goods_b.1, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            drive2(
+                &mut c,
+                0,
+                3200,
+                goods_b,
+                |t| (t / 10) as i64,
+                |t| (t / 10) as i64,
+                &tun,
+            );
+            (c, p0, p1, tun)
+        }
+
+        /// An edit stales the unit whose box holds it and drops its window and the district's;
+        /// the other unit keeps its window and may replay. An edit in no box stales no unit; a
+        /// command's stales every one (§3.6).
+        #[test]
+        fn an_edit_stales_only_the_unit_whose_box_holds_it() {
+            let (mut c, p0, p1, tun) = both_passed((ORE, CRUSHED));
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            assert!(c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            assert!(c.window().is_some());
+            c.edit(Tick(3250), Some(BlockPos::new(41, 64, 0)), &tun);
+            assert!(c.edited && c.window().is_none(), "the district window goes");
+            let (a, bs) = (&c.unit_state[ua as usize], &c.unit_state[ub as usize]);
+            assert!(!a.edited && bs.edited);
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            assert_eq!(c.unit_window(ub), None);
+            assert_eq!(bs.ready_at, Tick(3250 + tun.warmup_ticks));
+            assert!(c.unit_may_replay(ua) && !c.unit_may_replay(ub));
+            // Between the lines: no box holds it.
+            c.edit(Tick(3260), Some(BlockPos::new(20, 64, 0)), &tun);
+            assert!(!c.unit_state[ua as usize].edited);
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            // A command's edit has no place: every unit.
+            c.edit(Tick(3270), None, &tun);
+            assert!(c.unit_state.iter().all(|s| s.edited && !s.window_open()));
+            assert!(!c.unit_may_replay(ua));
+        }
+
+        /// A sweep that was not live: the district's window is discarded (`NOT_LIVE`), and the
+        /// unit whose chunks all ran samples and passes; the other never opens. A chunk that
+        /// stopped between two sweeps discards its unit's window though it runs again (§3.4).
+        /// A unit runs only in chunks Java reported ticking (choice SC58).
+        #[test]
+        fn a_unit_whose_chunks_ran_learns_through_partial_sweeps() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            ingest_all(&mut g, 0, &[ticking(D, 0, true)], &tun);
+            let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
+            let loaded: BTreeSet<ChunkPos> = [ChunkPos { dim: 0, x: 0, z: 0 }].into();
+            let ports = GoodVec::new();
+            let live = Liveness::Partial {
+                loaded: &loaded,
+                dim: 0,
+            };
+            for k in 0..=32u64 {
+                let t = k * 100;
+                // B made nothing it could be judged by: its chunk is away.
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, 0);
+                glass_sweep(&mut g, D, t, &inv, &ports, &live, &tun);
+            }
+            let dg = &g.districts[&D];
+            assert_eq!(dg.discards[discard::NOT_LIVE as usize], 33);
+            let c = comp(&g, D);
+            assert!(c.window().is_none() && c.last.is_none());
+            assert_eq!(c.sweeps, 0, "no live sweep");
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert_eq!(c.unit_state[ub as usize].last, None);
+            assert_eq!(c.unit_window(ub), None);
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            // Chunk 0 unloads and loads again before the next sweep: A did not run throughout.
+            g.chunk_stopped(D, ChunkPos { dim: 0, x: 0, z: 0 });
+            let inv = invs(ORE, CRUSHED, 330, 0);
+            glass_sweep(&mut g, D, 3300, &inv, &ports, &live, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.unit_window(ua), None);
+            assert_eq!(
+                c.unit_state[ua as usize].ready_at,
+                Tick(3300 + tun.warmup_ticks)
+            );
+            assert!(
+                g.districts[&D].stopped.is_empty(),
+                "the sweep took the stops"
+            );
+            // No unit ran: today's discard of everything.
+            let none: BTreeSet<ChunkPos> = BTreeSet::new();
+            let away = Liveness::Partial {
+                loaded: &none,
+                dim: 0,
+            };
+            glass_sweep(&mut g, D, 3400, &inv, &ports, &away, &tun);
+            assert_eq!(g.districts[&D].discards[discard::NOT_LIVE as usize], 35);
+        }
+
+        /// A recompile keeps the unit it did not change: its passed window, its open window (the
+        /// old model integrated up to the recompile) and its ports, and clears its edit; the
+        /// changed unit starts learning after a warm-up (§3.6).
+        #[test]
+        fn a_recompile_keeps_the_unit_it_did_not_change() {
+            let tun = GlassTunables::default();
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let sweep_to = |g: &mut Glass, from: u64, to: u64, b_rate: u64| {
+                let mut t = from;
+                while t <= to {
+                    let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / b_rate) as i64);
+                    glass_sweep(g, D, t, &inv, &ports, &Liveness::All, &tun);
+                    t += 100;
+                }
+            };
+            sweep_to(&mut g, 0, 3500, 10);
+            let ua = unit_of(comp(&g, D), p0);
+            let before = comp(&g, D).unit_state[ua as usize].clone();
+            assert_eq!(comp(&g, D).unit_window(ua), Some((Tick(3200), 4)));
+            // A stales itself by an edit at its own press, then B's press is rebuilt slower.
+            g.edit(Tick(3520), D, BlockPos::new(1, 64, 0), false, &tun);
+            g.port(D, 1, 1, &GoodVec::from_pairs([(SHEET, 7)]));
+            let (b2, p0b, p1b) = two_lines(ORE, CRUSHED, 20);
+            let inv = invs(ORE, CRUSHED, 350, 350);
+            ingest_seen(&mut g, 3550, &b2.records(2), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            assert_eq!(g.districts[&D].discards[discard::RECOMPILE as usize], 1);
+            let (ua2, ub2) = (unit_of(c, p0b), unit_of(c, p1b));
+            let a = &c.unit_state[ua2 as usize];
+            assert_eq!(a.passed, before.passed);
+            assert_eq!(a.windows_completed, 1);
+            assert!(!a.edited, "the recompile found it unchanged");
+            // The edit took A's window; it opens again after its warm-up.
+            assert_eq!(c.unit_window(ua2), None);
+            assert_eq!(a.ready_at, Tick(3520 + tun.warmup_ticks));
+            let bs = &c.unit_state[ub2 as usize];
+            assert_eq!((bs.passed, bs.windows_completed), (None, 0));
+            assert_eq!(bs.ready_at, Tick(3550 + tun.warmup_ticks));
+            assert_eq!(
+                c.ports_at.get(&1).map(|v| v.get(SHEET)),
+                Some(7),
+                "the ports go on"
+            );
+            assert!(c.window().is_none());
+        }
+
+        /// A derate on a unit's node (choice SC61) stales the unit's pass from before it, and the
+        /// unit does not carry across a recompile, whose model has no derates; the district's
+        /// derate tick carries, so no unit window from before it names a node.
+        #[test]
+        fn a_derate_stales_its_units_pass_and_its_carry() {
+            let (mut c, p0, p1, _) = both_passed((ORE, CRUSHED));
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            let start = c.unit_state[ua as usize]
+                .last
+                .as_ref()
+                .expect("passed")
+                .start;
+            c.unit_state[ua as usize].derated_at = Some(Tick(start.0 + 1));
+            assert!(!c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            c.unit_state[ua as usize].derated_at = Some(start);
+            assert!(
+                c.unit_may_replay(ua),
+                "a window from the derate on was judged against it"
+            );
+
+            let tun = GlassTunables::default();
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let mut t = 0;
+            while t <= 3500 {
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+                t += 100;
+            }
+            let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
+            {
+                let c = g.districts.get_mut(&D).unwrap().compiled.as_mut().unwrap();
+                assert!(c.unit_state[ua as usize].passed.is_some());
+                c.unit_state[ua as usize].derated_at = Some(Tick(3300));
+                c.derated_at = Some(Tick(3300));
+            }
+            let inv = invs(ORE, CRUSHED, 350, 350);
+            ingest_seen(&mut g, 3550, &b.records(2), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            let (a, bs) = (&c.unit_state[ua as usize], &c.unit_state[ub as usize]);
+            assert_eq!(
+                (a.passed, a.windows_completed, a.derated_at),
+                (None, 0, None)
+            );
+            assert!(bs.passed.is_some(), "the unit with no derate carries");
+            assert_eq!(c.derated_at, Some(Tick(3300)));
+        }
+
+        /// An open window carried across a recompile goes on and passes: the old compile's model
+        /// integrated it to the recompile, the new one from there.
+        #[test]
+        fn a_window_carried_across_a_recompile_passes() {
+            let tun = GlassTunables::default();
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let mut t = 0;
+            while t <= 6000 {
+                let b_made = if t < 4050 {
+                    t / 10
+                } else {
+                    405 + (t - 4050) / 20
+                };
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, b_made as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+                if t == 4000 {
+                    // B's press rebuilt slower: a recompile between two sweeps.
+                    let (b2, _, _) = two_lines(ORE, CRUSHED, 20);
+                    ingest_seen(&mut g, 4050, &b2.records(2), &inv, &tun);
+                }
+                t += 100;
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            let ua = unit_of(c, p0);
+            let a = &c.unit_state[ua as usize];
+            assert_eq!(a.windows_completed, 2);
+            assert_eq!(
+                a.passed,
+                Some((Tick(3200), 2000)),
+                "the carried window passed"
+            );
+            assert_eq!(verdict_of(a), verdict::PASS);
+        }
+
+        /// Ports into a unit's store are not its production: a player's sheets put into A's
+        /// output, credited to that inventory, leave A's window passing; uncredited they fail it.
+        #[test]
+        fn ports_into_a_units_store_are_not_its_production() {
+            let tun = GlassTunables::default();
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            for credit in [true, false] {
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &b.records(1), &tun);
+                for k in 0..=32u64 {
+                    let t = k * 100;
+                    let extra = if t >= 2000 { 500 } else { 0 };
+                    if t == 2000 && credit {
+                        g.port(D, 1, 1, &GoodVec::from_pairs([(SHEET, 500)]));
+                    }
+                    // The district's own ports always count the sheets.
+                    let ports = GoodVec::from_pairs([(SHEET, extra)]);
+                    let mut inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                    inv.insert(1, inventory(1, &[(SHEET, (t / 10) as i64 + extra)]));
+                    glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+                }
+                let c = comp(&g, D);
+                let ua = unit_of(c, p0);
+                assert_eq!(c.last.as_ref().map(|r| r.verdict), Some(verdict::PASS));
+                let want = if credit { verdict::PASS } else { verdict::FAIL };
+                assert_eq!(
+                    verdict_of(&c.unit_state[ua as usize]),
+                    want,
+                    "credit {credit}"
+                );
+            }
+            // A port into an inventory no unit holds, or of another revision, is not kept.
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            g.port(D, 1, 9, &GoodVec::from_pairs([(SHEET, 5)]));
+            g.port(D, 2, 1, &GoodVec::from_pairs([(SHEET, 5)]));
+            assert!(comp(&g, D).ports_at.is_empty());
+        }
+
+        /// The row caps (§7.2): a district past `glass.sectionRowsMax` extra rows is cut into
+        /// fewer sections and keeps the cut for its later compiles and through its page; past
+        /// `glass.sectionRowsWorldMax` the district with the most (the lowest id of equals) is cut.
+        #[test]
+        fn the_row_caps_cut_a_district_into_fewer_sections() {
+            let tun = GlassTunables {
+                section_rows_max: 1,
+                ..GlassTunables::default()
+            };
+            let (b, _, _) = two_lines(BRASS, SHEET, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            assert_eq!(comp(&g, D).sections.len(), 2);
+            let ports = GoodVec::new();
+            for k in 0..=13u64 {
+                let t = k * 100;
+                let inv = invs(BRASS, SHEET, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.sections.len(), 1, "merged by the cap");
+            assert!(c.unit_state.is_empty());
+            assert_eq!(g.districts[&D].sections_cap, Some(1));
+            assert_eq!(g.extra_rows(), 0);
+            assert!(c.window().is_some(), "the district window goes on");
+            // Its page keeps the cut.
+            let page = district_page(&g.districts[&D]);
+            let PageRead::Kept(dg) = read_district_page(&page, 64, CMAX).expect("decodes") else {
+                panic!("kept");
+            };
+            assert_eq!(dg.compiled.as_ref().expect("compile").sections.len(), 1);
+            // A later compile is cut the same.
+            ingest_all(&mut g, 1400, &b.records(2), &tun);
+            assert_eq!(comp(&g, D).sections.len(), 1);
+
+            // The world cap: two such districts, four extra rows, three allowed.
+            let tun = GlassTunables {
+                section_rows_world_max: 3,
+                ..GlassTunables::default()
+            };
+            let (d1, d2) = (DistrictId(3), DistrictId(4));
+            let mut g = Glass::default();
+            for d in [d2, d1] {
+                ingest_all(&mut g, 0, &records_for(&b, 1, d), &tun);
+            }
+            for k in 0..=13u64 {
+                let t = k * 100;
+                let inv = invs(BRASS, SHEET, (t / 10) as i64, (t / 10) as i64);
+                for d in [d2, d1] {
+                    glass_sweep(&mut g, d, t, &inv, &ports, &Liveness::All, &tun);
+                }
+            }
+            assert_eq!(
+                g.districts[&d1].sections_cap,
+                Some(1),
+                "the lower id of equals"
+            );
+            assert_eq!(g.districts[&d2].sections_cap, None);
+            assert_eq!(comp(&g, d2).sections.len(), 2);
+            assert_eq!(g.extra_rows(), 2);
+        }
+
+        /// A page keeps the units' windows, rows, verdicts and ports: read back, it is the state
+        /// it was written from, byte for byte. An IGL2 or IGL3 page drops its district (§5).
+        #[test]
+        fn a_page_keeps_the_units_windows() {
+            let tun = GlassTunables::default();
+            let (b, _, _) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            for k in 0..=35u64 {
+                let t = k * 100;
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 20) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            g.port(D, 1, 1, &GoodVec::from_pairs([(SHEET, 3)]));
+            let dg = &g.districts[&D];
+            let c = dg.compiled.as_ref().expect("compile");
+            assert!(c.rows_len() > 0 && c.unit_state.iter().all(|s| s.last.is_some()));
+            let page = district_page(dg);
+            let PageRead::Kept(back) = read_district_page(&page, 64, CMAX).expect("decodes") else {
+                panic!("kept");
+            };
+            let r = back.compiled.as_ref().expect("compile");
+            assert_eq!(r.units, c.units);
+            assert_eq!(r.ubounds, c.ubounds);
+            assert_eq!(r.unit_state, c.unit_state);
+            assert_eq!(r.rows_len(), c.rows_len());
+            assert_eq!(r.ports_at, c.ports_at);
+            assert_eq!(district_page(&back), page);
+            for magic in [
+                GLASS_MAGIC_IGL2,
+                GLASS_MAGIC_IGL3,
+                GLASS_MAGIC_IGL4,
+                GLASS_MAGIC_IGL5,
+            ] {
+                let mut old = page.clone();
+                old[..4].copy_from_slice(&magic.to_le_bytes());
+                assert!(matches!(
+                    read_district_page(&old, 64, CMAX),
+                    Ok(PageRead::Dropped(_))
+                ));
+            }
+        }
+
+        /// Through the engine: a partial load learns the loaded line (its chunk loaded, the sweep
+        /// not live), an `IND_EDIT` at the other line's press stales that line alone, and a save
+        /// and restore keeps the units' state.
+        #[test]
+        fn the_engine_judges_units_through_its_hooks() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut s = setup(&b, 4);
+            s.push(load_state(0, LoadState::Partial));
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: ChunkPos { dim: 0, x: 0, z: 0 },
+                    applied_epoch: 0,
+                },
+            ));
+            s.push(at(0, Obs::Glass(ticking(D, 0, true))));
+            for k in 1..=32u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[
+                        &[(BRASS, 100_000 - m)],
+                        &[(SHEET, m)],
+                        &[(ORE, 100_000)],
+                        &[],
+                    ],
+                );
+                // Some chunk did not tick throughout.
+                if let Some(Timed {
+                    obs: Obs::SweepEnd(e),
+                    ..
+                }) = s.last_mut()
+                {
+                    e.live = false;
+                }
+            }
+            s.push(at(
+                3250,
+                Obs::Edit {
+                    district: D,
+                    kind: EditKind::Placed,
+                    player: (1, 2),
+                    pos: BlockPos::new(41, 64, 0),
+                },
+            ));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            let (ua, ub) = (c.units.of_node[p0 as usize], c.units.of_node[p1 as usize]);
+            let a = &c.unit_state[ua as usize];
+            assert_eq!(verdict_of(a), verdict::PASS);
+            assert!(!a.edited && c.unit_state[ub as usize].edited);
+            assert!(c.unit_may_replay(ua) && !c.unit_may_replay(ub));
+            let r = Engine::restore(e.snapshot(), Tunables::default()).expect("restore");
+            let rc = r.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(rc.unit_state, c.unit_state);
+            assert_eq!(r.glass.extra_rows(), e.glass.extra_rows());
+        }
+
+        /// Line A's inventories when it made `m`, with `copper` it does not model in its output.
+        fn line_a(m: i64, copper: i64) -> [(u32, Inventory); 2] {
+            let mut out = vec![(SHEET, m)];
+            if copper > 0 {
+                out.push((COPPER, copper));
+            }
+            [
+                (0, inventory(0, &[(BRASS, 100_000 - m)])),
+                (1, inventory(1, &out)),
+            ]
+        }
+
+        /// The goods the district's last concluded window failed on.
+        fn failing(c: &Compiled) -> Vec<Good> {
+            c.district_failing()
+        }
+
+        /// A same-revision recompile keeps the district's veto (choice SC66): line B makes half its
+        /// rate, so the district fails on brass and sheets and line A, which passed, may not replay; the
+        /// recompile of the same factory has no district window yet, and A stays vetoed (the page
+        /// keeps the veto) until the new compile's first district window passes.
+        #[test]
+        fn a_recompile_keeps_the_districts_veto_until_its_own_window() {
+            let (b, p0, _) = two_lines(BRASS, SHEET, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            // B at half its rate until the recompile, at its rate after.
+            let bm = |t: u64| {
+                if t <= 3250 {
+                    (t / 20) as i64
+                } else {
+                    (3250 / 20 + (t - 3250) / 10) as i64
+                }
+            };
+            let inv = |t: u64| invs(BRASS, SHEET, (t / 10) as i64, bm(t));
+            for k in 0..=32u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            let c = comp(&g, D);
+            let ua = unit_of(c, p0);
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert_eq!(failing(c), vec![BRASS, SHEET]);
+            assert!(!c.unit_may_replay(ua));
+            ingest_seen(&mut g, 3250, &b.records(2), &inv(3250), &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            assert!(c.last.is_none(), "the new compile has no district window");
+            assert_eq!(c.veto, vec![BRASS, SHEET]);
+            let ua = unit_of(c, p0);
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert!(!c.unit_may_replay(ua), "the recompile keeps the veto");
+            let page = district_page(&g.districts[&D]);
+            let PageRead::Kept(back) = read_district_page(&page, 64, CMAX).expect("decodes") else {
+                panic!("kept");
+            };
+            assert_eq!(
+                back.compiled.as_ref().expect("compile").veto,
+                vec![BRASS, SHEET]
+            );
+            let mut t = 3300;
+            while comp(&g, D).last.is_none() && t <= 12_000 {
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+                t += 100;
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.last.as_ref().map(|r| r.verdict), Some(verdict::PASS));
+            assert!(c.veto.is_empty(), "the new window lifts it");
+            assert!(c.unit_may_replay(ua));
+        }
+
+        /// The veto reads every good the unit touches (§3.4): copper A does not model starts
+        /// arriving in its output store after A's last window concluded. A's open window holds a
+        /// copper row and the district's window, out of phase with A's after a partial sweep,
+        /// fails on copper: A may not replay, though its last window never saw copper.
+        #[test]
+        fn the_veto_reads_the_goods_a_unit_touches_now() {
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            ingest_all(&mut g, 0, &[ticking(D, 0, true)], &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| {
+                let m = (t / 10) as i64;
+                let copper = if t >= 5300 {
+                    ((t - 5300) / 5) as i64
+                } else {
+                    0
+                };
+                let mut v = VecMap::new();
+                for (i, x) in line_a(m, copper) {
+                    v.insert(i, x);
+                }
+                v.insert(2, inventory(2, &[(ORE, 100_000 - m)]));
+                v.insert(3, inventory(3, &[(CRUSHED, m)]));
+                v
+            };
+            // Only A's chunk runs through the sweep at 3300: the district's window and B's go.
+            let loaded: BTreeSet<ChunkPos> = [ChunkPos { dim: 0, x: 0, z: 0 }].into();
+            let partial = Liveness::Partial {
+                loaded: &loaded,
+                dim: 0,
+            };
+            let mut gaps = 0;
+            for k in 0..=71u64 {
+                let t = k * 100;
+                let live = if t == 3300 { &partial } else { &Liveness::All };
+                glass_sweep(&mut g, D, t, &inv(t), &ports, live, &tun);
+                let c = comp(&g, D);
+                let ua = unit_of(c, p0);
+                let st = &c.unit_state[ua as usize];
+                let own_passed = verdict_of(st) == verdict::PASS
+                    && st
+                        .last
+                        .as_ref()
+                        .is_some_and(|r| r.goods.iter().all(|x| x.good != COPPER));
+                let open_copper = c
+                    .unit_partial(ua)
+                    .is_some_and(|r| r.goods.iter().any(|x| x.good == COPPER));
+                if own_passed && open_copper && failing(c).contains(&COPPER) {
+                    gaps += 1;
+                    assert!(!c.unit_may_replay(ua), "t {t}: vetoed on copper");
+                }
+            }
+            assert!(gaps > 0, "the case arose");
+        }
+
+        /// A chunk that stopped during a sweep that was dropped (choice SC67): the live sweep
+        /// after ends the window of the unit lying in it, and the other unit's goes on.
+        #[test]
+        fn a_stop_during_a_dropped_sweep_ends_its_units_window() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+            for k in 0..=15u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
+            let a = comp(&g, D).unit_window(ua).expect("A's window is open");
+            assert!(comp(&g, D).unit_window(ub).is_some());
+            g.chunk_stopped(D, ChunkPos { dim: 0, x: 2, z: 0 });
+            g.discard(Tick(1600), D, discard::DROPPED, &tun);
+            glass_sweep(&mut g, D, 1700, &inv(1700), &ports, &Liveness::All, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.unit_window(ub), None);
+            assert_eq!(
+                c.unit_state[ub as usize].ready_at,
+                Tick(1700 + tun.warmup_ticks)
+            );
+            assert_eq!(c.unit_window(ua).map(|w| w.0), Some(a.0));
+            assert!(
+                c.window().is_some(),
+                "the district's window keeps today's rule"
+            );
+        }
+
+        /// No unit runs while the district is away (choice SC59), whatever a sweep still in flight
+        /// at the unload says (live or not); each warms up afresh from its return, not from the
+        /// unload nor from the sweep in flight.
+        #[test]
+        fn a_district_back_from_away_warms_its_units_up_afresh() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+            for k in 0..=20u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            g.away(Tick(2050), D, &tun);
+            assert!(g.districts[&D].away);
+            // The sweeps in flight end after the unload: one whose reads ran (live) and one with
+            // nothing loaded.
+            let empty: BTreeSet<ChunkPos> = BTreeSet::new();
+            glass_sweep(&mut g, D, 2060, &inv(2060), &ports, &Liveness::All, &tun);
+            glass_sweep(
+                &mut g,
+                D,
+                2070,
+                &inv(2070),
+                &ports,
+                &Liveness::Partial {
+                    loaded: &empty,
+                    dim: 0,
+                },
+                &tun,
+            );
+            assert!(g.districts[&D].away, "a sweep in flight is no return");
+            g.back(Tick(8950), D, &tun);
+            for t in [9000, 9100] {
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+                let c = comp(&g, D);
+                for v in [p0, p1] {
+                    let u = unit_of(c, v);
+                    assert_eq!(c.unit_window(u), None, "t {t}");
+                    assert_eq!(
+                        c.unit_state[u as usize].ready_at,
+                        Tick(8950 + tun.warmup_ticks)
+                    );
+                }
+            }
+            assert!(!g.districts[&D].away);
+            let page = district_page(&g.districts[&D]);
+            assert!(matches!(
+                read_district_page(&page, 64, CMAX),
+                Ok(PageRead::Kept(_))
+            ));
+        }
+
+        /// A district none of whose chunks Java reports ticking runs no unit on a partial sweep
+        /// (choice SC58): G2-17 reads the empty set as "every loaded chunk ticks" for the
+        /// district's window, but Java reports no chunk that never ticked. A unit that passed
+        /// keeps its pass across a stretch in which nothing ran.
+        #[test]
+        fn chunks_not_reported_ticking_run_no_unit() {
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            ingest_all(&mut g, 0, &[ticking(D, 0, true), ticking(D, 2, true)], &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| {
+                let m = (t.min(3300) / 10) as i64;
+                invs(ORE, CRUSHED, m, m)
+            };
+            for k in 0..=33u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            let ua = unit_of(comp(&g, D), p0);
+            let before = comp(&g, D).unit_state[ua as usize].last.clone();
+            assert_eq!(before.as_ref().map(|r| r.verdict), Some(verdict::PASS));
+            ingest_all(
+                &mut g,
+                3350,
+                &[ticking(D, 0, false), ticking(D, 2, false)],
+                &tun,
+            );
+            let loaded: BTreeSet<ChunkPos> = [0, 2]
+                .into_iter()
+                .map(|x| ChunkPos { dim: 0, x, z: 0 })
+                .collect();
+            let partial = Liveness::Partial {
+                loaded: &loaded,
+                dim: 0,
+            };
+            for k in 34..=70u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &partial, &tun);
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.unit_state[ua as usize].last, before);
+            assert_eq!(c.unit_window(ua), None);
+            assert!(c.unit_may_replay(ua));
+        }
+
+        /// The district's derate lands in the unit whose own window failed (choice SC61): B makes
+        /// half its rate, so B's press is derated by B's own η, and A, which matched, keeps
+        /// passing.
+        #[test]
+        fn the_districts_derate_lands_in_the_unit_that_failed() {
+            let (b, p0, p1) = two_lines(BRASS, SHEET, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            drive2(
+                &mut c,
+                0,
+                5200,
+                (BRASS, SHEET),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let derated: Vec<(u32, Q)> = c
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    GlassEvent::Derated { node, eta, .. } => Some((*node, *eta)),
+                    _ => None,
+                })
+                .collect();
+            assert!(!derated.is_empty());
+            assert!(derated.iter().all(|&(v, _)| v == p1), "{derated:?}");
+            let d = c.regime.derate[&p1].to_f64();
+            assert!((d - 0.5).abs() < 0.02, "B's own η: {d}");
+            assert_eq!(
+                verdict_of(&c.unit_state[unit_of(&c, p0) as usize]),
+                verdict::PASS
+            );
+        }
+
+        /// A window with nothing judged proves nothing (choice SC66): a unit whose last window
+        /// passed with no good of verdict PASS may not replay.
+        #[test]
+        fn a_unit_that_judged_nothing_may_not_replay() {
+            let (mut c, p0, _, _) = both_passed((ORE, CRUSHED));
+            let ua = unit_of(&c, p0);
+            assert!(c.unit_may_replay(ua));
+            let last = c.unit_state[ua as usize].last.as_mut().expect("passed");
+            for x in last.goods.iter_mut() {
+                x.verdict = verdict::NONE;
+            }
+            assert!(!c.unit_may_replay(ua));
+        }
+
+        /// A model demoted here leaves the rows of the units holding it unbounded (G-B14), as a
+        /// black box does: nothing in them is judged, and they lean on the district's pass, as a
+        /// district alone does (G-B4, choice SC66).
+        #[test]
+        fn a_demoted_model_leaves_its_units_unjudged() {
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let demoted: BTreeSet<u32> = [model::PRESS].into();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &demoted);
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 10) as i64,
+                &tun,
+            );
+            let ua = unit_of(&c, p0);
+            let last = c.unit_state[ua as usize].last.as_ref().expect("judged");
+            assert!(
+                last.goods
+                    .iter()
+                    .all(|x| x.class == crate::glass::report::class::UNBOUNDED
+                        && x.verdict == verdict::NONE),
+                "{:?}",
+                last.goods
+            );
+            assert!(
+                c.eligible(),
+                "the district passed: {:?}",
+                c.last.as_ref().map(|r| r.verdict)
+            );
+            assert!(c.unit_may_replay(ua), "it leans on the district's pass");
+            c.edited = true;
+            assert!(!c.unit_may_replay(ua), "and not on one an edit staled");
+        }
+
+        /// The extra rows are recounted at a session start (the windows' rows went), and ports
+        /// are kept only while the units are active.
+        #[test]
+        fn a_session_start_recounts_the_rows_and_one_unit_keeps_no_ports() {
+            let (b, _, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            for k in 0..=25u64 {
+                let t = k * 100;
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            let before = g.extra_rows();
+            g.session_start(Tick(2550), &tun);
+            let after = g.extra_rows();
+            g.recount_rows();
+            assert_eq!(after, g.extra_rows(), "recounted ({before} before)");
+            // One line: one unit, the district's window is its own.
+            let mut one = B::default();
+            let (i, o) = (one.store(0), one.store(1));
+            let r = one.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+            let p = one.machine(model::PRESS, r, 1, 10);
+            one.edge(i, p);
+            one.edge(p, o);
+            let d2 = DistrictId(D.0 + 1);
+            ingest_all(&mut g, 0, &records_for(&one, 1, d2), &tun);
+            assert!(!comp(&g, d2).units.active());
+            g.port(d2, 1, 1, &GoodVec::from_pairs([(SHEET, 3)]));
+            assert!(comp(&g, d2).ports_at.is_empty());
+        }
+
+        // ---- the replay by unit (SECTIONS.md §3.5, slice S2c) ------------------------------------
+
+        /// An inventory of a test district: its block, a fluid tank or not, and what it holds.
+        pub(super) struct Inv {
+            pos: BlockPos,
+            fluid: bool,
+            contents: Vec<(Good, i64)>,
+        }
+
+        pub(super) fn inv_at(x: i32, contents: &[(Good, i64)]) -> Inv {
+            Inv {
+                pos: BlockPos::new(x, 64, 0),
+                fluid: false,
+                contents: contents.to_vec(),
+            }
+        }
+
+        /// The inventories of [`two_lines`] at their stores' blocks (A's in chunk 0, B's in chunk
+        /// 2): A's brass and B's input as given.
+        pub(super) fn lines(brass: i64, b_in: (Good, i64)) -> Vec<Inv> {
+            vec![
+                inv_at(0, &[(BRASS, brass)]),
+                inv_at(2, &[]),
+                inv_at(40, &[b_in]),
+                inv_at(42, &[]),
+            ]
+        }
+
+        pub(super) fn chunk(x: i32) -> ChunkPos {
+            BlockPos::new(x, 64, 0).chunk(0)
+        }
+
+        /// `b`'s compile in an engine on tunables `tun`: the district live with `invs`, and one
+        /// live sweep at 100 of what they hold.
+        pub(super) fn engine_with(b: &B, tun: Tunables, invs: &[Inv]) -> Engine {
+            let mut s = vec![at(
+                0,
+                Obs::District(DistrictDecl {
+                    district: D,
+                    revision: 1,
+                    dim: 0,
+                    name: 0,
+                    not_learnable: None,
+                    inventory_count: invs.len() as u32,
+                }),
+            )];
+            for (i, x) in invs.iter().enumerate() {
+                let mut d = inventory(i as u32, &[]).decl;
+                d.pos = x.pos;
+                if x.fluid {
+                    d.kind = InvKind(InvKind::FLUIDS);
+                    d.item_slots = 0;
+                    d.fluid_capacity = 1_000_000_000;
+                }
+                s.push(at(0, Obs::Inventory(d)));
+            }
+            s.push(load_state(0, LoadState::Live));
+            for r in b.records(1) {
+                s.push(at(0, Obs::Glass(r)));
+            }
+            let contents: Vec<&[(Good, i64)]> =
+                invs.iter().map(|x| x.contents.as_slice()).collect();
+            sweep(&mut s, 1, 100, &contents);
+            let mut e = Engine::new(0, tun, Tick::ZERO);
+            for (g, info) in goods() {
+                e.define_good(g, info);
+            }
+            e.session_start(Tick(0));
+            for t in &s {
+                feed(&mut e, t);
+            }
+            e
+        }
+
+        /// Sets the last window of each node's unit to `verdict` by hand (passed when it passes),
+        /// with no district window concluded: the replay's own mechanics, without driving windows
+        /// that match every regime.
+        pub(super) fn judge(e: &mut Engine, verdicts: &[(u32, u32)]) {
+            let c = e
+                .glass
+                .districts
+                .get_mut(&D)
+                .and_then(|g| g.compiled.as_mut())
+                .expect("a compile");
+            for &(v, verdict) in verdicts {
+                let u = c.units.of_node[v as usize] as usize;
+                let st = &mut c.unit_state[u];
+                // One good judged with the window's verdict: a pass on nothing proves nothing
+                // (choice SC66).
+                let good = crate::glass::check::GoodResult {
+                    good: Good(0),
+                    class: crate::glass::report::class::EXACT,
+                    why: (0, 0),
+                    in_l: 0.0,
+                    in_u: 0.0,
+                    out_l: 0.0,
+                    out_u: 0.0,
+                    predicted: 0.0,
+                    lo: 0.0,
+                    hi: 0.0,
+                    measured: 0.0,
+                    sigma: 0.0,
+                    q: 1.0,
+                    verdict,
+                    samples: 3,
+                };
+                st.last = Some(WindowResult {
+                    start: Tick(0),
+                    ticks: 1,
+                    verdict,
+                    goods: vec![good],
+                    stores: Vec::new(),
+                });
+                st.passed = (verdict == verdict::PASS).then_some((Tick(0), 1));
+                st.edited = false;
+            }
+            c.last = None;
+            c.veto.clear();
+        }
+
+        fn replay(e: &Engine) -> &Replay {
+            e.glass.districts[&D].replay.as_ref().expect("replaying")
+        }
+
+        /// The district back at `t` with the chunks of blocks `xs` loaded: each store's change.
+        fn back(e: &mut Engine, t: u64, xs: &[i32]) -> BTreeMap<(u32, Good), i64> {
+            let mut cmds = feed(e, &load_state(t, LoadState::Live));
+            for &x in xs {
+                cmds.extend(feed(
+                    e,
+                    &at(
+                        t,
+                        Obs::ChunkLoaded {
+                            district: D,
+                            chunk: chunk(x),
+                            applied_epoch: 0,
+                        },
+                    ),
+                ));
+            }
+            deltas(&cmds)
+        }
+
+        /// A unit that may not replay is gated off while the other replays (§3.5): its press runs
+        /// nothing, and its stores are pools only the world's own changes touch (a package into
+        /// one stays there). Before S2c the district window's failure froze the whole district.
+        #[test]
+        fn a_unit_that_may_not_replay_is_gated_and_its_stores_keep_what_they_hold() {
+            use crate::obs::{Direction, PackageEvent};
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let c = comp(&e.glass, D);
+            let (ua, ub) = (unit_of(c, p0) as usize, unit_of(c, p1) as usize);
+            let rp = replay(&e);
+            assert!(rp.units_on()[ua] && !rp.units_on()[ub]);
+            assert!(rp.gated()[p1 as usize] && !rp.gated()[p0 as usize]);
+            assert!(rp.frozen().iter().all(|&f| !f));
+            feed(
+                &mut e,
+                &at(
+                    1000,
+                    Obs::Package(PackageEvent {
+                        district: D,
+                        inventory: 2,
+                        direction: Direction::In,
+                        address: 0,
+                        packages: 1,
+                        op: None,
+                        goods: GoodVec::from_pairs([(ORE, 64)]),
+                    }),
+                ),
+            );
+            e.advance_to(Tick(3200));
+            let st = e.sim_stock(D).expect("replaying");
+            assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+            assert_eq!((st.get(ORE), st.get(CRUSHED)), (1064, 0), "{st:?}");
+            let d = back(&mut e, 3200, &[0, 40]);
+            let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+            assert!((298..=300).contains(&made), "{d:?}");
+            assert!((-300..=-298).contains(&d.get(&(0, BRASS)).copied().unwrap_or(0)));
+            assert!(
+                d.keys().all(|&(i, _)| i < 2),
+                "B's stores keep what they hold: {d:?}"
+            );
+            e.check_books().expect("books");
+        }
+
+        /// The district's last pass as if it learned `rate` per tick of `good` in inventory `inv`
+        /// that the model does not predict: an unbounded good, so a residual (G-B13).
+        fn passed_with_residual(e: &mut Engine, inv: u32, good: Good, rate: f64) {
+            passed_with(e, good, rate, 0.0, &[(inv, good, rate, 0.0)]);
+        }
+
+        /// The district's last pass as if it measured `good` at `measured` per tick against
+        /// `predicted`, an unbounded good, with the per-store slopes `stores`.
+        fn passed_with(
+            e: &mut Engine,
+            good: Good,
+            measured: f64,
+            predicted: f64,
+            stores: &[(u32, Good, f64, f64)],
+        ) {
+            let c = e
+                .glass
+                .districts
+                .get_mut(&D)
+                .and_then(|g| g.compiled.as_mut())
+                .expect("a compile");
+            let g = crate::glass::check::GoodResult {
+                good,
+                class: class::UNBOUNDED,
+                why: (0, 0),
+                in_l: 0.0,
+                in_u: 0.0,
+                out_l: 0.0,
+                out_u: 0.0,
+                predicted,
+                lo: 0.0,
+                hi: 0.0,
+                measured,
+                sigma: 0.0,
+                q: 1.0,
+                verdict: verdict::PASS,
+                samples: 3,
+            };
+            c.passed = Some(WindowResult {
+                start: Tick(0),
+                ticks: 2000,
+                verdict: verdict::PASS,
+                goods: vec![g],
+                stores: stores.to_vec(),
+            });
+            c.edited = false;
+        }
+
+        /// A freeze in a replay split into parts gives no part a residual: the split started with
+        /// none (B's gated store took the whole's only share), and a part's own stores would hand
+        /// it the share weighed for the whole. Three lines, C a third press line at x 80 to 82;
+        /// with A's brass short and no breakpoint allowed per event, A's stop freezes it at about
+        /// 5,200, and C's crushed ore is what it is with A running on or gated from the start.
+        #[test]
+        fn a_freeze_in_a_split_replay_gives_no_part_a_residual() {
+            let run = |brass: i64, a: u32| {
+                let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let (i2, o2) = (b.store(4), b.store(5));
+                let r2 = b.recipe(&[(ORE, 1)], &[(CRUSHED, 1)]);
+                let p2 = b.machine(model::PRESS, r2, 1, 10);
+                b.edge(i2, p2);
+                b.edge(p2, o2);
+                for (v, x) in [(i2, 80), (p2, 81), (o2, 82)] {
+                    b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+                }
+                let mut invs = lines(brass, (ORE, 1000));
+                invs.push(inv_at(80, &[(ORE, 100_000)]));
+                invs.push(inv_at(82, &[]));
+                let mut tun = Tunables::default();
+                tun.glass.breakpoints_per_event_max = 0;
+                let mut e = engine_with(&b, tun, &invs);
+                judge(&mut e, &[(p0, a), (p1, verdict::FAIL), (p2, verdict::PASS)]);
+                passed_with(
+                    &mut e,
+                    CRUSHED,
+                    0.15,
+                    0.2,
+                    &[(3, CRUSHED, 0.05, 0.1), (5, CRUSHED, 0.1, 0.1)],
+                );
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(201));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let parts = comp(&e.glass, D).cache_parts;
+                e.advance_to(Tick(20_000));
+                let freezes = replay(&e).freezes();
+                let crushed = e.sim_stock(D).expect("replaying").get(CRUSHED);
+                e.check_books().expect("books");
+                (parts, freezes, crushed)
+            };
+            let control = run(100_000, verdict::PASS);
+            let gated = run(100_000, verdict::FAIL);
+            let frozen = run(500, verdict::PASS);
+            assert!(
+                control.0 > 1 && control.1 == 0,
+                "split, no freeze: {control:?}"
+            );
+            assert_eq!(frozen.1, 1, "A froze: {frozen:?}");
+            assert!(
+                (control.2 - frozen.2).abs() <= 2 && (control.2 - gated.2).abs() <= 2,
+                "C's crushed ore does not depend on A: {control:?} {gated:?} {frozen:?}"
+            );
+        }
+
+        /// The residual learned from the district's last pass books only into the stores of units
+        /// that replay (choice SC68): a gated unit's stores are pools only replaying neighbours
+        /// touch, so a learned source there would make goods from nothing and a learned drain
+        /// would lose them. The same residual into a store of the unit that replays is booked.
+        #[test]
+        fn a_gated_units_stores_take_no_residual() {
+            for (inv, good, rate, gated) in [
+                (3, CRUSHED, 0.05, true),
+                (2, ORE, -0.05, true),
+                (1, SHEET, 0.05, false),
+            ] {
+                let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+                judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+                passed_with_residual(&mut e, inv, good, rate);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(201));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let rp = replay(&e);
+                assert!(rp.gated()[p1 as usize] && !rp.gated()[p0 as usize]);
+                assert_eq!(rp.learned_sources(), u32::from(!gated && rate > 0.0));
+                e.advance_to(Tick(3200));
+                let st = e.sim_stock(D).expect("replaying");
+                let d = back(&mut e, 3200, &[0, 40]);
+                e.check_books().expect("books");
+                assert_eq!(
+                    (st.get(ORE), st.get(CRUSHED)),
+                    (1000, 0),
+                    "B's stores keep what they hold: {st:?} {d:?}"
+                );
+                let sheets = st.get(SHEET);
+                if gated {
+                    assert!((298..=300).contains(&sheets), "{st:?}");
+                } else {
+                    assert!(sheets > 400, "the residual books into A's store: {st:?}");
+                }
+            }
+        }
+
+        /// A recompile that keeps every unit (Java recompiles after each edit) starts the replay
+        /// again on the new compile: a replay of the old one stops at its next step, so with no
+        /// new start a bound or a timer would never be acted on and the part would stall while it
+        /// still reported GLASS. B's line here: a consumer burns its crushed ore into coal, and a
+        /// threshold switch on the crushed ore stops B's press at 100 and restarts it at 20.
+        #[test]
+        fn a_recompile_that_keeps_the_units_restarts_the_replay() {
+            let mut got = Vec::new();
+            for recompile in [false, true] {
+                let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let coal = b.store(4);
+                let burn = b.recipe(&[(CRUSHED, 1)], &[(COAL, 1)]);
+                let m = b.machine(model::PRESS, burn, 1, 20);
+                b.edge(3, m);
+                b.edge(m, coal);
+                let ctl = b.node(NodeKind::Controller, model::THRESHOLD_SWITCH, 0, Vec::new());
+                b.nodes[ctl as usize].params = [100, 20, 0, 80];
+                b.edge_k(EdgeKind::Observe, 3, ctl, &[]);
+                let ce = b.edge_k(EdgeKind::Control, ctl, p1, &[]);
+                b.edges[ce as usize].param = CONTROL_STOP_WHEN_ON;
+                for (v, x) in [(m, 43), (coal, 44), (ctl, 45)] {
+                    b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+                }
+                let mut invs = lines(1000, (ORE, 100_000));
+                invs.push(inv_at(44, &[]));
+                let mut e = engine_with(&b, Tunables::default(), &invs);
+                judge(
+                    &mut e,
+                    &[(p0, verdict::PASS), (p1, verdict::PASS), (m, verdict::PASS)],
+                );
+                let loaded = Obs::ChunkLoaded {
+                    district: D,
+                    chunk: chunk(0),
+                    applied_epoch: 0,
+                };
+                feed(&mut e, &at(200, loaded));
+                feed(&mut e, &load_state(200, LoadState::Partial));
+                e.advance_to(Tick(500));
+                if recompile {
+                    for r in b.records(2) {
+                        feed(&mut e, &at(500, Obs::Glass(r)));
+                    }
+                    let c = comp(&e.glass, D);
+                    assert!(c.graph.end.compile == 2 && c.replayable());
+                }
+                e.advance_to(Tick(20_200));
+                assert_eq!(model(&e), replay_model::GLASS);
+                assert_eq!(replay(&e).compile(), if recompile { 2 } else { 1 });
+                let st = e.sim_stock(D).expect("replaying");
+                got.push((recompile, st.get(CRUSHED), st.get(COAL)));
+            }
+            for &(recompile, crushed, coal) in &got {
+                assert!(
+                    coal > 900 && crushed <= 100,
+                    "recompile {recompile}: the line runs under its switch: {got:?}"
+                );
+            }
+        }
+
+        /// No unit may replay: the district freezes while away (staleness did it, I5), with no
+        /// replay and no black box. One unit that may is enough for the glass (§3.5).
+        #[test]
+        fn a_district_freezes_while_no_unit_may_replay() {
+            for (vb, want) in [
+                (verdict::FAIL, replay_model::NONE),
+                (verdict::PASS, replay_model::GLASS),
+            ] {
+                let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+                judge(&mut e, &[(p0, verdict::FAIL), (p1, vb)]);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(3000));
+                assert_eq!(model(&e), want);
+                let r = e.glass.report(D).expect("a compile");
+                assert_eq!(r.replay.eligible, want == replay_model::GLASS);
+                assert_eq!(e.sim_stock(D).is_some(), want == replay_model::GLASS);
+            }
+        }
+
+        /// A fallback freezes the unit it names, at its tick, keeping what it booked, and the rest
+        /// replays on (§3.5). With no breakpoint allowed between outside events, A's brass running
+        /// out falls back: A freezes, once, and B goes on. B's own fallback later leaves no unit
+        /// to replay, and only then does the district leave the glass.
+        #[test]
+        fn a_fallback_freezes_the_unit_it_names_and_the_rest_replays_on() {
+            let mut tun = Tunables::default();
+            tun.glass.breakpoints_per_event_max = 0;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, tun, &lines(500, (ORE, 2000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::PASS)]);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let c = comp(&e.glass, D);
+            let (ua, ub) = (unit_of(c, p0) as usize, unit_of(c, p1) as usize);
+            assert_eq!(replay(&e).freezes(), 0);
+            // A's 500 brass runs out about 5,200.
+            e.advance_to(Tick(8000));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let rp = replay(&e);
+            assert_eq!(rp.freezes(), 1);
+            assert_eq!(rp.counts().freezes, 1);
+            assert!(rp.frozen()[ua] && !rp.frozen()[ub]);
+            assert!(rp.gated()[p0 as usize] && !rp.gated()[p1 as usize]);
+            let st = e.sim_stock(D).expect("replaying");
+            assert_eq!(st.get(BRASS), 0, "{st:?}");
+            assert!(
+                (499..=500).contains(&st.get(SHEET)),
+                "A's bookings kept: {st:?}"
+            );
+            assert!((778..=780).contains(&st.get(CRUSHED)), "{st:?}");
+            // B's 2,000 ore runs out about 20,200: no unit is left to replay.
+            e.advance_to(Tick(30_000));
+            assert!(e.glass.districts[&D].fallback.is_some());
+            assert_ne!(model(&e), replay_model::GLASS);
+            let d = back(&mut e, 30_000, &[0, 40]);
+            assert_eq!(d.get(&(0, BRASS)), Some(&-500), "{d:?}");
+            assert!((499..=500).contains(&d[&(1, SHEET)]), "{d:?}");
+            assert_eq!(d.get(&(2, ORE)), Some(&-2000), "{d:?}");
+            assert!((1999..=2000).contains(&d[&(3, CRUSHED)]), "{d:?}");
+            e.check_books().expect("books");
+        }
+
+        /// [`two_lines`] with B's press on a network a boiler drives, the boiler's pump drawing
+        /// from a water tank (inventory 4, at x 80): three units. Returns the builder and A's
+        /// press, B's and the boiler.
+        pub(super) fn boiler_lines() -> (B, [u32; 3]) {
+            boiler_lines_from(false)
+        }
+
+        /// [`boiler_lines`]; with `source`, the pump draws from a water source in place of the
+        /// tank, so the boiler's unit has no store.
+        fn boiler_lines_from(source: bool) -> (B, [u32; 3]) {
+            let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let water = if source {
+                b.node(
+                    NodeKind::Source,
+                    model::WATER_SOURCE,
+                    node_flags::FLUID,
+                    Vec::new(),
+                )
+            } else {
+                let w = b.store(4);
+                b.nodes[w as usize].model = model::STORE_FLUID;
+                b.nodes[w as usize].flags = node_flags::FLUID;
+                w
+            };
+            let pump = b.node(
+                NodeKind::Mover,
+                model::PUMP,
+                node_flags::FLUID,
+                vec![RateEntry {
+                    flags: rate_flags::SHARED,
+                    ..entry(None, 40, 1)
+                }],
+            );
+            let boiler = b.node(
+                NodeKind::Boiler,
+                model::BOILER,
+                node_flags::FLUID,
+                Vec::new(),
+            );
+            b.nodes[boiler as usize].params = [16, 1, 0, 0];
+            let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+            b.nodes[h as usize].params = [100_000_000, i64::from(heat::KINDLED), 1600, 0];
+            for (v, x) in [(water, 80), (pump, 81), (boiler, 82), (h, 83)] {
+                b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+            }
+            b.edge_k(EdgeKind::Pipe, water, pump, &[WATER]);
+            b.edge_k(EdgeKind::Pipe, pump, boiler, &[WATER]);
+            let he = b.edge_k(EdgeKind::Heat, h, boiler, &[]);
+            b.edges[he as usize].param = 4;
+            let r = b.nodes[p1 as usize].rates[0].recipe;
+            b.nodes[p1 as usize].rates = vec![
+                RateEntry {
+                    level: 0,
+                    ..entry(r, 1, 20)
+                },
+                RateEntry {
+                    level: 1,
+                    ..entry(r, 1, 10)
+                },
+            ];
+            b.nodes[p1 as usize].domain = Some(0);
+            b.domains.push(GraphDomain {
+                head: head(0),
+                network: 1,
+                current: Some(1),
+                flags: 0,
+                live_stress: 0.0,
+                live_capacity: 0.0,
+                levels: vec![DomainLevel::speed_row(16), DomainLevel::speed_row(32)],
+                sources: vec![DomainSource::driven(
+                    boiler,
+                    0,
+                    &[(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)],
+                    2,
+                )],
+                foreign: 0,
+                members: vec![Member {
+                    node: Some(p1),
+                    count: 1,
+                    ratio_num: 1,
+                    ratio_den: 1,
+                    impact: 8.0,
+                }],
+            });
+            (b, [p0, p1, boiler])
+        }
+
+        /// A boiler whose unit may not replay stops its network for every unit on it (§3.5): B
+        /// passed its window, yet makes nothing while the boiler is gated; A, on no network, runs.
+        /// With the boiler's unit allowed, B runs at the boiler's level.
+        #[test]
+        fn a_gated_boiler_stops_its_network() {
+            for boiler_may in [false, true] {
+                let (b, [p0, p1, boiler]) = boiler_lines();
+                let mut invs = lines(1000, (ORE, 1000));
+                invs.push(Inv {
+                    pos: BlockPos::new(80, 64, 0),
+                    fluid: true,
+                    contents: vec![(WATER, 100_000_000)],
+                });
+                let mut e = engine_with(&b, Tunables::default(), &invs);
+                let c = comp(&e.glass, D);
+                assert_eq!(c.units.len(), 3);
+                let vk = if boiler_may {
+                    verdict::PASS
+                } else {
+                    verdict::FAIL
+                };
+                judge(
+                    &mut e,
+                    &[(p0, verdict::PASS), (p1, verdict::PASS), (boiler, vk)],
+                );
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(3200));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let rp = replay(&e);
+                assert_eq!(rp.gated()[p1 as usize], !boiler_may, "B's press");
+                assert_eq!(rp.gated()[boiler as usize], !boiler_may);
+                assert!(!rp.gated()[p0 as usize]);
+                let st = e.sim_stock(D).expect("replaying");
+                assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+                if boiler_may {
+                    assert!((296..=300).contains(&st.get(CRUSHED)), "{st:?}");
+                    assert!(st.get(WATER) < 100_000_000, "{st:?}");
+                } else {
+                    assert_eq!(st.get(CRUSHED), 0, "{st:?}");
+                    assert_eq!(st.get(WATER), 100_000_000, "{st:?}");
+                }
+            }
+        }
+
+        /// A unit with no store (a boiler its pump fills from a water source) has nothing a window
+        /// could judge: its passed window, empty, leans on the district's pass (choice SC66), so
+        /// the network it drives runs for B; without the district's pass it may not replay, and B,
+        /// which passed its own window, makes nothing while A runs.
+        #[test]
+        fn a_unit_with_no_store_leans_on_the_districts_pass() {
+            for district_passed in [false, true] {
+                let (b, [p0, p1, boiler]) = boiler_lines_from(true);
+                let invs = lines(1000, (ORE, 1000));
+                let mut e = engine_with(&b, Tunables::default(), &invs);
+                judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::PASS)]);
+                let c = e
+                    .glass
+                    .districts
+                    .get_mut(&D)
+                    .and_then(|g| g.compiled.as_mut())
+                    .expect("a compile");
+                assert_eq!(c.units.len(), 3);
+                let ub = c.units.of_node[boiler as usize];
+                assert!(c.units.stores[ub as usize].is_empty(), "no store");
+                let empty = |verdict| WindowResult {
+                    start: Tick(0),
+                    ticks: 1,
+                    verdict,
+                    goods: Vec::new(),
+                    stores: Vec::new(),
+                };
+                let st = &mut c.unit_state[ub as usize];
+                st.last = Some(empty(verdict::PASS));
+                st.passed = Some((Tick(0), 1));
+                st.edited = false;
+                c.passed = district_passed.then(|| empty(verdict::PASS));
+                assert_eq!(c.unit_may_replay(ub), district_passed);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(3200));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let rp = replay(&e);
+                assert_eq!(rp.gated()[boiler as usize], !district_passed);
+                assert_eq!(rp.gated()[p1 as usize], !district_passed, "B's press");
+                assert!(!rp.gated()[p0 as usize]);
+                let st = e.sim_stock(D).expect("replaying");
+                assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+                if district_passed {
+                    assert!((296..=300).contains(&st.get(CRUSHED)), "{st:?}");
+                } else {
+                    assert_eq!(st.get(CRUSHED), 0, "{st:?}");
+                }
+            }
+        }
+
+        /// The domain check (§3.6): a recompile keeps a unit on a network while the network's
+        /// stress stays at or below the least capacity its passed window ran at, and stales it
+        /// past that. A load added elsewhere on the network changes no fingerprint, so only the
+        /// domain check sees it.
+        #[test]
+        fn the_domain_check_stales_only_past_the_least_capacity_run_at() {
+            use crate::glass::check::DomCap;
+            let tun = GlassTunables::default();
+            let with_load = |others: u32| {
+                let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                b.nodes[p1 as usize].domain = Some(0);
+                let member = |node: Option<u32>, count: u32| Member {
+                    node,
+                    count,
+                    ratio_num: 1,
+                    ratio_den: 1,
+                    impact: 4.0,
+                };
+                b.domains.push(GraphDomain {
+                    head: head(0),
+                    network: 1,
+                    current: Some(0),
+                    flags: 0,
+                    live_stress: 0.0,
+                    live_capacity: 0.0,
+                    levels: vec![DomainLevel::speed_row(64)],
+                    sources: vec![DomainSource::fixed(0, 64, 1024.0)],
+                    foreign: 0,
+                    members: vec![member(Some(p1), 1), member(None, others)],
+                });
+                (b, p0, p1)
+            };
+            let (b, p0, p1) = with_load(1);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            for k in 0..=35u64 {
+                let t = k * 100;
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            let c = comp(&g, D);
+            let (ua, ub) = (unit_of(c, p0), unit_of(c, p1));
+            assert!(c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            assert_eq!(
+                c.unit_state[ub as usize].passed_caps,
+                vec![DomCap {
+                    domain: 0,
+                    source: Some(0),
+                    speed: 64.0,
+                    capacity: 1024.0
+                }]
+            );
+            assert!(c.unit_state[ua as usize].passed_caps.is_empty());
+            let inv = invs(ORE, CRUSHED, 350, 350);
+            // Two more loads elsewhere on the network: 768 of the 1,024 B ran at. B is kept.
+            let (b2, _, _) = with_load(2);
+            ingest_seen(&mut g, 3550, &b2.records(2), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            assert!(c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            assert_eq!(c.unit_state[ub as usize].passed_caps.len(), 1);
+            // Four: 1,280, past it. B goes stale and learns again; A is kept.
+            let (b3, _, _) = with_load(4);
+            ingest_seen(&mut g, 3600, &b3.records(3), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 3);
+            let bs = &c.unit_state[ub as usize];
+            assert!(bs.edited && bs.passed_caps.is_empty());
+            assert_eq!(c.unit_window(ub), None);
+            assert!(c.unit_may_replay(ua) && !c.unit_may_replay(ub));
+        }
+
+        /// A partly loaded district (§3.5): the loaded line is live, and the line away replays
+        /// when it may and is gated when it may not. An edit that leaves no unit allowed ends the
+        /// replay (staleness freezes, I5); one that leaves the line away allowed starts it again
+        /// over the same units, and it goes on.
+        #[test]
+        fn a_partial_load_replays_the_units_away_that_may() {
+            for b_may in [true, false] {
+                let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+                let vb = if b_may { verdict::PASS } else { verdict::FAIL };
+                judge(&mut e, &[(p0, verdict::PASS), (p1, vb)]);
+                feed(
+                    &mut e,
+                    &at(
+                        200,
+                        Obs::ChunkLoaded {
+                            district: D,
+                            chunk: chunk(0),
+                            applied_epoch: 0,
+                        },
+                    ),
+                );
+                feed(&mut e, &load_state(200, LoadState::Partial));
+                e.advance_to(Tick(1200));
+                assert_eq!(model(&e), replay_model::GLASS, "B may: {b_may}");
+                let rp = replay(&e);
+                assert!(!rp.gated()[p0 as usize], "A is live");
+                assert_eq!(rp.gated()[p1 as usize], !b_may);
+                let st = e.sim_stock(D).expect("replaying");
+                assert_eq!(st.get(SHEET), 0, "A's stores are not the replay's: {st:?}");
+                let crushed = if b_may { 100 } else { 0 };
+                assert!((crushed - 2..=crushed).contains(&st.get(CRUSHED)), "{st:?}");
+                // An edit at A's press stales A.
+                feed(
+                    &mut e,
+                    &at(
+                        1200,
+                        Obs::Edit {
+                            district: D,
+                            kind: EditKind::Placed,
+                            player: (1, 2),
+                            pos: BlockPos::new(1, 64, 0),
+                        },
+                    ),
+                );
+                e.advance_to(Tick(2200));
+                if b_may {
+                    assert_eq!(model(&e), replay_model::GLASS);
+                    let st = e.sim_stock(D).expect("replaying");
+                    assert!((195..=200).contains(&st.get(CRUSHED)), "{st:?}");
+                } else {
+                    assert_eq!(model(&e), replay_model::NONE);
+                    assert!(e.sim_stock(D).is_none());
+                }
+                e.check_books().expect("books");
+            }
+        }
+
+        // ---- stations (SECTIONS.md §3.6, §4.4, slice S2d) --------------------------------------
+
+        /// [`two_lines`] (B ore into crushed) and a third press line apart, C: zinc (4) into press
+        /// C into copper (5) at x 80 to 82 (chunk 5). Returns the builder and the three presses.
+        fn three_lines() -> (B, [u32; 3]) {
+            let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let (i, o) = (b.store(4), b.store(5));
+            let r = b.recipe(&[(ZINC, 1)], &[(COPPER, 1)]);
+            let p2 = b.machine(model::PRESS, r, 1, 10);
+            b.edge(i, p2);
+            b.edge(p2, o);
+            for (v, x) in [(i, 80), (p2, 81), (o, 82)] {
+                b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+            }
+            (b, [p0, p1, p2])
+        }
+
+        /// The three lines' inventories when each made `m`.
+        fn invs3(m: i64) -> VecMap<u32, Inventory> {
+            let mut v = invs(ORE, CRUSHED, m, m);
+            v.insert(4, inventory(4, &[(ZINC, 100_000 - m)]));
+            v.insert(5, inventory(5, &[(COPPER, m)]));
+            v
+        }
+
+        /// The three lines swept every 100 ticks from 0 to `to`, each at its rate.
+        fn three_lines_run(to: u64, tun: &GlassTunables) -> (Glass, [u32; 3]) {
+            let (b, p) = three_lines();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), tun);
+            assert_eq!(comp(&g, D).units.len(), 3);
+            let ports = GoodVec::new();
+            let mut t = 0;
+            while t <= to {
+                let inv = invs3((t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, tun);
+                t += 100;
+            }
+            (g, p)
+        }
+
+        /// One station's ports join the units holding them (choice SC75): lines A and B judged as
+        /// one, C apart keeping its passed window; the page and the next compile of the revision
+        /// keep the join, and ports of another revision regroup nothing.
+        #[test]
+        fn a_stations_ports_join_their_units_and_the_rest_keep_their_windows() {
+            let tun = GlassTunables::default();
+            let (mut g, [p0, p1, p2]) = three_lines_run(3200, &tun);
+            let c = comp(&g, D);
+            let uc = unit_of(c, p2);
+            let kept = c.unit_state[uc as usize].clone();
+            assert_eq!(verdict_of(&kept), verdict::PASS);
+            g.station_ports(Tick(3250), D, 1, vec![vec![1, 3], vec![4]], &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.units.len(), 2);
+            assert_eq!(unit_of(c, p0), unit_of(c, p1));
+            let (ab, uc) = (unit_of(c, p0), unit_of(c, p2));
+            assert_ne!(ab, uc);
+            assert_eq!(c.unit_state[uc as usize], kept, "C keeps its state");
+            let st = &c.unit_state[ab as usize];
+            assert!(
+                st.last.is_none() && st.windows_completed == 0,
+                "A and B start afresh"
+            );
+            assert_eq!(c.units.unit_of_inv(1), c.units.unit_of_inv(3));
+            assert_eq!(c.joins, vec![vec![1, 3]], "a lone inventory joins nothing");
+            // The same ports again change nothing.
+            let before = c.unit_state.clone();
+            g.station_ports(Tick(3260), D, 1, vec![vec![4], vec![1, 3]], &tun);
+            assert_eq!(comp(&g, D).unit_state, before);
+            // The page keeps the join.
+            let page = district_page(&g.districts[&D]);
+            let PageRead::Kept(back) = read_district_page(&page, 64, CMAX).expect("decodes") else {
+                panic!("kept");
+            };
+            assert_eq!(back.joins, g.districts[&D].joins);
+            let r = back.compiled.as_ref().expect("compile");
+            assert_eq!(r.units, comp(&g, D).units);
+            assert_eq!(district_page(&back), page);
+            // So does a recompile of the revision.
+            let (b, _) = three_lines();
+            ingest_seen(&mut g, 3300, &b.records(2), &invs3(330), &tun);
+            let c = comp(&g, D);
+            assert_eq!((c.graph.end.compile, c.units.len()), (2, 2));
+            // Ports numbering another revision's inventories regroup nothing now.
+            g.station_ports(Tick(3400), D, 2, vec![vec![3, 5]], &tun);
+            assert_eq!(comp(&g, D).units.len(), 2);
+            assert_eq!(comp(&g, D).joins, vec![vec![1, 3]]);
+        }
+
+        /// A train's cargo (§4.4, SC75) is the port of the one unit its station's ports lie in,
+        /// booked once; cargo the units cannot split costs their open windows; cargo into no
+        /// unit's inventory is the district's alone.
+        #[test]
+        fn train_cargo_goes_to_the_unit_its_ports_name_once() {
+            let tun = GlassTunables::default();
+            let cargo = GoodVec::from_pairs([(SHEET, 50), (CRUSHED, -20)]);
+            // Joined: one unit's port, at its first inventory.
+            let (mut g, [p0, ..]) = three_lines_run(1500, &tun);
+            g.station_ports(Tick(1500), D, 1, vec![vec![1, 3]], &tun);
+            let ab = unit_of(comp(&g, D), p0);
+            // It warms up afresh (warmup_ticks and the longest latency), then opens a window.
+            let ready = 1500 + tun.warmup_ticks + 100;
+            let mut t = 1600;
+            while t <= ready {
+                let inv = invs3((t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &GoodVec::new(), &Liveness::All, &tun);
+                t += 100;
+            }
+            let opened = comp(&g, D).unit_window(ab);
+            assert!(opened.is_some(), "the joined unit warmed up");
+            g.cargo(Tick(t), D, 1, &[1, 3], &cargo, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.ports_at.len(), 1);
+            assert_eq!(c.ports_at.get(&1), Some(&cargo), "booked once");
+            assert_eq!(c.unit_window(ab), opened);
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 0);
+            // Cargo of another revision is not kept.
+            g.cargo(Tick(t + 10), D, 2, &[1, 3], &cargo, &tun);
+            assert_eq!(comp(&g, D).ports_at.get(&1), Some(&cargo));
+
+            // Not joined: A and B lose their windows, C keeps its.
+            let (mut g, [p0, p1, p2]) = three_lines_run(1500, &tun);
+            let c = comp(&g, D);
+            let (ua, ub, uc) = (unit_of(c, p0), unit_of(c, p1), unit_of(c, p2));
+            assert!(c.unit_window(ua).is_some() && c.unit_window(uc).is_some());
+            g.cargo(Tick(1550), D, 1, &[1, 3], &cargo, &tun);
+            let c = comp(&g, D);
+            assert!(c.ports_at.is_empty());
+            assert!(c.unit_window(ua).is_none() && c.unit_window(ub).is_none());
+            assert!(c.unit_window(uc).is_some());
+            assert!(
+                c.window().is_some(),
+                "the district's window counts the cargo itself"
+            );
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 1);
+            // One unit's inventory and one no unit holds: that unit's window goes.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.cargo(Tick(1550), D, 1, &[5, 9], &cargo, &tun);
+            let c = comp(&g, D);
+            assert!(c.ports_at.is_empty());
+            assert!(c.unit_window(uc).is_none() && c.unit_window(ua).is_some());
+            // Only inventories no unit holds: the district's alone.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.cargo(Tick(1550), D, 1, &[9], &cargo, &tun);
+            let c = comp(&g, D);
+            assert!(c.ports_at.is_empty() && (0..3).all(|u| c.unit_window(u).is_some()));
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 0);
+            // One unit's inventory alone: its port.
+            g.cargo(Tick(1560), D, 1, &[5], &cargo, &tun);
+            assert_eq!(comp(&g, D).ports_at.get(&5), Some(&cargo));
+        }
+
+        /// Each discard's reach (§3.6): a station's `Other` discard takes the units its last ports
+        /// named and the district's window, every unit when it named none; a revision change and a
+        /// session start take every window.
+        #[test]
+        fn each_discard_reaches_the_windows_it_names() {
+            let tun = GlassTunables::default();
+            let all_open = |g: &Glass| {
+                let c = comp(g, D);
+                (0..3u16)
+                    .map(|u| c.unit_window(u).is_some())
+                    .collect::<Vec<_>>()
+            };
+            let (mut g, [_, p1, _]) = three_lines_run(1500, &tun);
+            assert_eq!(all_open(&g), vec![true; 3]);
+            let ub = unit_of(comp(&g, D), p1);
+            g.station_discard(Tick(1550), D, &[3], &tun);
+            let c = comp(&g, D);
+            assert!(c.window().is_none());
+            for u in 0..3u16 {
+                assert_eq!(c.unit_window(u).is_some(), u != ub, "unit {u}");
+            }
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 1);
+            assert_eq!(
+                g.districts[&D].last_discard,
+                Some((Tick(1550), discard::STATION))
+            );
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.station_discard(Tick(1550), D, &[], &tun);
+            assert!(comp(&g, D).window().is_none());
+            assert_eq!(all_open(&g), vec![false; 3]);
+            // A sweep of another revision.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            let inv = invs3(160);
+            let ports = GoodVec::new();
+            let view = View {
+                revision: 2,
+                sweep: 0,
+                inventories: &inv,
+                ports: &ports,
+            };
+            g.sweep(Tick(1600), D, &view, &Liveness::All, &goods(), &tun);
+            assert!(comp(&g, D).window().is_none());
+            assert_eq!(all_open(&g), vec![false; 3]);
+            assert_eq!(g.districts[&D].discards[discard::REVISION as usize], 1);
+            // A session start.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.session_start(Tick(1550), &tun);
+            assert!(comp(&g, D).window().is_none());
+            assert_eq!(all_open(&g), vec![false; 3]);
+        }
+
+        /// A train stands at one station: its arrival at another, left by a restart while it stood
+        /// there (no departure came), never maps a later call's cargo (review M1). The stale station
+        /// has the lower id, which the cargo's lookup took first before the arrival dropped it.
+        #[test]
+        fn a_calls_cargo_maps_through_the_station_the_train_stands_at() {
+            use crate::ids::{StationId, TrainId};
+            use crate::obs::{CargoFrom, PortKind, PortTransfer, StationPorts, TrainCall};
+            let (b, _) = three_lines();
+            let mut s = setup(&b, 6);
+            for k in 1..=15u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[
+                        &[(BRASS, 100_000 - m)],
+                        &[(SHEET, m)],
+                        &[(ORE, 100_000 - m)],
+                        &[(CRUSHED, m)],
+                        &[(ZINC, 100_000 - m)],
+                        &[(COPPER, m)],
+                    ],
+                );
+            }
+            let train = TrainId(77);
+            let (old, now) = (
+                StationId(0x5eed_0000_0000_0001),
+                StationId(0x5eed_0000_0000_0002),
+            );
+            for (t, station, inv) in [(1510, old, 5u32), (1520, now, 1u32)] {
+                s.push(at(
+                    t,
+                    Obs::TrainArrived(TrainCall {
+                        train,
+                        station,
+                        district: D,
+                        simulated: false,
+                        cargo_from: CargoFrom::Approach,
+                        carriages: Vec::new(),
+                    }),
+                ));
+                s.push(at(
+                    t + 1,
+                    Obs::StationPorts(StationPorts {
+                        station,
+                        district: D,
+                        inventories: vec![inv],
+                    }),
+                ));
+            }
+            let cargo = GoodVec::from_pairs([(SHEET, -40)]);
+            s.push(at(
+                1530,
+                Obs::Port(PortTransfer {
+                    district: D,
+                    kind: PortKind::TrainCargo,
+                    inventory: None,
+                    counterpart: train.0,
+                    op: None,
+                    goods: cargo.clone(),
+                }),
+            ));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(c.ports_at.get(&1), Some(&cargo));
+            assert!(!c.ports_at.contains_key(&5));
+        }
+
+        /// Through the engine: a loaded call's ports, sent before its cargo (SC75), join A and B;
+        /// the cargo, with no inventory, maps through the station the train stands at to their
+        /// unit's port; the station's `Other` discard reaches that unit and the district's window;
+        /// a save and restore keeps the join.
+        #[test]
+        fn the_engine_maps_a_calls_cargo_through_its_stations_ports() {
+            use crate::ids::{StationId, TrainId};
+            use crate::obs::{
+                CargoFrom, DiscardReason, PortKind, PortTransfer, StationPorts, TrainCall,
+            };
+            let (b, [p0, p1, p2]) = three_lines();
+            let mut s = setup(&b, 6);
+            for k in 1..=15u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[
+                        &[(BRASS, 100_000 - m)],
+                        &[(SHEET, m)],
+                        &[(ORE, 100_000 - m)],
+                        &[(CRUSHED, m)],
+                        &[(ZINC, 100_000 - m)],
+                        &[(COPPER, m)],
+                    ],
+                );
+            }
+            let (train, station) = (TrainId(77), StationId(0x5eed_0000_0000_0001));
+            s.push(at(
+                1520,
+                Obs::TrainArrived(TrainCall {
+                    train,
+                    station,
+                    district: D,
+                    simulated: false,
+                    cargo_from: CargoFrom::Approach,
+                    carriages: Vec::new(),
+                }),
+            ));
+            s.push(at(
+                1530,
+                Obs::StationPorts(StationPorts {
+                    station,
+                    district: D,
+                    inventories: vec![3, 1],
+                }),
+            ));
+            let cargo = GoodVec::from_pairs([(SHEET, -40)]);
+            s.push(at(
+                1530,
+                Obs::Port(PortTransfer {
+                    district: D,
+                    kind: PortKind::TrainCargo,
+                    inventory: None,
+                    counterpart: train.0,
+                    op: None,
+                    goods: cargo.clone(),
+                }),
+            ));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(c.units.len(), 2);
+            let (ab, uc) = (c.units.of_node[p0 as usize], c.units.of_node[p2 as usize]);
+            assert_eq!(ab, c.units.of_node[p1 as usize]);
+            assert_eq!(c.ports_at.get(&1), Some(&cargo));
+            assert!(c.unit_window(uc).is_some());
+            let r = Engine::restore(e.snapshot(), Tunables::default()).expect("restore");
+            let rc = r.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(rc.units, c.units);
+            assert_eq!(rc.ports_at, c.ports_at);
+            // The station's discard: A and B's unit and the district's window, not C's.
+            feed(
+                &mut e,
+                &at(
+                    1540,
+                    Obs::Discard {
+                        district: D,
+                        reason: DiscardReason::Other,
+                        station: Some(station),
+                    },
+                ),
+            );
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert!(c.window().is_none() && c.unit_window(ab).is_none());
+            assert!(c.unit_window(uc).is_some());
+            // Another reason, or no station: the glass windows stay (the learner's alone).
+            let before = (c.window(), c.unit_window(uc));
+            feed(
+                &mut e,
+                &at(
+                    1545,
+                    Obs::Discard {
+                        district: D,
+                        reason: DiscardReason::Other,
+                        station: None,
+                    },
+                ),
+            );
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!((c.window(), c.unit_window(uc)), before);
+        }
+
+        /// Counted stores between units (SECTIONS.md §4.1, §4.2; slice S3).
+        mod counted {
+            use super::*;
+            use crate::glass::page::{PageRead, district_page, read_district_page};
+            use crate::glass::units::{PAIR_IN, PAIR_OUT};
+
+            /// Line A presses brass (inventory 0) into sheets at x 0 to 2 and drops them into a
+            /// vault (1) at x 20 through a chute; line B's mover (`b_mover`: a funnel, counted,
+            /// or a belt, not) takes sheets from the vault into a press making crushed (2) at x 40
+            /// to 42. A presses one per 10 ticks, B one per `b_ticks`. Returns the builder and
+            /// [p0, chute, vault, mover, p1].
+            pub(super) fn vault_lines(b_ticks: u32, b_mover: u32) -> (B, [u32; 5]) {
+                let mut b = B::default();
+                let (i0, v, o1) = (b.store(0), b.store(1), b.store(2));
+                let r0 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+                let r1 = b.recipe(&[(SHEET, 1)], &[(CRUSHED, 1)]);
+                let p0 = b.machine(model::PRESS, r0, 1, 10);
+                let fast = || RateEntry {
+                    flags: rate_flags::SHARED,
+                    ..entry(None, 1, 1)
+                };
+                let c0 = b.node(NodeKind::Mover, model::CHUTE, 0, vec![fast()]);
+                let f1 = b.node(NodeKind::Mover, b_mover, 0, vec![fast()]);
+                let p1 = b.machine(model::PRESS, r1, 1, b_ticks);
+                b.edge(i0, p0);
+                b.edge(p0, c0);
+                b.edge_k(EdgeKind::Chute, c0, v, &[]);
+                b.edge(v, f1);
+                b.edge(f1, p1);
+                b.edge(p1, o1);
+                for (n, x) in [
+                    (i0, 0),
+                    (p0, 1),
+                    (c0, 2),
+                    (v, 20),
+                    (f1, 40),
+                    (p1, 41),
+                    (o1, 42),
+                ] {
+                    b.nodes[n as usize].pos = BlockPos::new(x, 64, 0);
+                }
+                b.window = 2000;
+                (b, [p0, c0, v, f1, p1])
+            }
+
+            /// What the world holds at a sweep: A made `made` sheets and its chute put them in
+            /// the vault, B's mover took `took` since its counters started, the vault holds
+            /// `stock` (less when a player took some) and B's store `crushed`, and each pair's
+            /// counters started at `since` (chute, mover); `sample` false sends no count sample.
+            #[derive(Clone, Copy)]
+            pub(super) struct At {
+                pub made: i64,
+                pub took: i64,
+                pub stock: i64,
+                pub crushed: i64,
+                pub since: (i64, i64),
+                pub sample: bool,
+            }
+
+            /// The counts of the vault's two pairs at a sweep.
+            pub(super) fn counts(ids: [u32; 5], a: At) -> Vec<Count> {
+                let [_, c0, v, f1, _] = ids;
+                vec![
+                    Count {
+                        mover: c0,
+                        store: v,
+                        good: Some(SHEET),
+                        since: a.since.0,
+                        moved_in: a.made,
+                        moved_out: 0,
+                        entries: 1,
+                    },
+                    Count {
+                        mover: f1,
+                        store: v,
+                        good: Some(SHEET),
+                        since: a.since.1,
+                        moved_in: 0,
+                        moved_out: a.took,
+                        entries: 1,
+                    },
+                ]
+            }
+
+            pub(super) fn vault_invs(a: At) -> VecMap<u32, Inventory> {
+                let mut v = VecMap::new();
+                v.insert(0, inventory(0, &[(BRASS, 100_000 - a.made)]));
+                v.insert(1, inventory(1, &[(SHEET, a.stock)]));
+                v.insert(2, inventory(2, &[(CRUSHED, a.crushed)]));
+                v
+            }
+
+            /// The steady run: A makes one sheet per 10 ticks, B takes one per 20.
+            pub(super) fn steady(t: u64) -> At {
+                let (made, took) = ((t / 10) as i64, (t / 20) as i64);
+                At {
+                    made,
+                    took,
+                    stock: made - took,
+                    crushed: took,
+                    since: (0, 0),
+                    sample: true,
+                }
+            }
+
+            /// Sweeps a compile every 100 ticks from `from` to `to` (both included), sweep number
+            /// t / 100, each with its count sample first when `world(t)` sends one.
+            pub(super) fn drive_v(
+                c: &mut Compiled,
+                ids: [u32; 5],
+                from: u64,
+                to: u64,
+                world: impl Fn(u64) -> At,
+                tun: &GlassTunables,
+            ) {
+                let goods = goods();
+                let ports = GoodVec::new();
+                let mut t = from;
+                while t <= to {
+                    let a = world(t);
+                    let sweep = (t / 100) as u32;
+                    if a.sample {
+                        c.count_sample(sweep, &counts(ids, a));
+                    }
+                    let inv = vault_invs(a);
+                    let view = View {
+                        revision: 1,
+                        sweep,
+                        inventories: &inv,
+                        ports: &ports,
+                    };
+                    if t == 0 {
+                        c.start(&view, &goods, tun);
+                    }
+                    c.sweep(Tick(t), &view, &goods, tun);
+                    t += 100;
+                }
+            }
+
+            fn row(st: &UnitState, g: Good) -> (u32, f64, f64) {
+                let r = st.last.as_ref().expect("judged");
+                let x = r.goods.iter().find(|x| x.good == g).expect("a row");
+                (x.verdict, x.measured, x.predicted)
+            }
+
+            fn units_of(c: &Compiled, ids: [u32; 5]) -> (u16, u16) {
+                (unit_of(c, ids[0]), unit_of(c, ids[4]))
+            }
+
+            /// §4.1: with the vault's moves counted, each line is judged on what its own movers
+            /// put in and took out: A's sheets are what its chute dropped in, B's what its funnel
+            /// took, and the vault's residue (stock less every counted move) is nothing.
+            #[test]
+            fn a_counted_vault_judges_each_line_on_its_own_moves() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                assert_eq!(c.sections.counted, vec![v]);
+                assert_eq!(c.units.counted, vec![v]);
+                assert!(c.units.active() && c.units.len() == 2);
+                let (ua, ub) = units_of(&c, ids);
+                assert_ne!(ua, ub);
+                let mut pairs = vec![(c0, v), (f1, v)];
+                pairs.sort_unstable();
+                assert_eq!(c.units.pairs, pairs);
+                assert_eq!(c.units.pairs_of[ua as usize], pairs);
+                assert_eq!(c.units.pairs_of[ub as usize], pairs);
+                assert_eq!(c.units.counted_store_of_inv(1), Some(v));
+                drive_v(&mut c, ids, 0, 3200, steady, &tun);
+                for u in [ua, ub] {
+                    let st = &c.unit_state[u as usize];
+                    assert_eq!(verdict_of(st), verdict::PASS, "unit {u}");
+                    assert_eq!(st.passed, Some((Tick(1200), 2000)));
+                }
+                let (va, ma, pa) = row(&c.unit_state[ua as usize], SHEET);
+                assert!(
+                    va == verdict::PASS && close(ma, 0.1) && close(pa, 0.1),
+                    "{ma} {pa}"
+                );
+                let (vb, mb, pb) = row(&c.unit_state[ub as usize], SHEET);
+                assert!(
+                    vb == verdict::PASS && close(mb, -0.05) && close(pb, -0.05),
+                    "{mb} {pb}"
+                );
+                let (_, mc, _) = row(&c.unit_state[ub as usize], CRUSHED);
+                assert!(close(mc, 0.05));
+                assert!(c.last.as_ref().is_some_and(|r| r.verdict == verdict::PASS));
+                // Each unit opened its window on the sweep's pairs.
+                assert_eq!(
+                    c.unit_state[ua as usize].count_since,
+                    vec![
+                        (BlockPos::new(2, 64, 0), BlockPos::new(20, 64, 0), 0),
+                        (BlockPos::new(40, 64, 0), BlockPos::new(20, 64, 0), 0),
+                    ]
+                );
+            }
+
+            /// Two movers at one block (a packager's packing and unpacking nodes) share Java's
+            /// counters there, which are keyed by position, so Java names the same counts under
+            /// both pairs: each direction is taken once, by the pair with an edge that way (SC94).
+            #[test]
+            fn two_movers_at_one_block_take_its_counts_once() {
+                let (mut b, ids) = vault_lines(20, model::PACKAGER);
+                let [_, c0, v, f1, _] = ids;
+                let src = b.store(3);
+                let unpack = b.node(
+                    NodeKind::Mover,
+                    model::PACKAGER,
+                    0,
+                    vec![RateEntry {
+                        flags: rate_flags::SHARED,
+                        ..entry(None, 1, 1)
+                    }],
+                );
+                b.edge(src, unpack);
+                b.edge(unpack, v);
+                b.nodes[src as usize].pos = BlockPos::new(60, 64, 0);
+                b.nodes[unpack as usize].pos = BlockPos::new(40, 64, 0);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                assert_eq!(c.units.counted, vec![v]);
+                let mut pairs = vec![(c0, v), (f1, v), (unpack, v)];
+                pairs.sort_unstable();
+                assert_eq!(c.units.pairs, pairs);
+                let dirs = |p: (u32, u32)| c.units.pair_dirs[pairs.binary_search(&p).unwrap()];
+                assert_eq!(dirs((c0, v)), PAIR_IN | PAIR_OUT);
+                assert_eq!(dirs((f1, v)), PAIR_OUT);
+                assert_eq!(dirs((unpack, v)), PAIR_IN);
+                let same = |m: u32| Count {
+                    mover: m,
+                    store: v,
+                    good: Some(SHEET),
+                    since: 0,
+                    moved_in: 5,
+                    moved_out: 7,
+                    entries: 1,
+                };
+                c.count_sample(1, &[same(f1), same(unpack)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.moved.get(&(f1, v, SHEET)), Some(&(0, 7)));
+                assert_eq!(t.moved.get(&(unpack, v, SHEET)), Some(&(5, 0)));
+                assert_eq!(t.since.len(), 2);
+            }
+
+            /// A pair with more goods than one record holds comes in several records, and each entry
+            /// says how many entries the pair has in all: a pair whose records did not all arrive
+            /// gives no cover (its lost goods would read as not moved), one that did gives it.
+            #[test]
+            fn a_pair_split_over_records_gives_cover_only_whole() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let entry = |m: u32, g: u32, of: u32| Count {
+                    mover: m,
+                    store: v,
+                    good: Some(Good(g)),
+                    since: 10,
+                    moved_in: 3,
+                    moved_out: 0,
+                    entries: of,
+                };
+                // c0 has two entries but only the first record came; f1 has one, whole.
+                c.count_sample(1, &[entry(c0, 1, 2), entry(f1, 1, 1)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), None);
+                assert_eq!(t.since_of((f1, v)), Some(10));
+                // The second record of the same sweep completes it.
+                c.count_sample(1, &[entry(c0, 2, 2)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), Some(10));
+                // A later sweep starts over: its one record of c0's two is partial again.
+                c.count_sample(2, &[entry(c0, 2, 2), entry(f1, 1, 1)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), None);
+                assert_eq!(t.since_of((f1, v)), Some(10));
+                // An entry that states no count (zero) is no whole pair.
+                c.count_sample(3, &[entry(c0, 1, 0), entry(f1, 1, 1)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), None);
+            }
+
+            /// Not counted: a belt takes from the vault (Java cannot count it), so the two lines
+            /// are one judging group; counted but never sampled, neither line opens a window while
+            /// the district's passes; past `glass.countedStoresMax` (none here) the lines join.
+            #[test]
+            fn an_uncounted_or_unsampled_vault_judges_no_line_apart() {
+                let tun = GlassTunables::default();
+                let (b, _) = vault_lines(20, model::BELT);
+                let c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                assert!(c.sections.counted.is_empty() && c.units.counted.is_empty());
+                assert!(!c.units.active());
+
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                drive_v(
+                    &mut c,
+                    ids,
+                    0,
+                    3200,
+                    |t| At {
+                        sample: false,
+                        ..steady(t)
+                    },
+                    &tun,
+                );
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u), None);
+                    assert_eq!(verdict_of(&c.unit_state[u as usize]), verdict::NONE);
+                    assert!(!c.unit_may_replay(u));
+                }
+                assert!(c.last.as_ref().is_some_and(|r| r.verdict == verdict::PASS));
+
+                let capped = GlassTunables {
+                    counted_stores_max: 0,
+                    ..GlassTunables::default()
+                };
+                let c = Compiled::new(b.graph(), Tick(0), &capped, &BTreeSet::new());
+                assert!(c.units.counted.is_empty() && !c.units.active());
+            }
+
+            /// A player takes sheets from the vault: a move the model lacks, in the residue of
+            /// every line at the vault, so both fail on sheets alone, as the district does.
+            #[test]
+            fn a_residue_at_the_vault_fails_every_line_there_on_its_good() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                let taken = |t: u64| {
+                    if t < 1500 {
+                        0
+                    } else {
+                        ((t - 1500) / 100 * 4) as i64
+                    }
+                };
+                drive_v(
+                    &mut c,
+                    ids,
+                    0,
+                    3200,
+                    |t| {
+                        let s = steady(t);
+                        At {
+                            stock: s.stock - taken(t),
+                            ..s
+                        }
+                    },
+                    &tun,
+                );
+                for u in [ua, ub] {
+                    let st = &c.unit_state[u as usize];
+                    assert_eq!(verdict_of(st), verdict::FAIL, "unit {u}");
+                    let r = st.last.as_ref().expect("judged");
+                    for g in &r.goods {
+                        assert_eq!(g.verdict == verdict::FAIL, g.good == SHEET, "{:?}", g.good);
+                    }
+                }
+                let d = c.last.as_ref().expect("the district judged");
+                assert_eq!(d.verdict, verdict::FAIL, "{d:?}");
+                for g in &d.goods {
+                    assert_eq!(g.verdict == verdict::FAIL, g.good == SHEET, "{:?}", g.good);
+                }
+            }
+
+            /// A pair whose counters started again (Java forgot them) starts every window at its
+            /// store again from that sweep, with no warm-up; a sweep whose sample lacks a pair
+            /// loses them, and they open again after a warm-up.
+            #[test]
+            fn a_pair_restarted_restarts_its_windows_and_one_missing_loses_them() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                let restarted = |t: u64| {
+                    let s = steady(t);
+                    if t < 2000 {
+                        return s;
+                    }
+                    At {
+                        took: ((t - 2000) / 20) as i64,
+                        since: (0, 2000),
+                        ..s
+                    }
+                };
+                drive_v(&mut c, ids, 0, 3200, restarted, &tun);
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u).map(|w| w.0), Some(Tick(2000)), "unit {u}");
+                    assert_eq!(verdict_of(&c.unit_state[u as usize]), verdict::NONE);
+                }
+                drive_v(&mut c, ids, 3300, 4000, restarted, &tun);
+                for u in [ua, ub] {
+                    let st = &c.unit_state[u as usize];
+                    assert_eq!(verdict_of(st), verdict::PASS, "unit {u}: {:?}", st.last);
+                    assert_eq!(st.passed, Some((Tick(2000), 2000)));
+                }
+                // The sample at 4100 lacks the chute's pair: both lose their windows and warm up.
+                let missing = |t: u64| At {
+                    sample: t != 4100,
+                    ..restarted(t)
+                };
+                drive_v(&mut c, ids, 4100, 4100, missing, &tun);
+                let ready = Tick(4100 + tun.warmup_ticks + c.graph.longest_latency);
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u), None);
+                    assert_eq!(c.unit_state[u as usize].ready_at, ready);
+                }
+                drive_v(&mut c, ids, 4200, ready.0, missing, &tun);
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u).map(|w| w.0), Some(ready));
+                }
+            }
+
+            /// A line taking from a vault that runs dry inside a sweep takes what it held: the
+            /// drain clamp's shortfall is its takers', so B still passes and A (which made
+            /// nothing) is not charged for it. B presses one per tick, so the vault (fed, held
+            /// down to a stack) holds 70 at the sweep before it runs dry and B takes them in 70
+            /// ticks; its press makes into the void, as the clamp corrects the store's good alone
+            /// (a machine's outputs are not, here or at an interior store).
+            #[test]
+            fn a_vault_run_dry_is_short_in_its_takers_line() {
+                let (mut b, ids) = vault_lines(1, model::FUNNEL_ANDESITE);
+                let o1 = &mut b.nodes[2];
+                assert_eq!(o1.inventory, Some(2));
+                (o1.kind, o1.model, o1.inventory) = (NodeKind::Sink, model::SINK_VOID, None);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                let dry = |t: u64| {
+                    let took = (t as i64).min(2270);
+                    // A's brass is gone (`made` all of it long ago): it makes nothing now.
+                    At {
+                        made: 100_000,
+                        took,
+                        stock: 2270 - took,
+                        crushed: 0,
+                        since: (0, 0),
+                        sample: true,
+                    }
+                };
+                drive_v(&mut c, ids, 0, 3200, dry, &tun);
+                let (vb, mb, pb) = row(&c.unit_state[ub as usize], SHEET);
+                assert_eq!(vb, verdict::PASS, "measured {mb} predicted {pb}");
+                assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+                assert!(c.last.as_ref().is_some_and(|r| r.verdict == verdict::PASS));
+            }
+
+            /// Goods ported into the vault (a train's or a package's) are no line's production:
+            /// the residue subtracts them, and both lines pass. Through the glass box: the count
+            /// samples come as IND_COUNT_SAMPLE.
+            #[test]
+            fn ports_into_a_counted_vault_are_no_lines_production() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                let goods = goods();
+                let ported = |t: u64| if t < 2000 { 0 } else { 50 };
+                let mut t = 0;
+                while t <= 3200 {
+                    if t == 2000 {
+                        g.port_one(D, 1, 1, SHEET, 50);
+                    }
+                    let a = steady(t);
+                    let sweep = (t / 100) as u32;
+                    let s = GlassObs::CountSample(CountSample {
+                        district: D,
+                        sweep,
+                        compile: 1,
+                        counts: counts(ids, a),
+                    });
+                    g.ingest(Tick(t), &s, None, &goods, &tun);
+                    let inv = vault_invs(At {
+                        stock: a.stock + ported(t),
+                        ..a
+                    });
+                    let ports = GoodVec::new();
+                    let view = View {
+                        revision: 1,
+                        sweep,
+                        inventories: &inv,
+                        ports: &ports,
+                    };
+                    g.sweep(Tick(t), D, &view, &Liveness::All, &goods, &tun);
+                    t += 100;
+                }
+                assert_eq!(g.count_stats.samples, 33);
+                let c = comp(&g, D);
+                let (ua, ub) = units_of(c, ids);
+                for u in [ua, ub] {
+                    assert_eq!(
+                        verdict_of(&c.unit_state[u as usize]),
+                        verdict::PASS,
+                        "unit {u}"
+                    );
+                }
+                // Another compile's sample counts for nothing.
+                let s = GlassObs::CountSample(CountSample {
+                    district: D,
+                    sweep: 33,
+                    compile: 2,
+                    counts: counts(ids, steady(3300)),
+                });
+                g.ingest(Tick(3300), &s, None, &goods, &tun);
+                assert_eq!(g.count_stats.samples, 33);
+            }
+
+            /// IND_COUNT_SET (§4.2): sent for each compile with counted pairs, again after a
+            /// resend END or a new session's compile, never twice for the same set, and empty once
+            /// the district has none to count.
+            #[test]
+            fn count_sets_follow_the_compiles_pairs() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let mut pairs = vec![(c0, v), (f1, v)];
+                pairs.sort_unstable();
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                let set = |compile: u32, pairs: &[(u32, u32)]| CountSet {
+                    district: D,
+                    compile,
+                    pairs: pairs.to_vec(),
+                };
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                assert_eq!(g.take_count_sets(), vec![set(1, &pairs)]);
+                assert!(g.take_count_sets().is_empty());
+                // A sweep that changes nothing sends nothing.
+                let inv = vault_invs(steady(0));
+                glass_sweep(&mut g, D, 100, &inv, &GoodVec::new(), &Liveness::All, &tun);
+                assert!(g.take_count_sets().is_empty());
+                // A resend of the compile held: Java may have lost the set.
+                let mut resend = records_for(&b, 1, D);
+                if let Some(GlassObs::End(e)) = resend.last_mut() {
+                    e.flags |= end_flags::RESEND;
+                }
+                ingest_all(&mut g, 200, &resend, &tun);
+                assert_eq!(g.stats.resends_ignored, 1);
+                assert_eq!(g.take_count_sets(), vec![set(1, &pairs)]);
+                // A newer compile names its own numbers.
+                ingest_all(&mut g, 300, &records_for(&b, 2, D), &tun);
+                assert_eq!(g.take_count_sets(), vec![set(2, &pairs)]);
+                // A new session: Java counts nothing until its compile comes, kept or not.
+                g.session_start(Tick(400), &tun);
+                assert!(g.take_count_sets().is_empty());
+                ingest_all(&mut g, 500, &records_for(&b, 1, D), &tun);
+                assert_eq!(g.stats.compiles_kept, 1);
+                assert_eq!(g.take_count_sets(), vec![set(1, &pairs)]);
+                // A belt in the funnel's place counts nothing: the set Java holds goes.
+                let (belt, _) = vault_lines(20, model::BELT);
+                ingest_all(&mut g, 600, &records_for(&belt, 2, D), &tun);
+                assert_eq!(g.take_count_sets(), vec![set(2, &[])]);
+                ingest_all(&mut g, 700, &records_for(&belt, 3, D), &tun);
+                assert!(g.take_count_sets().is_empty());
+                assert_eq!(g.count_stats.sets_sent, 5);
+            }
+
+            /// A resend END marks the set Java may have lost, but only for a district that was sent
+            /// one: a district with no counted pair is not sent an empty set at every resend.
+            #[test]
+            fn a_resend_sends_an_empty_set_only_to_a_district_that_held_one() {
+                let (belt, _) = vault_lines(20, model::BELT);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &records_for(&belt, 1, D), &tun);
+                assert!(g.take_count_sets().is_empty());
+                let mut resend = records_for(&belt, 1, D);
+                if let Some(GlassObs::End(e)) = resend.last_mut() {
+                    e.flags |= end_flags::RESEND;
+                }
+                ingest_all(&mut g, 200, &resend, &tun);
+                assert_eq!(g.stats.resends_ignored, 1);
+                assert!(g.take_count_sets().is_empty());
+                assert_eq!(g.count_stats.sets_sent, 0);
+            }
+
+            /// The last session's count sample goes at a session start, and with the same factory's
+            /// compile kept under its new number: a new session's sweep numbers start over.
+            #[test]
+            fn a_session_start_and_a_numbers_reset_clear_the_last_sample() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                let goods = goods();
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                let s = GlassObs::CountSample(CountSample {
+                    district: D,
+                    sweep: 7,
+                    compile: 1,
+                    counts: counts(ids, steady(700)),
+                });
+                g.ingest(Tick(700), &s, None, &goods, &tun);
+                assert!(comp(&g, D).counts.is_some());
+                g.session_start(Tick(800), &tun);
+                assert!(comp(&g, D).counts.is_none());
+                // The sample of the same sweep number in the new session is not mixed with it.
+                g.ingest(Tick(900), &s, None, &goods, &tun);
+                assert!(
+                    comp(&g, D).counts.is_none(),
+                    "numbers not reset yet: ignored"
+                );
+                ingest_all(&mut g, 1000, &records_for(&b, 1, D), &tun);
+                assert_eq!(g.stats.compiles_kept, 1);
+                assert!(comp(&g, D).counts.is_none());
+            }
+
+            /// Through the engine: the compile's count set goes out as a command, and the count
+            /// samples Java sends before each sweep's end judge the lines apart.
+            #[test]
+            fn the_engine_sends_the_count_set_and_judges_by_the_samples() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let mut e = engine();
+                let mut sets = Vec::new();
+                for t in setup(&b, 3) {
+                    for c in feed(&mut e, &t) {
+                        if let Cmd::CountSet(s) = c {
+                            sets.push(s);
+                        }
+                    }
+                }
+                let mut pairs = vec![(c0, v), (f1, v)];
+                pairs.sort_unstable();
+                assert_eq!(
+                    sets,
+                    vec![CountSet {
+                        district: D,
+                        compile: 1,
+                        pairs
+                    }]
+                );
+                let mut k = 0;
+                let mut t = 100;
+                while t <= 3200 {
+                    k += 1;
+                    let a = steady(t);
+                    let mut s = vec![at(
+                        t,
+                        Obs::Glass(GlassObs::CountSample(CountSample {
+                            district: D,
+                            sweep: k,
+                            compile: 1,
+                            counts: counts(ids, a),
+                        })),
+                    )];
+                    let (brass, sheet, crushed) = (
+                        [(BRASS, 100_000 - a.made)],
+                        [(SHEET, a.stock)],
+                        [(CRUSHED, a.crushed)],
+                    );
+                    sweep(&mut s, k, t, &[&brass, &sheet, &crushed]);
+                    for x in &s {
+                        for c in feed(&mut e, x) {
+                            assert!(!matches!(c, Cmd::CountSet(_)), "sent again at {t}");
+                        }
+                    }
+                    t += 100;
+                }
+                assert_eq!(e.glass.count_stats.samples, 32);
+                let c = comp(&e.glass, D);
+                let (ua, ub) = units_of(c, ids);
+                for u in [ua, ub] {
+                    assert_eq!(
+                        verdict_of(&c.unit_state[u as usize]),
+                        verdict::PASS,
+                        "unit {u}"
+                    );
+                }
+            }
+
+            /// The page keeps each unit's window base at its counted stores, and its cut keys name
+            /// the counted stores: read with another `glass.countedStoresMax`, it is dropped.
+            #[test]
+            fn a_page_keeps_the_counted_bases_and_drops_on_another_count_cap() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                let c = g
+                    .districts
+                    .get_mut(&D)
+                    .and_then(|dg| dg.compiled.as_mut())
+                    .expect("a compile");
+                drive_v(c, ids, 100, 2000, steady, &tun);
+                let (ua, _) = units_of(c, ids);
+                assert!(!c.unit_state[ua as usize].count_since.is_empty());
+                let dg = &g.districts[&D];
+                let page = district_page(dg);
+                let back = read_district_page(&page, tun.sections_max, tun.counted_stores_max)
+                    .expect("decodes")
+                    .kept()
+                    .expect("kept");
+                let r = back.compiled.as_ref().expect("compile");
+                let c = comp(&g, D);
+                assert_eq!(r.unit_state, c.unit_state);
+                assert_eq!(r.units, c.units);
+                assert_eq!(district_page(&back), page);
+                assert!(matches!(
+                    read_district_page(&page, tun.sections_max, 0),
+                    Ok(PageRead::Dropped(_))
+                ));
+            }
         }
     }
 }

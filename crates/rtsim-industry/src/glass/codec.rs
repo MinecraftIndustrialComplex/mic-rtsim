@@ -9,8 +9,9 @@
 use rtsim_kernel::clock::Tick;
 
 use super::records::{
-    ChunkTicking, DomainLevel, EdgeKind, GlassObs, GraphDomain, GraphEdge, GraphEnd, GraphHead,
-    GraphNode, GraphRecipe, Member, NONE, NodeKind, ProbeSample, ProbeSet, RateEntry, Term,
+    ChunkTicking, Count, CountSample, CountSet, DomainLevel, DomainSource, EdgeKind, GlassObs,
+    GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NONE, NodeKind,
+    ProbeSample, ProbeSet, RateEntry, Term,
 };
 use crate::ids::{ChunkPos, Good};
 use crate::wire::{R, W, WireError, check, n32, sized};
@@ -21,16 +22,21 @@ pub const IND_GRAPH_RECIPE: u16 = 0x004A;
 pub const IND_GRAPH_DOMAIN: u16 = 0x004B;
 pub const IND_GRAPH_END: u16 = 0x004C;
 pub const IND_PROBE_SAMPLE: u16 = 0x004D;
+// 0x004E left free.
+pub const IND_COUNT_SAMPLE: u16 = 0x004F;
 pub const IND_CHUNK_TICKING: u16 = 0x040B;
 pub const IND_PROBE_SET: u16 = 0x8406;
+// 0x8407 left free.
+pub const IND_COUNT_SET: u16 = 0x8408;
 
-pub const OBS_KINDS: [u16; 7] = [
+pub const OBS_KINDS: [u16; 8] = [
     IND_GRAPH_NODE,
     IND_GRAPH_EDGE,
     IND_GRAPH_RECIPE,
     IND_GRAPH_DOMAIN,
     IND_GRAPH_END,
     IND_PROBE_SAMPLE,
+    IND_COUNT_SAMPLE,
     IND_CHUNK_TICKING,
 ];
 
@@ -40,15 +46,20 @@ pub const RATE24: usize = 24;
 pub const EDGE_FIXED: usize = 72;
 pub const RECIPE_FIXED: usize = 56;
 pub const TERM24: usize = 24;
-pub const DOMAIN_FIXED: usize = 72;
+pub const DOMAIN_FIXED: usize = 88;
 pub const LEVEL24: usize = 24;
+pub const SOURCE32: usize = 32;
 pub const MEMBER24: usize = 24;
 pub const END_SIZE: usize = 80;
 pub const PROBE_FIXED: usize = 40;
 pub const TICKING_SIZE: usize = 48;
 pub const PROBE_SET_FIXED: usize = 32;
+pub const COUNT_FIXED: usize = 32;
+pub const COUNT40: usize = 40;
+pub const COUNT_SET_FIXED: usize = 32;
+pub const PAIR8: usize = 8;
 
-fn node_code(k: NodeKind) -> u32 {
+pub(crate) fn node_code(k: NodeKind) -> u32 {
     match k {
         NodeKind::Store => 1,
         NodeKind::Buffer => 2,
@@ -89,7 +100,7 @@ fn node_from(kind: u16, code: u32) -> Result<NodeKind, WireError> {
     })
 }
 
-fn edge_code(k: EdgeKind) -> u32 {
+pub(crate) fn edge_code(k: EdgeKind) -> u32 {
     match k {
         EdgeKind::Adjacency => 1,
         EdgeKind::Belt => 2,
@@ -226,17 +237,39 @@ pub fn encode_obs(
             head(&mut w, &d.head);
             w.put_u64(d.network);
             w.put_u32(n32(d.levels.len()));
-            w.put_u32(d.current);
-            w.put_u32(unopt(d.driver));
+            w.put_u32(unopt(d.current));
+            w.zero(4);
             w.put_u32(d.flags);
             w.put_f64(d.live_stress);
             w.put_f64(d.live_capacity);
-            for l in &d.levels {
+            let rows: usize = d.sources.iter().map(|s| s.levels.len()).sum();
+            w.put_u32(n32(d.sources.len()));
+            w.put_u32(n32(rows));
+            w.put_u32(d.foreign);
+            w.zero(4);
+            let level = |w: &mut W, l: &DomainLevel| {
                 w.put_u32(l.selector);
                 w.put_i32(l.speed_num);
                 w.put_u32(l.speed_den);
                 w.zero(4);
                 w.put_f64(l.capacity);
+            };
+            for l in &d.levels {
+                level(&mut w, l);
+            }
+            let mut first = 0usize;
+            for s in &d.sources {
+                w.put_u32(unopt(s.driver));
+                w.put_u32(n32(first));
+                w.put_u32(n32(s.levels.len()));
+                w.put_u32(unopt(s.current));
+                w.put_i32(s.ratio_num);
+                w.put_u32(s.ratio_den);
+                w.put_i64(s.pos);
+                first += s.levels.len();
+            }
+            for l in d.sources.iter().flat_map(|s| &s.levels) {
+                level(&mut w, l);
             }
             for m in &d.members {
                 w.put_u32(unopt(m.node));
@@ -272,6 +305,22 @@ pub fn encode_obs(
             w.put_u32(p.compile);
             w.zero(4);
             w.goods(&p.goods);
+            w.finish()
+        }
+        GlassObs::CountSample(c) => {
+            let mut w = W::obs(out, IND_COUNT_SAMPLE, n32(c.counts.len()), None, at);
+            w.put_u64(c.district.0);
+            w.put_u32(c.sweep);
+            w.put_u32(c.compile);
+            for x in &c.counts {
+                w.put_u32(x.mover);
+                w.put_u32(x.store);
+                w.put_u32(x.good.map_or(NONE, |g| g.0));
+                w.put_u32(x.entries);
+                w.put_i64(x.since);
+                w.put_i64(x.moved_in);
+                w.put_i64(x.moved_out);
+            }
             w.finish()
         }
         GlassObs::ChunkTicking(c) => {
@@ -391,31 +440,68 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
                 return Err(bad);
             }
             let l = r.get_u32(40) as usize;
+            let ns = r.get_u32(72) as usize;
+            let nr = r.get_u32(76) as usize;
+            let foreign = r.get_u32(80);
             check(
                 kind,
                 size,
-                sized(sized(DOMAIN_FIXED, l, LEVEL24), n, MEMBER24),
+                sized(
+                    sized(
+                        sized(sized(DOMAIN_FIXED, l, LEVEL24), ns, SOURCE32),
+                        nr,
+                        LEVEL24,
+                    ),
+                    n,
+                    MEMBER24,
+                ),
             )?;
-            let m0 = DOMAIN_FIXED + LEVEL24 * l;
+            if foreign as usize > n {
+                return Err(bad);
+            }
+            let s0 = DOMAIN_FIXED + LEVEL24 * l;
+            let r0 = s0 + SOURCE32 * ns;
+            let m0 = r0 + LEVEL24 * nr;
+            let level = |e: usize| DomainLevel {
+                selector: r.get_u32(e),
+                speed_num: r.get_i32(e + 4),
+                speed_den: r.get_u32(e + 8),
+                capacity: r.get_f64(e + 16),
+            };
+            // A source's rows follow the one before's: the encoding is canonical.
+            let mut sources = Vec::with_capacity(ns);
+            let mut next = 0usize;
+            for i in 0..ns {
+                let e = s0 + SOURCE32 * i;
+                let (first, count) = (r.get_u32(e + 4) as usize, r.get_u32(e + 8) as usize);
+                if first != next || count > nr - next {
+                    return Err(bad);
+                }
+                next += count;
+                sources.push(DomainSource {
+                    driver: opt(r.get_u32(e)),
+                    levels: (first..first + count)
+                        .map(|j| level(r0 + LEVEL24 * j))
+                        .collect(),
+                    current: opt(r.get_u32(e + 12)),
+                    ratio_num: r.get_i32(e + 16),
+                    ratio_den: r.get_u32(e + 20),
+                    pos: r.get_i64(e + 24),
+                });
+            }
+            if next != nr {
+                return Err(bad);
+            }
             GlassObs::Domain(GraphDomain {
                 head: read_head(&r),
                 network: r.get_u64(32),
-                current: r.get_u32(44),
-                driver: opt(r.get_u32(48)),
+                current: opt(r.get_u32(44)),
                 flags: r.get_u32(52),
                 live_stress: r.get_f64(56),
                 live_capacity: r.get_f64(64),
-                levels: (0..l)
-                    .map(|i| {
-                        let e = DOMAIN_FIXED + LEVEL24 * i;
-                        DomainLevel {
-                            selector: r.get_u32(e),
-                            speed_num: r.get_i32(e + 4),
-                            speed_den: r.get_u32(e + 8),
-                            capacity: r.get_f64(e + 16),
-                        }
-                    })
-                    .collect(),
+                levels: (0..l).map(|i| level(DOMAIN_FIXED + LEVEL24 * i)).collect(),
+                sources,
+                foreign,
                 members: (0..n)
                     .map(|i| {
                         let e = m0 + MEMBER24 * i;
@@ -457,6 +543,29 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
                 node: r.get_u32(28),
                 compile: r.get_u32(32),
                 goods: r.goods(PROBE_FIXED, n),
+            })
+        }
+        IND_COUNT_SAMPLE => {
+            check(kind, size, sized(COUNT_FIXED, n, COUNT40))?;
+            GlassObs::CountSample(CountSample {
+                district: r.district(16),
+                sweep: r.get_u32(24),
+                compile: r.get_u32(28),
+                counts: (0..n)
+                    .map(|i| {
+                        let o = COUNT_FIXED + COUNT40 * i;
+                        let g = r.get_u32(o + 8);
+                        Count {
+                            mover: r.get_u32(o),
+                            store: r.get_u32(o + 4),
+                            good: (g != NONE).then_some(Good(g)),
+                            entries: r.get_u32(o + 12),
+                            since: r.get_i64(o + 16),
+                            moved_in: r.get_i64(o + 24),
+                            moved_out: r.get_i64(o + 32),
+                        }
+                    })
+                    .collect(),
             })
         }
         IND_CHUNK_TICKING => {
@@ -511,6 +620,39 @@ pub fn decode_probe_set(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, ProbeSe
             district: r.district(16),
             compile: r.get_u32(24),
             nodes: (0..n).map(|i| r.get_u32(PROBE_SET_FIXED + 4 * i)).collect(),
+        },
+    ))
+}
+
+/// Appends IND_COUNT_SET.
+pub fn encode_count_set(cmd_seq: u64, c: &CountSet, out: &mut Vec<u8>) -> Result<(), WireError> {
+    let mut w = W::cmd(out, IND_COUNT_SET, n32(c.pairs.len()), cmd_seq);
+    w.put_u64(c.district.0);
+    w.put_u32(c.compile);
+    w.zero(4);
+    for &(m, h) in &c.pairs {
+        w.put_u32(m);
+        w.put_u32(h);
+    }
+    w.finish()
+}
+
+/// Decodes IND_COUNT_SET (header split off by the caller).
+pub fn decode_count_set(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, CountSet), WireError> {
+    let r = R(rec);
+    let n = aux as usize;
+    check(kind, rec.len(), sized(COUNT_SET_FIXED, n, PAIR8))?;
+    Ok((
+        r.get_u64(8),
+        CountSet {
+            district: r.district(16),
+            compile: r.get_u32(24),
+            pairs: (0..n)
+                .map(|i| {
+                    let o = COUNT_SET_FIXED + PAIR8 * i;
+                    (r.get_u32(o), r.get_u32(o + 4))
+                })
+                .collect(),
         },
     ))
 }
@@ -600,17 +742,21 @@ mod tests {
         let domain = GraphDomain {
             head: head(0),
             network: 99,
-            current: 0,
-            driver: None,
+            current: Some(1),
             flags: 0,
             live_stress: 1024.0,
             live_capacity: 4096.0,
-            levels: vec![DomainLevel {
-                selector: 0,
-                speed_num: 256,
-                speed_den: 1,
-                capacity: 4096.0,
-            }],
+            levels: vec![DomainLevel::speed_row(128), DomainLevel::speed_row(256)],
+            sources: vec![
+                DomainSource::driven(0, -5, &[(0, 0, 0.0), (2, 128, 2048.0), (4, 256, 4096.0)], 2),
+                DomainSource {
+                    ratio_num: 0,
+                    ratio_den: 0,
+                    current: None,
+                    ..DomainSource::fixed(1 << 40, -64, 512.0)
+                },
+            ],
+            foreign: 1,
             members: vec![Member {
                 node: Some(0),
                 count: 1,
@@ -642,6 +788,31 @@ mod tests {
             compile: 3,
             goods: GoodVec::from_pairs(vec![(Good(1), 5)]),
         };
+        let count = CountSample {
+            district: DistrictId(7),
+            sweep: 4,
+            compile: 3,
+            counts: vec![
+                Count {
+                    mover: 2,
+                    store: 0,
+                    good: Some(Good(1)),
+                    since: 1_000,
+                    moved_in: 64,
+                    moved_out: -3,
+                    entries: 1,
+                },
+                Count {
+                    mover: 5,
+                    store: 0,
+                    good: None,
+                    since: i64::MIN,
+                    moved_in: 0,
+                    moved_out: i64::MAX,
+                    entries: u32::MAX,
+                },
+            ],
+        };
         let ticking = ChunkTicking {
             district: DistrictId(7),
             chunk: ChunkPos {
@@ -658,6 +829,7 @@ mod tests {
             GlassObs::Domain(domain),
             GlassObs::End(end),
             GlassObs::ProbeSample(probe),
+            GlassObs::CountSample(count),
             GlassObs::ChunkTicking(ticking),
         ]
         .into_iter()
@@ -718,5 +890,28 @@ mod tests {
         wire::encode_cmd(77, &c, &mut b).unwrap();
         assert_eq!(b.len(), 48);
         assert_eq!(wire::decode_cmd(&b), Ok(Some((77, c))));
+    }
+
+    #[test]
+    fn count_set_round_trips() {
+        let c = Cmd::CountSet(CountSet {
+            district: DistrictId(3),
+            compile: 2,
+            pairs: vec![(4, 1), (5, 1), (9, 7)],
+        });
+        let mut b = Vec::new();
+        wire::encode_cmd(77, &c, &mut b).unwrap();
+        assert_eq!(b.len(), 56);
+        assert_eq!(wire::decode_cmd(&b), Ok(Some((77, c.clone()))));
+        // An empty set is the header alone.
+        let e = Cmd::CountSet(CountSet {
+            district: DistrictId(3),
+            compile: 3,
+            pairs: Vec::new(),
+        });
+        let mut b = Vec::new();
+        wire::encode_cmd(78, &e, &mut b).unwrap();
+        assert_eq!(b.len(), 32);
+        assert_eq!(wire::decode_cmd(&b), Ok(Some((78, e))));
     }
 }

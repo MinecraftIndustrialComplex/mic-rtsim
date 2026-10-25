@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.client;
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
 import com.iafenvoy.iceandfire.entity.LightningDragonEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarLook;
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarLookReset;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarModel;
 import com.minecraftindustrialcomplex.mic_rtsim.client.NullVertexConsumer;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKey;
@@ -63,7 +64,7 @@ public final class DragonLook implements FarLook {
     /** Open sky, no block light: the lightmap darkens them at night as it does DH's terrain. */
     static final int SKY_LIGHT = 15 << 20;
     /** Where the renders that only move the animation on draw to. */
-    private static final MultiBufferSource NULL_SOURCE = rt -> NullVertexConsumer.INSTANCE;
+    static final MultiBufferSource NULL_SOURCE = rt -> NullVertexConsumer.INSTANCE;
     /** A pose set nobody drew for this long is freed, a live stand-in sooner (PLACEHOLDERS). */
     static final long KEEP_NANOS = 60_000_000_000L, LIVE_KEEP_NANOS = 5_000_000_000L;
     /**
@@ -135,6 +136,12 @@ public final class DragonLook implements FarLook {
     private final Map<Integer, Float> renderSizes = new HashMap<>();
     private final DragonBaseEntity[] probes = new DragonBaseEntity[IafDragons.SPECIES.size()];
     private ClientLevel levelOf;
+    /** New bodies held back while their animation settles (DHT68). */
+    final DragonArrivals arrivals = new DragonArrivals();
+    /** A held body's far model's heading and pitch this call ({@link DragonArrivals#turn}). Render thread. */
+    private final float[] turned = new float[2];
+    /** The far feed's last RESET, until what nobody asked for again since is freed (DHT70). */
+    private final FarLookReset resets = new FarLookReset();
     private long clock, lastSweep;
     private int errors;
     private long setsBaked, bakeNanos;
@@ -199,8 +206,15 @@ public final class DragonLook implements FarLook {
             lastYaw.put(m.key(), yawDeg);
         } else
             yawDeg = lastYaw.getOrDefault(m.key(), 0f);
+        // A far dragon flies level; while its body is held it turns onto the body's heading and pitch, and keeps
+        // them until vanilla draws the body (DHT74)
+        float pitchDeg = 0f;
+        if (arrivals.turn(m.entity(), yawDeg, turned)) {
+            yawDeg = turned[0];
+            pitchDeg = turned[1];
+        }
         float yawRad = (float) Math.toRadians(yawDeg);
-        double time = clock + Math.floorMod(m.key().hashCode(), 60);
+        double time = clock + beatOffset(m);
         boolean flying = m.state() != FarState.ROOST;
         int age = age(m);
         float s = renderSize(species, age) / renderSize(species, ageFor(stage));
@@ -209,7 +223,9 @@ public final class DragonLook implements FarLook {
         // The feed's point is the hitbox's middle; the model stands on its feet (DragonFeedSource)
         float centre = (float) (0.6 * Math.min(renderSize(species, age) * 0.35, 7.0));
         float lo = s * p.minY - centre, hi = s * p.maxY - centre, half = Math.max(Math.abs(lo), Math.abs(hi));
-        out.radius = (float) Math.sqrt(s * s * p.maxH2 + half * half);
+        // Pitched, it turns about its feet, and reaches from them no farther than its farthest point
+        out.radius = pitchDeg == 0f ? (float) Math.sqrt(s * s * p.maxH2 + half * half)
+                : (float) Math.sqrt(s * s * (p.maxH2 + Math.max(p.minY * p.minY, p.maxY * p.maxY))) + centre;
         if (live) {
             StandIn st = standIns.computeIfAbsent(m.key(), k -> new StandIn());
             EntityRenderer<DragonBaseEntity> r;
@@ -237,14 +253,17 @@ public final class DragonLook implements FarLook {
             st.used = this.clock;
             DragonBaseEntity d = st.entity;
             pose(d, m.variant(), age, flying, yawDeg, time);
+            d.setDragonPitch(pitchDeg);
+            d.prevDragonPitch = pitchDeg;
             float frac = (float) (time - Math.floor(time));
+            float yawDrawn = yawDeg;
             out.parts = List.of();
             out.local.identity();
             out.lightYaw = Float.NaN;
             out.live = (ps, buffers) -> {
                 ps.pushPose();
                 ps.translate(0f, -centre, 0f);
-                r.render(d, yawDeg, frac, ps, buffers, SKY_LIGHT);
+                r.render(d, yawDrawn, frac, ps, buffers, SKY_LIGHT);
                 ps.popPose();
             };
             liveDrawn++;
@@ -256,8 +275,10 @@ public final class DragonLook implements FarLook {
         else
             parts = p.rest;
         out.parts = parts;
-        // Ice and Fire turns the model by (180 - yaw) about +y; the baked frames have yaw 0 in them already
-        out.local.identity().translate(0f, -centre, 0f).rotateY(-yawRad).scale(s);
+        // Ice and Fire turns the model by (180 - yaw) about +y; the baked frames have yaw 0 in them already. Its
+        // pitch goes outside that, about the world's x axis (its renderer's preRender, before GeckoLib's rotations)
+        out.local.identity().translate(0f, -centre, 0f).rotateX((float) Math.toRadians(pitchDeg)).rotateY(-yawRad)
+                .scale(s);
         out.lightYaw = -yawRad;
         out.live = null;
         return true;
@@ -268,15 +289,18 @@ public final class DragonLook implements FarLook {
         clock = now;
         ClientLevel level = Minecraft.getInstance().level;
         if (level != levelOf) {
-            clear();
+            clearFor(level);
             levelOf = level;
         }
         if (level == null)
             return;
+        arrivals.frame(level, this::copies);
         if (now - lastSweep > 1_000_000_000L) {
             lastSweep = now;
             sweep(now);
         }
+        if (resets.due(now))
+            freeUnasked();
         long t0 = System.nanoTime();
         // The oldest ask first; a set bakes to its end before the next starts, unless the budget runs out
         Iterator<Map.Entry<Integer, Long>> it = wanted.entrySet().iterator();
@@ -360,6 +384,14 @@ public final class DragonLook implements FarLook {
     }
 
     /**
+     * Where in its loop a mover's far model is at clock 0: each mover's own, so a flight's wings do not all beat
+     * together. Its far time is the far clock plus this.
+     */
+    static int beatOffset(FarMover m) {
+        return Math.floorMod(m.key().hashCode(), (int) LOOP);
+    }
+
+    /**
      * The last tick at or before {@code time} that a probe's flight loop starts at, a whole number of loops on:
      * Ice and Fire's controllers (GeckoLib's) start their loop at the render that ends their transition, which in a
      * bake is the last warm-up, {@code T0 - LOOP / FRAMES}.
@@ -399,7 +431,7 @@ public final class DragonLook implements FarLook {
         if (level == null)
             return;
         if (level != levelOf) {
-            clear();
+            clearFor(level);
             levelOf = level;
         }
         long t0 = System.nanoTime();
@@ -551,6 +583,9 @@ public final class DragonLook implements FarLook {
         d.yHeadRotO = yaw;
         d.setXRot(0f);
         d.xRotO = 0f;
+        if (d.getDragonPitch() != 0f)
+            d.setDragonPitch(0f);
+        d.prevDragonPitch = 0f;
     }
 
     @SuppressWarnings("unchecked")
@@ -587,18 +622,56 @@ public final class DragonLook implements FarLook {
         return !(body instanceof LightningDragonEntity l && l.hasLightningTarget());
     }
 
+    /** A new body vanilla does not draw this frame, the far model drawn for it instead (DHT68). */
+    @Override
+    public boolean holds(Entity body) {
+        return arrivals.holds(body);
+    }
+
     @Override
     public void clear() {
+        clearFor(null);
+    }
+
+    /** Frees everything, the arrivals of every level but {@code keep} with it (null: every one). */
+    private void clearFor(ClientLevel keep) {
         for (Poses p : sets.values())
             p.close();
         sets.clear();
         wanted.clear();
-        failed.clear();
         standIns.clear();
+        resets.clear();
+        failed.clear();
         lastYaw.clear();
         renderSizes.clear();
         java.util.Arrays.fill(probes, null);
         levelOf = null;
+        arrivals.clear(keep);
+    }
+
+    /**
+     * The far feed started over (docs/choices-dh-feed.md DHT70): the pose sets, live stand-ins and asks that no
+     * mover asks for again within {@link FarLookReset#GRACE_NANOS} go then ({@link #freeUnasked}); the probes the
+     * prewarm drew and their render sizes stay, as do the headings last seen (a dragon at rest is drawn facing the
+     * way it last flew) and the looks that would not bake (they would not bake again).
+     */
+    @Override
+    public void reset() {
+        resets.reset(clock);
+    }
+
+    /** A RESET's grace is over: frees what no mover asked for since. */
+    private void freeUnasked() {
+        sets.entrySet().removeIf(e -> {
+            Poses p = e.getValue();
+            Long asked = wanted.get(e.getKey());
+            boolean stale = p.ready() ? resets.stale(p.used) : asked == null || resets.stale(asked);
+            if (stale)
+                p.close();
+            return stale;
+        });
+        wanted.values().removeIf(resets::stale);
+        standIns.values().removeIf(st -> resets.stale(st.used));
     }
 
     @Override
@@ -616,7 +689,8 @@ public final class DragonLook implements FarLook {
                         + "%d sets baked, %.2f ms each, longest frame's bake %.2f ms, longest render %.2f ms (%s)",
                 ready, vertices, bytes / (double) (1 << 20), wanted.size(), failed.size(), standIns.size(), liveDrawn,
                 setsBaked,
-                setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs, maxRenderMs, maxRenderWhat);
+                setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs, maxRenderMs, maxRenderWhat)
+                + "; " + arrivals.stats();
         maxStepMs = 0;
         maxRenderMs = 0;
         maxRenderWhat = "none";

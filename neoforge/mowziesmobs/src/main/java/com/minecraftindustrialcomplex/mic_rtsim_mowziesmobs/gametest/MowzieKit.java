@@ -11,7 +11,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.GroveKind;
@@ -19,10 +22,13 @@ import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MowzieCamps;
 import com.mojang.logging.LogUtils;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.damagesource.DamageSource;
@@ -40,6 +46,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.entity.Visibility;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -51,6 +58,7 @@ import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -59,6 +67,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 
@@ -239,9 +248,10 @@ public final class MowzieKit {
             return RtsimTests.io(() -> {
                 for (long c : forced) {
                     int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking",
-                            level.hasChunk(cx, cz) && level.areEntitiesLoaded(c)
-                                    && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8)));
+                    boolean chunk = level.hasChunk(cx, cz), entities = level.areEntitiesLoaded(c);
+                    boolean ticking = chunk && entities && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8));
+                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking (chunk " + chunk + ", entities " + entities
+                            + ", ticking " + ticking + ")", ticking);
                 }
             });
         }
@@ -254,7 +264,16 @@ public final class MowzieKit {
 
     /** A stone floor over the area at its highest surface, three blocks of air above; the stone's y (bodies stand at y + 1). */
     public static int platform(ServerLevel level, int x0, int x1, int z0, int z1) {
-        int top = level.getMinBuildHeight();
+        return platform(level, x0, x1, z0, z1, level.getMinBuildHeight());
+    }
+
+    /**
+     * As above, with the floor at {@code minTop} at the lowest. The jar's fire pit makes no warrior on ground at
+     * y 0 or below ({@code FirepitPiece.postProcess}: {@code bPos.getY() <= 0}), and the GameTest world's ground is
+     * at y -61, so a test that runs the real piece lays its floor higher.
+     */
+    public static int platform(ServerLevel level, int x0, int x1, int z0, int z1, int minTop) {
+        int top = minTop;
         for (int x = x0; x <= x1; x++)
             for (int z = z0; z <= z1; z++)
                 top = Math.max(top, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z));
@@ -265,6 +284,91 @@ public final class MowzieKit {
                     level.setBlock(new BlockPos(x, top + y, z), Blocks.AIR.defaultBlockState(), 2);
             }
         return top;
+    }
+
+    /**
+     * Has the engine save its pages at its next step, so the command header after it acknowledges what it holds and
+     * the holders drop their pending records (a record marker with none is discarded). A GameTest server saves
+     * everything every 6,000 ticks (MinecraftServer.tickServer; the entity manager's autoSave then unloads every
+     * HIDDEN chunk, so C2ME's dropped unloads clear there too, MZB-664): a run under 6,000 ticks never reaches it, and
+     * nothing else makes the engine acknowledge.
+     */
+    public static void acknowledge() {
+        ScriptedEngine engine = RtsimTests.engine();
+        engine.awaitIdle();
+        engine.requestSaveAtNextStep();
+    }
+
+    /**
+     * Inside {@code thenWaitUntil}: the chunk is unloaded and each entity object is saved and unloaded with it
+     * ({@link #removed}). After this a forced chunk reads its entities from disk, and each joins as a new object.
+     */
+    @SafeVarargs
+    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, Supplier<? extends Entity>... objects) {
+        Runnable removed = removed(level, objects);
+        return RtsimTests.io(() -> {
+            removed.run();
+            check("chunk (" + cx + ", " + cz + ") is unloaded", !level.hasChunk(cx, cz));
+        });
+    }
+
+    /** Ticks into a {@link #removed} wait after which an object alive in a HIDDEN chunk has its unload queued again. */
+    public static final int REQUEUE_AFTER = 40;
+
+    /**
+     * Inside {@code thenWaitUntil}: every entity object is removed. For a body whose chunk went out that is saved
+     * and unloaded: vanilla's {@code storeChunkSections} writes the chunk's entities, then removes each object
+     * ({@code UNLOADED_TO_CHUNK}), and a forced chunk reads them from disk as new objects. Neither a null
+     * {@code getEntity} nor {@code !hasChunk} says that: under C2ME a re-force inside the hide window tracks the
+     * same object again with no join (MZB-662). The objects are read at each poll: a sequence's arguments are
+     * evaluated when it is built, before its {@code thenExecute} steps fill the test's arrays (a UUID read then is
+     * null, and {@code getEntity(null)} is null, so the UUID waits this replaces passed at once).
+     *
+     * <p>C2ME's {@code processUnloads} can drop a chunk's entity unload (MZB-664): the object then stays alive in
+     * a HIDDEN chunk until the next autosave, up to 6,000 ticks. When an object is still alive
+     * {@link #REQUEUE_AFTER} ticks into the wait, its chunk reads HIDDEN and is not queued to unload, the wait
+     * queues it again through MZB-660's accessor (vanilla's own retry: a chunk whose entities could not be
+     * stored yet stays queued) and logs it, once per chunk each {@link #REQUEUE_AFTER} ticks.
+     */
+    @SafeVarargs
+    public static Runnable removed(ServerLevel level, Supplier<? extends Entity>... objects) {
+        long[] since = {-1};
+        Map<Long, Long> requeuedAt = new HashMap<>();
+        return RtsimTests.io(() -> {
+            long now = level.getGameTime();
+            if (since[0] < 0)
+                since[0] = now;
+            List<Entity> es = new ArrayList<>(objects.length);
+            for (Supplier<? extends Entity> s : objects) {
+                Entity e = s.get();
+                check("the entity object is known", e != null);
+                es.add(e);
+            }
+            if (now - since[0] >= REQUEUE_AFTER)
+                for (Entity e : es)
+                    if (!e.isRemoved())
+                        requeueDroppedUnload(level, e, now, requeuedAt);
+            for (Entity e : es)
+                check("entity " + e.getUUID() + " is saved and unloaded (alive " + e.isAlive() + ", removal " + e.getRemovalReason()
+                        + ", chunk " + e.chunkPosition() + ")", e.isRemoved());
+        });
+    }
+
+    /** The retry of a dropped entity unload, for {@link #removed} (MZB-664). */
+    private static void requeueDroppedUnload(ServerLevel level, Entity e, long now, Map<Long, Long> requeuedAt) {
+        ChunkPos cp = e.chunkPosition();
+        long key = cp.toLong();
+        Long last = requeuedAt.get(key);
+        if (last != null && now - last < REQUEUE_AFTER)
+            return;
+        var manager = (EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+        // The map's default is HIDDEN: an absent chunk reads hidden, as vanilla's processUnloads reads it.
+        if (manager.mic_rtsim$chunkVisibility().get(key) != Visibility.HIDDEN || manager.mic_rtsim$chunksToUnload().contains(key))
+            return;
+        manager.mic_rtsim$chunksToUnload().add(key);
+        requeuedAt.put(key, now);
+        LogUtils.getLogger().warn("[gametest] entity {} is alive in the HIDDEN chunk {} with no unload queued, {} ticks into the wait: "
+                + "C2ME dropped its entity unload, queued again (MZB-664)", e.getUUID(), cp, REQUEUE_AFTER);
     }
 
     // ---- test camps -----------------------------------------------------------------------------
@@ -278,6 +382,65 @@ public final class MowzieKit {
         if (s == null)
             throw new IllegalStateException("no camp " + Long.toHexString(faction));
         return s;
+    }
+
+    // ---- a sequence that reports an unexpected exception as a failure ------------------------------
+
+    /**
+     * {@code helper.startSequence()} whose steps turn any exception that is no assertion into a failed assertion
+     * (MZB-599). Vanilla's sequence catches only {@code GameTestAssertException} from a step: any other
+     * exception (a null spot, an index out of range, a state a test did not expect) reaches the server's tick
+     * loop and crashes the whole GameTest server, so every test after it goes unrun. Here the exception is
+     * logged (the stack once per site) and fails that test with its type and message, as a wait's last
+     * assertion does when it times out.
+     */
+    public static Seq seq(GameTestHelper helper) {
+        return new Seq(helper.startSequence());
+    }
+
+    /** The steps a Mowzie test uses, each guarded (MZB-599). */
+    public static final class Seq {
+        private final GameTestSequence s;
+
+        private Seq(GameTestSequence s) {
+            this.s = s;
+        }
+
+        public Seq thenExecute(Runnable step) {
+            s.thenExecute(guard(step));
+            return this;
+        }
+
+        public Seq thenWaitUntil(Runnable step) {
+            s.thenWaitUntil(guard(step));
+            return this;
+        }
+
+        public Seq thenIdle(int ticks) {
+            s.thenIdle(ticks);
+            return this;
+        }
+
+        public void thenSucceed() {
+            s.thenSucceed();
+        }
+    }
+
+    private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
+
+    private static Runnable guard(Runnable step) {
+        return () -> {
+            try {
+                step.run();
+            } catch (GameTestAssertException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                StackTraceElement[] t = e.getStackTrace();
+                if (REPORTED.add(e.getClass().getName() + "@" + (t.length == 0 ? "" : t[0].toString())))
+                    LogUtils.getLogger().error("[gametest] a step threw {}", e.toString(), e);
+                throw new GameTestAssertException("unexpected " + e);
+            }
+        };
     }
 
     /** A grove at the middle of a chunk (MZB-218's round 25 blocks, 21 footprint chunks), declared with no fire pit piece. */
@@ -305,6 +468,12 @@ public final class MowzieKit {
             return this;
         }
 
+        /** As {@link #lay()} with the floor at {@code minTop} at the lowest (the jar's fire pit needs ground above y 0). */
+        public Grove lay(int minTop) {
+            platform(far.level, cx * 16 + 8 - 30, cx * 16 + 8 + 30, cz * 16 + 8 - 30, cz * 16 + 8 + 30, minTop);
+            return this;
+        }
+
         public Grove declare() {
             ServerLevel level = far.level;
             int x = cx * 16 + 8, z = cz * 16 + 8;
@@ -323,12 +492,14 @@ public final class MowzieKit {
 
         /** A point {@code dx}, {@code dz} from the centre, at standing height. */
         public Vec3 at(double dx, double dz) {
-            double x = spot.x + dx, z = spot.z + dz;
+            double x = (spot == null ? cx * 16 + 8.5 : spot.x) + dx, z = (spot == null ? cz * 16 + 8.5 : spot.z) + dz;
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
+        /** 64 blocks square round the centre; it does not read {@code spot}, so it works before the grove is declared. */
         public AABB area() {
-            return new AABB(spot.x - 32, far.level.getMinBuildHeight(), spot.z - 32, spot.x + 32, far.level.getMaxBuildHeight(), spot.z + 32);
+            double x = cx * 16 + 8.5, z = cz * 16 + 8.5;
+            return new AABB(x - 32, far.level.getMinBuildHeight(), z - 32, x + 32, far.level.getMaxBuildHeight(), z + 32);
         }
     }
 
@@ -400,9 +571,9 @@ public final class MowzieKit {
             return MowzieKit.site(faction);
         }
 
-        /** A point {@code dx}, {@code dz} from the spot, at standing height. */
+        /** A point {@code dx}, {@code dz} from the spot (the chunk's middle block before the den is declared), at standing height. */
         public Vec3 at(double dx, double dz) {
-            double x = spot.x + dx, z = spot.z + dz;
+            double x = (spot == null ? cx * 16 + 8 : spot.x) + dx, z = (spot == null ? cz * 16 + 8 : spot.z) + dz;
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
@@ -461,34 +632,47 @@ public final class MowzieKit {
     }
 
     /**
-     * A thief of a Frostmaw's crystal: a mock {@code Player} (not a {@code ServerPlayer}) of the given game
-     * mode, added with {@code addFreshEntity} so that the jar's {@code getPlayersNearby} (the entity manager,
-     * not {@code level.players()}) finds it, and kept at the crystal's point at the end of every tick until the
-     * Frostmaw has lost its crystal. {@code invisible} gives it the invisibility effect (a bare
-     * {@code setInvisible} is undone by the entity's first tick); {@code fullInventory} puts one dirt in each of
-     * the 36 main slots (the jar's {@code isInventoryFull} asks only whether a slot is empty). It holds no chunk
-     * ticket and is no target of any goal ({@code NearestAttackableTargetGoal} reads {@code players()}).
-     * Discarded when the test ends. UNVERIFIED on a running server: a fallback is {@code FakePlayers.addSeen}
-     * (MZB-281).
+     * A thief of a Frostmaw's crystal: a {@link FakePlayers#addSeen} server player of the given game mode
+     * (review C; M6 first used {@code helper.makeMockPlayer} added with {@code addFreshEntity}). It is in the
+     * entity manager, so that the jar's {@code getPlayersNearby} finds it, and in {@code level.players()},
+     * so that the goals' {@code NearestAttackableTargetGoal} reads it as a real player is read: a thief that
+     * is no target would make "the Frostmaw sleeps on" hold for a reason a real player does not share.
+     * It is kept at the crystal's point at the end of every tick until the Frostmaw has lost its crystal.
+     * {@code invisible} gives it the invisibility effect (a bare {@code setInvisible} is undone by the entity's
+     * first tick); {@code fullInventory} puts one dirt in each of the 36 main slots (the jar's
+     * {@code isInventoryFull} asks only whether a slot is empty). Removed when the test ends. Being a player it
+     * loads chunks round itself, so the far place is never released while it stands. UNVERIFIED on a running
+     * server (compiled only): a player joined this way may log or fail where a login would not (MZB-281).
      */
-    public static Player thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
+    public static ServerPlayer thief(GameTestHelper helper, EntityFrostmaw f, GameType mode, boolean invisible, boolean fullInventory) {
         ServerLevel level = helper.getLevel();
-        Player p = helper.makeMockPlayer(mode);
         Vec3 at = crystalPoint(f);
-        p.moveTo(at.x, at.y, at.z);
+        ServerPlayer p = FakePlayers.addSeen(level, at, "mowzie-thief");
+        p.setGameMode(mode);
+        // A target the Frostmaw may strike, not a casualty whose death cuts the test short. Not invulnerable:
+        // vanilla's canBeSeenAsEnemy is false for an invulnerable entity, so no targeting goal would take it
+        // and the jar's wake (which needs a target) could never fire. Resistance V takes every hit that does
+        // not bypass resistance, and the health is topped up each tick for the rest.
+        p.addEffect(new MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, MobEffectInstance.INFINITE_DURATION, 4, false, false));
         if (fullInventory)
             for (int i = 0; i < 36; i++)
                 p.getInventory().setItem(i, new ItemStack(Items.DIRT));
-        check("the thief is added", level.addFreshEntity(p));
-        if (invisible)
+        if (invisible) {
             p.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY, MobEffectInstance.INFINITE_DURATION, 0, false, false));
+            p.setInvisible(true);
+        }
         everyTick(helper, () -> {
+            if (!p.isRemoved() && p.getHealth() < p.getMaxHealth())
+                p.setHealth(p.getMaxHealth());
             if (!p.isRemoved() && !f.isRemoved() && f.getHasCrystal()) {
                 Vec3 c = crystalPoint(f);
                 p.moveTo(c.x, c.y, c.z);
             }
         });
-        ConflictKit.onEnd(helper, p::discard);
+        ConflictKit.onEnd(helper, () -> {
+            if (!p.isRemoved())
+                FakePlayers.removeSeen(p);
+        });
         return p;
     }
 
@@ -608,6 +792,16 @@ public final class MowzieKit {
     }
 
     // ---- record markers -------------------------------------------------------------------------
+
+    /**
+     * Discards the record markers standing in the loaded part of an area. A test that leaves a marker holding a
+     * record of an unknown generation in the reused world has it journaled as a copy, and applied, by the next
+     * run (a copy of a generation the engine never heard is new): so a test discards its markers when it ends.
+     */
+    public static void discardRecordMarkers(ServerLevel level, AABB area) {
+        for (Marker m : level.getEntities(EntityType.MARKER, area, e -> e.getTags().contains(RtsimSession.RECORD_MARKER_TAG)))
+            m.discard();
+    }
 
     /**
      * Catches the record markers (vanilla markers tagged {@code mic_rtsim.record}) standing in an area, at

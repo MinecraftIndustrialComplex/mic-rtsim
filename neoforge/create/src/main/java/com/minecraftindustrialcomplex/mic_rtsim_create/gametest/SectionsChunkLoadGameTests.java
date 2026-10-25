@@ -43,9 +43,12 @@ import net.minecraft.world.level.material.Fluids;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -75,6 +78,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * memory instead.)
  *
  * <p>Away chunks are read only through {@link Loaded}; {@code GlassCorpusKit.be} and {@code speed} load.
+ *
+ * <p>{@link #anEditOutsideEveryDistrictReachesTheDistrictOnItsNetwork} is slice S2d's (choice SC77), on the
+ * same fixture with B in no district.
  */
 @GameTestHolder(MicRtsimCreate.MODID)
 @PrefixGameTestTemplate(false)
@@ -464,7 +470,9 @@ public final class SectionsChunkLoadGameTests {
      * apart reach from A over 13 chunks to B, where a creative motor turns them; both ends have a cog and a
      * millstone. With only A's radius-1 ticket left, B (13 chunks away) unloads and the conveyors between
      * are held below FULL. The recount (Create's {@code calculateCapacity}) keeps the motor as it last was,
-     * without loading B: the capacity is unchanged and the motor still listed. A millstone added in A
+     * without loading B: the capacity is unchanged and the motor still listed, and the loaded half keeps
+     * turning at the motor's speed, not overstressed, for 600 ticks and after the recount below (slice
+     * S5-1, SECTIONS.md §2.6). A millstone added in A
      * makes the network recount its stress, with the same answer for the capacity. B then loads FULL and
      * does not tick: its fresh motor exists and has not joined, and a recount still keeps the kept motor.
      * When B is forced, the fresh motor takes the kept one's place as it joins: one source, with no recount
@@ -479,7 +487,7 @@ public final class SectionsChunkLoadGameTests {
      * joined positions, the recount after the update forgot the position and Create took the motor's share
      * out a second time).
      */
-    @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 16000)
+    @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 17000)
     public static void aNetworkRecountKeepsAnUnloadedSource(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
@@ -560,6 +568,19 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "B away: capacity, sources, members, size", cap[1] + ", " + n.sources.size() + ", " + n.members.size() + ", " + n.getSize());
                     check("the recount keeps the away motor's capacity: " + cap[1] + " vs " + cap[0], cap[1] == cap[0]);
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
+                    loadedHalfTurns(level, millA, "with B away");
+                })
+                // the loaded half keeps its speed and the away motor's capacity for as long as B stays away (slice S5-1,
+                // SECTIONS.md §2.6)
+                .thenIdle(600)
+                .thenExecute(() -> {
+                    KineticNetwork n = net.get();
+                    float c = n.calculateCapacity();
+                    record(t, "B away 600 ticks: millstone A's speed, capacity, stress, overstressed",
+                            speedOf(level, millA) + ", " + c + ", " + n.calculateStress() + ", " + kinetic(level, millA).isOverStressed());
+                    loadedHalfTurns(level, millA, "600 ticks after B went away");
+                    check("the same capacity 600 ticks on: " + c + " vs " + cap[0], c == cap[0]);
+                    check("the away motor is still listed 600 ticks on", n.sources.containsKey(oldMotor[0]));
                     GlassCorpusKit.set(helper, added, AllBlocks.MILLSTONE.getDefaultState());
                 })
                 .thenWaitUntil(() -> check("the added millstone turns: " + speedOf(level, added), Math.abs(speedOf(level, added)) == 64))
@@ -572,6 +593,7 @@ public final class SectionsChunkLoadGameTests {
                     check("the capacity is unchanged: " + cap[2], cap[2] == cap[0]);
                     check("the stress grew by the added millstone: " + stress[0] + " to " + stress[1], stress[1] > stress[0]);
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
+                    loadedHalfTurns(level, millA, "after the recount");
                     watch.check("no chunk two or more from A loaded");
                     watch.on = false;
                     // B's chunk loads FULL and does not tick: its block entities exist and have not joined
@@ -699,6 +721,13 @@ public final class SectionsChunkLoadGameTests {
                 .thenSucceed();
     }
 
+    /** A member of the loaded half turns at the away motor's 64 RPM and is not overstressed. */
+    private static void loadedHalfTurns(ServerLevel level, BlockPos member, String when) {
+        KineticBlockEntity k = kinetic(level, member);
+        check("the loaded half turns " + when + ": " + speedOf(level, member), k != null && Math.abs(speedOf(level, member)) == 64);
+        check("the loaded half is not overstressed " + when, !k.isOverStressed());
+    }
+
     /**
      * A network's unloaded capacity, stress and member count (private in Create), set to {@code set}; the
      * values before.
@@ -752,7 +781,7 @@ public final class SectionsChunkLoadGameTests {
      * choice SC10; PATCHES.md row 53's kept members). The motor is in B; with B away, A's compile reads CA's
      * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
      * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
-     * driver, and its members are bounded. {@code /rtsim district graph} writes the compile without loading
+     * driver (every source fixed), and its members are bounded. {@code /rtsim district graph} writes the compile without loading
      * anything either. Then B's block entities are taken out of the network, as a restart with B away leaves
      * it (the network lists only what loaded this session): the next compile still finds the network
      * crossing (choice SC44: CA's chain reaches B, which is not loaded), with the same domain.
@@ -788,7 +817,7 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "millstone A's domain", d);
                     check("one level: " + d.levels(), d.levels().size() == 1);
                     check("at the network's last speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
-                    check("no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    check("no driver: " + d.sources(), d.driven().isEmpty());
                     checkBounded(g, d);
                     try {
                         Path p = GlassGraphCommand.write(ind(), level.getServer(), ind().district(f.da()));
@@ -830,7 +859,7 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "millstone A's domain, B unlisted", d);
                     check("still one level: " + d.levels(), d.levels().size() == 1);
                     check("at the speed of A's members: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
-                    check("still no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    check("still no driver: " + d.sources(), d.driven().isEmpty());
                     checkBounded(GlassKit.latest(f.da()), d);
                 });
         restore(s, level, f).thenSucceed();
@@ -968,8 +997,8 @@ public final class SectionsChunkLoadGameTests {
      * boiler's district included. In A, a 2 x 2 x 1 fluid tank over one kindled blaze burner, filled with
      * 20 mB of water a tick, and a steam engine on it turn a shaft, a chain conveyor over it, a cog and a
      * millstone; the chain reaches CB in B, two chunks away, with a cog and a millstone. Both chunks are
-     * forced. In both districts' compiles the millstone's domain has one level, no driver (not the
-     * boiler's ladder of levels) and bounded members.
+     * forced. In both districts' compiles the millstone's domain has one speed row, no driver (every
+     * source fixed, not the boiler's ladder of rows) and bounded members.
      */
     @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 12000)
     public static void aBoilerOnAChainDrivesTheNextDistrict(GameTestHelper helper) {
@@ -1048,7 +1077,7 @@ public final class SectionsChunkLoadGameTests {
                         GlassKit.Domain d = millDomain(g);
                         record(t, "district " + which + ": graph, domain", g.describe() + "; " + d);
                         check(which + ": one level: " + d.levels(), d.levels().size() == 1);
-                        check(which + ": no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                        check(which + ": no driver: " + d.sources(), d.driven().isEmpty());
                         checkBounded(g, d);
                     }
                     water[0] = false;
@@ -1273,6 +1302,178 @@ public final class SectionsChunkLoadGameTests {
                     level.getChunkSource().removeRegionTicket(FULL_ONLY, c, 0, c);
                     level.setChunkForced(cx, f.az, false);
                 });
+        restore(s, level, f).thenSucceed();
+    }
+
+    /** IND_EDIT records journaled for district {@code d}. */
+    private static List<ByteBuffer> edits(long d) {
+        return received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, d);
+    }
+
+    /**
+     * A player's edit outside every district, on a network a district's compile reaches, is that district's
+     * edit too (SECTIONS.md §3.6, choice SC77). The chain of the adjacent fixture joins A to B, but only A's
+     * millstone is placed by a player: B is in no district and its millstone turns on A's motor. A's compile
+     * keeps B's chunk as one its network reaches (and not M's, which the chain only spans). A cog a player
+     * places in B, meshing with B's, is an IND_EDIT (placed) of A at the cog, and A recompiles. Breaking it
+     * is A's edit (broken) too. A chest placed and broken in B is no part of the network and no edit of A
+     * (review M2). A cog line a player runs in A out to its chunk's east border leaves M, empty there, as a
+     * chunk A's compile reaches across the last cog's face (review M3; the compile after the line turns, as
+     * the edits' own may run before its last cog joins): a cog placed in M meshing with it is an edit of A,
+     * with no compile asked for in between. B stays in no district.
+     */
+    @GameTest(template = YARD, batch = "sec1_9", timeoutTicks = 12000)
+    public static void anEditOutsideEveryDistrictReachesTheDistrictOnItsNetwork(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        Adj f = Adj.at(helper, 5200, true);
+        BlockPos cogB = f.cb.above().east(), chestB = f.cb.north(3);
+        // A's cog over CA is at local x 12: three more out to x 15, then M's first column
+        List<BlockPos> line = List.of(f.ca.above().east(), f.ca.above().east(2), f.ca.above().east(3));
+        BlockPos cogM = f.ca.above().east(4);
+        long chunkB = ChunkPos.asLong(f.bx, f.az), chunkM = ChunkPos.asLong(f.ax + 1, f.az);
+        long[] mark = {0, 0};
+        String t = "anEditOutsideEveryDistrictReachesTheDistrictOnItsNetwork";
+        GameTestSequence s = helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(f.ax, f.az, true);
+                    level.setChunkForced(f.bx, f.az, true);
+                })
+                .thenWaitUntil(io(() -> check("A, M and B load", allLoaded(level, f.ax, f.bx, f.az))))
+                .thenExecute(() -> {
+                    clear(level, f.ax - 1, f.az - 1, f.bx + 1, f.az + 1);
+                    GlassCorpusKit.motor(helper, f.motor, Direction.UP, 64);
+                    GlassCorpusKit.set(helper, f.ca, AllBlocks.CHAIN_CONVEYOR.getDefaultState());
+                    GlassCorpusKit.set(helper, f.cb, AllBlocks.CHAIN_CONVEYOR.getDefaultState());
+                    for (BlockPos c : List.of(f.ca, f.cb)) {
+                        GlassCorpusKit.cog(helper, c.above(), Direction.Axis.Y);
+                        GlassCorpusKit.set(helper, c.above().south(), AllBlocks.MILLSTONE.getDefaultState());
+                    }
+                    join(level, f.ca, f.cb);
+                    playerPlaced(helper, f.millA);
+                })
+                .thenWaitUntil(io(() -> {
+                    District a = districtAt(helper, f.millA);
+                    check("district A exists", a != null);
+                    f.ids[0] = a.id;
+                    check("B is in no district: " + districtAt(helper, f.millB), districtAt(helper, f.millB) == null);
+                    check("the chain turns B's millstone: " + speedOf(level, f.millB), speedOf(level, f.millB) != 0);
+                }))
+                .thenExecute(() -> {
+                    // A's first compile may have run before the chain joined B to A's network: a chunk a
+                    // network reaches only after a compile is indexed at the next one (SC77)
+                    mark[1] = ind().glass().compileNo(f.da());
+                    ind().glass().requestCompile(ind().district(f.da()));
+                })
+                .thenWaitUntil(io(() -> check("A recompiled once B turns: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                        ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()))))
+                .thenWaitUntil(io(() -> {
+                    long[] by = ind().glass().reachedBy(level.dimension(), chunkB);
+                    var lg = ind().glass().lastGraph(f.da());
+                    check("A's compile reaches B: " + java.util.Arrays.toString(by) + " (compile " + ind().glass().compileNo(f.da())
+                            + ", pending " + ind().glass().pending(f.da()) + ", reached " + (lg == null ? "no graph" : lg.reachedChunks)
+                            + ", B " + chunkB + ", A's chunks " + ind().district(f.da()).chunks + ")", by.length == 1 && by[0] == f.da());
+                    check("and not M, which the chain only spans", ind().glass().reachedBy(level.dimension(), chunkM).length == 0);
+                    check("A's compile is not pending", !ind().glass().pending(f.da()));
+                }))
+                .thenExecute(() -> {
+                    mark[0] = edits(f.da()).size();
+                    mark[1] = ind().glass().compileNo(f.da());
+                    GlassCorpusKit.cog(helper, cogB, Direction.Axis.Y);
+                    playerPlacedBare(helper, cogB);
+                })
+                .thenWaitUntil(io(() -> {
+                    List<ByteBuffer> e = edits(f.da());
+                    check("one more IND_EDIT of A: " + (e.size() - mark[0]), e.size() == mark[0] + 1);
+                    ByteBuffer last = e.get(e.size() - 1);
+                    check("placed, at the cog in B: " + aux(last) + " at " + last.getInt(IndRecords.Edit.X) + ", " + last.getInt(IndRecords.Edit.Z),
+                            aux(last) == IndRecords.Edit.PLACED && last.getInt(IndRecords.Edit.X) == cogB.getX()
+                                    && last.getInt(IndRecords.Edit.Y) == cogB.getY() && last.getInt(IndRecords.Edit.Z) == cogB.getZ());
+                    check("the cog in B turns with the chain: " + speedOf(level, cogB), speedOf(level, cogB) != 0);
+                    check("A recompiled: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                            ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
+                }))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("one edit of A for the cog: " + (edits(f.da()).size() - mark[0]), edits(f.da()).size() == mark[0] + 1);
+                    record(t, "A's edits, compiles after the placement", (edits(f.da()).size() - mark[0]) + ", " + (ind().glass().compileNo(f.da()) - mark[1]));
+                    NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, cogB, level.getBlockState(cogB),
+                            com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
+                    level.removeBlock(cogB, false);
+                })
+                .thenWaitUntil(io(() -> {
+                    List<ByteBuffer> e = edits(f.da());
+                    check("one more IND_EDIT of A: " + (e.size() - mark[0]), e.size() == mark[0] + 2);
+                    ByteBuffer last = e.get(e.size() - 1);
+                    check("broken, at the cog in B", aux(last) == IndRecords.Edit.BROKEN && last.getInt(IndRecords.Edit.X) == cogB.getX());
+                }))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("B's chunk is a member chunk of no district", ind().districts().at(level.dimension(), chunkB) == null);
+                    mark[0] = edits(f.da()).size();
+                    GlassCorpusKit.set(helper, chestB, net.minecraft.world.level.block.Blocks.CHEST.defaultBlockState());
+                    playerPlacedBare(helper, chestB);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("a chest placed in B is no edit of A: " + (edits(f.da()).size() - mark[0]), edits(f.da()).size() == mark[0]);
+                    NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, chestB, level.getBlockState(chestB),
+                            com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
+                    level.removeBlock(chestB, false);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("nor is breaking it: " + (edits(f.da()).size() - mark[0]), edits(f.da()).size() == mark[0]);
+                    mark[1] = ind().glass().compileNo(f.da());
+                    for (BlockPos c : line) {
+                        GlassCorpusKit.cog(helper, c, Direction.Axis.Y);
+                        playerPlacedBare(helper, c);
+                    }
+                })
+                .thenWaitUntil(io(() -> {
+                    check("the cog line turns: " + speedOf(level, line.get(2)), Math.abs(speedOf(level, line.get(2))) == 64);
+                    check("A recompiled after the cog line: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                            ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
+                }))
+                .thenExecute(() -> {
+                    // the edits' recompile may have run before the last cog joined A's network (a cog placed
+                    // this tick turns from its first tick on): a part the network takes only after a compile
+                    // is read at the next one (SC77), as for B above
+                    mark[1] = ind().glass().compileNo(f.da());
+                    ind().glass().requestCompile(ind().district(f.da()));
+                })
+                .thenWaitUntil(io(() -> {
+                    check("A recompiled once the cog line turns: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                            ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
+                    long[] by = ind().glass().reachedBy(level.dimension(), chunkM);
+                    check("A's compile reaches M across the line's last face: " + java.util.Arrays.toString(by), by.length == 1 && by[0] == f.da());
+                }))
+                .thenExecute(() -> {
+                    mark[0] = edits(f.da()).size();
+                    mark[1] = ind().glass().compileNo(f.da());
+                    GlassCorpusKit.cog(helper, cogM, Direction.Axis.Y);
+                    playerPlacedBare(helper, cogM);
+                })
+                .thenWaitUntil(io(() -> {
+                    List<ByteBuffer> e = edits(f.da());
+                    check("an IND_EDIT of A for the cog in M: " + (e.size() - mark[0]), e.size() == mark[0] + 1);
+                    ByteBuffer last = e.get(e.size() - 1);
+                    check("placed, at the cog in M", aux(last) == IndRecords.Edit.PLACED && last.getInt(IndRecords.Edit.X) == cogM.getX()
+                            && last.getInt(IndRecords.Edit.Z) == cogM.getZ());
+                    check("the cog in M turns: " + speedOf(level, cogM), speedOf(level, cogM) != 0);
+                    check("A recompiled: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                            ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da()));
+                }))
+                .thenExecute(() -> {
+                    record(t, "A's edits for the cog in M, compiles after it", (edits(f.da()).size() - mark[0]) + ", " + (ind().glass().compileNo(f.da()) - mark[1]));
+                    for (BlockPos c : List.of(cogM, line.get(2), line.get(1), line.get(0))) {
+                        NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, c, level.getBlockState(c),
+                                com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
+                        level.removeBlock(c, false);
+                    }
+                })
+                .thenIdle(40)
+                .thenExecute(() -> check("B is still in no district: " + districtAt(helper, f.millB), districtAt(helper, f.millB) == null));
         restore(s, level, f).thenSucceed();
     }
 

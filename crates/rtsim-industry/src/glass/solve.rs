@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::graph::{Graph, carries_goods, term_amount};
 use super::q::Q;
 use super::records::{
-    EdgeKind, NodeKind, edge_flags, heat as heat_level, model, node_flags, recipe_type, rule,
-    term_flags,
+    DomainSource, EdgeKind, GraphDomain, NodeKind, edge_flags, heat as heat_level, model,
+    node_flags, recipe_type, rule, term_flags,
 };
 use super::report::why;
 use crate::ids::Good;
@@ -39,6 +39,101 @@ pub fn chance_variance(e: f64) -> f64 {
         let k = e.ceil();
         let p = e / k;
         k * p * (1.0 - p)
+    }
+}
+
+/// Create's stress on `dom` at reference speed `speed`: the floating-point sum of
+/// `count × |ratio × speed| × impact` (`KineticNetwork.calculateStress`, §9.3).
+pub fn domain_stress(dom: &GraphDomain, speed: f64) -> f64 {
+    let mut stress = 0.0f64;
+    for m in &dom.members {
+        let ratio = f64::from(m.ratio_num) / f64::from(m.ratio_den.max(1));
+        stress += f64::from(m.count) * (ratio * speed).abs() * m.impact;
+    }
+    stress
+}
+
+/// A driven source's row at boiler level `level`: the largest selector at or below it.
+pub fn source_row(src: &DomainSource, level: i64) -> Option<u32> {
+    let mut best: Option<(u32, u32)> = None;
+    for (i, l) in src.levels.iter().enumerate() {
+        if i64::from(l.selector) <= level && best.is_none_or(|b| l.selector > b.0) {
+            best = Some((l.selector, i as u32));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// How near a source's speed over its ratio must come to a speed row to be it: Java builds the
+/// rows from the same rationals, so only rounding parts them.
+const SPEED_ROW_TOLERANCE: f64 = 1e-6;
+
+/// The speed row of driven domain `dom` at reference speed `v` (nonzero): the nearest of `v`'s
+/// sign within rounding. `Graph::new` refuses a driven domain where a source's speed has none
+/// (Java builds the rows from the sources' own speeds), so a solve always finds one.
+pub(super) fn speed_row_at(dom: &GraphDomain, v: f64) -> Option<u32> {
+    let tol = SPEED_ROW_TOLERANCE * v.abs().max(1.0);
+    let mut best: Option<(f64, u32)> = None;
+    for (i, l) in dom.levels.iter().enumerate() {
+        let off = (l.speed() - v).abs();
+        if l.speed() * v > 0.0 && off <= tol && best.is_none_or(|b| off < b.0) {
+            best = Some((off, i as u32));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// Domain `d`'s state with its sources at `rows` (flat by `Graph::src_off`): its speed row, None
+/// when it is stopped or overstressed, and its capacity in SU (§9.3; SECTIONS.md §2.6). A domain
+/// no boiler drives runs at its one row. Otherwise, as Create's propagation has it, the fastest
+/// source sets the speed (each source's row speed over its ratio, in the reference's frame), and
+/// sources that disagree in sign stop it (`RotationPropagator` breaks a block there). Every source
+/// adds its row's capacity at its own speed, a slower one included; the domain runs while that
+/// carries its members' stress at that speed, or always with stress disabled.
+pub fn domain_state(g: &Graph, d: u32, rows: &[Option<u32>]) -> (Option<u32>, f64) {
+    let dom = &g.domains[d as usize];
+    let mut cap = 0.0f64;
+    let mut fastest = 0.0f64;
+    let mut signs = (false, false);
+    for (src, row) in dom.sources.iter().zip(&rows[g.sources_of(d)]) {
+        let Some(lv) = row.and_then(|r| src.levels.get(r as usize)) else {
+            continue;
+        };
+        cap += lv.capacity;
+        let (Some(ratio), sp) = (src.ratio(), lv.speed()) else {
+            continue;
+        };
+        if sp == 0.0 || ratio == 0.0 {
+            continue;
+        }
+        let v = sp / ratio;
+        if v < 0.0 {
+            signs.0 = true;
+        } else {
+            signs.1 = true;
+        }
+        if v.abs() > fastest.abs() {
+            fastest = v;
+        }
+    }
+    let row = if !dom.driven() {
+        (!dom.levels.is_empty()).then_some(0u32)
+    } else if signs.0 && signs.1 || fastest == 0.0 {
+        None
+    } else {
+        speed_row_at(dom, fastest)
+    };
+    let Some(r) = row else {
+        return (None, cap);
+    };
+    if dom.flags & super::records::domain_flags::STRESS_DISABLED != 0 {
+        return (Some(r), cap);
+    }
+    // The stress at the row's own speed, as the LP bound weighs it (`lp::possible_rows`).
+    if cap < domain_stress(dom, dom.levels[r as usize].speed()) {
+        (None, cap)
+    } else {
+        (Some(r), cap)
     }
 }
 
@@ -158,6 +253,22 @@ pub struct GoodBound {
     pub why: (u32, u32),
 }
 
+/// A goods edge into or out of a store, as the solve ran it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StoreEdge {
+    pub edge: u32,
+    pub good: Good,
+    /// Its L flow, per tick.
+    pub flow: f64,
+    /// Into the store (else out of it).
+    pub into: bool,
+    /// The class of the component on its other side (`report::class`): a section's class for a
+    /// good is the worst of its own store edges', as the district's is of all of them.
+    pub class: u32,
+    /// Why (`report::why` and its node or edge).
+    pub why: (u32, u32),
+}
+
 /// A solve's result.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Solution {
@@ -171,18 +282,28 @@ pub struct Solution {
     pub saturated: Vec<bool>,
     /// Per edge: the flow L used, all goods (f64), for localization.
     pub edge_flow: Vec<f64>,
-    /// Read-store edges with their good and L flow: (edge, good, flow, into the store).
-    pub store_edges: Vec<(u32, Good, f64, bool)>,
+    /// Read-store edges with their good and L flow, and the class of the side they reach.
+    pub store_edges: Vec<StoreEdge>,
     /// Every goods edge's exact L flow per good, nonzero only, by edge then good: what the glass
     /// replay books per store and across a partial load's cut (G2).
     pub edge_goods: Vec<(u32, Good, Q)>,
-    /// Per domain: the running level index under L (None: stopped or overstressed).
+    /// Per domain: the running speed row under L (None: stopped or overstressed).
     pub dom_level: Vec<Option<u32>>,
+    /// Per domain: its sources' summed capacity under L, SU (the domain check's, §3.6).
+    pub dom_cap: Vec<f64>,
+    /// Per source (flat by `Graph::src_off`): its row under L.
+    pub src_row: Vec<Option<u32>>,
     /// Per node: a heater's duty under L.
     pub duty: Vec<Q>,
     /// Per node: the share of a heater's burn its fuel under L pays for, `min(1, Σ fuel × burnTicks)`
     /// (its remaining burn falls by `1 - fed` per tick while lit).
     pub fed: Vec<f64>,
+    /// Stochastic sources' variance per good they emit: (node, good, λ E[X²]), by node then good
+    /// (SECTIONS.md §4.1: a section's variance is its own nodes').
+    pub src_var: Vec<(u32, Good, f64)>,
+    /// Machines' chance outputs: (node, good, roll variance, what the node made of the good under
+    /// L), by node then good; the share reaching the stores nets the roll (GB111).
+    pub roll_var: Vec<(u32, Good, f64, f64)>,
     /// Graph-wide: a black box or port (or a demoted node) exists.
     pub has_unbounded: bool,
     /// LPs run, LPs skipped as too big (`glass.lpVarsMax`) or past the work (`glass.lpWorkMax`),
@@ -394,6 +515,9 @@ pub struct Solver<'a> {
     back_in: Vec<Q>,
     pub dom_level: Vec<Option<u32>>,
     dom_next: Vec<Option<u32>>,
+    /// Per source (flat by `Graph::src_off`): its row, and the next round's.
+    pub src_row: Vec<Option<u32>>,
+    src_next: Vec<Option<u32>>,
     pub duty: Vec<Q>,
     duty_assumed: Vec<Q>,
     pub saturated: Vec<bool>,
@@ -474,6 +598,8 @@ impl<'a> Solver<'a> {
             back_in: Vec::new(),
             dom_level: Vec::new(),
             dom_next: Vec::new(),
+            src_row: Vec::new(),
+            src_next: Vec::new(),
             duty: vec![Q::ZERO; n],
             duty_assumed: vec![Q::ONE; n],
             saturated: vec![false; n],
@@ -503,8 +629,10 @@ impl<'a> Solver<'a> {
         };
         s.reachability();
         s.slots();
+        s.src_row = g.source_rows_at_compile();
+        s.src_next = s.src_row.clone();
         s.dom_level = (0..g.domains.len() as u32)
-            .map(|d| s.running(d, g.domains[d as usize].current))
+            .map(|d| domain_state(g, d, &s.src_row).0)
             .collect();
         s.dom_next = s.dom_level.clone();
         s
@@ -750,27 +878,6 @@ impl<'a> Solver<'a> {
     }
 
     // ---- capacities ---------------------------------------------------------------------------
-
-    /// A domain's running level at `level`, or None when it is stopped or overstressed (§9.3: Create's
-    /// floating-point sum of `count × |ratio × speed| × impact` against the level's capacity).
-    pub fn running(&self, d: u32, level: u32) -> Option<u32> {
-        let dom = &self.g.domains[d as usize];
-        let lv = dom.levels.get(level as usize)?;
-        if dom.flags & super::records::domain_flags::STRESS_DISABLED != 0 {
-            return Some(level);
-        }
-        let speed = f64::from(lv.speed_num) / f64::from(lv.speed_den.max(1));
-        let mut stress = 0.0f64;
-        for m in &dom.members {
-            let ratio = f64::from(m.ratio_num) / f64::from(m.ratio_den.max(1));
-            stress += f64::from(m.count) * (ratio * speed).abs() * m.impact;
-        }
-        if lv.capacity < stress {
-            None
-        } else {
-            Some(level)
-        }
-    }
 
     /// The node's level index (its domain's, 0 outside one) and whether it runs at all.
     fn level(&self, v: u32, dl: &[Option<u32>]) -> Option<u32> {
@@ -1227,6 +1334,7 @@ impl<'a> Solver<'a> {
         let g = self.g;
         let dl = self.dom_level.clone();
         self.dom_next = self.dom_level.clone();
+        self.src_next.clone_from(&self.src_row);
         for i in 0..g.order.len() {
             let v = g.order[i];
             self.saturated[v as usize] = false;
@@ -1838,7 +1946,12 @@ impl<'a> Solver<'a> {
         let duty = std::mem::take(&mut self.duty);
         let level = self.boiler_level(v, w, &duty, false);
         self.duty = duty;
-        self.dom_next[d as usize] = self.select_level(d, level);
+        for (i, src) in g.sources_of(d).zip(&g.domains[d as usize].sources) {
+            if src.driver == Some(v) {
+                self.src_next[i] = source_row(src, level);
+            }
+        }
+        self.dom_next[d as usize] = domain_state(g, d, &self.src_next).0;
         // Heaters at part duty make the boiler's goods bounded (§9.3).
         for &e in g.heat_in.of(v) {
             let h = g.edge(e).from as usize;
@@ -1881,18 +1994,6 @@ impl<'a> Solver<'a> {
         let tank = g.node(v).params[0];
         let size_level = if tank > 0 { (tank / 4).min(18) } else { 18 };
         heat.min(water_level).min(size_level).max(0)
-    }
-
-    /// The domain's level for a driver value: the largest selector at or below it, if it runs.
-    pub fn select_level(&self, d: u32, value: i64) -> Option<u32> {
-        let dom = &self.g.domains[d as usize];
-        let mut best: Option<(u32, u32)> = None;
-        for (i, l) in dom.levels.iter().enumerate() {
-            if i64::from(l.selector) <= value && best.is_none_or(|b| l.selector > b.0) {
-                best = Some((l.selector, i as u32));
-            }
-        }
-        self.running(d, best?.1)
     }
 
     /// Runs the rounds to the fixed point (or the cap).
@@ -1995,6 +2096,8 @@ impl<'a> Solver<'a> {
                 self.dom_level = self.dom_next.clone();
                 changed = true;
             }
+            // A source's row moves the domain's capacity, which only its row's running says.
+            self.src_row.clone_from(&self.src_next);
             // A duty that changed is not a change of L's (the round after reads it as assumed),
             // but its part has not settled.
             for v in 0..self.g.nodes.len() {
@@ -2035,7 +2138,7 @@ impl<'a> Solver<'a> {
     fn mark_domain(&mut self, d: u32) {
         let g = self.g;
         let dom = &g.domains[d as usize];
-        if let Some(b) = dom.driver {
+        for b in dom.drivers() {
             self.moved[b as usize] = true;
         }
         for m in &dom.members {
@@ -2269,18 +2372,19 @@ pub(crate) fn classes(s: &mut Solver<'_>, converged: bool) -> Classes {
         }
     }
     for (d, dom) in g.domains.iter().enumerate() {
-        let Some(b) = dom.driver else { continue };
-        if g.drives[b as usize] != Some(d as u32) {
-            continue;
-        }
-        for m in &dom.members {
-            if let Some(v) = m.node {
-                uf.union(b, v);
+        for b in dom.drivers() {
+            if g.drives[b as usize] != Some(d as u32) {
+                continue;
             }
-        }
-        for (v, node) in g.nodes.iter().enumerate() {
-            if node.domain == Some(d as u32) {
-                uf.union(b, v as u32);
+            for m in &dom.members {
+                if let Some(v) = m.node {
+                    uf.union(b, v);
+                }
+            }
+            for (v, node) in g.nodes.iter().enumerate() {
+                if node.domain == Some(d as u32) {
+                    uf.union(b, v as u32);
+                }
             }
         }
     }
@@ -2434,11 +2538,14 @@ fn unsettled(s: &Solver<'_>, uf: &mut Uf) -> Vec<bool> {
         su.union(x, uf.find(x));
     }
     for (d, dom) in g.domains.iter().enumerate() {
-        let mut first: Option<u32> = dom.driver;
+        let mut first: Option<u32> = None;
         let mut join = |v: u32, su: &mut Uf| match first {
             Some(a) => su.union(a, v),
             None => first = Some(v),
         };
+        for b in dom.drivers() {
+            join(b, &mut su);
+        }
         for m in &dom.members {
             if let Some(v) = m.node {
                 join(v, &mut su);
@@ -2552,7 +2659,14 @@ pub(crate) fn solve_with(
                 b_in[gi] = b_in[gi].max(g.batch_units(from, s.goods[gi]));
                 let k = (inv, s.goods[gi]);
                 per_store.insert(k, per_store.get(&k).copied().unwrap_or(Q::ZERO).add(x));
-                store_edges.push((e, s.goods[gi], x.to_f64(), true));
+                store_edges.push(StoreEdge {
+                    edge: e,
+                    good: s.goods[gi],
+                    flow: x.to_f64(),
+                    into: true,
+                    class: u32::from(comp_taint[out_side(from)]),
+                    why: comp_why[out_side(from)],
+                });
             }
         }
         for &e in g.out_g.of(v) {
@@ -2567,12 +2681,21 @@ pub(crate) fn solve_with(
                 b_out[gi] = b_out[gi].max(g.batch_units(to, s.goods[gi]));
                 let k = (inv, s.goods[gi]);
                 per_store_out.insert(k, per_store_out.get(&k).copied().unwrap_or(Q::ZERO).add(x));
-                store_edges.push((e, s.goods[gi], x.to_f64(), false));
+                store_edges.push(StoreEdge {
+                    edge: e,
+                    good: s.goods[gi],
+                    flow: x.to_f64(),
+                    into: false,
+                    class: u32::from(comp_taint[to as usize]),
+                    why: comp_why[to as usize],
+                });
             }
         }
     }
     // Stochastic sources: λ E[X²] per good they emit.
     let mut var_rate = vec![0.0f64; gn];
+    let mut src_var: Vec<(u32, Good, f64)> = Vec::new();
+    let mut roll_var: Vec<(u32, Good, f64, f64)> = Vec::new();
     for v in 0..n as u32 {
         let node = g.node(v);
         if node.kind != NodeKind::Source
@@ -2601,6 +2724,7 @@ pub(crate) fn solve_with(
         for gi in emitted {
             if lambda.is_finite() {
                 var_rate[gi as usize] += lambda * ex2;
+                src_var.push((v, s.goods[gi as usize], lambda * ex2));
             }
         }
     }
@@ -2620,11 +2744,18 @@ pub(crate) fn solve_with(
             continue;
         }
         // What the node made of each good, chance or not.
+        let mut mine: BTreeMap<u32, Q> = BTreeMap::new();
         for &e in g.out_g.of(v) {
             for sl in s.slots_of(e) {
                 let gi = s.slot_good[sl] as usize;
                 made[gi] = made[gi].add(s.used[sl]);
+                let m = mine.entry(gi as u32).or_insert(Q::ZERO);
+                *m = m.add(s.used[sl]);
             }
+        }
+        for &(gi, x) in &s.chance_var[v as usize] {
+            let m = mine.get(&gi).copied().unwrap_or(Q::ZERO).to_f64();
+            roll_var.push((v, s.goods[gi as usize], x, m));
         }
     }
     for gi in 0..gn {
@@ -2655,8 +2786,14 @@ pub(crate) fn solve_with(
             })
             .collect(),
         dom_level: s.dom_level.clone(),
+        dom_cap: (0..g.domains.len() as u32)
+            .map(|d| domain_state(g, d, &s.src_row).1)
+            .collect(),
+        src_row: s.src_row.clone(),
         duty: s.duty.clone(),
         fed: s.fed.iter().map(|q| q.to_f64()).collect(),
+        src_var,
+        roll_var,
         has_unbounded,
         lp_solves: 0,
         lp_skipped: 0,

@@ -101,9 +101,14 @@ final class BogeyMeshes {
         }
     }
 
+    /**
+     * How far from its block's middle a bogey's vertices may be, blocks; a bogey drawn with a vertex past that, or
+     * not finite, is left out of the far meshes (DHT73).
+     */
+    static final float REACH = 5f;
     /** By style, size, axis and orientation; a null value is a bogey that would not draw. */
     private static final Map<String, Mesh> MESHES = new HashMap<>();
-    static int drawn, failed;
+    static int drawn, failed, outside;
     static long drawNanos;
 
     private BogeyMeshes() {}
@@ -177,6 +182,18 @@ final class BogeyMeshes {
         style.render(size, 0f, ps, capture, LightTexture.pack(0, 15), OverlayTexture.NO_OVERLAY, 0f, null, true);
         Mesh mesh = new Mesh();
         boolean any = false;
+        for (int l = 0; l < rec.length; l++)
+            for (int k = 0; rec[l] != null && k <= rec[l].n; k++) {
+                float x = rec[l].f[k * Mesh.FS] - 0.5f, y = rec[l].f[k * Mesh.FS + 1] - 0.5f,
+                        z = rec[l].f[k * Mesh.FS + 2] - 0.5f;
+                // Written so that NaN fails too
+                if (!(Math.abs(x) <= REACH && Math.abs(y) <= REACH && Math.abs(z) <= REACH)) {
+                    if (outside++ < 5)
+                        MicRtsimCreate.LOGGER.warn("[mic_rtsim_create] bogey {} {} drew a vertex at {} {} {} from its"
+                                + " block's middle (past {}); left out of the far view", styleId, sizeId, x, y, z, REACH);
+                    return null;
+                }
+            }
         for (int l = 0; l < rec.length; l++)
             if (rec[l] != null && rec[l].n >= 0) {
                 mesh.count[l] = rec[l].n + 1;
