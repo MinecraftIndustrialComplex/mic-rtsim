@@ -618,8 +618,8 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   band). The same shapes as in Ben's client and arm A, if rarer (once in 36 minutes, against twice in 34 in arm A
   and three times in 34 in the arm above). So what draws them is none of the three, and neither storm fog nor a
   SimpleClouds storm; left in the copy that draw: DH (loaded; the DH-off arm below was black with DH loaded and
-  drawing nothing), Sable 2.0.5, Sodium 0.8.13 with Sodium Extra 0.9.4, Particle Core 0.3.3, and vanilla's own
-  weather. No Iris or Oculus.
+  drawing nothing), Sable 2.0.5, Sodium 0.8.13 with Sodium Extra 0.9.4, Particle Core 0.3.3, Create 6.0.10 with
+  Flywheel 1.0.6, and vanilla's own weather. No Iris or Oculus. The capture below names Flywheel.
 - **DH rendering off: still black.** With DH's renderer off (`rendererMode = "DISABLED"`, DH still loaded) and storm
   fog on, at noon, three huge black polygons with straight edges came 568 s into the flight and stayed 20 s, up to
   96% of the sky band. With DH loaded SimpleClouds always takes its DH pipeline, which draws its cloud mesh, storm
@@ -627,8 +627,31 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   its storm fog was most likely not drawn either. `/pa tornado list` just after: no active tornadoes. So the black
   needs neither DH's LODs nor a tornado, and what draws the shapes is not DH, not SimpleClouds' cloud mesh and not
   ours. Their colour (black here and with storm fog on, white in one arm with storm fog off and DH on, black again
-  in the next two) may be GL state left bound by whatever drew before them, as in the DH bug below; a guess, not
-  shown.
+  in the next two): see the capture below.
+- **Captured: Flywheel's indirect backend draws them.** At about one spell per 35 storm minutes, removing mods one
+  arm at a time would not converge, so the full copy (storm fog off, our far view OFF, the forced storm, the same
+  route) ran under RenderDoc 1.44 (`renderdoccmd capture`), with a watcher on the probe's frames that pressed the
+  capture key once near-black (luma under 6) covered 2% of the sky band in two samples running. It caught one
+  spell, a slanted black slab across the sky; the capture stays local with the copy's media. Pixel history: every
+  black sky pixel is written by one draw, a `glMultiDrawElementsIndirect` of Flywheel 1.0.6's indirect backend
+  (Create's renderer; the copy loads Flywheel 1.0.6, the version Create 6.0.10 bundles, and `flywheel-client.toml`
+  `backend = "DEFAULT"` takes indirect on this GPU), program `flywheel:instance/transformed` with
+  `flywheel:material/default`, into the main target with the blocks atlas; DH's fade pass then copies it on. The
+  draw is 144 instances of a 32-vertex track-rail segment (an I-beam profile 0.28 high and 0.5 long): 140 are sane
+  rail pieces and four are garbage (pose scales of 1e19 to 1e22, matrices that are not affine, and one slot's
+  bytes ASCII from some shader's source, so memory never written with instance data). After the vertex shader one
+  of the four stretches from the top edge of the screen to well below its middle: the slab. Its colour word's
+  alpha (63) is the pixel's. Flywheel's own state calls those slots live: the cull dispatch before the draw reads
+  their 32-slot page as the rail model's, with their validity bits set. So Flywheel draws instances whose data
+  never reached its instance buffer; why (an upload ordering or resize fault) is not shown, nor why storms bring
+  it on more often. Two other rail draws in the frame carry three and four garbage instances, off screen in that
+  frame. A slab's colour is the garbage's own colour and light, which would explain black in most arms and white
+  in one; not shown. The white planes in the same frame are SimpleClouds' cloud cubes at the camera's height (its
+  instanced cube mesh, drawn into its clouds target and composited over the scene), not this. Sable 2.0.5 logs
+  that it overrides Flywheel's shaders and light storage; the draw's shaders carry no Sable code, and Sable's Java
+  side was not read. A way round, not tested and Ben's to choose: Flywheel's instancing backend
+  (`flywheel-client.toml` `backend = "flywheel:instancing"`, or `/flywheel backend instancing` in game), which
+  keeps each instancer's instances in a buffer of its own, not the paged store where the garbage sat.
 - **Our world, storm fog on and off.** About 20 minutes with storm fog on (four standpoints 150 blocks from a
   tornado looking up and level, the storm's edge from 450 to 850 blocks, and the tornado from 450 blocks at four
   bearings) and a second session with it off: no black frame in either. With storm fog on the tornado is a grey
@@ -660,12 +683,13 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   `projectatmosphere-common.toml` `[display]` `cloudMode = "FULL"`, `[storms]` `enableTornadoes = true`,
   `[storms.tornado]` `disableSimpleCloudsTornadoSSBO = false`; `DistantHorizons.toml`
   `[client.advanced.debugging]` `rendererMode = "DEFAULT"` (`"DISABLED"` for the DH-off arm) and
-  `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`. The arms changed only the copy's
+  `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`; `flywheel-client.toml`
+  `backend = "DEFAULT"` (indirect here; `"flywheel:instancing"` is the untested way round). The arms changed only the copy's
   instance; nothing in the pack or Ben's instances.
 - **Ben's call (2026-10-24):** storm fog off pack-wide (`renderStormFog = false`, the pack's d00ca03), and no
   report upstream; reverted (8947c6a) when the forced-storm arm came black with it off.
 - Nothing here adds an entity, block or item to a world (D3): the guards check our own meshes, and the probe was a
-  dev build's. Nothing was filed upstream.
+  dev build's; RenderDoc ran on the copy's client only. Nothing was filed upstream.
 
 ### Not measured or not exercised
 
