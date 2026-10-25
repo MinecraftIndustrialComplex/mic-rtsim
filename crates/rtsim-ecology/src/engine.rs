@@ -406,11 +406,18 @@ pub struct Dragons {
     /// then is a replayed DRAGON_MATERIALIZED the last session's answer to this engine's decision
     /// (docs/replay-gate.md §5.2). Set by [`Dragons::begin_replay`]; in memory only.
     pub(crate) replay_from_pages: bool,
+    /// The arena's next index when this session's replay began (RP-70): only a dragon below it is
+    /// in the pages, so only its replayed DRAGON_MATERIALIZED is the last session's answer to this
+    /// engine's decision. A dragon at or above it was allocated by the replay itself (or after
+    /// it): a different dragon than the last session's at that index. Set by
+    /// [`Dragons::begin_replay`]; in memory only.
+    pub(crate) replay_next: u32,
     /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30): agent to the highest epoch the
     /// engine has seen for it that its dragon's own `epoch` does not hold (any replayed record or
     /// copy that names one, RP-57). A dragon's next body takes an epoch above both. Not the epoch
     /// itself: a dragon embodied at an older one keeps it, so that its records still find it.
-    /// Folded into the epochs at the replay end; in memory only.
+    /// Folded into the epochs at the replay end, or when the agent's dragon is allocated (RP-75):
+    /// a floor of an agent nothing has allocated yet stays; in memory only.
     pub(crate) floors: BTreeMap<u64, u32>,
     pub(crate) players: BTreeMap<ActorId, PlayerView>,
     pub(crate) index: PreyIndex,
@@ -584,6 +591,7 @@ impl Dragons {
             food_by_season: [[0; PreyKind::COUNT]; 4],
             outbox: Outbox::default(),
             replay_from_pages: false,
+            replay_next: 0,
             floors: BTreeMap::new(),
             players: BTreeMap::new(),
             index: PreyIndex::default(),
@@ -988,6 +996,11 @@ impl Dragons {
             sensed: Vec::new(),
         };
         let d = self.dragons.insert(row);
+        // The floor of an agent that had none to hold it (a replayed record of the last session's
+        // dragon at this index, RP-75): its first body is above it.
+        if let Some(floor) = self.floors.remove(&agent_of(d)) {
+            self.dragons.get_mut(d).expect("live").epoch = floor;
+        }
         self.far.mark(d);
         self.schedule(at + left, Ev::Death { d });
         if let Some(l) = n.lair {
@@ -3245,7 +3258,8 @@ impl Dragons {
     /// before it embodies (`materialize` across a stopped seam), which spends it when it does.
     fn epoch_after(&self, d: DragonId) -> u32 {
         let floor = self.floors.get(&agent_of(d)).copied().unwrap_or(0);
-        self.dragons[d].epoch.max(floor) + 1
+        // Epochs come from a plugin record too: a wrap is back to 1, never 0 (0 is no body).
+        self.dragons[d].epoch.max(floor).wrapping_add(1).max(1)
     }
 
     /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a
@@ -3293,6 +3307,7 @@ impl Dragons {
     /// DRAGON_MATERIALIZED honoured (§5.2).
     pub fn begin_replay(&mut self, from_pages: bool) {
         self.replay_from_pages = from_pages;
+        self.replay_next = self.dragons.next_index();
         self.outbox.begin_replay();
         self.chests.clear();
     }
@@ -3318,8 +3333,11 @@ impl Dragons {
             self.player_left(w, p);
         }
         self.outbox.replay_done();
-        for (agent, floor) in std::mem::take(&mut self.floors) {
+        // A floor of an agent nothing has allocated stays (RP-75): a dragon born there later
+        // folds it in when it is allocated ([`Dragons::add_dragon`]).
+        for agent in self.floors.keys().copied().collect::<Vec<u64>>() {
             if let Some(d) = dragon_of(agent).filter(|d| self.dragons.contains(*d)) {
+                let floor = self.floors.remove(&agent).unwrap_or(0);
                 let x = self.dragons.get_mut(d).expect("live");
                 x.epoch = x.epoch.max(floor);
             }
@@ -3332,12 +3350,14 @@ impl Dragons {
     /// records of that body that follow count against it: `epoch` = the record's, Embodied (since
     /// the record's time, never departing, home, not harassing), its abstract leg cancelled, its
     /// health and place fixed as `materialize` fixes them. An epoch at or below the dragon's own
-    /// changes nothing.
+    /// changes nothing. Nor does the record of an index at or above the arena's next index when
+    /// the replay began (RP-70): the dragon there, if any, was allocated by the replay, and is not
+    /// the one the last session had.
     fn honour(&mut self, w: &mut World, m: &boundary::Materialized, at: Tick) {
         let Some(d) = dragon_of(m.agent).filter(|d| self.dragons.contains(*d)) else {
             return;
         };
-        if m.epoch <= self.dragons[d].epoch {
+        if d.index() >= self.replay_next || m.epoch <= self.dragons[d].epoch {
             return;
         }
         let (pos, y) = self.dragons[d].position(&self.topo, &self.lairs, at);

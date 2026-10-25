@@ -3709,7 +3709,24 @@ changed; the lead runs `gametest.sh iceandfire`.
   Embodied since the record's time, never departing, purpose Home, not harassing, health fixed as
   `materialize` fixes it, its rest its current position, its abstract leg cancelled, `by_entity`
   and the tracking set updated. A fresh engine (RP-31) only raises the floor. A record at or below
-  the dragon's epoch changes nothing. Option not taken: reading the purpose and the harass flag
+  the dragon's epoch changes nothing. Nor does one for a dragon the pages do not hold (the review
+  of the first pass): `begin_replay` records the arena's next index (`replay_next`, in memory
+  only), and the honour takes only a dragon below it. The arena hands indices out in order, never
+  reuses one, and its generation is always 1, so an agent whose index is at or above it names a
+  dragon the last session allocated after the pages, and a dragon the replay itself allocates at
+  that index (a clutch's young, a newcomer after a death, a field visitor, RP-72(b)) is another
+  one that merely has the same agent number. Honoured, the replayed MATERIALIZED would embody it
+  and the HURT and DIED that follow would wound or kill it. Not honoured: its epoch is a floor
+  (RP-75) and the records that follow find no body. Failing first (run on
+  41d3f2b8): `a_replayed_body_of_an_index_the_replay_allocates_embodies_nothing` (a dragon the
+  replay allocated at index 1, then the last session's MATERIALIZED, HURT and DIED for index 1):
+  embodied by the record, "the last session's body is not this dragon's"; after, it is untouched,
+  with its health, and alive. Control `a_replayed_body_of_a_dragon_in_the_pages_is_honoured` (the
+  second dragon in the pages, record at epoch 1, then a wound to 100) passes on both: embodied at
+  epoch 1, health 100. Option not taken: honouring a dragon the replay allocated when its draw is
+  the same as the last session's (the visitor's roll is a stream of seed, frame and tick): the
+  engine cannot tell it from a different dragon at the same index, and a wrong embodiment kills an
+  innocent dragon while a missed one only drops a wound. Option not taken: reading the purpose and the harass flag
   from the command (the record carries neither; the dragon is abstract at the replay end whatever
   they were, and what matters is that the records that follow count against the body). Failing
   first: rtsim-jni's `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (a lair's dragon
@@ -3759,10 +3776,17 @@ changed; the lead runs `gametest.sh iceandfire`.
     a replay `in_person` can differ from the session that went on, which spares a raid its own oil
     burn and wounds (OGC57); the replayed BREATHS and HURT of a real fight then apply over a raid
     that did or did not also burn and wound: bounded by one raid's passes. (b) The field-flight
-    rolls read `presence`, set by `player_at`, which waits for the replay end (and is not saved), so
-    no roll fires in the window and no visitor is drawn; a visitor the last session drew after the
-    pages is not in the pages, its replayed MATERIALIZED names an agent the engine does not hold
-    (floor only, RP-75), and its body is gone anyway. Failing first:
+    rolls read `presence`, set by `player_at`, which waits for the replay end. Presence IS saved
+    (persist.rs, the oil gate's block, in and out), and a presence is fresh for
+    `presence_fresh_ticks` (200) after its last report, so a roll in the replayed window within 200
+    ticks of the save still finds a fresh presence and can draw a visitor (`field_roll`, a stream
+    of seed, frame and tick): a dragon the replay allocates at the arena's next index. The last
+    session's own draw, with presence it kept up to date, may have allocated a dragon at that same
+    index, embodied it, and had it wounded or killed. Its replayed records name an agent the
+    replay now holds as a different dragon; RP-70's bound refuses to embody it, so a visitor is
+    abstract at the replay end and its wounds are not applied (bounded by one visitor per roll in
+    a 200-tick window), and its epochs are floors (RP-75). An earlier version of this line said
+    presence is not saved and no visitor is drawn in the window; both were wrong. Failing first:
     `a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract` (a grudge
     raid on a watched farm, the whole run a replay): 1 materialization on the base, none after,
     the raid's outcome, damage and count equal to the live run's; and
@@ -3825,11 +3849,20 @@ changed; the lead runs `gametest.sh iceandfire`.
     and `HerdFound` wait already (RP-33). `ScriptVillage` and `Phase1SpawnNear` reach neither
     engine (the second is skipped while replaying, RP-44). `Phase1Advance` moves the offset every
     module's record times add (`phase1::world_tick`), so one taken in a replay would put the
-    replayed records after it an offset later; it hands the dragons no command or decision, it is
-    phase 1's order (slice C) and no test orders it during a replay, so it is not held here. A
-    fork, reported: add `Order::Phase1Advance(_)` to `waits_for_the_replay_end` if the lead wants
-    it. `IndustryThreat` and `IndustryCommand` go to the industry engine, which is not held during
-    the replay (the coordinator's decision of 2026-10-24); `TalkReport` reaches no dragon.
+    replayed records after it an offset later, the dragons' among them. It is held: it joins
+    `waits_for_the_replay_end` with the rest (the review of the first pass; first reported as a
+    fork). Failing first: `a_phase1_advance_ordered_while_replaying_waits_for_the_replay_end` (the
+    same replay under way, an advance of 5,000,000 ordered after the first hand-over): the
+    dragons' clock at 5,001,006 while the replay runs, with the hold removed; held, it stays
+    below until the replay ends and is at least 5,000,000 after. Control
+    `a_phase1_advance_ordered_without_a_replay_is_taken_at_once`. `IndustryThreat` and
+    `IndustryCommand` go to the industry engine, which is not held during the replay (the
+    coordinator's decision of 2026-10-24: industry keeps its own clock and replay rules, and its
+    orders embody nothing); `TalkReport` reaches no dragon.
+  - Test orders written straight to Java by the engine's `take_unit` (SpawnGroup, DespawnGroup,
+    SteerGroup, TransferToContainer, and the scripted phase 1 commands Market, MerchantOffers,
+    WriteGossip, Sentiment, PlaceHouse, SpawnResident) are not gated: phase 1 is not an RP
+    module, and they are a test's. The dragons' gate covers the dragons' own commands only.
   - Founding paths, inside the engine, all state and none a command: LAIR_FOUND (a journaled
     record, replayed in order) makes a lair; a clutch's young (`Breed`), a newcomer after a
     death (the respawn) and a field visitor (`draw_visitor`) make an abstract dragon, which
@@ -3850,14 +3883,28 @@ changed; the lead runs `gametest.sh iceandfire`.
     no session, and read this one.
 - **RP-75** (no epoch is used twice; §5.3; RP-7, RP-30, RP-37, RP-57): the floor is an in-memory
   map, agent to the highest epoch seen that the dragon's own `epoch` does not hold. A dragon's
-  next epoch is `max(epoch, floor) + 1` (`next_epoch`; `materialize` computes it without spending
+  next epoch is `max(epoch, floor) + 1`, wrapping to 1 and never 0 for an epoch off the wire at
+  `u32::MAX` (`next_epoch`; `materialize` computes it without spending
   (`epoch_after`) and spends the floor only after the Materialize is pushed, so a return across an
   edge_stop seam keeps it). `untagged` and `adopt_again` take their epochs from it too (the first
   adoption's epoch was a literal 1). The fold is the top of `ingest` while replaying and of
   `ingest_copy` always, before any check that drops the record (a refusal, a stale despawn, a body
-  not held, a dragon not in the pages yet). `replay_done` folds each floor into its dragon's epoch
-  and clears the map, so the pages carry it; a floor of a dragon no longer in the arena is
-  dropped (a killed dragon's agent is a handle with a generation, and is never reissued). A live
+  not held, a dragon not in the pages yet). `replay_done` folds each floor of a dragon in the arena into
+  its epoch, so the pages carry it. A floor of an agent nothing has allocated stays in the map
+  past the replay end (the review of the first pass): the last session allocated a dragon at that
+  index after the pages (RP-70) and a record of its body named an epoch, so a dragon allocated at
+  that index later (`add_dragon`) starts at the floor (its `epoch`), and its first body is above
+  it. A killed dragon's agent is a handle with a generation, never reissued, so its floor would
+  never be spent, and costs a map entry in memory until the next restart. The floors are in
+  memory only: a second restart before the allocation loses them, and the replay of the records
+  after the later save does not name them again. Accepted: the last session's bodies are gone,
+  and only a copy or a record in flight could use the epoch. Failing first:
+  `the_floor_of_an_unallocated_agent_stays_for_the_dragon_born_there_later` (records of an
+  unallocated agent at epoch 3, the replay end, a dragon born at its index): the dragon's epoch 0
+  on 41d3f2b8 (so a first body at epoch 1, as the control's); after, 3 and a first body at 4. Control
+  `a_dragon_born_after_the_replay_with_no_record_starts_at_epoch_one`. Overflow:
+  `the_largest_replayed_epoch_does_not_overflow_the_next_one` (a record at `u32::MAX`: the next
+  body's epoch is 1, not a panic in a checked build or 0 in an unchecked one). A live
   copy's floor waits for the dragon's next materialize, as RP-57's does. Failing first, the epoch
   test (RP-7): `a_replayed_body_does_not_give_its_epoch_to_the_next_one` (the last session's
   MATERIALIZED at epoch 1 and its capture, then a new body): epoch 1 again on the base, 2 after;
@@ -3895,7 +3942,11 @@ changed; the lead runs `gametest.sh iceandfire`.
   mid-session) the end runs at once at the hand-over's time. `dragons::replay_end` runs at the
   session's replay end, at the replay clock (RP-24), before the other modules' ends; it calls
   `replay_done`, turns the far feed on (Java's far table is per session: far.rs) and takes the
-  commands. Switched off, the end stays due and the switch-on's reset runs it. `take_commands`
+  commands. Switched off, the end stays due and the switch-on's reset runs it. The arm's `leave_area` (shared.rs
+  `session_start`) still reaches the dragons, and does nothing there: the dragons' `Viewer` has
+  no `player_left` override, so the trait's no-op default runs. It is as if the dragons were left
+  out of the arm; their bodies are kept to the replay end (RP-70), whose `replay_done` does the
+  player work. `take_commands`
   logs a rise in the gate's "never" count at once with the kind, and the replay end's log line
   carries the dragons' dropped, never and deferred counts beside conflict's. `ingest` routes a
   copy (`st.applying_copy`) to `ingest_copy`.

@@ -375,6 +375,134 @@ fn a_replayed_body_takes_the_wounds_that_follow() {
     );
 }
 
+/// A rig whose pages hold two dragons (indices 0 and 1), read back from them, and the second.
+fn two_from_pages() -> (Rig, DragonId) {
+    let mut r = rig();
+    let lair = r.d.dragon(r.x).unwrap().lair.expect("housed");
+    let y = r.d.add_dragon(&mut r.w, adult("Ember", lair), Tick(0));
+    (restarted(r), y)
+}
+
+/// The last session's dragon at the index the pages do not hold (an egg it hatched, an adoption)
+/// was materialized and hurt and killed after the save. The replay does not know it: a dragon it
+/// allocates itself at that index is a different dragon, and the replayed MATERIALIZED is not its
+/// answer (RP-70, docs/replay-gate.md §5.2). Before the bound: the new dragon was embodied by
+/// the last session's record and killed by its wounds.
+#[test]
+fn a_replayed_body_of_an_index_the_replay_allocates_embodies_nothing() {
+    let mut r = restarted(rig());
+    assert_eq!(r.d.dragons.next_index(), 1, "the pages hold one dragon");
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    let lair = r.d.dragon(r.x).unwrap().lair.expect("housed");
+    // The replay's own allocation, at the index the last session's V had.
+    let y = r.d.add_dragon(&mut r.w, adult("Newcomer", lair), Tick(450));
+    assert_eq!(
+        y.index(),
+        1,
+        "the replay allocates at the replayed agent's index"
+    );
+    let agent = agent_of(y);
+    let health = r.d.dragon(y).unwrap().health;
+    ingest(&mut r, &materialized(agent, 1), Tick(500));
+    assert!(
+        !matches!(r.d.dragon(y).unwrap().state, State::Embodied { .. }),
+        "the last session's body is not this dragon's"
+    );
+    ingest(&mut r, &hurt(agent, 1, 100.0), Tick(600));
+    ingest(&mut r, &died(agent, 1), Tick(700));
+    end(&mut r.d, &mut r.w, Tick(900));
+    let v = r.d.dragon(y).expect("V's death is not the new dragon's");
+    assert_eq!(v.health, health, "V's wounds are not the new dragon's");
+    assert!(
+        r.d.dragon(r.x).is_some(),
+        "and the dragon of the pages is untouched"
+    );
+}
+
+/// The control: the second dragon is in the pages, so the record is the last session's answer
+/// to this engine's own decision and is honoured: its wound counts.
+#[test]
+fn a_replayed_body_of_a_dragon_in_the_pages_is_honoured() {
+    let (mut r, y) = two_from_pages();
+    assert_eq!(r.d.dragons.next_index(), 2, "the pages hold two dragons");
+    let agent = agent_of(y);
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    ingest(&mut r, &materialized(agent, 1), Tick(500));
+    assert!(
+        matches!(
+            r.d.dragon(y).unwrap().state,
+            State::Embodied { epoch: 1, .. }
+        ),
+        "the dragon of the pages is embodied as the last session had it"
+    );
+    ingest(&mut r, &hurt(agent, 1, 100.0), Tick(600));
+    end(&mut r.d, &mut r.w, Tick(900));
+    assert_eq!(r.d.dragon(y).unwrap().health, 100.0, "the wound counts");
+}
+
+/// The agent of an index nothing allocated during the replay keeps its floor past the replay end:
+/// the record of the last session's body names an epoch no body of a later dragon at that index
+/// may take again. Before: the floor was dropped at the replay end, and the dragon born there
+/// after it started again at epoch 1.
+#[test]
+fn the_floor_of_an_unallocated_agent_stays_for_the_dragon_born_there_later() {
+    let mut r = restarted(rig());
+    let lair = r.d.dragon(r.x).unwrap().lair.expect("housed");
+    let ghost = agent_of(DragonId::from_parts(1, 1));
+    let at = (4000.0, 100.0, 4000.0);
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    ingest(&mut r, &materialized(ghost, 3), Tick(500));
+    ingest(&mut r, &dematerialized(ghost, 3, 3, 400.0, at), Tick(700));
+    end(&mut r.d, &mut r.w, Tick(900));
+    // A dragon born after the replay end takes the index.
+    let y = r.d.add_dragon(&mut r.w, adult("Newborn", lair), Tick(950));
+    assert_eq!(agent_of(y), ghost, "the new dragon is at the ghost's index");
+    assert_eq!(
+        r.d.dragon(y).unwrap().epoch,
+        3,
+        "its epoch starts at the floor"
+    );
+    stay(&mut r, Tick(1_000));
+    let cmds = run(&mut r, Tick(1_010));
+    let first: Vec<_> = materializations(&cmds)
+        .into_iter()
+        .filter(|m| m.agent == ghost)
+        .collect();
+    assert_eq!(first.len(), 1, "it materializes at the lair: {cmds:?}");
+    assert_eq!(first[0].epoch, 4, "above the replayed 3");
+}
+
+/// The control: no record named the agent, the newborn's first body is epoch 1.
+#[test]
+fn a_dragon_born_after_the_replay_with_no_record_starts_at_epoch_one() {
+    let mut r = restarted(rig());
+    let lair = r.d.dragon(r.x).unwrap().lair.expect("housed");
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    end(&mut r.d, &mut r.w, Tick(900));
+    let y = r.d.add_dragon(&mut r.w, adult("Newborn", lair), Tick(950));
+    assert_eq!(r.d.dragon(y).unwrap().epoch, 0);
+    stay(&mut r, Tick(1_000));
+    let cmds = run(&mut r, Tick(1_010));
+    let first: Vec<_> = materializations(&cmds)
+        .into_iter()
+        .filter(|m| m.agent == agent_of(y))
+        .collect();
+    assert_eq!(first.len(), 1, "it materializes at the lair: {cmds:?}");
+    assert_eq!(first[0].epoch, 1);
+}
+
+/// An epoch the plugin names is a u32 off the wire: the largest one does not overflow the next
+/// body's epoch (it wraps to 1, never 0).
+#[test]
+fn the_largest_replayed_epoch_does_not_overflow_the_next_one() {
+    let mut r = restarted(rig());
+    let agent = agent_of(r.x);
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    ingest(&mut r, &materialized(agent, u32::MAX), Tick(500));
+    end(&mut r.d, &mut r.w, Tick(900));
+    assert_eq!(next_epoch(&mut r, Tick(1_000)), 1, "wrapped, and not 0");
+}
+
 /// A copy of a record from an ended session (S4p's REASSERT) embodies nothing, and its epoch is
 /// taken all the same, live or not.
 #[test]

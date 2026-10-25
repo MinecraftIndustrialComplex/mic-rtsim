@@ -555,8 +555,8 @@ ahead:
   four that run the clock there (the works grants and raids, TRIBUTE_START, HERD_FOUND) wait for
   the replay end (RP-33, the fix round's item 3): a unit given while replaying that holds one is
   queued, with every unit after it, and taken at the first step after the end. A conflict command
-  waits the same way, as it goes around the gate (§4.4, RP-66), and so do a dragon command and
-  NEST_DAY (§4.5, RP-74). The rest run no clock.
+  waits the same way, as it goes around the gate (§4.4, RP-66), and so do a dragon command, NEST_DAY
+  and a phase 1 advance, which shifts every later record's time (§4.5, RP-74). The rest run no clock.
 
 **The rule.** rtsim-jni keeps `st.replay_clock: Tick` (not saved): set at the SESSION_START arm to
 the world's present, and raised by `shared::catch_up` to each replayed record's world tick before it
@@ -694,13 +694,20 @@ with no `_` arm, every push of nest.rs, oil.rs and engine.rs through `Outbox::pu
 (Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew drops while
 replaying until slice N makes it send. The tests are the module's own (§4.2).
 
-Two routes go around the gate, and both are tests': rtsim-jni engine/dragons.rs `order_command`
+Three routes go around the gate, and all are tests': rtsim-jni engine/dragons.rs `order_command`
 (`Order::DragonCommand`, TEST mode only) puts a command of any kind straight into the host's queue,
-and `Order::NestDay` books the nests' next watch from the engine's own clock. Their verdict is
-"wait", as conflict's (§4.4, RP-66) and the herds': a unit holding one, and every unit after it, is
-held to the replay end with RP-33's orders (`waits_for_the_replay_end`, RP-74). The audit of the
-other routes (world orders, founding, lair and nest placement, oil, tribute coin) is in RP-74; none
-else goes around.
+`Order::NestDay` books the nests' next watch from the engine's own clock, and
+`Order::Phase1Advance` raises the offset every record's game time takes. Their verdict is "wait",
+as conflict's (§4.4, RP-66) and the herds': a unit holding one, and every unit after it, is held to
+the replay end with RP-33's orders (`waits_for_the_replay_end`, RP-74). The audit of the other
+routes (world orders, founding, lair and nest placement, oil, tribute coin) is in RP-74; none else
+goes around.
+
+Not gated, on purpose: the test orders written straight to Java by `take_unit` (SpawnGroup,
+DespawnGroup, SteerGroup, TransferToContainer, and the scripted phase 1 commands Market,
+MerchantOffers, WriteGossip, Sentiment, PlaceHouse, SpawnResident), because phase 1 is not an RP
+module and they are a test's own; and IndustryThreat and IndustryCommand, because industry keeps its
+own clock and its own replay rules (§3.6) and embodies nothing.
 
 ### 4.6 Herds (rtsim-ecology herds/boundary.rs `Cmd`)
 
@@ -779,7 +786,9 @@ the agent is embodied as the last session had it:
 - **Dragons** (DRAGON_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; the dragon's
   state becomes Embodied (since: the record's time, depart_at never, purpose home, no harass), its
   abstract leg cancelled, `by_entity` and the embodied index updated, as `materialize` does
-  without the command.
+  without the command. Only a dragon the pages hold is honoured (RP-70): `begin_replay` records the
+  arena's next index, and an agent at or above it names a dragon the last session allocated after
+  the pages, or a different one the replay allocated at that index; its record is a floor only.
 - **Herds** (HERD_MATERIALIZED: agent, epoch, spawned): `epoch` = the record's; `embodied` with every
   alive member and no player (the puppets count is reset at the replay end anyway).
 - **Ships** (SHIP_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; `set_embodied(id, true)`.
@@ -803,7 +812,8 @@ ships at their materialize). The floor is an in-memory map per engine, agent to 
 seen that the agent's own `epoch` does not hold (RP-30). Not the epoch itself: raising a party's
 `epoch` while it is embodied at an older one would make `party_of` and the despawn miss that body's
 records. At `replay_done`, when every agent is abstract, each floor folds into its agent's epoch and
-the map is cleared, so the pages carry it. A floor raised live (a copy after the replay end) waits
+the map is cleared (the dragons keep the floor of an agent nothing has allocated, §5.6), so the pages
+carry it. A floor raised live (a copy after the replay end) waits
 for the agent's next materialize. A restart loses the map; harmless, since no record of one body
 is ever applied to another (RP-8). Each module that has epochs has its own test: an epoch decided
 after the pages and answered in the journal is never decided again after a crash.
@@ -850,7 +860,8 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   to run (§6.1); then the kept notices go (`resend_notices`).
 - **Dragons:** every embodied dragon resumed where it was last seen (`resume(.., left: true)`),
   `by_entity` cleared, every player's interest leg cancelled, the epoch floors folded into the
-  dragons' epochs (§5.3). As built (RP-70, RP-75, RP-78): `session_start` is gone;
+  dragons' epochs (§5.3); the floor of an agent nothing has allocated stays, for a dragon born there
+  later (RP-75). As built (RP-70, RP-75, RP-78): `session_start` is gone;
   `begin_replay(from_pages)` changes no dragon (the bodies stay embodied through the replay, §5.1)
   and clears `chests` (the plugin's, reported again as its chests load; moved from the end to the
   start, since the replayed LAIR_CHEST records fill it again); `replay_done(w, at)` is a no-op

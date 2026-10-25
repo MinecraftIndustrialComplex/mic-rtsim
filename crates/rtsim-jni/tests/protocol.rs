@@ -2634,6 +2634,69 @@ mod dragons {
         assert_eq!(e.with_dragons(|d, _| d.nest_day_ticks()), 1_234);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
+
+    /// The dragons' clock, in ticks.
+    fn dragons_now(e: &Engine) -> u64 {
+        e.with_dragons(|d, _| d.now().0)
+    }
+
+    /// A test's phase 1 advance, far past anything the replayed journal holds.
+    const ADVANCE: u64 = 5_000_000;
+
+    /// RP-74: a phase 1 advance raises the offset that every record's game time takes, so taken
+    /// while the replay runs it would shift the replayed records still to come, the dragons'
+    /// among them, years into the future. It waits for the replay end too.
+    #[test]
+    fn a_phase1_advance_ordered_while_replaying_waits_for_the_replay_end() {
+        let (e, mut j) = a_replay_under_way("dragon-rp74-advance");
+        e.order(vec![Order::Phase1Advance(ADVANCE)]).unwrap();
+        j.idle();
+        assert_eq!(replays_ended(&e), 0, "still replaying");
+        assert!(
+            dragons_now(&e) < ADVANCE,
+            "the replayed records are not shifted: the dragons are at {}",
+            dragons_now(&e)
+        );
+        hand_over_all(&mut j);
+        j.idle();
+        assert_eq!(replays_ended(&e), 1, "the replay ended");
+        assert!(
+            dragons_now(&e) >= ADVANCE,
+            "applied once it has ended: the dragons are at {}",
+            dragons_now(&e)
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Control: no replay, the advance is taken at the first step.
+    #[test]
+    fn a_phase1_advance_ordered_without_a_replay_is_taken_at_once() {
+        let dir = tmpdir("dragon-rp74-advance-live");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.idle();
+        assert!(dragons_now(&e) < ADVANCE);
+        e.order(vec![Order::Phase1Advance(ADVANCE)]).unwrap();
+        j.idle();
+        // A record of the dragons' own, which takes the clock the offset gives it.
+        j.dragon_obs(&O::Hurt(db::Hurt {
+            agent: 0,
+            epoch: 0,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 1,
+            amount: 1.0,
+            health_after: 1.0,
+        }));
+        j.idle();
+        assert!(
+            dragons_now(&e) >= ADVANCE,
+            "the dragons are at {}",
+            dragons_now(&e)
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
 }
 
 // ---- ships (docs/boundary.md §7) ------------------------------------------------------------------
