@@ -1128,9 +1128,9 @@ fn district_load(at: u64, d: DistrictId, state: LoadState, ticking: u32) -> Time
 }
 
 /// The review's table (RP-272): two different decisions under one key at one tick, in a live
-/// run. A Mail pool's packages cannot be (RP-272 says why); deposit deltas can: two districts
-/// drawing on one diesel well both load at one tick, and one `flush_dirty` writes back both
-/// draws, the same plugin, chunk and good. On 2a975cc3 they had one key and the ordinal told
+/// run. A Mail pool's packages cannot be (each is named by its number, RP-259); deposit deltas
+/// can: two districts drawing on one diesel well both load at one tick, and one `flush_dirty`
+/// writes back both draws, the same plugin, chunk and good. On 2a975cc3 they had one key and the ordinal told
 /// them apart; since RP-275 the district is in the key. Either way two ops: Java, which guards a
 /// deposit delta by its op alone, applies both.
 #[test]
