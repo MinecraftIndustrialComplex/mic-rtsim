@@ -3538,6 +3538,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     the bridge does not sleep with either. The lurk's dimension is read from the names dictionary without
     the level, so a spot for a level not loaded yet is kept. `lurkBody` answers a live puppet of a party that
     is not recalling.
+  - Amendment (review C, item 4; compiled, not run): the bridge's `held` flag, which a switch-off reads to
+    decide whether there is anything to clear, was `!byAgent.isEmpty() || ...` without the lurks and the
+    pending roars. It is now `held = !idle()`, and `idle()` counts both (as the amendment above says it did), so
+    a module switched off with only a lurk or a pending roar left still runs `switchedOff`, which captures the
+    parties and calls `clearLurks()`. `trainCalled` returns at once when the conflict module is off (a module
+    that is off plays no roar for a train arriving). The `floors` map (a remembered floor y by agent) is
+    deleted with its three removals: nothing ever put into it or read it.
 - **MZB-360** (placement): a stack of a lurking agent's BAND_MATERIALIZE is placed at the spot, not on the
   arc.
   - Its y comes from a scan from track y + 4 down to track y - 8 for a block with a sturdy top face
@@ -3602,6 +3609,19 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     degrees on at the worst before it). The 90 degree line is a guess at how far the jar's lookAt gets the body
     in eight ticks: the 180 degree geometry makes the unfixed code fail by 60 degrees or more, and a fixed body
     short of it would fail the test falsely; if the round shows that, lower it.
+  - Amendment (review C, item 4, D1; compiled, not run): the walk-back called `getNavigation().moveTo(spot)`
+    at every hold while the body was beyond `STAND`, a path search a tick for a body that was already on its
+    way. Now `hold` calls `moveTo`
+    only when the navigation is done, or its `getTargetPos()` is more than a block (squared distance 2.0) from
+    the spot's block, so one search serves the whole walk. A private `stop(Mob)` stops the navigation in the
+    swipe, other-animation and within-`STAND` branches as before (behaviour unchanged) and counts a live path it
+    drops (`nav.isDone()` false before the stop). `FrostmawLurker` keeps two counters, `searches` and `dropped`, and the core `Lurker` gains two
+    default methods, `pathSearches()` and `pathsDropped()` (zero for a Lurker that keeps no count), so the create
+    project's test reads them through `Lurkers.of(mob)` without naming a Mowzie class. The counters are
+    plugin-wide, not per body; the one test that reads them differences them over its hold. Test 9 logs the
+    held puppet's path searches and dropped paths per second (MZB-370's item 4 amendment). The body's own
+    goals search besides, and the jar's navigation (`MMPathNavigateGround`) may restart a path of its own: the
+    counters measure what the hold asked for, not the pathfinder's total. No threshold: a count, not a check.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
@@ -3820,6 +3840,21 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       1.0 run (`rail_frostmaw_lurk`) keeps the whole test; the other two (`_slow`, `_fast`) skip the bait, the
       hold's checks and the hearer and end after the TRAIN_PASSED check. The rider is still the seated zombie, so
       the 3D filter is the one MZB-365's third amendment gates on.
+    - Amendment (review C, item 4; written and compiled, not run):
+      - Test 9's clearance gate is a near edge at least 1.5 blocks off the rail's centre line (it was 0.5). The
+        puppet's edge is its distance to the centre line less 2; the spot is `LATERAL` = 5 off, so the edge is 3.0
+        at the spot and 1.5 at the nearest the hold lets it stand (within `STAND` = 1.5 of the spot). The margin at
+        that nearest legal stand is nil, so a puppet pushed to the rail side of its stand fails exactly on the
+        line; it normally drifts away from the rail with the bait as its target, and the wall of the test is the
+        one place a failure would show it.
+      - Test 9's hold phase logs the hold's path searches and dropped paths per second
+        (`Lurkers.of(puppet).pathSearches()` and `pathsDropped()`, differenced over the hold; MZB-361's D1
+        amendment). A record, not a check; the first run's figure is the baseline.
+      - Test 8's moving half (`theIceBallHitRatesAgainstAMovingTrain`) now fails when no pass at the slowest
+        speed (0.5 blocks a tick) froze the rider, with "at least one pass at 0.5 blocks a tick froze the rider
+        (0/4, balls thrown at it: n)". It stays a measurement for the other speeds. This is a new gate on a
+        test that had none, so there is no earlier failing value to quote; the first run decides whether one pass
+        in four at the slowest speed is a fair floor.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
@@ -3957,6 +3992,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - M6 adds no `alwaysActive` and no lurk restriction, so M8 adds `Lurker`.
 - **MZB-374** (boundary.md): TRAIN_PASSED is live (the "come later" list, boundary.md:1752). AMBUSH_SPOT's
   spot y is the track's, with Java finding the floor. TRAIN_ROBBED's roar is a sound only.
+  - Amendment (review C, item 4): boundary.md's AMBUSH_SPOT section now states the spot-distance contract:
+    rail.rs `SPOT_BLOCKS` (5.0) against `AMBUSH_REACH` (8.0, the TRAIN_PASSED radius only), the sampler's
+    `STRIKE_REACH` (6.0, horizontal, on the landing point `SWING_TICKS` = 9 ticks on) and the Lurker's stand
+    (1.5) and restriction radius (2); the margin is 1.0 at the spot and nil-to-negative at the far side of the
+    stand, so the three move together. Its TRAIN_ROBBED section says who hears the station roar: a non-spectator
+    player in range who is not a NeoForge `FakePlayer` (`ConflictBridge.trainCalled` skips those; the
+    GameTests' `FakePlayers` hearer is a plain `ServerPlayer`, so it hears).
 
 ### M8 design for the implementer
 

@@ -494,8 +494,6 @@ public final class ConflictBridge implements SessionPlugin {
      */
     private final Map<Long, Lurk> lurks = new LinkedHashMap<>();
     private final Map<Long, Lurk> lurksView = Collections.unmodifiableMap(lurks);
-    /** The floor found for a lurk's spot (MZB-360), by agent: dropped with the lurk. */
-    private final Map<Long, Double> floors = new HashMap<>();
     /** M8 (MZB-366): trains a lurk robbed whose station has not roared yet, train to faction, oldest first. */
     private final Map<Long, Long> pendingRoars = new LinkedHashMap<>();
 
@@ -599,7 +597,6 @@ public final class ConflictBridge implements SessionPlugin {
     /** The lurk table and the pending roars are per session: empty them (the puppets were despawned or are going). */
     private void clearLurks() {
         lurks.clear();
-        floors.clear();
         pendingRoars.clear();
     }
 
@@ -1391,7 +1388,7 @@ public final class ConflictBridge implements SessionPlugin {
                     if (st.state == StackState.PENDING)
                         st.dirty = true;
         }
-        held = !byAgent.isEmpty() || !territories.isEmpty() || !notices.isEmpty() || !signals.isEmpty();
+        held = !idle(); // a lurk or a pending roar is held too: a switch-off clears them (MZB-359)
         if (!held) {
             reconciler.tick(now); // nothing without a camp declared (D1)
             return; // D1: no faction, nothing to do
@@ -2328,7 +2325,6 @@ public final class ConflictBridge implements SessionPlugin {
         Lurk l = new Lurk(agent, b.getInt(at + ConflictRecords.AmbushSpot.EPOCH), b.getLong(at + ConflictRecords.AmbushSpot.FACTION),
                 ResourceKey.create(Registries.DIMENSION, loc), track, spot, reach);
         Lurk old = lurks.put(agent, l);
-        floors.remove(agent);
         lurksKept++;
         Party p = byAgent.get(agent);
         if (p == null || p.recalling)
@@ -2350,7 +2346,6 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** A lurk ended: dropped by agent, and its puppets let go (the engine sends the steer or the recall after this). */
     private void endLurk(long agent) {
-        floors.remove(agent);
         if (lurks.remove(agent) != null)
             lurksRemoved++;
         Party p = byAgent.get(agent);
@@ -2497,7 +2492,7 @@ public final class ConflictBridge implements SessionPlugin {
      * once a player heard it, so an arrival with nobody near keeps it for the next. A train not pending returns at once.
      */
     public void trainCalled(long train, ServerLevel level, BlockPos station) {
-        if (pendingRoars.isEmpty())
+        if (pendingRoars.isEmpty() || !RtsimConfig.on(Module.CONFLICT)) // a module that is off plays nothing (MZB-359)
             return;
         Long faction = pendingRoars.get(train);
         if (faction == null)

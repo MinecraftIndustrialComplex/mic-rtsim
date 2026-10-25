@@ -29,4 +29,21 @@ public interface Lurker {
 
     /** A train it robbed is gone: the body announces it (a roar). */
     void roar(Mob mob);
+
+    /**
+     * D1 diagnostics (MZB-361): how many path searches this Lurker's holds have asked for since the game started
+     * (a {@code moveTo} is a search whether or not its path differs); zero for a Lurker that keeps no count.
+     */
+    default long pathSearches() {
+        return 0L;
+    }
+
+    /**
+     * D1 diagnostics: how many live paths its holds have dropped ({@code stop()} on a navigation still on its way,
+     * a path the body's own goals searched for, which they search for again next tick); zero for a Lurker that
+     * keeps no count.
+     */
+    default long pathsDropped() {
+        return 0L;
+    }
 }
