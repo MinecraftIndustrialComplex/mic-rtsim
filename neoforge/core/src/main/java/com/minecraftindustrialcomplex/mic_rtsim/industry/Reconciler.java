@@ -7,6 +7,7 @@ import net.minecraft.commands.arguments.blocks.BlockStateParser;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Exactly-once reconciliation on load (I8, docs/industry-boundary.md §4.1), and damage (C18, I23).
@@ -43,11 +45,18 @@ import java.util.Set;
  *       access) at the delta's position. A removal takes up to what is there, an addition puts in up to
  *       what fits. Then each destroy entry whose block still has the expected state is broken with
  *       {@code level.destroyBlock(pos, true)}, so its contents drop as items; the others are skipped.
- *       Fire is never placed.</li>
+ *       Fire is never placed. The dropped items are kept out of the level until the chunks the breaks
+ *       changed are on disk (step 6).</li>
  *   <li>In the same tick, the chunk's attachment takes the new epoch (with the result record, until the
  *       engine acknowledges it), so the contents and "epoch e applied" reach disk together in the
  *       chunk's NBT. IND_RECONCILE_RESULT (what was asked, what was applied, the blocks broken, the
  *       count skipped) and COMMAND_RESULT are journaled.</li>
+ *   <li>The drops of the breaks wait in memory while the chunks the breaks changed are written now
+ *       ({@code ChunkWriteBarrier.writeNow}), and join the level once they are on disk, each when its own
+ *       chunk's entities are loaded (docs/choices-journal-barrier.md RP-213). Item entities are saved apart
+ *       from their chunk, in {@code entities/}; a drop on disk with its chunk from before, the block still
+ *       standing and the epoch not yet applied, would be dropped again by the resent command. A write that
+ *       fails, or a stop while they wait, loses them (logged, counted): lose, never double.</li>
  * </ol>
  * A crash anywhere replays correctly: a chunk saved before step 5 still has its older epoch and its
  * older contents, and the journal's file is written only after the chunk's
@@ -61,9 +70,16 @@ public final class Reconciler {
 
     private record Held(byte[] bytes, long cmdSeq, int epoch) {}
 
+    /** The drops of one reconcile's breaks, waiting for the chunks they changed to be on disk (RP-213). */
+    private record Drops(ServerLevel level, List<ItemEntity> items, CompletableFuture<Boolean> written) {}
+
     private final Industry ind;
     private final Map<ChunkKey, List<Held>> held = new HashMap<>();
     private final Set<String> recommitted = new HashSet<>();
+    private final List<Drops> drops = new ArrayList<>();
+    /** The level whose item joins are taken as a break's drops, while a reconcile breaks blocks; else null. */
+    private ServerLevel capturing;
+    private final List<ItemEntity> captured = new ArrayList<>();
     private int opsLeft;
     private int quota;
     private long quotaTick = Long.MIN_VALUE;
@@ -77,6 +93,9 @@ public final class Reconciler {
     long blocksBroken;
     long blocksSkipped;
     long shortfalls;
+    /** Items a reconcile's breaks dropped, kept until their chunks were on disk; and those lost to a failed write. */
+    long dropsKept;
+    long dropsLost;
 
     Reconciler(Industry ind) {
         this.ind = ind;
@@ -227,6 +246,8 @@ public final class Reconciler {
 
     void tick(long now) {
         refreshQuota(now);
+        if (!drops.isEmpty())
+            releaseDrops();
         if (held.isEmpty())
             return;
         for (Iterator<Map.Entry<ChunkKey, List<Held>>> it = held.entrySet().iterator(); it.hasNext(); ) {
@@ -320,30 +341,40 @@ public final class Reconciler {
         // I1: the states before of everything a break may remove, to tell the plugins what the sim destroyed.
         Map<BlockPos, DestroyedBlock> before = m > 0 ? new LinkedHashMap<>() : null;
         int b0 = IndRecords.ChunkReconcile.DELTAS + n * IndRecords.ChunkReconcile.DELTA_SIZE;
-        for (int i = 0; i < m; i++) {
-            int e = b0 + i * IndRecords.ChunkReconcile.DESTROY_SIZE;
-            BlockPos pos = new BlockPos(r.getInt(e + IndRecords.ChunkReconcile.B_X), r.getInt(e + IndRecords.ChunkReconcile.B_Y), r.getInt(e + IndRecords.ChunkReconcile.B_Z));
-            String expected = ind.engineName(IndRecords.DICT_BLOCK_STATE, r.getInt(e + IndRecords.ChunkReconcile.B_STATE));
-            if ((pos.getX() >> 4) != cp.x || (pos.getZ() >> 4) != cp.z || expected == null
-                    || !BlockStateParser.serialize(level.getBlockState(pos)).equals(expected)) {
-                skipped++;
-                continue;
-            }
-            snapshotAround(level, pos, before);
-            // Broken with drops (C18, I23): containers spill their contents as recoverable items. The
-            // engine books the spill as a port (engine.rs reconcile_result), so the drops are marked:
-            // a player picking them up is not a second outflow. Another mod's onRemove may throw; the
-            // epoch and the result are written whatever happens here.
-            ind.ports.markDropsPorted(level, pos);
-            try {
-                if (level.destroyBlock(pos, true))
-                    broken.add(pos);
-                else
+        if (m > 0) {
+            dropsLost += captured.size(); // kept back by a reconcile that threw before it kept them
+            captured.clear();
+            capturing = level; // what the breaks drop is kept back (RP-213)
+        }
+        try {
+            for (int i = 0; i < m; i++) {
+                int e = b0 + i * IndRecords.ChunkReconcile.DESTROY_SIZE;
+                BlockPos pos = new BlockPos(r.getInt(e + IndRecords.ChunkReconcile.B_X), r.getInt(e + IndRecords.ChunkReconcile.B_Y), r.getInt(e + IndRecords.ChunkReconcile.B_Z));
+                String expected = ind.engineName(IndRecords.DICT_BLOCK_STATE, r.getInt(e + IndRecords.ChunkReconcile.B_STATE));
+                if ((pos.getX() >> 4) != cp.x || (pos.getZ() >> 4) != cp.z || expected == null
+                        || !BlockStateParser.serialize(level.getBlockState(pos)).equals(expected)) {
                     skipped++;
-            } catch (RuntimeException ex) {
-                ind.fail("breaking " + pos + " for a reconcile", ex);
-                skipped++;
+                    continue;
+                }
+                snapshotAround(level, pos, before);
+                // Broken with drops (C18, I23): containers spill their contents as recoverable items. The
+                // engine books the spill as a port (engine.rs reconcile_result), so the drops are marked:
+                // a player picking them up is not a second outflow (the mark is saved with them, RP-214).
+                // They join the level once the chunk is on disk (RP-213). Another mod's onRemove may throw;
+                // the epoch and the result are written whatever happens here.
+                ind.ports.markDropsPorted(level, pos);
+                try {
+                    if (level.destroyBlock(pos, true))
+                        broken.add(pos);
+                    else
+                        skipped++;
+                } catch (RuntimeException ex) {
+                    ind.fail("breaking " + pos + " for a reconcile", ex);
+                    skipped++;
+                }
             }
+        } finally {
+            capturing = null;
         }
         blocksBroken += broken.size();
         blocksSkipped += skipped;
@@ -384,6 +415,8 @@ public final class Reconciler {
         chunk.setUnsaved(true);
         ind.journalDependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        if (!captured.isEmpty())
+            keepDrops(level, chunk, removed);
         recommitted.add(level.dimension().location() + "/" + cp.toLong() + "/" + districtId + "/" + epoch);
         dropResultWhenAcked(level, cp, districtId, epoch, seq);
         applied++;
@@ -392,6 +425,75 @@ public final class Reconciler {
         if (d != null && !removed.isEmpty())
             ind.destroyed(level, d, removed, now);
         return true;
+    }
+
+    /**
+     * An item joining the level while a reconcile breaks blocks in it: kept back (its join is cancelled) and
+     * marked as ported now, while its break is this tick's. Server thread.
+     */
+    boolean captured(ItemEntity item) {
+        if (capturing == null || item.level() != capturing)
+            return false;
+        ind.ports.itemJoined(item);
+        captured.add(item);
+        return true;
+    }
+
+    /**
+     * The drops just captured wait for the reconcile's chunk, and the chunks of the other blocks its breaks
+     * removed, to be on disk (RP-213).
+     */
+    private void keepDrops(ServerLevel level, LevelChunk chunk, List<DestroyedBlock> removed) {
+        Map<Long, LevelChunk> chunks = new LinkedHashMap<>();
+        chunks.put(chunk.getPos().toLong(), chunk);
+        for (DestroyedBlock b : removed) {
+            LevelChunk c = level.getChunkSource().getChunkNow(b.pos().getX() >> 4, b.pos().getZ() >> 4);
+            if (c != null)
+                chunks.putIfAbsent(c.getPos().toLong(), c);
+        }
+        List<ItemEntity> items = new ArrayList<>(captured);
+        captured.clear();
+        dropsKept += items.size();
+        CompletableFuture<Boolean> written;
+        try {
+            written = ind.writeNow(level, chunks.values());
+        } catch (RuntimeException ex) {
+            ind.fail("writing the chunks of a reconcile's breaks", ex);
+            written = CompletableFuture.completedFuture(false);
+        }
+        drops.add(new Drops(level, items, written));
+    }
+
+    /**
+     * Drops whose chunks are on disk join the level, each once its own chunk's entities are loaded (the rest
+     * wait); those whose write failed are lost. Server thread, each tick.
+     */
+    private void releaseDrops() {
+        for (Iterator<Drops> it = drops.iterator(); it.hasNext(); ) {
+            Drops d = it.next();
+            if (!d.written().isDone())
+                continue;
+            if (!Boolean.TRUE.equals(d.written().getNow(false))) {
+                dropsLost += d.items().size();
+                MicRtsim.LOGGER.warn("[mic_rtsim] industry: {} item stacks a reconcile dropped are lost: their chunks could not be written first",
+                        d.items().size());
+                it.remove();
+                continue;
+            }
+            d.items().removeIf(item -> {
+                if (!d.level().areEntitiesLoaded(ChunkPos.asLong(item.blockPosition())))
+                    return false;
+                d.level().addFreshEntity(item);
+                return true;
+            });
+            if (d.items().isEmpty())
+                it.remove();
+        }
+    }
+
+    /** Drop batches waiting for their chunks' write or their entity chunks (the GameTests). */
+    public int dropsWaiting() {
+        return drops.size();
     }
 
     /**

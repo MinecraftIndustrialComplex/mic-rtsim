@@ -189,6 +189,7 @@ public final class ChunkWriteBarrier {
     // counters (the GameTests read them); the server thread's
     private long noted;
     private long forcedSaves;
+    private long writtenNow;
     private long entityNoted;
     private long entityStores;
     private long holdersResolved;
@@ -363,6 +364,76 @@ public final class ChunkWriteBarrier {
     public String strategy(ServerLevel level) {
         LevelWrites w = writesFor(level);
         return w == null ? "none" : w.kind();
+    }
+
+    /**
+     * Puts {@code chunks} of {@code level} on disk now, outside a journal round (docs/choices-journal-barrier.md
+     * RP-213: what waits for it must not reach disk before them). Each loaded unsaved chunk goes through
+     * vanilla's own {@code ChunkMap.save}, the level's chunk storage writes them ahead of its queue, as a round
+     * does, and their region files are forced to disk on the IO pool. Completes true once they are all on disk,
+     * false when one could not be saved or written (logged; a failed write is saved again at the next round, as
+     * a round's own is). True at once for a level that is not saving or whose writes cannot be ordered, as a
+     * round treats them. A noted chunk stays noted. Server thread; it never waits.
+     */
+    public CompletableFuture<Boolean> writeNow(ServerLevel level, java.util.Collection<LevelChunk> chunks) {
+        if (level.noSave())
+            return CompletableFuture.completedFuture(true);
+        LevelWrites w = writesFor(level);
+        if (w == null)
+            return CompletableFuture.completedFuture(true); // warned once: this level's writes cannot be ordered
+        List<ChunkPos> positions = new ArrayList<>(chunks.size());
+        for (LevelChunk c : chunks) {
+            if (((LevelChunkAccessor) c).mic_rtsim$loaded() && c.isUnsaved()) {
+                boolean saved;
+                try {
+                    saved = ((ChunkMapInvoker) level.getChunkSource().chunkMap).mic_rtsim$save(c);
+                } catch (RuntimeException ex) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] saving chunk {} now", c.getPos(), ex);
+                    saved = false;
+                }
+                if (!saved) {
+                    c.setUnsaved(true); // vanilla logged why and cleared the flag
+                    return CompletableFuture.completedFuture(false);
+                }
+                writtenNow++;
+            }
+            positions.add(c.getPos());
+        }
+        CompletableFuture<List<ChunkPos>> f;
+        try {
+            f = w.landed(positions);
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] asking {} to write chunks now", level.dimension().location(), ex);
+            return CompletableFuture.completedFuture(false);
+        }
+        Set<Path> files = new LinkedHashSet<>();
+        Path folder = w.regionFolder();
+        if (folder != null)
+            for (ChunkPos p : positions)
+                files.add(folder.resolve("r." + p.getRegionX() + "." + p.getRegionZ() + ".mca"));
+        return f.thenApplyAsync(bad -> {
+            if (!bad.isEmpty()) {
+                failedWrites.addAndGet(bad.size());
+                for (ChunkPos p : bad)
+                    failed.add(new Failed(level, p));
+                MicRtsim.LOGGER.warn("[mic_rtsim] {} chunk write(s) failed, {} first", bad.size(), bad.get(0));
+                return false;
+            }
+            String why = fsync(files);
+            if (why != null) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] {}", why);
+                return false;
+            }
+            return true;
+        }, net.minecraft.Util.ioPool()).exceptionally(ex -> {
+            MicRtsim.LOGGER.warn("[mic_rtsim] writing chunks now: {}", ex.toString());
+            return false;
+        });
+    }
+
+    /** Chunks {@link #writeNow} serialized. */
+    public long writtenNow() {
+        return writtenNow;
     }
 
     /**
