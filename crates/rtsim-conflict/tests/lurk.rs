@@ -873,6 +873,47 @@ fn a_copied_train_passed_is_dropped_and_robs_nothing() {
     assert_eq!(l.robbed(), vec![7]);
 }
 
+/// A pass the replay brings back is counted and rolls nothing (RP-154): the live session may have
+/// robbed it already, industry is not held while replaying and its attack op is derived from its
+/// present, so a second robbery would be a second op that Java applies again. `ambush_milli`
+/// 1000 makes every roll a hit, so the pass would rob if it rolled. The control: after the replay
+/// the same pass, live, robs train 7.
+#[test]
+fn a_replayed_train_passed_is_counted_and_never_rolls() {
+    let mut l = Lurk::raid(75);
+    let mut rails = Rails::new(&l.w, Some(3));
+    l.until_lurking();
+    l.c.tun.ambush_milli = 1000;
+    l.c.begin_replay(true);
+    l.c.take_commands();
+    l.said.clear();
+    assert!(l.c.replaying());
+    l.pass(&mut rails, 7, PASSED_WATCHED, 10);
+    assert_eq!(
+        (l.c.stats.passes, l.c.stats.passes_watched),
+        (1, 1),
+        "the pass is counted"
+    );
+    assert_eq!(l.c.stats.stale, 0, "and not stale");
+    assert!(rails.threats.is_empty(), "no attack on the train was asked");
+    assert_eq!(l.c.stats.lurk_robberies, 0);
+    assert_eq!(l.c.stats.ambushes, 0);
+    assert_eq!(l.c.stats.items_from_districts, 0);
+    assert!(l.c.ledger.from_players.is_empty(), "no loot taken");
+    assert!(l.c.log.iter().all(|e| e.kind != "ambush"), "no ambush noted");
+    assert!(l.robbed().is_empty(), "no TRAIN_ROBBED");
+    assert!(l.c.lurking(l.p), "the lurk goes on");
+
+    // The control: the same pass, live, rolls and robs.
+    l.c.replay_done();
+    l.said.clear();
+    l.pass(&mut rails, 7, PASSED_WATCHED, 10);
+    assert_eq!((l.c.stats.passes, l.c.stats.lurk_robberies), (2, 1));
+    assert!(!rails.threats.is_empty(), "the live pass attacked the train");
+    assert_eq!(l.robbed(), vec![7]);
+    l.c.check(&l.w).expect("books");
+}
+
 /// A pass rolls: a hit raids the train (one threat a class) and sends TRAIN_ROBBED; a miss sends
 /// nothing.
 #[test]

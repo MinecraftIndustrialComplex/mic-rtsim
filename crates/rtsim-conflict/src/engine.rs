@@ -594,7 +594,9 @@ pub struct ConflictStats {
     /// The lurk (MOWZIE.md §4.4, M8): lurks begun at a track (an AMBUSH_SPOT sent) and ended
     /// (its REMOVED sent), and the trains that passed one (TRAIN_PASSED taken), those of them
     /// watched by a player, and the robberies that were told (TRAIN_ROBBED sent: only a lurk's
-    /// ambush sends it, so `ambushes` also counts the on-the-way ones and is not this).
+    /// ambush sends it, so `ambushes` also counts the on-the-way ones and is not this). A pass
+    /// the replay brings back counts in `passes` and rolls nothing (RP-154), so `lurk_robberies`
+    /// counts only robberies told to Java, by a live session.
     pub lurks: u64,
     pub lurks_ended: u64,
     pub passes: u64,

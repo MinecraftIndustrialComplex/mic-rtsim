@@ -8403,7 +8403,7 @@ conservative option at its fork.
 | 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
 | 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
-| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and, while replaying, rolls nothing (RP-154); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
 | Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
@@ -8755,33 +8755,38 @@ MZB-690 to MZB-692 the build records.
   1000 counts no pass and no robbery, asks no threat and leaves the band lurking; the control, the
   same pass ingested, counts (1, 1) and robs train 7; without the arm the copy counts (1, 1), checked
   and undone).
-- **RP-151** (TRAIN_PASSED while replaying; the M8 merge, points 1 to 3; §4.4's M8 paragraph): with
-  `later` empty a replayed TRAIN_PASSED reaches `train_passed`. `ingest` folds its epoch first
-  (RP-57), then the party must exist, lurk and not be of an older epoch than the record's, else
-  `stale`. A pass that is not stale rolls as live: the same key (seed, `SYS_AMBUSH`, the party) and
-  slot (`train ^ at.rotate_left(32)`), at the record's own game time, which `ingest` runs the engine
-  to (the replay clock, §3.6). A hit runs
-  `ambush`, whose `infra.raid_train` takes the goods from industry at industry's present, as M7's
-  `Ev::Ambush` does while replaying: industry is not held (§3.6, RP-24; decided by the coordinator,
-  2026-10-24). The
-  conflict and industry pages are saved in one batch, so a robbery after the save is in neither and
-  the replay takes it once: lose, never double; I25's per-train cooldown is a second guard. Its
-  TRAIN_ROBBED drops at the gate (the roar is lost, RP-12). The lurk itself is state: `lurk_start` and
-  `lurk_end` run while replaying as live, their AMBUSH_SPOTs drop at the gate, and `resend_lurks`
-  says each lurk still standing at the replay end, at its epoch after the floors (§4.4). No ambush
-  spot is chosen from a pass: the spot is the target's (`Target::Track`), fixed when the raid set out.
-  Nothing is decided while replaying that §5 or §6 would hold: a seen lurk embodies through
-  BAND_MATERIALIZE's early returns, and sightings wait (§6). No change.
+- **RP-151** (TRAIN_PASSED while replaying; the M8 merge, points 1 to 3; §4.4's M8 paragraph;
+  corrected by RP-154, which replaces its roll): with `later` empty a replayed TRAIN_PASSED reaches
+  `train_passed`. `ingest` folds its epoch first (RP-57), then the party must exist, lurk and not be
+  of an older epoch than the record's, else `stale`. A pass that is not stale is counted
+  (`passes`, `passes_watched`) and, while replaying, rolls nothing (RP-154). This record first read
+  that it rolled as live (the same key, slot and game time) and took the goods from industry at
+  industry's present, as M7's `Ev::Ambush` does while replaying, on the reasoning that the conflict
+  and industry pages are saved in one batch, so a robbery after the save is in neither. That was
+  wrong for a pass the live session robbed: industry is not held (§3.6, RP-24; decided by the
+  coordinator, 2026-10-24), and `attack_train` derives its op from industry's present, so the replay's
+  robbery is a different op from the live one and Java removes the goods a second time (RP-154).
+  Its TRAIN_ROBBED would have dropped at the gate in any case (the roar is lost, RP-12). The lurk
+  itself is state: `lurk_start` and `lurk_end` run while replaying as live, their AMBUSH_SPOTs drop
+  at the gate, and `resend_lurks` says each lurk still standing at the replay end, at its epoch after
+  the floors (§4.4). No ambush spot is chosen from a pass: the spot is the target's
+  (`Target::Track`), fixed when the raid set out. Nothing is decided while replaying that §5 or §6
+  would hold: a seen lurk embodies through BAND_MATERIALIZE's early returns, and sightings wait (§6).
+  No change beyond RP-154's.
 - **RP-152** (a pass stale while replaying after two crashes; the M8 merge, point 2; a residual, not
   built): `train_passed` compares the record's epoch with the party's, not with the floor, since
   `ingest`'s fold has put the record's epoch in the floor already (a check on the floor would pass
   every record). After a crash the party's epoch rises to its floor only at `replay_done`, and the
   AMBUSH_SPOT `resend_lurks` sends carries that epoch. So with pages at epoch E, records of E+1
-  journaled after them, and a second crash before the next page save, a pass of the second session
-  (epoch E+1, the table's) replayed in the third finds the party at E, paged, and is stale. It
-  robbed live, and the replay robs nothing: lose, never double, one train's roll. The option not
-  taken: read the party's floor as it was before the record's fold (a per-record snapshot in
-  `ingest`), for a case that needs two crashes inside one page interval.
+  journaled after them, and a second crash before the next page save, every pass the second
+  session journaled (epoch E+1, the table's) up to its world save W2, not one train's, finds the
+  party at E when the third session replays it, paged, and is stale. Those passes robbed live. The
+  replay robs nothing of them, as it robs nothing of any replayed pass since RP-154, stale or not;
+  what staleness costs is their count (`passes` and `passes_watched` miss them, `stale` gets them).
+  Losing is the right direction (lose, never double), bounded by one world-save interval of passes.
+  The option not taken: read the party's floor as it was before the record's fold (a per-record
+  snapshot in `ingest`), for a case that needs two crashes inside one page interval and, since
+  RP-154, buys only the count.
 - **RP-153** (the rest of the eight points; the M8 merge, points 3 to 7; no change):
   - Point 3, the camp claim. A lurk's puppet takes a camp body only through `Camps.claim`, which
     matches this hand-over's SET_OUT lines by agent, epoch and body, for a camp that is in at the
@@ -8803,6 +8808,27 @@ MZB-690 to MZB-692 the build records.
     train for a line) and M8's lurk do not meet: the lurk has no held state, it is derived from the
     party's phase, kind and target (MZB-357).
   - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin (200 + 24 + 8 = 232) stands.
+- **RP-154** (a replayed TRAIN_PASSED rolls nothing; the M8 fixes pass, P2; corrects RP-151): in
+  `train_passed`, after the pass is counted (`passes`, and `passes_watched` when watched), `if
+  self.outbox.replaying() { return; }` comes before the roll. A pass the replay brings back is
+  counted and never rolls: no `ambush`, no `raid_train`, no TRAIN_ROBBED, `lurk_robberies` unchanged.
+  Why: the roll is keyed by train and the record's `at`, so a pass the live session robbed hits
+  again in the replay; industry is not held (§3.6, RP-24) and `attack_train` (rtsim-industry
+  `engine.rs`) derives its IND_CARRIAGE_DELTA op from industry's present `now`, so the op differs
+  from the live one and Java (`TrainWatch`, `opApplied`) removes the goods a second time. Lose,
+  never double: a robbery the live session never made (the pass came after the pages and the
+  industry save) is lost too, bounded by one world-save interval of passes; the cargo stays on the
+  train. The option not taken: derive industry's attack op from the threat's `at` and the train
+  id, so that Java answers DUPLICATE_OP for a replayed robbery and the replay may roll as live;
+  main's `Ev::Ambush` shares the root (it too robs at industry's present while replaying), so the
+  lead asked the coordinator, and this guard is the conservative option until that answer comes.
+  `stats.lurk_robberies` counts only the robberies told to Java, so only a live session's (its
+  doc at `Stats` says so). Test: tests/lurk.rs `a_replayed_train_passed_is_counted_and_never_rolls`
+  (`begin_replay`, a pass at `ambush_milli` 1000, which hits when it rolls: counted (1, 1 watched),
+  no threat asked, no loot, no ambush note, no TRAIN_ROBBED, `lurk_robberies` 0; the control, after
+  `replay_done` the same pass live robs train 7; without the guard the test fails at "no attack on
+  the train was asked", checked and undone). RP-151, RP-152, RP-57's 0x080D row, replay-gate.md
+  §4.4 and boundary.md §9.3 say a replayed pass rolls nothing.
 
 ### Slice H (herds)
 
