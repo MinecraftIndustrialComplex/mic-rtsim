@@ -4975,6 +4975,15 @@ mod conflict {
     /// A grove (FACTION_FOUND with the Umvuthana's structure) with `strays` of its own bodies standing
     /// in it, as the jar places them, in the fake plugin's camp world; the camp is out.
     fn grove(name: &str, strays: u16) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        grove_with(name, strays, false)
+    }
+
+    /// [`grove`], with the pages saved before the camp is found when `pages_first`.
+    fn grove_with(
+        name: &str,
+        strays: u16,
+        pages_first: bool,
+    ) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
         let dir = tmpdir(name);
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -4989,6 +4998,9 @@ mod conflict {
         let body = j.dict_id(wire::DICT_BODY, WARRIOR);
         for _ in 0..strays {
             j.conflict_plugin.camp_stray(CAMP, body);
+        }
+        if pages_first {
+            save(&e, &mut j);
         }
         j.conflict_obs(&O::FactionFound(cb::FactionFound {
             faction: CAMP,
@@ -5511,6 +5523,16 @@ mod conflict {
             slots(&e) == [3, 0, 0, 0, 0]
         });
         assert_eq!(reconciles(&j).len(), 1);
+        // What a holder of the answers keeps: its generation and the records as journaled.
+        let (nonce, answers): (u64, Vec<Vec<u8>>) = (
+            j.nonce,
+            j.journal
+                .iter()
+                .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == cb::CAMP_BODIES)
+                .map(|(_, r)| r.clone())
+                .collect(),
+        );
+        assert!(!answers.is_empty());
         let gt = j.game_time;
         let saved = j.world_save();
         let mut plugin =
@@ -5544,10 +5566,84 @@ mod conflict {
             [3, 0, 0, 0, 0],
             "the replayed answers, booked by state"
         );
+        // RP-69: nothing the gate never lets through was decided in the replay; and a live
+        // holder's copy (REASSERT) of each answer, for the replayed census's epoch, books nothing
+        // again.
+        let never = |e: &Engine| e.with_conflict(|c, _| c.replay_gate_counts().never);
+        assert_eq!(never(&e), 0);
+        let booked = e.with_conflict(|c, _| c.stats.camp_answers);
+        for r in &answers {
+            j.reassert(nonce, r);
+        }
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.camp_answers),
+            booked,
+            "the copies"
+        );
+        assert_eq!(reconciles(&j).len(), 0);
         camp_in(&mut j);
         assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
         assert_eq!(reconciles(&j).len(), 0, "nothing to order");
         assert_eq!(j.conflict_plugin.camps[&CAMP].bodies.len(), 3);
+        assert_eq!(never(&e), 0);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-69 (the M5 merge check's item 5): the conflict's replay begun late. The pages predate
+    /// the camp, so the conflict does not run at SESSION_START (conflict.rs `reset_if_due`); the
+    /// replayed FACTION_FOUND starts it and opens the window, and the camp's census replayed after
+    /// it only marks the camp out, as in a replay begun at the session start.
+    #[test]
+    fn a_replay_begun_by_a_replayed_faction_only_marks_its_census_out() {
+        let (dir, e, mut j) = grove_with("camp-replay-late", 3, true);
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoptions answered", |_| {
+            slots(&e) == [3, 0, 0, 0, 0]
+        });
+        assert_eq!(reconciles(&j).len(), 1);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.conflict_plugin = plugin;
+        assert!(
+            e.with_conflict(|c, _| c.faction_of_key(CAMP).is_none()),
+            "the pages predate the camp"
+        );
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the replayed census ordered nothing"
+        );
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "out"
+        );
+        assert_eq!(
+            slots(&e),
+            [3, 0, 0, 0, 0],
+            "the replayed answers, booked by state"
+        );
+        assert_eq!(e.with_conflict(|c, _| c.replay_gate_counts().never), 0);
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0]);
+        assert_eq!(reconciles(&j).len(), 0, "nothing to order");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -6528,13 +6624,20 @@ mod conflict {
             .filter(|(s, _)| *s >= first)
             .map(|(_, r)| r.len())
             .sum::<usize>();
-        assert!(bytes > 6 * wire::MIN_CAPACITY, "the replay's records: {bytes} bytes");
+        assert!(
+            bytes > 6 * wire::MIN_CAPACITY,
+            "the replay's records: {bytes} bytes"
+        );
         let e = engine(&dir, wire::MIN_CAPACITY);
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
         j.game_time = gt;
         j.idle();
-        assert_eq!(replay_counts(&e).0, 0, "the replay runs past its first hand-over");
+        assert_eq!(
+            replay_counts(&e).0,
+            0,
+            "the replay runs past its first hand-over"
+        );
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         let (warrior, agent) = (41, 0x43 << 56 | 0x66);
         let cmd = C::Materialize(cb::BandMaterialize {
