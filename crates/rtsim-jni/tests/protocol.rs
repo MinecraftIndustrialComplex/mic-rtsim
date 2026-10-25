@@ -1813,7 +1813,11 @@ mod dragons {
                 _ => None,
             })
             .collect();
-        assert_eq!(answers, vec![("discard", 1)], "the natural dragon is discarded");
+        assert_eq!(
+            answers,
+            vec![("discard", 1)],
+            "the natural dragon is discarded"
+        );
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
@@ -2036,6 +2040,126 @@ mod dragons {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// RP-291: a tribute stack answered with the dragons switched off is placed once. The lair's
+    /// chest is reported and the dragons send their stacks; ECOLOGY goes off in the tick Java
+    /// applies them (MODULES ahead of their APPLIED in that hand-over, as BoundarySession's
+    /// preamble puts it). The core takes each APPLIED out of the outbox whatever the switch. Java
+    /// reads an ack past the answers: it trims its journal through them, and the journal's op
+    /// index (`Journal.commandOpApplied`, `forgetOp`) and the chest's chunk carry forget the ops
+    /// with it, so the test drops them from the fake's applied set as main's Java does. Back on,
+    /// the dragons must not send a stack again: before the fix `after_core` ignored the answers
+    /// while off, so the stacks stayed `placing`, `write_tribute` wrote them again under the same
+    /// ops at the switch on, and Java, which no longer knew them, put the coin in the chest a
+    /// second time.
+    #[test]
+    fn a_tribute_stack_answered_with_the_dragons_off_is_placed_once() {
+        use rtsim_jni::engine::MODULE_ECOLOGY;
+        let dir = tmpdir("tribute-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, _, coins, _] = e.dragons_tribute();
+        assert_eq!(paid, 1);
+        assert!(coins > 64, "more than one stack: {coins}");
+        let stacks = (coins + 63) / 64;
+
+        // The chest: the stacks go out, and Java applies them at the end of the step that wrote
+        // them (`flush`), journaling their APPLIED. ECOLOGY goes off before the next hand-over.
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        j.dragon_obs(&O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        }));
+        for _ in 0..8 {
+            j.flush();
+            if !transfer_ops(&j).is_empty() {
+                break;
+            }
+        }
+        let ops = transfer_ops(&j);
+        assert_eq!(ops.len() as i64, stacks, "every stack sent at once");
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        j.modules(MODULES & !MODULE_ECOLOGY);
+        j.idle();
+        j.idle();
+        let placing_off = e.dragons_tribute()[3];
+
+        // Java reads an ack past the answers and forgets their ops.
+        save_durable(&e, &mut j);
+        j.idle();
+        let answered = |r: &[u8]| {
+            wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
+                && ops.contains(&wire::u64_at(r, obs::command_result::OP_ID))
+        };
+        assert!(
+            !j.journal.iter().any(|(_, r)| answered(r)),
+            "the journal is trimmed past the answers"
+        );
+        for op in &ops {
+            j.applied_cmd_ops.remove(op);
+        }
+
+        j.modules(MODULES);
+        for _ in 0..4 {
+            j.idle();
+        }
+        let sent: Vec<u64> = j
+            .commands
+            .iter()
+            .filter(|(_, kind, op)| *kind == cmd::TRANSFER_TO_CONTAINER && ops.contains(op))
+            .map(|(_, _, op)| *op)
+            .collect();
+        assert_eq!(
+            sent.len() as i64,
+            stacks,
+            "each stack written once (the chest holds {:?} of {coins} coins)",
+            j.containers.get(&chest)
+        );
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "no coin made"
+        );
+        assert_eq!(
+            placing_off, 0,
+            "the answers heard while off took their stacks out of `placing`"
+        );
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// The oil gate through the native engine and the fake plugin (docs/boundary.md §6.8): the
     /// plugin's switches and an oil field open the gate; a player near the field draws a field
     /// flight (a hostile fire dragon on a full reserve, flags 8 and 16) and, the field having no
@@ -2214,21 +2338,38 @@ mod dragons {
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
         let (agent, epoch) = (first[0].agent, first[0].epoch);
-        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
+        let last = |j: &Java| {
+            *j.far
+                .iter()
+                .rev()
+                .find(|r| r.agent == agent)
+                .expect("a far leg")
+        };
         let body = last(&j);
-        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
+        assert_eq!(
+            body.state,
+            FarState::Body,
+            "an adopted dragon is a body in the game"
+        );
         assert_eq!(body.kind, FAR_KIND_DRAGON);
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_BODY, body.body))
+                .map(String::as_str),
             Some("iceandfire:fire_dragon"),
             "its species in the engine's dictionary"
         );
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_DIMENSION, body.dimension))
+                .map(String::as_str),
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
-        assert_eq!(body.age_days, 110, "its age in whole days, as the body reported it (DH-7)");
+        assert_eq!(
+            body.age_days, 110,
+            "its age in whole days, as the body reported it (DH-7)"
+        );
 
         // Captured, it is abstract again: at its lair, or on a leg in game time.
         let seen = j.far.len();
@@ -2245,7 +2386,11 @@ mod dragons {
             j.game_time
         );
         if after.state == FarState::Roost {
-            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
+            assert_eq!(
+                (after.x0, after.z0),
+                (HOME.0, HOME.2),
+                "it rests at its lair"
+            );
         }
 
         // Quiet steps send nothing.
@@ -4236,7 +4381,13 @@ mod herds {
     /// §9.4 test 2: the epoch of a group decided after the pages and answered in the journal is
     /// not decided again after a crash. Returns (the old epoch, the next session's first).
     fn the_epoch_after_a_crash(name: &str, group: Group) -> (u32, u32) {
-        let old = the_old_session(name, Script { group, ..Script::QUIET });
+        let old = the_old_session(
+            name,
+            Script {
+                group,
+                ..Script::QUIET
+            },
+        );
         let before = old.group.as_ref().expect("a group").epoch;
         let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
         replay_quietly(&e, &mut j);
@@ -4298,12 +4449,13 @@ mod herds {
                 "only the shorn sheep is shorn"
             );
         }
-        let lasts: std::collections::BTreeSet<u64> = g
-            .members
-            .iter()
-            .map(|b| seen[&b.member].last.0)
-            .collect();
-        assert_eq!(lasts.len(), 1, "every member captured at one time: {lasts:?}");
+        let lasts: std::collections::BTreeSet<u64> =
+            g.members.iter().map(|b| seen[&b.member].last.0).collect();
+        assert_eq!(
+            lasts.len(),
+            1,
+            "every member captured at one time: {lasts:?}"
+        );
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
