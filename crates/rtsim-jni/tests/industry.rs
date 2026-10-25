@@ -3035,12 +3035,10 @@ mod ack_never_resends {
     /// live in this session, so its rings prune X (they prune with the module off, RP-257). On
     /// again, the engine sends its outbox under new sequences (`set_enabled`), X among them.
     ///
-    /// Open: this fails. The engine sends X again after the ack past S in the same session, so a
+    /// Failing first: the engine sends X again after the ack past S in the same session, so a
     /// real Java (rings pruned, journal trimmed through the ack) would apply it twice; the fake
-    /// world answers DUPLICATE because its applied set never prunes. Reported to the slice U lead;
-    /// the engine, the rings and the rules are unchanged here. Run it with `--ignored`.
+    /// world answers DUPLICATE because its applied set never prunes.
     #[test]
-    #[ignore = "open: an answer ignored with industry off is acked, pruned, then sent again"]
     fn an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack() {
         use rtsim_kernel::journal::OpId;
         let mut r = Rig::new("ack-switch", false);
