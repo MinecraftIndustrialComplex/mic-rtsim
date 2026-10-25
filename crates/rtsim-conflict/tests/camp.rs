@@ -951,6 +951,98 @@ fn a_party_home_with_its_puppets_has_them_handed_back_not_spawned() {
     ok(&mut r);
 }
 
+/// RP-69 (the M5 merge check's item 5): the same homecoming while the session's replay runs (the
+/// party kept embodied from the pages). The replay's start made the camp out, so its puppets are
+/// recalled as at any out camp (`camp_home`), and the gate drops the recall: no body of this
+/// session is there yet. No line goes, nothing the gate never lets through is decided, and the
+/// next census spawns the owed bodies.
+#[test]
+fn a_replayed_homecoming_at_an_out_camp_sends_nothing() {
+    let mut r = grove(133, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    let mut t = r.c.now();
+    while r.c.parties[p].phase != Phase::Home {
+        t += 200;
+        r.run(t);
+        assert!(t < day(20.0), "the party never walked home");
+    }
+    assert_eq!(counts(&r), [5, 0, 0, 4, 0], "away, gone");
+    let units = r.c.parties[p].units.clone();
+    r.c.parties[p].embodied = true;
+    r.c.parties[p].spawned = units;
+    r.restart_to_replay();
+    let (gate, sent) = (r.c.replay_gate_counts(), r.cmds.len());
+    let end = r.c.parties[p].until.max(t) + days(2.0);
+    r.run(end);
+    assert!(war_parties(&r).is_empty(), "home");
+    assert_eq!(counts(&r), [5, 4, 0, 0, 0], "gone, owed again");
+    let g = r.c.replay_gate_counts();
+    assert_eq!(g.never, 0);
+    assert!(g.dropped > gate.dropped, "the recall, dropped");
+    assert!(
+        r.cmds[sent..]
+            .iter()
+            .all(|(_, c)| !matches!(c, Cmd::Recall(_) | Cmd::Reconcile(_))),
+        "nothing sent"
+    );
+    r.c.replay_done();
+    come_in(&mut r);
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    assert_eq!(world_bodies(&r), 9);
+    ok(&mut r);
+}
+
+/// RP-69: a CAMP_DEATH replayed while the session's replay runs, of a body left in the camp by a
+/// party kept embodied from the pages: that member's unit dies, its puppet count follows it, and
+/// nothing is sent.
+#[test]
+fn a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing() {
+    let mut r = grove(134, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    r.camp_out();
+    let end = r.c.parties[p].until;
+    r.run(end + 100);
+    assert_eq!(r.c.parties[p].phase, Phase::Out);
+    assert_eq!(counts(&r)[2], 4, "left in the camp while it was out");
+    let units = r.c.parties[p].units.clone();
+    r.c.parties[p].embodied = true;
+    r.c.parties[p].spawned = units;
+    let b = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .find(|b| {
+            b.generation != 0
+                && r.c
+                    .camp(r.f)
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .any(|s| s.generation == b.generation && s.state == SlotState::Left)
+        })
+        .copied()
+        .unwrap();
+    r.restart_to_replay();
+    let sent = r.cmds.len();
+    let at = r.c.now() + 1;
+    r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
+    let to = r.c.now() + 3;
+    r.run(to);
+    let x = &r.c.parties[p];
+    assert_eq!(x.alive(), 3);
+    assert_eq!(
+        x.spawned.iter().map(|s| s.1).sum::<u32>(),
+        3,
+        "one puppet fewer"
+    );
+    assert_eq!(counts(&r)[2], 3);
+    assert_eq!(r.c.replay_gate_counts().never, 0);
+    assert!(r.cmds[sent..].is_empty(), "nothing sent");
+    r.c.replay_done();
+    ok(&mut r);
+}
+
 /// Test 22, a member drawn while owed (walkthrough A, "kill it"): a den out for a week has its
 /// Frostmaw owed; it musters and sets out owed (away, gone, carrying its debt). The den comes in
 /// while it is out and while it is away: nothing is taken, nothing spawned, no member booked dead.

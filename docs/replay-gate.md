@@ -387,6 +387,18 @@ sides' stats kept) and the `Conflict` fields and `Conflict::new` (both sides' ke
    `copy_is_new`, by that generation, so §2.3's two cases stand.
 6. **Fixtures**: main regenerated the rtsim-view fixtures at cc0c8c34 (M5's head); no converter yet
    (no ChunkWait on main).
+7. **The merge check's tests** (RP-65, RP-69), every one the check listed:
+   - rtsim-jni: `a_replayed_census_orders_nothing_and_its_answers_are_booked_by_state` now also
+     reasserts each replayed answer live for the census's epoch and books nothing again, and
+     asserts the gate's "never" count stays 0;
+   - rtsim-jni: `a_replay_begun_by_a_replayed_faction_only_marks_its_census_out`, the window
+     opened late by `reset_if_due` (the pages predate the camp);
+   - tests/camp.rs: `a_replayed_homecoming_at_an_out_camp_sends_nothing` (`camp_home`'s recall,
+     dropped by the gate);
+   - tests/camp.rs: `a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing`;
+   - tests/camp.rs: `a_replayed_census_only_marks_its_camp_out`, which now answers the replayed
+     epoch (RP-65).
+   None is left unwritten.
 
 ## 3. The flag
 

@@ -3675,3 +3675,13 @@ conservative option at its fork.
   check's). Failing first, tests/camp.rs's
   `a_world_save_while_replaying_forgets_no_answer_until_the_replay_end` with the save applied at
   once: `camp_answers` 12 against 11.
+- **RP-69** (the M5 merge check's missing tests; §2.7 item 7; item 5): all five are written, and
+  every one passed when written (the paths were right; the tests keep them so).
+  - rtsim-jni: the replayed census test reasserts each answer live for the replayed epoch, with
+    no second booking, and asserts the gate's "never" count stays 0.
+  - rtsim-jni: `a_replay_begun_by_a_replayed_faction_only_marks_its_census_out` (`grove_with`,
+    the pages saved before FACTION_FOUND).
+  - tests/camp.rs: `a_replayed_homecoming_at_an_out_camp_sends_nothing` and
+    `a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing`. Each marks
+    the party embodied by hand, as the homecoming test does, since no flow of this slice leaves
+    one embodied across a restart.
