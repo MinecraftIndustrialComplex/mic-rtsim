@@ -2020,3 +2020,113 @@ fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
     );
     assert_eq!(b.after, b.before, "re-derived under its op id");
 }
+
+/// Iron in the fake world: (in its stores, on its trains, minted, burned).
+fn world_iron(j: &Java) -> (i64, i64, i64, i64) {
+    let g = rtsim_industry::ids::Good(1);
+    let w = j.mc();
+    let mut stores = 0i64;
+    for d in &w.districts {
+        for i in &d.inventories {
+            if !i.destroyed {
+                stores += i.contents.get(g);
+            }
+        }
+    }
+    let mut carried = 0i64;
+    for t in &w.trains {
+        for c in &t.carriages {
+            carried += c.cargo.get(g);
+        }
+    }
+    (stores, carried, w.books.minted.get(g), w.books.burned.get(g))
+}
+
+/// A command Java answered FAILED live is never applied after a crash (the review of 2a975cc3,
+/// P1-1 there; docs/choices-mowzie-build.md RP-259). Train 1's exchange at the ore coast (72,800)
+/// fails live (the world fails every carriage delta from 72,100 to 72,850); the world saves at
+/// 72,900 and the crash comes at 73,500. The replay, over several hand-overs, decides the call
+/// again under the live op (RP-272), and the copy waits in the held engine (RP-274); the replayed
+/// FAILED answer takes the exchange back. On 2a975cc3 the copy went to Java after the replay end,
+/// and the world, which keeps only the ops it applied, applied it: 224 ore loaded that never were.
+#[test]
+#[ignore = "slice R review P1-2: a FAILED op re-decided by the replay is sent after its end"]
+fn an_exchange_answered_failed_live_is_not_applied_after_a_crash() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-failed-again");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let paged = j.ind_commands.len();
+    j.mc_run_until(Tick(72_100));
+    fillers(&mut j, REPLAY_FILLERS);
+    j.mc_mut().fail_carriage_deltas = true;
+    j.mc_run_until(Tick(72_850));
+    j.mc_mut().fail_carriage_deltas = false;
+    j.mc_run_until(Tick(72_900));
+    let exchanges = |j: &Java, from: usize| -> Vec<u64> {
+        j.ind_commands[from..]
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    let failed: Vec<u64> = exchanges(&j, paged)
+        .into_iter()
+        .filter(|op| {
+            !j.mc()
+                .applied_ops()
+                .contains(&rtsim_kernel::journal::OpId(*op))
+        })
+        .collect();
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    j.mc_run_until(Tick(73_500));
+    let cargo_live = cargo(&j);
+    let iron_live = world_iron(&j);
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let saved_ops = mc.applied_ops().clone();
+    let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
+    j.mc_run_until(Tick(73_500));
+    let handovers = replayed_over_several(&j);
+    let cargo_again = cargo(&j);
+    let iron_again = world_iron(&j);
+    let after = exchanges(&j, 0);
+    let applied_after: Vec<u64> = after
+        .iter()
+        .copied()
+        .filter(|op| {
+            let op = rtsim_kernel::journal::OpId(*op);
+            j.mc().applied_ops().contains(&op) && !saved_ops.contains(&op)
+        })
+        .collect();
+    eprintln!(
+        "{handovers} replay hand-overs; failed live {failed:x?}; sent after the restart {after:x?}; \
+         applied after the restart {applied_after:x?}; iron (stores, carried, minted, burned) live \
+         {iron_live:?}, again {iron_again:?}; cargo at the crash {cargo_live:?}, again {cargo_again:?}"
+    );
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    assert!(!failed.is_empty(), "an exchange failed live");
+    assert!(
+        applied_after.iter().all(|op| !failed.contains(op)),
+        "an exchange answered FAILED live is applied after the restart: {applied_after:x?}"
+    );
+    assert_eq!(cargo_again, cargo_live, "the trains hold what they held");
+    assert_eq!(iron_again, iron_live, "no iron made or lost");
+}

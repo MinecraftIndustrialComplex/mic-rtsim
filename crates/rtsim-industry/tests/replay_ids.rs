@@ -24,12 +24,16 @@ use rtsim_industry::cmd::{ChunkReconcile, Cmd};
 use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::learn::Learned;
-use rtsim_industry::obs::{DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd, Timed};
+use rtsim_industry::obs::{
+    DepositPluginId, DepositSample, DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd,
+    Timed,
+};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 
 const IRON: Good = Good(1);
+const OIL: Good = Good(5);
 const MILL: DistrictId = DistrictId(1);
 /// A second district, whose declaration is a harmless journaled record.
 const OTHER: DistrictId = DistrictId(2);
@@ -137,8 +141,17 @@ fn mill(stock: i64, rate: f64) -> Engine {
 
 /// [`mill`] with `frog` iron in the frogport.
 fn mill_with(stock: i64, frog: i64, rate: f64) -> Engine {
+    mill_oil(stock, frog, rate, None)
+}
+
+/// [`mill_with`], and with `oil` a diesel well on the vault's chunk that the model draws `oil` a
+/// tick from while away (a deposit delta in each round that settles the vault's chunk).
+fn mill_oil(stock: i64, frog: i64, rate: f64, oil: Option<f64>) -> Engine {
     let mut e = Engine::new(SEED, Tunables::default(), Tick(0));
     e.define_good(IRON, GoodInfo::item("iron", 64));
+    if oil.is_some() {
+        e.define_good(OIL, GoodInfo::deposit("diesel:oil/00000000000000aa"));
+    }
     let send = |e: &mut Engine, rec: Timed| e.ingest(&rec);
     send(
         &mut e,
@@ -192,6 +205,23 @@ fn mill_with(stock: i64, frog: i64, rate: f64) -> Engine {
             ),
         );
     }
+    if oil.is_some() {
+        send(
+            &mut e,
+            t(
+                10,
+                Obs::DepositSample(DepositSample {
+                    district: MILL,
+                    good: OIL,
+                    plugin: DepositPluginId::DieselOil,
+                    chunk: chunks()[0],
+                    remaining: 1_000_000,
+                    infinite: false,
+                    sweep: 1,
+                }),
+            ),
+        );
+    }
     send(
         &mut e,
         t(
@@ -199,7 +229,7 @@ fn mill_with(stock: i64, frog: i64, rate: f64) -> Engine {
             Obs::SweepEnd(SweepEnd {
                 district: MILL,
                 sweep: 1,
-                records: 2,
+                records: if oil.is_some() { 3 } else { 2 },
                 inventories: 2,
                 live: true,
                 creative: false,
@@ -212,7 +242,10 @@ fn mill_with(stock: i64, frog: i64, rate: f64) -> Engine {
         Learned {
             at: Tick(20),
             window_ticks: 12_000,
-            rates: vec![(IRON, rate)],
+            rates: [(IRON, rate)]
+                .into_iter()
+                .chain(oil.map(|o| (OIL, o)))
+                .collect(),
             links: vec![],
             confidence: 1.0,
             points: 0,
@@ -784,7 +817,6 @@ fn a_raid_delivered_at_the_hand_overs_time_is_rederived_with_the_same_id() {
 #[test]
 fn a_collision_before_a_save_gives_the_same_ordinal_after_a_crash() {
     use rtsim_industry::cmd::{DepositDelta, IndustryOps};
-    use rtsim_industry::obs::DepositPluginId;
     use rtsim_industry::persist::Persist;
     use rtsim_kernel::codec::{Reader, Writer};
     use rtsim_kernel::journal::OpId;
@@ -825,4 +857,137 @@ fn a_collision_before_a_save_gives_the_same_ordinal_after_a_crash() {
     );
     // The control: an empty window gives the first one's op.
     assert_eq!(IndustryOps::default().derive(SEED, at, &oil(-5)), first);
+}
+
+// ---- the review of 2a975cc3 (docs/choices-mowzie-build.md RP-259) ------------------------------
+
+fn deposits(v: &[Cmd]) -> Vec<(u64, i64)> {
+    v.iter()
+        .filter_map(|c| match c {
+            Cmd::DepositDelta(d) => Some((d.op.0, d.delta)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn chunk_rounds(v: &[Cmd]) -> Vec<(u64, u32, ChunkPos, Vec<i64>)> {
+    reconciles(v)
+        .iter()
+        .map(|r| {
+            (
+                r.op.0,
+                r.epoch,
+                r.chunk,
+                r.deltas.iter().map(|d| d.delta).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The oil mill of the review: away from 100 with a raid at 4,000 (hand-over 1, G = 5,000), a
+/// harmless record (hand-over 2, G = 9,000), then its chunks load at 8,000 and 8,100 and it is live
+/// at 8,200, all stale (hand-over 3, G = 9,500).
+fn oil_steps() -> Vec<Step> {
+    let mut away = Step::new(5_000);
+    away.journaled.push(load_state(100, LoadState::Unloaded, 0));
+    away.threats.push(Threat {
+        id: 9,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        loads: None,
+        at: Tick(4_000),
+    });
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    let mut load = Step::new(9_500);
+    load.journaled = vec![
+        chunk_loaded(8_000, 0),
+        chunk_loaded(8_100, 1),
+        load_state(8_200, LoadState::Live, 2),
+    ];
+    vec![away, quiet, load]
+}
+
+fn oil_mill() -> Engine {
+    mill_oil(300, 600, -0.2, Some(-0.5))
+}
+
+/// `Engine::decided` is saved with the pages (P1-1 of the review): pages can be taken in the middle
+/// of a hand-over, right before the first record past a world save's journal (rtsim-jni
+/// engine.rs, `journaled`), so after a stale record whose marks wait for the next record. Here the
+/// pages come right after the vault's chunk loads (8,000, stale: G was 9,000). Live, the
+/// frogport's record at 8,100 settles the vault's chunk at 8,000 first, then its own: two rounds.
+/// On 2a975cc3 the restored engine started `decided` at `now` (9,000), so neither later record
+/// was past it, the marks merged into one round, and the round's deposit delta was decided at
+/// another tick: live 0x4962c4fe7b7be699, replayed 0x49274e3eaf93756b, both -4,450 (the well
+/// drawn twice), and the frogport's chunk at epoch 1 where the world applied 2.
+#[test]
+#[ignore = "slice R review P1-1: decided is not saved"]
+fn pages_taken_after_a_stale_record_rederive_its_rounds() {
+    let steps = oil_steps();
+    let mut e = oil_mill();
+    let mut sink = Vec::new();
+    live_step(&mut e, &steps[0], &mut sink);
+    live_step(&mut e, &steps[1], &mut sink);
+    // Hand-over 3, live, with the pages taken after its first record.
+    let load = &steps[2];
+    e.ingest(&load.journaled[0]);
+    let pages = e.snapshot();
+    let mut live = Vec::new();
+    for rec in &load.journaled[1..] {
+        e.ingest(rec);
+    }
+    e.advance_to(Tick(load.g));
+    live.extend(e.drain_commands());
+    let mut replay = Engine::restore(pages, Tunables::default()).expect("the pages restore");
+    for rec in &load.journaled[1..] {
+        replay.ingest(rec);
+    }
+    replay.session_start(Tick(20_000));
+    let replayed = replay.drain_commands();
+    let (l, r) = (deposits(&live), deposits(&replayed));
+    let what = format!(
+        "live deposits {l:x?} rounds {:x?}; replayed deposits {r:x?} rounds {:x?}",
+        chunk_rounds(&live),
+        chunk_rounds(&replayed)
+    );
+    assert!(!l.is_empty(), "a deposit delta live: {what}");
+    assert_eq!(l, r, "the same deposit deltas under the same ops: {what}");
+    assert_eq!(
+        chunk_rounds(&live),
+        chunk_rounds(&replayed),
+        "the same rounds: {what}"
+    );
+}
+
+/// The same stale records with the pages at the step boundary before them (G = 5,000): the
+/// restored engine's clock is behind the live one's (5,000 against 9,000) when it takes them, so
+/// a round's immediate deposit delta derived with `now` would differ (the mutation check of
+/// RP-270's site in `reconcile_round`, P2-2 of the review). Derived with the record's tick, both
+/// runs send the same ops. Their amounts differ (live -4,450, replayed -3,950): the live engine
+/// ran its clock to 9,000 before it took the records (RP-262, RP-279), so the op is answered
+/// DUPLICATE and the difference is lost (RP-272).
+#[test]
+fn stale_records_rederive_their_rounds_deposit_deltas() {
+    let o = run(oil_mill(), &oil_steps(), 0, 20_000, false);
+    let (l, r) = (deposits(&o.live), deposits(&o.replayed));
+    let what = format!(
+        "live deposits {l:x?} rounds {:x?}; replayed deposits {r:x?} rounds {:x?}; now live {}, \
+         replayed {}",
+        chunk_rounds(&o.live),
+        chunk_rounds(&o.replayed),
+        o.now_live.0,
+        o.now_replayed.0
+    );
+    assert!(!l.is_empty(), "a deposit delta live: {what}");
+    let ops = |v: &[(u64, i64)]| v.iter().map(|d| d.0).collect::<Vec<_>>();
+    assert_eq!(ops(&l), ops(&r), "the same deposit ops: {what}");
+    assert_eq!(
+        chunk_rounds(&o.live),
+        chunk_rounds(&o.replayed),
+        "the same rounds: {what}"
+    );
 }
