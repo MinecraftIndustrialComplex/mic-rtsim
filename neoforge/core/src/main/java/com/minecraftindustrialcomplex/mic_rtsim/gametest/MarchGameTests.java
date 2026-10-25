@@ -657,5 +657,299 @@ public final class MarchGameTests {
                 .thenSucceed();
     }
 
+    /** The members of a stack that are alive (the stack's own count is package-private). */
+    private static int aliveIn(ConflictBridge.Stack st) {
+        int n = 0;
+        for (ConflictBridge.Slot sl : st.slots())
+            if (sl.alive())
+                n++;
+        return n;
+    }
+
+    // ---- the trim (MZB-473) ---------------------------------------------------------------------------
+
+    /**
+     * The trim (MZB-473) with a player's sight in it. A band of six warriors and the chief stands placed, held (speed 0), in forced
+     * chunks. A march that matches it cuts nothing. A march one warrior short, with a plain player 30 blocks from the band:
+     * <ul>
+     * <li>nothing is cut while the player stands there, for 60 ticks ({@code trimmed} unmoved), and the party stays due ({@code trimDue});</li>
+     * <li>the player taken out at the middle of a beat, the cut comes on the beat that follows (9 to 13 ticks on, never at once)
+     * and it is the rearmost member (the last of the last row), the one the march says is gone; the party is due no more;</li>
+     * <li>a march that lacks the chief, with no one near, cuts the chief in the tick the record arrives;</li>
+     * <li>neither cut journals a casualty nor a chief's death, and the recall lists five warriors as survivors (a cut member is no survivor).</li>
+     * </ul>
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_trim")
+    public static void theTrimNeverCutsInSightAndCutsTheRearmostOnTheBeat(GameTestHelper helper) {
+        String test = "theTrimNeverCutsInSightAndCutsTheRearmostOnTheBeat";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 2);
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction(), agent = ConflictKit.newAgent();
+        Map<String, Integer> six = Map.of(WARRIOR, 6), five = Map.of(WARRIOR, 5);
+        ConflictKit.Band band = ConflictKit.band(agent, faction, dim);
+        band.arcX = at.x();
+        band.arcZ = at.z();
+        band.bearing = 180f;
+        band.targetX = at.x();
+        band.targetZ = at.z();
+        band.speed = 0f;
+        band.flags = HOSTILE | CHIEF;
+
+        ServerPlayer[] player = new ServerPlayer[1];
+        long[] n = new long[4]; // trimmed before the record, marchRecords before, the tick the record was sent, the tick the player went
+        boolean[] watching = {false};
+        int[] cutInSight = {0}, notDue = {0};
+        waits.eachTick(() -> {
+            if (!watching[0])
+                return;
+            if (ConflictKit.trimmed() != n[0])
+                cutInSight[0]++;
+            if (level.getGameTime() > n[2] + 2 && !party(agent).trimDue())
+                notDue[0]++;
+        });
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 2)))
+                .thenExecute(() -> ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 6, true))))
+                .thenWaitUntil(waits.logic(() -> allStacks(party(agent), PLACED, "the band is placed")))
+                .thenExecute(() -> {
+                    ConflictBridge.Party p = party(agent);
+                    check("three rows and the chief: " + states(p), p.stacks().size() == 4);
+                    n[0] = ConflictKit.trimmed();
+                    n[1] = bridge().marchRecords;
+                    long now = level.getGameTime();
+                    say(agent, 1, dim, faction, OUT, MARCH_CHIEF, six, wp(at.x(), at.z(), now), wp(at.x() - 200, at.z(), now + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the march was kept", bridge().marchRecords == n[1] + 1)))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    check("a march that matches the band cuts nothing (" + (ConflictKit.trimmed() - n[0]) + " cut)", ConflictKit.trimmed() == n[0]);
+                    check("and the band is not due", !party(agent).trimDue());
+                    double y = f.ground(at.x() - 30, at.z());
+                    player[0] = FakePlayers.add(level, new Vec3(at.x() - 30, y, at.z()), "conflict_march_trim_watcher");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    n[1] = bridge().marchRecords;
+                    n[2] = level.getGameTime();
+                    watching[0] = true;
+                    say(agent, 2, dim, faction, OUT, MARCH_CHIEF, five, wp(at.x(), at.z(), n[2]), wp(at.x() - 200, at.z(), n[2] + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the march was kept", bridge().marchRecords == n[1] + 1)))
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    record(test, "in sight", "the player stood 30 blocks off for 60 ticks: " + (ConflictKit.trimmed() - n[0]) + " cut, " + cutInSight[0]
+                            + " ticks with a cut, " + notDue[0] + " ticks not due");
+                    check("nothing was cut while a player stood in sight (" + cutInSight[0] + " ticks saw a cut, trimmed " + (ConflictKit.trimmed() - n[0]) + ")",
+                            cutInSight[0] == 0 && ConflictKit.trimmed() == n[0]);
+                    check("the band stayed due the whole time (" + notDue[0] + " ticks not due)", notDue[0] == 0 && party(agent).trimDue());
+                })
+                // Out at the middle of a beat: the cut waits for the beat.
+                .thenWaitUntil(waits.logic(() -> check("the middle of a beat, tick " + level.getGameTime(), level.getGameTime() % 20 == 10)))
+                .thenExecute(() -> {
+                    n[3] = level.getGameTime();
+                    FakePlayers.remove(player[0]);
+                    watching[0] = false;
+                })
+                .thenWaitUntil(waits.logic(() -> check("the member was cut (trimmed " + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 1)))
+                .thenExecute(() -> {
+                    long cutAt = level.getGameTime();
+                    ConflictBridge.Party p = party(agent);
+                    record(test, "on the beat", "the player went at tick " + n[3] + ", the cut was seen at tick " + cutAt + " (mod 20: " + cutAt % 20 + ")");
+                    check("the cut waited for the beat: seen " + (cutAt - n[3]) + " ticks after the player went (tick " + cutAt + ")",
+                            cutAt - n[3] >= 9 && cutAt - n[3] <= 13 && cutAt % 20 <= 2);
+                    check("the party is due no more", !p.trimDue());
+                    ConflictBridge.Slot last = p.stacks().get(2).slots().get(1);
+                    check("the cut member is the rearmost, stack 2's second (alive " + last.alive() + ")", !last.alive());
+                    int alive = 0;
+                    for (ConflictBridge.Stack st : p.stacks())
+                        for (ConflictBridge.Slot sl : st.slots())
+                            if (sl.alive() && !sl.chief)
+                                alive++;
+                    check("five warriors are left (" + alive + ")", alive == 5);
+                    check("its body is out of the world", last.entity() == null || last.entity().isRemoved());
+                })
+                // A march with no chief: the chief goes in the tick the record arrives, with no one near.
+                .thenWaitUntil(waits.logic(() -> check("the middle of a beat, tick " + level.getGameTime(), level.getGameTime() % 20 == 10)))
+                .thenExecute(() -> {
+                    n[2] = level.getGameTime();
+                    say(agent, 3, dim, faction, OUT, 0, five, wp(at.x(), at.z(), n[2]), wp(at.x() - 200, at.z(), n[2] + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the chief was cut (trimmed " + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 2)))
+                .thenExecute(() -> {
+                    long cutAt = level.getGameTime();
+                    ConflictBridge.Stack chief = party(agent).stacks().get(3);
+                    record(test, "no chief", "the march was sent at tick " + n[2] + ", the cut was seen at tick " + cutAt);
+                    check("the chief went with the record, not on a beat: " + (cutAt - n[2]) + " ticks", cutAt - n[2] <= 6);
+                    check("the chief's stack is gone: " + states(party(agent)), chief.chief() && chief.state() == GONE);
+                    check("no casualty and no chief killed were journaled (" + about(ConflictRecords.BAND_CASUALTIES, agent).size() + ", "
+                            + about(ConflictRecords.CHIEF_KILLED, agent).size() + ")", about(ConflictRecords.BAND_CASUALTIES, agent).isEmpty()
+                            && about(ConflictRecords.CHIEF_KILLED, agent).isEmpty());
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("recalled", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty())))
+                .thenExecute(() -> {
+                    Map<String, Integer> left = ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, agent).get(0));
+                    record(test, "survivors", left.toString());
+                    check("a cut member is no survivor: " + left, left.equals(Map.of(WARRIOR, 5)));
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The trim's other cases (MZB-473), in forced chunks with a plain player 18 blocks from the placed stacks:
+     * <ul>
+     * <li>P stands half in the ticking area: its first two rows are placed and its third row and chief are pending;</li>
+     * <li>a march that matches cuts nothing; a march of another dimension (units 1 against six) trims nothing and is not due, and is held;</li>
+     * <li>E, a band whose march is ENDED (units 1 against six): nothing is cut, the path is dropped and the agent remembered, and a
+     * later record of it is stale (one more {@code marchStale}) and trims nothing;</li>
+     * <li>P's march one warrior short, the player in sight of its placed rows: the rearmost pending member goes in the tick the record
+     * arrives (the third row's second), and the band is not due; a march with no chief cuts the pending chief at once;</li>
+     * <li>a march of three warriors then cuts the last pending member and no more: every member left is in sight, so the party is
+     * due ({@code trimDue}) with four on it;</li>
+     * <li>the recall lists four survivors for P, six for E and D.</li>
+     * </ul>
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_trim2")
+    public static void thePendingAreCutAtOnceAndAnEndedOrForeignRecordTrimsNothing(GameTestHelper helper) {
+        String test = "thePendingAreCutAtOnceAndAnEndedOrForeignRecordTrimsNothing";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 1);
+        String dim = RtsimTests.dimension(helper);
+        double east = 16.0 * (at.cx() + 2);
+        long faction = ConflictKit.newFaction();
+        long p = ConflictKit.newAgent(), e = ConflictKit.newAgent(), d = ConflictKit.newAgent();
+        Map<String, Integer> six = Map.of(WARRIOR, 6), five = Map.of(WARRIOR, 5), three = Map.of(WARRIOR, 3), one = Map.of(WARRIOR, 1);
+        double[][] heads = {{east - 2.25, at.z()}, {at.x() - 8, at.z() - 10}, {at.x() - 8, at.z() + 10}};
+        long[] agents = {p, e, d};
+        List<ConflictKit.StackSpec> six4 = List.of(new ConflictKit.StackSpec(WARRIOR, 6, true));
+        ServerPlayer[] player = new ServerPlayer[1];
+        long[] n = new long[6]; // trimmed, marchRecords, marchStale, marchEnds before a step; the tick a step began
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 1)))
+                .thenExecute(() -> {
+                    for (int b = 0; b < 3; b++) {
+                        ConflictKit.Band band = ConflictKit.band(agents[b], faction, dim);
+                        band.arcX = heads[b][0];
+                        band.arcZ = heads[b][1];
+                        band.bearing = 180f;
+                        band.targetX = heads[b][0];
+                        band.targetZ = heads[b][1];
+                        band.speed = 0f;
+                        band.flags = HOSTILE | CHIEF;
+                        ConflictKit.materialize(band, six4);
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> check("every band appeared", bridge().party(p) != null && bridge().party(e) != null && bridge().party(d) != null
+                        && bridge().party(e).stacks().get(3).state() == PLACED && bridge().party(d).stacks().get(3).state() == PLACED
+                        && bridge().party(p).stacks().get(1).state() == PLACED)))
+                .thenExecute(() -> {
+                    ConflictBridge.Party pp = party(p);
+                    record(test, "P at the edge", "head x " + heads[0][0] + ", the ticking edge " + east + ": " + states(pp));
+                    check("P's first two rows are placed and its third row and chief pending: " + states(pp), pp.stacks().size() == 4
+                            && pp.stacks().get(0).state() == PLACED && pp.stacks().get(1).state() == PLACED
+                            && pp.stacks().get(2).state() == PENDING && pp.stacks().get(3).state() == PENDING);
+                    n[0] = ConflictKit.trimmed();
+                    n[1] = bridge().marchRecords;
+                    long now = level.getGameTime();
+                    say(p, 1, dim, faction, OUT, MARCH_CHIEF, six, wp(heads[0][0], heads[0][1], now), wp(heads[0][0] - 200, heads[0][1], now + 10_000));
+                    say(e, 1, dim, faction, OUT, MARCH_CHIEF, six, wp(heads[1][0], heads[1][1], now), wp(heads[1][0] - 200, heads[1][1], now + 10_000));
+                    // A march of another level: its units are one against the band's six, and it is not this band's books.
+                    say(d, 1, "minecraft:the_nether", faction, OUT, MARCH_CHIEF, one, wp(0, 0, now), wp(100, 0, now + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("three marches kept", bridge().marchRecords == n[1] + 3)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("a matching march and a march of another dimension cut nothing (" + (ConflictKit.trimmed() - n[0]) + " cut)", ConflictKit.trimmed() == n[0]);
+                    check("none is due", !party(p).trimDue() && !party(e).trimDue() && !party(d).trimDue());
+                    ConflictBridge.Party dp = party(d);
+                    check("the other dimension's march is held as it is said: " + (bridge().march(d) == null ? "none" : bridge().march(d).dimension()),
+                            bridge().march(d) != null && "minecraft:the_nether".equals(bridge().march(d).dimension()));
+                    check("D still has its six warriors and chief: " + bridge().bodies(d).size() + " bodies", bridge().bodies(d).size() == 7);
+                    // E's march ends, saying one unit: nothing is cut.
+                    n[2] = bridge().marchEnds;
+                    say(e, 2, dim, faction, OUT, MARCH_CHIEF | MARCH_ENDED, one, wp(heads[1][0], heads[1][1], level.getGameTime()));
+                })
+                .thenWaitUntil(waits.logic(() -> check("E's end was counted", bridge().marchEnds == n[2] + 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("an ENDED march trims nothing (" + (ConflictKit.trimmed() - n[0]) + " cut)", ConflictKit.trimmed() == n[0]);
+                    check("E's path is dropped and its agent remembered: path " + bridge().march(e) + ", ended " + bridge().marchEnded(e),
+                            bridge().march(e) == null && bridge().marchEnded(e));
+                    check("E keeps its seven bodies (" + bridge().bodies(e).size() + ")", bridge().bodies(e).size() == 7);
+                    n[3] = bridge().marchStale;
+                    say(e, 3, dim, faction, OUT, MARCH_CHIEF, one, wp(heads[1][0], heads[1][1], level.getGameTime()));
+                })
+                .thenWaitUntil(waits.logic(() -> check("E's later record was stale", bridge().marchStale == n[3] + 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("a later record of an ended agent trims nothing and keeps no path (" + (ConflictKit.trimmed() - n[0]) + " cut, path " + bridge().march(e) + ")",
+                            ConflictKit.trimmed() == n[0] && bridge().march(e) == null);
+                    // The player, in sight of P's placed rows and every other band.
+                    double px = heads[0][0] + 18;
+                    player[0] = FakePlayers.add(level, new Vec3(px, f.ground(px, at.z()), at.z()), "conflict_march_trim2_watcher");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                })
+                // P is one warrior short with a player in sight of its placed rows: the pending third row gives it up at once.
+                .thenWaitUntil(waits.logic(() -> check("the middle of a beat, tick " + level.getGameTime(), level.getGameTime() % 20 == 10)))
+                .thenExecute(() -> {
+                    n[4] = level.getGameTime();
+                    say(p, 2, dim, faction, OUT, MARCH_CHIEF, five, wp(heads[0][0], heads[0][1], n[4]), wp(heads[0][0] - 200, heads[0][1], n[4] + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("a pending member was cut (" + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 1)))
+                .thenExecute(() -> {
+                    long cutAt = level.getGameTime();
+                    ConflictBridge.Party pp = party(p);
+                    record(test, "pending first", "the march was sent at tick " + n[4] + ", the cut was seen at tick " + cutAt + ", " + states(pp));
+                    check("the pending member went with the record, in sight of the rest: " + (cutAt - n[4]) + " ticks", cutAt - n[4] <= 6);
+                    check("it is stack 2's second member, and its stack still stands pending with the first: " + states(pp), !pp.stacks().get(2).slots().get(1).alive()
+                            && pp.stacks().get(2).slots().get(0).alive() && pp.stacks().get(2).state() == PENDING);
+                    check("no placed member was cut", aliveIn(pp.stacks().get(0)) == 2 && aliveIn(pp.stacks().get(1)) == 2);
+                    check("the band is not due", !pp.trimDue());
+                    // No chief on the march: the pending chief goes at once.
+                    n[4] = level.getGameTime();
+                    say(p, 3, dim, faction, OUT, 0, five, wp(heads[0][0], heads[0][1], n[4]), wp(heads[0][0] - 200, heads[0][1], n[4] + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the pending chief was cut (" + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 2)))
+                .thenExecute(() -> {
+                    ConflictBridge.Party pp = party(p);
+                    check("the chief's stack is gone: " + states(pp), pp.stacks().get(3).state() == GONE);
+                    check("the band is not due", !pp.trimDue());
+                    // Three warriors: two to cut, one pending and the rest in sight.
+                    n[4] = level.getGameTime();
+                    say(p, 4, dim, faction, OUT, 0, three, wp(heads[0][0], heads[0][1], n[4]), wp(heads[0][0] - 200, heads[0][1], n[4] + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the last pending member was cut (" + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 3)))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    ConflictBridge.Party pp = party(p);
+                    record(test, "blocked", "trimmed " + (ConflictKit.trimmed() - n[0]) + " after 40 ticks, due " + pp.trimDue() + ", " + states(pp));
+                    check("only the pending member went: every member left is in sight (" + (ConflictKit.trimmed() - n[0]) + " cut)", ConflictKit.trimmed() == n[0] + 3);
+                    check("stack 2 is gone and the placed rows have their four: " + states(pp), pp.stacks().get(2).state() == GONE
+                            && aliveIn(pp.stacks().get(0)) + aliveIn(pp.stacks().get(1)) == 4);
+                    check("the band is due, waiting for the player to go", pp.trimDue());
+                    FakePlayers.remove(player[0]);
+                    for (long a : agents)
+                        ConflictKit.recall(a, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("every band recalled", !about(ConflictRecords.BAND_DEMATERIALIZED, p).isEmpty()
+                        && !about(ConflictRecords.BAND_DEMATERIALIZED, e).isEmpty() && !about(ConflictRecords.BAND_DEMATERIALIZED, d).isEmpty())))
+                .thenExecute(() -> {
+                    Map<String, Integer> sp = ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, p).get(0));
+                    Map<String, Integer> se = ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, e).get(0));
+                    Map<String, Integer> sd = ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, d).get(0));
+                    record(test, "survivors", "P " + sp + ", E " + se + ", D " + sd);
+                    check("P's survivors are the four left: " + sp, sp.equals(Map.of(WARRIOR, 4)));
+                    check("E's and D's survivors are all six: " + se + ", " + sd, se.equals(Map.of(WARRIOR, 6)) && sd.equals(Map.of(WARRIOR, 6)));
+                })
+                .thenSucceed();
+    }
+
     // @@END@@
 }
