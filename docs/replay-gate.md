@@ -1915,8 +1915,9 @@ its files on disk, the rest from the save before. Two directions:
    (nothing in the outbox) and the op re-decided after it, in that step's `simulate`. Java refuses it then:
    the restored journal's applied index holds it until the engine's pages pass its answer, and the store's
    ring holds it until the store's first save. The hole is a re-decision after both: the industry module
-   off at the restart and switched on after a world save (the link ignores the journaled records, the
-   engine acknowledges them, the ring trims by the journal's file mark): a dupe. The port's rings have no
+   off at the restart and switched on after a world save (the link ignores the journaled records, its
+   COMMAND_RESULTs taken since RP-285; the engine acknowledges them, the ring trims by the journal's file
+   mark): a dupe. The port's rings have no
    trim (only residual 6). Closed at the merge with T2 (RP-209): every ring keeps an op until the engine
    acknowledges the op's latest answer, after which the engine cannot re-decide it, and a ring another
    session answered is settled at the session's start against the engine's pages and the journal the
@@ -1948,7 +1949,11 @@ reload) could die before the journal's write, and an op applied before the switc
 at its resend once the module is on. Tests: create `aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused`
 (applied, the module off, saved, a crash before the journal's write, the restart with it on: refused, one
 package). The port's rings follow it since slice U-a (RP-206) and the store rings always did (RP-204); T2's
-train ring takes it since RP-257 (docs/choices-mowzie-build.md), in place of RP-194's gate.
+train ring takes it since RP-257 (docs/choices-mowzie-build.md), in place of RP-194's gate. The engine's
+side follows the same rule since RP-285 (docs/choices-journal-barrier.md): with the industry module off,
+U10's ignore no longer covers an answer to an industry command. It takes the command out of the outbox
+or the queue and books its effect at once, so a command whose ring entry Java pruned at the
+acknowledgement is never written again at the switch-on.
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 

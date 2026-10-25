@@ -419,6 +419,49 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     or an op a postbox's chunk was found to carry, `PortRing.refreshed`) stays until its op's resend or
     the valve; it can only refuse that op. 4,096 unacknowledged ops in one ring push the oldest out,
     counted.
+- **RP-285, an industry answer heard with the module off (slice U, SEC-1's option A; amends U10's industry
+  rule, IR15 in docs/choices-indrework.md).**
+  - *Chosen.* With `Module.INDUSTRY` off, `industry::journaled` still takes a COMMAND_RESULT for an
+    industry op; every other industry record is still ignored (U10). The kept command leaves the outbox
+    (`Link::complete`), or the queue that the switch or a session start with the module off moved it back
+    to (`Link::unqueue`, new; `set_enabled`, `write_resends`). Its book effect lands at once, at the
+    engine's frozen time (`engine.now()`, as `dropped` does), so the answer never runs the engine's clock:
+    FAILED takes the exchange back (`command_failed`), DUPLICATE_OP drops it (`command_duplicate`,
+    RP-199), and APPLIED drops a station exchange too, since its IND_CARRIAGE_RESULT, journaled just
+    before it, was ignored if the switch came between, and none will come. `command_duplicate` only
+    removes an entry of the engine's exchanges, which hold carriage deltas alone (rtsim-industry
+    `engine.rs`, the station exchange and the loot), so APPLIED for a deposit delta, a package or a chain
+    write books nothing. A REASSERT copy of a carried answer takes the same path, and so does an answer
+    heard again (`answered_again`). While on, `command_result` also takes a kept command out of the queue.
+    `set_enabled` still sends the whole outbox again under new sequences once on: what is left there has
+    no answer from Java.
+  - *Why.* Java prunes its op rings and trims its journal at the engine's acknowledgement of a live
+    answer whatever the switch (RP-209, RP-257). An answer that reached the engine with the module off was
+    acknowledged and dropped, its command kept in the outbox, and `set_enabled` sent it again once on: a
+    second application of an op Java no longer knew. Answers do reach an engine that is off: the switch
+    comes in a hand-over's preamble (MODULES) ahead of the journal's drain, so every answer not drained
+    yet lands behind it, and the core journals a loaded chunk's carried answers again (REASSERT,
+    `RtsimSession.reassert`) whatever the industry module, then drops them at the acknowledgement.
+    Applying the effect at once holds across a crash while off: `take_save` calls `industry::save` with
+    the module off (the engine's changed pages, and the link page with its outbox and queue), and
+    `Link::load` reads them whatever the switch, so the pages that cover the answer hold its effect.
+  - *Cost.* An IND_CARRIAGE_RESULT heard while off is still ignored: an exchange whose result came in that
+    window keeps no shortfall correction (IR15's cost), and is now dropped at its APPLIED instead of
+    staying pending until a resend's DUPLICATE_OP.
+  - *Tests.* rtsim-jni `tests/industry.rs`, module `ack_never_resends`:
+    `an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack` (the switch in
+    the tick of a station exchange's APPLIED; failing first at b5f3c55f, the exchange sent again after
+    the acknowledgement past its answer); `a_failed_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off`;
+    `a_duplicate_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off` (a J3
+    re-derivation refused live in the tick industry goes off);
+    `a_carried_answer_heard_with_industry_off_takes_its_queued_command` (a chunk's carried APPLIED for an
+    ordered package write, journaled again as a REASSERT in a session that starts off). The three crash
+    cases restart off on a minimum-size buffer, the replay over at least two hand-overs. Against the link
+    before the fix each fails: FAILED leaves the world's books short (the exchange never taken back, the
+    command trimmed from the outbox at the restart), DUPLICATE_OP leaves the exchange pending for ever,
+    and the carried package is sent again after the acknowledgement past its copy.
+  - *Left.* No test answers a deposit delta or a chain write while off on a running line (the iron line
+    decides only exchanges, loot and reconciles); the carried case covers an ordered package write.
 
 ## For Ben
 
