@@ -29,6 +29,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
+use rtsim_conflict::engine::StationEnd;
 use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
@@ -595,16 +596,58 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if let Obs::CarriageResult(r) = &t.obs {
         l.complete(r.op);
     }
+    // A train's arrival (or its stop outside every district) names the line its held rail passes
+    // ran (M7, MZB-312). The arrival clears the train's departure, so the line is read first.
+    let rail = rail_line(&l.engine, &t.obs);
     l.ingest(&t);
+    if let Some((train, line)) = rail
+        && super::conflict::running(st)
+        && st.conflict.engine.holds_train(train)
+    {
+        super::conflict::rail_call(st, rec, train, line);
+    }
+}
+
+/// The train an arrival or an unwatched stop is of, and the line it ran: the two stations it left
+/// and reached, as the conflict knows them. None for the line when the train has no departure on
+/// the books, a station is undeclared, both ends are one station, or it stopped outside every
+/// district (an unwatched stop always lets the passes go). None for a record of another kind.
+fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationEnd)>)> {
+    let end = |id| {
+        let d = e.station_decl(id)?;
+        Some(StationEnd {
+            id: d.station.0,
+            dim: d.dim,
+            x: d.pos.x,
+            z: d.pos.z,
+            district: d.district.map(|d| d.0),
+        })
+    };
+    match o {
+        Obs::TrainArrived(c) => {
+            let line = e
+                .last_departure_of(c.train)
+                .filter(|from| *from != c.station)
+                .and_then(|from| Some((end(from)?, end(c.station)?)));
+            Some((c.train.0, line))
+        }
+        Obs::TrainUnwatched(u) => Some((u.train.0, None)),
+        _ => None,
+    }
 }
 
 /// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
 /// command written under that op id again (a test's order, or the same decision resent) is
-/// answered all the same, so it leaves the outbox.
+/// answered all the same, so it leaves the outbox. A train's loot re-decided after a crash is
+/// such a command: the replay heard the live application's APPLIED, so Java's DUPLICATE comes
+/// here, not to `command_result`, and the loot exchange is dropped here (RP-182).
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
         st.industry.complete(op);
+        if rec.aux == obs::command_result::DUPLICATE_OP && st.industry.enabled {
+            st.industry.engine.command_duplicate(op);
+        }
     }
 }
 
@@ -631,8 +674,14 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
 /// the result, so this works whether or not the outbox still had the command: a restart trims the
 /// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+/// A duplicate carriage delta of a train's loot was re-decided after a crash under the op Java
+/// applied before: its goods left once, so the engine drops the exchange (RP-182).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
     let kept = l.complete(op);
+    if status == obs::command_result::DUPLICATE_OP {
+        l.engine.command_duplicate(op);
+        return;
+    }
     if status != obs::command_result::FAILED {
         return;
     }

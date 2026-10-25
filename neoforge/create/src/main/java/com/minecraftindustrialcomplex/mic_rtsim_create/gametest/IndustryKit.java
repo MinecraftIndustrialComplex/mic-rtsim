@@ -87,6 +87,14 @@ public final class IndustryKit {
     }
 
     /**
+     * For a {@code ChunkWait.chunks} wait: the chunk is loaded as a level chunk (after a test forced it, before
+     * a wait on what its load does).
+     */
+    public static void loads(ServerLevel level, int cx, int cz) {
+        check("chunk " + cx + ", " + cz + " loads", level.getChunkSource().getChunkNow(cx, cz) != null);
+    }
+
+    /**
      * A wait on the engine, which takes the journal's records on its own thread: the GameTest server ticks as fast as
      * it can, so on a busy machine (a glass replay's step still running, other jobs) a timeout in ticks passes before
      * the engine has taken a record Java handed over. While the check fails, the tick waits 5 ms, so a timeout of
@@ -119,6 +127,7 @@ public final class IndustryKit {
     /** Test pacing: short sweeps and detection right after an edit. Clears test switches a failed test left on. */
     public static void fastConfig() {
         com.minecraftindustrialcomplex.mic_rtsim_create.Frontier.ignoreReturnsForTest = false;
+        com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.fallbackForTest(false);
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
         // The glass box: compiles finish within a tick or two and resend often enough for a short test.

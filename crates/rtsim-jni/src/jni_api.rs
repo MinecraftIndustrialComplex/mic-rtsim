@@ -30,7 +30,7 @@ use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
 use crate::engine::{
-    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HABITAT_INFO,
+    CLOCKS, Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HABITAT_INFO,
     HERD_INFO, PHASE1_STATS, STATS_LEN, last_error, set_last_error,
 };
 use crate::orders;
@@ -394,6 +394,27 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         let n = out.len(env)?.min(PHASE1_STATS);
         let vals: Vec<jlong> = stats[..n].iter().map(|v| *v as jlong).collect();
         out.set_region(env, 0, &vals)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native void nClocks(long handle, long[] out)`: the modules' clocks (`CLOCKS` of
+/// them, `Engine::clocks`). Between steps.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nClocks<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    out: JLongArray<'l>,
+) {
+    env.with_env(|env| -> Result<(), JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let clocks = e.clocks();
+        let n = out.len(env)?.min(CLOCKS);
+        out.set_region(env, 0, &clocks[..n])
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
