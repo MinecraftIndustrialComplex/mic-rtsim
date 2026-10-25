@@ -827,6 +827,8 @@ impl Glass {
                 c.discard(at, tun);
                 // A new session's sweep numbers start over: the last session's sample is not theirs.
                 c.counts = None;
+                // and the last session's residue: a report before the next compile shows none.
+                c.counted_res.clear();
             }
             dg.asm = store::Assembler::default();
             dg.ticking.clear();

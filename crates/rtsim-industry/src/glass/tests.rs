@@ -5434,12 +5434,10 @@ mod replay_path {
             assert_eq!(live.sections.len(), 2);
             assert_eq!(live.units, 2);
             let bytes = district_page(&dg);
-            let PageRead::Kept(back) = read_district_page(
-                &bytes,
-                tun.sections_max,
-                tun.counted_stores_max,
-            )
-            .expect("the page reads") else {
+            let PageRead::Kept(back) =
+                read_district_page(&bytes, tun.sections_max, tun.counted_stores_max)
+                    .expect("the page reads")
+            else {
                 panic!("the page was dropped");
             };
             let saved = DistrictSections::of(&back).expect("a compile in the page");
@@ -6541,7 +6539,10 @@ mod replay_path {
             );
             // Before the replay starts nothing replays, whatever may.
             let r = c.report(&e.glass.districts[&D]);
-            assert_eq!((r.sections[sa].state, r.sections[sb].state), (ss::PASSED, ss::FAILED));
+            assert_eq!(
+                (r.sections[sa].state, r.sections[sb].state),
+                (ss::PASSED, ss::FAILED)
+            );
             feed(&mut e, &load_state(200, LoadState::Unloaded));
             e.advance_to(Tick(201));
             assert_eq!(model(&e), replay_model::GLASS);
@@ -8758,5 +8759,94 @@ mod replay_path {
         let st = e.sim_stock(D).expect("replaying");
         assert!((196..=200).contains(&st.get(SHEET)), "{st:?}");
         e.check_books().expect("books");
+    }
+}
+
+/// The counted stores' residue as the report shows it (SECTIONS.md §8.1, choices SC168, SC177).
+mod store_residue {
+    use std::collections::BTreeMap;
+
+    use crate::glass::check::{CountTake, StoreRes, note_residue};
+    use crate::glass::units::Units;
+    use crate::ids::Good;
+
+    const H: u32 = 5;
+    const G: Good = Good(3);
+
+    fn units(pairs: &[(u32, u32)]) -> Units {
+        Units {
+            counted: vec![H],
+            pairs: pairs.to_vec(),
+            ..Units::default()
+        }
+    }
+
+    /// A sample holding each pair whole, with its `since`.
+    fn take(sweep: u32, pairs: &[((u32, u32), i64)]) -> CountTake {
+        let mut t = CountTake {
+            sweep,
+            ..CountTake::default()
+        };
+        for &(p, since) in pairs {
+            t.since.insert(p, since);
+            t.stated.insert(p, 1);
+            t.got.insert(p, 1);
+        }
+        t
+    }
+
+    fn at(v: i64) -> BTreeMap<(u32, Good), i64> {
+        BTreeMap::from([((H, G), v)])
+    }
+
+    #[test]
+    fn residue_is_the_change_since_the_baseline() {
+        let u = units(&[(1, H)]);
+        let mut res = BTreeMap::new();
+        note_residue(&mut res, &u, &take(1, &[((1, H), 10)]), &at(7));
+        assert!(
+            res[&H].residue().is_empty(),
+            "the first sweep is the baseline"
+        );
+        note_residue(&mut res, &u, &take(2, &[((1, H), 10)]), &at(12));
+        assert_eq!(res[&H].residue(), vec![(G, 5)]);
+        // Java forgot the pair: its `since` moved, the baseline starts again.
+        note_residue(&mut res, &u, &take(3, &[((1, H), 99)]), &at(20));
+        assert!(res[&H].residue().is_empty());
+        note_residue(&mut res, &u, &take(4, &[((1, H), 99)]), &at(21));
+        assert_eq!(res[&H].residue(), vec![(G, 1)]);
+    }
+
+    #[test]
+    fn a_store_with_no_pairs_takes_a_baseline_too() {
+        let u = units(&[]);
+        let mut res = BTreeMap::new();
+        note_residue(&mut res, &u, &take(1, &[]), &at(7));
+        assert!(res[&H].residue().is_empty(), "not the raw residue");
+        note_residue(&mut res, &u, &take(2, &[]), &at(9));
+        assert_eq!(res[&H].residue(), vec![(G, 2)]);
+    }
+
+    #[test]
+    fn a_partial_sweep_leaves_the_store_as_it_was() {
+        let u = units(&[(1, H), (2, H)]);
+        let mut res = BTreeMap::new();
+        let both = [((1, H), 10), ((2, H), 10)];
+        note_residue(&mut res, &u, &take(1, &both), &at(7));
+        note_residue(&mut res, &u, &take(2, &both), &at(9));
+        // The second pair is missing from this sweep: nothing changes.
+        note_residue(&mut res, &u, &take(3, &[((1, H), 10)]), &at(50));
+        assert_eq!(res[&H].residue(), vec![(G, 2)]);
+    }
+
+    #[test]
+    fn a_sweep_that_changes_nothing_keeps_the_store_equal() {
+        let u = units(&[(1, H)]);
+        let mut res = BTreeMap::new();
+        let t = take(1, &[((1, H), 10)]);
+        note_residue(&mut res, &u, &t, &at(7));
+        let before: StoreRes = res[&H].clone();
+        note_residue(&mut res, &u, &t, &at(7));
+        assert_eq!(res[&H], before);
     }
 }
