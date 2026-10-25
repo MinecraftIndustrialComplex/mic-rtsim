@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.mixin;
 
+import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import org.spongepowered.asm.mixin.Mixin;
@@ -15,4 +16,12 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 public interface ChunkMapInvoker {
     @Invoker("save")
     boolean mic_rtsim$save(ChunkAccess chunk);
+
+    /**
+     * {@code getUpdatingChunkIfPresent} (protected): a chunk's holder as last scheduled, the one
+     * {@code ChunkTicketLevelUpdatedEvent} speaks of; the camp reconciler reads a footprint chunk's ticket
+     * level once from it when it registers the camp (MOWZIE.md §4.9).
+     */
+    @Invoker("getUpdatingChunkIfPresent")
+    ChunkHolder mic_rtsim$updating(long chunkPos);
 }
