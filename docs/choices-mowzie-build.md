@@ -3606,8 +3606,36 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - Forks: the hold point is the nearest block centre within 0.4 of 5.0, not exactly 5.0 (a body cannot
       rest between blocks); "refused" is as above; the diagonal is covered by the JUnit geometry and the
       provider's GameTest, not by a pass of test 9 on a diagonal rail (a diagonal fixture is a larger
-      job than the value of it); the other slots of a stack keep their stack offset about the hold point
       (the contract is for the first body).
+  - Amendment (the second re-check's P3, embankments and cuttings, a curve's middle, a diagonal's corner;
+    compiled and the JUnit run, the GameTests not run):
+    - `standAt` takes a floor within `STAND_RISE` (2.0) of the rail's y, not the search of y + 4 down to y - 8:
+      a floor whose top is 3 or more above or below the rail is the rim of a cutting or the crown of an
+      embankment, a long walk from the rail and out of the strike's reach in the vertical (the swipe is 3D, and
+      the gate's 6.0 horizontal absorbs |dy| up to 2.5 only). Such a column is no candidate, so the other side
+      is tried, and with neither the lurk is refused as before. The no-axis path keeps `floorAt` (the heightmap
+      fallback of M5's placing), since there is no rail to be level with.
+    - With no axis known (a curve's middle, a crossing, no create plugin), `holdPoint` asks `RailAxes.trackNear(level,
+      point, radius)` (a default method, false) about the engine's spot at the track's height, with the radius the body's
+      half-width plus `LurkGeometry.RAIL_CLEARANCE` (1.5): 3.5 for the 4-wide Frostmaw, the least at which its box
+      could reach the rail's clearance. A rail within that is refused (the same refusal as a side with no floor);
+      none, and the engine's spot stands, so the no-plugin case works as before. Create's `RailDirections.trackNear`
+      scans the blocks within the radius (centre to point, horizontal) and 3 blocks of height for an `ITrackBlock`
+      or a `FakeTrackBlock`, the block Create fills a curve's span with (a bezier piece has an `ITrackBlock` only
+      at its two ends). The refusal is a fork: the alternative, placing a body near a curve by the nearest track
+      segment's direction, needs the bezier's tangent per segment (not read here), and a refused lurk is retried
+      (`RETRY_FAILED`) and only costs the party its ambush at that point of the line.
+    - A diagonal rail's centre line meets the corner of a square box, not its side, so the Frostmaw's 2.0 half-width
+      is 2.83 against the rail. The candidate window is asymmetric for a rail not along an axis: far slack 0.4
+      (unchanged), near slack `OBLIQUE_NEAR_SLACK` (0.17): 5.0 - 0.17 - 0.5 - 2.83 = 1.50, the clearance, by
+      construction rather than by the 4.95 the block lattice happens to give (1.61 clear). `LurkGeometry.nearSlack(axis)`
+      is the pick; an axis rail keeps the 0.4 both sides. Off Create's lattice (the track point not on the rail's
+      line) the den's side may have no block centre in the narrower window; the other side, the mirror lattice,
+      always has one (a JUnit sweep checks it), so the body goes there and the lurk is not refused for it.
+    - Tests (written and compiled, not run): `LurkSpotsTest` (the sweep above, three diagonal cases, `nearSlack`),
+      `FrostmawGameTests` (a cutting on the den's side stands the body on the other; no axis and a rail near is
+      refused with the radius and point asserted, then the engine's spot once none is near), `RailDirectionsGameTests`
+      (`trackNear` at a crossing, the corner of two lines, a fake track block, 3 blocks of height and bare ground).
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
@@ -3915,6 +3943,26 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     its bogey when the stand was out of reach. A rider is now a living entity that is alive and a `Mob` or a `Player`
     (`TrainSampler.rides`), in all three of its sources. Nothing else in vanilla is a living non-mob except the
     stand; a mod's decoration that extends `Mob` is a mob by every other rule here.
+  - Amendment (the second re-check's P3, a rider on the next carriage, a rider's height, a diagonal's corner;
+    compiled, not run):
+    - `strikeAt` looks at the riders of every unstruck carriage in the cheap range before it aims at any bogey. A
+      first pass takes each carriage's riders (once, kept) and strikes the first whose landing is in reach; a second
+      pass strikes a carriage that has no rider, at its bogey, only when the first struck nothing. Before, the
+      loop went carriage by carriage, so a riderless carriage in front took the swing at its bogey (the puppet then
+      busy for the swing) while a rider on the next carriage, in reach a tick later, was refused. The loop returns
+      at the first strike that starts: the puppet is busy, so a second would be refused. A carriage with a rider that
+      is not in reach is still not struck.
+    - A rider's reach is the swipe's own, in 3D: `TrainSampler.reachesRider` takes the landing point's distance to the
+      body's feet in three dimensions against `SWIPE_RANGE` (6.5) plus half the rider's width (6.8 for a player),
+      the jar's 3D cut. The horizontal `STRIKE_REACH` (6.0) stays for a bogey point, which has no height of its own.
+      So a rider on a carriage floor 2 above the body, or the body 2 below on a bank, is struck when 3D-near, and
+      one the horizontal gate would have passed at 6.0 and the 3D cut refuses (|dy| above 3.2) is not.
+    - `spotContract(stand, halfWidth, diagonal)`: for a diagonal rail the box's corner meets the rail, so the reach is
+      `halfWidth * sqrt(2)` and the near slack `OBLIQUE_NEAR_SLACK` (MZB-360's amendment); the rule holds by
+      itself, 5.0 - 0.17 - 0.5 - 2.83 = 1.50 >= 1.5 (it rested on the 4.95 the lattice gives before). Test 9 asserts
+      it for an axis rail and for a diagonal.
+    - The ordering of the two passes has no test: it needs a train of two carriages, one with a rider, in front of a
+      puppet, which the riders test's one-carriage line does not lay.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -4151,6 +4199,8 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
         it does a real rider and Create carries it. The seated zombie stays `noAi` (it is a passenger).
       - The bystander stands level with the floor 1.6 blocks beside the player on it (it was 3.0), 1.1 past the
         plank's edge, and an armor stand stands on the floor with the player: `ridersOf` returns neither.
+      - The second re-check's P3 tests of placement are listed in MZB-360's amendment (a cutting, a curve's middle,
+        `trackNear`); the spot contract is checked for a diagonal as well as an axis rail (MZB-365's amendment).
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
@@ -4304,6 +4354,10 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     neither side is standable; the engine's spot when no rail direction is known), and the contract's two
     inequalities count `LATERAL_SLACK` (MZB-360's and MZB-365's amendments). The wire is unchanged: `spot` is
     still the engine's point.
+  - Amendment (the second re-check's P3): boundary.md's contract block takes the diagonal's corner (`halfWidth *
+    sqrt 2` and the near slack 0.17), the floor within 2 of the rail's y, and the refusal when no direction is known
+    and a rail is within the body's half-width plus the rail clearance of the engine's spot (MZB-360's and MZB-365's
+    amendments). The wire is unchanged.
 
 ### M8 design for the implementer
 

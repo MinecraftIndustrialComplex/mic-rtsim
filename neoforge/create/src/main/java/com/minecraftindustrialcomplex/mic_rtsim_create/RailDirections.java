@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create;
 
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
+import com.simibubi.create.content.trains.track.FakeTrackBlock;
 import com.simibubi.create.content.trains.track.ITrackBlock;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -25,6 +26,39 @@ public final class RailDirections implements RailAxes {
     @Override
     public Vec3 at(ServerLevel level, Vec3 point) {
         return axisAt(level, point);
+    }
+
+    /** How far above and below the point's block a piece of track still counts as near it (blocks). */
+    private static final int NEAR_HEIGHT = 3;
+
+    /**
+     * Whether a piece of Create track is within {@code radius} blocks (horizontal, block centre to point) of the point and
+     * within {@link #NEAR_HEIGHT} blocks of its height: any {@code ITrackBlock} (straight, diagonal, slope, crossing,
+     * junction) or a {@code FakeTrackBlock}, the block Create fills a curve's span with (a bezier piece has an
+     * {@code ITrackBlock} only at its two ends). Not loaded counts as no track.
+     */
+    @Override
+    public boolean trackNear(ServerLevel level, Vec3 point, double radius) {
+        int bx = Mth.floor(point.x), by = Mth.floor(point.y), bz = Mth.floor(point.z);
+        int r = Mth.ceil(radius) + 1;
+        double r2 = radius * radius;
+        BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
+        for (int dx = -r; dx <= r; dx++)
+            for (int dz = -r; dz <= r; dz++) {
+                double cx = bx + dx + 0.5 - point.x, cz = bz + dz + 0.5 - point.z;
+                if (cx * cx + cz * cz > r2 || !level.hasChunk((bx + dx) >> 4, (bz + dz) >> 4))
+                    continue;
+                for (int dy = -NEAR_HEIGHT; dy <= NEAR_HEIGHT; dy++) {
+                    at.set(bx + dx, by + dy, bz + dz);
+                    if (isTrack(level.getBlockState(at)))
+                        return true;
+                }
+            }
+        return false;
+    }
+
+    private static boolean isTrack(BlockState state) {
+        return state.getBlock() instanceof ITrackBlock || state.getBlock() instanceof FakeTrackBlock;
     }
 
     /** The horizontal unit direction of the rail at {@code point}, or null (see the class doc). */

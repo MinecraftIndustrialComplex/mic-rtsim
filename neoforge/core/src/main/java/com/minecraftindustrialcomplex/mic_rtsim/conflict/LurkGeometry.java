@@ -18,9 +18,10 @@ import java.util.List;
  * engine's spot only gives the side.
  *
  * <p>A body's centre can rest only on a block's centre (the navigation ends a wide body's path there), so the point
- * is a block centre whose distance to the centre line is within {@link #LATERAL_SLACK} of {@code SPOT_BLOCKS} (exact
- * on a rail along an axis; up to 0.354 off on a diagonal), within {@link #ALONG_MAX} of the track point along the rail, the
- * nearest to both first. The den's side first, then the other; the bridge takes the first that is standable.
+ * is a block centre whose distance to the centre line, less {@code SPOT_BLOCKS}, is within {@link #LATERAL_SLACK} on the
+ * far side and within {@link #nearSlack} on the near side (exact on a rail along an axis), within {@link #ALONG_MAX} of
+ * the track point along the rail, the nearest to both first. The den's side first, then the other; the bridge takes the
+ * first that is standable.
  */
 public final class LurkGeometry {
     private LurkGeometry() {}
@@ -32,11 +33,32 @@ public final class LurkGeometry {
      */
     public static final double SPOT_BLOCKS = 5.0;
     /**
-     * How far from {@link #SPOT_BLOCKS} a body's distance to the centre line may be (blocks). The block centres of a
-     * diagonal rail's side lie on lines 1/sqrt(2) = 0.707 apart, so the nearest is up to 0.354 off whatever the track
-     * point's fraction; 0.4 always finds one. The contract counts it ({@code TrainSampler.spotContract}).
+     * How far beyond {@link #SPOT_BLOCKS} a body's distance to the centre line may be (blocks), and how far short of it
+     * for a rail along an axis. The contract counts it ({@code TrainSampler.spotContract}).
      */
     public static final double LATERAL_SLACK = 0.4;
+    /**
+     * How far short of {@link #SPOT_BLOCKS} a body's distance to the centre line may be for a rail not along an axis (a
+     * diagonal; Create has no other straight piece), in blocks. A diagonal rail's centre line meets the corner of a
+     * square box, not its side, so a body of half-width {@code h} comes {@code h * sqrt(2)} to it, not {@code h}: the
+     * Frostmaw's 2.0 is 2.83. The window stays on the safe side by construction: 5.0 - 0.17 - 0.5 (its stand) - 2.83 =
+     * 1.50, the rail clearance (the second re-check's P3: the rule held for a diagonal only because Create's block
+     * centres lie exactly 4.95 from a diagonal's line, 1.61 clear). On Create's lattice (the track point on the
+     * rail's line) the block centres of a diagonal's side lie 4.95, 5.66 from it, so 4.95 is the one found.
+     */
+    public static final double OBLIQUE_NEAR_SLACK = 0.17;
+
+    /** The slack short of {@link #SPOT_BLOCKS} for the axis {@code (axisX, axisZ)}: {@link #LATERAL_SLACK} along an axis, else {@link #OBLIQUE_NEAR_SLACK}. */
+    public static double nearSlack(double axisX, double axisZ) {
+        double len = Math.hypot(axisX, axisZ);
+        boolean alongAxis = Math.abs(axisX) < 0.01 * len || Math.abs(axisZ) < 0.01 * len;
+        return alongAxis ? LATERAL_SLACK : OBLIQUE_NEAR_SLACK;
+    }
+    /**
+     * The nearest a lurking body's box may come to the rail's centre line (blocks): clear of the carriages' boxes (MZB-370).
+     * The create sampler's {@code TrainSampler.RAIL_CLEARANCE} is this one.
+     */
+    public static final double RAIL_CLEARANCE = 1.5;
     /** How far along the rail from the track point a body may stand (blocks): the strike does not care where along the rail. */
     public static final double ALONG_MAX = 1.5;
     /** A spot this close to the rail's line (its component along the normal, blocks) is on the line: the den's side is not known. */
@@ -54,6 +76,7 @@ public final class LurkGeometry {
             return List.of();
         double ax = axisX / len, az = axisZ / len;
         double nx = -az, nz = ax;
+        double near = nearSlack(axisX, axisZ);
         double side = (spotX - trackX) * nx + (spotZ - trackZ) * nz;
         int s = Math.abs(side) < ON_LINE ? 1 : (side > 0.0 ? 1 : -1);
         List<double[]> out = new ArrayList<>();
@@ -67,7 +90,8 @@ public final class LurkGeometry {
                     double lateral = sd * ((px - trackX) * nx + (pz - trackZ) * nz);
                     double along = (px - trackX) * ax + (pz - trackZ) * az;
                     double off = Math.abs(lateral - SPOT_BLOCKS);
-                    if (off > LATERAL_SLACK + 1.0e-9 || Math.abs(along) > ALONG_MAX + 1.0e-9)
+                    if (lateral - SPOT_BLOCKS > LATERAL_SLACK + 1.0e-9 || SPOT_BLOCKS - lateral > near + 1.0e-9
+                            || Math.abs(along) > ALONG_MAX + 1.0e-9)
                         continue;
                     found.add(new double[] {off, Math.abs(along), px, pz});
                 }

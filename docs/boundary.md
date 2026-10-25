@@ -1686,11 +1686,19 @@ variant):
 
 ```
 SPOT_BLOCKS + slack + stand                <= STRIKE_REACH     5.0 + 0.4 + 0.5       <= 6.0   the far side of the stand is in reach
-SPOT_BLOCKS - slack - stand - halfWidth    >= RAIL_CLEARANCE   5.0 - 0.4 - 0.5 - 2.0 >= 1.5   the near edge of the box is off the rail
+SPOT_BLOCKS - nearSlack - stand - reach    >= RAIL_CLEARANCE   5.0 - 0.4 - 0.5 - 2.0 >= 1.5   the near edge of the box is off the rail
 ```
 
 `slack` is `LurkSpots.LATERAL_SLACK` (0.4), how far a block centre the body can rest on may be from `SPOT_BLOCKS`
-(Create's rails give exactly 5.0 along an axis and 4.95 on a diagonal, so the real far side is 5.5).
+on the far side (Create's rails give exactly 5.0 along an axis and 4.95 on a diagonal, so the real far side is 5.5).
+For a rail along an axis `nearSlack` is the same 0.4 and `reach` the body's half-width (the rail meets the box's
+side). A diagonal rail meets the box's corner, so `reach` is `halfWidth * sqrt 2` (2.83 for the Frostmaw) and
+`nearSlack` is `LurkSpots.OBLIQUE_NEAR_SLACK` (0.17): 5.0 - 0.17 - 0.5 - 2.83 = 1.5, so the rule holds by itself and
+not by the lattice. Java stands the body on a floor within 2 blocks of the rail's height only (an embankment's crown
+or a cutting's rim is another level: the swipe is 3D). Where no direction is known (a curve's middle, a crossing) and
+a rail lies within the body's half-width plus `RAIL_CLEARANCE` of the engine's spot, the lurk is refused; with none
+near (or no create plugin) the engine's spot stands. A rider on a carriage is struck by the swipe's 3D reach (6.5
+plus half the rider's width), a bogey point by the horizontal `STRIKE_REACH`.
 
 `SPOT_BLOCKS` is mirrored in `TrainSampler` and pinned on the Rust side (`tests/lurk.rs`): a change to it, the
 strike reach or a stand is a change to all of them, made together. A body kind with another swing registers its own
