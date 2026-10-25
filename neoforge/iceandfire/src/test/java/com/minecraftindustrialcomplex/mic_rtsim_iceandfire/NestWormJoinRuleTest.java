@@ -136,7 +136,7 @@ class NestWormJoinRuleTest {
 
     @Test
     void aWormLoadedBeforeAnOlderOneDoesNotMakeTheOlderStale() {
-        // RP-250, the review's P2: N saved at spawned = 3 with 2 owed; worms 3 and 4 were spawned and their entity sections
+        // RP-242, the review's P2: N saved at spawned = 3 with 2 owed; worms 3 and 4 were spawned and their entity sections
         // saved without N. Worm 4 loads first and is adopted; worm 3, the only copy, then loads.
         Nests.Nest n = nest();
         n.spawned = 3;
@@ -235,7 +235,7 @@ class NestWormJoinRuleTest {
 
     @Test
     void wormsLoadedBeforeTheNestWasRegisteredAreSettledOnce() {
-        // RP-251: a nest rebuilt from its chamber (the file lost it): spawned 0, nothing owed. Three worms were loaded with
+        // RP-241: a nest rebuilt from its chamber (the file lost it): spawned 0, nothing owed. Three worms were loaded with
         // the chunk: ordinals 4, 1 and a second copy of 1.
         Nests.Nest n = nest();
         UUID a = UUID.randomUUID(), b = UUID.randomUUID(), c = UUID.randomUUID();

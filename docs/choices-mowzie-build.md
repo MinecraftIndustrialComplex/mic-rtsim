@@ -5936,216 +5936,292 @@ Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles
 fix/replay-iaf-dupes, base 6100ec9d (slice N). The audit's rows D2, D4, D6 and D8. RP-240 to RP-249.
 Java only (`neoforge/iceandfire`); no Rust, no wire change, no page format change, so no rtsim-view
 fixtures to regenerate. The rule is lose, never double. Saved-data changes, none migrated (nothing is
-released): the Nests SavedData gains `spawned` per placed nest; the placed lairs' SavedData
+released): the Nests SavedData gains `spawned` and `holes` per placed nest; the placed lairs' SavedData
 (`mic_rtsim_iceandfire_oil_lairs`) gains `start` per placed lair; a nest's heart (a spawner block
 entity) gains `mic_rtsim_nest_heart` in its NeoForge persistent data; a nest worm gains
-`mic_rtsim_nest_ordinal` beside `mic_rtsim_nest`. Directions: A is the journal or the engine pages
-newer than the Java store, chunk or entity file; B is the Java store, chunk or entity file newer; JL is
-slice U-a's journal-last save. The GameTests compile and were not run. docs/replay-gate.md has no
-table of the audit's D rows, so it is not edited; the rows are named here.
+`mic_rtsim_nest_ordinal` beside `mic_rtsim_nest`. Directions: A is the journal or the engine pages newer
+than the Java store, chunk or entity file; B is the Java store, chunk or entity file newer; JL is slice
+U-a's journal-last save. The GameTests compile and were not run. An Opus review of the first pass found
+no P1, one P2 and eleven P3; its fixes are folded into RP-241 to RP-244, RP-246 to RP-249, and RP-250
+and up are taken in other worktrees, so no new ids were used. docs/replay-gate.md has no table of the
+audit's D rows, so it is not edited; the rows are named here.
 
-- **RP-240** (D4, the heart carries its nest; ordering): `setHeart` writes the nest id into the
-  spawner block entity's NeoForge persistent data (`getPersistentData().putLong("mic_rtsim_nest_heart",
-  id)`, then `setChanged()`), on a fresh carve and on a reform. NeoForge saves it with the block
-  entity under "NeoForgeData" (`BlockEntity.java:95`), so it is in the chunk's own tag beside the
-  blocks the carve set: one file, one write, the chamber and its mark reach disk together or not at
-  all. The ordering it closes: N (the Nests SavedData) from before the nest, the chunk with the
-  chamber, and the engine's PLACE_NEST resent (Keep, Send) because it never saw NEST_FOUND. Today
-  vanilla writes SavedData before chunks and the background chunk saver writes chunks on any tick, so
-  the chunk can be newer than N. JL moves only the journal, to the end of the save: N and the chunk
-  keep their order, so the ordering stays reachable under JL, and the fix does not care which is
-  newer, since it reads the chunk. Before it, `place` found nothing in N, spot 0 failed on the old
-  air and a spot clear of it (six above or six below the first, which the GameTest picks and
-  asserts fits) carved a second chamber, a second spawner and a second brood. Residual: a chamber
-  whose heart no longer stands (a player broke it before the chunk was saved) has lost the mark with
-  the spawner, so with an N from before the nest a second chamber can still be carved where a spot
-  clears the first. Direction A (N says placed, the chunk is from before and has no chamber) is the
-  old phantom nest: the census finds the heart missing, the nest breaks, and the engine's reform
-  sets it again where it was; unchanged. UR-1: an unknown key in a spawner's NeoForge persistent
-  data is harmless with the module off: `BlockEntity` reads "NeoForgeData" into
-  `customPersistentData` (`:78`) and writes it back unchanged (`:95`), and nothing else reads it;
-  the spawner's own keys are untouched. D1: one pass over one chunk's block entity positions per
-  nest placed from the engine's request (the state of each position is tested, and only a spawner is
+- **RP-240** (D4, the heart carries its nest; ordering): `setHeart` writes the nest id into the spawner
+  block entity's NeoForge persistent data (`getPersistentData().putLong("mic_rtsim_nest_heart", id)`,
+  then `setChanged()`), on a fresh carve and on a reform. NeoForge saves it with the block entity under
+  "NeoForgeData" (`BlockEntity.java:95`), so it is in the chunk's own tag beside the blocks the carve
+  set: one file, one write, the chamber and its mark reach disk together or not at all. The ordering it
+  closes: N (the Nests SavedData) from before the nest, the chunk with the chamber, and the engine's
+  PLACE_NEST resent (Keep, Send) because it never saw NEST_FOUND. Today vanilla writes SavedData before
+  chunks and the background chunk saver writes chunks on any tick, so the chunk can be newer than N. JL
+  moves only the journal, to the end of the save: N and the chunk keep their order, so the ordering
+  stays reachable under JL, and the fix does not care which is newer, since it reads the chunk. Before
+  it, `place` found nothing in N, spot 0 failed on the old air and a spot clear of it (six above or six
+  below the first, which the GameTest picks and asserts fits) carved a second chamber, a second spawner
+  and a second brood. Residual: a chamber whose heart no longer stands (a player broke it before the
+  chunk was saved) has lost the mark with the spawner, so with an N from before the nest a second
+  chamber can still be carved where a spot clears the first. Direction A (N says placed, the chunk is
+  from before and has no chamber) is the old phantom nest: the census finds the heart missing, the nest
+  breaks, and the engine's reform sets it again where it was; unchanged. UR-1: an unknown key in a
+  spawner's NeoForge persistent data is harmless with the module off: `BlockEntity` reads "NeoForgeData"
+  into `customPersistentData` (`:78`) and writes it back unchanged (`:95`), and nothing else reads it;
+  the spawner's own keys are untouched. D1: one pass over one chunk's block entity positions per nest
+  placed from the engine's request (the state of each position is tested, and only a spawner is
   serialized, with `saveCustomOnly`, which allocates nothing in a foreign block entity's persistent
   data, where `getPersistentData()` would), never per tick; a carve adds one compound write.
-- **RP-241** (D4, what a found chamber answers, and its forks): `placeWaiting` looks for the
-  heart before it carves (`Nests.findHeart`). A chunk with a spawner carrying the nest id registers
-  the nest at that heart with nothing carved, indexes it as a fresh nest is, counts it
-  (`heartsRecognised`), and sends `found(...)`, which is what a fresh carve sends: NEST_FOUND placed
-  with the heart. A fresh carve sends nothing else at that point (the census follows from the
-  worms and the chunk load, as before), so nothing else is sent. Forks taken: (a) should two
-  spawners carry the id (a second chamber from before this fix), the lowest position wins, a
-  deterministic choice; the other stays as it is, no cleanup. (b) A spawner with no mark, the
-  world's own or another nest's, is never taken. (c) The chamber is trusted as it stands: its sand
-  and air are not re-checked, since the heart stands by construction and the census checks it. (d)
-  A heart found is registered not broken. The GameTest
-  `aNestPlacedAgainFindsItsChamber` (NestGameTests, batch nest_heart_found) places a nest, asserts that a
-  second chamber would fit, drops the nest from the Nests, asks again, and expects one heart plus the
-  world's own spawner, the old heart registered, none carved and the second spot still stone.
+- **RP-241** (D4, what a found chamber answers, and its forks): `placeWaiting` looks for the heart
+  before it carves (`Nests.findHeart`). A chunk with a spawner carrying the nest id registers the nest
+  at that heart with nothing carved, indexes it as a fresh nest is, counts it (`heartsRecognised`), and
+  sends `found(...)`, which is what a fresh carve sends: NEST_FOUND placed with the heart. A fresh carve
+  sends nothing else at that point (the census follows from the worms and the chunk load, as before), so
+  nothing else is sent. Forks taken: (a) should two spawners carry the id (a second chamber from before
+  this fix), the lowest position wins, a deterministic choice; the other stays as it is, no cleanup. (b)
+  A spawner with no mark, the world's own or another nest's, is never taken. (c) The chamber is trusted
+  as it stands: its sand and air are not re-checked, since the heart stands by construction and the
+  census checks it. (d) A heart found is registered not broken. (e) Worms loaded before the nest was
+  known (the review's P3-7): a worm's join runs the rule against a file that does not know its nest, so
+  `staleCopy` let it through, unlisted. On a chamber found standing, `settleLoaded` runs the worms of
+  that nest already loaded through the join rule once (`Nest.settle`: a stale copy is discarded the way
+  a join discards it, the rest are adopted, one off `owed` each, which is 0 for a rebuilt nest), so a
+  chunk that stays loaded until the next renewal cannot hold both an old worm and the one the nest then
+  spawns under the same ordinal. The scan is the level's entity index over the heart's chunk and the
+  ring of chunks round it (48 by 48 blocks, the world's full height): one query per registration, never
+  per tick, reading the sections of nine columns that hold entities. When any worm was adopted one
+  NEST_CENSUS follows NEST_FOUND, so the engine hears of the worms the nest holds. A carved chamber does
+  no scan (it has no worms of its id), and a worm of the nest loaded beyond the ring (on a sortie glide)
+  is not reached: it stays unlisted until it joins again, which then runs the ordinary rule. Order
+  inside the scan does not matter (RP-242: the holes see to that) and two worms of one ordinal end as
+  one adopted and one discarded. The GameTests `aNestPlacedAgainFindsItsChamber` (NestGameTests, batch
+  nest_heart_found) places a nest, asserts that a second chamber would fit, drops the nest from the
+  Nests, asks again, and expects one heart plus the world's own spawner, the old heart registered, none
+  carved and the second spot still stone; `aWormLoadedBeforeItsNestWasFoundIsSettled` (batch
+  nest_worm_settle) places a worm, drops the nest, finds the chamber again and expects the loaded worm
+  adopted (listed, spawned 1, a census) and the next worm placed with ordinal 1, not 0.
 - **RP-242** (D6, the ordinal and the join rule; ordering): each nest keeps `spawned`, the count of
   worms it has ever spawned (saved in N; a file from before loads 0). `spawnWorm` tags the worm with
-  `mic_rtsim_nest_ordinal` = `spawned` and then increments it, listing the worm and counting it
-  before `addFreshEntity`, because the worm's own join runs the rule and must find it listed (a
-  refused join takes both back). A worm tagged with a known nest and an ordinal joins by
-  `Nest.judge`: in the list, or no ordinal tag: normal, as today; unlisted with ordinal below
-  `spawned`: a stale copy, its join cancelled and the worm discarded the way core discards a stale
-  puppet (`BridgeEvents.onJoin`, `event.setCanceled(true)`, `ejectPassengers()`, `stopRiding()`,
-  `discard()`; `PersistentEntitySectionManager.addEntity` returns false for a cancelled join), with
-  nothing journaled, since it is not a death; unlisted with ordinal at or above `spawned`: adopted
-  into the list, `spawned = ordinal + 1`, one off `owed` (never below 0), and, only when nothing was
-  owed to cover it, a census, since the nest then holds a worm the engine was not told of. An unknown
-  nest keeps today's behaviour (row D3). `onDeath` journals NEST_LOSS only for a worm the list holds or
-  one with no ordinal (`Nest.countsLoss`); before this it tested the tag only. The ordering it closes
-  (B): the entity file holds a worm N does not know, because `owed--` and `worms.add` are in memory
-  and N is saved later (vanilla writes SavedData before entities and chunks, and entities are
-  written at unload on any tick). `owed` was still above 0 on the restart and the worm was placed
-  again beside the one on disk. JL does not reorder N against the entity file, so it stays reachable
-  under JL; the rule reads the worm's own tag, not the order. Either order of the two events ends
-  with one worm: the file's worm joins first (adopted, `owed` falls, none is placed), or the nest
-  places its worm first (ordinal 0 again, `spawned` 1) and the file's worm then joins as stale and is
-  discarded. UR-1: the ordinal is an unknown key in the worm's NeoForge persistent data, beside the
-  `mic_rtsim_nest` tag the module has always put there; with the module off Ice and Fire reads and
-  writes the compound unchanged. D1: the rule runs once per worm join as a set lookup on the nest's
-  worm list, never per tick; the Nests data is the one already in memory.
-- **RP-243** (D2, direction B closed: L is on disk before any chunk of the roost can be): right
-  after a placement adds the field, removes the request and records the lair, `LairPlacer.saveNow`
-  writes L's own file in the same tick, on the server thread. It calls
-  `SavedData.save(File, Provider)`, which NeoForge patches (`SavedData.java:36-52`): it serializes
-  at once, copies the tag, clears the dirty flag and queues the write on the `IOUtilities` chain; then
-  `IOUtilities.waitUntilIOWorkerComplete()` (`IOUtilities.java:199`) joins the chain, so the file is
-  written when it returns. The file is `<world>/data/mic_rtsim_iceandfire_oil_lairs.dat`
+  `mic_rtsim_nest_ordinal` = `spawned` and then increments it, listing the worm and counting it before
+  `addFreshEntity`, because the worm's own join runs the rule and must find it listed (a refused join
+  takes both back). A worm tagged with a known nest and an ordinal joins by `Nest.judge`: in the list,
+  or no ordinal tag: normal, as today; unlisted, not a hole (below), with ordinal below `spawned`: a
+  stale copy, its join cancelled and the worm discarded the way core discards a stale puppet
+  (`BridgeEvents.onJoin`, `event.setCanceled(true)`, `ejectPassengers()`, `stopRiding()`, `discard()`;
+  `PersistentEntitySectionManager.addEntity` returns false for a cancelled join), with nothing
+  journaled, since it is not a death; unlisted with ordinal at or above `spawned`, or the ordinal of a
+  hole: adopted into the list, `spawned = ordinal + 1` (the ordinals it skips become holes), one off
+  `owed` (never below 0), and, only when nothing was owed to cover it, a census, since the nest then
+  holds a worm the engine was not told of. An unknown nest keeps today's behaviour (row D3). Holes (the
+  review's P2, the order of the worms): the rule as first built discarded a worm that loaded after a
+  higher one. N is saved at `spawned` = s with two or more owed; worms s and s+1 are spawned and their
+  entity sections saved without N; a crash; worm s+1 loads first and is adopted (`spawned` becomes s+2);
+  worm s, the only copy, then loads below the count and was discarded as stale, a worm the engine was
+  owed lost (the same on the found path of RP-241, where a rebuilt nest starts at `spawned` 0). Each
+  nest now keeps `holes`, the ordinals an adopt skipped, saved with it (an int array, absent when empty;
+  a file from before loads none, and a load keeps only ordinals below `spawned`, the highest 32).
+  `judge`: a listed worm, or one with no ordinal, NORMAL; an ordinal in `holes`, ADOPT (the hole is
+  filled and one comes off `owed`, never below 0); otherwise below `spawned`, STALE; otherwise ADOPT,
+  the ordinals from `spawned` up to it becoming holes. The nest's own spawn (`takeOrdinal`) takes the
+  lowest hole before it raises `spawned`, so a worm spawned into hole k carries ordinal k and the old
+  copy of k, which then finds no hole, is stale as before: without it the nest would spawn a worm for an
+  owed count the old copy also covers, a double. `returnOrdinal` undoes the take for a worm that cannot
+  join. The bound: a hole is a worm of the brood the file still owed, or one that died in the lost
+  window, and a brood is K worms (2 by default, a u16 setting); `HOLES_MAX` = 32 caps the set
+  defensively, and past it the lowest hole is dropped, so that worm's copy is discarded when it loads (a
+  loss, never a double). An adopt of a far ordinal adds only the 32 highest, so a hand-edited tag cannot
+  make a long loop. Order no longer matters: the file's whole brood is kept whatever order its worms
+  load in, with `owed` right. `onDeath` journals NEST_LOSS only for a worm the list holds or one with no
+  ordinal (`Nest.countsLoss`); before this it tested the tag only. The ordering it closes (B): the
+  entity file holds a worm N does not know, because `owed--` and `worms.add` are in memory and N is
+  saved later (vanilla writes SavedData before entities and chunks, and entities are written at unload
+  on any tick). `owed` was still above 0 on the restart and the worm was placed again beside the one on
+  disk. JL does not reorder N against the entity file, so it stays reachable under JL; the rule reads
+  the worm's own tag, not the order. Either order of the two events ends with one worm: the file's worm
+  joins first (adopted, `owed` falls, none is placed), or the nest places its worm first (ordinal 0
+  again, `spawned` 1) and the file's worm then joins as stale and is discarded. UR-1: the ordinal is an
+  unknown key in the worm's NeoForge persistent data, beside the `mic_rtsim_nest` tag the module has
+  always put there; with the module off Ice and Fire reads and writes the compound unchanged. D1: the
+  rule runs once per worm join as a set lookup on the nest's worm list, never per tick; the Nests data
+  is the one already in memory.
+- **RP-243** (D2, direction B closed: L is on disk before any chunk of the roost can be): right after a
+  placement adds the field, removes the request and records the lair, `LairPlacer.saveNow` writes L's
+  own file in the same tick, on the server thread. It calls `SavedData.save(File, Provider)`, which
+  NeoForge patches (`SavedData.java:36-52`): it serializes at once, copies the tag, clears the dirty
+  flag and queues the write on the `IOUtilities` chain; then `IOUtilities.waitUntilIOWorkerComplete()`
+  (`IOUtilities.java:199`) joins the chain, so the file is written when it returns. The file is
+  `<world>/data/mic_rtsim_iceandfire_oil_lairs.dat`
   (`server.getWorldPath(LevelResource.ROOT).resolve("data")`, the overworld's data folder). It never
   calls `DimensionDataStorage.save()`, which would also write the journal and the other stores out of
-  their order. Vanilla's background chunk saver runs on the server thread too, so no chunk of the
-  roost is written between the placement and this write: L is older than no chunk of the roost, and the
-  crash that left L from before with the request pending, and the roost on disk, cannot happen. The
-  engine's resend of PLACE_LAIR (Keep, Send) then meets an L that already holds the field and is
-  refused as a repeat. Under JL the order is the placement tick (L), any later tick (the roost's
-  chunks), the save's end (the journal): L is older than the journal's LAIR_FOUND, which is committed
-  inside `place` and journaled at the save. Residual: the write is as durable as any Minecraft save
-  (a process crash, not a power cut with no fsync); `SavedData.save` logs and swallows an
-  `IOException` in the worker, so a failed write leaves the old window open for that lair, with a
-  warning in the log; `saveNow` catches a `RuntimeException` the same way. UR-1: the file is the
-  module's own, never read with the module off, and the roost is vanilla structure data in the chunks,
-  as `/place` plus world generation's own bookkeeping leave it. D1: one small file write, on the server
-  thread, per lair placed (the join of the IO chain also waits for any other SavedData write already
-  queued, a few small files); lairs are rare. The GameTest `aPlacedLairIsOnDiskBeforeItsRoostCanBe`
-  (OilFieldGameTests, batch oil_lair_durable) reads the file back one tick after the placement and
-  expects the field, no pending request, the lair and its start chunk, one counted write, then reloads
-  the saved state from that file in place of memory and expects the resend refused and no second roost.
+  their order. Vanilla's background chunk saver runs on the server thread too, so no chunk of the roost
+  is written between the placement and this write: L is older than no chunk of the roost, and the crash
+  that left L from before with the request pending, and the roost on disk, cannot happen. The engine's
+  resend of PLACE_LAIR (Keep, Send) then meets an L that already holds the field and is refused as a
+  repeat. Under JL the order is the placement tick (L), any later tick (the roost's chunks), the save's
+  end (the journal): L is older than the journal's LAIR_FOUND, which is committed inside `place` and
+  journaled at the save. `saveNow` sets the dirty flag again after the join (the review's P3-1):
+  `SavedData.save` clears it at the call and an `IOException` in the queued task is only logged, so a
+  failed write would otherwise stand until L next changed; now the next save of the world writes the
+  file again (one more small write per lair placed). Residual: the write is as durable as any Minecraft
+  save (a process crash, not a power cut with no fsync); a failed write leaves the old window open for
+  that lair until the next save writes it again, with the log's error; `saveNow` catches a
+  `RuntimeException` the same way. UR-1: the file is the module's own, never read with the module off,
+  and the roost is vanilla structure data in the chunks, as `/place` plus world generation's own
+  bookkeeping leave it. D1: one small file write, on the server thread, per lair placed, and one more at
+  the next save; the join of the IO chain waits for every SavedData write already queued, so a placement
+  in the tick after an autosave waits on the server thread for that autosave's whole queue (the world's
+  small stores); lairs are rare, so this is acceptable and recorded. The GameTest
+  `aPlacedLairIsOnDiskBeforeItsRoostCanBe` (OilFieldGameTests, batch oil_lair_durable) reads the file
+  back one tick after the placement and expects the field, no pending request, the lair and its start
+  chunk, one counted write, then reloads the saved state from that file in place of memory and expects
+  the resend refused and no second roost.
 - **RP-244** (D2, direction A: a placed lair whose start is missing is placed again, once): L keeps each
-  placed lair's start chunk (`start`, absent in a file from before: never checked). The first time in a
-  session a placed lair's start chunk is loaded, `verifyPlaced` looks for the lair's structure start in
-  it (`ChunkAccess.getStartForStructure`, valid). Found, or a structure or dimension that is gone: the
-  lair is verified and not looked at again this session. Missing (L, now durable at the placement, says
-  placed and the chunk is from before): the lair is placed again at the same start chunk, once, by the
-  same `place` as a first placement. `free()`'s test of lair references is skipped there, since the
-  lair's own references may survive in box chunks that were saved; the loaded window (3 chunks round the
-  start) and the no-player test (48 blocks) stay, and the lair waits while they fail. One lair a tick,
-  and the pass runs every 20 ticks while a placed lair is unverified (a lair whose chunk nobody loads
-  stays on the list all session; a pass is one `getChunkNow` per such lair). The lair id comes from the
-  start chunk (`Lairs.lair`, `Obs.villageId(dim, chunk x, chunk z)`), so it is the same, and the
-  engine is told nothing new: `Lairs.report` is once per lair per session, a session's first report
-  after a restart is LAIR_FOUND late as any lair's, and the engine's `add_lair` is a no-op for a known
-  key (`engine.rs:764`). The record in L is replaced by the new placement with the same field, lair
-  and start. The direction it closes: (A) is L newer than the chunks, which RP-243 makes more likely
-  (a crash any time before the roost's chunks are written leaves L placed and the chunks without it),
-  and it was the phantom lair, a loss, before; it is now exact when the whole roost is from before.
-  Residual (the brief's): a box chunk, or the dragon's entity file, saved without the start chunk. The
-  re-placement then builds over a roost whose box chunks were newer than the start chunk (a partial
-  second structure over the saved part, and edits a player made in those chunks overwritten), or spawns
-  the roost's dragon beside the one the entity file holds (a second roost dragon). That needs a crash
-  between two chunk writes of one save, or an entity file written at unload ahead of its region
-  chunk. A lair that no one loads is never verified; a placement that fails again (Ice and Fire's draw
-  gives no start there) is logged and given up for the session (`replaceFailed`). UR-1 and D1 as RP-243
-  (the key is in the module's own file; no chunk or entity data is touched but what a placement writes).
-  The GameTest `aLairWhoseStartIsMissingIsPlacedAgainOnce` (batch oil_lair_replace) has a control (the
-  start is there: nothing placed again), then removes the start and the roost's dragon from the loaded
-  chunk and expects one re-placement, the same lair and start chunk, the references still standing, one
-  LAIR_FOUND, one dragon, and nothing more in the next 80 ticks.
+  placed lair's start chunk (`start`, absent in a file from before: never checked). `verifyPlaced` runs
+  every 20 ticks while a placed lair is unverified. A pass looks at every unverified lair and stops at
+  the first re-placement attempt, so at most one a pass (the first wording said one lair a tick); a lair
+  of a file from before `start`, or of a dimension that is not here, is marked verified; one whose start
+  chunk is not loaded, or whose site is not loaded 3 chunks round the start, or has a player within 48
+  blocks, is skipped and looked at again at the next pass (a lair that no one loads stays on the list
+  all session; a pass is one `getChunkNow` per such lair). The first time in a session a placed lair's
+  start chunk is loaded, `verifyPlaced` looks for the lair's structure start in it
+  (`ChunkAccess.getStartForStructure`, valid). Found, or a structure that is gone: the lair is verified
+  and not looked at again this session. Missing (L, now durable at the placement, says placed and the
+  chunk is from before): the lair is placed again at the same start chunk, by the same `place` with
+  `again` set. `free()`'s test of lair references is skipped there (the lair's own references may
+  survive in saved box chunks); the loaded-window and no-player tests stay. The re-placement builds only
+  in the box chunks whose references lack the lair's start chunk (the review's P3-3): a chunk that holds
+  the reference was saved with the roost's blocks and is not built a second time, so a roost whose other
+  chunks survived gets no partial second structure. The start is restored in its chunk and the
+  references that are missing are added; a repeat then finds the start and does nothing, so "once" needs
+  no record in L. The roost's dragon: Ice and Fire's piece spawns it while it builds and its entity file
+  is separate from the chunks. When any box chunk held the reference, or a dragon already stands in the
+  box (its entity file is loaded), the dragons the re-placement spawned are discarded
+  (`replacedDragonsDiscarded`: the dragons in the box and 8 blocks round, compared by UUID before and
+  after). That is the conservative reading, a loss, never a double: when the old dragon's entity file
+  was lost and some box chunk survived, the roost has none. A roost whose chunks and entities were all
+  lost gets its dragon with the rebuilt structure. The dragon-already-there test goes beyond the brief
+  (which names only the held reference); the cost is one entity query round the box per re-placement.
+  The lair id comes from the start chunk (`Lairs.lair`, `Obs.villageId(dim, chunk x, chunk z)`), so it
+  is the same, and the engine is told nothing new: `Lairs.report` is once per lair per session, a
+  session's first report after a restart is LAIR_FOUND late as any lair's, and the engine's `add_lair`
+  is a no-op for a known key (`engine.rs:764`). The record in L is replaced by the new placement with
+  the same field, lair and start. The direction it closes: (A) is L newer than the chunks, which RP-243
+  makes more likely (a crash any time before the roost's chunks are written leaves L placed and the
+  chunks without it), and it was the phantom lair, a loss, before; it is now exact when the whole roost
+  is from before. Residual (the corrected window): the roost's chunks reach disk at different times, not
+  only in one save. `ChunkMap.processUnloads` writes at most 20 chunks a tick with a 10 s cooldown per
+  chunk, and a per-chunk unload writes one chunk and its entity section alone, so a crash or a restore
+  of the world files can leave the start chunk from before with some box chunks, or the dragon's entity
+  file, from after. What is left after the fix: the dragon's entity file saved while no box chunk
+  survived and not yet loaded when the check ran (a second roost dragon); a lair that no one loads is
+  never verified; a placement that fails again (Ice and Fire's draw gives no start there) is logged and
+  given up for the session (`replaceFailed`). UR-1 and D1 as RP-243 (the key is in the module's own
+  file; no chunk or entity data is touched but what a placement writes). The GameTest
+  `aLairWhoseStartIsMissingIsPlacedAgainOnce` (batch oil_lair_replace) has a control (the start is
+  there: nothing placed again), then removes the start and the home chunk's own reference but keeps the
+  roost's dragon in the box, and expects one re-placement, the same lair and start chunk, the start and
+  the reference back, one LAIR_FOUND, exactly one dragon and it the first one, and nothing more in the
+  next 80 ticks.
 - **RP-245** (D8, the adopt edge; ordering A): `DragonBridge.adopt` answers ALREADY_EMBODIED when the
   agent's held puppet is at the same or a newer epoch, or when the target is itself a puppet, as before.
   A held puppet at a strictly older epoch (`Epochs.supersedes`, an unsigned compare, the epoch being a
-  u32) is superseded: captured with DRAGON_DEMATERIALIZED reason COMMAND at its own epoch, the body removed
-  (puppets are never saved), counted (`superseded`), and then the target is adopted at the new epoch. The
-  ordering (A): the entity file holds U untagged and is older than the journal and the pages. Java
-  materializes a puppet B2 of the dragon at epoch e1 (from the replayed pages), and only then is U
+  u32) is superseded: captured with DRAGON_DEMATERIALIZED reason COMMAND at its own epoch, the body
+  removed (puppets are never saved), counted (`superseded`), and then the target is adopted at the new
+  epoch. The ordering (A): the entity file holds U untagged and is older than the journal and the pages.
+  Java materializes a puppet B2 of the dragon at epoch e1 (from the replayed pages), and only then is U
   reported; the engine's `untagged` calls `adopt_again` (`engine.rs:4562`, `4654`) for a dragon in
   `adopted`, which moves it to Embodied at e2 and sends Adopt without looking at its state. The Adopt at
   e2 met `byAgent` holding B2 and was answered ALREADY_EMBODIED: the engine resumed abstract at U's
   position, B2 was orphaned and U stayed wild, two dragons. Now B2 goes and U is adopted. Under JL the
   journal is the newest file, so ordering A is the common shape of a restore; the rule depends only on
-  the two epochs, not on the order of the files. UR-1: nothing is saved by this (a puppet is
-  never saved, and the tag the adopt writes is the existing attachment). D1: one map lookup and an
-  unsigned compare per DRAGON_ADOPT, a command that is rare. The GameTest
-  `anAdoptAtANewerEpochReleasesTheOlderPuppet` (DragonGameTests, batch dragon_adopt_supersede)
-  stands a puppet at epoch 1 and adopts another untagged dragon at epoch 2: the old body is gone, the
-  new one tagged epoch 2, one body of the agent alive, one DEMATERIALIZED at epoch 1 with reason COMMAND,
+  the two epochs, not on the order of the files. UR-1: nothing is saved by this (a puppet is never
+  saved, and the tag the adopt writes is the existing attachment). D1: one map lookup and an unsigned
+  compare per DRAGON_ADOPT, a command that is rare. The GameTest
+  `anAdoptAtANewerEpochReleasesTheOlderPuppet` (DragonGameTests, batch dragon_adopt_supersede) stands a
+  puppet at epoch 1 and adopts another untagged dragon at epoch 2: the old body is gone, the new one
+  tagged epoch 2, one body of the agent alive, one DEMATERIALIZED at epoch 1 with reason COMMAND,
   MATERIALIZED at epoch 2 naming it; then adopts at the same epoch, an older one, and a newer one at a
   puppet of another agent: three ALREADY_EMBODIED rejections, the held puppet kept.
-- **RP-246** (D8, the engine's books and what stays a loss): the released puppet's records are
-  dropped by the engine, not misread. `Dragons::embodied(agent, epoch)` returns the dragon only for the
-  epoch it is Embodied or Leaving at (`engine.rs:3246` to `3258`), and its callers return when it is
-  `None`: Hurt (`3473`), the state record (`3482`), Died (`3487` and `3503`), Dematerialized (`3521`),
-  Ate (`3581`), Breaths (`3903`) and the oil flights' record (`oil.rs:1412`). The dragon is Embodied at
-  e2 after `adopt_again`, so every record the superseded puppet leaves, its capture at e1 and any meal
-  or breath flushed with it, is dropped at e1. The one fork taken: the supersede runs before the
-  validity check of the target, so an adopt whose target is gone, dead or tamed releases the stale
-  puppet and answers SPAWN_FAILED; the engine then resumes the dragon abstract as it does for any
-  refused spawn, and B2, which the engine no longer holds at e1, is not left behind as a second dragon.
-  A target that is already a puppet, or a same or newer held epoch, still answers ALREADY_EMBODIED and
-  releases nothing. Direction B of the row (the entity file newer: the tagged body is skipped from the
-  entity save, and the journal holds no UNTAGGED for the dragon) is a LOSS: the dragon is gone from
-  disk and the engine adopts it from the journal's earlier state or not at all. Recorded, not fixed,
-  by the brief. Residual: the epoch is a u32 that wraps to 1 (`next_epoch`), and after 2^32 adopts of
-  one dragon a wrapped epoch is not newer than the held one and keeps today's ALREADY_EMBODIED; not
-  reachable in a game.
-- **RP-247** (D6, the forks and what is left): (a) A gap of skipped ordinals stays a gap: ordinals
-  the nest never saw are never listed, their old copies are discarded as stale when they load (they are
-  below the new `spawned`), and `owed` still covers them, so the count the census gives stays right.
-  (b) The adopt's census is sent only when nothing was owed to cover the worm. (c) An ordinal tag with no
+- **RP-246** (D8, the engine's books and what stays a loss): the released puppet's records are dropped
+  by the engine, not misread. `Dragons::embodied(agent, epoch)` returns the dragon only for the epoch it
+  is Embodied or Leaving at (`engine.rs:3246` to `3258`), and its callers return when it is `None`: Hurt
+  (`3473`), the state record (`3482`), Died (`3487` and `3503`), Dematerialized (`3521`), Ate (`3581`),
+  Breaths (`3903`) and the oil flights' record (`oil.rs:1412`). The dragon is Embodied at e2 after
+  `adopt_again`, so every record the superseded puppet leaves, its capture at e1 and any meal or breath
+  flushed with it, is dropped at e1. The one fork taken: the supersede runs before the validity check of
+  the target, so an adopt whose target is gone, dead or tamed releases the stale puppet and answers
+  SPAWN_FAILED; the engine then resumes the dragon abstract as it does for any refused spawn, and B2,
+  which the engine no longer holds at e1, is not left behind as a second dragon. A target that is
+  already a puppet, or a same or newer held epoch, still answers ALREADY_EMBODIED and releases nothing.
+  The fork has its own GameTest (the review's P3-10),
+  `anAdoptOfAGoneDragonReleasesTheOlderPuppetAndFails` (batch dragon_adopt_failed): an ADOPT at epoch 2
+  naming a removed dragon releases the epoch 1 puppet (DEMATERIALIZED epoch 1, reason COMMAND), adds one
+  to `superseded`, answers SPAWN_FAILED at epoch 2, and the agent holds no body. Direction B of the row
+  (the entity file newer: the tagged body is skipped from the entity save, and the journal holds no
+  UNTAGGED for the dragon) is a LOSS: the dragon is gone from disk and the engine adopts it from the
+  journal's earlier state or not at all. Recorded, not fixed, by the brief. Residual: the epoch is a u32
+  that wraps to 1 (`next_epoch`), and after 2^32 adopts of one dragon a wrapped epoch is not newer than
+  the held one and keeps today's ALREADY_EMBODIED; not reachable in a game.
+- **RP-247** (D6, the forks and what is left): (a) The ordinals an adopt skips are holes (RP-242), not a
+  gap of stale copies: the worms of those ordinals are adopted when they load, whatever the order (the
+  review's P2), and the nest's own spawn fills the lowest hole first, so the old copy of a refilled
+  ordinal is stale. A hole dropped past the cap, and an ordinal that is no hole and below `spawned`, are
+  discarded when they load, and `owed` still covers them, so the count the census gives stays right. (b)
+  The adopt's census is sent only when nothing was owed to cover the worm. (c) An ordinal tag with no
   nest tag, a tag naming a nest the Nests do not know (the row D3 loss), and a worm with no ordinal
   (from before this change) all keep today's behaviour. (d) The nest's own list can still hold a worm
   that is not on disk (N newer than the entity file, direction A): the census counts it, as before; a
   loss, unchanged. (e) A stale copy is discarded silently: no NEST_LOSS and no census, the nest's books
-  already do not hold it. (f) `Nest.countsLoss` makes an unlisted worm of an ordinal no loss of its
-  nest when it dies, which the join rule keeps out of a level, so it matters only for a worm that got
-  in some other way. (g) `spawned` is an int and does not wrap in play. Residual: a worm spawned by a
-  session whose N was lost and which died before the restart has no copy to adopt, so `owed` stays up and
-  the nest places it again: one worm for one lost life, a loss of the death's record (the NEST_LOSS was
-  journaled or not by the journal's own rule), never a second worm beside a live one.
-- **RP-248** (the tests and how they were checked): JUnit, `:iceandfire:test`, 32 tests, all pass: the
-  twelve of slice N's `NestRenewalSerialTest` and twenty new ones (`NestWormJoinRuleTest` 11,
-  `NestHeartMarkTest` 4, `LairPlacedRecordTest` 3, `EpochsTest` 2). Each rule was checked to fail without
-  its fix by changing it in the source, running the suite and restoring the file (`git checkout --`), in
-  three runs, each with its failures counted. Run 1 (11 of 32 failed): the join rule answering NORMAL
-  for every worm (six `NestWormJoinRuleTest` failures: a copy below the count, a worm that died, the
-  brood of three, the adopted worm, the nest spawning first, the gap), `marksNest` taking any heart
-  mark whatever its nest (`aMarkedHeartIsTheNestsAndNoOtherNests`), the lair's `start` not written
-  (`theStartChunkSurvivesASaveAndLoad`, `aStartAtTheOriginIsNotTakenForNone`), and `supersedes` as
-  `incoming != held` (both `EpochsTest` tests, the unsigned one included). Run 2 (5 failed): `adopt`
-  taking nothing off `owed`, `countsLoss` always true, and `marksNest` reading the spawner's own tag in
-  place of "NeoForgeData". Run 3 (7 failed): `adopt` not raising `spawned`, `judge` not asking the
-  worm list, and `spawned` not written. One finding: removing `owed--` from `adopt` is not caught by
-  `owedNeverGoesBelowZeroAndAGapStaysAGap` (it checks the floor, which holds without the decrement); four
-  other tests catch it. The GameTests (NestGameTests: `aNestPlacedAgainFindsItsChamber`,
-  `aWormTheSavedCountLostIsAdopted`, `aStaleWormCopyIsDiscardedAndJournalsNothing`; OilFieldGameTests:
-  `aPlacedLairIsOnDiskBeforeItsRoostCanBe`, `aLairWhoseStartIsMissingIsPlacedAgainOnce`; DragonGameTests:
-  `anAdoptAtANewerEpochReleasesTheOlderPuppet`) are written and compiled, not run, each in its own
-  batch. The brief asks for `python3 -I neoforge/tools/chunk_waits.py` over each touched GameTest file:
-  the tool is not in this branch (commit c11e9aa3 is not an ancestor; it lives on the feat/mowzie and
-  fix/mowzie-chunkwaits branches, and /tmp/mzbuild/m9-merge.md says it is not on main yet and is not to
-  be merged), so it was not run; the lead should run it over NestGameTests, OilFieldGameTests and
-  DragonGameTests when it lands. The D6 tests copy a worm with `EntityType.loadEntityRecursive` and add
-  it with `addFreshEntity`, which fires the same cancellable join event a load does. The D4 test needs
-  a nest id whose spot list has a spot exactly six above or below the first (it draws ids until it has
-  one) and asserts that the second chamber fits, so it fails without the fix.
+  already do not hold it. (f) `Nest.countsLoss` makes an unlisted worm of an ordinal no loss of its nest
+  when it dies, which the join rule keeps out of a level, so it matters only for a worm that got in some
+  other way. (g) `spawned` is an int and does not wrap in play. (h) A worm released from a mob-capture
+  item (the review's P3-6): `left()` takes a worm discarded (reason DISCARDED, which is how a capture
+  removes it from the level) out of its nest's list, so if a capture item later releases it with the
+  same UUID and ordinal it is unlisted and below `spawned`, and is judged stale and discarded: a loss a
+  player sees. Taken as the conservative branch and recorded as a residual. It is not re-adopted by
+  UUID: a stale entity-file copy of the same UUID could then come back as a second worm beside the one
+  the nest holds. Residual: a worm spawned by a session whose N was lost and which died before the
+  restart has no copy to adopt, so `owed` stays up and the nest places it again: one worm for one lost
+  life, a loss of the death's record (the NEST_LOSS was journaled or not by the journal's own rule),
+  never a second worm beside a live one.
+- **RP-248** (the tests and how they were checked): JUnit, `:iceandfire:test`, 38 tests, all pass: the
+  twelve of slice N's `NestRenewalSerialTest` and twenty-six new ones (`NestWormJoinRuleTest` 17,
+  `NestHeartMarkTest` 4, `LairPlacedRecordTest` 3, `EpochsTest` 2), run with `--no-build-cache` (the
+  shared build cache restores `:iceandfire:test` FROM-CACHE even after `cleanTest`). Each rule was
+  checked to fail without its fix by changing it in the source, running the suite and restoring the
+  file. First pass, three runs, failures counted: the join rule answering NORMAL for every worm (six
+  `NestWormJoinRuleTest` failures), `marksNest` taking any heart mark whatever its nest, the lair's
+  `start` not written (two), `supersedes` as `incoming != held` (both `EpochsTest` tests, the unsigned
+  one included); `adopt` taking nothing off `owed`, `countsLoss` always true, `marksNest` reading the
+  spawner's own tag in place of "NeoForgeData"; `adopt` not raising `spawned`, `judge` not asking the
+  worm list, `spawned` not written. Removing `owed--` from `adopt` is not caught by
+  `owedNeverGoesBelowZeroAndAGapStaysAGap` (it checks the floor, which holds without the decrement) and
+  is caught by four other tests. Review fixes, one run each, the failures: `judge` ignoring holes (5),
+  `adopt` adding no holes (7), the spawn taking no hole (3), the holes not capped (1,
+  `theHolesAreBoundedAndTheLowestIsDropped`), not saved (1), loaded unchecked (1, the same save test),
+  `settle` keeping the stale copies (1), `returnOrdinal` ignoring a hole (1), and `marksNest` without
+  its type check (1, `aMarkOfTheWrongTypeIsNotOne`, which now uses a nest id that fits an int: with the
+  first one the mark of the wrong type read back as a different number and passed either way). The
+  `saveNow` dirty flag, the partial re-placement, the dragon discard and `settleLoaded` are GameTest
+  territory and have no JUnit mutation: they need a level. The GameTests (NestGameTests:
+  `aNestPlacedAgainFindsItsChamber`, `aWormTheSavedCountLostIsAdopted`,
+  `aStaleWormCopyIsDiscardedAndJournalsNothing`, `aWormLoadedBeforeItsNestWasFoundIsSettled`;
+  OilFieldGameTests: `aPlacedLairIsOnDiskBeforeItsRoostCanBe`,
+  `aLairWhoseStartIsMissingIsPlacedAgainOnce`; DragonGameTests:
+  `anAdoptAtANewerEpochReleasesTheOlderPuppet`, `anAdoptOfAGoneDragonReleasesTheOlderPuppetAndFails`)
+  are written and compiled, not run, each in its own batch. `chunk_waits.py` (the brief asks for
+  `python3 -I neoforge/tools/chunk_waits.py` over each touched GameTest file) is on origin/main and not
+  yet in this branch: the merge of origin/main waits for the lead's go (slice N lands first), and the
+  reviewer's five site-load waits that need `--chunk 'chunks loaded'` (NestGameTests.java:752, 844 and
+  913, OilFieldGameTests.java:572 and 648) are to be run and recorded here then. The D6 tests copy a
+  worm with `EntityType.loadEntityRecursive` and add it with `addFreshEntity`, which fires the same
+  cancellable join event a load does. The D4 test needs a nest id whose spot list has a spot exactly six
+  above or below the first (it draws ids until it has one) and asserts that the second chamber fits, so
+  it fails without the fix.
 - **RP-249** (formats, and the whole of what changed for a world with the module off): the Nests
-  SavedData gains `spawned` per nest and the placed lairs' SavedData gains `start` per lair; an older
-  file loads `spawned` 0 and `start` absent, which are the "no ordinal yet" and "never checked" states, so
-  nothing is migrated and nothing has to be. A worm gains one int and a heart one long in NeoForge
-  persistent data, which Ice and Fire and vanilla keep and write back untouched (RP-240, RP-242). No
-  record kind, size or offset changes, and no Rust file is touched, so the pages, the journal and the
-  rtsim-view fixtures are as slice N left them. Per tick, the new work is a flag test and an
-  unsigned counter compare in `tick` and a pass over the unverified placed lairs every 20 ticks; every
-  other cost is per placement, per worm join or per ADOPT (RP-240 to RP-245).
+  SavedData gains `spawned` and `holes` per nest and the placed lairs' SavedData gains `start` per lair;
+  an older file loads `spawned` 0, no holes and `start` absent, which are the "no ordinal yet", "nothing
+  skipped" and "never checked" states, so nothing is migrated and nothing has to be. A worm gains one
+  int and a heart one long in NeoForge persistent data, which Ice and Fire and vanilla keep and write
+  back untouched (RP-240, RP-242). No record kind, size or offset changes, and no Rust file is touched,
+  so the pages, the journal and the rtsim-view fixtures are as slice N left them. Per tick, the new work
+  is a flag test and an unsigned counter compare in `tick` and a pass over the unverified placed lairs
+  every 20 ticks; every other cost is per placement, per worm join, per ADOPT, per chamber found (one
+  entity query, RP-241) or per re-placement (one entity query round the box, RP-244).
