@@ -1627,6 +1627,24 @@ The options below stay as the record of what was offered.
     frogport 0 hops from it.
   - A store page or a glass page past the 4,096 the viewer reads is not read (SC181); the viewer
     and `rtsim-cli stores` name the first 8 bad pages and count the rest (SC182).
-  - The create GameTest fixture's glass pages are in an older page format (the format drops them),
-    so its sections and networks are empty; its six package stores have frogports in no district. A
-    fresh GameTest run would give the layers something to draw.
+  - The create GameTest fixture (M6's save from 1290d0b7, `-Psec1fx`) holds one glass page, with
+    no sections: each GameTest's `forget()` forgets every district in the level, so the save keeps
+    only the last tests' districts. Its sections and networks are empty, and its six package stores
+    have frogports in no district. A save taken right after the section fixtures would give the
+    layers something to draw.
+- **What S7 left untested or moved outside its slice** (found at landing, 2026-10-25):
+  - `rtsim-cli stores` exits 1 when the industry module is unreadable (§8.2), but no test drives it:
+    it needs a helper that writes a page store with a corrupt industry page, and neither rtsim-cli's
+    nor rtsim-view's tests have one (the fixtures are readable saves).
+  - `glass::Replay::same_layout` (the check that a running replay's per-unit flags index this
+    compile's units) is tested on a compile id that differs
+    (`a_report_over_another_compile_reads_no_running_replay`); a replay under the same compile id
+    whose `unit_of` differs from the compile's units is not.
+  - Join pairs are Java's only (SC175): neither the viewer nor `rtsim-cli` can show them, and the
+    pairs a save holds are read nowhere outside `/rtsim district` on the server.
+  - `PackageStore::route` taking a pair of unknown hops (`UNKNOWN_HOPS`, 0xFFFF) as no route
+    (SC179) is an engine change that landed with S7, a reach slice, after its re-review. Before it a
+    replay read 0xFFFF as 65,535 conveyors. A chain link with unknown hops now builds no route in
+    `member_spec`, so its goods stay in stock (UR-1 holds). Only
+    `a_pair_of_unknown_hops_replays_no_chain_link` (rtsim-industry's chain_replay tests) covers it;
+    no GameTest replays a store whose hops are unknown.
