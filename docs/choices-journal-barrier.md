@@ -447,7 +447,8 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     `Link::load` reads them whatever the switch, so the pages that cover the answer hold its effect.
   - *Cost.* An IND_CARRIAGE_RESULT heard while off is still ignored: an exchange whose result came in that
     window keeps no shortfall correction (IR15's cost), and is now dropped at its APPLIED instead of
-    staying pending until a resend's DUPLICATE_OP.
+    staying pending until a resend's DUPLICATE_OP. A chain write's CHAIN_IN heard while off is ignored the
+    same way, so its store's write stays unanswered (SC113), as it did before.
   - *Tests.* rtsim-jni `tests/industry.rs`, module `ack_never_resends`:
     `an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack` (the switch in
     the tick of a station exchange's APPLIED; failing first at b5f3c55f, the exchange sent again after
