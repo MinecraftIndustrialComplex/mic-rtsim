@@ -28,6 +28,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -69,7 +70,7 @@ public final class MarchMowzieGameTests {
 
     /** A band's walk, blocks a tick (the stack's anchor; the puppets follow it). */
     private static final float WALK = 0.2f;
-    /** The distance a watching player stands from a band: inside the recall's {@value ConflictBridge#OUT_OF_VIEW} blocks, outside a warrior's sight. */
+    /** The distance a watching player stands from a band: inside a warrior puppet's sight (ConflictBridge.sightRange). */
     private static final double WATCH = 50.0;
 
     // ---- helpers ---------------------------------------------------------------------------------
@@ -1003,6 +1004,316 @@ public final class MarchMowzieGameTests {
                     for (Mob f : pack)
                         check("and each of its pack (" + f.getRemovalReason() + ")", f.isRemoved());
                     check("the party is gone", ConflictKit.bridge().party(agent[0]) == null);
+                })
+                .thenSucceed();
+    }
+
+    // ---- the trim and the recall see as far as the server sends (MZB-745) ----------------------------------
+
+    /** Sets the server's view distance for the test and puts it back when the test ends (a GameTest server's is 0: no bound). */
+    private static void viewDistance(GameTestHelper helper, ServerLevel level, int chunks) {
+        var players = level.getServer().getPlayerList();
+        int saved = players.getViewDistance();
+        players.setViewDistance(chunks);
+        ConflictKit.onEnd(helper, () -> players.setViewDistance(saved));
+    }
+
+    /** The distance between a player and an entity, as the sight rule measures it. */
+    private static double reach(ServerPlayer p, Entity e) {
+        return Math.sqrt(p.distanceToSqr(e));
+    }
+
+    /**
+     * The trim and the recall see as far as the server sends an entity (MZB-745, P2 of the M10b review: both used 64 blocks, so a
+     * band was cut, or sent home and gone, in plain view of a player 100 blocks off). The view distance is 10 for the test. A band
+     * of three warriors stands placed and held 25 blocks west of a grove's centre and the march says two:
+     * <ul>
+     * <li>a warrior puppet is seen from 128 blocks ({@link ConflictBridge#sightRange});</li>
+     * <li>a plain player 100 blocks from the head puppet: for 60 ticks nothing is cut and the party stays due;</li>
+     * <li>that player gone and a plain player 170 blocks off in its place, with a spectator 10 blocks from the head (a spectator
+     * never sees, as vanilla's despawn ignores one): the rearmost member is cut on the next beat, the party is due no more;</li>
+     * <li>the player at 100 blocks again and a BAND_RECALL: for 60 ticks the band does not go (the recall's rule was 64), and the
+     * beat after the player goes it does, with its two warriors as survivors.</li>
+     * </ul>
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_march_sight", skyAccess = true)
+    public static void theTrimAndTheRecallSeeAsFarAsTheServerSends(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "theTrimAndTheRecallSeeAsFarAsTheServerSends";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Grove grove = new Grove(far, far.k, far.z0);
+        long[] agent = new long[1], n = new long[4]; // trimmed before the record, marchRecords before, the tick the watch began, the tick of the last change
+        ServerPlayer[] player = new ServerPlayer[3];
+        ConflictBridge.Slot[] member = new ConflictBridge.Slot[3];
+        boolean[] watching = {false};
+        int[] cut = {0}, notDue = {0};
+        viewDistance(helper, level, 10);
+        MowzieKit.everyTick(helper, () -> {
+            if (!watching[0])
+                return;
+            if (ConflictKit.trimmed() != n[0])
+                cut[0]++;
+            if (level.getGameTime() > n[2] && !ConflictKit.party(agent[0]).trimDue())
+                notDue[0]++;
+        });
+
+        MowzieKit.seq(helper)
+                .thenExecute(grove::force)
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.Band b = ConflictKit.band(agent[0], grove.faction, dim);
+                    b.arcX = grove.spot.x - 25;
+                    b.arcZ = grove.spot.z;
+                    b.bearing = 0f;
+                    b.targetX = b.arcX;
+                    b.targetY = grove.spot.y;
+                    b.targetZ = b.arcZ;
+                    b.speed = 0f;
+                    ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.WARRIOR, 3, false)));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the grove's census 1 (" + MowzieKit.censusCount(grove.faction) + ")", MowzieKit.censusCount(grove.faction) >= 1);
+                    embodied(agent[0], 3);
+                }))
+                .thenExecute(() -> {
+                    List<ConflictBridge.Slot> all = embodied(agent[0], 3);
+                    for (int i = 0; i < 3; i++)
+                        member[i] = all.get(i);
+                    Vec3 head = member[0].entity().position();
+                    double r = ConflictBridge.sightRange(member[0].entity(), level);
+                    record(test, "range", "a warrior puppet is seen from " + r + " blocks at view distance " + level.getServer().getPlayerList().getViewDistance());
+                    check("a warrior puppet is seen from 128 blocks at view distance 10 (" + r + ")", r == 128.0);
+                    player[0] = MowzieKit.player(helper, head.add(0, 1, 100), "mowzie-sight-100");
+                    StringBuilder log = new StringBuilder();
+                    for (int i = 0; i < 3; i++) {
+                        double d = reach(player[0], member[i].entity());
+                        log.append(String.format("member %d %.1f blocks from the player; ", i, d));
+                        check("member " + i + " stands 90 to 110 blocks from the player (" + d + ")", d >= 90 && d <= 110);
+                    }
+                    record(test, "player at 100", log.toString());
+                    n[0] = ConflictKit.trimmed();
+                    n[1] = ConflictKit.bridge().marchRecords;
+                    ConflictKit.march(new ConflictKit.MarchSpec(agent[0], 1, dim, grove.faction, ConflictRecords.PURPOSE_RAID, ConflictRecords.March.OUT, 0, 0L,
+                            new LinkedHashMap<>(Map.of(MowzieKit.WARRIOR, 2)),
+                            List.of(wp(grove.spot.x, grove.spot.z, level.getGameTime()), wp(grove.spot.x - 200, grove.spot.z, level.getGameTime() + 10_000))));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the march was kept (" + (ConflictKit.bridge().marchRecords - n[1]) + " new)",
+                        ConflictKit.bridge().marchRecords == n[1] + 1)))
+                .thenExecute(() -> {
+                    n[2] = level.getGameTime();
+                    watching[0] = true;
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    record(test, "in sight at 100", (ConflictKit.trimmed() - n[0]) + " cut, " + cut[0] + " ticks with a cut, " + notDue[0] + " ticks not due");
+                    check("nothing was cut while a player stood 100 blocks off (" + cut[0] + " ticks saw a cut, trimmed " + (ConflictKit.trimmed() - n[0]) + ")",
+                            cut[0] == 0 && ConflictKit.trimmed() == n[0]);
+                    check("the band stayed due the whole time (" + notDue[0] + " ticks not due)", notDue[0] == 0 && ConflictKit.party(agent[0]).trimDue());
+                    for (int i = 0; i < 3; i++)
+                        check("member " + i + " stands (" + member[i].alive() + ")", member[i].alive() && !member[i].entity().isRemoved());
+                    watching[0] = false;
+                })
+                // The player at 100 blocks goes; one at 170 and a spectator at 10 blocks come.
+                .thenWaitUntil(waits.logic(() -> check("the middle of a beat, tick " + level.getGameTime(), level.getGameTime() % 20 == 10)))
+                .thenExecute(() -> {
+                    Vec3 head = member[0].entity().position();
+                    FakePlayers.remove(player[0]);
+                    player[1] = MowzieKit.player(helper, head.add(0, 1, 170), "mowzie-sight-170");
+                    player[2] = MowzieKit.player(helper, head.add(0, 1, 10), "mowzie-sight-spectator");
+                    player[2].setGameMode(GameType.SPECTATOR);
+                    check("the near player is a spectator", player[2].isSpectator() && !player[1].isSpectator());
+                    for (int i = 0; i < 3; i++) {
+                        double d = reach(player[1], member[i].entity());
+                        check("member " + i + " stands 160 blocks or more from the far player (" + d + ")", d >= 160);
+                    }
+                    n[3] = level.getGameTime();
+                })
+                .thenWaitUntil(waits.logic(() -> check("the member was cut (trimmed " + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 1)))
+                .thenExecute(() -> {
+                    long took = level.getGameTime() - n[3];
+                    ConflictBridge.Party p = ConflictKit.party(agent[0]);
+                    record(test, "out of sight", "the cut came " + took + " ticks after the near player went and a spectator stood 10 blocks off");
+                    check("the cut waited for the beat and came on it: " + took + " ticks", took >= 5 && took <= 25);
+                    check("the party is due no more", !p.trimDue());
+                    double rear = 0;
+                    for (ConflictBridge.Stack st : p.stacks())
+                        rear = Math.max(rear, st.back());
+                    int alive = 0;
+                    for (int i = 0; i < 3; i++) {
+                        if (member[i].alive())
+                            alive++;
+                        else
+                            check("the member cut is in the rearmost row (its row is " + member[i].stack.back() + " blocks back, the rearmost " + rear + ")",
+                                    member[i].stack.back() == rear && (member[i].entity() == null || member[i].entity().isRemoved()));
+                    }
+                    check("two warriors are left (" + alive + ")", alive == 2);
+                    check("no casualty was booked for a cut member (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[0]).size() + ")",
+                            ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[0]).isEmpty());
+                })
+                // The recall: a player 100 blocks from the nearest member sees the band, and it stays.
+                .thenExecute(() -> {
+                    FakePlayers.remove(player[1]);
+                    FakePlayers.remove(player[2]);
+                    Vec3 near = null;
+                    for (int i = 0; i < 3; i++)
+                        if (member[i].alive())
+                            near = member[i].entity().position();
+                    player[0] = MowzieKit.player(helper, near.add(0, 1, 100), "mowzie-sight-recall");
+                    n[3] = level.getGameTime();
+                    ConflictKit.recall(agent[0], ConflictKit.party(agent[0]).epoch, ConflictRecords.RECALL_DONE, 0, near.x, near.z + 60);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band is recalling", ConflictKit.party(agent[0]).recalling())))
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    ConflictBridge.Party p = ConflictKit.bridge().party(agent[0]);
+                    check("60 ticks on, with a player 100 blocks off, the band is still there and recalling (" + p + ")", p != null && p.recalling());
+                    check("and has not gone", ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty());
+                    for (int i = 0; i < 3; i++)
+                        if (member[i].alive())
+                            check("member " + i + " stands (" + member[i].entity().getRemovalReason() + ")", !member[i].entity().isRemoved());
+                    n[3] = level.getGameTime();
+                    FakePlayers.remove(player[0]);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band goes once the player does",
+                        !ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty())))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received done = ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).get(0);
+                    Map<String, Integer> left = ConflictKit.survivors(done);
+                    long took = level.getGameTime() - n[3];
+                    record(test, "recall", "BAND_DEMATERIALIZED " + took + " ticks after the player left, survivors " + left);
+                    check("its two warriors are its survivors (" + left + ")", left.equals(Map.of(MowzieKit.WARRIOR, 2)));
+                    check("it went within a few ticks of the player's going (" + took + ")", took <= 5);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A member is seen when any of its extras is (MZB-745): a raptor's pack. A band of a warrior and a raptor with its four followers
+     * stands placed and held, the march says the warrior only (the raptor is one too many), and a plain player stands 140 blocks
+     * from the raptor, beyond its 128:
+     * <ul>
+     * <li>one follower, held where it is put (no AI), is 120 blocks from the player and the other three, as the raptor, are beyond 128:
+     * for 60 ticks nothing is cut and the party stays due (the leader is out of sight, a follower is not);</li>
+     * <li>that follower moved to 148 blocks: on the next beat the raptor is cut, and with it the raptor's body and all four
+     * followers are out of the world; the warrior stands.</li>
+     * </ul>
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_march_sight_pack", skyAccess = true)
+    public static void aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Grove grove = new Grove(far, far.k, far.z0);
+        long[] agent = new long[1], n = new long[4];
+        ServerPlayer[] player = new ServerPlayer[1];
+        ConflictBridge.Slot[] member = new ConflictBridge.Slot[2];
+        List<Mob> pack = new ArrayList<>();
+        Vec3[] lead = new Vec3[1];
+        boolean[] watching = {false};
+        int[] cut = {0}, notDue = {0};
+        viewDistance(helper, level, 10);
+        MowzieKit.everyTick(helper, () -> {
+            if (!watching[0])
+                return;
+            if (ConflictKit.trimmed() != n[0])
+                cut[0]++;
+            if (level.getGameTime() > n[2] && !ConflictKit.party(agent[0]).trimDue())
+                notDue[0]++;
+        });
+
+        MowzieKit.seq(helper)
+                .thenExecute(grove::force)
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.Band b = ConflictKit.band(agent[0], grove.faction, dim);
+                    b.arcX = grove.spot.x - 25;
+                    b.arcZ = grove.spot.z;
+                    b.bearing = 0f;
+                    b.targetX = b.arcX;
+                    b.targetY = grove.spot.y;
+                    b.targetZ = b.arcZ;
+                    b.speed = 0f;
+                    ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.WARRIOR, 1, false),
+                            new ConflictKit.StackSpec(MowzieKit.RAPTOR, 1, false)));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the grove's census 1 (" + MowzieKit.censusCount(grove.faction) + ")", MowzieKit.censusCount(grove.faction) >= 1);
+                    embodied(agent[0], 2);
+                }))
+                .thenExecute(() -> {
+                    List<ConflictBridge.Slot> all = embodied(agent[0], 2);
+                    member[0] = of(all, MowzieKit.WARRIOR).get(0);
+                    member[1] = of(all, MowzieKit.RAPTOR).get(0);
+                    pack.addAll(member[1].extras());
+                    check("the raptor has its pack of 4 (" + pack.size() + ")", member[1].entity() instanceof EntityUmvuthanaRaptor && pack.size() == 4);
+                    Mob leader = member[1].entity();
+                    lead[0] = leader.position();
+                    // Three followers stand behind the leader, one stands 20 blocks toward the player; all held where they are put.
+                    for (int i = 0; i < 4; i++) {
+                        Mob f = pack.get(i);
+                        f.setNoAi(true);
+                        f.moveTo(lead[0].x, lead[0].y, lead[0].z + (i == 0 ? 20 : -6), f.getYRot(), f.getXRot());
+                    }
+                    player[0] = MowzieKit.player(helper, lead[0].add(0, 1, 140), "mowzie-sight-pack");
+                    StringBuilder log = new StringBuilder(String.format("the raptor %.1f blocks from the player; ", reach(player[0], leader)));
+                    check("the raptor is out of its sight (" + reach(player[0], leader) + " against " + ConflictBridge.sightRange(leader, level) + ")",
+                            reach(player[0], leader) > ConflictBridge.sightRange(leader, level));
+                    for (int i = 0; i < 4; i++) {
+                        double d = reach(player[0], pack.get(i));
+                        double r = ConflictBridge.sightRange(pack.get(i), level);
+                        log.append(String.format("follower %d %.1f of %.0f; ", i, d, r));
+                        check("follower " + i + " is " + (i == 0 ? "in" : "out of") + " its sight (" + d + " against " + r + ")", (d <= r) == (i == 0));
+                    }
+                    record(test, "pack", log.toString());
+                    n[0] = ConflictKit.trimmed();
+                    n[1] = ConflictKit.bridge().marchRecords;
+                    ConflictKit.march(new ConflictKit.MarchSpec(agent[0], 1, dim, grove.faction, ConflictRecords.PURPOSE_RAID, ConflictRecords.March.OUT, 0, 0L,
+                            new LinkedHashMap<>(Map.of(MowzieKit.WARRIOR, 1)),
+                            List.of(wp(grove.spot.x, grove.spot.z, level.getGameTime()), wp(grove.spot.x - 200, grove.spot.z, level.getGameTime() + 10_000))));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the march was kept (" + (ConflictKit.bridge().marchRecords - n[1]) + " new)",
+                        ConflictKit.bridge().marchRecords == n[1] + 1)))
+                .thenExecute(() -> {
+                    n[2] = level.getGameTime();
+                    watching[0] = true;
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    record(test, "follower in sight", (ConflictKit.trimmed() - n[0]) + " cut, " + cut[0] + " ticks with a cut, " + notDue[0] + " ticks not due");
+                    check("the raptor was not cut while a follower was in sight (" + cut[0] + " ticks saw a cut, trimmed " + (ConflictKit.trimmed() - n[0]) + ")",
+                            cut[0] == 0 && ConflictKit.trimmed() == n[0]);
+                    check("the band stayed due the whole time (" + notDue[0] + " ticks not due)", notDue[0] == 0 && ConflictKit.party(agent[0]).trimDue());
+                    double d = reach(player[0], pack.get(0));
+                    check("the follower stayed where it was put: " + d + " blocks from the player", !pack.get(0).isRemoved() && Math.abs(d - 120) < 6);
+                    check("the raptor stands (" + member[1].alive() + ")", member[1].alive() && !member[1].entity().isRemoved());
+                    watching[0] = false;
+                })
+                .thenWaitUntil(waits.logic(() -> check("the middle of a beat, tick " + level.getGameTime(), level.getGameTime() % 20 == 10)))
+                .thenExecute(() -> {
+                    pack.get(0).moveTo(lead[0].x, lead[0].y, lead[0].z - 8, pack.get(0).getYRot(), pack.get(0).getXRot());
+                    double d = reach(player[0], pack.get(0));
+                    check("the follower is out of sight now (" + d + ")", d > ConflictBridge.sightRange(pack.get(0), level));
+                    n[3] = level.getGameTime();
+                })
+                .thenWaitUntil(waits.logic(() -> check("the raptor was cut (trimmed " + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 1)))
+                .thenExecute(() -> {
+                    long took = level.getGameTime() - n[3];
+                    record(test, "out of sight", "the raptor was cut " + took + " ticks after its last follower went out of sight");
+                    check("the cut came on the beat (" + took + " ticks)", took >= 5 && took <= 25);
+                    check("the raptor is no longer the band's (" + member[1].alive() + ")", !member[1].alive());
+                    check("its body is out of the world (" + member[1].entity() + ")", member[1].entity() == null || member[1].entity().isRemoved());
+                    for (int i = 0; i < 4; i++)
+                        check("follower " + i + " is out of the world (" + pack.get(i).getRemovalReason() + ")", pack.get(i).isRemoved());
+                    check("the warrior stands (" + member[0].alive() + ")", member[0].alive() && !member[0].entity().isRemoved());
+                    check("the party is due no more", !ConflictKit.party(agent[0]).trimDue());
                 })
                 .thenSucceed();
     }

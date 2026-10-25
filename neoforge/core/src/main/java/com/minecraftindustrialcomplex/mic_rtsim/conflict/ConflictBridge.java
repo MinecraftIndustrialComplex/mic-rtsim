@@ -95,8 +95,13 @@ public final class ConflictBridge implements SessionPlugin {
     public static final int STATE_INTERVAL = 100;
     /** A member farther than this from its place is walked back to it (blocks, PLACEHOLDER). */
     public static final double LEASH = 6.0;
-    /** A recalled stack with no player this close to a member despawns (blocks, PLACEHOLDER). */
+    /** A held puppet drops a target farther than this (blocks, PLACEHOLDER); sight, for the recall and the trim, is {@link #sightRange}. */
     public static final double OUT_OF_VIEW = 64.0;
+    /**
+     * No member is seen from nearer than this (blocks): a warrior's tracking range, and the distance at which vanilla's
+     * despawn lets a mob go ({@link #sightRange}, MZB-745).
+     */
+    public static final double SIGHT_FLOOR = 128.0;
     /** BAND_RECALL's timeout when the record gives none (ticks; the engine's default). */
     public static final int RECALL_TIMEOUT = 1200;
     /** A batch of territory signals is journaled this many ticks after its first event (PLACEHOLDER). */
@@ -1226,7 +1231,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /**
      * BAND_RECALL: pending stacks never come; placed ones walk off toward the record's point and each
-     * despawns when no player is within {@value #OUT_OF_VIEW} blocks of it, or all at the timeout. Then
+     * despawns when no player sees one of its members ({@link #sightRange}), or all at the timeout. Then
      * BAND_DEMATERIALIZED (reason 1) with every living member as a survivor. An agent the bridge does not
      * hold is not answered.
      */
@@ -1915,14 +1920,41 @@ public final class ConflictBridge implements SessionPlugin {
         return false;
     }
 
-    /** Whether a player (not a spectator) in the level is within {@link #OUT_OF_VIEW} of the member's body. */
+    /**
+     * How far from an entity a player sees it, in blocks (MZB-745): {@code min(max(128, tracking range), view distance)}, the
+     * range the server sends the entity to a player from, and never nearer than the {@value #SIGHT_FLOOR} blocks at which
+     * vanilla lets a mob despawn. A view distance of 0 or less (a GameTest server's) is no bound.
+     */
+    public static double sightRange(Entity e, ServerLevel level) {
+        double r = Math.max(SIGHT_FLOOR, e.getType().clientTrackingRange() * 16.0);
+        int view = level.getServer().getPlayerList().getViewDistance();
+        return view > 0 ? Math.min(r, view * 16.0) : r;
+    }
+
+    /**
+     * Whether a player (not a spectator: vanilla's despawn ignores them too, MZB-745) in the level is within
+     * {@link #sightRange} of the entity.
+     */
+    private static boolean seenBy(Entity e, ServerLevel level) {
+        double r = sightRange(e, level);
+        for (ServerPlayer pl : level.players())
+            if (!pl.isSpectator() && pl.distanceToSqr(e) <= r * r)
+                return true;
+        return false;
+    }
+
+    /**
+     * Whether a player sees the member: its body, or any of its extras (a raptor's followers; a leader at the edge of sight
+     * with a follower nearer the player is seen). A member with no body in the world is seen by no one.
+     */
     private static boolean inSight(Slot sl, ServerLevel level) {
         Mob e = sl.entity;
         if (e == null || e.isRemoved())
             return false;
-        double r2 = OUT_OF_VIEW * OUT_OF_VIEW;
-        for (ServerPlayer pl : level.players())
-            if (!pl.isSpectator() && pl.distanceToSqr(e) <= r2)
+        if (seenBy(e, level))
+            return true;
+        for (Mob x : sl.extras)
+            if (!x.isRemoved() && seenBy(x, level))
                 return true;
         return false;
     }
@@ -2087,16 +2119,11 @@ public final class ConflictBridge implements SessionPlugin {
         return false;
     }
 
-    /** Whether a player (not a spectator) is within {@link #OUT_OF_VIEW} of a living member. */
+    /** Whether a player sees a living member of the stack ({@link #inSight}: its body or an extra). */
     private static boolean seen(Stack st, ServerLevel level) {
-        double r2 = OUT_OF_VIEW * OUT_OF_VIEW;
-        for (Slot sl : st.slots) {
-            if (!sl.alive || sl.entity == null)
-                continue;
-            for (ServerPlayer pl : level.players())
-                if (!pl.isSpectator() && pl.distanceToSqr(sl.entity) <= r2)
-                    return true;
-        }
+        for (Slot sl : st.slots)
+            if (sl.alive && inSight(sl, level))
+                return true;
         return false;
     }
 
