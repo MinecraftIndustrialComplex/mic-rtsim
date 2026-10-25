@@ -338,6 +338,11 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   `cdg_oil_chunks`; a level attachment beside Destroy's level pollution, and the district pollution
   ledger's own), or the journal's applied set; the journal's file is the last SavedData a world save
   writes (docs/choices-journal-barrier.md RP-200, RP-204, RP-207).
+  IND_WRITE_PACKAGE's dedup is the station port's own rings of the ops written through it, one for its
+  offline buffer and one for its loaded postbox, saved in the port's entry of `create_tracks.dat` beside
+  the buffer: an offline write is refused by either ring; a loaded postbox's write by its chunk's carried
+  result, the journal, or the buffer's ring (RP-206). Without the rings' mixins it is the journal's applied
+  set, and the chunk for a loaded postbox.
 - **IND_WRITE_CHAIN** (SECTIONS.md §2.5, SC113): whole packages into the frogport's inventory while
   its chunk is loaded, addressed to its filter, as many as fit with one slot kept free (a package
   Create is catching lands there). Java journals one IND_CHAIN_PACKAGE `CHAIN_IN` with the command's

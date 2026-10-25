@@ -212,17 +212,42 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     sized for a hold of at most four autosaves; a hold that lasts hours can push a busy train's or port's
     op out before the journal's file holds it, and a crash then applies its resend again
     (`DurableOpRing`'s trim by the journal's mark does not have this limit).
-- **RP-206, the station port's ring (to build once slices T and T2 land; PATCHES.md row 87).**
-  - *Chosen.* IND_WRITE_PACKAGE's offline buffer is in `create_tracks.dat` inside each GlobalStation's
-    port entry. An `AppliedOpRing` of 256 (T2's class, unchanged) goes in that entry under
-    `mic_rtsim:applied_ops`, through a mixin at the RETURN of `GlobalStation.write` and `read` in T2's
-    `require 0` mixin config. WritePackages looks the port up first, records the op on both the offline and
-    the loaded path (so the mirror and the ring land in the same file), never primes on the loaded path,
-    keeps `chunkCarriesOp` for a loaded postbox, and dedups on the ring alone: "ring or journal" would
-    bring back direction A's loss.
-  - *Why.* Under JL, K2's direction B (the buffer written twice) is the only one, a dupe either way.
-  - *Left.* K3's goods moved out of the postbox's chunk before it saved, and K5 (the PostboxAccess
-    mirror), which are not journal-ordered: the coordinator's Create slice.
+- **RP-206, the station port's rings (PATCHES.md row 87).**
+  - *Chosen.* IND_WRITE_PACKAGE's offline buffer is in `create_tracks.dat`, in its port's entry of the
+    station's "Ports" list. Each `GlobalPackagePort` keeps two `AppliedOpRing`s of 256 (T2's class,
+    unchanged) in that entry, through mixins at the RETURN of `GlobalStation.write` and `read` in T2's
+    `require 0` config (`PortRing`): `mic_rtsim:applied_ops` for the ops whose packages went into the
+    offline buffer, `mic_rtsim:applied_ops_postbox` for the ops whose packages went into the loaded postbox,
+    which Create mirrors into the buffer, unprimed. WritePackages looks the port up on both paths.
+    - An offline write is refused when either ring holds the op, and only then: the journal is not asked,
+      so a tracks write that failed while the journal's succeeded is written again, once.
+    - A loaded write is refused when the postbox's chunk carries the op, the journal knows it, or the
+      buffer's ring holds it (packages written offline, then taken into the postbox at its load). The
+      postbox's ring is not asked here: a world save writes the tracks file before the chunks, so the
+      tracks can hold the ring and the mirror while the postbox's chunk is from before the write, and the
+      resend must then write the package again.
+    - A write records the op in its path's ring and marks the tracks dirty; the loaded path never primes.
+    - Without the mixins (probed once with a station written and read back), the old dedup: the journal's
+      applied set, and the chunk for a loaded postbox, with one WARN.
+  - *Why.* Under JL, K2's direction B (the buffer written twice) is the only one, a dupe either way. One
+    ring for both paths would refuse the loaded postbox's resend above, a loss where the journal's dedup
+    was exact; no ring on the loaded path would let the offline path write again what the postbox already
+    holds, which the restore at the postbox's load makes two copies.
+  - *Tests.* Create `PortRingGameTests`: the four crash cases on the buffer (`aCrashThatKept...` one
+    package each, `aCrashThatKeptTheBufferAndNotTheJournalWritesAPackageOnce` being K2), the fallback's
+    dupe pinned (`withoutTheRingsACrashThatKeptTheBufferAndNotTheJournalWritesAPackageTwice`: two
+    packages for one op), `aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce` (written again
+    while loaded, refused offline with nothing put in the buffer) and
+    `withIndustryOffAStationSaveDropsThePortRings` (UR-1).
+  - *Left.*
+    - The crash above with the postbox unloaded at the resend: refused by the postbox's ring while the
+      package is only in the unprimed mirror, a loss. Priming the mirror would revert the postbox to the
+      tracks file's copy, which can be older than its chunk: a dupe.
+    - A port Create removes and makes anew (the postbox or station broken and placed again) between the
+      write and the engine's acknowledgement starts with empty rings.
+    - K3's goods moved out of the postbox's chunk before it saved, and K5 (the PostboxAccess mirror),
+      which are not journal-ordered: the coordinator's Create slice.
+    - The rings' fixed bound under a long hold (RP-205's Left).
 - **RP-207, Destroy's pollution: one ring per file.**
   - *Chosen.* Level pollution is Destroy's `LEVEL_POLLUTION` level attachment, which NeoForge saves in the
     level's `neoforge_data_attachments`. Its ring is a mic_rtsim level attachment (`mic_rtsim:applied_ops`,
