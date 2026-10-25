@@ -54,6 +54,20 @@ public final class RtsimAttachments {
             TYPES.register("player_blocks", () -> AttachmentType.builder(com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks::new)
                     .serialize(com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks.CODEC, p -> !p.isEmpty()).build());
 
+    /**
+     * {@code mic_rtsim:camp_member}: a camp body's camp, slot and generation (MOWZIE.md §4.9). Saved with
+     * the body, on purpose: bodies at home are the jar's own entities, saved by vanilla.
+     */
+    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember>> CAMP_MEMBER =
+            TYPES.register("camp_member", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember.NONE)
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember.CODEC, m -> !m.isNone()).build());
+
+    /** The entity's camp tag, or null for a body no camp holds. */
+    public static com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember campMember(Entity entity) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember m = entity.getExistingDataOrNull(CAMP_MEMBER);
+        return m == null || m.isNone() ? null : m;
+    }
+
     public static void register(IEventBus modBus) {
         TYPES.register(modBus);
     }

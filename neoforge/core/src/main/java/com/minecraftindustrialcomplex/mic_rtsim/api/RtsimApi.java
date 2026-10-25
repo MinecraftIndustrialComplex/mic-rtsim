@@ -199,6 +199,45 @@ public final class RtsimApi {
     }
 
     /**
+     * A camp kind (MOWZIE.md §4.9, M5): what the core's camp reconciler needs to know of a mod's camp
+     * bodies. Registered once; {@link #declareCamp} registers it too.
+     */
+    public static void registerCampKind(com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind kind) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().registerKind(kind);
+    }
+
+    /**
+     * A plugin found a camp whose members at home are its mod's own bodies (MOWZIE.md §4.9): the core
+     * follows its footprint in and out, sends its census and plays the engine's reconciles on it.
+     * {@code start} is the structure start's chunk, which keys the faction; {@code pos} the block
+     * FACTION_FOUND names (clamped into that chunk); {@code spot} where its bodies are kept and spawned;
+     * the footprint is the circle of {@code radius} round {@code spot}, and with a {@code halfHeight} above
+     * zero only that far above and below it (a cylinder; zero is no height bound).
+     * Returns the faction key, or 0 with no live session (ask again when the chunk next loads).
+     */
+    public static long declareCamp(net.minecraft.server.level.ServerLevel level, net.minecraft.world.level.ChunkPos start,
+                                   String structure, com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind kind,
+                                   net.minecraft.core.BlockPos pos, net.minecraft.world.phys.Vec3 spot,
+                                   double radius, double halfHeight, boolean late) {
+        var c = com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().declare(level, start,
+                structure, kind, pos, spot, radius, halfHeight, late);
+        return c == null ? 0L : c.faction;
+    }
+
+    /** Whether an entity is a body a camp holds (tagged {@code mic_rtsim:camp_member}). */
+    public static boolean isCampBody(Entity entity) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps.isHeld(entity);
+    }
+
+    /**
+     * A player carries off a body a camp holds (Carry On, A10): CAMP_DEATH with killer kind taken, and its
+     * tag goes before Carry On saves it, so it is put down a stray. False when no camp holds it.
+     */
+    public static boolean takeCampBody(Entity entity, net.minecraft.server.level.ServerPlayer player) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().take(entity, player);
+    }
+
+    /**
      * A conflict party member carried items off from a container (BAND_LOOTED). False when the entity
      * is no live member.
      */

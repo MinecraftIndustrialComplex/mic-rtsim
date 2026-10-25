@@ -52,5 +52,6 @@
   "rout_share": 0.5,
   "chief_lifespan_days": 1000000,
   "source": "boss",
-  "loot_destroyed": true
+  "loot_destroyed": true,
+  "camp_bodies": true
 }

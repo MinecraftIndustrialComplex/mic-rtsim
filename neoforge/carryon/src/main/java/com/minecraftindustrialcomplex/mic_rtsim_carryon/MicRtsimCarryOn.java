@@ -25,7 +25,8 @@ import tschipp.carryon.events.EntityPickupEvent;
  * puppet out of the sim ({@code RtsimApi.takeFromSim}, TAKEN with reason PICKUP): its tag goes, so
  * {@code Entity.save} works on it again, and the rest of its group stays one unit (C25). A listener of
  * the same lowest priority that cancels after this one would leave an ordinary entity on the ground;
- * the creature is out of the sim either way (PATCHES.md).
+ * the creature is out of the sim either way (PATCHES.md). A body a camp holds (MOWZIE.md §4.9) leaves its
+ * camp the same way ({@code RtsimApi.takeCampBody}: CAMP_DEATH with killer kind taken) and is put down a stray.
  */
 @Mod(MicRtsimCarryOn.MODID)
 public final class MicRtsimCarryOn {
@@ -41,5 +42,7 @@ public final class MicRtsimCarryOn {
             return;
         if (RtsimApi.isPuppet(event.target) && RtsimApi.takeFromSim(event.target, TakeReason.PICKUP, event.player))
             LOGGER.debug("[mic_rtsim_carryon] {} picked up {}: it left the sim", event.player.getName().getString(), event.target);
+        else if (RtsimApi.isCampBody(event.target) && RtsimApi.takeCampBody(event.target, event.player))
+            LOGGER.debug("[mic_rtsim_carryon] {} picked up {}: it left its camp", event.player.getName().getString(), event.target);
     }
 }

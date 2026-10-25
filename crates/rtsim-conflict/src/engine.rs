@@ -68,6 +68,14 @@ pub const TRIBUTE_PRICE_CAP: f64 = 4.0;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
+pub mod camp;
+
+pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
+
+/// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
+/// event is booked for it, and `Conflict::unblock` plans it again when one comes.
+pub const BLOCKED: Tick = Tick(u64::MAX / 2);
+
 pub type Purpose = PartyKind;
 
 /// A faction: a culture, a camp (a haven node in the world), a territory, a chief and an heir.
@@ -99,6 +107,16 @@ pub struct Faction {
     /// The chief holds its crystal (MOWZIE.md ledger 9): units with a `without_crystal` row fight
     /// as that row while it does not. True until a report says otherwise.
     pub crystal: bool,
+    /// The most members the camp holds, its pool and its war parties' members away together:
+    /// the culture's `pool_cap`, or for a camp whose bodies a census counts, the count of its
+    /// bodies at FACTION_FOUND bounded by the culture's (MOWZIE.md ledger 7).
+    pub cap: u32,
+    /// Members away: the units alive of its war parties. The pool refills only while it and
+    /// these are under `cap` (ledger 6), so a band's survivors always have their slots.
+    pub away: u32,
+    /// The ledger of the camp's bodies (MOWZIE.md §4.9), kept for a camp whose bodies a census
+    /// counts. Boxed: a camp with none costs a word.
+    pub camp: Option<Box<Camp>>,
 }
 
 /// What an envoy asked.
@@ -338,6 +356,11 @@ pub(crate) enum Ev {
         faction: u32,
         stamp: u32,
     },
+    /// A camp that is in has gained a whole member: its slot is owed a body (`Camp::refill`).
+    Refill {
+        faction: u32,
+        stamp: u32,
+    },
 }
 
 /// Counters for the CLI, tests and the bench.
@@ -386,6 +409,14 @@ pub struct ConflictStats {
     /// War parties sent again on the same rung, `repeat_days` after the last came home (MOWZIE.md
     /// ledger 3).
     pub repeats: u64,
+    /// Camp ledgers (MOWZIE.md §4.9): censuses booked, CAMP_RECONCILEs and the lines in them
+    /// sent, answers and deaths booked, and members written off after three misses.
+    pub camp_censuses: u64,
+    pub camp_orders: u64,
+    pub camp_lines: u64,
+    pub camp_answers: u64,
+    pub camp_deaths: u64,
+    pub camp_written_off: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -678,8 +709,17 @@ pub struct Conflict {
     pub notice_serial: u32,
     /// Between a session's start and the replay having caught up (`replay_done`): the bodies the
     /// pages held in Minecraft are kept as recalled stacks for the replayed records to count
-    /// (MZB-138). Not state: a session sets it.
+    /// (MZB-138), and a CAMP_CENSUS then only marks its camp out, its bodies not being the world
+    /// as it is now (MOWZIE.md §4.9). Not state: a session sets it.
     pub replaying: bool,
+    /// The journal sequence of the record being ingested (0 where the host has none, as in the
+    /// simulations, whose answers are then kept to the end of their epoch): a CAMP_BODIES answer is
+    /// kept with it. Set by the host; not state.
+    pub obs_seq: u64,
+    /// The highest journal sequence the host has reported durable in a world save (WORLD_SAVED):
+    /// answers booked from records at or before it are forgotten, as `Replay` forgets op ids
+    /// (docs/boundary.md §2.3, MZB-177). Set by the host, which never lowers it; not state.
+    pub durable_obs_seq: u64,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -763,6 +803,8 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             replaying: false,
+            obs_seq: 0,
+            durable_obs_seq: 0,
         }
     }
 
@@ -822,7 +864,7 @@ impl Conflict {
         let mut c = rtsim_kernel::census::KindCensus::new("conflict.camp");
         for f in 0..self.factions.len() as u32 {
             let pool = self.pool_at(f, self.now).max(0.0).floor() as u64;
-            c.site(pool, u64::from(self.culture(f).def.pool_cap), false, 0.0);
+            c.site(pool, u64::from(self.factions[f as usize].cap), false, 0.0);
         }
         vec![c]
     }
@@ -847,6 +889,7 @@ impl Conflict {
                 Ev::Wave { .. } => "wave",
                 Ev::Ambush { .. } => "ambush",
                 Ev::Plunder { .. } => "plunder",
+                Ev::Refill { .. } => "refill",
             };
             *m.entry(k).or_default() += 1;
         }
@@ -998,6 +1041,9 @@ impl Conflict {
             observed: Vec::new(),
             chief_out: false,
             crystal: true,
+            cap: cu.def.pool_cap,
+            away: 0,
+            camp: None,
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -1162,31 +1208,47 @@ impl Conflict {
         out
     }
 
-    /// The faction's warriors at `t` (closed form).
+    /// The faction's warriors at `t` (closed form): recruited back at the culture's rate to the
+    /// camp's cap less the members away (MOWZIE.md ledger 6), so a band's survivors always have
+    /// their slots to come home to. This holds for every culture, with a ledger or without (a
+    /// camp's cap is its culture's `pool_cap` unless a census says fewer), and a pool above that
+    /// room is clamped to it.
     pub fn pool_at(&self, f: u32, t: Tick) -> f64 {
         let x = &self.factions[f as usize];
         let c = self.culture(f);
         let rate = c.def.recruits_per_day / TICKS_PER_DAY as f64;
-        (x.pool + rate * t.0.saturating_sub(x.pool_at.0) as f64).min(f64::from(c.def.pool_cap))
+        let room = f64::from(x.cap.saturating_sub(x.away));
+        (x.pool + rate * t.0.saturating_sub(x.pool_at.0) as f64)
+            .min(room)
+            .max(x.pool.min(room))
     }
 
+    /// The pool changes by `n` at `at`. A camp with a ledger first adds the slots the pool gained
+    /// since it was last read (I2), so that every change of the pool moves a slot with it.
     fn pool_add(&mut self, f: u32, n: f64, at: Tick) {
+        self.camp_sync(f, at);
         let v = self.pool_at(f, at);
-        let cap = f64::from(self.culture(f).def.pool_cap);
         let x = &mut self.factions[f as usize];
-        x.pool = (v + n).clamp(0.0, cap);
+        let room = f64::from(x.cap.saturating_sub(x.away));
+        x.pool = (v + n).clamp(0.0, room);
         x.pool_at = at;
     }
 
-    /// When the pool will hold `n` warriors.
+    /// When the pool will hold `n` warriors: [`BLOCKED`] when the camp's cap less its members
+    /// away holds fewer, or it recruits none, so that only a change of the room can end the wait
+    /// (`unblock`).
     fn pool_ready(&self, f: u32, n: f64, at: Tick) -> Tick {
+        let x = &self.factions[f as usize];
+        if n > f64::from(x.cap.saturating_sub(x.away)) {
+            return BLOCKED;
+        }
         let have = self.pool_at(f, at);
         if have >= n {
             return at;
         }
         let rate = self.culture(f).def.recruits_per_day / TICKS_PER_DAY as f64;
         if rate <= 0.0 {
-            return Tick(u64::MAX / 2);
+            return BLOCKED;
         }
         later(at, (((n - have) / rate).ceil() as u64).saturating_add(1))
     }
@@ -1767,7 +1829,8 @@ impl Conflict {
         let feud = self.feud_mut(f, a).expect("checked");
         feud.stamp = feud.stamp.wrapping_add(1);
         let stamp = feud.stamp;
-        if let Some(t) = next {
+        // A wait only the camp's room or lines can end books nothing: `unblock` plans it again.
+        if let Some(t) = next.filter(|t| *t < BLOCKED) {
             let t = if from_wake { t.max(at + 1) } else { t.max(at) };
             self.schedule(
                 t,
@@ -1898,7 +1961,7 @@ impl Conflict {
                 // Not enough warriors: wait for the pool (closed form). The whole warriors
                 // `send_party` needs, so the wait ends when it can send (MOWZIE.md ledger 6).
                 let need = (self.party_size(f, pk) as f64 / 2.0).ceil();
-                let ready = self.pool_ready(f, need, at);
+                let ready = self.bodies_ready(f, need, at);
                 let feud = self.feud_mut(f, a).expect("exists");
                 feud.wait_until = ready;
                 return;
@@ -2077,7 +2140,7 @@ impl Conflict {
         let Some(p) = self.send_party(w, f, Some(a), PartyKind::Envoy, target, at) else {
             // The whole warriors `send_party` needs, as `escalate` waits for (MZB-52).
             let need = (self.party_size(f, PartyKind::Envoy) as f64 / 2.0).ceil();
-            let ready = self.pool_ready(f, need, at);
+            let ready = self.bodies_ready(f, need, at);
             self.feud_mut(f, a).expect("exists").wait_until = ready;
             return;
         };
@@ -2622,8 +2685,14 @@ impl Conflict {
         }
         let want: u32 = make.iter().map(|u| u.1).sum();
         let units = if kind.is_war() {
-            let have = self.pool_at(f, at).floor() as u32;
-            if have * 2 < want {
+            // The smaller of the whole warriors and the slots at home with no line in flight
+            // (MOWZIE.md ledger 7): a slot whose body may be going or coming is not drawn.
+            self.camp_sync(f, at);
+            let mut have = self.pool_at(f, at).floor() as u32;
+            if let Some(slots) = self.camp_drawable(f) {
+                have = have.min(slots);
+            }
+            if have == 0 || have * 2 < want {
                 return None;
             }
             let share = f64::from(have.min(want)) / f64::from(want.max(1));
@@ -2635,7 +2704,17 @@ impl Conflict {
             if total > have {
                 v[0].1 = v[0].1.saturating_sub(total - have).max(1);
             }
-            let total: u32 = v.iter().map(|u| u.1).sum();
+            // Every kind keeps one, so a make-up with more kinds than `have` (or a pair of one
+            // each with one warrior at home) still overdraws: the last kinds give theirs up. A
+            // party never has more units than the slots (or the pool) it was drawn from.
+            let mut total: u32 = v.iter().map(|u| u.1).sum();
+            for u in v.iter_mut().rev() {
+                let cut = total.saturating_sub(have).min(u.1);
+                u.1 -= cut;
+                total -= cut;
+            }
+            v.retain(|u| u.1 > 0);
+            debug_assert!(total <= have && total > 0, "a draw of {total} from {have}");
             self.pool_add(f, -f64::from(total), at);
             v
         } else {
@@ -2687,6 +2766,10 @@ impl Conflict {
             fight_strength: 0.0,
         });
         self.stats.parties[kind.index()] += 1;
+        if kind.is_war() {
+            self.factions[f as usize].away += start_units;
+            self.camp_draw(f, p, start_units, at);
+        }
         let pos = self.factions[f as usize].pos;
         let fid = self.fid(f);
         self.tape
@@ -2817,6 +2900,7 @@ impl Conflict {
                 );
             }
             Phase::Mustering => {
+                self.camp_set_out(p, at);
                 self.parties[p].phase = Phase::Out;
                 self.parties[p].seg = 0;
                 self.start_segment(w, infra, p, at);
@@ -3497,6 +3581,7 @@ impl Conflict {
             .map(|&(u, _)| class(self.unit_row(f, u).class))
             .collect();
         let x = &mut self.parties[p];
+        let mut lost = 0;
         for (k, e) in x.units.iter_mut().enumerate() {
             if n == 0 {
                 break;
@@ -3505,9 +3590,11 @@ impl Conflict {
                 let t = e.1.min(n);
                 e.1 -= t;
                 n -= t;
+                lost += t;
                 self.stats.casualties += u64::from(t);
             }
         }
+        self.party_lost(p, lost, self.now);
     }
 
     /// A raid on a village's or a rival haven's market: Lanchester's linear law against the
@@ -3715,7 +3802,9 @@ impl Conflict {
             )
             .text(|| format!("{} home: {alive} left, {items} items", kind.name()));
         if kind.is_war() {
-            self.pool_add(f, f64::from(alive), at);
+            self.camp_home(p, at);
+            self.pool_return(f, alive, at);
+            self.unblock(f, at);
         }
         if chief {
             self.factions[f as usize].chief_out = false;
@@ -4520,6 +4609,7 @@ impl Conflict {
                 }
                 self.plunder(w, faction, at);
             }
+            Ev::Refill { faction, stamp } => self.camp_refill(faction, stamp, at),
         }
     }
 
@@ -4577,6 +4667,7 @@ impl Conflict {
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
+            self.camp_session_start(f);
             let t = self.territory(f);
             self.outbox.push(t);
             if (f + 1) % per == 0 {
@@ -4888,8 +4979,9 @@ impl Conflict {
         m
     }
 
-    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the camp
-    /// reconciler's, the rail meter's, the chief's and the grove's.
+    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the rail
+    /// meter's, the chief's and the grove's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT,
+    /// CAMP_BODIES, CAMP_DEATH) are built (M4).
     pub fn later(o: &Obs) -> bool {
         matches!(
             o,
@@ -4897,11 +4989,7 @@ impl Conflict {
                 | Obs::HavenChest(_)
                 | Obs::RailPass(_)
                 | Obs::TrainPassed(_)
-                | Obs::CampDeath(_)
-                | Obs::CampCensus(_)
                 | Obs::Traded(_)
-                | Obs::CampBodies(_)
-                | Obs::CampOut(_)
                 | Obs::ChiefPaid(_)
         )
     }
@@ -4928,12 +5016,12 @@ impl Conflict {
             | Obs::HavenChest(_)
             | Obs::RailPass(_)
             | Obs::TrainPassed(_)
-            | Obs::CampDeath(_)
-            | Obs::CampCensus(_)
             | Obs::Traded(_)
-            | Obs::CampBodies(_)
-            | Obs::CampOut(_)
             | Obs::ChiefPaid(_) => {}
+            Obs::CampDeath(d) => self.camp_death(w, d, at),
+            Obs::CampCensus(c) => self.camp_census(c, at),
+            Obs::CampBodies(b) => self.camp_bodies(b, at),
+            Obs::CampOut(o) => self.camp_out(o, at),
             Obs::FactionFound(ff) => {
                 let Some(name) = self.java_dict.get(&(4, ff.structure)).cloned() else {
                     return;
@@ -4943,7 +5031,12 @@ impl Conflict {
                 };
                 let cname = self.cultures.get(ci).name().to_string();
                 let pos = self.canon(ff.dimension, ff.pos.0, ff.pos.2);
-                self.add_faction(w, ff.faction, &cname, pos, at);
+                let known = self.by_key.contains_key(&ff.faction);
+                if let Some(f) = self.add_faction(w, ff.faction, &cname, pos, at)
+                    && !known
+                {
+                    self.camp_found(f, ff.home_bodies, at);
+                }
             }
             Obs::Signal(s) => {
                 let Some(kind) = SignalKind::from_u32(s.kind) else {
@@ -5034,6 +5127,7 @@ impl Conflict {
                     .iter()
                     .map(|&u| back_of(u, &self.java_dict, &self.cultures))
                     .collect();
+                let before = self.parties[p].alive();
                 let x = &mut self.parties[p];
                 if live {
                     // The plugin despawned it (its chunks unloaded): alive are those never
@@ -5059,6 +5153,8 @@ impl Conflict {
                         s.1 = s.1.min(alive);
                     }
                 }
+                let lost = before.saturating_sub(x.alive());
+                self.party_lost(p, lost, at);
             }
             Obs::Casualties(cs) => self.casualties(w, cs, at),
             Obs::ChiefKilled(ck) => {
@@ -5198,6 +5294,7 @@ impl Conflict {
             s.1 = s.1.saturating_sub(t);
         }
         self.stats.casualties += u64::from(t);
+        self.party_lost(p, t, at);
         let killer = (cs.by == boundary::BY_PLAYER).then(|| self.player(w, cs.killer));
         if let Some(k) = killer {
             self.parties[p].breaker = Some(k);
