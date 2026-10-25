@@ -446,6 +446,10 @@ pub struct Compiled {
     pub ports_at: VecMap<u32, GoodVec>,
     /// The latest sweep's IND_COUNT_SAMPLE (§4.2). Not saved.
     pub counts: Option<CountTake>,
+    /// Per counted store (a node of [`Units::counted`]): its residue for the report. Not saved.
+    pub counted_res: BTreeMap<u32, StoreRes>,
+    /// The number of the latest sweep this compile took (Java's), for the report. Not saved.
+    pub view_sweep: Option<u32>,
 }
 
 /// One district's glass state.
@@ -533,6 +537,135 @@ pub(crate) fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64, fe
         GoodClass::Item => goods.max_stack(g) * stacks,
         GoodClass::Fluid => 1000 * stacks,
         _ => stacks.max(1),
+    }
+}
+
+/// One counted store's residue as the report shows it (SECTIONS.md §8.1, choice SC168): the
+/// store's residue per good ([`Compiled::sample_counted`]'s `r`) at the sweep that took the
+/// baseline, and at the latest sweep that counted every pair at it. Not saved: the report is
+/// built on request, from what the sweeps already computed. Noting a sweep allocates only when
+/// the baseline or the residue changes (SC177).
+#[derive(Clone, Debug, Default)]
+pub struct StoreRes {
+    /// The baseline, once a sweep that counted every pair at the store took one.
+    base: Option<Baseline>,
+    now: BTreeMap<Good, i64>,
+    /// The pass in flight over the pairs.
+    pass: Pass,
+}
+
+/// The residue a store started from, and the pairs' `since` (in pair order) it was taken under: a
+/// pair Java forgot starts it again.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Baseline {
+    since: Vec<i64>,
+    goods: BTreeMap<Good, i64>,
+}
+
+/// How the pairs at a store compared with its baseline in one sweep.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pass {
+    /// The pairs seen so far.
+    seen: usize,
+    /// Every pair seen so far had the baseline's `since`.
+    same: bool,
+    /// Every pair seen so far was counted whole in the sweep.
+    whole: bool,
+}
+
+impl Default for Pass {
+    fn default() -> Pass {
+        Pass {
+            seen: 0,
+            same: true,
+            whole: true,
+        }
+    }
+}
+
+impl PartialEq for StoreRes {
+    /// By what the report shows; the pass in flight is scratch.
+    fn eq(&self, o: &StoreRes) -> bool {
+        self.base == o.base && self.now == o.now
+    }
+}
+
+impl StoreRes {
+    /// The residue per good since the baseline, goods with none left out.
+    pub fn residue(&self) -> Vec<(Good, i64)> {
+        self.now
+            .iter()
+            .filter_map(|(&g, &v)| {
+                let from = self
+                    .base
+                    .as_ref()
+                    .and_then(|b| b.goods.get(&g))
+                    .copied()
+                    .unwrap_or(0);
+                let d = v.saturating_sub(from);
+                (d != 0).then_some((g, d))
+            })
+            .collect()
+    }
+}
+
+/// Records the counted stores' residue `r` (by store and good) of the sweep `t` counted, for the
+/// stores whose every pair `t` covers. Two passes over what exists already, comparing in place:
+/// nothing is allocated unless a store's baseline or residue changed.
+pub(crate) fn note_residue(
+    res: &mut BTreeMap<u32, StoreRes>,
+    units: &Units,
+    t: &CountTake,
+    r: &BTreeMap<(u32, Good), i64>,
+) {
+    for &h in &units.counted {
+        res.entry(h).or_default().pass = Pass::default();
+    }
+    for &(m, h) in &units.pairs {
+        let Some(st) = res.get_mut(&h) else { continue };
+        let Some(since) = t.since_of((m, h)) else {
+            st.pass.whole = false;
+            continue;
+        };
+        let was = st
+            .base
+            .as_ref()
+            .and_then(|b| b.since.get(st.pass.seen))
+            .copied();
+        st.pass.same &= was == Some(since);
+        st.pass.seen += 1;
+    }
+    for &h in &units.counted {
+        let Some(st) = res.get_mut(&h) else { continue };
+        if !st.pass.whole {
+            continue;
+        }
+        let at = (h, Good(0))..=(h, Good(u32::MAX));
+        let unchanged = st
+            .base
+            .as_ref()
+            .is_some_and(|b| st.pass.same && b.since.len() == st.pass.seen);
+        if !unchanged {
+            // A new baseline: the pairs' `since`, read again, and the residue now.
+            let since = units
+                .pairs
+                .iter()
+                .filter(|p| p.1 == h)
+                .filter_map(|&p| t.since_of(p))
+                .collect();
+            let goods = r.range(at.clone()).map(|(&(_, g), &v)| (g, v)).collect();
+            st.base = Some(Baseline { since, goods });
+        }
+        let now = r.range(at);
+        if st.now.len() != now.clone().count()
+            || !st
+                .now
+                .iter()
+                .zip(now.clone())
+                .all(|(a, (k, v))| *a.0 == k.1 && a.1 == v)
+        {
+            st.now = now.map(|(&(_, g), &v)| (g, v)).collect();
+        }
     }
 }
 
@@ -822,6 +955,40 @@ fn most_optimistic(goods: &[GoodResult], only: Option<Good>) -> Option<(f64, Goo
     worst
 }
 
+/// The failed good of a window that missed its band by the most, for the report (choice SC167):
+/// an exact good's band is its prediction, a bounded good's is [lo, hi]. [`most_optimistic`]
+/// ranks only the goods the model over-predicts, for the derate, so the report does not use it.
+/// Ties go to the lowest good.
+fn worst_miss(r: &WindowResult) -> Option<report::WorstGood> {
+    let mut worst: Option<report::WorstGood> = None;
+    for g in &r.goods {
+        if g.verdict != report::verdict::FAIL || !g.measured.is_finite() {
+            continue;
+        }
+        let excess = if g.class == report::class::EXACT {
+            (g.measured - g.predicted).abs()
+        } else if g.measured < g.lo {
+            g.lo - g.measured
+        } else if g.measured > g.hi {
+            g.measured - g.hi
+        } else {
+            0.0
+        };
+        if !excess.is_finite() {
+            continue;
+        }
+        if worst.is_none_or(|w| excess > w.excess) {
+            worst = Some(report::WorstGood {
+                good: g.good.0,
+                measured: g.measured,
+                predicted: g.predicted,
+                excess,
+            });
+        }
+    }
+    worst
+}
+
 /// The cumulative prediction a good sampled before any flow starts with: exact, or unbounded on
 /// a unit or district holding a black box or a port; a batch of one.
 fn sampled_cum(unbounded: bool) -> Cum {
@@ -968,6 +1135,8 @@ impl Compiled {
             rows: Vec::new(),
             ports_at: VecMap::new(),
             counts: None,
+            counted_res: BTreeMap::new(),
+            view_sweep: None,
         }
     }
 
@@ -1890,6 +2059,7 @@ impl Compiled {
                 }
             }
         }
+        note_residue(&mut self.counted_res, units, t, &r);
         for u in 0..units.len() {
             if !wanted(u) {
                 continue;
@@ -2238,6 +2408,7 @@ impl Compiled {
             self.sweeps += 1;
         }
         self.district_revision = Some(view.revision);
+        self.view_sweep = Some(view.sweep);
         self.advance(at, tun);
         // The units first: each open one that ran is sampled, the others lose their windows.
         let nu = self.unit_state.len();
@@ -2496,7 +2667,169 @@ impl Compiled {
             },
             goods: goods.into_values().collect(),
             units: self.unit_reports(dg),
+            sections: self.section_reports(dg),
+            shared: self.shared_reports(),
         }
+    }
+
+    /// Each section as the report shows it (SECTIONS.md §8.1, choice SC165): its state is its
+    /// unit's, and with one unit or none the district's own window and replay. A replay of another
+    /// compile or other units (stopping at its next step) replays none of this compile's sections.
+    pub fn section_reports(&self, dg: &DistrictGlass) -> Vec<report::SectionReport> {
+        let replay = dg.replay.as_ref().filter(|r| r.same_layout(self));
+        let glass_replay = replay.is_some() && dg.replay_model == report::replay_model::GLASS;
+        let frozen = replay.map(|r| r.frozen());
+        let on = replay.map(|r| r.units_on()).unwrap_or_default();
+        let active = self.units.active();
+        self.sections
+            .list
+            .iter()
+            .enumerate()
+            .map(|(si, sec)| {
+                let unit = active
+                    .then(|| self.units.of_section.get(si).copied())
+                    .flatten()
+                    .filter(|&u| u != super::sections::NONE);
+                let (last, passed, stale, strikes, done, win_ticks) = match unit {
+                    Some(u) => {
+                        let st = &self.unit_state[u as usize];
+                        (
+                            st.last.as_ref(),
+                            st.passed.is_some(),
+                            st.edited,
+                            st.strikes,
+                            st.windows_completed,
+                            st.win
+                                .as_ref()
+                                .map_or(0, |w| w.last.0.saturating_sub(w.start.0)),
+                        )
+                    }
+                    None => (
+                        self.last.as_ref(),
+                        self.passed.is_some(),
+                        self.edited,
+                        self.strikes,
+                        self.windows_completed,
+                        self.win
+                            .as_ref()
+                            .map_or(0, |w| w.last.0.saturating_sub(w.start.0)),
+                    ),
+                };
+                // The running replay decides what replays and what froze; with one unit or none the
+                // district's own replay is the section's.
+                let (may_replay, is_frozen, replaying) = match unit {
+                    Some(u) => (
+                        self.unit_may_replay(u),
+                        frozen
+                            .and_then(|f| f.get(u as usize))
+                            .copied()
+                            .unwrap_or(false),
+                        glass_replay && on.get(u as usize).copied().unwrap_or(false),
+                    ),
+                    // A section no unit holds while two units judge (none: every section is in a
+                    // group): unit 0 is not its unit, so nothing says it may replay.
+                    None if active => (false, false, false),
+                    None => (
+                        self.eligible(),
+                        frozen.and_then(|f| f.first()).copied().unwrap_or(false),
+                        glass_replay,
+                    ),
+                };
+                let verdict = last.map_or(report::verdict::NONE, |r| r.verdict);
+                use report::section_state as ss;
+                let state = if is_frozen {
+                    ss::FROZEN
+                } else if stale {
+                    ss::STALE
+                } else if replaying {
+                    ss::REPLAYING
+                } else if verdict == report::verdict::FAIL {
+                    ss::FAILED
+                } else if passed {
+                    ss::PASSED
+                } else {
+                    ss::LEARNING
+                };
+                report::SectionReport {
+                    unit: unit.map(u32::from),
+                    group: self
+                        .sections
+                        .group_of
+                        .get(si)
+                        .copied()
+                        .map_or(si as u32, u32::from),
+                    nodes: sec.nodes.len() as u32,
+                    stores: sec
+                        .stores
+                        .iter()
+                        .map(|&h| {
+                            let shared = self
+                                .sections
+                                .shared
+                                .binary_search_by_key(&h, |x| x.0)
+                                .is_ok();
+                            (self.graph.node(h).inventory, shared)
+                        })
+                        .collect(),
+                    domains: sec.domains.len() as u32,
+                    working: sec.working,
+                    bbox: sec.bbox,
+                    low: sec.low,
+                    fingerprint: sec.fingerprint,
+                    state,
+                    passed,
+                    stale,
+                    may_replay,
+                    frozen: is_frozen,
+                    verdict,
+                    strikes,
+                    windows_completed: done,
+                    window_ticks: win_ticks,
+                    worst: last.and_then(worst_miss),
+                }
+            })
+            .collect()
+    }
+
+    /// Each store shared by sections as the report shows it (SECTIONS.md §4.2, §8.1, choice SC168).
+    pub fn shared_reports(&self) -> Vec<report::SharedReport> {
+        let take = self.counts.as_ref();
+        self.sections
+            .shared
+            .iter()
+            .map(|(h, secs)| {
+                let n = self.graph.node(*h);
+                let counted = self.units.counted.binary_search(h).is_ok();
+                let pairs = self.units.pairs.iter().filter(|p| p.1 == *h).count();
+                let counted_now = counted
+                    && take.is_some_and(|t| {
+                        Some(t.sweep) == self.view_sweep
+                            && pairs > 0
+                            && self
+                                .units
+                                .pairs
+                                .iter()
+                                .filter(|p| p.1 == *h)
+                                .all(|&p| t.since_of(p).is_some())
+                    });
+                report::SharedReport {
+                    node: *h,
+                    inventory: n.inventory,
+                    pos: (!super::sections::is_virtual(n)).then_some(n.pos),
+                    sections: secs.iter().map(|&s| u32::from(s)).collect(),
+                    counted,
+                    pairs: pairs as u32,
+                    counted_now,
+                    sample_sweep: take.map(|t| t.sweep),
+                    residue: self
+                        .counted_res
+                        .get(h)
+                        .filter(|_| counted)
+                        .map(|r| r.residue().into_iter().map(|(g, v)| (g.0, v)).collect())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
     }
 
     /// Each judging unit as the report shows it (choice SC74); empty with one unit or none.
@@ -3043,6 +3376,8 @@ mod persist_impls {
                 units: Units::default(),
                 ubounds: Vec::new(),
                 counts: None,
+                counted_res: BTreeMap::new(),
+                view_sweep: None,
             };
             // What the solve and the window index by node must cover the graph's nodes.
             let n = c.graph.nodes.len();

@@ -151,3 +151,106 @@ fn the_create_gametest_save_draws_every_layer_and_writes_nothing() {
         &["ecology.herds", "industry.districts", "industry.stations"],
     );
 }
+
+/// Slice S7's layers on the create GameTest save: it holds package stores (frogports with no
+/// district, from the S4 GameTests) that draw as edges and have cards; its glass pages are in an
+/// older format, so the sections layer is empty and says so, and the viewer names the pages it
+/// left out.
+#[test]
+fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
+    let dir = data("create");
+    let before = snapshot(&dir);
+    let view = View::open(&dir, Limits::default()).expect("the save opens");
+    let drawing = every_layer_draws_or_says_why(&view);
+    assert!(
+        drawing.iter().any(|d| d == "industry.stores"),
+        "the stores draw: {drawing:?}"
+    );
+    let n = view
+        .saved()
+        .industry
+        .as_ref()
+        .expect("industry")
+        .stores
+        .len();
+    assert_eq!(n, 6, "the save holds six package stores");
+    for l in ["industry.sections", "industry.networks"] {
+        if !drawing.iter().any(|d| d == l) {
+            assert!(view.reasons().contains_key(l), "{l} says why it is empty");
+        }
+    }
+    let unread = view.saved().industry.as_ref().unwrap().glass_unread.pages();
+    if unread > 0 {
+        let why = &view.reasons()["industry.sections"];
+        assert!(
+            why.contains("glass page") && why.contains("did not read"),
+            "{why}"
+        );
+    }
+    // The layer draws a chain, not every pair of a store's frogports, and every frogport of a
+    // store whose hops Java measured is on it.
+    for st in &view.saved().industry.as_ref().unwrap().stores {
+        let n = st.frogports.len();
+        let links = rtsim_layers::industry::chain_links(st, n, usize::MAX);
+        eprintln!("store {}: {n} frogports, links {links:?}", st.id.0);
+        assert!(
+            links.len() <= n.saturating_sub(1),
+            "store {}: {links:?} for {n}",
+            st.id.0
+        );
+        if !st.hops.contains(&rtsim_layers::industry::UNKNOWN_HOPS) {
+            let mut on = vec![false; n];
+            on[0] = true;
+            for _ in 0..n {
+                for &(i, j) in &links {
+                    let (i, j) = (usize::from(i), usize::from(j));
+                    let joined = on[i] || on[j];
+                    on[i] = joined;
+                    on[j] = joined;
+                }
+            }
+            assert!(
+                on.iter().all(|&x| x),
+                "store {}: links {links:?} leave a frogport off the chain (hops {:?})",
+                st.id.0,
+                st.hops
+            );
+        }
+    }
+    let (id, edge) = {
+        let saved = view.saved();
+        let first = &saved.industry.as_ref().unwrap().stores[0];
+        (
+            first.id.0,
+            rtsim_layers::industry::store_mark(first).links[0],
+        )
+    };
+    let view = Arc::new(view);
+    let app = mic_viewer::viewer::App::new(Arc::clone(&view));
+    let card: mic_viewer::api::Card =
+        get_json(&app, &format!("/api/thing/industry.stores/{id}"), "");
+    assert_eq!(card.layer, "industry.stores");
+    assert!(card.sections.iter().any(|s| s.title == "Frogports"));
+    // A drawn edge's id ("store:i-j") opens its store's card.
+    let by_edge: mic_viewer::api::Card = get_json(
+        &app,
+        &format!("/api/thing/industry.stores/{id}:{}-{}", edge.0, edge.1),
+        "",
+    );
+    assert_eq!(by_edge.layer, "industry.stores");
+    assert_eq!(by_edge.title, card.title, "the edge's card is its store's");
+    let (status, _) = get(&app, "/api/thing/industry.stores/999999", "");
+    assert_eq!(status, 404, "a store the save lacks has no card");
+    let layers: mic_viewer::api::Layers = get_json(&app, "/api/layers", "");
+    let sections = layers
+        .layers
+        .iter()
+        .find(|l| l.id == "industry.sections")
+        .expect("the sections layer");
+    assert!(
+        sections.max_bpp <= 1.0,
+        "sections draw at a block a pixel and closer"
+    );
+    drop(view);
+    assert_same(&before, &snapshot(&dir));
+}

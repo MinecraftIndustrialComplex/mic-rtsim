@@ -1235,6 +1235,60 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * {@code /rtsim district sections} without a report (SECTIONS.md §8.1, S7). The command needs permission 2, and
+     * a district with no report says why in one line and returns 0: on the scripted (stub) engine, which has no
+     * glass box, that is the stub note, and {@code info} carries no glass lines. A district on the native engine
+     * with a report is covered where sections exist, by the vault-between-mixers fixture in the replay harness
+     * ({@code VaultBetweenMixersFactory.sectionsCommand}, namespace {@code mic_rtsim_create_sec1fx}); this test
+     * checks nothing about a native district's lines, since a lone vault compiles to no sections.
+     */
+    // Its own batch: forget() forgets every district in the level, so a test sharing a batch would lose its
+    // district mid-run (it shared industry_10 once, and theDebugOutputShowsWhatJavaKnows's district went).
+    @GameTest(template = YARD, batch = "industry_26", timeoutTicks = 600)
+    public static void theSectionsCommandSaysSoWithoutAReport(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos vaultPos = new BlockPos(bx + 2, y, z);
+        set(helper, vaultPos, block("create:item_vault").defaultBlockState());
+        playerPlaced(helper, vaultPos);
+        long[] id = {0};
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, vaultPos);
+                    check("district", d != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    District d = ind().district(id[0]);
+                    var fetch = ind().diagnostics().glassReportOf(d);
+                    check("this test is for a district with no report (a lone vault compiles to no sections): " + fetch.note(),
+                            fetch.report() == null || fetch.report().sections().isEmpty());
+                    var said = IndustryKit.say(helper.getLevel(), vaultPos,
+                            "rtsim district sections");
+                    record("theSectionsCommandSaysSoWithoutAReport", "sections", said.lines().toString());
+                    check("the command printed one line (" + said.lines() + ")", said.lines().size() == 1);
+                    check("that line names the district", said.lines().get(0).startsWith("district " + id[0] + " '"));
+                    check("it returns 0", said.ran() == 0);
+                    if (fetch.stub()) {
+                        check("the stub engine is named", said.lines().get(0).contains("stub engine"));
+                        StringBuilder info = new StringBuilder();
+                        for (var c : ind().diagnostics().debugLines(d))
+                            info.append(c.getString()).append(" / ");
+                        check("the info output carries no glass sections line", !info.toString().contains("glass sections"));
+                    }
+                    boolean refused = false;
+                    try {
+                        helper.getLevel().getServer().getCommands().getDispatcher().execute("rtsim district sections", source(helper, vaultPos).withPermission(1));
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                        refused = true;
+                    }
+                    check("below permission 2 the command is refused", refused);
+                })
+                .thenSucceed();
+    }
+
     /** True once the engine's received log holds a record at or past {@code seq} (it arrives in sequence order). */
     private static boolean receivedThrough(long seq) {
         var all = engine().received();
