@@ -4,6 +4,9 @@ import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.TakeReason;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
+import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
+import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
@@ -12,13 +15,16 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.Hearer;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Den;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Far;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Markers;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.level.ServerLevel;
@@ -34,12 +40,14 @@ import net.minecraft.world.entity.projectile.ThrownTrident;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
@@ -475,86 +483,229 @@ public final class FrostmawGameTests {
                 .thenSucceed();
     }
 
-    // ---- a lurk puppet taken by a player (MZB-369) --------------------------------------------------
+    // ---- a lurk puppet taken, or still held when the module goes (MZB-369, UR-1) ---------------------
+
+    /** One held lurk puppet of a one-unit Frostmaw band at a spot, and what the tests below do to it. */
+    private static final class Held {
+        final String test;
+        final Far far;
+        final ServerLevel level;
+        final long agent = ConflictKit.newAgent(), faction = ConflictKit.newFaction();
+        final int x, z;
+        final Vec3[] spot = new Vec3[1], track = new Vec3[1];
+        final EntityFrostmaw[] f = new EntityFrostmaw[1];
+        /** The saved NBT of the body (or of the copy), kept to compare. */
+        final CompoundTag[] saved = {null};
+        final Entity[] copy = {null};
+
+        Held(GameTestHelper helper, String test) {
+            this.test = test;
+            this.far = new Far(helper, test);
+            this.level = far.level;
+            this.x = far.bx + 8;
+            this.z = far.bz + 8;
+        }
+
+        /** The sequence up to a held puppet: the lurk is in the table, the puppet stands, tagged, awake for good, restricted. */
+        GameTestSequence up(GameTestHelper helper) {
+            return helper.startSequence()
+                    .thenExecute(() -> far.force(far.k, far.z0))
+                    .thenWaitUntil(far.ready())
+                    .thenExecute(() -> {
+                        int y = MowzieKit.platform(level, far.bx + 2, far.bx + 14, far.bz + 2, far.bz + 14) + 1;
+                        spot[0] = new Vec3(x + 0.5, y, z + 0.5);
+                        track[0] = new Vec3(x + 0.5, y, z - 3.5);
+                        ConflictKit.ambushSpot(agent, 1, faction, far.dim, new double[] {track[0].x, track[0].y, track[0].z},
+                                new double[] {spot[0].x, spot[0].y, spot[0].z}, 8.0f);
+                    })
+                    .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent))))
+                    .thenExecute(() -> {
+                        ConflictKit.Band b = ConflictKit.band(agent, faction, far.dim);
+                        b.arcX = spot[0].x;
+                        b.arcZ = spot[0].z;
+                        b.targetX = track[0].x;
+                        b.targetY = track[0].y;
+                        b.targetZ = track[0].z;
+                        b.speed = 0f;
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
+                    })
+                    .thenWaitUntil(io(() -> {
+                        check("the puppet stands", RtsimApi.lurkBody(agent) instanceof EntityFrostmaw);
+                        EntityFrostmaw p = (EntityFrostmaw) RtsimApi.lurkBody(agent);
+                        check("and is held: awake for good and restricted", p.isAlwaysActive() && p.hasRestriction());
+                    }))
+                    .thenExecute(() -> {
+                        f[0] = (EntityFrostmaw) RtsimApi.lurkBody(agent);
+                        ConflictKit.onEnd(helper, () -> {
+                            f[0].discard();
+                            if (copy[0] != null)
+                                copy[0].discard();
+                            RtsimConfig.Test.setModule(Module.CONFLICT, null);
+                            BridgeEvents.moduleSwitchesChanged(level.getServer());
+                        });
+                        CompoundTag nbt = f[0].saveWithoutId(new CompoundTag());
+                        check("the puppet is tagged", RtsimApi.isPuppet(f[0]));
+                        check("its NBT says alwaysActive (the premise: " + nbt.getBoolean("alwaysActive") + ")", nbt.getBoolean("alwaysActive"));
+                        check("its restriction is two blocks about the spot (" + f[0].getRestrictRadius() + ")", f[0].getRestrictRadius() == 2.0f);
+                    });
+        }
+
+        /** What an ordinary Frostmaw is, of a live body: no puppet, no restriction, not always-active, not the bridge's. */
+        void ordinary(String what, Entity e) {
+            check(what + " is a Frostmaw", e instanceof EntityFrostmaw);
+            EntityFrostmaw g = (EntityFrostmaw) e;
+            check(what + " is no puppet", !RtsimApi.isPuppet(g));
+            check(what + " is no member of the bridge's", ConflictKit.bridge().slotOf(g) == null);
+            check(what + " has no restriction (" + g.hasRestriction() + ")", !g.hasRestriction());
+            check(what + " is not always-active (" + g.isAlwaysActive() + ")", !g.isAlwaysActive());
+            check(what + " is alive and in the world", g.isAlive() && !g.isRemoved());
+        }
+
+        /** A body's saved NBT, with the hold's own mark, {@code alwaysActive}, false; kept in {@link #saved}. */
+        void saveOrdinary(String what, Entity e) {
+            CompoundTag nbt = new CompoundTag();
+            check(what + " saves (it is no puppet)", e.save(nbt));
+            check(what + ": alwaysActive false in its saved NBT", !nbt.getBoolean("alwaysActive"));
+            saved[0] = nbt;
+        }
+
+        /**
+         * A body's saved NBT as a world without mic_rtsim and the plugin would read it (UR-1): nothing of
+         * mic_rtsim in it for NeoForge to skip (no attachment, no tag, no persistent data, no word of it anywhere),
+         * and {@code alwaysActive} false. Only once the engine has acknowledged what the body carried.
+         */
+        void leavesNothing(String what, Entity e) {
+            saveOrdinary(what, e);
+            CompoundTag nbt = saved[0];
+            for (String k : nbt.getCompound("neoforge:attachments").getAllKeys())
+                check(what + ": no attachment of mic_rtsim (" + k + ")", !k.startsWith("mic_rtsim:"));
+            for (String k : nbt.getCompound("NeoForgeData").getAllKeys())
+                check(what + ": no persistent data of mic_rtsim (" + k + ")", !k.contains("mic_rtsim"));
+            for (Tag t : nbt.getList("Tags", 8))
+                check(what + ": no tag of mic_rtsim (" + t.getAsString() + ")", !t.getAsString().contains("mic_rtsim"));
+            check(what + ": nothing of mic_rtsim anywhere in its saved NBT", !nbt.toString().contains("mic_rtsim"));
+        }
+
+        void off(GameTestHelper helper, boolean off) {
+            RtsimConfig.Test.setModule(Module.CONFLICT, off ? Boolean.FALSE : null);
+            BridgeEvents.moduleSwitchesChanged(helper.getLevel().getServer());
+        }
+    }
 
     /**
      * A held lurk puppet taken by a player is an ordinary Frostmaw again (UR-1, MZB-369). A one-unit Frostmaw band
      * lurking at a spot, held (awake for good, restricted to the spot, with that in its saved NBT); a player's
-     * pickup ({@code takeFromSim}, Carry On's) takes it: the body is no longer a puppet, has no restriction, is
-     * not always-active, its saved NBT says {@code alwaysActive} false, a body made from that NBT is not
-     * always-active either, and 60 ticks later nothing has held it again. The lurk itself stays in the table until
-     * the engine ends it. On the code before the fix (forget cleared the hold without asking the Lurker) the body
-     * keeps {@code restrictTo(spot, 2)} (hasRestriction true) and writes {@code alwaysActive true} to its NBT, so
-     * the first check after the take fails: "the taken body has no restriction (true)".
+     * pickup ({@code takeFromSim}, Carry On's) takes it. At once: the body is no longer a puppet, has no restriction,
+     * is not always-active, its saved NBT says {@code alwaysActive} false, and a body made from that NBT is not
+     * always-active either. The uninstall and the reinstall, by the module switch the other GameTests use: once the
+     * engine has acknowledged the casualty (the body's {@code mic_rtsim:pending} record drops), the body's saved NBT
+     * has nothing of mic_rtsim in it for a world without the mod to skip; the conflict module is switched off, and
+     * the body stays, alive and ordinary; switched on again, a copy made from the saved NBT joins the level as an
+     * ordinary Frostmaw and nothing holds either of them again.
+     * <p>On the code before the fix (forget cleared the hold without asking the Lurker) the body keeps
+     * {@code restrictTo(spot, 2)} (hasRestriction true) and writes {@code alwaysActive true} to its NBT, so the first
+     * check after the take fails: "the taken body has no restriction (true)". Not run.
      */
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_taken", skyAccess = true)
     public static void aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw(GameTestHelper helper) {
-        String test = "aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw";
-        Far far = new Far(helper, test);
-        ServerLevel level = far.level;
-        long agent = ConflictKit.newAgent(), faction = ConflictKit.newFaction();
-        int x = far.bx + 8, z = far.bz + 8;
-        Vec3[] spot = new Vec3[1], track = new Vec3[1];
-        EntityFrostmaw[] f = new EntityFrostmaw[1];
-        Player[] taker = new Player[1];
+        taken(helper, "aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw", true);
+    }
 
-        helper.startSequence()
-                .thenExecute(() -> far.force(far.k, far.z0))
-                .thenWaitUntil(far.ready())
+    /**
+     * The same for a puppet taken by something that is not a player ({@code TakeReason.PLUGIN}, no player): the
+     * casualty is by other, and the body is let go the same way. On the code before the fix: "the taken body has no
+     * restriction (true)". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_taken_other", skyAccess = true)
+    public static void aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw(GameTestHelper helper) {
+        taken(helper, "aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw", false);
+    }
+
+    private static void taken(GameTestHelper helper, String test, boolean byPlayer) {
+        Held h = new Held(helper, test);
+        Player[] taker = new Player[1];
+        int by = byPlayer ? ConflictRecords.BY_PLAYER : ConflictRecords.BY_OTHER;
+        h.up(helper)
                 .thenExecute(() -> {
-                    int y = MowzieKit.platform(level, far.bx + 2, far.bx + 14, far.bz + 2, far.bz + 14) + 1;
-                    spot[0] = new Vec3(x + 0.5, y, z + 0.5);
-                    track[0] = new Vec3(x + 0.5, y, z - 3.5);
-                    ConflictKit.ambushSpot(agent, 1, faction, far.dim, new double[] {track[0].x, track[0].y, track[0].z},
-                            new double[] {spot[0].x, spot[0].y, spot[0].z}, 8.0f);
-                })
-                .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent))))
-                .thenExecute(() -> {
-                    ConflictKit.Band b = ConflictKit.band(agent, faction, far.dim);
-                    b.arcX = spot[0].x;
-                    b.arcZ = spot[0].z;
-                    b.targetX = track[0].x;
-                    b.targetY = track[0].y;
-                    b.targetZ = track[0].z;
-                    b.speed = 0f;
-                    ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
+                    EntityFrostmaw f = h.f[0];
+                    taker[0] = byPlayer ? helper.makeMockPlayer(GameType.SURVIVAL) : null;
+                    check("the take works", RtsimApi.takeFromSim(f, byPlayer ? TakeReason.PICKUP : TakeReason.PLUGIN, taker[0]));
+                    check("it is no puppet now", !RtsimApi.isPuppet(f));
+                    check("the taken body has no restriction (" + f.hasRestriction() + ")", !f.hasRestriction());
+                    check("the taken body is not always-active (" + f.isAlwaysActive() + ")", !f.isAlwaysActive());
+                    // The record it carries (mic_rtsim:pending) is the one thing of mic_rtsim on it, until the engine has it
+                    h.saveOrdinary("the taken body, before the engine has the casualty,", f);
+                    Entity again = EntityType.create(h.saved[0], h.level).orElse(null);
+                    check("a body made from that NBT is a Frostmaw", again instanceof EntityFrostmaw);
+                    check("and is not always-active (" + ((EntityFrostmaw) again).isAlwaysActive() + ")", !((EntityFrostmaw) again).isAlwaysActive());
+                    check("and has no restriction (" + ((EntityFrostmaw) again).hasRestriction() + ")", !((EntityFrostmaw) again).hasRestriction());
+                    check("the lurk is still in the table", RtsimApi.lurks().containsKey(h.agent));
                 })
                 .thenWaitUntil(io(() -> {
-                    check("the puppet stands", RtsimApi.lurkBody(agent) instanceof EntityFrostmaw);
-                    EntityFrostmaw p = (EntityFrostmaw) RtsimApi.lurkBody(agent);
-                    check("and is held: awake for good and restricted", p.isAlwaysActive() && p.hasRestriction());
+                    List<ScriptedEngine.Received> c = ConflictKit.about(ConflictRecords.BAND_CASUALTIES, h.agent);
+                    check("the engine has the casualty", c.size() == 1);
+                    check("by " + by + ", not " + c.get(0).aux(), c.get(0).aux() == by);
                 }))
+                .thenExecute(() -> RtsimTests.engine().requestSaveAtNextStep())
+                .thenWaitUntil(io(() -> check("acknowledged: the body carries no records", !h.f[0].hasData(RtsimAttachments.PENDING))))
                 .thenExecute(() -> {
-                    f[0] = (EntityFrostmaw) RtsimApi.lurkBody(agent);
-                    ConflictKit.onEnd(helper, () -> f[0].discard());
-                    check("the puppet is tagged", RtsimApi.isPuppet(f[0]));
-                    check("its NBT says alwaysActive (the premise: " + f[0].saveWithoutId(new CompoundTag()).getBoolean("alwaysActive") + ")",
-                            f[0].saveWithoutId(new CompoundTag()).getBoolean("alwaysActive"));
-                    check("its restriction is two blocks about the spot (" + f[0].getRestrictRadius() + ")", f[0].getRestrictRadius() == 2.0f);
-                    taker[0] = helper.makeMockPlayer(GameType.SURVIVAL);
-                    check("a player's pickup takes it", RtsimApi.takeFromSim(f[0], TakeReason.PICKUP, taker[0]));
-                    check("it is no puppet now", !RtsimApi.isPuppet(f[0]));
-                    check("the taken body has no restriction (" + f[0].hasRestriction() + ")", !f[0].hasRestriction());
-                    check("the taken body is not always-active (" + f[0].isAlwaysActive() + ")", !f[0].isAlwaysActive());
-                    CompoundTag saved = new CompoundTag();
-                    check("the taken body saves (it is no puppet)", f[0].save(saved));
-                    check("its NBT says alwaysActive false (" + saved.getBoolean("alwaysActive") + ")", !saved.getBoolean("alwaysActive"));
-                    Entity again = EntityType.create(saved, level).orElse(null);
-                    check("a body made from that NBT is a Frostmaw", again instanceof EntityFrostmaw);
-                    EntityFrostmaw g = (EntityFrostmaw) again;
-                    check("and is not always-active (" + g.isAlwaysActive() + ")", !g.isAlwaysActive());
-                    check("and has no restriction (" + g.hasRestriction() + ")", !g.hasRestriction());
-                    check("the lurk is still in the table", RtsimApi.lurks().containsKey(agent));
+                    // The uninstall: the module off. The body is not the bridge's, so it stays as it is.
+                    h.off(helper, true);
+                    h.leavesNothing("the taken body, acknowledged,", h.f[0]);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    h.ordinary("the taken body with the module off", h.f[0]);
+                    h.leavesNothing("the taken body with the module off,", h.f[0]);
+                    // The reinstall: the module on, and a copy of the saved body joins the level
+                    h.off(helper, false);
+                    Entity c = EntityType.create(h.saved[0], h.level).orElse(null);
+                    check("the copy is made from the saved NBT", c != null);
+                    c.setUUID(UUID.randomUUID());
+                    h.level.addLegacyChunkEntities(Stream.of(c));
+                    check("the copy joined", h.level.getEntity(c.getUUID()) == c);
+                    h.copy[0] = c;
                 })
                 .thenIdle(60)
                 .thenExecute(() -> {
-                    check("nothing held it again: no restriction (" + f[0].hasRestriction() + ")", !f[0].hasRestriction());
-                    check("nothing held it again: not always-active (" + f[0].isAlwaysActive() + ")", !f[0].isAlwaysActive());
-                    check("the lurk has no live puppet", RtsimApi.lurkBody(agent) == null);
-                    record(test, "taken", "the lurk puppet taken at " + f[0].position() + " is an ordinary Frostmaw: no restriction, not always-active, in its NBT or in a body made from it");
-                    ConflictKit.ambushRemoved(agent, 1, faction, far.dim);
+                    h.ordinary("the taken body after the reinstall", h.f[0]);
+                    h.ordinary("the copy of it", h.copy[0]);
+                    check("nothing is held by the lurk", RtsimApi.lurkBody(h.agent) == null);
+                    record(test, "taken", "the lurk puppet taken " + (byPlayer ? "by a player" : "by no player") + " at " + h.f[0].position()
+                            + " is an ordinary Frostmaw: no restriction, not always-active, in its NBT or in a copy made from it, and"
+                            + " nothing of mic_rtsim on it once the engine has the casualty; the module off and on left it alone");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
-                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent))))
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    /**
+     * The other end of the same uninstall (UR-1): a puppet still held when the conflict module is switched off is
+     * not left in the world. The body is discarded and the lurk's table cleared, and switched on again nothing
+     * stands in its place. (This holds on the code before the fix too: it is the guard that the release does not
+     * change the switch-off.) Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_off", skyAccess = true)
+    public static void aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld(GameTestHelper helper) {
+        String test = "aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld";
+        Held h = new Held(helper, test);
+        h.up(helper)
+                .thenExecute(() -> h.off(helper, true))
+                .thenWaitUntil(() -> check("the held body is gone with the module off", h.f[0].isRemoved()))
+                .thenExecute(() -> {
+                    check("the lurk has no body", RtsimApi.lurkBody(h.agent) == null);
+                    h.off(helper, false);
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    AABB around = new AABB(h.spot[0], h.spot[0]).inflate(24);
+                    check("no Frostmaw stands about the spot", h.level.getEntitiesOfClass(EntityFrostmaw.class, around).isEmpty());
+                    check("the lurk has no body", RtsimApi.lurkBody(h.agent) == null);
+                    record(test, "off", "a held lurk puppet was gone with the module switched off, and nothing stood in its place after it was on again");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
                 .thenSucceed();
     }
 
