@@ -3722,9 +3722,34 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     (`forget` now releases a dying one too, which is harmless); a recall or a moved or ended lurk already
     called `releaseLurk`. A body unloaded with its chunk is saved held, but the join check refuses it as a
     stale copy and discards it.
-    `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (mowziesmobs, batch `frostmaw_lurk_taken`):
-    on the unfixed code the first check after the take fails, "the taken body has no restriction (true)", and
-    the next would read "not always-active (true)" and the saved `alwaysActive` true.
+    Three GameTests in the mowziesmobs project (`FrostmawGameTests`, written and compiled, not run), sharing one
+    fixture (`Held`: a one-unit Frostmaw band lurking at a spot, held), because the brief made this a UR-1 break
+    and so its test must uninstall and reinstall:
+    - `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (batch `frostmaw_lurk_taken`, the mock player's
+      `PICKUP`) and `aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (batch `frostmaw_lurk_taken_other`,
+      `TakeReason.PLUGIN`, no player). At once after the take: no puppet, no restriction, not always-active,
+      `alwaysActive` false in the saved NBT, and the same of a body made from that NBT. Then the engine's
+      BAND_CASUALTIES (by player, or by other) is waited for, `requestSaveAtNextStep` has it acknowledged, and the
+      body's `mic_rtsim:pending` record drops (it is the one thing of mic_rtsim on the body until then, so the
+      first save is checked for the hold only). The uninstall is the module switch the other GameTests use
+      (`RtsimConfig.Test.setModule(Module.CONFLICT, false)` and `BridgeEvents.moduleSwitchesChanged`, as
+      `IndustryGameTests` and `ModuleSwitchGameTests` do; no GameTest removes a mod, and none is named for an
+      uninstall, so the saved-NBT checks below stand for the mod's removal):
+      the saved NBT of the acknowledged body has no `neoforge:attachments` key of `mic_rtsim:`, no
+      `NeoForgeData` key and no tag with `mic_rtsim`, no word of `mic_rtsim` anywhere in its string form, and
+      `alwaysActive` false, which is what a world without mic_rtsim and the plugin reads (NeoForge skips an
+      unknown attachment; there is none to skip). The body stays after 40 ticks with the module off, alive and
+      ordinary (no restriction, not always-active, not the bridge's). The reinstall is the module on again and a
+      copy of the saved NBT, with a new UUID, added as a chunk would add it: after 60 ticks both bodies are
+      ordinary Frostmaws, nothing is held by the lurk (`lurkBody` null), and the lurk is ended and leaves the
+      table. The mock player (`PICKUP`) is not a `FakePlayer`, so the casualty is by a player.
+    - Expected on the unfixed code, both: the first check after the take fails, "the taken body has no
+      restriction (true)"; the next would read "not always-active (true)", and the saved `alwaysActive` true.
+    - `aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld` (batch `frostmaw_lurk_off`) is the other end
+      of the uninstall, a puppet still held when the module goes off: the body is discarded, the lurk has no body,
+      and 60 ticks after the module is on again no Frostmaw stands within 24 blocks of the spot. It passes on the
+      unfixed code too (a guard that the release does not change what the switch-off does, which discards the
+      body). The test restores the switch when it ends, passed or failed.
 - **MZB-370** (test choices):
   - Test 8's rider is `helper.makeMockPlayer(GameType.SURVIVAL)` added with `addFreshEntity`, as M6's thief
     (MZB-281), so the ice ball's `getEntitiesOfClass` sees it. It is seated with `addSittingPassenger`.
