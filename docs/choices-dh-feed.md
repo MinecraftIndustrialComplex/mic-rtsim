@@ -108,8 +108,17 @@ while held (DHT72).
 
 | # | Choice | Why |
 |---|---|---|
-| DHT71 | **A body that arrives flying starts its flight loop on its far model's beat** (`DragonArrivals.warm`). At the body's first held frame (DHT68), when the far dragon is not roosting, the game is not frozen, and Ice and Fire's controller would play the flight loop for the body (its `selectGeckoAnimation`: not dead, not swimming, flying or hovering or part way into either, and neither charging a blast nor breathing fire), the hidden renders run at ticks of the body's own clock chosen for the far model's loop: the far model's time is the far clock plus its key's offset (DHT65), and the body's tick that is the last start of that loop at or before it gets the two warm renders a stand-in gets, so the transition ends there and the loop starts there; during the hold the body gets a render at each later start of the loop, as the stand-ins do. Each render sets the body's `tickCount`, renders into nothing and puts it back, inside the frame; nothing ticks between. A body that arrives on the ground, swimming, charging a blast or breathing fire plays its own opening, unseen for the hold as before. The stats line counts how many bodies were held and how many started on the beat. Uninstall effect: none; client only, nothing saved, nothing sent. | The coordinator's call: the wings jumped at the swap in every take of round two, in 4 of 8 from fully down to fully up in one frame, because the body's loop starts wings up at its first render and the far model's is wherever its clock has it. Within 300 blocks the two nearest far dragons are drawn live, on the same loop and the same clock (DHT65), so there the far model's pose and the body's are the same at the swap; farther out the far model draws the baked frame nearest its time, 12 to the loop, and the two agree to within half a frame step, 2.5 ticks. The jump was up to half the loop. The stand-ins already start a loop at a chosen tick this way (DHT65); a body's `tickCount` is what GeckoLib's clock reads (TICK). GeckoLib takes up an animation only when its clock is not -1, its "never polled" value, so a first warm render that would land on -1 goes one tick earlier, which still ends the transition at the loop's start. Under `/tick freeze` the far clock runs on and the body's does not, so the beat would not hold; a blast's charge or a breath plays another animation, and the body's own clock then decides. A body new to the client has no action at all (Ice and Fire's `getAnimation` is null then, not `NO_ANIMATION`), and the flight loop plays for any action but the charge, so the check names the charge and nothing else. In eight takes on the beat no wing flipped at the swap, where all four before did; a smaller change of pose is left, from the body's turn while held, which the far model does not follow ("Round three" under Measured). |
+| DHT71 | **A body that arrives flying starts its flight loop on its far model's beat** (`DragonArrivals.warm`). At the body's first held frame (DHT68), when the far dragon is not roosting, the game is not frozen, and Ice and Fire's controller would play the flight loop for the body (its `selectGeckoAnimation`: not dead, not swimming, flying or hovering or part way into either, and neither charging a blast nor breathing fire), the hidden renders run at ticks of the body's own clock chosen for the far model's loop: the far model's time is the far clock plus its key's offset (DHT65), and the body's tick that is the last start of that loop at or before it gets the two warm renders a stand-in gets, so the transition ends there and the loop starts there; during the hold the body gets a render at each later start of the loop, as the stand-ins do. Each render sets the body's `tickCount`, renders into nothing and puts it back, inside the frame; nothing ticks between. A body that arrives on the ground, swimming, charging a blast or breathing fire plays its own opening, unseen for the hold as before. The stats line counts how many bodies were held and how many started on the beat. Uninstall effect: none; client only, nothing saved, nothing sent. | The coordinator's call: the wings jumped at the swap in every take of round two, in 4 of 8 from fully down to fully up in one frame, because the body's loop starts wings up at its first render and the far model's is wherever its clock has it. Within 300 blocks the two nearest far dragons are drawn live, on the same loop and the same clock (DHT65), so there the far model's pose and the body's are the same at the swap; farther out the far model draws the baked frame nearest its time, 12 to the loop, and the two agree to within half a frame step, 2.5 ticks. The jump was up to half the loop. The stand-ins already start a loop at a chosen tick this way (DHT65); a body's `tickCount` is what GeckoLib's clock reads (TICK). GeckoLib takes up an animation only when its clock is not -1, its "never polled" value, so a first warm render that would land on -1 goes one tick earlier, which still ends the transition at the loop's start. Under `/tick freeze` the far clock runs on and the body's does not, so the beat would not hold; a blast's charge or a breath plays another animation, and the body's own clock then decides. A body new to the client has no action at all (Ice and Fire's `getAnimation` is null then, not `NO_ANIMATION`), and the flight loop plays for any action but the charge, so the check names the charge and nothing else. In eight takes on the beat no wing flipped at the swap, where all four before did; a smaller change of pose is left, from the body's turn while held, which the far model did not follow ("Round three" under Measured) until DHT74. |
 | DHT72 | **While held, a named body's name tag is held too; its leash and its shadow are not** (`MicRtsimIceAndFireClient`). The name tag goes through NeoForge's `RenderNameTagEvent`, at the lowest priority, set to not render for a held body (GeckoLib still runs vanilla's render, which posts it, after its own Pre event is cancelled). A leash and a shadow have no event: the leash is drawn twice for a GeckoLib mob, by vanilla's `EntityRenderer.render` (its private `renderLeash`) and by GeckoLib's `GeoEntityRenderer.renderFinal` (`Mob.getLeashHolder`, then its own `renderLeash`), so hiding it needs a mixin at both, a head cancel on `EntityRenderer#renderLeash` and on `GeoEntityRenderer#renderLeash` for a held body; the shadow is drawn by `EntityRenderDispatcher.render` after the renderer returns, so it needs a mixin there (around its `renderShadow` call). Neither is done. | The coordinator's call: hide what an event covers, leave and name what needs a mixin. The lowest priority, so a mod that forces name tags on does not bring a held one back. A shadow is drawn only within 16 blocks of the camera, onto blocks a short way below the body, so a dragon arriving in flight at the tracking range's edge has none to show; a leashed dragon arriving from the far view needs its holder there too. Ice and Fire sets the renderer's `shadowRadius` in its `preRender`, before GeckoLib's Pre event, so a Pre listener could zero it by reflection for that frame without a mixin; that is not an event's cover and is not done either. |
+
+## Round four
+
+The fourth round on the arrival (branch `fix/dh-yaw-match`, 2026-10-24), the coordinator's call. It supersedes
+round three's "Turning the stand-in onto the body's yaw and pitch ... should close it" (under Measured).
+
+| # | Choice | Why |
+|---|---|---|
+| DHT74 | **While a body is held, its far model turns onto the body's heading and pitch** (`DragonArrivals.turn`, `DragonLook`). Each frame of the hold (DHT68) the far model's heading goes from the feed's toward the body's (its `yBodyRot`, interpolated, as Ice and Fire's renderer reads it) and its pitch from level toward the body's (`dragonPitch`), in step with the hold, by its ticks or its wall time, whichever is further, all the way by 0.8 of the hold. A body whose hold ran out before vanilla drew it (out of the frustum, or its section not compiled yet) keeps its far model at the body's angles outright until vanilla's first render of it. The live stand-ins (the nearest two within 300 blocks) take the pitch as their `dragonPitch` and are drawn at the turned yaw; the baked frames take a rotation about the world's X axis outside the yaw, as Ice and Fire pitches a dragon; a pitched model's bounding sphere is reckoned from its feet. Left: the baked frames' lights stay those of the level model (passing the pitch to them needs a field in the core's `FarModel`), and the position is not blended (at the swap the far model's middle was within 0.04 blocks of the body's along and across its heading, and 0.2 to 0.7 blocks above or below it, in the seven takes the turn ran in). Uninstall effect: none; client only, nothing saved, nothing sent; the stand-ins are never added to a level (D3). | The coordinator's call, from round three's leftover: the server turns a held body and the far model kept the feed's heading, level, so at the swap the body's yaw was 1.8 to 4.7 degrees past the stand-in's and its pitch about 1 degree off. Ice and Fire draws a flying dragon at its body's yaw and pitch only (no lagging tail, no roll), so those two are all there is to follow. A hold ends at the first frame past its end, so the turn ends at 0.8 of it: the last held frame, up to a frame short of the end, already has the body's angles. A body released but not yet drawn is still the far model on screen, so it keeps the angles rather than snapping back to the feed's. Measured in "Round four" under Measured. |
 
 ## Measured
 
@@ -470,10 +479,11 @@ median of the same comparison over its neighbours, which is the dragon's own mot
   the far wing opens from edge-on in one frame; in 7 of the 10 takes on the beat the tail's tip ends 20 to 28
   pixels further back at the swap. The body turns while it is held and the far model does not: at the release
   the body's yaw is 1.8 to 4.7 degrees past the stand-in's (1.2 at the hold's start; session B's six takes on
-  the beat) and its pitch about 1 degree off, and Ice and Fire swings a turning body's tail and rolls it, which a
-  stand-in following the feed's heading does not. `a3b_ring` (1.8 degrees) is clean, and `a3t_fly` (3.0, TAA
-  off) the cleanest swap of all. Turning the stand-in onto the body's yaw and pitch through the hold should
-  close it; not done.
+  the beat) and its pitch about 1 degree off. (An earlier draft said Ice and Fire also swings a turning body's
+  tail and rolls it; it does not: its renderer draws a flying dragon at its body's yaw, pitched about the world's
+  X axis outside that yaw, with no tail that lags a turn and no roll, so yaw and pitch are all there is to
+  follow.) `a3b_ring` (1.8 degrees) is clean, and `a3t_fly` (3.0, TAA off) the cleanest swap of all. Turning the
+  stand-in onto the body's yaw and pitch through the hold should close it: DHT74, measured in round four.
 - **The smear under the body is DH's TAA.** With DH's temporal anti-aliasing on, the far model's lowered wings
   stay as a red smear over the ground for a frame or two after the swap (strong before, where the wings jumped,
   faint after); with it off (`/micmedia dh taa 0`) none, beat or not (`b3t_*`, `a3t_*`; beat off, the wings still
@@ -487,6 +497,59 @@ median of the same comparison over its neighbours, which is the dragon's own mot
   radius from 160 chunks to 150 and back, so two RESETs: each of the 12 pose sets was asked for again 0.8 to
   1.2 ms after the RESET was applied, in the same frame, and at the grace's end, 1.99 s, none was freed. So the
   grace decides only what becomes of a set nothing asks for at once; why 2 s stays is in DHT70's row.
+
+### Round four (DHT74)
+
+Captured on 2026-10-24, 13:55 to 14:10 (session C), as round three: a private headless sway at 1920x1080, the pack's
+Sodium 0.8.13, the local verify branch `verify/dh-round3` with this branch merged in (`/micmedia turn 0|1` to switch
+the turn off for the controls; the stand-in's pitch and the far model's offset from the body in `MEDIAPHASE`), round
+two's world and flights, lossless recordings, the same `swap.py`. The machine's load was 50 to 82 (other sessions'
+jobs and a game being played), so frames came unevenly. The four flights twice with the turn (`y4_*`, `y4b_*`) and
+two with it off (`y4o_*`). Media as round three's, in `/home/greencheetah/mic-media/dh-round3-2026-10-23/`
+(`raw/frames/y4*`, `raw/phase.log`, `raw/client-sessionC.log`; `stills/after-turn_*`, `stills/turn-off_*`). A
+visual review (Opus) went through each take frame by frame against round three's `a3` and `a3b` takes, measuring
+the dragon's length from tail tip to eye (a side view shows its heading as length) and the tail tip's step.
+
+| Take | Turn | Yaw left at the release | Pitch left | IoU at the swap | Neighbours' median | The review |
+|---|---|---|---|---|---|---|
+| fly, 114 blocks (`y4_fly`) | on | 0.0 | 0.0 | 0.78 | 0.72 | clean (0.5% longer, the tail tip still) |
+| ring, 149 blocks (`y4_ring`) | on | 4.0 | 0.9 | 0.89 | 0.87 | 6.5% longer, about one neighbour's step |
+| fly, zoomed (`y4_flyz`) | on | 0.7 | 0.4 | 0.45 | 0.54 | heading matched; the whole dragon 25 pixels higher |
+| ring, zoomed (`y4_ringz`) | on | 1.2 | 0.2 | 0.81 | 0.80 | clean |
+| fly (`y4b_fly`) | on | 1.1 | 0.2 | 0.44 | 0.65 | clean; a 100 ms stall at the swap |
+| ring (`y4b_ring`) | on | 0.9 | 0.0 | 0.88 | 0.91 | clean |
+| fly, zoomed (`y4b_flyz`) | on | 1.1 | 0.7 | 0.82 | 0.80 | clean |
+| ring, zoomed (`y4b_ringz`) | on | (not recorded) | | | | the client stalled: the hold passed in one 74 ms frame |
+| fly (`y4o_fly`) | off | 32.2 | 1.0 | 0.62 | 0.78 | jumps: 24% longer in one step, the far wing gone, the tail tip 16 pixels back |
+| fly, zoomed (`y4o_flyz`) | off | 6.0 | 1.3 | 0.81 | 0.70 | jumps, less: 8.4% longer, the far wing narrower |
+
+Angles in degrees, the body's less the far model's at the release, as sizes. In round three the body was 1.8 to 4.7
+degrees past the stand-in at the release, and the swap made the dragon up to a quarter longer in one frame with the
+tail tip mostly 20 to 26 pixels back (`a3_fly` 25%, `a3_flyz` 7%, `a3_ringz` 8%, `a3b_fly` 7.5%; the ring 2%,
+already small). With the turn: 0.5 to 2.9% in five of the seven takes (5% in `y4b_fly` over the three frame times
+of its stall, in line with its neighbours), the tail tip 0 to 4 pixels (14 over two frame times in `y4b_flyz`, as
+its neighbours), no flip and no double image at any swap. `y4_ring` is the one take no better than round three
+(6.5% against 2%): a hold of few frames under the load, so its last held frame came before 0.8 of the hold, with
+4 degrees still to go. The turn-off controls show what the turn takes away: the
+heading snap (a 32 degree gap is a quarter longer in one step, a 6 degree one 8%), the tail tip jumping back, the
+far wing going or narrowing as the body shows itself broadside. Pitch gaps were 1.3 degrees or less in every take,
+and nothing visible came of them. A cosine-of-heading reading of the length fits `y4_flyz` to the pixel: the
+stand-in turned in its hold from -70.5 to -76.0 degrees and grew from 577 to 613 pixels (614 by the cosine).
+`stills/after-turn_y4_ringz_swap_pair.png` is a swap where the stand-in visibly turned to meet the body;
+`stills/turn-off-vs-on_swap_fly_114-blocks.png` sets `y4o_fly`'s swap above `y4_fly`'s (whose body had not turned
+in its hold, so its match owes little to the turn).
+
+- **Left: the body's own turn after the swap.** The server goes on turning a body that arrives flying, to about -100
+  to -106 degrees here, some 30 degrees off the feed's heading, after the hold as well as in it. What round three
+  saw as the dragon a fifth longer in one frame now plays out over the 4 to 11 frames after the swap (130 to 370
+  ms): the body turning, drawn by Ice and Fire, not the hand-over. It shows most in `y4_fly`, whose body had not
+  turned in the hold at all (127.5 pixels long at the swap, 147 eight frames on, 156 at sixteen).
+- **Left: the position.** `y4_flyz`'s rise at the swap is the far model's middle 0.67 blocks below the body's (its
+  `farOff` at the release), the only pop left in a turned take; DHT74's row says why the position is not blended.
+- **DH's TAA again.** `y4o_fly` leaves a faint red smear over the forest for 17 frames after the swap where the
+  stand-in and then the body had been, none before it: DH's TAA, as in round three (looked for in this take only).
+- **The stand-in stands still in the hold** on screen in `y4_fly`, `y4b_fly` and round three's `a3_fly`: the body
+  itself moved 0.1 blocks in its hold (`MEDIAHOLD at=`), so that is right, and not DHT74's.
 
 ### The black slabs in the sky (DHT73)
 
@@ -507,17 +570,65 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   (`detail = "OFF"` in `mic_rtsim_dh-client.toml`, so we draw nothing), and at 562 s
   with C2ME removed. Removing SimpleClouds and Project Atmosphere together could not be run: the client stopped at
   load (watut: `Invalid shaders/core/particle.json`).
-- **Storm fog clears it.** With SimpleClouds' storm fog off (`renderStormFog = false`) the copy ran 22 minutes of
-  storms without one black frame. The shapes did not all go: the same straight slanted bands and wedges came white
-  instead of black. Turning storm fog off hides the black, not the shapes.
+- **Storm fog off hid the black in one arm.** With SimpleClouds' storm fog off (`renderStormFog = false`) the copy
+  ran 22 minutes of storms without one black frame. The shapes did not all go: the same straight slanted bands and
+  wedges came white instead of black. Turning storm fog off hid the black there, not the shapes; the next arms
+  brought the black back, the forced-storm one (below) with nothing else changed.
+- **Project Atmosphere's clouds off as well: the shapes stay, black.** Ben chose storm fog off pack-wide (the
+  pack's d00ca03) and no report upstream; the white shapes would still show, so one more arm on the copy with
+  storm fog off and Project Atmosphere's own clouds off (`projectatmosphere-common.toml` `[display]`
+  `cloudMode = "VANILLA"`, beside `renderStormFog = false`): two flights, 34 minutes, about 10 of them clear and
+  then snowstorms, our far view OFF. No white bar or wedge (the white scan's hits were vanilla's cloud boxes,
+  which this mode brings back), but the black came back three times: the sky black for 4 s (93% of the sky
+  band); the lower view black for a moment, then the sky black for 21 s (96%); then a black slab with straight,
+  slanted edges across the lower view for 8 s (43% of the frame). SimpleClouds still drew its clouds and storms
+  (Project Atmosphere logs "Simple Clouds owns the base cloud layer" and "Cloud rendering disabled by config;
+  using disabled cloud service"), so this mode turns off only Project Atmosphere's own cloud service. So
+  `cloudMode = "VANILLA"` does not clear the shapes, and storm fog off did not keep them from coming black here:
+  the forced-storm arm below, with this mode back at `"FULL"`, came black too, so the 22 clean minutes above were
+  luck. A lead, then, since dropped: two of the three black spells came at or just after Project Atmosphere entered a new 2000-block forecast
+  region (its chat line "Entered region region[x,z]@2000. Forecast regenerated.", the 21 s one inside the
+  region's 40 s regeneration), and a white bar of the storm-fog-off arm was on screen with that line fresh in
+  the chat; but 10 of this arm's 12 entries brought nothing, and the DH-off arm's black (below) ended 40 s
+  before one; in the forced-storm arm neither black spell came on an entry.
+- **Forced storms, storm fog off: black twice.** The arms so far differed in weather as well as settings, so two
+  more, alike but for the mods: fresh DH databases, our far view OFF, the same route (the arm above's two flights,
+  a loop of about 17 minutes), DH at 4 threads (`numberOfThreads`, the copy only, as a game was being played on
+  the machine), noon held (`doDaylightCycle false`), the weather held (`doWeatherCycle false`), and the storm
+  logged: a datapack in the copy's save (`micart:stormlog`) says thunder, rain or clear at the player every 600
+  game ticks by the `minecraft:weather_check` predicate (which SimpleClouds answers from the cloud over the
+  player), and a script turns those lines into storm seconds a minute for each recording. SimpleClouds refuses
+  `/weather` under its server `cloudMode = "DEFAULT"`, so arm A's storm was a SimpleClouds thunderstorm spawned
+  over the route and held there (`/simpleclouds clouds spawn simpleclouds:cumulonimbus -650 -230 3000 1 0 3d 600 1
+  0 0 0`: 3000 blocks across, lasting 3 days, not moving). Arm A, storm fog off (`renderStormFog = false`) and
+  Project Atmosphere at its `cloudMode = "FULL"`: 34.0 minutes of thunder over two loops, and black twice. Long
+  slanted black slabs for 16 s in the first loop (up to 13% of the sky band, 20% of the frame), one rising from a
+  building with snow falling in front of it, gone from the same teleport point in the second loop; a black wedge
+  over half the view for 23 s in the second loop (51% of the sky band, 55% of the frame). Neither came where the
+  other did on the route, nor on a Project Atmosphere region entry (one sat between two, 14 s after and 4 s
+  before; one ended 16 s before an entry; ten other entries brought nothing). So storm fog off does not clear the
+  black; the pack's d00ca03 was reverted (8947c6a).
+- **Without SimpleClouds, Project Atmosphere and watut: still black.** Arm B, the same with those three jars out of
+  the copy's mods (watut, which stopped the load before, went with them) and vanilla weather held by `/weather
+  thunder 3d`. The copy's season is winter, and Serene Seasons turns vanilla thunder off then
+  (`config/sereneseasons/seasons.toml`: `min_thunder_time = -1`, `max_thunder_time = -1` for the three winter
+  sub-seasons), so the storm was vanilla snow at full: 35.9 minutes over two loops, no thunder or lightning. Black
+  once, for 10 s in the second loop: a long straight black slab across the view (24% of the frame) with snow
+  falling in front of it, then a black band with a straight lower edge across the top of the sky (78% of the sky
+  band). The same shapes as in Ben's client and arm A, if rarer (once in 36 minutes, against twice in 34 in arm A
+  and three times in 34 in the arm above). So what draws them is none of the three, and neither storm fog nor a
+  SimpleClouds storm; left in the copy that draw: DH (loaded; the DH-off arm below was black with DH loaded and
+  drawing nothing), Sable 2.0.5, Sodium 0.8.13 with Sodium Extra 0.9.4, Particle Core 0.3.3, and vanilla's own
+  weather. No Iris or Oculus.
 - **DH rendering off: still black.** With DH's renderer off (`rendererMode = "DISABLED"`, DH still loaded) and storm
   fog on, at noon, three huge black polygons with straight edges came 568 s into the flight and stayed 20 s, up to
   96% of the sky band. With DH loaded SimpleClouds always takes its DH pipeline, which draws its cloud mesh, storm
   fog and lightning after DH's frame; with DH drawing nothing only its high wisps (drawn after the sky) showed, so
   its storm fog was most likely not drawn either. `/pa tornado list` just after: no active tornadoes. So the black
   needs neither DH's LODs nor a tornado, and what draws the shapes is not DH, not SimpleClouds' cloud mesh and not
-  ours. Their colour (black here and with storm fog on, white with storm fog off and DH on) may be GL state left
-  bound by whatever drew before them, as in the DH bug below; a guess, not shown.
+  ours. Their colour (black here and with storm fog on, white in one arm with storm fog off and DH on, black again
+  in the next two) may be GL state left bound by whatever drew before them, as in the DH bug below; a guess, not
+  shown.
 - **Our world, storm fog on and off.** About 20 minutes with storm fog on (four standpoints 150 blocks from a
   tornado looking up and level, the storm's edge from 450 to 850 blocks, and the tornado from 450 blocks at four
   bearings) and a second session with it off: no black frame in either. With storm fog on the tornado is a grey
@@ -545,12 +656,14 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   costs a bound test when a mesh is baked and a finite test a model a frame.
 - **The keys**, in the instance's `config/` (the pack ships none of these files; the values are those of Ben's
   instance, which the copy took): `simpleclouds-client.toml` `[performance]` `renderStormFog = true` (false
-  clears the black; `stormFogLightningFlashes = true` beside it); `simpleclouds-server.toml` `cloudMode = "DEFAULT"`;
+  does not clear the black; `stormFogLightningFlashes = true` beside it); `simpleclouds-server.toml` `cloudMode = "DEFAULT"`;
   `projectatmosphere-common.toml` `[display]` `cloudMode = "FULL"`, `[storms]` `enableTornadoes = true`,
   `[storms.tornado]` `disableSimpleCloudsTornadoSSBO = false`; `DistantHorizons.toml`
   `[client.advanced.debugging]` `rendererMode = "DEFAULT"` (`"DISABLED"` for the DH-off arm) and
   `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`. The arms changed only the copy's
   instance; nothing in the pack or Ben's instances.
+- **Ben's call (2026-10-24):** storm fog off pack-wide (`renderStormFog = false`, the pack's d00ca03), and no
+  report upstream; reverted (8947c6a) when the forced-storm arm came black with it off.
 - Nothing here adds an entity, block or item to a world (D3): the guards check our own meshes, and the probe was a
   dev build's. Nothing was filed upstream.
 
