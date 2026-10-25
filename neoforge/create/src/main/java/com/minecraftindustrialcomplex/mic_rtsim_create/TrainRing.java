@@ -118,10 +118,20 @@ public final class TrainRing {
 
     // ---- GameTests ----------------------------------------------------------------------------
 
-    /** Switches the ring off (true) as if the mixin had not applied, or back to the probe (false). */
+    /**
+     * Switches the ring off (true) as if the mixin had not applied, or back to the probe (false). A change
+     * probes again at the next {@link #available}, and logs again when off.
+     */
     public static void fallbackForTest(boolean on) {
+        if (fallbackForTest == on)
+            return;
         fallbackForTest = on;
         available = null;
+    }
+
+    /** A train's ring without making one: null when it never had one or the mixin did not apply. */
+    public static AppliedOpRing peekForTest(Train train) {
+        return (Object) train instanceof AppliedOpsHolder h ? h.mic_rtsim$appliedOpsIfAny() : null;
     }
 
     /** How many times the fallback was logged: once per probe that failed. */
