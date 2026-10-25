@@ -7853,6 +7853,22 @@ counter and a no-cascade test.
 - **The command count.** `take_commands` returns more commands now. Tests that count them, or index into
   them, need the march records filtered out.
 
+### M10a build records (MZB-485 to MZB-499)
+
+What the implementation of the engine half (M10a) decided. The design's records are MZB-450 to MZB-484
+above; the replay gate's are RP-170 and up in docs/replay-gate.md.
+
+- **MZB-485** (the base; amends MZB-450): `feat/mowzie-m10` starts from `feat/mowzie-m8`'s merged head
+  (14c896ee: M8 with M7 and M9 at 7153b7fe, M6 and main at a11311aa's parents), not from M9 alone. M8 lands
+  before M10 and both change rtsim-conflict's engine and its persisted state, so M10 builds on the tree it
+  will merge into; MZB-450 asked for M9 plus M6, which M8's head carries. Step 1 then merged
+  `feat/mowzie-m9` at 42e8fcc3 (the M9 check's fixes: RP-133, RP-134, MZB-672 boxed hunts, MZB-673) and
+  `design/mowzie-m10`'s four design commits. MZB-672's pin: M8 adds no `Faction` field (MZB-690 to MZB-692), so
+  `FactionRow` is the M9 check's 216 (200 + 8 + 8), not the 232 M8's merge had pinned; tests/rail.rs asserts
+  216 and M8's RP-153 point 7 now says so. No `run-gametest/world` existed in any project of this worktree to
+  delete. The saved state is **RTC11 / META 10**, magic `RTCB` (M8's is `RTCA`; M10 lands after M8), no
+  migration.
+
 ## M11 Aloft
 
 (none yet)
