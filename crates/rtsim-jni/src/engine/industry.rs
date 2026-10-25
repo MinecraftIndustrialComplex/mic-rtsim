@@ -571,16 +571,23 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 /// command stays in the outbox and goes again once the module is on.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
+    let replaying = st.replaying;
     let l = &mut st.industry;
     if !l.enabled {
         l.stats.ignored += 1;
         return;
     }
+    // A record of this session ends the replay before it is dispatched (`replay_end_before`), so
+    // the engine's session start never runs while replaying.
     if this_session {
         l.begin_session();
     }
     let at = tick(wire::i64_at(rec.bytes, obs::GAME_TIME));
-    l.flush(Some(at));
+    // The deferred latest-wins records are this session's, stamped at its present, past every
+    // replayed record: they wait for the replay end with the rest of the held step (RP-274).
+    if !replaying {
+        l.flush(Some(at));
+    }
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
         command_result(l, op, rec.aux, at);
@@ -775,7 +782,23 @@ pub(super) fn threat(st: &mut State, t: &Threat) {
 
 /// "2. Simulate": every breakpoint and wake due by the hand-over's game time fires, and the
 /// engine's commands join the queue.
+///
+/// Held while the session's replay runs (docs/replay-gate.md §3.6, docs/choices-mowzie-build.md
+/// RP-274; this reverses the coordinator's decision of 2026-10-24, as the coordinator approved for
+/// slice R): no session start, no deferred latest-wins records, no threats and no run of the
+/// clock to the hand-over's time, which after a crash is Java's present, past every replayed
+/// record. Run on the first replayed hand-over, it took the later hand-overs' records as stale,
+/// at the present, and decided their rounds and calls again with other contents (RP-263). The
+/// replayed records still run the engine, at their own ticks, as the crashed session ran it
+/// between them. The threats, the deferred records and the commands the replayed records decided
+/// wait here, and the first step after the replay end runs them as the first replayed hand-over's
+/// simulate did: the session start at SESSION_START's game time, the deferred records, the
+/// threats, the clock to the hand-over's time, and the commands into the queue (Java answers a
+/// command it applied before the crash DUPLICATE by its op id, RP-272).
 pub(super) fn simulate(st: &mut State) {
+    if st.replaying {
+        return;
+    }
     let game_time = st.game_time;
     let l = &mut st.industry;
     l.begin_session();

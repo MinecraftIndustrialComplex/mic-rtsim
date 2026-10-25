@@ -401,8 +401,16 @@ fn a_round_from_a_record_stamped_after_the_last_hand_over_is_rederived_with_the_
 /// `at = max(8,000, 9,000) = 9,000`; replayed, no `advance_to(9,000)` ran, `now` is the last
 /// record's 5,100, and `at = 8,000`. The round is decided at another tick: another content (the
 /// iron the replay made until then) and another id. Fails on bc669502.
+///
+/// Still fails after step 2: both paths now derive at the record's own 8,000 (RP-270), but the
+/// live engine had run to 9,000 before it took the record, and the content (445 against 395) is
+/// part of a chunk reconcile's identity, so the ids differ. That is a loss, never a double: both
+/// carry the chunk's epoch, and Java's chunk epoch guard applies one reconcile per epoch
+/// (`a_stale_records_round_decided_again_meets_the_live_reconciles_epoch`, RP-272). Making the
+/// content the same needs Java to say a hand-over left journal records for the next one, so that
+/// the live engine does not run past them (RP-279).
 #[test]
-#[ignore = "slice R: a record stamped before the previous G is taken at G live, at its own tick replayed (RP-262)"]
+#[ignore = "slice R: a record stamped before the previous G is decided on another state replayed (RP-262); a loss by the chunk epoch, never a double (RP-272)"]
 fn a_round_from_a_record_stamped_before_the_last_hand_over_is_rederived_with_the_same_id() {
     let mut steps = base_steps();
     let mut quiet = Step::new(9_000);
@@ -424,10 +432,10 @@ fn a_round_from_a_record_stamped_before_the_last_hand_over_is_rederived_with_the
 /// makes nothing, and a raid before the pages (while it is away, no replay running) left its
 /// theft owed, so the reconcile's deltas are the owed ones whatever `at` is. Live and replayed
 /// decide the *same command* (the precondition below holds), and the only thing left to differ is
-/// the op id, which `derive` takes from `self.now`: live 9,000 (the hand-over before's G), replayed
-/// 5,100. Fails on bc669502.
+/// the op id, which `derive` took from `self.now`: live 9,000 (the hand-over before's G), replayed
+/// 5,100. Failed on bc669502 (live op 0x492cd7d0fd2f3291, replayed 0x49be17700102776d). Both now
+/// derive with the record's own tick, 8,000 (RP-270): the same op.
 #[test]
-#[ignore = "slice R: the same command gets another op id when `now` differs (RP-262)"]
 fn a_stale_record_gives_the_same_command_another_op_id_in_the_replay() {
     let mut steps = Vec::new();
     let mut away = Step::new(5_000);
@@ -473,6 +481,54 @@ fn a_stale_record_gives_the_same_command_another_op_id_in_the_replay() {
         );
     }
     assert_same(&o, 1, "owed theft loaded at 8,000 after G = 9,000");
+}
+
+/// The stale record of the 445 against 395 case above, decided again on another state: the two
+/// reconciles differ, but each names the same chunk and the same epoch (the chunk's applied epoch,
+/// which only Java's journaled results move), so Java's chunk epoch guard applies the live one and
+/// refuses the replay's. The content difference is lost, never applied twice (RP-272).
+#[test]
+fn a_stale_records_round_decided_again_meets_the_live_reconciles_epoch() {
+    let mut steps = base_steps();
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    steps.push(quiet);
+    let mut load = Step::new(9_500);
+    load.journaled = vec![
+        chunk_loaded(8_000, 0),
+        chunk_loaded(8_000, 1),
+        load_state(8_000, LoadState::Live, 2),
+    ];
+    steps.push(load);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    let (live, replayed) = (reconciles(&o.live), reconciles(&o.replayed));
+    assert!(
+        live.iter().any(|r| !r.deltas.is_empty()),
+        "the round ran live: {live:?}"
+    );
+    for l in &live {
+        let twin = replayed.iter().find(|r| r.chunk == l.chunk);
+        assert!(
+            twin.is_some_and(|r| r.epoch == l.epoch),
+            "the live reconcile of {:?} at epoch {} (op {:#x}) has a replayed twin at the same \
+             epoch: {:?}",
+            l.chunk,
+            l.epoch,
+            l.op.0,
+            replayed
+                .iter()
+                .map(|r| (r.chunk, r.epoch, r.op.0))
+                .collect::<Vec<_>>()
+        );
+    }
+    // Nothing but chunk reconciles: no command guarded by its op alone carries the difference.
+    assert!(
+        o.replayed
+            .iter()
+            .all(|c| matches!(c, Cmd::ChunkReconcile(_))),
+        "{:?}",
+        o.replayed
+    );
 }
 
 /// The same stale record with no hand-over between it and the pages: the restored engine's `now`
@@ -633,4 +689,60 @@ fn a_raid_delivered_at_the_hand_overs_time_is_rederived_with_the_same_id() {
     steps.push(raid);
     let o = run(mill(1_000, 0.0), &steps, 0, 20_000, true);
     assert_same(&o, 1, "a raid at G = 3,000");
+}
+
+// ---- the recent-id window (RP-275) -----------------------------------------------------------
+
+/// Two identical commands of one tick take ordinals 0 and 1 (`IndustryOps::derive`). The first is
+/// decided before the pages are saved, the second after; the crash loses the second, and the
+/// replay decides it again. The window of recent ids is part of the engine's globals page
+/// (`e.ops.put(w)` beside `e.out`), so the restored window holds the first, and the replay's
+/// second takes ordinal 1 again: the op Java applied, answered DUPLICATE. A window that restarted
+/// empty (step 1's RP-267 said so; it was wrong) would give it ordinal 0, the first command's op,
+/// which Java has long forgotten (its applied ops are trimmed at the acknowledgement): applied
+/// twice.
+#[test]
+fn a_collision_before_a_save_gives_the_same_ordinal_after_a_crash() {
+    use rtsim_industry::cmd::{DepositDelta, IndustryOps};
+    use rtsim_industry::obs::DepositPluginId;
+    use rtsim_industry::persist::Persist;
+    use rtsim_kernel::codec::{Reader, Writer};
+    use rtsim_kernel::journal::OpId;
+
+    let oil = |delta| {
+        Cmd::DepositDelta(DepositDelta {
+            op: OpId(0),
+            plugin: DepositPluginId::DieselOil,
+            chunk: ChunkPos { dim: 0, x: 7, z: 0 },
+            good: IRON,
+            delta,
+        })
+    };
+    let at = Tick(4_000);
+    let mut live = IndustryOps::default();
+    let first = live.derive(SEED, at, &oil(-5));
+    // Other decisions between, as a busy engine makes them.
+    for n in 0..40 {
+        live.derive(SEED, Tick(4_000 + n), &oil(n as i64 + 1));
+    }
+    // The save: the window as the engine's globals page carries it.
+    let mut w = Writer::new();
+    live.put(&mut w);
+    let page = w.into_bytes();
+    let second = live.derive(SEED, at, &oil(-5));
+    assert_ne!(second, first, "the collision takes another ordinal");
+    // The crash and the replay: the window from the page, the second decided again.
+    let mut r = Reader::new(&page);
+    let mut replay: IndustryOps = Persist::get(&mut r).expect("the window decodes");
+    assert_eq!(replay, {
+        let mut r = Reader::new(&page);
+        Persist::get(&mut r).expect("again")
+    });
+    assert_eq!(
+        replay.derive(SEED, at, &oil(-5)),
+        second,
+        "the same ordinal after the crash"
+    );
+    // The control: an empty window gives the first one's op.
+    assert_eq!(IndustryOps::default().derive(SEED, at, &oil(-5)), first);
 }
