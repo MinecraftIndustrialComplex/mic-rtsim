@@ -1000,9 +1000,12 @@ No migration code (no backward compatibility before release; G2-85). On load:
   shared networks and join pairs join the file as slices S2, S4, S5 and S6 bring them. It reads only
   what the engine and the index already hold.
 - Both read the district's live report (`Report::to_f64s`, `GlassReport.decode`), which is built
-  on request: no tick pays for it. The report's sections and shared stores follow its units in the
-  flat array, each with its stride constant (SC165, SC166). A district with one unit or none has no
-  units in the report; its sections then take the district's own window, verdict and replay.
+  on request: no tick pays for it. The one part kept ahead is a counted store's residue per good:
+  each sweep that counts it notes it (`note_residue`), comparing in place and allocating only
+  when a store's baseline or residue changed. The report's sections and shared stores follow its
+  units in the flat array, each with its stride constant (SC165, SC166). A district with one unit
+  or none has no units in the report; its sections then take the district's own window, verdict
+  and replay.
 
 ### 8.2 rtsim-cli
 
@@ -1144,7 +1147,7 @@ repeated on the laptop copy after each slice. That check stays local; nothing fr
 | **S4** | Package stores (Q4): `IndustryData` format 3 with the drop and the engine reset (§6), the store record and identity, `CHAIN_OUT` and `CHAIN_IN` at the frogports of package stores, no `CHAIN` edges on them, pools per destination with routing, room and the census, and the both-away replay on the first cluster that couples districts (a pool shared between them); then the frontier (Q5): routes kept, the hold, `CHAIN_HELD`, drawn keys and their removal | `aChainInsideOneDistrictStaysEdges`, `aChainBetweenTwoFactoriesLeavesThemTwo`, `twoFrogportsOfOneDistrictOnASharedChain`, `aPlayerTakesAPackageOffTheChain`, then `aRouteToAnAwayFrogportIsKept`, `aHeldPackageDrawnIsRemovedOnce`, the store's engine tests | S1. Useful before S6: chains between districts that are apart today are counted nowhere since DS-10 |
 | **S5** | Shared kinetic networks (Q2), in two parts: S5-1 every domain's sources and speed rows within a district (SC144 to SC148), then S5-2 a part per compile, the network registry, the network's state in each part's solve, readers settled at each change (SC151 to SC154) | the extended `aNetworkRecountKeepsAnUnloadedSource` first (S5-1), then `aBoilerOnAChainDrivesTheNextDistrict` (away part), the shared network's engine tests | S1, S2 (the domain check), S4 (the clusters) |
 | **S6** | Level 1: joins J1 to J6, no bare adjacency, saved join pairs, the station rule with `TrainWatch.ports` resolving any district, `IndustryData` format 4 through S4's reset; the stale comment in `CreatePlugin` on chain conveyors | §9.1's join and station rows, and the existing detection tests | S1, S4, S5: no district is split before its packages and its network have somewhere to go |
-| **S7** | Reach: `sections` command, info line, `rtsim-cli stores`, viewer layers and cards (built, §8) | `GlassReportTest`, the report's engine tests, `theSectionsCommandPrintsOneLinePerSection`, rtsim-view card, layer and fixture tests | S2; S4 and S5 for stores and networks |
+| **S7** | Reach: `sections` command, info line, `rtsim-cli stores`, viewer layers and cards (built, §8) | `GlassReportTest`, the report's engine tests, `sec1fx_vault_mixers` (the command against its report), `theSectionsCommandSaysSoWithoutAReport`, rtsim-view card, layer and fixture tests | S2; S4 and S5 for stores and networks |
 
 New mixins go in PATCHES.md (P7) with contract tests.
 
@@ -1478,7 +1481,7 @@ The options below stay as the record of what was offered.
 | SC179 | A package store's chain links are the pairs of frogports with a known hop count (Java's `UNKNOWN_HOPS`, 0xFFFF, is none) and no third frogport between them (`hops(i, k) + hops(k, j) == hops(i, j)`), about `n - 1` for a chain; the stores layer draws only those | `hops_between` answers for every pair in range, so the old rule drew all `n (n - 1) / 2` pairs |
 | SC180 | A section shows REPLAYING when its unit is among the running replay's `units_on()`, not when the compile's gate would let it replay now; the unit branch of `section_reports` is explicit (no unit shows the district's own window) | the report says what runs, and a gate that moved since the replay began must not relabel it |
 | SC181 | The viewer reads at most 4,096 glass pages and 4,096 store pages (`Limits.glass_pages`, `Limits.store_pages`), takes each glass page under `catch_unwind`, and names the pages it left out (`glass_unread`, `stores_unread`) in the empty layer's reason instead of failing the whole industry view | one bad page took the stations, lines, trains and glass down with it, and the paged readers are capped | 
-| SC182 | `rtsim-cli stores` lists the held and drawn packages at positions the store no longer lists (`dropped`), prints `left` and `owed` as one line each per position, names an unreadable store page (at most 32 named, the rest counted) and carries on, and exits 0 with a message for a world with no industry pages | `redeclare` keeps `on_hold` and `drawn` at dropped positions; the JSON had `left` and `owed` and the text did not; one bad page hid the listing |
+| SC182 | `rtsim-cli stores` lists the held and drawn packages at positions the store no longer lists (`dropped`), prints `left` and `owed` as one line each per position, names an unreadable store page (the viewer's first 8 named, the rest counted, and the pages past its limit) and carries on, reading the pages once with the viewer (a page that panics its decoder is named too), exits 0 with a message for a world with no industry pages and 1 for one whose industry pages do not read | `redeclare` keeps `on_hold` and `drawn` at dropped positions; the JSON had `left` and `owed` and the text did not; one bad page hid the listing |
 | SC183 | `/rtsim district sections` prints no "same unit as sN" lines, and with no units prints the district's worst good once under the header | the line repeated the unit's first and the same good on every section |
 
 ---
@@ -1614,9 +1617,12 @@ The options below stay as the record of what was offered.
   - The reach layers draw at most 64 sections a district, 16 links a store (the first 16 of its
     chain, in frogport order) and 16 edges a network (its first 16 other parts); a bigger one is
     drawn partly, and its card still lists all (SC178). A store whose hop table is a tree with an
-    undeclared hub links its leaves pairwise; the cap bounds that.
-  - A store page or a glass page past the 4,096 the viewer reads is not read (SC181); `rtsim-cli
-    stores` names 32 bad pages and counts the rest (SC182).
+    undeclared hub links its leaves pairwise; the cap bounds that. Java's hops are the shortest
+    walk, so a ring of frogports whose longest gap is at least the way round through the others
+    loses the link across that gap and draws as a chain; frogports 0 hops apart (on one conveyor) draw as one stop,
+    each linked to the lowest of them.
+  - A store page or a glass page past the 4,096 the viewer reads is not read (SC181); the viewer
+    and `rtsim-cli stores` name the first 8 bad pages and count the rest (SC182).
   - The create GameTest fixture's glass pages are in an older page format (the format drops them),
     so its sections and networks are empty; its six package stores have frogports in no district. A
     fresh GameTest run would give the layers something to draw.

@@ -6525,7 +6525,8 @@ mod replay_path {
         }
 
         /// The report's sections follow the running replay: the unit that replays shows replaying,
-        /// the one gated off keeps its failed verdict, and a unit the fallback froze shows frozen.
+        /// the one gated off keeps its failed verdict, and one that passes later is not replaying
+        /// until the replay starts again.
         #[test]
         fn the_report_names_the_units_a_running_replay_runs() {
             use crate::glass::report::section_state as ss;

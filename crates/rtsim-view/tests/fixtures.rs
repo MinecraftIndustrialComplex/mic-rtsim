@@ -172,7 +172,7 @@ fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
             assert!(view.reasons().contains_key(l), "{l} says why it is empty");
         }
     }
-    let unread = view.saved().industry.as_ref().unwrap().glass_unread.len();
+    let unread = view.saved().industry.as_ref().unwrap().glass_unread.pages();
     if unread > 0 {
         let why = &view.reasons()["industry.sections"];
         assert!(
@@ -180,24 +180,58 @@ fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
             "{why}"
         );
     }
-    // The layer draws a chain, not every pair of a store's frogports.
+    // The layer draws a chain, not every pair of a store's frogports, and every frogport of a
+    // store whose hops Java measured is on it.
     for st in &view.saved().industry.as_ref().unwrap().stores {
         let n = st.frogports.len();
-        let links = rtsim_layers::industry::store_mark(st).links.len();
-        eprintln!("store {}: {n} frogports, {links} links", st.id.0);
+        let links = rtsim_layers::industry::store_mark(st).links;
+        eprintln!("store {}: {n} frogports, links {links:?}", st.id.0);
         assert!(
-            links <= n.saturating_sub(1),
-            "store {}: {links} links of {n}",
+            links.len() <= n.saturating_sub(1),
+            "store {}: {links:?} for {n}",
             st.id.0
         );
+        if !st.hops.contains(&rtsim_layers::industry::UNKNOWN_HOPS) {
+            let mut on = vec![false; n];
+            on[0] = true;
+            for _ in 0..n {
+                for &(i, j) in &links {
+                    let (i, j) = (usize::from(i), usize::from(j));
+                    let joined = on[i] || on[j];
+                    on[i] = joined;
+                    on[j] = joined;
+                }
+            }
+            assert!(
+                on.iter().all(|&x| x),
+                "store {}: links {links:?} leave a frogport off the chain (hops {:?})",
+                st.id.0,
+                st.hops
+            );
+        }
     }
-    let id = view.saved().industry.as_ref().unwrap().stores[0].id.0;
+    let (id, edge) = {
+        let saved = view.saved();
+        let first = &saved.industry.as_ref().unwrap().stores[0];
+        (
+            first.id.0,
+            rtsim_layers::industry::store_mark(first).links[0],
+        )
+    };
     let view = Arc::new(view);
     let app = mic_viewer::viewer::App::new(Arc::clone(&view));
     let card: mic_viewer::api::Card =
         get_json(&app, &format!("/api/thing/industry.stores/{id}"), "");
     assert_eq!(card.layer, "industry.stores");
     assert!(card.sections.iter().any(|s| s.title == "Frogports"));
+    // A drawn edge's id ("store:i-j") opens its store's card.
+    let by_edge: mic_viewer::api::Card = get_json(
+        &app,
+        &format!("/api/thing/industry.stores/{id}:{}-{}", edge.0, edge.1),
+        "",
+    );
+    assert_eq!(by_edge.layer, "industry.stores");
+    assert_eq!(by_edge.title, card.title, "the edge's card is its store's");
     let (status, _) = get(&app, "/api/thing/industry.stores/999999", "");
     assert_eq!(status, 404, "a store the save lacks has no card");
     let layers: mic_viewer::api::Layers = get_json(&app, "/api/layers", "");

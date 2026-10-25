@@ -35,10 +35,11 @@ pub use industry::{DistrictMark, IndustrySource, NetMark, SectionMark, StoreMark
 /// Java's dictionary kind for names (rtsim-jni's `DICT_NAME`).
 pub const DICT_NAME: u32 = 0x11;
 
-/// The most sections a district draws (the glass box's `sections_max`, 64 by default; choice SC178).
+/// The most sections a district draws (the glass box's `sections_max`, 64 by default; choice
+/// SC178).
 pub const SECTION_ROWS: u64 = 64;
-/// The most chain links a package store draws (choice SC178): a chain of `n` frogports links `n - 1`,
-/// and a store with more is drawn by its first links.
+/// The most chain links a package store draws (choice SC178): a chain of `n` frogports links
+/// `n - 1`, and a store with more is drawn by its first links.
 pub const STORE_LINKS: u64 = 16;
 /// The most edges a shared network draws (choice SC178): the glass box couples at most
 /// `cluster_districts_max` (16) parts, one edge from the first to each of the others.

@@ -2673,11 +2673,13 @@ impl Compiled {
     }
 
     /// Each section as the report shows it (SECTIONS.md §8.1, choice SC165): its state is its
-    /// unit's, and with one unit or none the district's own window and replay.
+    /// unit's, and with one unit or none the district's own window and replay. A replay of another
+    /// compile or other units (stopping at its next step) replays none of this compile's sections.
     pub fn section_reports(&self, dg: &DistrictGlass) -> Vec<report::SectionReport> {
-        let glass_replay = dg.replay.is_some() && dg.replay_model == report::replay_model::GLASS;
-        let frozen = dg.replay.as_ref().map(|r| r.frozen());
-        let on = dg.replay.as_ref().map(|r| r.units_on()).unwrap_or_default();
+        let replay = dg.replay.as_ref().filter(|r| r.same_layout(self));
+        let glass_replay = replay.is_some() && dg.replay_model == report::replay_model::GLASS;
+        let frozen = replay.map(|r| r.frozen());
+        let on = replay.map(|r| r.units_on()).unwrap_or_default();
         let active = self.units.active();
         self.sections
             .list
@@ -2724,8 +2726,11 @@ impl Compiled {
                             .unwrap_or(false),
                         glass_replay && on.get(u as usize).copied().unwrap_or(false),
                     ),
+                    // A section no unit holds while two units judge (none: every section is in a
+                    // group): unit 0 is not its unit, so nothing says it may replay.
+                    None if active => (false, false, false),
                     None => (
-                        self.unit_may_replay(0),
+                        self.eligible(),
                         frozen.and_then(|f| f.first()).copied().unwrap_or(false),
                         glass_replay,
                     ),
