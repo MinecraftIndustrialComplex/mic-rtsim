@@ -2751,18 +2751,7 @@ mod ack_never_resends {
     fn switch_off_on(
         r: &mut Rig,
         what: &str,
-        pick: impl FnMut(&Java, &(u64, u64, u32)) -> bool,
-    ) -> (u64, u64, Tick) {
-        switch_off_with(r, what, pick, |_, _| {})
-    }
-
-    /// [`switch_off_on`], with `also` journaling more of that tick after the switch (given the
-    /// op), as Java journals a write's `CHAIN_IN` with its answer.
-    fn switch_off_with(
-        r: &mut Rig,
-        what: &str,
         mut pick: impl FnMut(&Java, &(u64, u64, u32)) -> bool,
-        mut also: impl FnMut(&mut Java, u64),
     ) -> (u64, u64, Tick) {
         let mut hit: Option<(u64, u64, Tick)> = None;
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -2774,7 +2763,6 @@ mod ack_never_resends {
                     if let Some(&(op, seq, _)) = answers.iter().find(|a| pick(j, a)) {
                         j.modules(0);
                         j.mc_mut().fail_carriage_deltas = false;
-                        also(j, op);
                         hit = Some((op, seq, Tick(j.game_time as u64)));
                     }
                 },
@@ -3267,14 +3255,14 @@ mod ack_never_resends {
 
     /// RP-285 (P1-1), a chain write's `CHAIN_IN` heard while off, across a crash while still off. A
     /// test's order (W17) writes two packages of ingots into a frogport of a package store Java
-    /// declared (StoreId 7, one frogport in no district). Java applies the write, journals its
-    /// APPLIED and the `CHAIN_IN` carrying the write's op (the rig journals the answer first; both
-    /// are answers, kept or not by kind), and industry goes off in that tick. Off, the engine
-    /// keeps the `CHAIN_IN`; after a crash while off, the frogport's chunk journals it again
-    /// (REASSERT), and the switch takes it once: the store counts two packages written, whatever
-    /// the copy. At 9bbf1569 the `CHAIN_IN` was ignored off, so nothing lowered what the store owed
-    /// or its pools, and an engine write past ten periods went again under a new op (SC113): the
-    /// engine-level case in `chain_replay.rs` shows that write; this one shows the record booked.
+    /// declared (StoreId 7, one frogport in no district). Java applies the write and journals the
+    /// `CHAIN_IN` carrying the write's op, then its APPLIED, and industry goes off in that tick.
+    /// Off, the engine keeps the `CHAIN_IN`; after a crash while off, the frogport's chunk
+    /// journals it again (REASSERT), and the switch takes it once: the store counts two packages
+    /// written, whatever the copy. At 9bbf1569 the `CHAIN_IN` was ignored off, so nothing lowered
+    /// what the store owed or its pools, and an engine write past ten periods went again under a
+    /// new op (SC113): the engine-level case in `chain_replay.rs` shows that write; this one shows
+    /// the record booked.
     #[test]
     fn a_chain_write_answered_with_industry_off_is_taken_once_across_a_crash_while_off() {
         use rtsim_industry::cmd::{IndustryOps, WriteChain};
@@ -3333,34 +3321,35 @@ mod ack_never_resends {
             }])
             .unwrap();
         let x = op.0;
-        let mut chain_in: Option<Vec<u8>> = None;
-        let (_, s, at) = switch_off_with(
-            &mut r,
-            "the chain write's answer",
-            |_, &(o, _, st)| o == x && st == APPLIED,
-            |j, _| {
-                let seq = j.next_obs;
-                j.industry_obs(&Timed {
-                    at: Tick(j.game_time as u64),
-                    obs: Obs::ChainPackage(ChainPackage {
-                        store,
-                        district: None,
-                        inventory: None,
-                        direction: ChainDirection::In,
-                        frogport: 0,
-                        pos,
-                        destination: Some(0),
-                        packages: 2,
-                        address: 0,
-                        op: Some(op),
-                        key: None,
-                        goods: GoodVec::from_pairs([(INGOT, 128)]),
-                    }),
-                });
-                chain_in = Some(j.journaled(seq).expect("the CHAIN_IN journaled"));
-            },
-        );
-        let bytes = chain_in.expect("the CHAIN_IN");
+        r.run("the write delivered", day(4.0), |r| sent(&r.j, x).is_some());
+        // Java applies it at the next tick, journaling the `CHAIN_IN` ahead of its APPLIED.
+        let t = r.j.mc().t + 1;
+        r.j.mc_mut().outgoing.push(Outgoing::Obs(Timed {
+            at: t,
+            obs: Obs::ChainPackage(ChainPackage {
+                store,
+                district: None,
+                inventory: None,
+                direction: ChainDirection::In,
+                frogport: 0,
+                pos,
+                destination: Some(0),
+                packages: 2,
+                address: 0,
+                op: Some(op),
+                key: None,
+                goods: GoodVec::from_pairs([(INGOT, 128)]),
+            }),
+        }));
+        let (_, s, at) = switch_off_on(&mut r, "the chain write's answer", |_, &(o, _, st)| {
+            o == x && st == APPLIED
+        });
+        assert_eq!(at, t);
+        let bytes = (1..s)
+            .rev()
+            .filter_map(|q| r.j.journaled(q))
+            .find(|b| wire::u16_at(b, wire::R_KIND) == iw::IND_CHAIN_PACKAGE)
+            .expect("the CHAIN_IN, journaled ahead of the APPLIED");
         let written = |r: &Rig| {
             industry(&r.j.e, |ie| {
                 ie.stores().get(&store).map_or(0, |st| st.counts.written)
@@ -3373,6 +3362,10 @@ mod ack_never_resends {
         );
         assert!(clock(&r) <= at);
         crash_while_off_after_the_ack(&mut r, x, s);
+        assert!(
+            industry(&r.j.e, |ie| ie.stores().contains_key(&store)),
+            "the restart reads the store's page back"
+        );
         assert_eq!(written(&r), 0, "the pages hold it kept, not taken");
         let nonce = r.c.sessions[0].nonce;
         r.j.reassert(nonce, &bytes);
