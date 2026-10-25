@@ -395,7 +395,7 @@ public final class IndustryGameTests {
 
     // ---- trains ---------------------------------------------------------------------------------
 
-    private static Train syntheticTrain(GameTestHelper helper, BlockPos vaultPos, int iron) {
+    static Train syntheticTrain(GameTestHelper helper, BlockPos vaultPos, int iron) {
         ServerLevel level = helper.getLevel();
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         IItemHandler vh = level.getCapability(Capabilities.ItemHandler.BLOCK, vaultPos, null);
@@ -419,7 +419,7 @@ public final class IndustryGameTests {
         return st;
     }
 
-    private static long carriageCount(Train train, net.minecraft.world.item.Item item) {
+    static long carriageCount(Train train, net.minecraft.world.item.Item item) {
         IItemHandler h = train.carriages.get(0).storage.getAllItems();
         long n = 0;
         for (int s = 0; s < h.getSlots(); s++)
