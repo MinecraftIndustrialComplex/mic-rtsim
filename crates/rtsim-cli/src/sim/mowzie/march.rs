@@ -795,6 +795,9 @@ fn abstract_dead(out: &mut Vec<Check>) {
         );
         if crash {
             r.c.replay_done();
+            // The host tells the session's present right after the replay end (MZB-748).
+            let present = r.c.now();
+            r.c.replay_present(present);
         }
         let x = &r.c.parties[band];
         let once = x.alive() == left - 1 && x.recalled.is_empty();

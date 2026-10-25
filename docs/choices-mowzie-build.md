@@ -8565,6 +8565,24 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
   unit kept with only the rows moved); no GameTest changes (`anEmptyFightWaveIsEchoedAndTheNextWaveComes` places a
   second wave and asserts counts and states, not places).
 
+- **MZB-748** (the synthetic restarts tell the present; P3-5 of the Opus review of M10b): the host calls
+  `replay_present` right after `replay_done` (rtsim-jni's `replay_end`, MZB-707); the two synthetic restarts that end
+  a replay called `replay_done` alone, so the lost window (`lost_until`) stayed `Tick::ZERO` in them and a sim
+  could not see what the host's engine sees. `synth::CampRun::restart` and the CLI march sim's crash branch
+  (`sim/mowzie/march.rs`) now call `replay_present(now)` with the engine's own `now()` taken after the replay end:
+  with nothing to replay the hand-over's game time is the restart's own tick. `restart_to_replay` is left as it is
+  (the caller closes the replay and tells the present itself, as the engine tests do). Checked: `cargo test
+  --workspace --no-fail-fast` passes everywhere but three targets, `rtsim-host --test host`
+  (`gametest_worlds_open_in_the_host_with_their_saved_state`) and `rtsim-view --test fixtures` and `--test hashes`
+  (four tests), all on the committed GameTest saves under `crates/rtsim-view/tests/data`: "conflict: pages dropped",
+  "meta page version 7, this build reads 10". They are saves of an older format (the cause is the fixtures, not this
+  change, which touches no format or reader); regenerating them takes a GameTest run (M10a's page format moved META to 10), which this build does not do.
+  `cargo clippy -p rtsim-conflict -p rtsim-cli --all-targets -- -D warnings` is clean. `sim conflict` and `sim mowzie`
+  (all 13 runs, seed 7) regenerated to a scratch file and compared with `scenario/results/sim-conflict.json` and
+  `sim-mowzie.json`, `wall_ms` filtered out: **no difference**, so neither file is regenerated (an arrival after the
+  restart is after `now`, the present, and books nothing). Both runs exit 0 with every check ok. rustfmt was run
+  on the two files, both clean at HEAD.
+
 ## M11 Aloft
 
 (none yet)
