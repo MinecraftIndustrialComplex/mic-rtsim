@@ -1168,8 +1168,9 @@ impl Conflict {
         Pos::new(frame, x, z)
     }
 
-    /// A party's position on its route at `t`, in the route's chart.
-    fn party_chart_pos(&self, p: Handle<Party>, t: Tick) -> (i32, i32) {
+    /// A party's position on its route at `t`, in the route's chart (the cell the march record's
+    /// `chart_pos` gives at `t`, MZB-454).
+    pub fn party_chart_pos(&self, p: Handle<Party>, t: Tick) -> (i32, i32) {
         let x = &self.parties[p];
         match x.phase {
             Phase::Mustering => x.route[0],

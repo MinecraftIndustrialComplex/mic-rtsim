@@ -12,6 +12,8 @@
 //!   codec; a scripted player answers envoys (ignore, pay, refuse, attack) and fights bands that
 //!   materialize near it (a share killed per wave, the war chief or not).
 
+pub mod march;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
@@ -2004,6 +2006,13 @@ impl CampRun {
             .min()
             .unwrap_or(to)
             .clamp(t + 1, to);
+            // The march audit looks every `march::STEP` ticks (run 13).
+            let next = if march::active() {
+                next.min(t + march::STEP)
+            } else {
+                next
+            };
+            march::begin(&self.c);
             for (at, o) in self.plugin.due(next) {
                 self.c.ingest(&mut self.w, &mut *self.infra, &o, at);
             }
@@ -2014,6 +2023,7 @@ impl CampRun {
                 self.next_obs = next + 1_200;
             }
             self.flush(next);
+            march::end(&self.c, t, next);
             if self.audits {
                 self.track();
             }
@@ -2024,6 +2034,7 @@ impl CampRun {
     /// What the engine decided, to the plugin.
     pub fn flush(&mut self, at: Tick) {
         let cmds = self.c.take_commands();
+        march::took(&self.c, &cmds);
         self.cmds.extend(cmds.iter().cloned().map(|c| (at, c)));
         self.plugin.apply(cmds, at);
     }
@@ -2071,7 +2082,9 @@ impl CampRun {
     pub fn decide(&mut self, to: Tick) -> Vec<Cmd> {
         self.c
             .run_until(&mut self.w, &mut rtsim_ecology::infra::NoInfrastructure, to);
-        self.c.take_commands()
+        let cmds = self.c.take_commands();
+        march::took(&self.c, &cmds);
+        cmds
     }
 
     /// The camp comes in and the census reaches the engine, whose commands are held back (as
@@ -2128,7 +2141,8 @@ impl CampRun {
             camp.epoch = 0;
         }
         // The host's session start: the engine came back from its pages, and its replay begins
-        // (docs/replay-gate.md §5.1, RP-2, RP-31).
+        // (docs/replay-gate.md §5.1, RP-2, RP-31). Java's map of marches starts empty.
+        march::session();
         self.c.begin_replay(true);
         self.flush(at);
         if self.plugin.holders_again {
