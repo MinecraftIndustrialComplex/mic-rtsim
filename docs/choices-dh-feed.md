@@ -643,15 +643,60 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   of the four stretches from the top edge of the screen to well below its middle: the slab. Its colour word's
   alpha (63) is the pixel's. Flywheel's own state calls those slots live: the cull dispatch before the draw reads
   their 32-slot page as the rail model's, with their validity bits set. So Flywheel draws instances whose data
-  never reached its instance buffer; why (an upload ordering or resize fault) is not shown, nor why storms bring
-  it on more often. Two other rail draws in the frame carry three and four garbage instances, off screen in that
-  frame. A slab's colour is the garbage's own colour and light, which would explain black in most arms and white
-  in one; not shown. The white planes in the same frame are SimpleClouds' cloud cubes at the camera's height (its
-  instanced cube mesh, drawn into its clouds target and composited over the scene), not this. Sable 2.0.5 logs
-  that it overrides Flywheel's shaders and light storage; the draw's shaders carry no Sable code, and Sable's Java
-  side was not read. A way round, not tested and Ben's to choose: Flywheel's instancing backend
-  (`flywheel-client.toml` `backend = "flywheel:instancing"`, or `/flywheel backend instancing` in game), which
-  keeps each instancer's instances in a buffer of its own, not the paged store where the garbage sat.
+  never reached its instance buffer (why: see "A likely cause" below). Two other rail draws in the frame carry
+  three and four garbage instances, off screen in that frame. A slab's colour is the garbage's own colour and
+  light, which would explain black in most arms and white in one; not shown. The white planes in the same frame
+  are SimpleClouds' cloud cubes at the camera's height (its instanced cube mesh, drawn into its clouds target and
+  composited over the scene), not this. The replay's last frame matches the live frame the watcher saw, so the
+  capture shows what was drawn.
+- **Sable leaves Flywheel's instance store alone (read, decompiled).** Sable 2.0.5 logs that it overrides
+  Flywheel's shaders and light storage, and the draw's shaders carry no Sable code. Its Java side does not write,
+  resize or reuse Flywheel's instance buffers, the 32-slot pages or their validity bits. It replaces the light
+  storage (both backends), widens the indirect backend's matrix buffer stride from 112 to 192 bytes, shares the
+  staging buffer, and overrides the indirect vertex and matrix shaders, but not the cull, scatter or apply shaders
+  that read the pages. So the instancing backend, which has no pages, reaches past anything Sable does there.
+- **A likely cause (read in Flywheel 1.0.6, decompiled; not tested).** `IndirectInstancer` marks a page mergeable
+  when it holds 16 instances or fewer and never unmarks it when the page fills again. A merge
+  (`InstancePage.takeFrom`) moves the other page's instances from slot 0 up until this page is full, then drops
+  the other page's pending upload whole. The instances left in the other page's upper slots stay valid, but their
+  data never reaches the buffer. The captured page fits: slots 21 to 31 valid, 0 to 20 empty, and the draw's four
+  garbage instances among those eleven. Pages merge after instances are removed, which would explain why churn
+  (visuals unloading and loading) brings it on (below). The instancing backend keeps each instancer's instances
+  in a buffer of its own, with no pages and no merge.
+- **Clear weather, train churn: black on indirect, never on instancing.** The full copy at noon in clear weather,
+  our far view OFF, a spectator camera about 30 blocks over the train yard (about 25 parked trains and the yard's
+  track). Clear weather was held by SimpleClouds' server `cloudMode = "AMBIENT"` on the copy, with `/weather
+  clear` and `doWeatherCycle false`: in its `"DEFAULT"` mode SimpleClouds grew rain, then thunder and a dark
+  snowstorm in place within 5 minutes, even with its clouds held still. No rain or snow shows in the stills. The
+  save has `spectatorsGenerateChunks` false, so a spectator camera loads no chunks; it was set true on the copy.
+  The first time the yard's chunks came in (all at once, after 8 minutes of nothing loading), a black wedge with
+  straight edges covered a quarter of the frame and held for 40 s. `/flywheel backend flywheel:instancing`
+  cleared it, with trains, track and terrain behind. Back on indirect it stayed clear, since a switch rebuilds the
+  pages fresh. Then churn: the camera went back and forth between the yard and the metro by the join point, about
+  960 blocks apart, so the yard's train and track visuals unloaded and loaded again each round, with three stills
+  8 s apart at the yard each round. Indirect was black in 5 of 16 rounds (63%, 23%, 26%, 10% and 14% of the
+  frame), each holding through its three stills and gone the next round. Instancing was black in none of 16
+  rounds (all 48 yard stills and 16 metro stills clean). If instancing were as prone as indirect, 16 clean rounds
+  would come by chance about once in 400. So the black needs no storm: churn of Create's visuals brings it on,
+  and the instancing backend did not show it. Why the storm arms showed it more often than the clear flights is
+  not shown.
+- **fps of the two backends: no difference seen.** Two fresh sessions of the copy, on the same views and weather
+  as above, with vsync off, the frame cap at 260, DH at 4 threads and MangoHud logging every frame. One camera
+  point over the yard, four facings (three over the trains, one over the station and city); each facing waited
+  for its frame to finish building, settled 5 s, then measured 22 s. Each session ran six arms, with the backend
+  switched in game before each (a switch rebuilds every chunk mesh, which was waited out). Session one started
+  on the default (indirect) and ran indirect, instancing, instancing, indirect, indirect, instancing. Session two
+  started from `backend = "flywheel:instancing"` in the file and ran the mirror order. That gave 48 windows and
+  about 68,600 frames, at a load of 8 to 40 from other jobs on the laptop.
+  - Median fps, instancing against indirect: 1.03 (95% 0.95 to 1.11) from a fit with a time trend per session,
+    and 1.03 as the geometric mean of the 24 adjacent pairs. The median of window medians was 70.7 fps on
+    instancing against 63.3 on indirect, and the median frame time 14.1 against 15.8 ms.
+  - 1%-low fps (1000 over the 99th percentile frame time): the median of windows was 40.8 against 38.4. The pairs
+    spread widely (0.05 to 3.6, geometric mean 0.85), because stalls from other jobs' load spikes land in single
+    windows.
+  - The largest effect was order: each session's first arm ran about 25% faster than its later ones, whichever
+    backend it was, and both sessions lost about 20% every 10 minutes.
+  So no fps difference shows on this laptop under load: the 95% range runs from 5% slower to 11% faster.
 - **Our world, storm fog on and off.** About 20 minutes with storm fog on (four standpoints 150 blocks from a
   tornado looking up and level, the storm's edge from 450 to 850 blocks, and the tornado from 450 blocks at four
   bearings) and a second session with it off: no black frame in either. With storm fog on the tornado is a grey
@@ -684,12 +729,14 @@ daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stil
   `[storms.tornado]` `disableSimpleCloudsTornadoSSBO = false`; `DistantHorizons.toml`
   `[client.advanced.debugging]` `rendererMode = "DEFAULT"` (`"DISABLED"` for the DH-off arm) and
   `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`; `flywheel-client.toml`
-  `backend = "DEFAULT"` (indirect here; `"flywheel:instancing"` is the untested way round). The arms changed only the copy's
-  instance; nothing in the pack or Ben's instances.
+  `backend = "DEFAULT"` (indirect here; `"flywheel:instancing"` is the way round, tested above). The arms changed
+  only the copy's instance; nothing in the pack or Ben's instances.
 - **Ben's call (2026-10-24):** storm fog off pack-wide (`renderStormFog = false`, the pack's d00ca03), and no
-  report upstream; reverted (8947c6a) when the forced-storm arm came black with it off.
+  report upstream; reverted (8947c6a) when the forced-storm arm came black with it off. Later the same day: the
+  instancing backend as the fix is fine with him. He has not seen the slabs in the real pack or in his Deep Time
+  testing.
 - Nothing here adds an entity, block or item to a world (D3): the guards check our own meshes, and the probe was a
-  dev build's; RenderDoc ran on the copy's client only. Nothing was filed upstream.
+  dev build's; RenderDoc and MangoHud ran on the copy's client only. Nothing was filed upstream.
 
 ### Not measured or not exercised
 
