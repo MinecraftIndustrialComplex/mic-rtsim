@@ -3720,6 +3720,22 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     jar's chase runs nine ticks in ten and the puppet walks west: "back within 0.5 blocks of its spot in 200
     ticks (... the closest it came to the spot ...)" fails first, or if it stands the later checks (nearest
     approach, new paths) fail. The figures are recorded (`back`, `steady`).
+  - Amendment (the second re-check's P2, the dodge leap; compiled, not run): a player within the jar's 4-block
+    dodge range dealing 16 damage (the jar sums `damage`, a sum that loses 1 every 7 ticks), or any lava damage,
+    starts `DODGE_ANIMATION`, and at its tick 6 the jar does `setDeltaMovement(m.x, 0.6, m.z)` with `m` the body's
+    motion plus 1.7 blocks a tick at `dodgeYaw`: a 10 to 14 block leap off the spot, which the six chase calls did not
+    cover. Choice (a fork the lead may flip): wrap the call, do not block the dodge. `EntityFrostmawMixin` wraps the
+    `EntityFrostmaw.setDeltaMovement(DDD)V` calls of `tick()` (`require = 2, allow = 2`: the dodge's, cfr line 430, and
+    the asleep branch's, line 592, which a held body never runs), and for a body `FrostmawLurker.holds` it passes the
+    body's own current x and z and the call's y (0.6): the body hops in place and lands where it was, and the jar's
+    animation state stays what the jar has it (the dodge runs its 15 ticks and ends on its timer, its
+    `wantsToIceBreathAfterDodging` is still consumed, the dodge cooldown is set). Blocking the dodge instead would
+    need a wrap of `hurt` to keep the jar's `shouldDodgeMeasure` and `wantsToIceBreathAfterDodging` from being set
+    on some of its paths and not others, and a lava hurt starts the dodge before the measure is read. Two tests
+    (mowziesmobs, batches `frostmaw_lurk_dodge_player` and `frostmaw_lurk_dodge_lava`): a held puppet without a crystal is hurt once
+    (20 damage by a player 3 blocks west whom it targets; 1 damage of lava), the dodge is seen to pass tick 7, and for
+    40 ticks it is never more than `STAND` from its hold point. Expected on the unfixed code: "the puppet never left
+    its stand while it dodged: strayed 11.9 of 0.5" (or more).
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
