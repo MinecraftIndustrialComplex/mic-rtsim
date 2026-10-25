@@ -90,6 +90,22 @@ public final class MarchGameTests {
                         forced.add(ChunkPos.asLong(x, z));
         }
 
+        /**
+         * Sets the server's simulation distance (the stop's square reads it) and puts it back when the test ends. The distance is
+         * server-wide, so a test using this has a batch of its own.
+         */
+        void simulation(GameTestHelper helper, int s) {
+            var players = level.getServer().getPlayerList();
+            int saved = players.getSimulationDistance();
+            players.setSimulationDistance(s);
+            ConflictKit.onEnd(helper, () -> players.setSimulationDistance(saved));
+        }
+
+        /** The y a player or a body stands at in the forced area (the world is flat). */
+        double ground(double x, double z) {
+            return level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(x), (int) Math.floor(z));
+        }
+
         /** Fails (until they do) unless every chunk of the square ticks entities. */
         void checkSquare(int cx, int cz, int r) {
             int n = 0, total = (2 * r + 1) * (2 * r + 1);
@@ -384,6 +400,260 @@ public final class MarchGameTests {
                     ConflictKit.recall(envoy, 1, ConflictRecords.RECALL_DONE, 1, t.px - 100, t.pz);
                 })
                 .thenWaitUntil(waits.logic(() -> check("the envoy recalled", !about(ConflictRecords.BAND_DEMATERIALIZED, envoy).isEmpty())))
+                .thenSucceed();
+    }
+
+    // ---- shared pieces of the march tests ---------------------------------------------------------
+
+    /** A far base's centre chunk and the block centre of it. */
+    private record Spot(int cx, int cz, double x, double z) {}
+
+    private static Spot spot() {
+        int[] base = ConflictKit.farBase();
+        int cx = (base[0] + 512) >> 4, cz = (base[1] + 512) >> 4;
+        return new Spot(cx, cz, 16.0 * cx + 8.0, 16.0 * cz + 8.0);
+    }
+
+    /** A waypoint of a march record: block x and z of the route's chart, and the game tick the band reaches it. */
+    private static long[] wp(double x, double z, long tick) {
+        return new long[] {(long) Math.floor(x), (long) Math.floor(z), tick};
+    }
+
+    /** BAND_MARCH of {@code agent}: its revision, phase and flags, the units it has by body, and its waypoints. */
+    private static void say(long agent, int revision, String dim, long faction, int phase, int flags, Map<String, Integer> units, long[]... waypoints) {
+        ConflictKit.march(new ConflictKit.MarchSpec(agent, revision, dim, faction, ConflictRecords.PURPOSE_RAID, phase, flags, 0L, units,
+                List.of(waypoints)));
+    }
+
+    private static final int MARCH_CHIEF = ConflictRecords.March.FLAG_CHIEF, MARCH_ENDED = ConflictRecords.March.FLAG_ENDED;
+    private static final int OUT = ConflictRecords.March.OUT, WAITING = ConflictRecords.March.WAITING, HOME = ConflictRecords.March.HOME;
+
+    /** Every stack of the party is in the state, or the check fails naming the states. */
+    private static void allStacks(ConflictBridge.Party p, ConflictBridge.StackState want, String what) {
+        for (ConflictBridge.Stack st : p.stacks())
+            if (st.state() != want)
+                throw new GameTestAssertException(what + ": wanted every stack " + want + ", saw " + states(p));
+    }
+
+    // ---- the stop (MZB-472) --------------------------------------------------------------------------
+
+    /**
+     * The stop (MZB-472, CL-D35) at a simulation distance of 8: a band the engine says is waiting or fighting keeps to the square of
+     * blocks one chunk inside the ticking edge of the player it stands near. The chunks of the area are forced (a seen player's
+     * area is test 33's), a plain {@link FakePlayers#add} player stands in the middle, and three bands of six warriors and
+     * the chief are met on the march (radius 0, rows of two, the chief at the rear):
+     * <ul>
+     * <li>W appears outside the ticking area, held (speed 0). A march in phase WAITING walks each of its four pending stacks in
+     * ({@code walkIns} up by four, each stack's place inside the square), and each is placed once and stays placed;</li>
+     * <li>C stands placed inside the square, walking east at 0.3 toward a target outside the ticking area. The same march clamps each
+     * walk end into the square ({@code clamps} up by four) and no stack's place passes the square's east edge;</li>
+     * <li>K is C with no march: its stacks walk out of the ticking area and are taken back to pending, so it is the stop that held C;</li>
+     * <li>a placed stack of W is none the worse for the player standing still: no stack of W or C is ever not placed after it was;</li>
+     * <li>one body of W killed with no killer is one BAND_CASUALTIES of kind 0;</li>
+     * <li>a march in phase HOME and a BAND_STEER to the head: each stack walks to its column place there (its end is the point plus
+     * its offset, {@code back} from the point along the new heading).</li>
+     * </ul>
+     * The same at a simulation distance of 4 is {@link #aStoppedBandKeepsToTheSquareAtSimulationDistanceFour} (P3-2 of the M10b
+     * review: the square is a chunk's margin from the edge, where bodies pushed off their places stay in the ticking area).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_stop")
+    public static void aStoppedBandKeepsToThePlayersSquare(GameTestHelper helper) {
+        stop(helper, "aStoppedBandKeepsToThePlayersSquare", 8);
+    }
+
+    /** The stop at a simulation distance of 4: the ticking area is nine chunks across and the square seven. */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_stop4")
+    public static void aStoppedBandKeepsToTheSquareAtSimulationDistanceFour(GameTestHelper helper) {
+        stop(helper, "aStoppedBandKeepsToTheSquareAtSimulationDistanceFour", 4);
+    }
+
+    private static void stop(GameTestHelper helper, String test, int s) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.simulation(helper, s);
+        f.square(at.cx(), at.cz(), s);
+        String dim = RtsimTests.dimension(helper);
+        int[] sq = ConflictBridge.stopSquare(at.cx(), at.cz(), s);
+        double east = sq[2] + 1.0;                    // the square's east edge (the first x outside it)
+        double tickEdge = 16.0 * (at.cx() + s + 1);   // the first x outside the forced, ticking area
+        double wx = tickEdge + 24, wz = at.z() - 10;  // W: appears outside the ticking area, in z inside the square
+        double cx0 = east - 30, cz0 = at.z() + 14;    // C and K: 30 blocks inside the square, walking east
+        double kz = at.z() - 40;
+        double farX = tickEdge + 60;
+        long faction = ConflictKit.newFaction();
+        long w = ConflictKit.newAgent(), c = ConflictKit.newAgent(), k = ConflictKit.newAgent();
+        List<ConflictKit.StackSpec> six = List.of(new ConflictKit.StackSpec(WARRIOR, 6, true));
+        Map<String, Integer> units = Map.of(WARRIOR, 6);
+
+        ConflictKit.Band bw = ConflictKit.band(w, faction, dim);
+        bw.arcX = wx;
+        bw.arcZ = wz;
+        bw.bearing = 180f;
+        bw.targetX = wx;
+        bw.targetZ = wz;
+        bw.speed = 0f;
+        bw.flags = HOSTILE | CHIEF;
+        ConflictKit.Band bc = ConflictKit.band(c, faction, dim);
+        bc.arcX = cx0;
+        bc.arcZ = cz0;
+        bc.bearing = 0f;
+        bc.targetX = farX;
+        bc.targetZ = cz0;
+        bc.speed = 0.3f;
+        bc.flags = HOSTILE | CHIEF;
+        ConflictKit.Band bk = ConflictKit.band(k, faction, dim);
+        bk.arcX = cx0;
+        bk.arcZ = kz;
+        bk.bearing = 0f;
+        bk.targetX = farX;
+        bk.targetZ = kz;
+        bk.speed = 0.3f;
+        bk.flags = HOSTILE | CHIEF;
+
+        ConflictBridge.Stack[][] stacks = new ConflictBridge.Stack[3][4]; // W, C, K
+        long[][] firstPlaced = new long[3][4];
+        int[] flicker = new int[2];      // W, C: observed ticks of a stack that was placed and is not
+        long[] kOut = {0};               // the first tick a stack of K was seen taken back
+        double[] maxAnchorX = {-1e18, -1e18}; // W, C: the farthest east a stack's place was, once the march was said
+        boolean[] watching = {false};
+        waits.eachTick(() -> {
+            long now = level.getGameTime();
+            for (int b = 0; b < 3; b++) {
+                if (stacks[b][0] == null)
+                    continue;
+                for (int i = 0; i < 4; i++) {
+                    ConflictBridge.Stack st = stacks[b][i];
+                    if (st.state() == PLACED && firstPlaced[b][i] == 0) {
+                        firstPlaced[b][i] = now;
+                    } else if (st.state() != PLACED && firstPlaced[b][i] != 0) {
+                        if (b < 2)
+                            flicker[b]++;
+                        else if (kOut[0] == 0)
+                            kOut[0] = now;
+                    }
+                    if (watching[0] && b < 2)
+                        maxAnchorX[b] = Math.max(maxAnchorX[b], st.anchorAt(now)[0]);
+                }
+            }
+        });
+        ServerPlayer[] player = new ServerPlayer[1];
+        long[] before = new long[2];   // walkIns, clamps
+        long[] said = new long[2];     // the tick the march was sent, the tick W was seen placed
+        long[] cas = new long[1];
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), s)))
+                .thenExecute(() -> {
+                    player[0] = FakePlayers.add(level, new Vec3(at.x(), f.ground(at.x(), at.z()), at.z()), "conflict_march_stop_watcher");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    record(test, "area", "simulation distance " + s + ", the player's chunk (" + at.cx() + ", " + at.cz() + "), the square x "
+                            + sq[0] + " to " + sq[2] + " and z " + sq[1] + " to " + sq[3] + ", the ticking area ends at x " + tickEdge);
+                    check("the square lies inside the ticking area by at least a chunk on the east: edge " + east + ", ticking edge " + tickEdge,
+                            tickEdge - east >= 16.0);
+                    ConflictKit.materialize(bw, six);
+                    ConflictKit.materialize(bc, six);
+                    ConflictKit.materialize(bk, six);
+                })
+                .thenWaitUntil(waits.logic(() -> check("a BAND_MATERIALIZED for each band",
+                        !about(ConflictRecords.BAND_MATERIALIZED, w).isEmpty() && !about(ConflictRecords.BAND_MATERIALIZED, c).isEmpty()
+                                && !about(ConflictRecords.BAND_MATERIALIZED, k).isEmpty())))
+                .thenExecute(() -> {
+                    long[] agents = {w, c, k};
+                    for (int b = 0; b < 3; b++) {
+                        ConflictBridge.Party p = party(agents[b]);
+                        check("band " + b + " is four stacks (three rows and the chief): " + states(p), p.stacks().size() == 4);
+                        for (int i = 0; i < 4; i++)
+                            stacks[b][i] = p.stacks().get(i);
+                    }
+                    check("W appears outside the ticking area, every stack pending: " + states(party(w)), stacks[0][0].state() == PENDING
+                            && stacks[0][3].state() == PENDING);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    allStacks(party(c), PLACED, "C is placed inside the square");
+                    allStacks(party(k), PLACED, "K is placed inside the square");
+                }))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    before[0] = ConflictKit.walkIns();
+                    before[1] = ConflictKit.clamps();
+                    said[0] = now;
+                    watching[0] = true;
+                    say(w, 1, dim, faction, WAITING, MARCH_CHIEF, units, wp(at.x() + 8, wz, now));
+                    say(c, 1, dim, faction, WAITING, MARCH_CHIEF, units, wp(cx0 - 20, cz0, now));
+                })
+                .thenWaitUntil(waits.logic(() -> allStacks(party(w), PLACED, "W's pending stacks walk in and are placed")))
+                .thenExecute(() -> {
+                    said[1] = level.getGameTime();
+                    long walked = ConflictKit.walkIns() - before[0];
+                    record(test, "W walked in", walked + " walk-ins, placed " + (said[1] - said[0]) + " ticks after the march was said (the stop's beat is "
+                            + ConflictBridge.STOP_BEAT + ")");
+                    check("each of W's four pending stacks walked in once (" + walked + ")", walked == 4);
+                    check("the walk-in came by the first beat, " + (said[1] - said[0]) + " ticks after the march was said", said[1] - said[0] <= ConflictBridge.STOP_BEAT + 2);
+                    for (ConflictBridge.Stack st : stacks[0]) {
+                        double[] end = st.target();
+                        check("W stack " + st.index + " walks to a place inside the square: end " + xz(end) + ", square x " + sq[0] + " to " + (sq[2] + 1)
+                                + ", z " + sq[1] + " to " + (sq[3] + 1), end[0] >= sq[0] && end[0] < east && end[1] >= sq[1] && end[1] < sq[3] + 1.0);
+                    }
+                })
+                .thenIdle(300)
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    long clamped = ConflictKit.clamps() - before[1];
+                    record(test, "C held", clamped + " clamps, the farthest east a place reached x " + String.format("%.2f", maxAnchorX[1])
+                            + " (the square's edge is " + east + "), K first taken back at tick " + kOut[0] + " (the march was said at " + said[0] + ")");
+                    check("each of C's four placed stacks had its end clamped once (" + clamped + ")", clamped == 4);
+                    check("no place of C passed the square's east edge " + east + ": the farthest was " + maxAnchorX[1], maxAnchorX[1] < east);
+                    check("no place of W passed it either: " + maxAnchorX[0], maxAnchorX[0] < east);
+                    check("no stack of W or C was taken back after it was placed (" + flicker[0] + " and " + flicker[1] + " observed ticks)",
+                            flicker[0] == 0 && flicker[1] == 0);
+                    for (int b = 0; b < 2; b++)
+                        for (ConflictBridge.Stack st : stacks[b])
+                            check("band " + b + " stack " + st.index + " is placed once and still placed (" + st.placings() + " placings, " + st.state() + ")",
+                                    st.placings() == 1 && st.state() == PLACED);
+                    check("K, with no march, left the ticking area and was taken back (first at tick " + kOut[0] + "): " + states(party(k)), kOut[0] != 0
+                            && stacks[2][0].state() != PLACED);
+                    // A body of W killed with no killer: one BAND_CASUALTIES of kind 0 (by none).
+                    cas[0] = about(ConflictRecords.BAND_CASUALTIES, w).size();
+                    Mob body = stacks[0][0].bodies().get(0);
+                    body.hurt(level.damageSources().generic(), 1000f);
+                })
+                .thenWaitUntil(waits.logic(() -> check("a casualty for W was journaled", about(ConflictRecords.BAND_CASUALTIES, w).size() == cas[0] + 1)))
+                .thenExecute(() -> {
+                    check("the casualty is of kind 0 (a death with no killer), aux " + about(ConflictRecords.BAND_CASUALTIES, w).get((int) cas[0]).aux(),
+                            about(ConflictRecords.BAND_CASUALTIES, w).get((int) cas[0]).aux() == 0);
+                    // The walk home: the march turns to HOME and the band is steered to its head's spot.
+                    long now = level.getGameTime();
+                    double hx = at.x() + 8, hz = wz;
+                    say(w, 2, dim, faction, HOME, MARCH_CHIEF, units, wp(hx, hz, now), wp(hx, hz, now + 100_000));
+                    ConflictKit.steer(w, 1, 0.5f, hx, hz, 0, false);
+                    said[0] = now;
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    long now = level.getGameTime();
+                    for (ConflictBridge.Stack st : stacks[0]) {
+                        double[] a = st.anchorAt(now), e = st.target();
+                        if (Math.hypot(a[0] - e[0], a[1] - e[1]) > 0.05)
+                            throw new GameTestAssertException("W stack " + st.index + " still walks home: place " + xz(a) + ", end " + xz(e));
+                    }
+                }))
+                .thenExecute(() -> {
+                    double hx = at.x() + 8, hz = wz;
+                    for (ConflictBridge.Stack st : stacks[0]) {
+                        double[] e = st.target();
+                        double d = Math.hypot(e[0] - hx, e[1] - hz);
+                        record(test, "W home, stack " + st.index, "end " + xz(e) + " is " + String.format("%.3f", d) + " from the point (" + hx + ", " + hz + "), back " + st.back());
+                        check("W stack " + st.index + " stands " + st.back() + " behind the point along the column (" + d + " away, end " + xz(e) + ")",
+                                Math.abs(d - st.back()) < 0.02);
+                    }
+                    check("no stack of W went to pending on the way: " + states(party(w)) + ", flicker " + flicker[0], flicker[0] == 0);
+                    for (long a : new long[] {w, c, k})
+                        ConflictKit.recall(a, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("all three recalled", !about(ConflictRecords.BAND_DEMATERIALIZED, w).isEmpty()
+                        && !about(ConflictRecords.BAND_DEMATERIALIZED, c).isEmpty() && !about(ConflictRecords.BAND_DEMATERIALIZED, k).isEmpty())))
                 .thenSucceed();
     }
 

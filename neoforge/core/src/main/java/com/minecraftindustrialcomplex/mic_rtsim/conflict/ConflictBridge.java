@@ -1780,6 +1780,14 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     /**
+     * The stop's square for a player in chunk ({@code pcx}, {@code pcz}) at a simulation distance, as the bridge uses it:
+     * {@code {minX, minZ, maxX, maxZ}}, the maxima inclusive (GameTests; M10c reads it so a change of the inset moves no test).
+     */
+    public static int[] stopSquare(int pcx, int pcz, int simulationDistance) {
+        return StopSquare.square(pcx, pcz, simulationDistance);
+    }
+
+    /**
      * A pending stack of a stopped band whose place lies outside its player's square comes in where its line to the
      * head crosses the square (the head clamped into it when the line never does), and walks on toward its old end
      * clamped into the square. It is marked for a test: the square only picks the point, and it is placed only if the
