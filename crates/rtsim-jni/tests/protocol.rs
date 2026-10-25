@@ -8266,6 +8266,99 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The camp's pool as it stands now, its members away and its cap.
+    fn pool_away_cap(e: &Engine) -> (f64, f64, f64) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let x = &c.factions[f as usize];
+            (c.pool_at(f, c.now()), f64::from(x.away), f64::from(x.cap))
+        })
+    }
+
+    /// Test 28's engine half (MOWZIE.md §4.16, MZB-452): an Invasion ordered from a grove that is
+    /// out; at its muster's end the grove comes in, and the takes that follow send the band no
+    /// BAND_MARCH (what its record says has not changed: the revision stays); the Invasion reaches
+    /// its target, which is a record. A raid is refused while the invasion holds 8 of the grove's
+    /// 9, and goes once the survivors are home and the pool has refilled; the pool plus the
+    /// members away stay at or under the cap at every step.
+    #[test]
+    fn an_invasion_from_a_grove_that_comes_in_sends_no_march_and_keeps_the_cap() {
+        let (_dir, e, mut j) = grove("conflict-march-grove-in", 30);
+        let far = (CAMP_AT.0 + 1_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Invasion, Step::Invasion, far);
+        on_step(&e, p, Step::Invasion);
+        let within_cap = |e: &Engine, what: &str| {
+            let (pool, away, cap) = pool_away_cap(e);
+            assert!(pool + away <= cap + 1e-9, "{what}: pool {pool}, {away} away, cap {cap}");
+        };
+        within_cap(&e, "ordered");
+        advance_until(&mut j, 20, 3 * DAY, "the muster's end", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        assert!(!marches(&j, p).is_empty(), "the muster's end sent its record");
+        let (sent, rev) = (
+            marches(&j, p).len(),
+            e.with_conflict(|c, _| c.parties[p].march_rev),
+        );
+        // The grove comes in with the band on the road.
+        camp_in(&mut j);
+        // A raid ordered whenever the pool allows one: the invasion holds 8 of the grove's 9.
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD) as u16;
+        let order_raid = |e: &Engine| {
+            e.with_conflict_mut(|c, w| {
+                let at = c.now();
+                c.order_party(
+                    w,
+                    CAMP,
+                    PartyKind::Raid,
+                    Target::Pos(Pos::new(dim, CAMP_AT.0 - 3_000, CAMP_AT.1)),
+                    None,
+                    at,
+                )
+            })
+        };
+        assert!(
+            order_raid(&e).is_none(),
+            "no raid while the invasion holds the members"
+        );
+        within_cap(&e, "the raid refused");
+        advance_until(&mut j, 100, 6 * DAY, "the invasion at its target", |j| {
+            within_cap(&j.e, "on the road");
+            if party(&j.e, p).is_some_and(|x| x.0 == Phase::Out) {
+                assert_eq!(marches(j, p).len(), sent, "no record while the road goes on");
+                assert_eq!(j.e.with_conflict(|c, _| c.parties[p].march_rev), rev);
+                false
+            } else {
+                true
+            }
+        });
+        j.idle();
+        let reached = marches(&j, p);
+        assert!(
+            reached.len() > sent && reached.last().is_some_and(|m| m.revision > rev),
+            "the arrival is a record: {reached:?}"
+        );
+        assert!(
+            reached.windows(2).all(|w| w[0].flags == w[1].flags),
+            "the camp's coming in changed no flag of the band: {reached:?}"
+        );
+        // The survivors come home, the pool refills, and a raid goes: still within the cap.
+        let mut raid = None;
+        advance_until(&mut j, 100, 8 * DAY, "a raid ordered from the refilled pool", |j| {
+            within_cap(&j.e, "after the arrival");
+            raid = raid.or_else(|| order_raid(&j.e));
+            raid.is_some()
+        });
+        within_cap(&e, "the raid ordered");
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 100, 2 * DAY, "a day of the raid out", |j| {
+            within_cap(&j.e, "the raid out");
+            j.game_time >= end
+        });
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     // ---- the replay gate (docs/replay-gate.md, fix/replay-push) ----------------------------
 
     /// A buffer that holds a whole long replay in one hand-over.
