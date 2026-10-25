@@ -1509,7 +1509,8 @@ and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
   time and the first look after the end is judged by the players routed by then.
 - **Test orders** (§3.6, §4.4, RP-96): `Order::ShipCommand` waits for the replay end.
 - **Copies** (§5.7, RP-97): rtsim-jni routes a REASSERT to `Ships::ingest_copy`, which folds the
-  epoch and does nothing more for every kind.
+  epoch and does nothing more for every kind; a copied HAVEN_FOUND joins no haven node to the
+  world either.
 - **The link** (§3.2, RP-98): `replay_end` logs the counts; the ships' pages, the outbox and
   every other format are unchanged.
 
