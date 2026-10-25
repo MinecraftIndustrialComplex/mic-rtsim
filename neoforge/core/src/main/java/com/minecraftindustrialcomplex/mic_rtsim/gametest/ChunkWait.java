@@ -1,12 +1,16 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.GameTestInfo;
 import net.minecraft.gametest.framework.GameTestListener;
 import net.minecraft.gametest.framework.GameTestRunner;
+import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
@@ -261,6 +265,48 @@ public final class ChunkWait {
 
     private String name() {
         return helper.testInfo.getTestName();
+    }
+
+    /**
+     * Where the chunk at {@code cx}, {@code cz} still is in memory: "" once it is out, else what holds it,
+     * for a wait that a chunk was saved and dropped (call on the server thread). {@code level.hasChunk}
+     * cannot tell: it is false as soon as the chunk's ticket level falls below FULL, while its holder and
+     * level chunk stay, first in the chunk map below FULL ({@code getChunkNow} is null then too), then in
+     * the map's pending unloads until its save is queued. A chunk forced again from either is put back from
+     * memory, with no read from disk. Its entities unload apart from it, through the entity manager, which
+     * writes them as it drops them, and only once their read from disk has landed. Out means no level chunk,
+     * a holder in none of the three, and entities neither loaded nor loading. Under C2ME an entity unload that
+     * fails once (the read still in flight) is dropped and never tried again (its entity manager's
+     * {@code processUnloads}), so the entities stay until the next save (an autosave every 6,000 ticks): the
+     * answer then says so.
+     */
+    public static String inMemory(ServerLevel level, int cx, int cz) {
+        long pos = ChunkPos.asLong(cx, cz);
+        ChunkMap map = level.getChunkSource().chunkMap;
+        StringBuilder in = new StringBuilder();
+        if (level.getChunkSource().getChunkNow(cx, cz) != null)
+            in.append("a level chunk, ");
+        if (map.getVisibleChunkIfPresent(pos) != null)
+            in.append("a holder in the visible map, ");
+        if (((ChunkMapInvoker) map).mic_rtsim$updating(pos) != null)
+            in.append("a holder in the updating map, ");
+        if (((ChunkMapInvoker) map).mic_rtsim$pendingUnloads().containsKey(pos))
+            in.append("a holder pending unload, ");
+        boolean chunkOut = in.isEmpty();
+        Object entities = ((EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager())
+                .mic_rtsim$chunkLoadStatuses().get(pos);
+        String state = entities instanceof Enum<?> e ? e.name() : String.valueOf(entities);
+        if (state.equals("LOADED"))
+            in.append("its entities loaded, ");
+        else if (state.equals("PENDING"))
+            in.append("its entities loading, ");
+        if (in.isEmpty())
+            return "";
+        String out = in.substring(0, in.length() - 2);
+        if (chunkOut && net.neoforged.fml.ModList.get().isLoaded("c2me"))
+            out += " (the chunk is gone: C2ME drops an entity unload that failed once and never retries it, so they stay"
+                    + " until the next save writes them)";
+        return out;
     }
 
     /**
