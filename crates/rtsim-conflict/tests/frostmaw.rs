@@ -10,7 +10,9 @@ use rtsim_conflict::Step;
 use rtsim_conflict::boundary;
 use rtsim_conflict::culture::{Culture, Cultures, SignalKind};
 use rtsim_conflict::engine::{Party, Signal, SlotState};
-use rtsim_conflict::synth::{CAMP_POS, CampRun, Fight, REFINERY, REFINERY_POS};
+use rtsim_conflict::synth::{
+    CAMP, CAMP_POS, CAMP_STRUCTURE, CampRun, Fight, REFINERY, REFINERY_POS,
+};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
 use rtsim_industry::threat::Threat;
@@ -657,9 +659,9 @@ fn a_frostmaw_lost_to_a_districts_walls_loses_its_chief_and_is_a_player_loss() {
 fn a_dead_slots_chief_body_is_not_felled_twice() {
     let mut r = den(58, 1);
     r.plugin.fight = Some(Fight {
-        kill_share: 1.0,
+        kill_share: 0.0,
         after: 200,
-        kill_chief: false,
+        kill_chief: true,
         only_at_base: false,
     });
     come_in(&mut r);
@@ -785,6 +787,70 @@ fn faction_found_reads_the_crystal() {
     // A den found with no body says nothing of a chief: the crystal is the default.
     let r = den(63, 0);
     assert!(crystal_of(&r));
+}
+
+/// CHIEF_STATE while the outbox replays (RP-100): the record is live and nothing journals it, so it
+/// is newer than every record the replay brings back. It waits for the replay end, the latest for
+/// each faction, as a world save does (RP-68): a den's FACTION_FOUND of the last session, replayed
+/// after it, neither drops it (the faction was not known yet) nor undoes it (its census byte is the
+/// world as it was then).
+#[test]
+fn a_chief_state_while_replaying_waits_for_the_replay_end() {
+    use rtsim_conflict::synth;
+    let (mut w, _) = synth::world(65);
+    let mut c = synth::conflict_with(65, &w, Cultures::builtin());
+    let ci = c.cultures.index_of("frostmaw").expect("a built-in culture");
+    let structure = c.cultures.get(ci).def.structures[0].clone();
+    c.define(4, CAMP_STRUCTURE, &structure);
+    let mut infra = rtsim_ecology::infra::NoInfrastructure;
+    let chief_state = |flags: u32| {
+        boundary::Obs::ChiefState(boundary::ChiefState {
+            faction: CAMP,
+            flags,
+            health: 100.0,
+        })
+    };
+    c.begin_replay(true);
+    // The steal of this session's first ticks, then the crystal given back and taken again: the
+    // last of them is the world as it is.
+    c.ingest(&mut w, &mut infra, &chief_state(0), Tick(2));
+    c.ingest(
+        &mut w,
+        &mut infra,
+        &chief_state(boundary::CHIEF_CRYSTAL),
+        Tick(3),
+    );
+    c.ingest(&mut w, &mut infra, &chief_state(0), Tick(4));
+    // The den found last session with its chief and crystal, replayed.
+    c.ingest(
+        &mut w,
+        &mut infra,
+        &boundary::Obs::FactionFound(boundary::FactionFound {
+            faction: CAMP,
+            flags: 0,
+            dimension: u32::from(CAMP_POS.frame),
+            structure: CAMP_STRUCTURE,
+            pos: (CAMP_POS.x, 64, CAMP_POS.z),
+            home_bodies: 1,
+            census: (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8,
+        }),
+        Tick(5),
+    );
+    let f = c.faction_of_key(CAMP).expect("found") as usize;
+    assert!(c.factions[f].crystal, "the replay's census byte, for now");
+    c.replay_done();
+    assert!(
+        !c.factions[f].crystal,
+        "the live record is newer than every replayed one"
+    );
+    // After the replay end a CHIEF_STATE is applied at once.
+    c.ingest(
+        &mut w,
+        &mut infra,
+        &chief_state(boundary::CHIEF_CRYSTAL),
+        Tick(6),
+    );
+    assert!(c.factions[f].crystal);
 }
 
 /// A steal is not a loss (EQUILIBRIUM item 5, MZB-276): the robbed Frostmaw stands in its den, no
@@ -954,6 +1020,168 @@ fn a_chief_killed_away_stays_dead_across_a_crash_before_the_band_is_counted_out(
     ok(&mut r);
 }
 
+/// The materialize commands the engine has sent so far.
+fn materializes(r: &CampRun) -> Vec<boundary::BandMaterialize> {
+    r.cmds
+        .iter()
+        .filter_map(|(_, c)| match c {
+            boundary::Cmd::Materialize(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A Frostmaw raid is materialized as the chief alone (MZB-127, MZB-109): the Frostmaw is its band's
+/// one unit and its chief, and Java makes a chief stack's chief as one body more than the stack's
+/// count. A stack of count 1 with MEMBER_CHIEF made two Frostmaws, the den's and a fresh one with a
+/// crystal.
+#[test]
+fn a_frostmaw_raid_is_materialized_as_the_chief_alone() {
+    let mut r = den(67, 1);
+    come_in(&mut r);
+    r.watch = true;
+    r.raid().expect("a raid goes");
+    r.camp_out();
+    let limit = r.c.now() + days(4.0);
+    while materializes(&r).is_empty() {
+        assert!(r.c.now() < limit, "the band is seen");
+        let to = r.c.now() + 100;
+        r.run(to);
+    }
+    let m = &materializes(&r)[0];
+    assert_ne!(m.flags & boundary::BAND_CHIEF, 0, "the band has its chief");
+    assert_eq!(m.members.len(), 1, "one stack");
+    assert_eq!(m.members[0].count, 0, "no unit but the chief");
+    assert_eq!(m.members[0].flags, boundary::MEMBER_CHIEF);
+    ok(&mut r);
+}
+
+/// A robbed Frostmaw goes on a raid without its crystal (review C): the stack carries MEMBER_BARE,
+/// so Java makes its body without one (a fresh Frostmaw is made with its crystal on). A den that
+/// holds its crystal sends none, and the flag follows the faction's crystal at the wave.
+#[test]
+fn a_robbed_frostmaws_raid_is_materialized_bare() {
+    for robbed in [false, true] {
+        let mut r = den(69, 1);
+        come_in(&mut r);
+        if robbed {
+            let at = r.c.now() + 1;
+            assert!(r.plugin.steal(r.key, at));
+            let to = r.c.now() + 5;
+            r.run(to);
+            assert!(!crystal_of(&r), "robbed");
+        }
+        r.watch = true;
+        r.raid().expect("a raid goes");
+        r.camp_out();
+        let limit = r.c.now() + days(4.0);
+        while materializes(&r).is_empty() {
+            assert!(r.c.now() < limit, "the band is seen");
+            let to = r.c.now() + 100;
+            r.run(to);
+        }
+        let m = &materializes(&r)[0];
+        assert_eq!(m.members.len(), 1, "one stack");
+        assert_eq!(m.members[0].count, 0, "the chief alone");
+        assert_eq!(
+            m.members[0].flags,
+            if robbed {
+                boundary::MEMBER_CHIEF | boundary::MEMBER_BARE
+            } else {
+                boundary::MEMBER_CHIEF
+            },
+            "robbed {robbed}"
+        );
+        ok(&mut r);
+    }
+}
+
+/// A recalled Frostmaw with its chief alive keeps its one unit (MZB-109): Java's survivors never
+/// name a chief, so the DEMATERIALIZED names none, and the engine counts the living chief back.
+/// Without it the band was written off at every recall of a Frostmaw raid.
+#[test]
+fn a_recalled_frostmaw_band_keeps_its_unit_while_the_chief_lives() {
+    let mut r = den(68, 1);
+    come_in(&mut r);
+    r.watch = true;
+    let p = r.raid().expect("a raid goes");
+    r.camp_out();
+    let limit = r.c.now() + days(4.0);
+    while materializes(&r).is_empty() {
+        assert!(r.c.now() < limit, "the band is seen");
+        let to = r.c.now() + 100;
+        r.run(to);
+    }
+    r.watch = false;
+    let recalled = |r: &CampRun| {
+        r.cmds
+            .iter()
+            .any(|(_, c)| matches!(c, boundary::Cmd::Recall(_)))
+    };
+    while !recalled(&r) {
+        assert!(r.c.now() < limit, "the band is recalled");
+        let to = r.c.now() + 100;
+        r.run(to);
+    }
+    // Its DEMATERIALIZED, which names no survivor, arrives once the plugin has let it go.
+    let to = r.c.now() + 400;
+    r.run(to);
+    assert!(r.plugin.embodied() == 0, "the plugin has let it go");
+    let x = &r.c.parties[p];
+    assert!(
+        !x.embodied && x.recalled.is_empty(),
+        "and the engine counted it"
+    );
+    assert_eq!(x.alive(), 1, "the Frostmaw is alive");
+    assert!(x.chief, "and still its chief");
+    assert_eq!(r.c.stats.chiefs_killed, 0);
+    assert_eq!(r.c.factions[r.f as usize].away, 1, "still out");
+    assert_eq!(counts(&r), [0, 0, 1, 0, 0], "its slot is still its own");
+    ok(&mut r);
+}
+
+/// CHIEF_KILLED, then the DEMATERIALIZED that counts the band out, take the Frostmaw's one unit
+/// once between them (MZB-295, MZB-109): the chief is no survivor, and the engine has its unit
+/// already gone.
+#[test]
+fn a_chief_killed_then_counted_out_takes_exactly_one_unit() {
+    let mut r = den(69, 1);
+    r.plugin.fight = Some(Fight {
+        kill_share: 0.0,
+        after: 200,
+        kill_chief: true,
+        only_at_base: false,
+    });
+    come_in(&mut r);
+    r.watch = true;
+    let p = r.raid().expect("a raid goes");
+    r.camp_out();
+    let limit = r.c.now() + days(4.0);
+    while r.c.stats.chiefs_killed == 0 {
+        assert!(r.c.now() < limit, "the chief is killed in time");
+        let to = r.c.now() + 10;
+        r.run(to);
+    }
+    r.watch = false;
+    let casualties = r.c.stats.casualties;
+    // On to the DEMATERIALIZED (the plugin lets the band go 300 ticks after the recall).
+    let to = r.c.now() + 1_500;
+    r.run(to);
+    assert!(
+        r.c.parties
+            .get(p)
+            .is_none_or(|x| x.alive() == 0 && !x.embodied),
+        "the band is empty and out of the world"
+    );
+    assert_eq!(casualties, 1, "CHIEF_KILLED took the unit");
+    assert_eq!(r.c.stats.casualties, 1, "and the DEMATERIALIZED took none");
+    assert_eq!(r.c.stats.renewal_losses, 1, "the pressure was bumped once");
+    assert_eq!(pressure_of(&r), 1.0);
+    assert_eq!(counts(&r), [0, 0, 0, 0, 1]);
+    assert_eq!(r.c.factions[r.f as usize].away, 0);
+    ok(&mut r);
+}
+
 /// The census's crystal byte is read off a chief body the books keep (MZB-269): a robbed Frostmaw
 /// killed on a raid while its den is out leaves its body in the den, its slot dead. The arrival
 /// comes with the crystal, and the next census finds that leftover robbed body first: the byte
@@ -963,9 +1191,9 @@ fn a_chief_killed_away_stays_dead_across_a_crash_before_the_band_is_counted_out(
 fn a_new_frostmaw_keeps_its_crystal_when_a_dead_slots_robbed_body_still_stands() {
     let mut r = den(65, 1);
     r.plugin.fight = Some(Fight {
-        kill_share: 1.0,
+        kill_share: 0.0,
         after: 200,
-        kill_chief: false,
+        kill_chief: true,
         only_at_base: false,
     });
     come_in(&mut r);
@@ -1032,6 +1260,89 @@ fn a_new_frostmaw_keeps_its_crystal_when_a_dead_slots_robbed_body_still_stands()
         .expect("a Frostmaw stands in the den");
     assert!(fresh.crystal, "and it holds it");
     assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// The census reads the crystal off the kept chief body's own bit (MZB-269, amended at review C),
+/// not off the camp's byte: Java builds the byte from the chief body nearest the spot, and a
+/// dead slot's leftover can be that one. The leftover robbed body nearest the spot does not flip
+/// a crystal the kept Frostmaw holds, and a leftover that holds one does not give one back to a
+/// kept Frostmaw that was robbed.
+#[test]
+fn a_leftover_body_nearest_the_spot_does_not_flip_the_crystal() {
+    let mut r = den(68, 1);
+    r.plugin.fight = Some(Fight {
+        kill_share: 0.0,
+        after: 200,
+        kill_chief: true,
+        only_at_base: false,
+    });
+    come_in(&mut r);
+    let at = r.c.now() + 1;
+    assert!(r.plugin.steal(r.key, at));
+    let to = r.c.now() + 5;
+    r.run(to);
+    r.watch = true;
+    r.raid().expect("a raid goes");
+    r.camp_out();
+    r.run(Tick(days(4.0)));
+    r.watch = false;
+    let leftover = r.plugin.camps[&r.key].bodies[0];
+    assert!(leftover.chief && !leftover.crystal, "a robbed chief's body");
+    let t = arrival_at(&r).expect("a wait is booked");
+    r.run(t + 10);
+    // The census spawns the new Frostmaw and removes the leftover.
+    come_in(&mut r);
+    let kept = *r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .find(|b| b.chief)
+        .expect("a Frostmaw stands in the den");
+    assert!(kept.crystal && kept.generation != leftover.generation);
+    assert!(crystal_of(&r));
+    // The robbed leftover stands again, first, and the census's byte follows it.
+    r.plugin
+        .camps
+        .get_mut(&r.key)
+        .expect("world")
+        .bodies
+        .insert(0, leftover);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert!(
+        crystal_of(&r),
+        "the kept Frostmaw's own bit says it holds the crystal"
+    );
+    let chief_lines: Vec<u8> = line_flags(&r)
+        .into_iter()
+        .filter(|f| f & boundary::LINE_CHIEF != 0)
+        .collect();
+    assert!(
+        !chief_lines.is_empty() && chief_lines.iter().all(|f| f & boundary::LINE_CRYSTAL != 0),
+        "and the lines ask for it: {chief_lines:?}"
+    );
+    // The other way: the kept Frostmaw is robbed, and a leftover that holds a crystal is first.
+    let at = r.c.now() + 1;
+    assert!(r.plugin.steal(r.key, at));
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert!(!crystal_of(&r), "robbed");
+    let mut held = leftover;
+    held.crystal = true;
+    r.plugin
+        .camps
+        .get_mut(&r.key)
+        .expect("world")
+        .bodies
+        .insert(0, held);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert!(
+        !crystal_of(&r),
+        "a leftover's crystal is not the kept Frostmaw's"
+    );
     ok(&mut r);
 }
 

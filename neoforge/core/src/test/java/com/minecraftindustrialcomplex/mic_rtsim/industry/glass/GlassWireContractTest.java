@@ -37,7 +37,7 @@ class GlassWireContractTest {
 
     private static final List<String> REQUIRED = List.of("IND_GRAPH_NODE", "IND_GRAPH_NODE_NONE", "IND_GRAPH_EDGE",
             "IND_GRAPH_EDGE_UNLIMITED", "IND_GRAPH_RECIPE", "IND_GRAPH_DOMAIN", "IND_GRAPH_END", "IND_PROBE_SAMPLE",
-            "IND_CHUNK_TICKING", "IND_PROBE_SET");
+            "IND_CHUNK_TICKING", "IND_PROBE_SET", "IND_COUNT_SAMPLE", "IND_COUNT_SET");
 
     private record Fixture(byte[] bytes, Map<String, String> f) {
         String sym(String k) {
@@ -49,6 +49,11 @@ class GlassWireContractTest {
 
         long u32(String k) {
             return Long.parseLong(sym(k));
+        }
+
+        /** A u32 index that reads {@code none} for NONE. */
+        int index(String k) {
+            return sym(k).equals("none") ? GlassRecords.NONE : (int) u32(k);
         }
 
         long u64(String k) {
@@ -255,26 +260,40 @@ class GlassWireContractTest {
     @Test
     void graphDomain() {
         Fixture f = fx("IND_GRAPH_DOMAIN");
-        int nl = f.count("n_levels"), nm = f.count("n_members");
-        ByteBuffer b = rec(GlassRecords.IND_GRAPH_DOMAIN, GlassRecords.Domain.size(nl, nm), nm);
+        int nl = f.count("n_levels"), ns = f.count("n_sources"), nm = f.count("n_members");
+        int nsl = 0;
+        for (int i = 0; i < ns; i++)
+            nsl += f.count("source" + i + ".n_levels");
+        ByteBuffer b = rec(GlassRecords.IND_GRAPH_DOMAIN, GlassRecords.Domain.size(nl, ns, nsl, nm), nm);
         headOf(b, f);
         b.putLong(GlassRecords.Domain.NETWORK, f.u64("network"));
         b.putInt(GlassRecords.Domain.N_LEVELS, nl);
-        b.putInt(GlassRecords.Domain.CURRENT, (int) f.u32("current"));
-        b.putInt(GlassRecords.Domain.DRIVER, (int) f.u32("driver"));
+        b.putInt(GlassRecords.Domain.CURRENT, f.index("current"));
         b.putInt(GlassRecords.Domain.FLAGS, (int) f.u32("flags"));
         b.putDouble(GlassRecords.Domain.LIVE_STRESS, f.f64("live_stress"));
         b.putDouble(GlassRecords.Domain.LIVE_CAPACITY, f.f64("live_capacity"));
-        for (int i = 0; i < nl; i++) {
-            int e = GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL;
-            String p = "level" + i + ".";
-            b.putInt(e + GlassRecords.Domain.L_SELECTOR, (int) f.u32(p + "selector"));
-            b.putInt(e + GlassRecords.Domain.L_SPEED_NUM, f.i32(p + "speed_num"));
-            b.putInt(e + GlassRecords.Domain.L_SPEED_DEN, (int) f.u32(p + "speed_den"));
-            b.putDouble(e + GlassRecords.Domain.L_CAPACITY, f.f64(p + "capacity"));
+        b.putInt(GlassRecords.Domain.N_SOURCES, ns);
+        b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
+        b.putInt(GlassRecords.Domain.N_FOREIGN, (int) f.u32("foreign"));
+        for (int i = 0; i < nl; i++)
+            level(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, f, "level" + i + ".");
+        int first = 0;
+        for (int i = 0; i < ns; i++) {
+            int e = GlassRecords.Domain.sources(nl) + i * GlassRecords.Domain.SOURCE;
+            String p = "source" + i + ".";
+            int rows = f.count(p + "n_levels");
+            b.putInt(e + GlassRecords.Domain.S_DRIVER, f.index(p + "driver"));
+            b.putInt(e + GlassRecords.Domain.S_FIRST, first);
+            b.putInt(e + GlassRecords.Domain.S_ROWS, rows);
+            b.putInt(e + GlassRecords.Domain.S_CURRENT, f.index(p + "current"));
+            b.putInt(e + GlassRecords.Domain.S_RATIO_NUM, f.i32(p + "ratio_num"));
+            b.putInt(e + GlassRecords.Domain.S_RATIO_DEN, (int) f.u32(p + "ratio_den"));
+            b.putLong(e + GlassRecords.Domain.S_POS, f.i64(p + "pos"));
+            for (int j = 0; j < rows; j++)
+                level(b, GlassRecords.Domain.sourceLevels(nl, ns) + (first++) * GlassRecords.Domain.LEVEL, f, p + "level" + j + ".");
         }
         for (int i = 0; i < nm; i++) {
-            int e = GlassRecords.Domain.members(nl) + i * GlassRecords.Domain.MEMBER;
+            int e = GlassRecords.Domain.members(nl, ns, nsl) + i * GlassRecords.Domain.MEMBER;
             String p = "member" + i + ".";
             b.putInt(e + GlassRecords.Domain.M_NODE, f.sym(p + "node").equals("none") ? GlassRecords.NONE : (int) f.u32(p + "node"));
             b.putInt(e + GlassRecords.Domain.M_COUNT, (int) f.u32(p + "count"));
@@ -283,6 +302,14 @@ class GlassWireContractTest {
             b.putDouble(e + GlassRecords.Domain.M_IMPACT, f.f64(p + "impact"));
         }
         same("IND_GRAPH_DOMAIN", b, f.bytes());
+    }
+
+    /** A Level24 (a speed row or a source row) from the fixture's {@code prefix}selector, speed_num, speed_den, capacity. */
+    private static void level(ByteBuffer b, int at, Fixture f, String prefix) {
+        b.putInt(at + GlassRecords.Domain.L_SELECTOR, (int) f.u32(prefix + "selector"));
+        b.putInt(at + GlassRecords.Domain.L_SPEED_NUM, f.i32(prefix + "speed_num"));
+        b.putInt(at + GlassRecords.Domain.L_SPEED_DEN, (int) f.u32(prefix + "speed_den"));
+        b.putDouble(at + GlassRecords.Domain.L_CAPACITY, f.f64(prefix + "capacity"));
     }
 
     @Test
@@ -325,6 +352,31 @@ class GlassWireContractTest {
     }
 
     @Test
+    void countSample() {
+        Fixture f = fx("IND_COUNT_SAMPLE");
+        int n = f.count("n_entries");
+        ByteBuffer b = rec(GlassRecords.IND_COUNT_SAMPLE, GlassRecords.CountSample.size(n), n);
+        b.putLong(GlassRecords.GAME_TIME, f.i64("game_time"));
+        b.putLong(GlassRecords.DISTRICT, f.u64("district"));
+        b.putInt(GlassRecords.CountSample.SWEEP, (int) f.u32("sweep"));
+        b.putInt(GlassRecords.CountSample.COMPILE, (int) f.u32("compile"));
+        for (int i = 0; i < n; i++) {
+            int e = GlassRecords.CountSample.ENTRIES + GlassRecords.CountSample.ENTRY * i;
+            b.putInt(e + GlassRecords.CountSample.E_MOVER, (int) f.u32("entry" + i + ".mover"));
+            b.putInt(e + GlassRecords.CountSample.E_STORE, (int) f.u32("entry" + i + ".store"));
+            // The second entry has counted no good yet: NONE on the wire.
+            String good = f.sym("entry" + i + ".good");
+            b.putInt(e + GlassRecords.CountSample.E_GOOD, good.equals("none") ? GlassRecords.NONE : (int) Long.parseLong(good));
+            b.putInt(e + GlassRecords.CountSample.E_ENTRIES, (int) f.u32("entry" + i + ".entries"));
+            b.putLong(e + GlassRecords.CountSample.E_SINCE, f.i64("entry" + i + ".since"));
+            b.putLong(e + GlassRecords.CountSample.E_IN, f.i64("entry" + i + ".in"));
+            b.putLong(e + GlassRecords.CountSample.E_OUT, f.i64("entry" + i + ".out"));
+        }
+        assertEquals("none", f.sym("entry1.good"), "the fixture's second pair counted no good");
+        same("IND_COUNT_SAMPLE", b, f.bytes());
+    }
+
+    @Test
     void chunkTicking() {
         Fixture f = fx("IND_CHUNK_TICKING");
         ByteBuffer b = rec(GlassRecords.IND_CHUNK_TICKING, GlassRecords.ChunkTicking.SIZE, Boolean.parseBoolean(f.sym("ticking")) ? 1 : 0);
@@ -359,5 +411,33 @@ class GlassWireContractTest {
         for (int i = 0; i < n; i++)
             built.putInt(GlassRecords.ProbeSet.NODES + 4 * i, (int) f.u32("node" + i));
         same("IND_PROBE_SET", built, f.bytes());
+    }
+
+    @Test
+    void countSetIsReadAtTheJavaOffsets() {
+        Fixture f = fx("IND_COUNT_SET");
+        ByteBuffer b = ByteBuffer.wrap(f.bytes()).order(ByteOrder.LITTLE_ENDIAN);
+        int n = f.count("n_pairs");
+        assertEquals(GlassRecords.IND_COUNT_SET, b.getShort(0) & 0xFFFF, "kind");
+        assertEquals(GlassRecords.CountSet.size(n), b.getShort(2) & 0xFFFF, "size");
+        assertEquals(n, b.getInt(4), "aux");
+        assertEquals(f.u64("cmd_seq"), b.getLong(8), "cmdSeq");
+        assertEquals(f.u64("district"), b.getLong(GlassRecords.CountSet.DISTRICT), "district");
+        assertEquals(f.u32("compile"), Integer.toUnsignedLong(b.getInt(GlassRecords.CountSet.COMPILE)), "compile");
+        for (int i = 0; i < n; i++) {
+            int p = GlassRecords.CountSet.PAIRS + GlassRecords.CountSet.PAIR * i;
+            assertEquals(f.u32("pair" + i + ".mover"), Integer.toUnsignedLong(b.getInt(p + GlassRecords.CountSet.P_MOVER)), "pair" + i + ".mover");
+            assertEquals(f.u32("pair" + i + ".store"), Integer.toUnsignedLong(b.getInt(p + GlassRecords.CountSet.P_STORE)), "pair" + i + ".store");
+        }
+        ByteBuffer built = rec(GlassRecords.IND_COUNT_SET, GlassRecords.CountSet.size(n), n);
+        built.putLong(8, f.u64("cmd_seq"));
+        built.putLong(GlassRecords.CountSet.DISTRICT, f.u64("district"));
+        built.putInt(GlassRecords.CountSet.COMPILE, (int) f.u32("compile"));
+        for (int i = 0; i < n; i++) {
+            int p = GlassRecords.CountSet.PAIRS + GlassRecords.CountSet.PAIR * i;
+            built.putInt(p + GlassRecords.CountSet.P_MOVER, (int) f.u32("pair" + i + ".mover"));
+            built.putInt(p + GlassRecords.CountSet.P_STORE, (int) f.u32("pair" + i + ".store"));
+        }
+        same("IND_COUNT_SET", built, f.bytes());
     }
 }

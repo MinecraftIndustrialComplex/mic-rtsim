@@ -5,14 +5,15 @@
 //! non-zero-byte value derived from the record's name, each record decoded again by the reference
 //! decoder before it is printed.
 
+use rtsim_industry::cmd::Cmd;
 use rtsim_industry::glass::codec as gc;
 use rtsim_industry::glass::records::{
-    ChunkTicking, DomainLevel, EdgeKind, GlassObs, GraphDomain, GraphEdge, GraphEnd, GraphHead,
-    GraphNode, GraphRecipe, Member, NodeKind, ProbeSample, ProbeSet, RateEntry, Term,
+    ChunkTicking, Count, CountSample, CountSet, DomainLevel, DomainSource, EdgeKind, GlassObs,
+    GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NodeKind,
+    ProbeSample, ProbeSet, RateEntry, Term,
 };
 use rtsim_industry::ids::{ChunkPos, Good};
 use rtsim_industry::obs::{Obs, Timed};
-use rtsim_industry::cmd::Cmd;
 
 use super::{Fields, Gen, Sign, begin, cmd, district, game_time, goods, obs, pos, table};
 
@@ -21,7 +22,7 @@ const HEADER: &str = "\
 # Regenerate: cd neoforge/tools/industry-wire-fixtures && nix develop ../../..# -c cargo run --release --quiet -- glass > ../../core/src/test/resources/glass-wire-fixtures.txt
 # Lines: '<NAME> <hex>' is one encoded record (little-endian, header included); '<NAME>.fields k=v ...' the values it was built from;
 # 'CODES.<group> Variant=code ...' an enum code table. f64 values are whole eighths, printed exactly. Latest-wins records carry
-# game_time at 8; IND_CHUNK_TICKING obs_seq at 8 and game_time at 16; IND_PROBE_SET cmd_seq at 8.
+# game_time at 8; IND_CHUNK_TICKING obs_seq at 8 and game_time at 16; IND_PROBE_SET and IND_COUNT_SET cmd_seq at 8.
 ";
 
 /// A double that prints and parses exactly: a whole number of eighths, not zero.
@@ -45,7 +46,15 @@ fn head(f: &mut Fields, g: &mut Gen) -> GraphHead {
     }
 }
 
-fn glass_obs(out: &mut String, name: &str, kind: u16, seq: u64, at: rtsim_kernel::clock::Tick, o: GlassObs, f: &Fields) {
+fn glass_obs(
+    out: &mut String,
+    name: &str,
+    kind: u16,
+    seq: u64,
+    at: rtsim_kernel::clock::Tick,
+    o: GlassObs,
+    f: &Fields,
+) {
     obs(
         out,
         name,
@@ -264,8 +273,7 @@ pub fn fixtures() -> String {
         let at = game_time(&mut f, &mut g);
         let head = head(&mut f, &mut g);
         let network = f.u64("network", g.u64());
-        let current = f.u32("current", g.u32());
-        let driver = Some(f.u32("driver", g.u32() & 0x7FFF_FFFF));
+        let current = Some(f.u32("current", g.u32() & 0x7FFF_FFFF));
         let flags = f.u32("flags", g.u32());
         let live_stress = f64f(&mut f, "live_stress", f64v(&mut g));
         let live_capacity = f64f(&mut f, "live_capacity", f64v(&mut g));
@@ -281,6 +289,49 @@ pub fn fixtures() -> String {
                 capacity: f64f(&mut f, &format!("level{i}.capacity"), f64v(&mut g)),
             })
             .collect();
+        // Two sources: a driven one with two rows and a current row, a fixed one with one row, no
+        // driver and no current row.
+        f.sym("n_sources", 2);
+        let mut sources = Vec::new();
+        for i in 0..2u32 {
+            let driver = if i == 0 {
+                Some(f.u32("source0.driver", g.u32() & 0x7FFF_FFFF))
+            } else {
+                f.sym("source1.driver", "none");
+                None
+            };
+            let n = 2 - i;
+            f.sym(&format!("source{i}.n_levels"), n);
+            let mut rows = Vec::new();
+            for j in 0..n {
+                let p = format!("source{i}.level{j}");
+                rows.push(DomainLevel {
+                    selector: f.u32(&format!("{p}.selector"), g.u32()),
+                    speed_num: f.i32(
+                        &format!("{p}.speed_num"),
+                        g.i32(if j == 0 { Sign::Neg } else { Sign::Pos }),
+                    ),
+                    speed_den: f.u32(&format!("{p}.speed_den"), g.u32()),
+                    capacity: f64f(&mut f, &format!("{p}.capacity"), f64v(&mut g)),
+                });
+            }
+            let current = if i == 0 {
+                Some(f.u32("source0.current", g.u32() & 0x7FFF_FFFF))
+            } else {
+                f.sym("source1.current", "none");
+                None
+            };
+            sources.push(DomainSource {
+                driver,
+                levels: rows,
+                current,
+                ratio_num: f.i32(&format!("source{i}.ratio_num"), g.i32(Sign::Neg)),
+                ratio_den: f.u32(&format!("source{i}.ratio_den"), g.u32()),
+                pos: f.i64(&format!("source{i}.pos"), g.i64(Sign::Neg)),
+            });
+        }
+        // The last member is foreign (a count, not a wire-derived value).
+        let foreign = f.u32("foreign", 1);
         f.sym("n_members", 2);
         let members: Vec<Member> = (0..2)
             .map(|i| Member {
@@ -300,11 +351,12 @@ pub fn fixtures() -> String {
             head,
             network,
             current,
-            driver,
             flags,
             live_stress,
             live_capacity,
             levels,
+            sources,
+            foreign,
             members,
         });
         glass_obs(&mut out, name, gc::IND_GRAPH_DOMAIN, 0, at, o, &f);
@@ -357,6 +409,40 @@ pub fn fixtures() -> String {
     }
 
     {
+        // Two entries: a counted good, and a pair that counted nothing yet (good NONE on the wire).
+        let name = "IND_COUNT_SAMPLE";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let sweep = f.u32("sweep", g.u32());
+        let compile = f.u32("compile", g.u32());
+        f.sym("n_entries", 2);
+        let counts = (0..2)
+            .map(|i| Count {
+                mover: f.u32(&format!("entry{i}.mover"), g.u32()),
+                store: f.u32(&format!("entry{i}.store"), g.u32()),
+                good: if i == 0 {
+                    Some(Good(f.u32("entry0.good", g.u32() & 0x7FFF_FFFF)))
+                } else {
+                    f.sym("entry1.good", "none");
+                    None
+                },
+                since: f.i64(&format!("entry{i}.since"), g.i64(Sign::Pos)),
+                moved_in: f.i64(&format!("entry{i}.in"), g.i64(Sign::Pos)),
+                moved_out: f.i64(&format!("entry{i}.out"), g.i64(Sign::Pos)),
+                entries: f.u32(&format!("entry{i}.entries"), g.u32()),
+            })
+            .collect();
+        let o = GlassObs::CountSample(CountSample {
+            district,
+            sweep,
+            compile,
+            counts,
+        });
+        glass_obs(&mut out, name, gc::IND_COUNT_SAMPLE, 0, at, o, &f);
+    }
+
+    {
         let name = "IND_CHUNK_TICKING";
         let (mut g, mut f) = begin(name);
         let seq = f.u64("obs_seq", g.u64());
@@ -390,6 +476,29 @@ pub fn fixtures() -> String {
             nodes,
         });
         cmd(&mut out, name, gc::IND_PROBE_SET, seq, c, &f);
+    }
+
+    {
+        let name = "IND_COUNT_SET";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let district = district(&mut f, &mut g);
+        let compile = f.u32("compile", g.u32());
+        f.sym("n_pairs", 3);
+        let pairs: Vec<(u32, u32)> = (0..3)
+            .map(|i| {
+                (
+                    f.u32(&format!("pair{i}.mover"), g.u32()),
+                    f.u32(&format!("pair{i}.store"), g.u32()),
+                )
+            })
+            .collect();
+        let c = Cmd::CountSet(CountSet {
+            district,
+            compile,
+            pairs,
+        });
+        cmd(&mut out, name, gc::IND_COUNT_SET, seq, c, &f);
     }
 
     code_tables(&mut out);
@@ -435,7 +544,10 @@ fn code_tables(out: &mut String) {
                 &mut b,
             )
             .expect("encode");
-            (format!("{kind:?}"), u32::from_le_bytes(b[4..8].try_into().unwrap()))
+            (
+                format!("{kind:?}"),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            )
         })
         .collect();
     table(out, "node_kind", &rows);
@@ -475,7 +587,10 @@ fn code_tables(out: &mut String) {
                 &mut b,
             )
             .expect("encode");
-            (format!("{kind:?}"), u32::from_le_bytes(b[4..8].try_into().unwrap()))
+            (
+                format!("{kind:?}"),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            )
         })
         .collect();
     table(out, "edge_kind", &rows);

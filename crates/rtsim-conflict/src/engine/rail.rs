@@ -327,7 +327,7 @@ type LineAt = ((u64, u64), Option<(Pos, DistrictId)>);
 
 /// A pass waiting for its train's next arrival to name the line it ran (MZB-308).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Held {
+pub struct HeldPass {
     pub faction: u32,
     /// Whom the pass counts against: none for a train nobody owns, counted when its line is named
     /// or when it is let go (MZB-309, MZB-310).
@@ -358,12 +358,12 @@ pub struct RailCall {
 impl Conflict {
     /// Whether any pass of `train` is waiting for a line.
     pub fn holds_train(&self, train: u64) -> bool {
-        self.held.contains_key(&train)
+        self.rail_held.contains_key(&train)
     }
 
     /// Passes waiting for a line, in all.
     pub fn held_passes(&self) -> usize {
-        self.held_n
+        self.rail_held_n
     }
 
     /// A RAIL_PASS (MZB-319): a train's pass through a faction's range. A pass for a faction
@@ -392,10 +392,10 @@ impl Conflict {
             self.count_pass(f, a, exit, point, y, None);
             self.rail_gate(w, f, a, at);
         }
-        self.hold(
+        self.hold_pass(
             w,
             rp.train,
-            Held {
+            HeldPass {
                 faction: f,
                 actor,
                 exit,
@@ -675,9 +675,9 @@ impl Conflict {
 
     /// Holds a pass for its train, the train's passes in order of exit. A train over its cap, or
     /// the table over its own, lets its oldest go first (MZB-308).
-    fn hold(&mut self, w: &mut World, train: u64, h: Held, at: Tick) {
+    fn hold_pass(&mut self, w: &mut World, train: u64, h: HeldPass, at: Tick) {
         if self
-            .held
+            .rail_held
             .get(&train)
             .is_some_and(|v| v.len() >= HELD_PER_TRAIN)
             && let Some(old) = self.pop_held(train)
@@ -685,52 +685,52 @@ impl Conflict {
             self.stats.rail_let_go += 1;
             self.let_go(w, old, at);
         }
-        if self.held_n >= HELD_TOTAL
-            && let Some(&(_, oldest)) = self.held_oldest.first()
+        if self.rail_held_n >= HELD_TOTAL
+            && let Some(&(_, oldest)) = self.rail_held_oldest.first()
             && let Some(old) = self.pop_held(oldest)
         {
             self.stats.rail_let_go += 1;
             self.let_go(w, old, at);
         }
-        let v = self.held.entry(train).or_default();
+        let v = self.rail_held.entry(train).or_default();
         if let Some(first) = v.first() {
-            self.held_oldest.remove(&(first.exit, train));
+            self.rail_held_oldest.remove(&(first.exit, train));
         }
         let at_i = v.partition_point(|x| x.exit <= h.exit);
         v.insert(at_i, h);
-        self.held_oldest.insert((v[0].exit, train));
-        self.held_n += 1;
+        self.rail_held_oldest.insert((v[0].exit, train));
+        self.rail_held_n += 1;
     }
 
     /// The oldest pass `train` holds, taken out.
-    fn pop_held(&mut self, train: u64) -> Option<Held> {
-        let v = self.held.get_mut(&train)?;
+    fn pop_held(&mut self, train: u64) -> Option<HeldPass> {
+        let v = self.rail_held.get_mut(&train)?;
         let h = v.remove(0);
-        self.held_oldest.remove(&(h.exit, train));
+        self.rail_held_oldest.remove(&(h.exit, train));
         match v.first() {
             Some(n) => {
-                self.held_oldest.insert((n.exit, train));
+                self.rail_held_oldest.insert((n.exit, train));
             }
             None => {
-                self.held.remove(&train);
+                self.rail_held.remove(&train);
             }
         }
-        self.held_n -= 1;
+        self.rail_held_n -= 1;
         Some(h)
     }
 
     /// Every pass `train` holds, taken out.
-    fn take_train(&mut self, train: u64) -> Option<Vec<Held>> {
-        let v = self.held.remove(&train)?;
-        self.held_oldest.remove(&(v[0].exit, train));
-        self.held_n -= v.len();
+    fn take_train(&mut self, train: u64) -> Option<Vec<HeldPass>> {
+        let v = self.rail_held.remove(&train)?;
+        self.rail_held_oldest.remove(&(v[0].exit, train));
+        self.rail_held_n -= v.len();
         Some(v)
     }
 
     /// A pass nobody named a line for (MZB-309): one with an owner was counted at ingest, so it is
     /// only dropped; one with none counts now, at its exit, against the player with the most time
     /// in its point's chunk, or against nobody.
-    fn let_go(&mut self, w: &mut World, h: Held, at: Tick) {
+    fn let_go(&mut self, w: &mut World, h: HeldPass, at: Tick) {
         if h.actor.is_some() {
             return;
         }
@@ -743,7 +743,7 @@ impl Conflict {
     /// Lets go every pass held for a day (MZB-308). Lazy: it runs first in `rail_pass`,
     /// `rail_call` and `rail_wake`.
     pub(super) fn let_go_due(&mut self, w: &mut World, at: Tick) {
-        while let Some(&(exit, train)) = self.held_oldest.first()
+        while let Some(&(exit, train)) = self.rail_held_oldest.first()
             && exit.0 + HELD_TICKS <= at.0
         {
             let Some(h) = self.pop_held(train) else {

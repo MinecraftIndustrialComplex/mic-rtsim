@@ -19,7 +19,11 @@ pub enum Invalid {
     Domain(u32),
     Member(u32),
     Level(u32),
+    Source(u32),
 }
+
+/// A domain's speed rows at most (Java makes a domain with more unstable).
+pub const MAX_SPEED_ROWS: usize = 32;
 
 /// Compressed rows: `idx[off[v]..off[v + 1]]` are node `v`'s items.
 #[derive(Clone, Debug, Default)]
@@ -76,6 +80,9 @@ pub struct Graph {
     pub node_recipes: Rows,
     /// The domain each boiler drives.
     pub drives: Vec<Option<u32>>,
+    /// Per domain: its sources' first index in a flat per-source vector, then the total
+    /// (`src_off[d]..src_off[d + 1]`).
+    pub src_off: Vec<u32>,
     /// The passes' order: strongly connected components in topological order, each in the reverse
     /// postorder of a depth-first search inside it.
     pub order: Vec<u32>,
@@ -160,18 +167,58 @@ impl Graph {
                     return Err(Invalid::Member(di as u32));
                 }
             }
-            if !d.levels.is_empty() && d.current as usize >= d.levels.len() {
+            if d.current.is_some_and(|c| c as usize >= d.levels.len())
+                || d.levels.len() > MAX_SPEED_ROWS
+                || d.foreign as usize > d.members.len()
+            {
                 return Err(Invalid::Level(di as u32));
             }
-            if let Some(b) = d.driver {
-                if b >= nn {
-                    return Err(Invalid::Member(di as u32));
+            if d.sources.windows(2).any(|w| w[0].pos >= w[1].pos) {
+                return Err(Invalid::Source(di as u32));
+            }
+            for s in &d.sources {
+                if s.current.is_some_and(|c| c as usize >= s.levels.len()) {
+                    return Err(Invalid::Level(di as u32));
                 }
-                if nodes[b as usize].kind == NodeKind::Boiler {
-                    drives[b as usize] = Some(di as u32);
+                let Some(b) = s.driver else { continue };
+                // A driven source places its speeds in the reference's frame by its ratio.
+                if b >= nn || s.ratio_den == 0 || s.levels.is_empty() {
+                    return Err(Invalid::Source(di as u32));
+                }
+                if nodes[b as usize].kind != NodeKind::Boiler {
+                    continue;
+                }
+                // A boiler drives one domain (Java makes a tank on two networks unstable).
+                match drives[b as usize] {
+                    Some(o) if o != di as u32 => return Err(Invalid::Source(di as u32)),
+                    _ => drives[b as usize] = Some(di as u32),
                 }
             }
         }
+        // A driven domain has a speed row for each speed a source gives, in the reference's frame
+        // (Java builds the rows from those speeds), so a solve always finds the row it runs at.
+        for (di, d) in domains.iter().enumerate() {
+            if !d.driven() {
+                continue;
+            }
+            for s in &d.sources {
+                let Some(r) = s.ratio().filter(|&r| r != 0.0) else {
+                    continue;
+                };
+                if s.levels.iter().any(|l| {
+                    l.speed() != 0.0 && super::solve::speed_row_at(d, l.speed() / r).is_none()
+                }) {
+                    return Err(Invalid::Level(di as u32));
+                }
+            }
+        }
+        let mut src_off = Vec::with_capacity(domains.len() + 1);
+        let mut total = 0u32;
+        for d in &domains {
+            src_off.push(total);
+            total += d.sources.len() as u32;
+        }
+        src_off.push(total);
         let key = |e: &GraphEdge, i: usize| (u64::from(e.order) << 32) | i as u64;
         let mut outs = Vec::new();
         let mut ins = Vec::new();
@@ -210,6 +257,7 @@ impl Graph {
             observe_in,
             node_recipes,
             drives,
+            src_off,
             order: Vec::new(),
             back: Vec::new(),
             cyclic: vec![false; n],
@@ -488,6 +536,19 @@ impl Graph {
             }
         }
         count
+    }
+
+    /// Domain `d`'s sources' span in a flat per-source vector.
+    pub fn sources_of(&self, d: u32) -> std::ops::Range<usize> {
+        self.src_off[d as usize] as usize..self.src_off[d as usize + 1] as usize
+    }
+
+    /// Every source's row at compile, flat by [`Graph::src_off`].
+    pub fn source_rows_at_compile(&self) -> Vec<Option<u32>> {
+        self.domains
+            .iter()
+            .flat_map(|d| d.sources.iter().map(|s| s.current))
+            .collect()
     }
 
     pub fn node(&self, v: u32) -> &GraphNode {

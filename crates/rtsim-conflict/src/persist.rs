@@ -43,8 +43,8 @@ use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus,
-    Held, Line, LineCount, Party, Phase, Pin, RailMeter, Retired, Slot, SlotState, Source, Target,
-    Throne,
+    HeldPass, Line, LineCount, Party, Phase, Pin, RailMeter, Retired, Slot, SlotState, Source,
+    Target, Throne,
 };
 use crate::grievance::{Grievance, KB, RailTail};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
@@ -63,7 +63,8 @@ use crate::tunables::ConflictTunables;
 /// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
 /// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
-/// arrival (M6, MZB-271). RTC8: a focus may keep its track, a source its pin, a party's target may
+/// arrival (M6, MZB-271); a party ends with the op ids of the casualties it counted (MZB-589).
+/// RTC8: a focus may keep its track, a source its pin, a party's target may
 /// be a track, a faction carries its rail meters, the wheel's events may be a rail wake and the
 /// resident state ends with the passes held for a line (M7, MZB-302). So that a world with no
 /// rail pays base's bytes, the Rail kind's grievance components ride after a feud's flags byte
@@ -752,6 +753,10 @@ fn put_party(w: &mut Writer, x: &Party) {
     w.bool(x.chief);
     put_opt(w, &x.breaker, |w, a| w.u64(a.to_bits()));
     w.f64(x.fight_strength);
+    put_usize(w, x.casualty_ops.len());
+    for op in &x.casualty_ops {
+        w.u64(*op);
+    }
 }
 
 fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
@@ -808,6 +813,10 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
         chief: r.bool()?,
         breaker: get_opt(r, handle)?,
         fight_strength: r.f64()?,
+        casualty_ops: {
+            let n = r.len_prefix(8)?;
+            (0..n).map(|_| r.u64()).collect::<codec::Result<Vec<_>>>()?
+        },
     })
 }
 
@@ -1231,7 +1240,7 @@ fn get_meter(r: &mut Reader<'_>) -> codec::Result<RailMeter> {
     Ok(m)
 }
 
-fn put_held(w: &mut Writer, h: &Held) {
+fn put_held(w: &mut Writer, h: &HeldPass) {
     w.var_u64(u64::from(h.faction));
     put_opt(w, &h.actor, |w, a| w.u64(a.to_bits()));
     w.u64(h.exit.0);
@@ -1239,8 +1248,8 @@ fn put_held(w: &mut Writer, h: &Held) {
     w.var_i64(i64::from(h.y));
 }
 
-fn get_held(r: &mut Reader<'_>) -> codec::Result<Held> {
-    Ok(Held {
+fn get_held(r: &mut Reader<'_>) -> codec::Result<HeldPass> {
+    Ok(HeldPass {
         faction: get_u32(r)?,
         actor: get_opt(r, handle)?,
         exit: Tick(r.u64()?),
@@ -1399,7 +1408,7 @@ impl Conflict {
         put_usize(w, st.len());
         st.iter().for_each(|v| w.var_u64(*v));
         put_usize(w, self.outbox.len());
-        for c in &self.outbox {
+        for c in self.outbox.iter() {
             let mut b = Vec::new();
             boundary::encode_cmd(0, c, &mut b);
             w.bytes(&b);
@@ -1408,8 +1417,8 @@ impl Conflict {
         w.u8(u8::from(self.peaceful));
         w.u64(self.peaceful_since.0);
         w.var_u64(u64::from(self.notice_serial));
-        put_usize(w, self.held.len());
-        for (train, v) in &self.held {
+        put_usize(w, self.rail_held.len());
+        for (train, v) in &self.rail_held {
             w.u64(*train);
             put_usize(w, v.len());
             v.iter().for_each(|h| put_held(w, h));
@@ -1461,7 +1470,7 @@ impl Conflict {
             let b = r.bytes()?;
             let (_, cmd, _) = boundary::decode_cmd(b)
                 .map_err(|e| CodecError::Invalid(format!("a queued command: {e:?}")))?;
-            c.outbox.push(cmd);
+            c.outbox.restore(cmd);
         }
         get_presence(r, &mut c.presence)?;
         c.peaceful = r.u8()? != 0;
@@ -1471,7 +1480,7 @@ impl Conflict {
             let train = r.u64()?;
             // A held pass is at least a faction, a flag, an exit, a position and a y.
             let m = r.len_prefix(12)?;
-            let mut v: Vec<Held> = Vec::with_capacity(m);
+            let mut v: Vec<HeldPass> = Vec::with_capacity(m);
             for _ in 0..m {
                 let h = get_held(r)?;
                 if v.last().is_some_and(|p| p.exit > h.exit) {
@@ -1482,9 +1491,9 @@ impl Conflict {
             let Some(first) = v.first() else {
                 return bad("a train that holds nothing".into());
             };
-            c.held_oldest.insert((first.exit, train));
-            c.held_n += v.len();
-            if c.held.insert(train, v).is_some() {
+            c.rail_held_oldest.insert((first.exit, train));
+            c.rail_held_n += v.len();
+            if c.rail_held.insert(train, v).is_some() {
                 return bad("a train held twice".into());
             }
         }
@@ -1542,7 +1551,7 @@ impl Conflict {
             return bad("an index names a faction past the table".into());
         }
         if self
-            .held
+            .rail_held
             .values()
             .flatten()
             .any(|h| h.faction as usize >= n)

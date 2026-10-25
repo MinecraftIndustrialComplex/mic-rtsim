@@ -246,6 +246,9 @@ public final class CarryOnConflictGameTests {
                     Mob v = EntityType.VINDICATOR.create(level);
                     v.moveTo(spot[0].x, spot[0].y, spot[0].z, 0f, 0f);
                     v.setNoAi(true);
+                    // far from every player, a monster that is not persistent despawns on its first tick (the census
+                    // then lists nothing); a camp's own bodies are persistent
+                    v.setPersistenceRequired();
                     check("added", level.addFreshEntity(v));
                     body[0] = v;
                     faction[0] = RtsimApi.declareCamp(level, new ChunkPos(cx, cz), CAMP_STRUCTURE, STUB_KIND, BlockPos.containing(spot[0]),

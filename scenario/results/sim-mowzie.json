@@ -69,7 +69,7 @@
         {
           "name": "12 legs a day",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 77d7229e29fa37c9"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 9f2bc009569d30fb"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -89,7 +89,7 @@
         {
           "name": "24 legs a day",
           "ok": true,
-          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state fb4eb382133c503a"
+          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state dbf2eb25ea36b5ee"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -109,7 +109,7 @@
         {
           "name": "50 legs a day",
           "ok": true,
-          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state c3b72e3e6348396f"
+          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state b962a368c3f42efb"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -134,7 +134,7 @@
         {
           "name": "14 lines at 1.7 legs a day on one trunk (23.8)",
           "ok": true,
-          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state 81d68e44f763963c"
+          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state 368c15d290f05760"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -225,6 +225,8 @@
         "peace_held": 0,
         "notices_shown": 0,
         "repeats": 7,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -634,12 +636,12 @@
         {
           "name": "den A (west of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 4111cb9b9e9f40b6"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 8ed032f57f15508c"
         },
         {
           "name": "den B (east of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 4111cb9b9e9f40b6"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 8ed032f57f15508c"
         },
         {
           "name": "a den found on day 10 gets its first pass from the next train and its own meter",
@@ -766,6 +768,8 @@
         "peace_held": 0,
         "notices_shown": 0,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -1069,7 +1073,7 @@
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state f8a504d9f2e6473a against f8a504d9f2e6473a, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state c299d06ac983597e against c299d06ac983597e, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",

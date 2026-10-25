@@ -5,7 +5,9 @@ SCENARIO: {"port": 25871, "rcon_port": 25872, "seed": "...", "jvm": ["-Xms6G", "
            "neoforge": "21.1.230", "java": "/nix/store/.../bin/java", "nice": 10,
            "boot_timeout": 1800,
            "steps": [{"cmd": "forceload add 0 0 15 15"}, {"wait": 60},
-                     {"sample_tps": {"seconds": 300, "every": 5}}, {"cmd": "save-all flush"}, {"stop": true}]}
+                     {"sample_tps": {"seconds": 300, "every": 5, "also": ["rtsim perf"]}},
+                     {"cmd": "save-all flush"}, {"stop": true}]}
+sample_tps's optional "also" commands are sent after each tps sample and their replies kept in "also".
 Every command's reply is logged in OUT.json. A java process left over is killed only if it is ours.
 """
 import json
@@ -146,12 +148,17 @@ def main():
             elif 'sample_tps' in st:
                 p = st['sample_tps']
                 samples = []
+                also = []  # replies of the 'also' commands, read after each tps sample (rtsim's own counters)
                 end = time.time() + p['seconds']
                 while time.time() < end:
                     txt = r.cmd(p.get('command', 'neoforge tps'))
                     samples.append([round(time.time() - t0, 1), parse_tps(txt), proc_stats(proc.pid), loadavg()])
+                    if p.get('also'):
+                        also.append([round(time.time() - t0, 1)] + [r.cmd(c) for c in p['also']])
                     time.sleep(p.get('every', 5))
                 rec['samples'] = samples
+                if also:
+                    rec['also'] = also
                 ps = [x for x in samples if x[2]]
                 if len(ps) >= 2:
                     rec['cpu_cores'] = round((ps[-1][2][1] - ps[0][2][1]) / (ps[-1][0] - ps[0][0]), 3)

@@ -21,16 +21,19 @@ use std::collections::HashMap;
 use std::fmt::{Display, Write as _};
 
 use rtsim_industry::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, DrawAction,
+    HeldDraw, InvDelta, WriteChain, WritePackage,
 };
-use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
+use rtsim_industry::ids::{
+    BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId,
+};
 use rtsim_industry::obs::{
-    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
-    DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
-    EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
-    PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
-    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
+    ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, HeldList, InvKind,
+    InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer,
+    ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl,
+    StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
@@ -353,6 +356,7 @@ fn code_tables(out: &mut String) {
         let b = obs_bytes(Obs::Discard {
             district: d,
             reason,
+            station: None,
         });
         (format!("{reason:?}"), u32_at(&b, 4))
     })
@@ -438,6 +442,35 @@ fn code_tables(out: &mut String) {
         .collect();
     table(out, "package_direction", &rows);
 
+    // IND_CHAIN_PACKAGE direction, at 44.
+    let rows: Vec<_> = [
+        ChainDirection::Out,
+        ChainDirection::In,
+        ChainDirection::Held,
+        ChainDirection::Released,
+        ChainDirection::Drawn,
+    ]
+    .into_iter()
+    .map(|direction| {
+        let b = obs_bytes(Obs::ChainPackage(ChainPackage {
+            store: StoreId(1),
+            district: Some(d),
+            inventory: Some(1),
+            direction,
+            frogport: 2,
+            pos: BlockPos::new(0, 0, 0),
+            destination: None,
+            packages: 3,
+            address: 4,
+            op: None,
+            key: None,
+            goods: GoodVec::new(),
+        }));
+        (format!("{direction:?}"), u32_at(&b, 44))
+    })
+    .collect();
+    table(out, "chain_direction", &rows);
+
     // IND_DISTRICT aux.
     let rows: Vec<_> = [
         NotLearnable::RotationCrossesBoundary,
@@ -507,6 +540,23 @@ fn code_tables(out: &mut String) {
         })
         .collect();
     table(out, "carriage_reason", &rows);
+
+    // IND_HELD_DRAW action, at 28.
+    let rows: Vec<_> = [DrawAction::Draw, DrawAction::Remove, DrawAction::Return]
+        .into_iter()
+        .map(|action| {
+            let mut bytes = Vec::new();
+            let c = Cmd::HeldDraw(HeldDraw {
+                store: StoreId(1),
+                epoch: 1,
+                action,
+                serials: Vec::new(),
+            });
+            wire::encode_cmd(1, &c, &mut bytes).expect("encode_cmd");
+            (format!("{action:?}"), u32_at(&bytes, 28))
+        })
+        .collect();
+    table(out, "draw_action", &rows);
 
     // IND_DEPOSIT_SAMPLE aux (also IND_DEPOSIT_DELTA's).
     let rows: Vec<_> = [
@@ -881,9 +931,14 @@ fn main() {
         let seq = f.u64("obs_seq", g.u64());
         let at = game_time(&mut f, &mut g);
         let district = district(&mut f, &mut g);
-        let reason = DiscardReason::ProgressiveContraption;
+        let reason = DiscardReason::Other;
         f.sym("discard_reason", format!("{reason:?}"));
-        let o = Obs::Discard { district, reason };
+        let station = Some(StationId(f.u64("station", g.u64())));
+        let o = Obs::Discard {
+            district,
+            reason,
+            station,
+        };
         obs(
             &mut out,
             name,
@@ -1315,6 +1370,193 @@ fn main() {
     }
 
     {
+        // Three frogports (three hops, 200 bytes): one in no district, one with no inventory, one
+        // from another store, one with a `*` filter.
+        let name = "IND_PACKAGE_STORE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let store = StoreId(f.u64("store", g.u64()));
+        let dim = f.u32("dim", g.u32());
+        let epoch = f.u32("epoch", g.u32());
+        let into = StoreId(f.u64("into", g.u64()));
+        let n = 3usize;
+        f.sym("n_frogports", n);
+        let frogports: Vec<StoreFrogport> = (0..n)
+            .map(|i| {
+                let p = format!("frogport{i}.");
+                let district = if i == 2 {
+                    f.sym(&format!("{p}district"), "none");
+                    None
+                } else {
+                    Some(DistrictId(f.u64(&format!("{p}district"), g.u64())))
+                };
+                let inventory = if i == 1 {
+                    f.sym(&format!("{p}inventory"), "none");
+                    None
+                } else {
+                    Some(f.u32(&format!("{p}inventory"), g.u32()))
+                };
+                let star = i == 0;
+                f.sym(&format!("{p}star"), star);
+                let at = pos(&mut f, &mut g, &p);
+                let conveyor = pos(&mut f, &mut g, &format!("{p}conveyor_"));
+                let from = if i == 1 {
+                    Some(StoreId(f.u64(&format!("{p}from"), g.u64())))
+                } else {
+                    f.sym(&format!("{p}from"), "none");
+                    None
+                };
+                StoreFrogport {
+                    district,
+                    inventory,
+                    star,
+                    pos: at,
+                    conveyor,
+                    from,
+                }
+            })
+            .collect();
+        let hops: Vec<u16> = (0..n * (n - 1) / 2)
+            .map(|i| f.u32(&format!("hops{i}"), g.u32() & 0x7FFF) as u16)
+            .collect();
+        let o = Obs::PackageStore(StoreDecl {
+            store,
+            dim,
+            epoch,
+            into: Some(into),
+            frogports,
+            hops,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_PACKAGE_STORE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        let name = "IND_CHAIN_PACKAGE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let store = StoreId(f.u64("store", g.u64()));
+        let district = district(&mut f, &mut g);
+        let inventory = f.u32("inventory", g.u32());
+        let direction = ChainDirection::Out;
+        f.sym("direction", format!("{direction:?}"));
+        let frogport = f.u32("frogport", g.u32());
+        let pos = pos(&mut f, &mut g, "");
+        let destination = f.u32("destination", g.u32());
+        let packages = f.u32("packages", g.u32());
+        let address = f.u32("address", g.u32());
+        let op = g.bridge_op();
+        f.num("op", op.0);
+        // Both an op and a key, though no record Java sends has both: the layout's test.
+        let key = HeldKey {
+            epoch: f.u32("epoch", g.u32() | 1),
+            serial: f.u64("serial", g.u64()),
+        };
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let o = Obs::ChainPackage(ChainPackage {
+            store,
+            district: Some(district),
+            inventory: Some(inventory),
+            direction,
+            frogport,
+            pos,
+            destination: Some(destination),
+            packages,
+            address,
+            op: Some(op),
+            key: Some(key),
+            goods,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_CHAIN_PACKAGE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // Three serials, the last one drawn (choices SC140, SC143).
+        let name = "IND_HELD_LIST";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let epoch = f.u32("epoch", g.u32() | 1);
+        f.sym("n_serials", 3);
+        f.sym("n_drawn", 1);
+        let mut serials: Vec<u64> = (0..3)
+            .map(|i| f.u64(&format!("serial{i}"), g.u64()))
+            .collect();
+        let drawn = serials.split_off(2);
+        let o = Obs::HeldList(HeldList {
+            epoch,
+            serials,
+            drawn,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_HELD_LIST,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // Two destinations, one of them no route; three goods entries.
+        let name = "IND_STORE_CENSUS";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let store = StoreId(f.u64("store", g.u64()));
+        f.sym("m", 2);
+        let d0 = f.u32("dest0", g.u32());
+        let p0 = f.u32("dest0.packages", g.u32());
+        f.sym("dest1", "none");
+        let p1 = f.u32("dest1.packages", g.u32());
+        f.sym("n_entries", 3);
+        let goods: Vec<(Option<u32>, Good, i64)> = (0..3)
+            .map(|i| {
+                let good = Good(f.u32(&format!("entry{i}.good"), g.u32()));
+                let dest = if i == 1 {
+                    f.sym(&format!("entry{i}.dest"), "none");
+                    None
+                } else {
+                    f.sym(&format!("entry{i}.dest"), "dest0");
+                    Some(d0)
+                };
+                let sign = if i % 2 == 0 { Sign::Pos } else { Sign::Neg };
+                let amount = f.i64(&format!("entry{i}.amount"), g.i64(sign));
+                (dest, good, amount)
+            })
+            .collect();
+        let o = Obs::StoreCensus(StoreCensus {
+            store,
+            packages: vec![(Some(d0), p0), (None, p1)],
+            goods,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_STORE_CENSUS,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
         let name = "IND_PACKAGE";
         let (mut g, mut f) = begin(name);
         let seq = f.u64("obs_seq", g.u64());
@@ -1630,6 +1872,55 @@ fn main() {
             goods,
         });
         cmd(&mut out, name, wire::IND_WRITE_PACKAGE, seq, c, &f);
+    }
+
+    {
+        let name = "IND_WRITE_CHAIN";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let op = g.engine_op();
+        f.num("op", op.0);
+        let store = StoreId(f.u64("store", g.u64()));
+        let district = district(&mut f, &mut g);
+        let inventory = f.u32("inventory", g.u32());
+        let frogport = f.u32("frogport", g.u32());
+        let p = pos(&mut f, &mut g, "");
+        let count = f.u32("count", g.u32());
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let c = Cmd::WriteChain(WriteChain {
+            op,
+            store,
+            district,
+            inventory,
+            frogport,
+            pos: p,
+            count,
+            goods,
+        });
+        cmd(&mut out, name, wire::IND_WRITE_CHAIN, seq, c, &f);
+    }
+
+    {
+        // Three serials (slice S4c2).
+        let name = "IND_HELD_DRAW";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let store = StoreId(f.u64("store", g.u64()));
+        let epoch = f.u32("epoch", g.u32() | 1);
+        let action = DrawAction::Remove;
+        f.sym("action", format!("{action:?}"));
+        f.sym("n_serials", 3);
+        let serials = (0..3)
+            .map(|i| f.u64(&format!("serial{i}"), g.u64()))
+            .collect();
+        let c = Cmd::HeldDraw(HeldDraw {
+            store,
+            epoch,
+            action,
+            serials,
+        });
+        cmd(&mut out, name, wire::IND_HELD_DRAW, seq, c, &f);
     }
 
     code_tables(&mut out);
