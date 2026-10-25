@@ -414,7 +414,10 @@ public final class SectionsJoinGameTests {
      * across the border into B, ending in a depot (B holds no seed, so it is a member by the face touch alone): one
      * district with both chunks and the pair. Then B alone unloads. A forced chunk keeps its neighbour loaded
      * (ticket level 31 reaches 32 next door), so A is let go to a FULL-only ticket (level 33) first and B, at 34,
-     * unloads with the forcing gone; A stays loaded. A detection that looks at A and cannot look at B
+     * drops below FULL with the forcing gone ({@code getChunkNow} null, so no detection can look at it); A stays
+     * loaded. B stays in memory with no {@code ChunkEvent.Unload} (a chunk unloads only past
+     * {@code ChunkLevel.MAX_LEVEL}, and A's ticket holds B at 34), so the district still counts it among its
+     * loaded chunks, and the wait is on {@code getChunkNow} alone. A detection that looks at A and cannot look at B
      * ({@code markDirty} A, {@code rescanNow}) keeps the same district id, both chunks and the pair: the join was
      * seen through B's loaded face and an unloaded member keeps what its district saw (SECTIONS.md §2.3, SC157).
      * The chunks are forced and cleared again at the end.
@@ -461,11 +464,9 @@ public final class SectionsJoinGameTests {
                 })
                 .thenWaitUntil(paced(() -> {
                     District d = ind().district(id[0]);
-                    check("B unloads, A stays: A " + (level.getChunkSource().getChunkNow(ax, az) != null) + ", B "
-                            + (level.getChunkSource().getChunkNow(bx, az) != null) + ", loaded chunks "
-                            + (d == null ? -1 : ind().districts().loadedChunks(d)),
-                            level.getChunkSource().getChunkNow(bx, az) == null && level.getChunkSource().getChunkNow(ax, az) != null
-                                    && d != null && ind().districts().loadedChunks(d) == 1);
+                    check("B leaves FULL, A stays: A " + (level.getChunkSource().getChunkNow(ax, az) != null) + ", B "
+                            + (level.getChunkSource().getChunkNow(bx, az) != null) + ", district " + (d != null),
+                            level.getChunkSource().getChunkNow(bx, az) == null && level.getChunkSource().getChunkNow(ax, az) != null && d != null);
                 }))
                 .thenExecute(() -> {
                     ind().districts().markDirty(level.dimension(), ca);
@@ -847,8 +848,8 @@ public final class SectionsJoinGameTests {
      * Two far force-loaded chunks X (west) and Y (east). Y holds a press seed and a mechanical arm one block from the
      * border with X, taking from a depot in X (three blocks away) and depositing onto a depot of its own; X holds only
      * that depot (no seed), and nothing in Y touches X across the border. After the arm has ticked: one district with
-     * both chunks and the pair (X, Y). Then Y alone unloads (X gets a FULL-only ticket first, as in
-     * anUnloadedMemberKeepsItsJoins), X is marked and a detection runs: the same district, X in it and the pair kept
+     * both chunks and the pair (X, Y). Then Y alone unloads (X gets a FULL-only ticket first, and Y drops below
+     * FULL with no {@code ChunkEvent.Unload}, as in anUnloadedMemberKeepsItsJoins), X is marked and a detection runs: the same district, X in it and the pair kept
      * (X holds an industrial block entity and has a saved pair to an unloaded member, so it roots the walk). Then X's
      * depot is removed and a detection runs again: X is no longer in the district, while the district (Y, unloaded)
      * stays. Both states are recorded; if Y does not stay a member while unloaded, the last check fails and says so.
@@ -905,11 +906,9 @@ public final class SectionsJoinGameTests {
                 })
                 .thenWaitUntil(paced(() -> {
                     District d = ind().district(id[0]);
-                    check("Y unloads, X stays: X " + (level.getChunkSource().getChunkNow(xx, zz) != null) + ", Y "
-                            + (level.getChunkSource().getChunkNow(yx, zz) != null) + ", loaded chunks "
-                            + (d == null ? -1 : ind().districts().loadedChunks(d)),
-                            level.getChunkSource().getChunkNow(yx, zz) == null && level.getChunkSource().getChunkNow(xx, zz) != null
-                                    && d != null && ind().districts().loadedChunks(d) == 1);
+                    check("Y leaves FULL, X stays: X " + (level.getChunkSource().getChunkNow(xx, zz) != null) + ", Y "
+                            + (level.getChunkSource().getChunkNow(yx, zz) != null) + ", district " + (d != null),
+                            level.getChunkSource().getChunkNow(yx, zz) == null && level.getChunkSource().getChunkNow(xx, zz) != null && d != null);
                 }))
                 .thenExecute(() -> {
                     ind().districts().markDirty(level.dimension(), cx);
