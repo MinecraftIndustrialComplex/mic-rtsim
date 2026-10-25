@@ -688,6 +688,11 @@ lands second.**
 | NestRenew | keep | drop in slice D; send from slice N | not idempotent until it carries its serial (§7.1) |
 | NestSortie | drop | drop | a watched district's fight, re-derived (RP-15) |
 
+As built (slice D, RP-74): `rtsim-ecology/src/outbox.rs`, `gate` an exhaustive `match` over `Cmd`
+with no `_` arm, every push of nest.rs, oil.rs and engine.rs through `Outbox::push`. "Never"
+(Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew drops while
+replaying until slice N makes it send. The tests are the module's own (§4.2).
+
 ### 4.6 Herds (rtsim-ecology herds/boundary.rs `Cmd`)
 
 | Kind | Queued | While replaying | Why |
@@ -835,7 +840,13 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   (§5.3) and the fill's death counts (§5.2) cleared; the held set cleared, its parties' polls left
   to run (§6.1); then the kept notices go (`resend_notices`).
 - **Dragons:** every embodied dragon resumed where it was last seen (`resume(.., left: true)`),
-  `by_entity` and `chests` cleared, every player's interest leg cancelled.
+  `by_entity` cleared, every player's interest leg cancelled, the epoch floors folded into the
+  dragons' epochs (§5.3). As built (RP-70, RP-75, RP-78): `session_start` is gone;
+  `begin_replay(from_pages)` changes no dragon (the bodies stay embodied through the replay, §5.1)
+  and clears `chests` (the plugin's, reported again as its chests load; moved from the end to the
+  start, since the replayed LAIR_CHEST records fill it again); `replay_done(w, at)` is a no-op
+  unless a replay runs. rtsim-jni turns the far feed on at the dragons' replay end (Java's far
+  table is per session).
 - **Herds:** every embodied group abstract (clips' legs cancelled, members' `seen.last` set), every
   player's interest and `pos` forgotten, `puppets` 0. A herds player's interest is the world's area
   leg, which `forget_player_pos` already cancelled at the arm: set to None, not cancelled again (the
@@ -858,7 +869,11 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   names an epoch raises the floor to it first, live or replayed (RP-57).
 - **Herds:** HERD_KILLED and HERD_TAKEN go by member key and op id already; a copied
   HERD_MATERIALIZED raises the floor only.
-- **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
+- **Dragons:** `Dragons::ingest_copy(w, obs, at)`, called by rtsim-jni when `st.applying_copy` is
+  `Some` (RP-78). Nothing is carried: a copy embodies nothing, and every copy that names an epoch
+  raises the floor to it first, live or replayed (RP-57, RP-75: the floor folds into the dragon's
+  epoch at the next materialize or the replay end).
+- **Ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
 
 ### 5.8 The DEPART trap (RP-16)
 
@@ -867,6 +882,10 @@ reason NOT_EMBODIED that carries only the agent and the epoch. The engine's Dema
 (rtsim-ecology engine.rs about L3274) reads no reason and takes the zeros: health 0, hunger 0, a rest at
 (0, 0, 0) in dimension 0. Fix in slice D: reason NOT_EMBODIED takes no position, health or hunger; the
 dragon resumes where the engine had it, as a SPAWN_REJECTED does.
+
+Built in slice D (RP-73): `boundary::DEMAT_NOT_EMBODIED = 6`. The arm removes the dragon's
+`by_entity` entries and leaves health, hunger and rest alone; it resumes as `left` if the dragon was
+leaving, the visit over; its adoption stands. Only reason 6 changes (docs/boundary.md §2.3).
 
 ### 5.9 A casualty finds its stack by epoch (RP-27)
 
@@ -899,7 +918,10 @@ the cap makes the order not matter.
     from the branches §6.1 holds, and `wave` returns without scheduling the next, since the kept
     band's fight becomes Waiting at the replay end anyway;
   - dragons `materialize` (callers: `seen`, the field flights in oil.rs, engine.rs about 1380 and
-    2695);
+    2695). As built (RP-71, RP-72): `seen` and `Ev::SeenAtLair` return early (counted as deferred);
+    the raids that asked whether a player watches (`raid_home`, `raid_district`, `refuel_arrive`, a
+    nest's sortie) are gated, not held: the abstract raid stands and books what it books either way,
+    the dragon does not come in person, and `materialize` keeps a `defer()` backstop at its top;
   - herds `seen` (also fired by Ev::Seen events from the pages' wheel);
   - ships `materialize_timetabled` and `materialize_pirate` (from `seen`, `seen_ships`, `raid`).
 - **At the replay end:** `shared::simulate` runs after the modules in every step, so the kept
@@ -1292,6 +1314,34 @@ Tests:
    adopts at once.
 5. `no_dragon_materializes_while_a_long_replay_runs_with_a_player_near`, with its control.
 6. The gate tests (§4.2).
+
+As built (RP-70 to RP-79 in docs/choices-mowzie-build.md):
+1. `outbox.rs`, the gate and its two tests (`every_command_kind_has_its_replay_verdicts`,
+   `a_never_kind_decided_while_replaying_is_counted_and_not_queued`, the second run once with
+   `--release`).
+2. `begin_replay(from_pages)` and `replay_done(w, at)`; `session_start` removed.
+3. `seen`, `Ev::SeenAtLair` and `materialize` return early (RP-71); the honour (RP-70); the floor
+   (RP-75, RP-76's table for all 18 `Obs` kinds, `Obs::agent_epoch`).
+4. `DEMAT_NOT_EMBODIED` (RP-73).
+5. rtsim-jni `engine/dragons.rs` `reset`, `replay_end`, `take_commands`' counts, copies to
+   `ingest_copy`; shared.rs's `replay_end` calls the dragons first (RP-77).
+6. The list is RP-72: `seen` and `SeenAtLair` deferred, `raid_home`, `raid_district`,
+   `refuel_arrive` and the nest sortie gated.
+7. RP-79, with the DragonBridge lines.
+
+Tests: `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (rtsim-jni protocol; control
+`..._after_a_clean_restart`); the epoch tests in rtsim-ecology `tests/replay.rs`
+(`a_replayed_body_does_not_give_its_epoch_to_the_next_one` and its control,
+`an_epoch_that_ended_in_the_replayed_window_is_never_reused`,
+`every_replayed_kind_raises_the_epoch_floor_or_carries_no_epoch`);
+`a_depart_answered_not_embodied_keeps_the_dragon_where_it_was` with
+`a_dematerialized_of_a_held_dragon_takes_its_health_and_position`;
+`a_replayed_untagged_dragon_is_adopted_again_by_its_live_report` with
+`a_live_untagged_dragon_is_adopted_at_once`;
+`no_dragon_materializes_while_a_long_replay_runs_with_a_player_near` with
+`a_dragon_materializes_when_no_replay_runs_with_a_player_near`; and for step 6,
+`a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract` (tests/dragons.rs)
+and `a_watched_tank_in_the_replayed_window_is_raided_without_the_dragon_coming` (tests/oilgate.rs).
 
 GameTests: `neoforge/gametest.sh iceandfire`.
 

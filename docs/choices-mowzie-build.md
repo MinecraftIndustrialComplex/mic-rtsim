@@ -3685,3 +3685,190 @@ conservative option at its fork.
     `a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing`. Each marks
     the party embodied by hand, as the homecoming test does, since no flow of this slice leaves
     one embodied across a restart.
+
+### Slice D (dragons)
+
+fix/replay-dragons, base f2cf3d69; docs/replay-gate.md §9.2. RP-70 to RP-79. No page, record or
+wire layout changes: the dragons' pages hold what they held (the outbox is the same queue behind a
+gate), and no rtsim-view fixture needs regenerating for this slice. One wire meaning is now
+written down: DRAGON_DEMATERIALIZED reason 6 for a DEPART (docs/boundary.md §2.3, RP-73). No Java
+changed; the lead runs `gametest.sh iceandfire`.
+
+- **RP-70** (`begin_replay` and `replay_done` replace `session_start`; bodies stay embodied
+  through the replay; the honoured DRAGON_MATERIALIZED; §5.1, §5.2, §5.6; RP-5, RP-6, RP-31):
+  `Dragons::session_start` is gone. `begin_replay(from_pages)` changes no dragon: a dragon the
+  pages hold embodied stays embodied at its epoch, so the journal's records of the last session's
+  bodies (a wound, a death, a capture) find them. It opens the outbox's gate (§4.1; what is queued
+  takes its verdict) and clears the lair chests (the plugin's, reported again as its chests load).
+  `replay_done(w, at)` is a no-op unless a replay runs; else, at `at.max(now)`, every embodied
+  dragon resumes where it was last seen (`resume(.., left = true)`, the work `session_start` did at
+  the start), `by_entity` is cleared, every player's interest leg is cancelled (the host routes the
+  positions again), the gate opens and the floors fold (RP-75). The honour: a replayed
+  DRAGON_MATERIALIZED on an engine from its pages, whose epoch is above the dragon's own, embodies
+  the dragon as the last session's materialize left it, without the command: the record's epoch,
+  Embodied since the record's time, never departing, purpose Home, not harassing, health fixed as
+  `materialize` fixes it, its rest its current position, its abstract leg cancelled, `by_entity`
+  and the tracking set updated. A fresh engine (RP-31) only raises the floor. A record at or below
+  the dragon's epoch changes nothing. Option not taken: reading the purpose and the harass flag
+  from the command (the record carries neither; the dragon is abstract at the replay end whatever
+  they were, and what matters is that the records that follow count against the body). Failing
+  first: rtsim-jni's `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (a lair's dragon
+  saved embodied, killed by a player, crash): 1 dragon alive against 0 on f2cf3d69, because the
+  session start made it abstract and the replayed DRAGON_DIED found no body; its control without
+  the crash (`a_dragon_killed_after_a_save_stays_dead_after_a_clean_restart`) passes on both. At
+  engine level `a_dragon_killed_after_a_save_is_dead_after_the_replay` (1 against 0) and
+  `a_replayed_body_takes_the_wounds_that_follow` (a replayed MATERIALIZED then a HURT to 200: the
+  dragon's health 442 on the base, 200 after, and the grudge the wound is).
+- **RP-71** (nothing embodies while the replay runs; §6; RP-11): `seen` and `Ev::SeenAtLair`
+  return early while replaying (`Outbox::defer`, counted as deferred), after the stale and
+  already-embodied checks and before `stats.seen`, so the books count no sighting that did not
+  happen; `materialize` has the same return as a backstop at its top. The dragon goes on
+  abstractly. Nothing is lost: `shared::simulate` routes every player's area at the replay end,
+  and `book_interest` books the meetings of the legs the area crosses and `seen_at_lairs` the lairs
+  it covers, so a dragon on a leg through the area, or at rest in a covered lair, is seen at once;
+  the dragons keep no list of deferred sightings to replay. Failing first:
+  `no_dragon_materializes_while_a_long_replay_runs_with_a_player_near` (two days, a player at the
+  lair): the base materialized the dragon (epoch 1) in the middle of
+  the replay; after, none, the sighting counted as deferred, and one materialization (epoch 1) when
+  the area is routed again at the replay end. Control: the same window with no replay
+  (`a_dragon_materializes_when_no_replay_runs_with_a_player_near`) materializes at once and defers
+  nothing.
+- **RP-72** (step 6: every decision of the replayed window that asks whether a player watches;
+  §6.1's last point): each answer, with why the books stand.
+  - `seen` (a leg meeting) and `Ev::SeenAtLair`: deferred (RP-71). Nothing was booked yet.
+  - `raid_home` (a grudge raid on a player's home, `r.watched`): the abstract raid stands
+    (`raid_sites` raided the district and booked its damage, watched or not: P28, OGC56), the dragon
+    is fed and the hunt recorded as before, and instead of materializing it flies home as after a
+    fight that ended (`fly(Home)`).
+  - `raid_district` (a district-targeted raid, a field flight's, with `player_near`): the same.
+  - `refuel_arrive` (a field flight's dragon at a watched tank): the tanks are raided and drunk
+    from (`raid_sites`, `feed`, `record_hunt`) as before; the in-person branch is skipped through
+    the let-chain's `&& !self.outbox.defer()`, so it falls through to what an unwatched district
+    gets: rest on the field, or `after_refuel` when full.
+  - A nest's sortie (nest.rs `raid_in_sight`): the abstract raid stands and `stats.sorties` still
+    counts; the NEST_SORTIE command is dropped by the gate (RP-15, §4.5), as its only effect is a
+    body.
+  - Held, as conflict's arrivals are (§6.1's `held`)? No, gated. A conflict arrival resolves
+    abstractly only when no one watches, so a watched one replayed unwatched is resolved twice;
+    a dragon's raid books the same damage and the same hunt either way, so there is no second
+    resolution to avoid and nothing to hold. What is dropped is only the dragon's coming in
+    person, and the real fight's records (MATERIALIZED, HURT, BREATHS, DIED, DEMATERIALIZED) apply
+    to the body the honour embodies (RP-70).
+  - Residuals, not changed: (a) `player_near` and the raids' `in_person` read `homes.last_seen`,
+    the pages' and not the last session's, since positions are routed only at the replay end. In
+    a replay `in_person` can differ from the session that went on, which spares a raid its own oil
+    burn and wounds (OGC57); the replayed BREATHS and HURT of a real fight then apply over a raid
+    that did or did not also burn and wound: bounded by one raid's passes. (b) The field-flight
+    rolls read `presence`, set by `player_at`, which waits for the replay end (and is not saved), so
+    no roll fires in the window and no visitor is drawn; a visitor the last session drew after the
+    pages is not in the pages, its replayed MATERIALIZED names an agent the engine does not hold
+    (floor only, RP-75), and its body is gone anyway. Failing first:
+    `a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract` (a grudge
+    raid on a watched farm, the whole run a replay): 1 materialization on the base, none after,
+    the raid's outcome, damage and count equal to the live run's; and
+    `a_watched_tank_in_the_replayed_window_is_raided_without_the_dragon_coming` (a watched tank
+    with a player near, the whole run a replay): the base materialized the dragon, after none, the
+    tanks raided once and drunk from. Both check the books after the replay end.
+- **RP-73** (the DEPART trap; §5.8; RP-16): DragonBridge answers a DRAGON_DEPART for a body it
+  does not hold (no puppet for the agent, or one of another epoch: DragonBridge.java L655 to
+  L668) with DRAGON_DEMATERIALIZED, reason 6 (`NOT_EMBODIED`), carrying only the agent and the
+  epoch. The engine's arm read no reason and took the zeros: health 0, hunger 0, a rest at (0, 0, 0)
+  in dimension 0. Now `boundary::DEMAT_NOT_EMBODIED` (6, the number conflict's and the herds'
+  NOT_EMBODIED have): the arm removes the dragon's `by_entity` entries, leaves health, hunger and
+  rest as the engine had them, and resumes as a SPAWN_REJECTED does (`left` if it was leaving, the
+  visit over). Its adoption (`adopted`) stands, unlike a capture's: no entity is known gone, and a
+  report of the entity untagged again adopts the same dragon (`adopt_again`). Only reason 6
+  changes; every other reason is as it was. Failing first:
+  `a_depart_answered_not_embodied_keeps_the_dragon_where_it_was` (a starving dragon told to leave
+  at health 350 and rest (4100, 4100)): health 0 at (0, 0) on the base, 350 at (4100, 4100) after.
+  Control: `a_dematerialized_of_a_held_dragon_takes_its_health_and_position` (reason 1, health
+  275 at (4200, 4300)) takes both on both.
+- **RP-74** (the gate as built; §4.5): `outbox::gate` is an exhaustive `match` over `Cmd`, no `_`
+  arm; nest.rs, oil.rs and engine.rs push only through `Outbox::push`. Queued / while replaying:
+  Materialize drop / never; Steer drop / drop (the engine pushes none today); Depart drop / drop;
+  Adopt drop / drop; Discard keep / drop; PlaceLair keep / send; OilSurvey keep / send; PlaceNest
+  keep / send; NestRenew keep / drop; NestSortie drop / drop. NestRenew drops while replaying in
+  this slice (it is not idempotent until it carries a serial, §7.1); slice N makes it send. A
+  "never" kind decided while replaying is counted, not queued, and `debug_assert!`s in debug
+  builds only (no release panic): `materialize` returns before it, so it is a bug if it is ever
+  reached. Why dropping leaves the books right, per kind: a Materialize or Depart is a body's
+  order and the replay has no body; an Adopt is decided from a replayed UNTAGGED whose entity
+  reports again (RP-79); a Discard likewise; a NestSortie's only effect is the body (RP-72). The
+  tests are the module's own: `every_command_kind_has_its_replay_verdicts` (the table) and
+  `a_never_kind_decided_while_replaying_is_counted_and_not_queued` (run once with `--release`).
+  The outbox the pages hold is unchanged; a queued command restored from a page takes its queued
+  verdict at `begin_replay`.
+- **RP-75** (no epoch is used twice; §5.3; RP-7, RP-30, RP-37, RP-57): the floor is an in-memory
+  map, agent to the highest epoch seen that the dragon's own `epoch` does not hold. A dragon's
+  next epoch is `max(epoch, floor) + 1` (`next_epoch`; `materialize` computes it without spending
+  (`epoch_after`) and spends the floor only after the Materialize is pushed, so a return across an
+  edge_stop seam keeps it). `untagged` and `adopt_again` take their epochs from it too (the first
+  adoption's epoch was a literal 1). The fold is the top of `ingest` while replaying and of
+  `ingest_copy` always, before any check that drops the record (a refusal, a stale despawn, a body
+  not held, a dragon not in the pages yet). `replay_done` folds each floor into its dragon's epoch
+  and clears the map, so the pages carry it; a floor of a dragon no longer in the arena is
+  dropped (a killed dragon's agent is a handle with a generation, and is never reissued). A live
+  copy's floor waits for the dragon's next materialize, as RP-57's does. Failing first, the epoch
+  test (RP-7): `a_replayed_body_does_not_give_its_epoch_to_the_next_one` (the last session's
+  MATERIALIZED at epoch 1 and its capture, then a new body): epoch 1 again on the base, 2 after;
+  `without_a_replayed_body_the_first_epoch_is_one` is the control. A fresh engine
+  (`a_replayed_body_on_a_fresh_engine_only_raises_the_floor`, record at epoch 4): 1 against 5, and
+  the dragon is not embodied by a record.
+- **RP-76** (RP-57 for the dragons: every kind with its answer): `Obs::agent_epoch` (exhaustive,
+  no `_` arm) names it; this table replaces the dragons' part of RP-57's last row ("Herds,
+  dragons, ships: no floor yet"), which stays as written for the herds and the ships (their slices
+  edit it at the merge).
+
+| Kind | Epoch | Reaches the floor |
+| --- | --- | --- |
+| 0x0060 DRAGON_STATE | the body's | `ingest`'s fold while replaying, `ingest_copy`'s always; latest-wins and never journaled, so it is replayed or copied only if a host feeds one |
+| 0x0500 DRAGON_MATERIALIZED | the body's | the fold; honoured when it is above the dragon's own epoch and the engine is from its pages (RP-70), else the floor only; a copy only raises the floor |
+| 0x0501 DRAGON_SPAWN_REJECTED | the body's | the fold, held or not |
+| 0x0502 DRAGON_DEMATERIALIZED | the body's | the fold, a stale epoch and a NOT_EMBODIED too |
+| 0x0503 DRAGON_HURT | the body's | the fold |
+| 0x0504 DRAGON_DIED | the body's | the fold, before the check that drops a death of a body not held |
+| 0x0508 DRAGON_ATE | the body's | the fold |
+| 0x050A DRAGON_BREATHS | the body's | the fold |
+| 0x0505 LAIR_FOUND, 0x0061 LAIR_CHEST, 0x0506 HOARD_ROBBED, 0x0509 OIL_CHUNKS, 0x050B OIL_CONFIG, 0x050C NEST_FOUND, 0x050D NEST_CENSUS, 0x050E NEST_LOSS, 0x050F NEST_HEART | none | nothing to fold (a lair, a chest, a hoard, the oil, the nests: no body) |
+| 0x0507 DRAGON_UNTAGGED | none | the epoch is the engine's own, decided at the adopt (`next_epoch`), not the record's |
+
+  The test is `every_replayed_kind_raises_the_epoch_floor_or_carries_no_epoch`: one record of each
+  of the 18 `Obs` kinds at epoch 7 on an engine from its pages, then the replay end and the next
+  body's epoch: 8 for the eight kinds that raise, 1 for the ten that carry none. On the base the
+  dragons had no floor, so all eighteen read 1 and the eight that raise fail.
+- **RP-77** (rtsim-jni: the reset, the replay end and the clock; §3.2, §3.6): `session_start`
+  marks the dragons' reset due. The reset (`reset`) runs when the dragons run, or when a record
+  reaches them first (`ingest` begins with it): it calls `begin_replay(from_pages)` (the link
+  knows whether the engine came from its pages, `Link::load`), marks the replay end due and takes
+  the gate's first verdicts. Starting at the first record, not the first step, means the gate holds
+  from the record that reaches an enabled but inactive engine. When no replay runs (a switch-on
+  mid-session) the end runs at once at the hand-over's time. `dragons::replay_end` runs at the
+  session's replay end, at the replay clock (RP-24), before the other modules' ends; it calls
+  `replay_done`, turns the far feed on (Java's far table is per session: far.rs) and takes the
+  commands. Switched off, the end stays due and the switch-on's reset runs it. `take_commands`
+  logs a rise in the gate's "never" count at once with the kind, and the replay end's log line
+  carries the dragons' dropped, never and deferred counts beside conflict's. `ingest` routes a
+  copy (`st.applying_copy`) to `ingest_copy`.
+- **RP-78** (ending epochs, copies, chests and the far feed): an epoch that ended in the replayed
+  window (a capture, a refusal) is never decided again:
+  `an_epoch_that_ended_in_the_replayed_window_is_never_reused` (captured, left tracking, refused:
+  the next body is above 1; the base fails on the first, taking 1 again). A killed dragon's agent has
+  no next body (RP-75). A copy (S4p's REASSERT) embodies nothing and raises the floor
+  (`a_copied_body_raises_the_floor_and_embodies_nothing`: 6 after a copy at 5; the base 1). The
+  chests are cleared at `begin_replay` (not at the end as `session_start` did at the start): the
+  replayed LAIR_CHEST records and the chests loading in the new session report them again, and a
+  tribute stack placed meanwhile goes through `placing` and `write_tribute`, idempotent by op id,
+  not through the outbox.
+- **RP-79** (step 7, read only: a dragon adopted in the replayed window reports untagged again;
+  RP-13): the replayed UNTAGGED adopts the dragon (an entity the new session may not even
+  have), but its DRAGON_ADOPT is dropped by the gate (RP-74), so the entity is untagged when it
+  joins. DragonBridge reports untagged entities once each per session in `reportUntagged`
+  (called at DragonBridge.java L803, defined at L1282; `untaggedReported.add` at L1290 is choice
+  Z9, once per entity per session, cleared at L262), and the tag (`RtsimAttachments.AGENT`) reaches
+  disk only with its chunk's save, which a crash can precede. The live UNTAGGED after the replay
+  end finds the entity in `adopted` (the engine's memory) and `adopt_again` sends an ADOPT at a
+  new epoch (`next_epoch`), for the same dragon, never a second one. Test:
+  `a_replayed_untagged_dragon_is_adopted_again_by_its_live_report` (no ADOPT while replaying, the
+  gate counting the drop; the live report after the end re-adopts at epoch 2 with the dragon
+  count unchanged; a third report while embodied adds nothing): the base sent the ADOPT in the
+  replay (epoch 1). Control: `a_live_untagged_dragon_is_adopted_at_once`.

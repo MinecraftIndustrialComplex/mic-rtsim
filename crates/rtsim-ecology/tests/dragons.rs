@@ -687,7 +687,7 @@ fn a_watched_district_gets_a_real_fight_and_the_same_bounded_damage() {
     d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 
-/// docs/replay-gate.md §6.1, RP-75: a grudge raid on a district that is watched while a session's
+/// docs/replay-gate.md §6.1, RP-72: a grudge raid on a district that is watched while a session's
 /// replay runs (the player at the farm is the last session's, so the dragon is not to come in
 /// person) is the abstract raid: the same bounded damage booked on the district, the same hunt
 /// booked for the dragon, and the dragon flies on, abstract. Today (the base): it materializes in
