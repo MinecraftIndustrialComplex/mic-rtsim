@@ -66,6 +66,8 @@ public final class ConflictRecords {
     public static final int OWED_HUNT = 0x880C;
     /** M9: the chief's trade memory at home (a command, aux = traded players t). */
     public static final int CHIEF_BODY = 0x880A;
+    /** M10: a party's march (latest wins by revision per agent; aux = waypoint count). */
+    public static final int BAND_MARCH = 0x880B;
 
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
@@ -302,6 +304,30 @@ public final class ConflictRecords {
         }
     }
 
+    /**
+     * BAND_MARCH (M10, aux = w waypoints), then k x (u32 body, u32 count), then w x (i32 x, i32 z, i64 tick).
+     * Its size is {@code 72 + 8 k + 16 w} (docs/boundary.md §9.3); the waypoints are in the route's chart and
+     * the ticks are game time.
+     */
+    public static final class March {
+        public static final int AGENT = 16, REVISION = 24, DIM = 28, FACTION = 32, CULTURE = 40, KIND = 44, PHASE = 45,
+                FLAGS = 46, PARTNER = 48, MUSTER_END = 56, UNITS = 64, UNIT_LIST = 72;
+        /** One unit entry: u32 body (dictionary 3), u32 count. */
+        public static final int UNIT = 8, U_BODY = 0, U_COUNT = 4;
+        /** One waypoint: i32 x, i32 z, i64 tick. */
+        public static final int WAYPOINT = 16, W_X = 0, W_Z = 4, W_TICK = 8;
+        /** FLAGS: the war chief marches with the band; the march is over (drop the agent); a joint attack. */
+        public static final int FLAG_CHIEF = 1, FLAG_ENDED = 2, FLAG_JOINT = 4;
+        /** PHASE. */
+        public static final int MUSTERING = 1, OUT = 2, WAITING = 3, FIGHTING = 4, HOME = 5;
+
+        /** The size of a march of {@code k} unit entries and {@code w} waypoints, or -1 when it overflows. */
+        public static int size(int k, int w) {
+            long n = UNIT_LIST + (long) UNIT * k + (long) WAYPOINT * w;
+            return n > Integer.MAX_VALUE ? -1 : (int) n;
+        }
+    }
+
     /** BAND_STEER (aux = flags). */
     public static final class Steer {
         public static final int AGENT = 16, EPOCH = 24, SPEED = 28, X = 32, Y = 40, Z = 48, ARRIVE = 56, SIZE = 64;
@@ -481,6 +507,7 @@ public final class ConflictRecords {
             case FACTION_NOTICE -> Notice.SIZE;
             case ENVOY_MATERIALIZE -> Envoy.MEMBERS;
             case BAND_MATERIALIZE -> Materialize.STACKS;
+            case BAND_MARCH -> March.UNIT_LIST;
             case BAND_STEER -> Steer.SIZE;
             case BAND_RECALL -> Recall.SIZE;
             case DEMAND_SETTLED -> Settled.SIZE;

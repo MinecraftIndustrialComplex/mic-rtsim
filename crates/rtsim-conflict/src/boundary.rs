@@ -2483,6 +2483,18 @@ pub(crate) mod tests {
         assert_eq!(b.len(), 408);
     }
 
+    /// The sample march's bytes, pinned. Java's `MarchPathTest` decodes the same hex, so a layout
+    /// drift on either side fails a test (MZB-720).
+    pub(crate) const SAMPLE_MARCH_HEX: &str = "0b888800030000000100000000000000050000000000000004000000010000004d0000000000000002000000030201000000000000000000600900000000000002000000000000000100000008000000020000000400000084030000e8030000600900000000000052030000c00300001c0c000000000000bc0200000c0300002823000000000000";
+
+    #[test]
+    fn a_march_record_is_the_bytes_java_pins() {
+        let mut b = Vec::new();
+        encode_cmd(1, &cmds().pop().unwrap(), &mut b);
+        let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        assert_eq!(hex, SAMPLE_MARCH_HEX);
+    }
+
     #[test]
     fn faction_found_carries_the_census_in_its_reserved_word() {
         let mut b = Vec::new();
