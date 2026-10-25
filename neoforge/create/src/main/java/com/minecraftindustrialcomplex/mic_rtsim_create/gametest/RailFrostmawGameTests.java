@@ -9,6 +9,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
+import com.minecraftindustrialcomplex.mic_rtsim_create.TrainSampler;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.Create;
@@ -135,7 +136,7 @@ public final class RailFrostmawGameTests {
      * {@code SPOT_BLOCKS} of rail.rs, 5 whole blocks from the track point toward the den, here due north), the
      * second station this far from the first.
      */
-    static final int LURK_AHEAD = 40, LATERAL = 5, B_AWAY = 60, HEARER_BEHIND = 20, HOLD_TICKS = 200;
+    static final int LURK_AHEAD = 40, LATERAL = (int) TrainSampler.SPOT_BLOCKS, B_AWAY = 60, HEARER_BEHIND = 20, HOLD_TICKS = 200;
     static final float REACH = 8.0f;
 
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_pass", timeoutTicks = 2400)
@@ -843,10 +844,13 @@ public final class RailFrostmawGameTests {
 
         /** The train's speed in this run (blocks a tick). */
         final double speed;
+        /** The far-edge variant: the puppet is pinned at the far side of its stand until the swing has hit. */
+        final boolean far;
 
-        LurkRun(GameTestHelper helper, double speed) {
+        LurkRun(GameTestHelper helper, double speed, boolean far) {
             super(helper, 10, 2);
             this.speed = speed;
+            this.far = far;
             atEnd.add(() -> {
                 if (!lurkEnded && agent != 0) {
                     ConflictKit.ambushRemoved(agent, 1, faction, dim);
@@ -868,6 +872,21 @@ public final class RailFrostmawGameTests {
             hold(speed);
         }
 
+        /**
+         * The far-edge variant (review C, the spot-distance contract, MZB-374): every tick until the swing has hit, the
+         * puppet is put on the far side of its stand, {@code stand} blocks from the spot along the line away from the
+         * rail (a hair inside, so the hold does not walk it back), with no horizontal motion. Its feet stay where they
+         * are. The worst place the hold lets it rest, for the strike's gate and the contract's far side.
+         */
+        void pin() {
+            if (!far || puppet == null || hit)
+                return;
+            double stand = Lurkers.of(puppet).stand() - 0.001;
+            double away = Math.signum(spot.z - (z0 + 0.5));
+            puppet.setPos(spot.x, puppet.getY(), spot.z + away * stand);
+            puppet.setDeltaMovement(0.0, puppet.getDeltaMovement().y, 0.0);
+        }
+
         /** Each poll of the hold phase: the puppet near its spot, off the rail, awake. */
         void sampleHold(long now) {
             puppet = RtsimApi.lurkBody(agent);
@@ -878,12 +897,12 @@ public final class RailFrostmawGameTests {
             if (stray > 2.0)
                 stop("the puppet strayed " + stray + " blocks from its spot (2 allowed)");
             // The Frostmaw is 4 wide: its near edge is its distance to the rail's centre line less 2 (3.0 at the spot,
-            // which is LATERAL = 5 off the rail, and it stands within 1.5 of the spot: 1.5 at the nearest it stands,
-            // and it walks away from the rail while it has the bait as its target)
-            double edge = Math.abs(puppet.getZ() - (z0 + 0.5)) - 2.0;
+            // which is LATERAL = 5 off the rail; 2.5 at the nearest its stand lets it rest, and it walks away from the
+            // rail while it has the bait as its target)
+            double edge = Math.abs(puppet.getZ() - (z0 + 0.5)) - puppet.getBbWidth() / 2.0;
             clearance = Math.min(clearance, edge);
-            if (edge < 1.5)
-                stop("the puppet's near edge is " + edge + " blocks from the rail's centre line (1.5 needed)");
+            if (edge < TrainSampler.RAIL_CLEARANCE)
+                stop("the puppet's near edge is " + edge + " blocks from the rail's centre line (" + TrainSampler.RAIL_CLEARANCE + " needed)");
             if (puppet.getTarget() != null)
                 targeted = true;
         }
@@ -916,9 +935,12 @@ public final class RailFrostmawGameTests {
      * Frostmaw and a bait player 30 blocks from the spot, set as the puppet's target and walking away.
      *
      * <ul>
-     * <li>For {@value #HOLD_TICKS} ticks the puppet stays within 2 blocks of the spot, its near edge (the spot's is 2.0
+     * <li>The spot-distance contract holds for the Lurker's stand and the body's width ({@link TrainSampler#spotContract}).
+     * <li>For {@value #HOLD_TICKS} ticks the puppet stays within 2 blocks of the spot, its near edge (the spot's is 3.0
      * from the rail's centre line) at least 1.5 blocks off it, and its NBT has {@code alwaysActive}. The path searches
-     * its hold asked for, and the live paths the hold dropped, are logged per second (D1; a count, not a check).
+     * its hold asked for, and the live paths the hold dropped, are logged per second (D1; a count, not a check). Sixty
+     * ticks after the bait goes the puppet rests within the strike gate's margin of its spot (1.0: the reach less the
+     * spot's distance), whatever its stand.
      * <li>The bait goes, and the train passes at 1.0 blocks a tick: exactly one TRAIN_PASSED with PASSED_WATCHED and
      * a carriage in range; {@code lurkStrikes} up by one or more; at the tick the zombie's health first drops, the
      * puppet's {@code yBodyRot} within 30 degrees of the bearing to the zombie; the zombie hurt; no carriage box
@@ -937,19 +959,29 @@ public final class RailFrostmawGameTests {
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk", timeoutTicks = 3600)
     public static void aLurkingFrostmawStandsOffTheRailAndSwipesAPassingCarriage(GameTestHelper helper) {
-        lurk(helper, 1.0, true);
+        lurk(helper, 1.0, true, false);
     }
 
     /** The pass of test 9 at half a block a tick, on the engine's own spot: the strike still lands (review C, item 2). */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_slow", timeoutTicks = 2400)
     public static void aLurkingFrostmawSwipesACarriageAtHalfABlockATick(GameTestHelper helper) {
-        lurk(helper, 0.5, false);
+        lurk(helper, 0.5, false, false);
     }
 
     /** The pass of test 9 at 1.4 blocks a tick (Create's default top speed is about that), on the engine's own spot. */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_fast", timeoutTicks = 2400)
     public static void aLurkingFrostmawSwipesACarriageAtOnePointFourBlocksATick(GameTestHelper helper) {
-        lurk(helper, 1.4, false);
+        lurk(helper, 1.4, false, false);
+    }
+
+    /**
+     * The pass of test 9 at 1.4 blocks a tick with the puppet pinned at the far side of its stand, the worst place the
+     * hold lets it rest: {@code STAND} blocks from the spot, away from the rail, so {@code SPOT_BLOCKS + STAND} from
+     * the track point. The strike still lands (the spot-distance contract, MZB-374).
+     */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_far", timeoutTicks = 2400)
+    public static void aLurkingFrostmawAtTheFarSideOfItsStandStillSwipesAtOnePointFourBlocksATick(GameTestHelper helper) {
+        lurk(helper, 1.4, false, true);
     }
 
     /**
@@ -957,8 +989,8 @@ public final class RailFrostmawGameTests {
      * cargo delta, the robbery and its roar, the lurk's end); not full it is the pass alone: the puppet placed, a
      * zombie seated, the train driven past, the swipe's hit, TRAIN_PASSED.
      */
-    private static void lurk(GameTestHelper helper, double speed, boolean full) {
-        LurkRun t = new LurkRun(helper, speed);
+    private static void lurk(GameTestHelper helper, double speed, boolean full, boolean far) {
+        LurkRun t = new LurkRun(helper, speed, far);
         ServerLevel level = t.level;
 
         GameTestSequence s = probed(t, laid(t, true))
@@ -1004,7 +1036,16 @@ public final class RailFrostmawGameTests {
                 .thenWaitUntil(paced(() -> {
                     t.puppet = RtsimApi.lurkBody(t.agent);
                     check("the puppet stands in the world", t.puppet != null);
-                }));
+                }))
+                // The spot-distance contract (MZB-374), read off the Lurker and the body: one rule, two inequalities
+                .thenExecute(() -> {
+                    double stand = Lurkers.of(t.puppet).stand(), half = t.puppet.getBbWidth() / 2.0;
+                    String broken = TrainSampler.spotContract(stand, half);
+                    record("railFrostmaw", "lurk", "the spot is " + TrainSampler.SPOT_BLOCKS + " blocks off, the stand " + stand + ", the body's half-width " + half
+                            + ", the strike reach " + TrainSampler.STRIKE_REACH + ", the rail clearance " + TrainSampler.RAIL_CLEARANCE + (t.far ? ", pinned at the far side" : ""));
+                    check("the spot-distance contract holds" + (broken == null ? "" : ": " + broken), broken == null);
+                    check("the test lays the engine's spot (" + LATERAL + " of " + TrainSampler.SPOT_BLOCKS + ")", LATERAL == TrainSampler.SPOT_BLOCKS);
+                });
         if (full) {
             s = s.thenExecute(() -> {
                     t.bait = FakePlayers.add(level, new Vec3(t.spot.x, t.spot.y, t.spot.z - 30.0), "frostmaw-bait");
@@ -1037,7 +1078,15 @@ public final class RailFrostmawGameTests {
                     t.bait.setPos(t.spot.x, t.spot.y, t.spot.z - 300.0);
                     t.puppet.setTarget(null);
                 })
-                .thenIdle(60);
+                .thenIdle(60)
+                // Where the hold leaves the puppet to rest: the strike's gate needs the spot and the rest within its reach
+                .thenExecute(() -> {
+                    double rest = Math.hypot(t.puppet.getX() - t.spot.x, t.puppet.getZ() - t.spot.z);
+                    double allowed = TrainSampler.STRIKE_REACH - TrainSampler.SPOT_BLOCKS;
+                    record("railFrostmaw", "lurk", "60 ticks after the bait went the puppet rests " + rest + " blocks from its spot (its stand " + Lurkers.of(t.puppet).stand()
+                            + ", the strike gate allows " + allowed + ")");
+                    check("the puppet rests " + rest + " blocks from its spot, inside the strike gate's " + allowed, rest <= allowed);
+                });
         } else {
             // The sampler's next sample (once in 20 ticks) puts the train in the near set, now the puppet lives
             s = s.thenIdle(40);
@@ -1064,12 +1113,14 @@ public final class RailFrostmawGameTests {
                     t.blocks0 = t.blocks();
                     t.strikes0 = ConflictKit.lurkStrikes();
                     t.passes0 = ConflictKit.bridge().trainPasses;
+                    t.pin();
                     record("railFrostmaw", "lurk", "the zombie rides carriage 0 at " + z.position() + ", train speed " + t.speed
-                            + (full ? ", hearer " + apart + " blocks from the puppet" : ""));
+                            + (full ? ", hearer " + apart + " blocks from the puppet" : "") + (t.far ? ", the puppet pinned at " + t.puppet.position() : ""));
                 })
                 // The pass
                 .thenWaitUntil(() -> {
                     t.hold();
+                    t.pin();
                     t.sampleSwipe();
                     double beyond = (t.lead() - t.lx) * t.sign;
                     check("the train is " + PAST + " blocks past the lurk point (" + beyond + ")", beyond >= PAST);

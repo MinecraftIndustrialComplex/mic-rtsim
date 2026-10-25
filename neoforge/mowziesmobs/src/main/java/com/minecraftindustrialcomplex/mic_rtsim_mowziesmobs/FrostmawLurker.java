@@ -26,8 +26,14 @@ import java.util.WeakHashMap;
 public final class FrostmawLurker implements Lurker {
     /** The restriction radius round the spot (blocks). */
     public static final int RADIUS = 2;
-    /** Within this many blocks of its spot it stands; beyond, it walks back. */
-    public static final double STAND = 1.5;
+    /**
+     * Within this many blocks of its spot it stands; beyond, it walks back. It is the number the spot-distance
+     * contract is written in (MZB-374): the engine's spot distance plus this stays under the create sampler's strike
+     * reach, and the spot distance less this and the body's half-width stays off the rail.
+     */
+    public static final double STAND = 0.5;
+    /** Ticks between two walk-back searches of one body (a body that cannot get closer does not search every tick). */
+    public static final int RESEARCH_TICKS = 10;
     /** The swipe hits at this animation tick (AnimationAreaAttackAI damage frame): the body faces the strike until then. */
     public static final int SWIPE_HIT_TICK = 9;
 
@@ -36,6 +42,9 @@ public final class FrostmawLurker implements Lurker {
 
     /** The bearing (yaw) of a strike in progress, by body: dropped in {@link #hold} once its swing is past the hit frame. */
     private final Map<Mob, Float> bearings = new WeakHashMap<>();
+
+    /** The game time of a body's last walk-back search, by body. */
+    private final Map<Mob, Long> searched = new WeakHashMap<>();
 
     @Override
     public void hold(Mob mob, Vec3 spot) {
@@ -72,13 +81,34 @@ public final class FrostmawLurker implements Lurker {
             stop(f);
             return;
         }
-        // Walk back: one search when the navigation is not already on its way to the spot, not one a tick (D1)
+        // Walk back: one search when the navigation is not already on its way to the spot, not one a tick (D1), and
+        // not again within RESEARCH_TICKS of the last (a body that cannot get closer to the spot than the path's end
+        // would search every tick)
         PathNavigation nav = f.getNavigation();
+        double off = nodeOffset(f);
+        double ax = spot.x - off, az = spot.z - off;
         BlockPos heading = nav.getTargetPos();
-        if (nav.isDone() || heading == null || heading.distSqr(centre) > 2.0) {
-            searches++;
-            nav.moveTo(spot.x, spot.y, spot.z, 1.0);
-        }
+        if (!nav.isDone() && heading != null && heading.distSqr(BlockPos.containing(ax, spot.y, az)) <= 2.0)
+            return;
+        long now = f.level().getGameTime();
+        Long last = searched.get(f);
+        if (last != null && now - last < RESEARCH_TICKS && now >= last)
+            return;
+        searched.put(f, now);
+        searches++;
+        // Accuracy 0: the path ends on the aimed node itself, not a node short of it
+        nav.moveTo(ax, spot.y, az, 0, 1.0);
+    }
+
+    /**
+     * How far past the aimed block's corner a path's last node leaves a body's centre, less the half block a spot
+     * already has: a body walking a path stands at its last node plus {@code (int) (width + 1) / 2} blocks
+     * (vanilla {@code Path.getEntityPosAtNode}), so to end on the spot the path is aimed that far before it. Zero for
+     * a body under a block wide; 2.0 for the Frostmaw (4 wide), which would otherwise end 2 blocks east and south of
+     * its spot.
+     */
+    static double nodeOffset(Mob f) {
+        return (int) (f.getBbWidth() + 1.0F) * 0.5 - 0.5;
     }
 
     /** Stops the navigation (a swing or a roar is not walked out of, and within its stand it stays), counting a live path it drops. */
@@ -87,6 +117,11 @@ public final class FrostmawLurker implements Lurker {
         if (!nav.isDone())
             dropped++;
         nav.stop();
+    }
+
+    @Override
+    public double stand() {
+        return STAND;
     }
 
     @Override
@@ -117,6 +152,7 @@ public final class FrostmawLurker implements Lurker {
     @Override
     public void release(Mob mob) {
         bearings.remove(mob);
+        searched.remove(mob);
         if (!(mob instanceof EntityFrostmaw f))
             return;
         f.setAlwaysActive(false);
