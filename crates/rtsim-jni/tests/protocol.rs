@@ -4760,13 +4760,17 @@ mod conflict {
         advance_until(&mut j, 1_000, 3 * DAY, "the demand refused", |j| {
             cmds(j).any(|c| matches!(c, C::Settled(s) if s.player == PLAYER2))
         });
-        // Nobody fights the raid: it waits at the base, gets bored and goes home.
+        // Nobody fights the raid: it is met on its road (a column, the whole band under the
+        // quota), walks into the base where the player stands, waits there, gets bored and goes
+        // home. With every member placed the director has no wave to send (MZB-461).
         advance_until(&mut j, 1_000, 6 * DAY, "a war band at the base", |j| {
-            cmds(j).any(|c| matches!(c, C::Materialize(m) if m.purpose == 3 && m.arc_radius > 0))
+            cmds(j).any(|c| {
+                matches!(c, C::Steer(s) if s.flags & cb::STEER_ATTACK != 0 && s.arrive == 0)
+            })
         });
         let raid = cmds(&j)
             .find_map(|c| match c {
-                C::Materialize(m) if m.purpose == 3 && m.arc_radius > 0 => Some(m.clone()),
+                C::Materialize(m) if m.purpose == 3 => Some(m.clone()),
                 _ => None,
             })
             .unwrap();
@@ -4774,23 +4778,19 @@ mod conflict {
             "the raid at day {:.2}: {raid:?}",
             j.game_time as f64 / DAY as f64
         );
-        assert_eq!(raid.arc_radius, 112, "the director's arc, 112 blocks out");
-        assert!(
-            (raid.arc_centre.0 - base[0]).abs() < 2.0 && (raid.arc_centre.1 - base[2]).abs() < 2.0,
-            "around the watching player: {:?}",
-            raid.arc_centre
-        );
+        assert_eq!(raid.arc_radius, 0, "met on its road: a column, not an arc");
         assert!(raid.flags & cb::BAND_HOSTILE != 0);
 
-        // The invasion: more than the spawn quota, so it comes in waves; the players kill four in
-        // ten of each wave, then its war chief.
+        // The invasion: more than the spawn quota, so the sighting places the quota and the rest
+        // comes in waves on an arc as the players kill four in ten of what stands (then its war
+        // chief), each wave only as many as the quota has room for.
         j.conflict_plugin.fight = Some(synth::Fight {
             kill_share: 0.4,
             after: 200,
             kill_chief: false,
             only_at_base: true,
         });
-        let waves_of = |j: &Java, agent: u64| -> Vec<cb::BandMaterialize> {
+        let arcs_of = |j: &Java, agent: u64| -> Vec<cb::BandMaterialize> {
             cmds(j)
                 .filter_map(|c| match c {
                     C::Materialize(m) if m.agent == agent && m.arc_radius > 0 => Some(m.clone()),
@@ -4799,29 +4799,30 @@ mod conflict {
                 .collect()
         };
         advance_until(&mut j, 1_000, 12 * DAY, "an invasion at the base", |j| {
-            cmds(j).any(|c| matches!(c, C::Materialize(m) if m.purpose == 4 && m.arc_radius > 0))
+            cmds(j).any(|c| matches!(c, C::Materialize(m) if m.purpose == 4))
         });
         let inv = cmds(&j)
             .find_map(|c| match c {
-                C::Materialize(m) if m.purpose == 4 && m.arc_radius > 0 => Some(m.clone()),
+                C::Materialize(m) if m.purpose == 4 => Some(m.clone()),
                 _ => None,
             })
             .unwrap();
-        advance_until(&mut j, 100, DAY / 4, "a second wave", |j| {
-            waves_of(j, inv.agent).len() >= 2
+        advance_until(&mut j, 100, DAY, "a wave on the arc", |j| {
+            !arcs_of(j, inv.agent).is_empty()
         });
-        let waves = waves_of(&j, inv.agent);
-        let first: u32 = waves[0].members.iter().map(|s| s.count).sum();
+        let waves = arcs_of(&j, inv.agent);
+        let first: u32 = inv.members.iter().map(|s| s.count).sum();
         eprintln!(
-            "the invasion at day {:.2}: {} waves, the first of {first}",
+            "the invasion at day {:.2}: {} arc waves after the sighting's {first}",
             j.game_time as f64 / DAY as f64,
             waves.len()
         );
-        assert!(first <= 16, "a wave within the spawn quota: {first}");
-        assert_eq!(waves[0].wave, 0);
+        assert!(first <= 16, "the sighting within the spawn quota: {first}");
+        assert_eq!(inv.wave, 0);
+        assert_eq!(inv.arc_radius, 0, "met on its road");
         assert!(
-            waves[1].wave >= 1 && waves[1].epoch == waves[0].epoch,
-            "{waves:?}"
+            waves[0].wave >= 1 && waves[0].epoch == inv.epoch,
+            "the walk-in keeps the epoch: {waves:?}"
         );
         assert!(
             waves
@@ -4830,7 +4831,7 @@ mod conflict {
             "on the arc"
         );
         assert!(
-            waves[0].flags & cb::BAND_CHIEF != 0,
+            inv.flags & cb::BAND_CHIEF != 0,
             "the war chief leads the invasion"
         );
         let (casualties, chiefs) =
@@ -4858,9 +4859,23 @@ mod conflict {
             successions >= 1 && chief_now != chief_before,
             "the heir takes over"
         );
+        // The band routs and walks home in its bodies (MZB-456): the order is a steer toward the
+        // home segment's end, not a recall, which only the door's fallback sends.
+        let home = e.with_conflict(|c, _| {
+            Party::of_agent(inv.agent)
+                .and_then(|p| c.parties.get(p))
+                .map(|x| x.phase)
+        });
+        assert_eq!(home, Some(Phase::Home), "the band routs");
         assert!(
-            cmds(&j).any(|c| matches!(c, C::Recall(r) if r.agent == inv.agent && r.reason == cb::RECALL_ROUTED)),
-            "the band routs"
+            cmds(&j).any(|c| matches!(c, C::Steer(s)
+                if s.agent == inv.agent && s.flags & cb::STEER_ATTACK == 0 && s.arrive > 0)),
+            "a steer home"
+        );
+        assert!(
+            !cmds(&j).any(|c| matches!(c, C::Recall(r)
+                if r.agent == inv.agent && r.reason == cb::RECALL_ROUTED)),
+            "no recall at the order"
         );
         // The same death again under its op id: nothing more.
         j.conflict_obs(&ck);
@@ -10183,15 +10198,16 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// SEC-1's meeting-point review, item 7: a raid's arrival in the replayed window, held
-    /// (§6.1, RP-23), and its replayed fight. S0: the player at the target sees the band leave
-    /// the camp; a save while it is on its way; its arrival is a watched fight (a
-    /// BAND_MATERIALIZED at the next epoch), a quarter of the wave falls (BAND_CASUALTIES); a
-    /// crash. S1 replays both records from the pages taken before the arrival: the arrival is
-    /// held, the BAND_MATERIALIZED (inside the hold's slack, RP-48) is honoured as its fight, the
-    /// casualties count against that epoch's stack, and nothing is resolved abstractly. The
-    /// band's books, its epoch and the watched fights are S0's, and the fight is Waiting,
-    /// abstract, at the replay end.
+    /// SEC-1's meeting-point review, item 7, after M10 (MZB-461, MZB-492): a raid's arrival in
+    /// the replayed window, held (§6.1, RP-23), and its replayed fight. S0: the player at the
+    /// target sees the band leave the camp (a sighting: the whole band, under the quota, is
+    /// placed in a column); a save while it is on its way; its arrival is a walk-in (BAND_STEER
+    /// with the attack flag, the same epoch, and no wave, since nobody is left to send), a
+    /// quarter of the band falls (BAND_CASUALTIES); a crash. S1 replays the sighting's record
+    /// and the casualties from the pages taken before the arrival: the arrival is held and the
+    /// first casualty ends the hold, decided unwatched (no fight record exists to honour, the
+    /// gap MZB-492 names). The casualties count once, at the sighting's epoch, so the band's
+    /// books and epoch are S0's, and the band is abstract and walking home at the replay end.
     #[test]
     fn a_held_arrivals_replayed_fight_counts_its_casualties_once() {
         let resolved = |e: &Engine| {
@@ -10226,7 +10242,11 @@ mod conflict {
         fillers(&mut j, 20);
         j.game_time += 300;
         j.idle();
-        assert_eq!(materialized_epochs(&j, from, p), vec![at_save + 1]);
+        assert_eq!(
+            materialized_epochs(&j, from, p),
+            Vec::<u32>::new(),
+            "the band met on the road walks into its fight: no new epoch, no wave"
+        );
         let replayed = |kind: u16| {
             j.journal
                 .iter()
@@ -10238,11 +10258,11 @@ mod conflict {
             replayed(cb::BAND_CASUALTIES),
         );
         assert!(
-            m >= 1 && c > 20,
-            "the fight's records after the pages: {m}, {c}"
+            m == 1 && c > 20,
+            "the sighting's record and the fight's casualties after the pages: {m}, {c}"
         );
         let live = books(&e, p);
-        assert!(live.0 < n && live.1 == at_save + 1, "{live:?}");
+        assert!(live.0 < n && live.1 == at_save, "{live:?}");
         assert_eq!(party(&e, p), Some((Phase::Fighting, true)));
         assert_eq!(e.conflict_stats().0.raids_watched, watched + 1);
         assert_eq!(resolved(&e), 0, "S0 resolved nothing");
@@ -10256,21 +10276,24 @@ mod conflict {
             "the pages from before the arrival"
         );
         assert_eq!(resolved(&e), 0, "the held arrival resolved nothing");
+        // The walked-in fight left no fight record to honour (MZB-492): the first casualty ended
+        // the held arrival, decided unwatched, and the casualties count against the sighting's
+        // stack. The session that went on had fought it watched.
         assert_eq!(
             e.conflict_stats().0.raids_watched,
-            watched + 1,
-            "the replayed BAND_MATERIALIZED honoured as the arrival's fight"
+            watched,
+            "no BAND_MATERIALIZED to honour as the arrival's fight"
         );
         let b = books(&e, p);
         assert_eq!(
             (b.0, b.1),
             (live.0, live.1),
-            "the casualties counted once, at the fight's epoch"
+            "the casualties counted once, at the sighting's epoch"
         );
         assert_eq!(
             party(&e, p),
-            Some((Phase::Waiting, false)),
-            "the fight Waiting, abstract, at the replay end"
+            Some((Phase::Home, false)),
+            "the arrival decided unwatched, abstract at the replay end"
         );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
