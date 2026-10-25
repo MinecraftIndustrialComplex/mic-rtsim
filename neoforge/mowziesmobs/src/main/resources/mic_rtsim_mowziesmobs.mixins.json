@@ -4,7 +4,9 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "EntityFrostmawMixin"
+    "ContainerUmvuthanaTradeSlotResultMixin",
+    "EntityFrostmawMixin",
+    "EntityUmvuthiMixin"
   ],
   "injectors": {
     "defaultRequire": 1

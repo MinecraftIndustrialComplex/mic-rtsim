@@ -19,8 +19,8 @@
 
 pub const BAND_STATE: u16 = 0x0090;
 pub const CHIEF_STATE: u16 = 0x0091;
-pub const HAVEN_CHEST: u16 = 0x0092;
-// 0x0093 is retired: DIFFICULTY was latest-wins there before it was journaled (MZB-17).
+// 0x0092 is retired: HAVEN_CHEST was latest-wins there before it was journaled (MZB-446, review
+// P3-3). 0x0093 is retired the same way: DIFFICULTY (MZB-17).
 pub const FACTION_FOUND: u16 = 0x0800;
 pub const TERRITORY_SIGNAL: u16 = 0x0801;
 pub const POLLUTION: u16 = 0x0802;
@@ -43,6 +43,11 @@ pub const CAMP_BODIES: u16 = 0x0812;
 pub const CAMP_OUT: u16 = 0x0813;
 pub const CHIEF_PAID: u16 = 0x0814;
 pub const DIFFICULTY: u16 = 0x0815;
+/// An owed hunt was applied (MZB-425): the animals the raiding raptors would have hunted, killed.
+pub const HUNT_APPLIED: u16 = 0x0816;
+/// The chest the plugin chose for a grove's tribute (MZB-422), journaled so that a replay places
+/// the stacks it placed (MZB-446).
+pub const HAVEN_CHEST: u16 = 0x0817;
 
 pub const TERRITORY: u16 = 0x8800;
 pub const FACTION_NOTICE: u16 = 0x8801;
@@ -56,6 +61,9 @@ pub const CAMP_RECONCILE: u16 = 0x8808;
 pub const TRAIN_ROBBED: u16 = 0x8809;
 pub const CHIEF_BODY: u16 = 0x880A;
 pub const BAND_MARCH: u16 = 0x880B;
+/// The animals a raid on an unwatched district leaves hunted (MZB-425), latest wins for each
+/// faction and district.
+pub const OWED_HUNT: u16 = 0x880C;
 
 /// The agent namespace byte ("C"; dragons 0x44, ships 0x53, herds 0x48, industry 0x49).
 pub const AGENT_NAMESPACE: u64 = 0x43;
@@ -158,6 +166,9 @@ pub const ACTION_SET_OUT: u8 = 4;
 pub const ACTION_HAND_BACK: u8 = 5;
 pub const ACTION_REMOVE: u8 = 6;
 pub const ACTION_SEAT_HEIR: u8 = 7;
+/// Take a warrior at home for the heir (slot 0, generation 0: Java picks the one farthest from
+/// every player); always paired with `ACTION_SEAT_HEIR` in one CAMP_RECONCILE (MZB-408).
+pub const ACTION_MASK: u8 = 8;
 /// CAMP_RECONCILE line flags.
 pub const LINE_CHIEF: u8 = 1;
 pub const LINE_CRYSTAL: u8 = 2;
@@ -337,7 +348,7 @@ pub struct ChiefState {
     pub health: f32,
 }
 
-/// A chest at a haven the tribute can go into (latest-wins, as LAIR_CHEST).
+/// A chest at a haven the tribute can go into (journaled, MZB-446; the position as LAIR_CHEST's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HavenChest {
     pub faction: u64,
@@ -491,6 +502,15 @@ pub struct ChiefPaid {
     pub items: Vec<Item>,
 }
 
+/// An owed hunt was applied, whatever it killed (MZB-425, MZB-426): the hunt is spent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HuntApplied {
+    pub faction: u64,
+    pub district: u64,
+    pub op: u64,
+    pub killed: u32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
     State(BandState),
@@ -518,6 +538,7 @@ pub enum Obs {
     CampBodies(CampBodies),
     CampOut(CampOut),
     ChiefPaid(ChiefPaid),
+    HuntApplied(HuntApplied),
 }
 
 impl Obs {
@@ -535,6 +556,7 @@ impl Obs {
             Obs::CampBodies(_) => CAMP_BODIES,
             Obs::CampOut(_) => CAMP_OUT,
             Obs::ChiefPaid(_) => CHIEF_PAID,
+            Obs::HuntApplied(_) => HUNT_APPLIED,
             Obs::State(_) => BAND_STATE,
             Obs::FactionFound(_) => FACTION_FOUND,
             Obs::Signal(_) => TERRITORY_SIGNAL,
@@ -558,6 +580,8 @@ impl Obs {
     /// The plugin's op id, for the records that move items or trade (applied once, in the world's
     /// set). The camp's records have none to skip by: CAMP_DEATH is idempotent by its slot and
     /// generation, and CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
+    /// HUNT_APPLIED's op is the engine's own, in a record that moves no items: it is booked by the
+    /// state of the faction's hunts (review P3-6), so a set of them would only grow.
     /// BAND_CASUALTIES carries an op id too and is not here: there is one for every member death in
     /// the world's life, and the world's set never shrinks (D1), so the engine skips a copy by the
     /// party's own list (`Party::casualty_ops`, which goes with the party; MZB-589).
@@ -604,7 +628,8 @@ impl Obs {
             | Obs::NoticeShown(_)
             | Obs::CampBodies(_)
             | Obs::CampOut(_)
-            | Obs::ChiefPaid(_) => return None,
+            | Obs::ChiefPaid(_)
+            | Obs::HuntApplied(_) => return None,
         };
         (agent != 0).then_some((agent, epoch))
     }
@@ -731,7 +756,7 @@ pub struct ReconcileLine {
     pub slot: u32,
     pub generation: u32,
     pub body: u32,
-    /// `ACTION_SPAWN` to `ACTION_SEAT_HEIR`.
+    /// `ACTION_SPAWN` to `ACTION_MASK`.
     pub action: u8,
     /// `LINE_CHIEF`, `LINE_CRYSTAL`.
     pub flags: u8,
@@ -759,6 +784,27 @@ pub struct CampReconcile {
 pub struct TrainRobbed {
     pub faction: u64,
     pub train: u64,
+}
+
+/// The hunt a raid left owed in a district (MZB-424, MZB-425): up to `count` animals within
+/// `radius` blocks of the centre die when its chunks tick. One is in flight for each faction and
+/// district, resent at each session start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwedHunt {
+    pub faction: u64,
+    pub district: u64,
+    /// Booked once: the hunt's own id (the engine allocator's byte, the camp's hash).
+    pub op: u64,
+    /// The op this hunt replaced while it was in flight; 0 for none (MZB-449, the re-check).
+    pub replaced: u64,
+    pub dimension: u32,
+    pub count: u32,
+    /// The district's centre, in blocks.
+    pub centre: (i32, i32),
+    pub radius: u32,
+    /// The animals to kill instead of `count` when the last op the plugin applied for this
+    /// faction and district is `replaced`: what the replacing raid owes on its own.
+    pub rest: u32,
 }
 
 /// A chief's health, crystal and trade memory, ahead of a stack, spawn line or hand-back.
@@ -813,6 +859,7 @@ pub enum Cmd {
     TrainRobbed(TrainRobbed),
     ChiefBody(ChiefBody),
     March(BandMarch),
+    OwedHunt(OwedHunt),
 }
 
 impl Cmd {
@@ -823,6 +870,7 @@ impl Cmd {
             Cmd::TrainRobbed(_) => TRAIN_ROBBED,
             Cmd::ChiefBody(_) => CHIEF_BODY,
             Cmd::March(_) => BAND_MARCH,
+            Cmd::OwedHunt(_) => OWED_HUNT,
             Cmd::Territory(_) => TERRITORY,
             Cmd::Notice(_) => FACTION_NOTICE,
             Cmd::Envoy(_) => ENVOY_MATERIALIZE,
@@ -847,6 +895,7 @@ impl Cmd {
             Cmd::TrainRobbed(_) => "TRAIN_ROBBED",
             Cmd::ChiefBody(_) => "CHIEF_BODY",
             Cmd::March(_) => "BAND_MARCH",
+            Cmd::OwedHunt(_) => "OWED_HUNT",
         }
     }
 
@@ -1159,11 +1208,11 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.finish(CHIEF_STATE, c.flags, 24);
         }
         Obs::HavenChest(h) => {
-            w.u64(8, h.faction);
-            w.u32(16, h.dimension);
-            w.ipos(20, h.pos);
-            w.u32(32, h.free);
-            w.finish(HAVEN_CHEST, 0, 40);
+            w.u64(24, h.faction);
+            w.u32(32, h.dimension);
+            w.ipos(36, h.pos);
+            w.u32(48, h.free);
+            w.finish(HAVEN_CHEST, 0, 56);
         }
         Obs::Difficulty(d) => {
             w.u32(24, d.difficulty);
@@ -1253,6 +1302,13 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u64(24, c.faction);
             w.u64(32, c.epoch);
             w.finish(CAMP_OUT, 0, 40);
+        }
+        Obs::HuntApplied(h) => {
+            w.u64(24, h.faction);
+            w.u64(32, h.district);
+            w.u64(40, h.op);
+            w.u32(48, h.killed);
+            w.finish(HUNT_APPLIED, 0, 56);
         }
         Obs::ChiefPaid(c) => {
             w.u64(24, c.faction);
@@ -1394,10 +1450,10 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             health: r.f32(16)?,
         }),
         HAVEN_CHEST => Obs::HavenChest(HavenChest {
-            faction: r.u64(8)?,
-            dimension: r.u32(16)?,
-            pos: r.ipos(20)?,
-            free: r.u32(32)?,
+            faction: r.u64(24)?,
+            dimension: r.u32(32)?,
+            pos: r.ipos(36)?,
+            free: r.u32(48)?,
         }),
         DIFFICULTY => Obs::Difficulty(Difficulty {
             difficulty: r.u32(24)?,
@@ -1494,6 +1550,12 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
         CAMP_OUT => Obs::CampOut(CampOut {
             faction: r.u64(24)?,
             epoch: r.u64(32)?,
+        }),
+        HUNT_APPLIED => Obs::HuntApplied(HuntApplied {
+            faction: r.u64(24)?,
+            district: r.u64(32)?,
+            op: r.u64(40)?,
+            killed: r.u32(48)?,
         }),
         CHIEF_PAID => Obs::ChiefPaid(ChiefPaid {
             faction: r.u64(24)?,
@@ -1652,6 +1714,19 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
                 w.uuid(48 + 16 * k, *u);
             }
             w.finish(CHIEF_BODY, traded.len() as u32, 48 + 16 * traded.len());
+        }
+        Cmd::OwedHunt(h) => {
+            w.u64(16, h.faction);
+            w.u64(24, h.district);
+            w.u64(32, h.op);
+            w.u64(40, h.replaced);
+            w.u32(48, h.dimension);
+            w.u32(52, h.count);
+            w.i32(56, h.centre.0);
+            w.i32(60, h.centre.1);
+            w.u32(64, h.radius);
+            w.u32(68, h.rest);
+            w.finish(OWED_HUNT, 0, 72);
         }
         Cmd::March(m) => {
             w.u64(16, m.agent);
@@ -1827,6 +1902,17 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             traded: (0..count(aux)?)
                 .map(|k| r.uuid(48 + 16 * k))
                 .collect::<Result<Vec<_>, CodecError>>()?,
+        }),
+        OWED_HUNT => Cmd::OwedHunt(OwedHunt {
+            faction: r.u64(16)?,
+            district: r.u64(24)?,
+            op: r.u64(32)?,
+            replaced: r.u64(40)?,
+            dimension: r.u32(48)?,
+            count: r.u32(52)?,
+            centre: (r.i32(56)?, r.i32(60)?),
+            radius: r.u32(64)?,
+            rest: r.u32(68)?,
         }),
         BAND_MARCH => {
             let k = count(r.u32(64)?)?;
@@ -2081,6 +2167,12 @@ pub(crate) mod tests {
                 op: 1 << 63 | 11,
                 items,
             }),
+            Obs::HuntApplied(HuntApplied {
+                faction: 77,
+                district: 9_000_000_017,
+                op: AGENT_NAMESPACE << 56 | 31,
+                killed: 3,
+            }),
         ]
     }
 
@@ -2230,6 +2322,28 @@ pub(crate) mod tests {
                 flags: CHIEF_CRYSTAL,
                 traded: vec![(11, 22), (33, 44), (55, 66)],
             }),
+            Cmd::OwedHunt(OwedHunt {
+                faction: 77,
+                district: 9_000_000_017,
+                op: AGENT_NAMESPACE << 56 | 31,
+                replaced: AGENT_NAMESPACE << 56 | 30,
+                dimension: 1,
+                count: 8,
+                centre: (-1200, 3400),
+                radius: 48,
+                rest: 3,
+            }),
+            Cmd::OwedHunt(OwedHunt {
+                faction: 77,
+                district: 9_000_000_017,
+                op: AGENT_NAMESPACE << 56 | 32,
+                replaced: 0,
+                dimension: 1,
+                count: 2,
+                centre: (i32::MIN, i32::MAX),
+                radius: 48,
+                rest: 0,
+            }),
             Cmd::March(BandMarch {
                 agent: 5,
                 revision: 4,
@@ -2254,7 +2368,7 @@ pub(crate) mod tests {
         match kind {
             BAND_STATE => 56,
             CHIEF_STATE => 24,
-            HAVEN_CHEST => 40,
+            HAVEN_CHEST => 56,
             DIFFICULTY => 32,
             FACTION_FOUND => 56,
             TERRITORY_SIGNAL => 72,
@@ -2276,6 +2390,7 @@ pub(crate) mod tests {
             CAMP_BODIES => 48 + 16 * n,
             CAMP_OUT => 40,
             CHIEF_PAID => 72 + 16 * n,
+            HUNT_APPLIED => 56,
             TERRITORY => 48,
             FACTION_NOTICE => 64,
             ENVOY_MATERIALIZE => 104 + 8 * n,
@@ -2286,6 +2401,7 @@ pub(crate) mod tests {
             AMBUSH_SPOT => 96,
             CAMP_RECONCILE => 72 + 32 * n,
             TRAIN_ROBBED => 32,
+            OWED_HUNT => 72,
             CHIEF_BODY => 48 + 16 * n,
             BAND_MARCH => 72 + 8 * u32_at(64) + 16 * n,
             k => panic!("kind {k:#06x} has no documented size"),
@@ -2311,8 +2427,8 @@ pub(crate) mod tests {
             assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
             seen.insert(kind);
         }
-        // Every kind of docs/boundary.md §9 has a sample: 13 + 12 observations, 7 + 5 commands.
-        assert_eq!(seen.len(), 37);
+        // Every kind of docs/boundary.md §9 has a sample (the hunt pair among them, MZB-425).
+        assert_eq!(seen.len(), 39);
         // BAND_MARCH: 72 + 8 a body kind + 16 a waypoint (MOWZIE.md §4.16): 408 for 20
         // waypoints and two body kinds.
         let mut b = Vec::new();
@@ -2657,5 +2773,28 @@ pub(crate) mod tests {
         assert_eq!(u16::from_le_bytes([b[0], b[1]]), 0x0815);
         assert_eq!(u32::from_le_bytes(b[24..28].try_into().unwrap()), 3);
         assert_eq!(decode_obs(&b), Ok((Some((41, 9_000)), o, 32)));
+    }
+
+    /// MZB-446 (review P3-3): HAVEN_CHEST is journaled (obsSeq at 8, gameTime at 16) at 0x0817, so
+    /// a replay places the stacks the session did; the latest-wins id it had is retired.
+    #[test]
+    fn haven_chest_is_journaled_and_its_old_id_is_retired() {
+        let o = Obs::HavenChest(HavenChest {
+            faction: 77,
+            dimension: 1,
+            pos: (905, 71, -1002),
+            free: 27,
+        });
+        assert!(o.is_journaled());
+        let mut b = Vec::new();
+        encode_obs(52, 12_000, &o, &mut b);
+        assert_eq!(b.len(), 56);
+        assert_eq!(u16::from_le_bytes([b[0], b[1]]), 0x0817);
+        assert_eq!(u64::from_le_bytes(b[24..32].try_into().unwrap()), 77);
+        assert_eq!(u32::from_le_bytes(b[48..52].try_into().unwrap()), 27);
+        assert_eq!(decode_obs(&b), Ok((Some((52, 12_000)), o, 56)));
+        // The retired id decodes as nothing.
+        b[0..2].copy_from_slice(&0x0092u16.to_le_bytes());
+        assert_eq!(decode_obs(&b), Err(CodecError::Unknown(0x0092)));
     }
 }
