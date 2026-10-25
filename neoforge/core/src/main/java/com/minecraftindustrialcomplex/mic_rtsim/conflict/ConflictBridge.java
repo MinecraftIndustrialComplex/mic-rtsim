@@ -112,6 +112,12 @@ public final class ConflictBridge implements SessionPlugin {
     static final double ROW = 1.5, FILE = 1.2;
     /** Blocks between the centres of neighbouring stacks placed at one point (PLACEHOLDER). */
     static final double STACK_SPACING = 4.0;
+    /**
+     * M10 (MZB-472): the stop's beat, the walk-in's and the clamp's (ticks, PLACEHOLDER), and how far from the band's head
+     * a player may be to be the one its stacks keep to (blocks, PLACEHOLDER).
+     */
+    public static final int STOP_BEAT = 20;
+    public static final double STOP_REACH = 256.0;
     /** A stack whose bodies could not be made is tried again after this many ticks. */
     static final int RETRY_FAILED = 100;
     /**
@@ -181,6 +187,8 @@ public final class ConflictBridge implements SessionPlugin {
         boolean attack;
         /** The column's heading (a unit vector, MZB-469): from the head toward the walk's target; a steer turns it. */
         double hdx = 1.0, hdz = 0.0;
+        /** M10 (MZB-472): the walk-in and the clamp run at the next pass (a record has just put the band in the stop). */
+        boolean stopBeat;
         UUID targetPlayer;
         boolean recalling;
         long recallDeadline;
@@ -997,6 +1005,7 @@ public final class ConflictBridge implements SessionPlugin {
             p = new Party(agent, epoch, level.dimension(), b.getLong(at + ConflictRecords.Materialize.FACTION), false,
                     b.get(at + ConflictRecords.Materialize.PURPOSE) & 0xFF, pflags);
             p.lastState = now;
+            p.stopBeat = true; // a band that appears at the stop walks in at once if it must
             byAgent.put(agent, p);
         }
         p.waves.add(wave);
@@ -1228,10 +1237,14 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         }
         marchRecords++;
+        MarchPath old = marches.get(m.agent());
         switch (marches.offer(m)) {
             case STALE -> marchStale++;
             case ENDED -> marchEnds++;
             case KEPT -> {
+                Party p = byAgent.get(m.agent());
+                if (p != null && m.stopped() && (old == null || !old.stopped()))
+                    p.stopBeat = true; // the record put the band in the stop: its walk-in runs this tick (MZB-472)
             }
         }
     }
@@ -1652,9 +1665,20 @@ public final class ConflictBridge implements SessionPlugin {
             ServerLevel level = level(p.dimension);
             if (level == null)
                 continue;
-            for (Stack st : p.stacks)
-                if (st.state == StackState.PENDING && st.dirty)
+            // The stop (MZB-472): on its beat a stopped band's pending stacks walk into the player's square before
+            // they are tested, and its placed stacks are held in it.
+            boolean stop = (p.stopBeat || now % STOP_BEAT == 0) && stopped(p);
+            for (Stack st : p.stacks) {
+                if (st.state != StackState.PENDING)
+                    continue;
+                if (stop)
+                    walkIn(p, st, level, now);
+                if (st.dirty)
                     tryPlace(st, level, now);
+            }
+            if (stop)
+                clamp(p, level, now);
+            p.stopBeat = false;
         }
         passing.clear();
         holdLurks(now); // after every level ticked and the placings: a puppet placed this tick is held at once
@@ -1663,6 +1687,100 @@ public final class ConflictBridge implements SessionPlugin {
         flushSignals(now, false);
         if (now % NOTICE_CHECK == 0)
             checkNotices(now);
+    }
+
+    // ---- the stop (MZB-472) ---------------------------------------------------------------------
+
+    /** A band is stopped while the bridge holds a march of it in phase 3 or 4 (waiting or fighting) in its own level. */
+    private boolean stopped(Party p) {
+        if (p.envoy)
+            return false;
+        MarchPath m = marches.get(p.agent);
+        return m != null && m.stopped() && m.dimension() != null && m.dimension().equals(p.dimension.location().toString());
+    }
+
+    /** The band's head at {@code now}: the march's position in the frame the anchors are in (MZB-479), or null. */
+    private int[] head(Party p, long now) {
+        MarchPath m = marches.get(p.agent);
+        return m == null ? null : m.chartAt(now);
+    }
+
+    /** The nearest non-spectator player in the level to (x, z) within {@value #STOP_REACH} blocks of the head, or null. */
+    private static ServerPlayer nearest(ServerLevel level, double x, double z, int[] head) {
+        ServerPlayer best = null;
+        double bestD = Double.MAX_VALUE, reach2 = STOP_REACH * STOP_REACH;
+        for (ServerPlayer pl : level.players()) {
+            if (pl.isSpectator())
+                continue;
+            double hx = pl.getX() - head[0], hz = pl.getZ() - head[1];
+            if (hx * hx + hz * hz > reach2)
+                continue;
+            double dx = pl.getX() - x, dz = pl.getZ() - z, d = dx * dx + dz * dz;
+            if (d < bestD) {
+                bestD = d;
+                best = pl;
+            }
+        }
+        return best;
+    }
+
+    /** The square of blocks a player's stopped bands keep to: one chunk inside its entity-ticking edge. */
+    private int[] square(ServerPlayer pl) {
+        ChunkPos c = pl.chunkPosition();
+        return StopSquare.square(c.x, c.z, session.server().getPlayerList().getSimulationDistance());
+    }
+
+    /**
+     * A pending stack of a stopped band whose place lies outside its player's square comes in where its line to the
+     * head crosses the square (the head clamped into it when the line never does), and walks on toward its old end
+     * clamped into the square. It is marked for a test: the square only picks the point, and it is placed only if the
+     * chunks it needs tick (MZB-472).
+     */
+    private void walkIn(Party p, Stack st, ServerLevel level, long now) {
+        int[] head = head(p, now);
+        if (head == null)
+            return;
+        double[] a = st.anchor(now);
+        ServerPlayer pl = nearest(level, a[0], a[1], head);
+        if (pl == null)
+            return;
+        int[] sq = square(pl);
+        if (StopSquare.inside(a[0], a[1], sq))
+            return;
+        double[] in = StopSquare.entry(a[0], a[1], head[0], head[1], sq);
+        double[] end = StopSquare.clampInto(st.ex, st.ez, sq);
+        long arrive = st.t1 > now ? st.t1 : 0L;
+        st.ax = st.ex = in[0];
+        st.az = st.ez = in[1];
+        st.t0 = st.t1 = now;
+        st.walk(end[0], end[1], p.speed, arrive, now);
+        st.dirty = true;
+        walkIns++;
+    }
+
+    /**
+     * A placed stack of a stopped band whose walk end lies outside its player's square has the end clamped into it
+     * and walks on from where it stands: it holds one chunk inside the edge while it goes toward the fight, and never
+     * walks out of the ticking area to be taken back to pending (MZB-472).
+     */
+    private void clamp(Party p, ServerLevel level, long now) {
+        int[] head = head(p, now);
+        if (head == null)
+            return;
+        for (Stack st : p.stacks) {
+            if (st.state != StackState.PLACED)
+                continue;
+            double[] a = st.anchor(now);
+            ServerPlayer pl = nearest(level, a[0], a[1], head);
+            if (pl == null)
+                continue;
+            int[] sq = square(pl);
+            if (StopSquare.inside(st.ex, st.ez, sq))
+                continue;
+            double[] end = StopSquare.clampInto(st.ex, st.ez, sq);
+            st.walk(end[0], end[1], p.speed, st.t1 > now ? st.t1 : 0L, now);
+            clamps++;
+        }
     }
 
     /** The conflict module was switched off: every party goes back to the engine as it stands, and the rest is forgotten. */
