@@ -14,7 +14,10 @@ import net.neoforged.neoforge.common.IOUtilities;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * The journal SavedData, {@code mic_rtsim:journal} (PLAN.md §4.9), in the overworld's data storage.
@@ -34,6 +37,14 @@ public final class JournalSavedData extends SavedData {
     private volatile boolean retry;
     private volatile long writtenThrough;
     private final AtomicLong writes = new AtomicLong();
+
+    /**
+     * GameTests: run once, on the IO chain, right before the journal's next write (its chunks on disk), with the
+     * file. What it reads on disk is what a crash at that instant leaves.
+     */
+    public static final AtomicReference<Consumer<Path>> BEFORE_WRITE_FOR_TEST = new AtomicReference<>();
+    /** GameTests: run once, on the IO chain, right after the journal's next write. */
+    public static final AtomicReference<Consumer<Path>> AFTER_WRITE_FOR_TEST = new AtomicReference<>();
 
     private JournalSavedData(Journal journal) {
         this.journal = journal;
@@ -89,13 +100,26 @@ public final class JournalSavedData extends SavedData {
                 retry = true;
                 return;
             }
+            forTest(BEFORE_WRITE_FOR_TEST, file);
             IOUtilities.writeNbtCompressed(tag, file.toPath());
             if (through > writtenThrough)
                 writtenThrough = through;
             writes.incrementAndGet();
+            forTest(AFTER_WRITE_FOR_TEST, file);
         } catch (IOException | RuntimeException e) {
             retry = true;
             MicRtsim.LOGGER.error("[mic_rtsim] could not write the journal's file {}", file, e);
+        }
+    }
+
+    private static void forTest(AtomicReference<Consumer<Path>> hook, File file) {
+        Consumer<Path> h = hook.getAndSet(null);
+        if (h == null)
+            return;
+        try {
+            h.accept(file.toPath());
+        } catch (RuntimeException e) {
+            MicRtsim.LOGGER.error("[mic_rtsim] a GameTest's journal write hook failed", e);
         }
     }
 
