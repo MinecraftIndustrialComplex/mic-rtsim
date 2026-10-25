@@ -538,8 +538,8 @@ ahead:
 - **Orders** (`take_unit`, from tests and the console) run at the hand-over's time as today. The
   four that run the clock there (the works grants and raids, TRIBUTE_START, HERD_FOUND) wait for
   the replay end (RP-33, the fix round's item 3): a unit given while replaying that holds one is
-  queued, with every unit after it, and taken at the first step after the end. The rest run no
-  clock.
+  queued, with every unit after it, and taken at the first step after the end. A conflict command
+  waits the same way, as it goes around the gate (§4.4, RP-66). The rest run no clock.
 
 **The rule.** rtsim-jni keeps `st.replay_clock: Tick` (not saved): set at the SESSION_START arm to
 the world's present, and raised by `shared::catch_up` to each replayed record's world tick before it
@@ -627,6 +627,12 @@ Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
 table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
 March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
+
+One route goes around the gate, and it is a test's: rtsim-jni engine/conflict.rs `order_command`
+(`Order::ConflictCommand`, TEST mode only) puts a command of any kind straight into the host's
+queue. Its verdict is "wait": a unit holding one, and every unit after it, is held to the replay end
+with RP-33's orders that run the clock (`waits_for_the_replay_end`, RP-66), so no test's command
+goes while the replay runs, a "never" kind included.
 
 **M7's rail caller (feat/mowzie-m7, not on main): a note for whichever of M7 and fix/replay-push
 lands second.**

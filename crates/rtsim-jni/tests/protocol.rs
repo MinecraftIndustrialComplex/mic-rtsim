@@ -6508,6 +6508,76 @@ mod conflict {
         a_fight_kept_in_the_pages_with("conflict-rp33-tribute", long, mask, Some(order));
     }
 
+    /// RP-66 (the M5 merge check's item 2): a test's conflict command joins the conflict's queue
+    /// around its gate, so one ordered while the replay runs waits for the replay end as RP-33's
+    /// orders do. A BAND_MATERIALIZE, a "never" kind, is not written while the replay runs, and
+    /// is once it has ended.
+    #[test]
+    fn a_conflict_command_ordered_while_replaying_waits_for_the_replay_end() {
+        let (dir, e, mut j) = camp("conflict-rp66-order");
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        // Eight hand-overs: an idle takes two.
+        fillers(&mut j, 8_000);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        assert!(bytes > 6 * wire::MIN_CAPACITY, "the replay's records: {bytes} bytes");
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 0, "the replay runs past its first hand-over");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let (warrior, agent) = (41, 0x43 << 56 | 0x66);
+        let cmd = C::Materialize(cb::BandMaterialize {
+            agent,
+            epoch: 3,
+            dimension: dim,
+            faction: CAMP,
+            purpose: 3,
+            flags: cb::BAND_HOSTILE,
+            wave: 0,
+            arc_centre: (10.0, 20.0),
+            bearing_deg: 90.0,
+            arc_radius: 112,
+            half_width_deg: 30.0,
+            target: (10.0, 64.0, 20.0),
+            target_player: PLAYER,
+            speed: 0.02,
+            members: vec![cb::Stack {
+                body: warrior,
+                count: 5,
+                flags: 0,
+            }],
+        });
+        let mut record = Vec::new();
+        cb::encode_cmd(0, &cmd, &mut record);
+        let name = "mic_rtsim:conflict/goblin/warrior".to_string();
+        e.order(vec![Order::ConflictCommand {
+            names: vec![(wire::DICT_BODY, warrior, name)],
+            record,
+        }])
+        .unwrap();
+        let written =
+            |j: &Java| cmds(j).any(|c| matches!(c, C::Materialize(m) if m.agent == agent));
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 0, "still replaying");
+        assert!(!written(&j), "not written while the replay runs");
+        hand_over_all(&mut j);
+        j.idle();
+        assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+        assert!(written(&j), "written once it has ended");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// A second case: the same replay in one hand-over. It does not isolate RP-24: before
     /// df53fe38 it failed too, on RP-26's anchor (the arm's leave of the players' areas). The
     /// control is the no-crash variant below.
