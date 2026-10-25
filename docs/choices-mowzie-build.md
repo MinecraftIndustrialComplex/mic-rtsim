@@ -3693,10 +3693,10 @@ outbox and its gate, `begin_replay` and `replay_done`, the honoured SHIP_MATERIA
 floors, the early returns, the pirate coast raid, the host's copies and a test's ship command.
 Slice C (RP-1 to RP-69) is the pattern; slices D and H keep RP-70 to RP-89 on their own branches.
 No page, record or wire format changes: the floors, the counts and the replay flags are in memory,
-and the ships' pages hold what they held. Tests: rtsim-ships `tests/replay.rs` (21, the engine
+and the ships' pages hold what they held. Tests: rtsim-ships `tests/replay.rs` (23, the engine
 level), `tests/blockade.rs` (one more), `outbox.rs` (3 unit tests), `engine/blockade.rs` (two
 in-crate tests: the blind watcher and the blockade bumps), rtsim-jni
-`tests/ships_replay.rs` (12, the host level). The Opus review of the first round (216e21a5) found
+`tests/ships_replay.rs` (13, the host level). The Opus review of the first round (216e21a5) found
 the handle shift on every by-agent lookup but the honour, four holes in the session's bound and
 fold, and five smaller things; the fixes round amended RP-93, RP-95, RP-96, RP-97 and RP-99 and
 added RP-120 to RP-122. What each fails with on the base is in RP-90 to RP-99 and RP-120 to RP-122;
@@ -3960,9 +3960,11 @@ mutation of the fix (the list is under RP-99).
   `the_pirates_of_the_first_activating_haven_are_inside_no_bound`, `a_later_replay_takes_its_own_bound`,
   and rtsim-jni `a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate`
   and `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` (pages with an empty
-  ships engine, the coast found, the haven's pirate at handle 0 materialized at epoch 3 in a
-  replayed window: never seen embodied, epoch 3 as the floor, next 4; the control is
-  `a_replayed_materialization_is_honoured_on_the_pages_ship`). Mutations of each are in the list
+  ships engine, the coast found with the haven reported before the ports and after them, the
+  haven's pirate materialized at epoch 3 in a replayed window: never seen embodied, epoch 3 as the
+  floor, next 4; the control is `a_replayed_materialization_is_honoured_on_the_pages_ship`). The
+  haven-first order is the one that matters at the host: with the ports first the engine is
+  already running when the haven is found, and the bound was right even on the first round's code. Mutations of each are in the list
   below.
 
 - **RP-121** (the blockade's bumps go through `next_epoch`, and the honour spends a floor only
@@ -3988,7 +3990,10 @@ mutation of the fix (the list is under RP-99).
   `an_epoch_named_while_the_ships_were_off_is_not_reused_once_they_are_on` (a body ended after
   the save, the crash, the next session starts with the ships off and switches them on after the
   replay end; control: ships on through the replay), `an_epoch_named_before_the_ships_had_a_dock_is_not_reused`
-  (the record is journaled before any dock; control: the coast on the pages), and tests/replay.rs's
+  (the record is journaled before any dock; control: the coast on the pages),
+  `an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused` (the same for a SHIP_STATE
+  that the plugin's second hand-over carries into a replay of several; control: ships on), and
+  tests/replay.rs's
   `a_copy_after_the_replay_end_only_moves_the_floor` (a post-replay copy of a Sunk or a Damaged
   moves the floor and no ship).
 
@@ -4013,6 +4018,44 @@ at least the test named):
 | `ingest_copy` does not fold the floor | `a_copy_of_a_materialization_embodies_nothing`, `every_kind_that_names_an_epoch_raises_the_floor` |
 | a copy applied as a live record (rtsim-jni) | `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor` |
 | a test's ship command not held (rtsim-jni) | `a_ship_command_ordered_while_replaying_waits_for_the_replay_end` |
+
+The review's fixes round (RP-120 to RP-122) added these, each applied alone to a scratch copy of the
+committed tree, one driver at a time. Each line gives the tests that fail and the first failing
+assertion of the one named, which is the before value of its fail-first (the engine-level tests
+cannot be built on f2cf3d69, which has none of the calls, so a mutation of the fix is their
+before; the host-level tests quote the same mutations):
+
+| Mutation | Caught by, first failing assertion |
+| --- | --- |
+| `named_ship` without its bound (every by-agent lookup open) | nine tests, among them `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle` ("sunk, pages true: the pirate is not the merchant") |
+| `ship_of_op` unbounded | `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle` (the same message) |
+| `ship_of` unbounded | `an_epoch_checked_lookup_finds_only_a_ship_the_pages_held` ((hull, crew) (100, 5) against (1000, 6)); none before the test's epoch-0 record, the epoch check being a wall of its own |
+| the capturing ship's lookups unbounded | `a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost` ("captured: the merchant stays") |
+| Fight's lookups unbounded | `a_replayed_fight_between_handles_the_replay_allocated_is_lost` (fights observed 1 against 0) |
+| `doer` unbounded | `a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody` (the row's doer [4294967308] against [0]); none before the test |
+| `begin_replay` takes the bound at each call | `a_second_begin_replay_keeps_the_sessions_bound_and_flag`, `the_pirates_of_the_first_activating_haven_are_inside_no_bound` ("not honoured" and the pirate embodied) |
+| `begin_replay` overwrites `from_pages` | `a_second_begin_replay_keeps_the_sessions_bound_and_flag` |
+| `begin_session` does nothing | `the_pirates_of_the_first_activating_haven_are_inside_no_bound`, and rtsim-jni `a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate` and `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` ("haven first true: the replay's pirate was embodied by a record that named a live ship"). With the ports first the host ran no differently, since the engine is running before the haven: the tests take both orders |
+| `ships::session_start` does not call it (rtsim-jni) | the two host tests above, the same message |
+| `ingest_copy` ingests as well | `a_copy_after_the_replay_end_only_moves_the_floor` (the merchant sunk by a post-replay copy), `a_copy_of_a_materialization_embodies_nothing` |
+| `set_epoch` spends any floor | `the_honour_spends_only_a_floor_it_reaches` (floor 9: next 4 against 10) |
+| the blockade bumps a plain +1 | `a_blockade_bump_goes_above_the_epochs_a_replayed_record_named` (above the floor of 7: 1 against 8) |
+| `replay_done` keeps the bound | `a_later_replay_takes_its_own_bound` |
+| `journaled` folds after the switch check (rtsim-jni) | `an_epoch_named_before_the_ships_had_a_dock_is_not_reused` (1 against 8) and `an_epoch_named_while_the_ships_were_off_is_not_reused_once_they_are_on` ("ships off true: the next body is numbered 1, and the last session spent 1") |
+| `observe_state` does not fold (rtsim-jni) | `an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused` ("ships off true: the next body is numbered 2, and the state record spent 6"); none before the test |
+| the fold keyed on the engine's replay flag (rtsim-jni) | the three tests above |
+
+
+Two mutation runs were wasted and are worth knowing. Once two copies of the driver ran on the same
+scratch tree (a relaunch while the first still lived), and each saw the other's half-applied
+mutation: "did not apply" for a mutation that applies, and a link error. Check `pgrep` for the
+driver before a relaunch, and read a "did not apply" or a link error as a collision before as a
+bug. The second: a host test that passes under the mutation it should catch is a test that does
+not reach the line: the first draft of the first-activating-haven host test passed with
+`begin_session` removed, because the coast it used reports its ports first (the engine runs
+before the haven's record, so the bound is right on either code), and the first draft of the
+state-record test saw its record before the session's SESSION_START and with an empty replay.
+Both were found by running the mutation, and both are fixed by their tests.
 
 One mutation run was wasted and is worth knowing: the scratch copy was cut from a commit older than
 the floor test, so the first run of the "floors dropped" mutation printed "0 failed". A mutation
@@ -4048,6 +4091,17 @@ timing tests that failed under a machine load of about 98 and passed on rerun (r
 `the_server_threads_hand_over_keeps_its_timing_class`, failed in three of five reruns at load about
 40 and passed four of four at load about 8 on this branch (and four of four on the base at load
 about 20). None touches the ships (the host calls no replay API of the ships).
+
+The fixes round's runs: `cargo test --workspace --no-fail-fast` passed except rtsim-cli's `view`
+test `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap` (the
+district card carried a `note` under a machine load with the mutation driver running; it passed
+alone at once, and it touches no ships); the full `cargo test -p rtsim-ships -p rtsim-jni
+--no-fail-fast` passed on the final tree (the workspace run was before the renumbering of the
+records and the two host tests of the end of the round, which change no source line), and
+`cargo clippy -p rtsim-ships -p rtsim-jni --all-targets -- -D warnings` is clean. The sims were not
+run again: the round changes no line an unreplayed run reaches but the blockade's bump, which is
+`next_epoch` (the same number with no floor) and `named_ship`, which answers its handle when the
+outbox is not replaying.
 
 Forks taken in the review's fixes round (each can be undone; the lead decides whether to keep it):
 
