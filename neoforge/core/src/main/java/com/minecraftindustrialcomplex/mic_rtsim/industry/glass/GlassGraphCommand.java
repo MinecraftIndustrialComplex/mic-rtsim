@@ -202,15 +202,30 @@ public final class GlassGraphCommand {
             w.beginObject();
             w.name("index").value(dm.index);
             pos(w, BlockPos.of(dm.network));
-            w.name("current").value(dm.current);
-            w.name("driver").value(dm.driver == GraphBuilder.NONE ? -1 : dm.driver);
+            w.name("current").value(dm.current == GraphBuilder.NONE ? -1 : dm.current);
             w.name("flags").value(dm.flags);
             w.name("liveStress").value(dm.liveStress);
             w.name("liveCapacity").value(dm.liveCapacity);
             w.name("levels").beginArray();
             for (GraphBuilder.Level l : dm.levels)
-                w.beginObject().name("selector").value(l.selector()).name("speed").value(l.speed().toString())
-                        .name("capacity").value(l.capacity()).endObject();
+                level(w, l);
+            w.endArray();
+            w.name("sources").beginArray();
+            for (GraphBuilder.Source sr : dm.sources) {
+                w.beginObject();
+                pos(w, BlockPos.of(sr.pos));
+                w.name("driver").value(sr.driver == GraphBuilder.NONE ? -1 : sr.driver);
+                if (sr.ratio == null)
+                    w.name("ratio").nullValue();
+                else
+                    w.name("ratio").value(sr.ratio.num() + "/" + sr.ratio.den());
+                w.name("current").value(sr.current == GraphBuilder.NONE ? -1 : sr.current);
+                w.name("rows").beginArray();
+                for (GraphBuilder.Level l : sr.levels)
+                    level(w, l);
+                w.endArray();
+                w.endObject();
+            }
             w.endArray();
             w.name("members").beginArray();
             for (GraphBuilder.Member m : dm.members)
@@ -221,6 +236,11 @@ public final class GlassGraphCommand {
         }
         w.endArray();
         w.endObject();
+    }
+
+    private static void level(JsonWriter w, GraphBuilder.Level l) throws IOException {
+        w.beginObject().name("selector").value(l.selector()).name("speed").value(l.speed().toString())
+                .name("capacity").value(l.capacity()).endObject();
     }
 
     private static void terms(JsonWriter w, Industry ind, String key, java.util.List<GraphBuilder.Term> terms) throws IOException {

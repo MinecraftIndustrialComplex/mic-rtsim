@@ -9,9 +9,9 @@
 use rtsim_kernel::clock::Tick;
 
 use super::records::{
-    ChunkTicking, Count, CountSample, CountSet, DomainLevel, EdgeKind, GlassObs, GraphDomain,
-    GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NONE, NodeKind, ProbeSample,
-    ProbeSet, RateEntry, Term,
+    ChunkTicking, Count, CountSample, CountSet, DomainLevel, DomainSource, EdgeKind, GlassObs,
+    GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NONE, NodeKind,
+    ProbeSample, ProbeSet, RateEntry, Term,
 };
 use crate::ids::{ChunkPos, Good};
 use crate::wire::{R, W, WireError, check, n32, sized};
@@ -46,8 +46,9 @@ pub const RATE24: usize = 24;
 pub const EDGE_FIXED: usize = 72;
 pub const RECIPE_FIXED: usize = 56;
 pub const TERM24: usize = 24;
-pub const DOMAIN_FIXED: usize = 72;
+pub const DOMAIN_FIXED: usize = 88;
 pub const LEVEL24: usize = 24;
+pub const SOURCE32: usize = 32;
 pub const MEMBER24: usize = 24;
 pub const END_SIZE: usize = 80;
 pub const PROBE_FIXED: usize = 40;
@@ -236,17 +237,39 @@ pub fn encode_obs(
             head(&mut w, &d.head);
             w.put_u64(d.network);
             w.put_u32(n32(d.levels.len()));
-            w.put_u32(d.current);
-            w.put_u32(unopt(d.driver));
+            w.put_u32(unopt(d.current));
+            w.zero(4);
             w.put_u32(d.flags);
             w.put_f64(d.live_stress);
             w.put_f64(d.live_capacity);
-            for l in &d.levels {
+            let rows: usize = d.sources.iter().map(|s| s.levels.len()).sum();
+            w.put_u32(n32(d.sources.len()));
+            w.put_u32(n32(rows));
+            w.put_u32(d.foreign);
+            w.zero(4);
+            let level = |w: &mut W, l: &DomainLevel| {
                 w.put_u32(l.selector);
                 w.put_i32(l.speed_num);
                 w.put_u32(l.speed_den);
                 w.zero(4);
                 w.put_f64(l.capacity);
+            };
+            for l in &d.levels {
+                level(&mut w, l);
+            }
+            let mut first = 0usize;
+            for s in &d.sources {
+                w.put_u32(unopt(s.driver));
+                w.put_u32(n32(first));
+                w.put_u32(n32(s.levels.len()));
+                w.put_u32(unopt(s.current));
+                w.put_i32(s.ratio_num);
+                w.put_u32(s.ratio_den);
+                w.put_i64(s.pos);
+                first += s.levels.len();
+            }
+            for l in d.sources.iter().flat_map(|s| &s.levels) {
+                level(&mut w, l);
             }
             for m in &d.members {
                 w.put_u32(unopt(m.node));
@@ -417,31 +440,68 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
                 return Err(bad);
             }
             let l = r.get_u32(40) as usize;
+            let ns = r.get_u32(72) as usize;
+            let nr = r.get_u32(76) as usize;
+            let foreign = r.get_u32(80);
             check(
                 kind,
                 size,
-                sized(sized(DOMAIN_FIXED, l, LEVEL24), n, MEMBER24),
+                sized(
+                    sized(
+                        sized(sized(DOMAIN_FIXED, l, LEVEL24), ns, SOURCE32),
+                        nr,
+                        LEVEL24,
+                    ),
+                    n,
+                    MEMBER24,
+                ),
             )?;
-            let m0 = DOMAIN_FIXED + LEVEL24 * l;
+            if foreign as usize > n {
+                return Err(bad);
+            }
+            let s0 = DOMAIN_FIXED + LEVEL24 * l;
+            let r0 = s0 + SOURCE32 * ns;
+            let m0 = r0 + LEVEL24 * nr;
+            let level = |e: usize| DomainLevel {
+                selector: r.get_u32(e),
+                speed_num: r.get_i32(e + 4),
+                speed_den: r.get_u32(e + 8),
+                capacity: r.get_f64(e + 16),
+            };
+            // A source's rows follow the one before's: the encoding is canonical.
+            let mut sources = Vec::with_capacity(ns);
+            let mut next = 0usize;
+            for i in 0..ns {
+                let e = s0 + SOURCE32 * i;
+                let (first, count) = (r.get_u32(e + 4) as usize, r.get_u32(e + 8) as usize);
+                if first != next || count > nr - next {
+                    return Err(bad);
+                }
+                next += count;
+                sources.push(DomainSource {
+                    driver: opt(r.get_u32(e)),
+                    levels: (first..first + count)
+                        .map(|j| level(r0 + LEVEL24 * j))
+                        .collect(),
+                    current: opt(r.get_u32(e + 12)),
+                    ratio_num: r.get_i32(e + 16),
+                    ratio_den: r.get_u32(e + 20),
+                    pos: r.get_i64(e + 24),
+                });
+            }
+            if next != nr {
+                return Err(bad);
+            }
             GlassObs::Domain(GraphDomain {
                 head: read_head(&r),
                 network: r.get_u64(32),
-                current: r.get_u32(44),
-                driver: opt(r.get_u32(48)),
+                current: opt(r.get_u32(44)),
                 flags: r.get_u32(52),
                 live_stress: r.get_f64(56),
                 live_capacity: r.get_f64(64),
-                levels: (0..l)
-                    .map(|i| {
-                        let e = DOMAIN_FIXED + LEVEL24 * i;
-                        DomainLevel {
-                            selector: r.get_u32(e),
-                            speed_num: r.get_i32(e + 4),
-                            speed_den: r.get_u32(e + 8),
-                            capacity: r.get_f64(e + 16),
-                        }
-                    })
-                    .collect(),
+                levels: (0..l).map(|i| level(DOMAIN_FIXED + LEVEL24 * i)).collect(),
+                sources,
+                foreign,
                 members: (0..n)
                     .map(|i| {
                         let e = m0 + MEMBER24 * i;
@@ -682,17 +742,21 @@ mod tests {
         let domain = GraphDomain {
             head: head(0),
             network: 99,
-            current: 0,
-            driver: None,
+            current: Some(1),
             flags: 0,
             live_stress: 1024.0,
             live_capacity: 4096.0,
-            levels: vec![DomainLevel {
-                selector: 0,
-                speed_num: 256,
-                speed_den: 1,
-                capacity: 4096.0,
-            }],
+            levels: vec![DomainLevel::speed_row(128), DomainLevel::speed_row(256)],
+            sources: vec![
+                DomainSource::driven(0, -5, &[(0, 0, 0.0), (2, 128, 2048.0), (4, 256, 4096.0)], 2),
+                DomainSource {
+                    ratio_num: 0,
+                    ratio_den: 0,
+                    current: None,
+                    ..DomainSource::fixed(1 << 40, -64, 512.0)
+                },
+            ],
+            foreign: 1,
             members: vec![Member {
                 node: Some(0),
                 count: 1,

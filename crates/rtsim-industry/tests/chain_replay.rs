@@ -4,13 +4,14 @@
 //! what that pool holds goes back to the store when no replay touches it, and the engine writes it
 //! into a loaded frogport as real packages (IND_WRITE_CHAIN).
 
-use rtsim_industry::cmd::{Cmd, WriteChain};
+use rtsim_industry::cmd::{ChunkReconcile, Cmd, DrawAction, HeldDraw, WriteChain};
 use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec, StoreId};
 use rtsim_industry::learn::{Learned, LinkKey};
 use rtsim_industry::obs::{
-    ChainDirection, ChainPackage, DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, StoreDecl,
-    StoreFrogport, SweepEnd, Timed,
+    ChainDirection, ChainPackage, DistrictDecl, HeldKey, HeldList, InvKind, InventoryDecl,
+    LoadState, Obs, ReconcileResult, ResultEntry, StoreCensus, StoreDecl, StoreFrogport, SweepEnd,
+    Timed,
 };
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
@@ -883,5 +884,426 @@ fn a_loaded_frogport_of_a_partly_replayed_district_is_no_part_of_the_replay() {
         before - (0.04 * 11_600.0) as i64,
         "the writes are the frogport's, not the vault's"
     );
+    e.check_books().expect("books");
+}
+
+// ---- the frontier's draw (slice S4c2) ----------------------------------------------------------
+
+const K7: HeldKey = HeldKey {
+    epoch: 0,
+    serial: 7,
+};
+const K8: HeldKey = HeldKey {
+    epoch: 0,
+    serial: 8,
+};
+const K9: HeldKey = HeldKey {
+    epoch: 0,
+    serial: 9,
+};
+
+/// The mine loaded, three of its packages on the chain toward the mill, and the mill away with
+/// nothing to use: its replay's iron is what it imports.
+fn frontier() -> Engine {
+    let mut e = engine(Tunables::default());
+    send(&mut e, 0, Obs::PackageStore(store()));
+    district(&mut e, MINE, 1_000, 0.05, -0.05);
+    district(&mut e, MILL, 0, 0.0, 0.05);
+    send(&mut e, 15, chain(MINE, ChainDirection::Out, 3, None));
+    away(&mut e, MILL, 100);
+    assert!(e.replays(MILL) && !e.replays(MINE));
+    e.drain_commands();
+    e
+}
+
+/// The frontier's record of key `k`, one package toward the mill's frogport held on the mine's
+/// side: `CHAIN_HELD`, `CHAIN_DRAWN` or `CHAIN_RELEASED`.
+fn keyed(direction: ChainDirection, k: HeldKey) -> Obs {
+    let released = direction == ChainDirection::Released;
+    Obs::ChainPackage(ChainPackage {
+        store: S,
+        district: None,
+        inventory: None,
+        direction,
+        frogport: if released { u32::MAX } else { 1 },
+        pos: BlockPos::new(15, 64, 0),
+        destination: (!released).then_some(1),
+        packages: u32::from(!released),
+        address: 0,
+        op: None,
+        key: Some(k),
+        goods: if released {
+            GoodVec::new()
+        } else {
+            GoodVec::from_pairs([(IRON, BATCH)])
+        },
+    })
+}
+
+/// The engine's IND_HELD_DRAW asks, as (action, serials), and its reconciles.
+fn asks(e: &mut Engine) -> (Vec<(DrawAction, Vec<u64>)>, Vec<ChunkReconcile>) {
+    let mut draws = Vec::new();
+    let mut reconciles = Vec::new();
+    for c in e.drain_commands() {
+        match c {
+            Cmd::HeldDraw(HeldDraw {
+                store,
+                epoch,
+                action,
+                serials,
+            }) => {
+                assert_eq!((store, epoch), (S, 0));
+                draws.push((action, serials));
+            }
+            Cmd::ChunkReconcile(r) => reconciles.push(r),
+            _ => {}
+        }
+    }
+    (draws, reconciles)
+}
+
+/// Java applying every reconcile whole.
+fn reconciled(e: &mut Engine, at: u64, rs: &[ChunkReconcile]) {
+    for r in rs {
+        send(
+            e,
+            at,
+            Obs::ReconcileResult(ReconcileResult {
+                op: r.op,
+                district: r.district,
+                epoch: r.epoch,
+                chunk: r.chunk,
+                entries: r
+                    .deltas
+                    .iter()
+                    .map(|d| ResultEntry {
+                        inventory: d.inventory,
+                        good: d.good,
+                        requested: d.delta,
+                        applied: d.delta,
+                    })
+                    .collect(),
+                destroyed: vec![],
+                blocks_skipped: 0,
+            }),
+        );
+    }
+}
+
+fn held_keys(e: &Engine) -> Vec<HeldKey> {
+    e.stores()[&S]
+        .held_toward(frog(MILL))
+        .iter()
+        .map(|h| h.key)
+        .collect()
+}
+
+fn drawn_keys(e: &Engine) -> Vec<HeldKey> {
+    e.stores()[&S]
+        .drawn_toward(frog(MILL))
+        .iter()
+        .map(|h| h.key)
+        .collect()
+}
+
+fn chain_packages(e: &Engine) -> u64 {
+    e.stores()[&S].pools[1].packages
+}
+
+/// A package the frontier holds toward the away mill is drawn by the mill's replay (choice
+/// SC141): asked once, booked at Java's `CHAIN_DRAWN`, its iron the replay's import. It stays in
+/// the world until the replay has reached it: once the mill loads and its reconcile applied, the
+/// engine has it removed, once (choice SC142).
+#[test]
+fn a_held_package_is_drawn_by_the_far_replay_and_removed_once_its_reconcile_applied() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    // Another held package wakes the store again: only the new key is asked.
+    send(&mut e, 210, keyed(ChainDirection::Held, K8));
+    e.advance_to(Tick(215));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![8])]);
+    assert_eq!(e.stats.held_draws_asked, 2);
+    assert_eq!(e.sim_stock(MILL).expect("replays").get(IRON), 0);
+    // Java draws 7 only (8 moved on meanwhile, say).
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(drawn_keys(&e), vec![K7]);
+    assert_eq!(held_keys(&e), vec![K8]);
+    assert_eq!(chain_packages(&e), 2, "the drawn package is no pool's");
+    assert_eq!(e.stores()[&S].counts.drawn, 1);
+    // Told again: nothing changes.
+    send(&mut e, 221, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(e.stores()[&S].counts.drawn, 1);
+    e.check_books().expect("books");
+    // A held record of a drawn key (Java lost its mark) asks the draw again, and stays drawn.
+    send(&mut e, 222, keyed(ChainDirection::Held, K7));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    assert_eq!(drawn_keys(&e), vec![K7]);
+    // The replay imports the package's iron.
+    e.advance_to(Tick(3_000));
+    assert_eq!(e.sim_stock(MILL).expect("replays").get(IRON), BATCH);
+    // The mill loads: no removal while its reconcile is out.
+    live(&mut e, MILL, 3_000);
+    e.advance_to(Tick(3_100));
+    let (draws, rs) = asks(&mut e);
+    assert!(draws.is_empty(), "{draws:?}");
+    assert!(!rs.is_empty(), "the replay's iron goes back to the world");
+    assert_eq!(drawn_keys(&e), vec![K7]);
+    reconciled(&mut e, 3_100, &rs);
+    e.advance_to(Tick(3_102));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Remove, vec![7])]);
+    assert_eq!(e.stats.held_removes_asked, 1);
+    // Java removed it: struck.
+    send(&mut e, 3_200, keyed(ChainDirection::Released, K7));
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(e.stores()[&S].counts.drawn_removed, 1);
+    assert_eq!(held_keys(&e), vec![K8]);
+    assert_eq!(chain_packages(&e), 2);
+    e.check_books().expect("books");
+}
+
+/// A drawn package whose district is removed is given back (choice SC143): nothing will reach
+/// the world for it, so it is held again and the world's.
+#[test]
+fn a_drawn_package_whose_district_is_gone_is_given_back() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(chain_packages(&e), 2);
+    send(&mut e, 300, Obs::DistrictRemoved { district: MILL });
+    e.advance_to(Tick(302));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Return, vec![7])]);
+    assert_eq!(held_keys(&e), vec![K7]);
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(chain_packages(&e), 3);
+    assert_eq!(e.stores()[&S].counts.drawn_back, 1);
+    assert_eq!(e.stats.held_returns_asked, 1);
+}
+
+/// Java's mark that comes after the mill loaded is given back: no replay draws that frogport now
+/// (choice SC141).
+#[test]
+fn a_draw_marked_after_its_district_loaded_is_given_back() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    live(&mut e, MILL, 210);
+    e.advance_to(Tick(215));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Return, vec![7])]);
+    assert_eq!(held_keys(&e), vec![K7]);
+    assert_eq!(e.stores()[&S].counts.drawn, 0);
+    assert_eq!(chain_packages(&e), 3);
+}
+
+/// A drawn package that lands anyway (its key's keyed `CHAIN_IN`) is the world's again: back in
+/// the pool and taken there, a duplicate of what the replay drew at worst (choice SC143).
+#[test]
+fn a_drawn_package_that_lands_goes_back_into_the_pool_first() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    live(&mut e, MILL, 300);
+    let mut landed = chain(MILL, ChainDirection::In, 1, None);
+    if let Obs::ChainPackage(p) = &mut landed {
+        p.key = Some(K7);
+    }
+    send(&mut e, 310, landed);
+    let s = &e.stores()[&S];
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(
+        (s.counts.held_landed, s.counts.drawn_back),
+        (1, 1),
+        "{:?}",
+        s.counts
+    );
+    assert_eq!(chain_packages(&e), 2);
+    e.check_books().expect("books");
+}
+
+/// A drawn package that lands at another frogport than the one it was held toward goes back into
+/// the pool of the frogport it landed at, so that landing takes it and no other pool is short.
+#[test]
+fn a_drawn_package_that_lands_elsewhere_goes_back_where_it_landed() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(chain_packages(&e), 2);
+    let mut landed = chain(MINE, ChainDirection::In, 1, None);
+    if let Obs::ChainPackage(p) = &mut landed {
+        p.key = Some(K7);
+    }
+    send(&mut e, 310, landed);
+    let s = &e.stores()[&S];
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(
+        (
+            s.counts.held_landed,
+            s.counts.drawn_back,
+            s.counts.in_beyond
+        ),
+        (1, 1, 0),
+        "{:?}",
+        s.counts
+    );
+    assert_eq!(
+        s.pools[0].packages, 0,
+        "the landing took it where it landed"
+    );
+    assert_eq!(chain_packages(&e), 2, "the mill's pool is not given it");
+    e.check_books().expect("books");
+}
+
+/// A drawn package's landing that a census counted already (recorded before it, taken after it)
+/// takes nothing, and the census, which counts no drawn package, has the pools right: the package
+/// goes into none.
+#[test]
+fn a_drawn_landing_a_census_counted_goes_into_no_pool() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    send(
+        &mut e,
+        400,
+        Obs::StoreCensus(StoreCensus {
+            store: S,
+            packages: vec![(Some(1), 2)],
+            goods: vec![(Some(1), IRON, 2 * BATCH)],
+        }),
+    );
+    assert_eq!(chain_packages(&e), 2);
+    let mut landed = chain(MINE, ChainDirection::In, 1, None);
+    if let Obs::ChainPackage(p) = &mut landed {
+        p.key = Some(K7);
+    }
+    send(&mut e, 310, landed);
+    let s = &e.stores()[&S];
+    assert!(drawn_keys(&e).is_empty());
+    assert_eq!(
+        (
+            s.counts.held_landed,
+            s.counts.drawn_back,
+            s.counts.in_beyond
+        ),
+        (1, 1, 0),
+        "{:?}",
+        s.counts
+    );
+    assert_eq!(s.pools[0].packages, 0, "no pool is given it");
+    assert_eq!(chain_packages(&e), 2);
+    e.check_books().expect("books");
+}
+
+/// A draw Java declined (its frogport ticked then) comes back as a held record: the engine may
+/// ask it again.
+#[test]
+fn a_declined_draw_is_asked_again() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    send(&mut e, 230, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(235));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7])]);
+    assert_eq!(e.stats.held_draws_asked, 2);
+}
+
+/// After a restart the drawn packages are as saved (IST4), and Java's held list puts the marks
+/// right (choice SC143): a key Java does not name goes back to the pools, one the engine drew that
+/// Java lists only held is drawn again, and one Java marked drawn whose record was lost is booked
+/// drawn, its frogport's replay still on.
+#[test]
+fn the_held_list_puts_the_drawn_marks_right_after_a_restart() {
+    let mut e = frontier();
+    e.set_page_check(true);
+    // Held in one tick: one ask.
+    for k in [K7, K8, K9] {
+        send(&mut e, 200, keyed(ChainDirection::Held, k));
+    }
+    e.advance_to(Tick(205));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Draw, vec![7, 8, 9])]);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    send(&mut e, 221, keyed(ChainDirection::Drawn, K9));
+    assert_eq!(chain_packages(&e), 1);
+    e.advance_to(Tick(230));
+    e.drain_commands();
+    let c = e.save_changed();
+    let mut back = Engine::restore(c.put, Tunables::default()).expect("restore");
+    assert_eq!(back.stores(), e.stores());
+    assert_eq!(
+        back.stores()[&S].drawn_toward(frog(MILL))[0].by,
+        Some(MILL),
+        "the drawing district is saved"
+    );
+    assert!(back.replays(MILL));
+    send(
+        &mut back,
+        300,
+        Obs::HeldList(HeldList {
+            epoch: 0,
+            serials: vec![7],
+            drawn: vec![8],
+        }),
+    );
+    back.advance_to(Tick(302));
+    assert_eq!(asks(&mut back).0, vec![(DrawAction::Draw, vec![7])]);
+    let s = &back.stores()[&S];
+    assert_eq!(drawn_keys(&back), vec![K7, K8]);
+    assert!(held_keys(&back).is_empty());
+    assert_eq!(
+        (s.counts.held_unlisted, s.counts.drawn_back, s.counts.drawn),
+        (1, 1, 3)
+    );
+    assert_eq!(chain_packages(&back), 1);
+    back.check_books().expect("books");
+}
+
+/// What the replay did not use of a drawn package goes back to the store and is written into the
+/// loaded frogport first: the removal waits for that write's answer (choice SC142).
+#[test]
+fn a_drawn_package_is_removed_after_the_rest_of_it_is_written() {
+    let mut e = frontier();
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    // 280 ticks at 0.05: 14 iron imported, the rest still in the pool.
+    e.advance_to(Tick(500));
+    live(&mut e, MILL, 500);
+    let rest = owed(&e);
+    assert!((40..BATCH).contains(&rest), "{rest}");
+    e.advance_to(Tick(510));
+    let mut w = Vec::new();
+    let mut rs = Vec::new();
+    for c in e.drain_commands() {
+        match c {
+            Cmd::WriteChain(x) => w.push(x),
+            Cmd::ChunkReconcile(r) => rs.push(r),
+            Cmd::HeldDraw(d) => panic!("asked before the rest is written: {d:?}"),
+            _ => {}
+        }
+    }
+    assert_eq!(iron(&w), rest, "{w:?}");
+    reconciled(&mut e, 510, &rs);
+    e.advance_to(Tick(600));
+    assert!(asks(&mut e).0.is_empty(), "the write is not answered yet");
+    for x in &w {
+        written(&mut e, 600, x);
+    }
+    assert_eq!(owed(&e), 0);
+    // At the store's next write wake.
+    e.advance_to(Tick(800));
+    assert_eq!(asks(&mut e).0, vec![(DrawAction::Remove, vec![7])]);
     e.check_books().expect("books");
 }
