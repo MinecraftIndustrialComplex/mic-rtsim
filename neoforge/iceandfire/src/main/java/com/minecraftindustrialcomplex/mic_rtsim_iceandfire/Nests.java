@@ -52,6 +52,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -150,6 +151,8 @@ public final class Nests {
          * the one way left to owe a renewal twice (RP-232: more than eight lives, and a hand-mixed restore).
          */
         public static final int LIVES = 8;
+        /** The most holes a nest keeps (RP-250): far above any brood in use; the lowest is dropped past it. */
+        public static final int HOLES_MAX = 32;
 
         public final long id;
         public final String dim;
@@ -162,6 +165,17 @@ public final class Nests {
          * from the worm the nest holds. Saved in the same file as {@link #owed}; a file from before it loads 0.
          */
         public int spawned;
+        /**
+         * Ordinals below {@link #spawned} that were skipped (RP-242, RP-250): a worm adopted at ordinal k above the count
+         * leaves {@code spawned..k-1} here, because the worms of those ordinals may be in entity files that load after it.
+         * A hole is a worm the file's brood still owes, so the join rule adopts its copy (once) where it would discard
+         * one of an ordinal below the count, and the nest's own spawn takes the lowest hole before it raises the count (the
+         * old copy of the ordinal it spawns again is then stale, as before). Held to {@link #HOLES_MAX}: a brood is
+         * {@code K} worms (2 by default, a u16 setting), and a hole is one of them or one that died in the lost window;
+         * past the cap the lowest is dropped, so that worm's copy is discarded when it loads (a loss, never a double).
+         * Saved in the same file as {@link #spawned}.
+         */
+        public final TreeSet<Integer> holes = new TreeSet<>();
         /**
          * The heart is gone: no worm is placed until a PLACE_NEST (or a NEST_RENEW) re-forms it; {@code reform}:
          * one asked for it, to be done when the heart's chunk is loaded.
@@ -284,26 +298,81 @@ public final class Nests {
         /**
          * The join rule of a nest worm (RP-242). {@code ordinal} is the worm's {@link Nests#ORDINAL_TAG}, or
          * {@code -1} for a worm that has none. A worm the list holds is normal whatever its ordinal. An unlisted one
-         * below {@link #spawned} is a stale copy: lose, never double (the count it was spawned at was spawned again,
-         * or it died, and either way the nest's books no longer owe it). One at or above it was spawned by a session
-         * whose count did not reach this file, and is adopted.
+         * of a hole's ordinal (RP-250) is adopted: a worm a later session spawned, whose entity file loaded after a
+         * higher one's. An unlisted one below {@link #spawned} otherwise is a stale copy: lose, never double (the count
+         * it was spawned at was spawned again, or it died, and either way the nest's books no longer owe it). One at or
+         * above the count was spawned by a session whose count did not reach this file, and is adopted.
          */
         public Join judge(UUID worm, int ordinal) {
             if (ordinal < 0 || worms.contains(worm))
                 return Join.NORMAL;
+            if (holes.contains(ordinal))
+                return Join.ADOPT;
             return ordinal < spawned ? Join.STALE : Join.ADOPT;
         }
 
         /**
          * Takes an adopted worm into the nest (RP-242): listed, its ordinal counted as spawned, and one worm
-         * less owed (never below 0: a gap of skipped ordinals stays a gap, their stale copies are discarded as they
-         * load, and {@link #owed} still covers them).
+         * less owed (never below 0: {@link #owed} still covers the worms of the ordinals skipped). The ordinals it skips,
+         * the count up to it, become {@link #holes} (RP-250), so their worms are adopted when they load, whatever the
+         * order; a hole it fills is taken off. Only the {@link #HOLES_MAX} highest are kept.
          */
         public void adopt(UUID worm, int ordinal) {
             worms.add(worm);
-            spawned = Math.max(spawned, ordinal + 1);
+            if (!holes.remove(ordinal) && ordinal >= spawned) {
+                for (int k = (int) Math.max(spawned, (long) ordinal - HOLES_MAX); k < ordinal; k++)
+                    holes.add(k);
+                while (holes.size() > HOLES_MAX)
+                    holes.pollFirst();
+                spawned = ordinal == Integer.MAX_VALUE ? ordinal : ordinal + 1;
+            }
             if (owed > 0)
                 owed--;
+        }
+
+        /** One loaded worm of this nest, for {@link #settle}. */
+        public record Loaded(UUID worm, int ordinal) {}
+
+        /** What {@link #settle} decided: the copies to discard, and how many worms it adopted. */
+        public record Settled(List<UUID> stale, int adopted) {}
+
+        /**
+         * The join rule over worms already loaded when the nest was registered (RP-251): each goes through {@link #judge}
+         * in turn, a stale one is returned to be discarded, an adopted one is {@link #adopt adopted}. Order does not
+         * matter (the holes see to that), and two worms of one ordinal end as one adopted and one stale.
+         */
+        public Settled settle(List<Loaded> loaded) {
+            List<UUID> stale = new ArrayList<>();
+            int adopted = 0;
+            for (Loaded l : loaded)
+                switch (judge(l.worm(), l.ordinal())) {
+                    case STALE -> stale.add(l.worm());
+                    case ADOPT -> {
+                        adopt(l.worm(), l.ordinal());
+                        adopted++;
+                    }
+                    default -> {
+                    }
+                }
+            return new Settled(stale, adopted);
+        }
+
+        /**
+         * The ordinal the nest's next worm carries (RP-250): the lowest hole, taken, else the count, raised. The old copy
+         * of an ordinal spawned again finds no hole and is stale. {@link #returnOrdinal} undoes it if the worm cannot join.
+         */
+        public int takeOrdinal() {
+            if (!holes.isEmpty())
+                return holes.pollFirst();
+            return spawned++;
+        }
+
+        /** Undoes {@link #takeOrdinal} for a worm that did not join: {@code hole} says whether it was a hole's. */
+        public void returnOrdinal(int ordinal, boolean hole) {
+            if (hole)
+                holes.add(ordinal);
+            else
+                spawned = ordinal;
         }
 
         /**
@@ -728,6 +797,7 @@ public final class Nests {
             // and a second brood.
             BlockPos heart = findHeart(level, chunk, id);
             boolean standing = heart != null;
+            int settled = 0;
             if (!standing)
                 heart = carve(level, chunk, id, p.depth());
             if (heart == null) {
@@ -739,6 +809,7 @@ public final class Nests {
                 d.placed.put(id, n);
                 indexNest(n);
                 if (standing) {
+                    settled = settleLoaded(level, n);
                     heartsRecognised++;
                     MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: its chamber stands, heart at {} in {}: nothing carved",
                             id, heart.toShortString(), p.dim());
@@ -750,7 +821,50 @@ public final class Nests {
             }
             d.setDirty();
             found(id, p.dim(), heart, now);
+            // Worms the nest holds now that were loaded before it was known: the engine is told after NEST_FOUND.
+            if (settled > 0 && heart != null)
+                census(d.placed.get(id), level, now);
         }
+    }
+
+    /**
+     * The worms of nest {@code n} already loaded when its chamber was found standing (RP-251): their joins ran while the
+     * file did not know the nest, so {@link #staleCopy} let them through. They go through the join rule now, once, so a
+     * chunk that stays loaded until the next renewal cannot hold both an old worm and the one the nest spawns. The scan is
+     * the heart's chunk and the ring of chunks round it (48 by 48 blocks, the world's full height), through the level's
+     * entity index: one query per registration, never per tick, and it reads the sections of nine columns that hold
+     * entities. A stale copy is cancelled and discarded as a join does; the number adopted is returned.
+     */
+    private int settleLoaded(ServerLevel level, Nest n) {
+        ChunkPos c = n.chunk();
+        AABB area = new AABB(c.getMinBlockX() - 16, level.getMinBuildHeight(), c.getMinBlockZ() - 16,
+                c.getMaxBlockX() + 17, level.getMaxBuildHeight(), c.getMaxBlockZ() + 17);
+        Map<UUID, DeathWormEntity> found = new LinkedHashMap<>();
+        List<Nest.Loaded> loaded = new ArrayList<>();
+        for (DeathWormEntity w : level.getEntitiesOfClass(DeathWormEntity.class, area)) {
+            CompoundTag t = w.getPersistentData();
+            int ordinal = ordinal(w);
+            if (ordinal < 0 || !t.contains(TAG, Tag.TAG_LONG) || t.getLong(TAG) != n.id || w.isRemoved())
+                continue;
+            found.put(w.getUUID(), w);
+            loaded.add(new Nest.Loaded(w.getUUID(), ordinal));
+        }
+        if (loaded.isEmpty())
+            return 0;
+        Nest.Settled s = n.settle(loaded);
+        for (UUID u : s.stale()) {
+            DeathWormEntity w = found.get(u);
+            staleWorms++;
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: worm {} was loaded before the nest was found and is a stale copy: discarded", n.id, u);
+            w.ejectPassengers();
+            w.stopRiding();
+            w.discard();
+        }
+        adoptedWorms += s.adopted();
+        if (s.adopted() > 0)
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: {} worm(s) loaded before the nest was found adopted (spawned now {})",
+                    n.id, s.adopted(), n.spawned);
+        return s.adopted();
     }
 
     // ---- placement --------------------------------------------------------------------------------
@@ -949,14 +1063,14 @@ public final class Nests {
         w.getPersistentData().putLong(TAG, n.id);
         // The worm's ordinal (RP-242), and the worm in the list before it joins: its own join runs the join rule, which
         // must find it listed (it is the normal case). A refused join takes both back.
-        int ordinal = n.spawned;
+        boolean hole = !n.holes.isEmpty();
+        int ordinal = n.takeOrdinal();
         w.getPersistentData().putInt(ORDINAL_TAG, ordinal);
         n.worms.add(w.getUUID());
-        n.spawned = ordinal + 1;
         if (level.addFreshEntity(w))
             return w;
         n.worms.remove(w.getUUID());
-        n.spawned = ordinal;
+        n.returnOrdinal(ordinal, hole);
         return null;
     }
 
@@ -1425,6 +1539,8 @@ public final class Nests {
                 t.putLong("heart", n.heart.asLong());
                 t.putInt("owed", n.owed);
                 t.putInt("spawned", n.spawned);
+                if (!n.holes.isEmpty())
+                    t.putIntArray("holes", n.holes.stream().mapToInt(Integer::intValue).toArray());
                 t.putInt("stage", n.stage);
                 t.putBoolean("broken", n.broken);
                 t.putBoolean("reform", n.reform);
@@ -1473,6 +1589,13 @@ public final class Nests {
                         n.remember(((CompoundTag) x).getLong("life"), ((CompoundTag) x).getLong("serial"));
                 // The worms ever spawned (RP-242): a file from before it loads 0, and no worm it holds carries an ordinal.
                 n.spawned = Math.max(0, t.getInt("spawned"));
+                // The skipped ordinals (RP-250): a file from before them has none. Only ordinals below the count, at most
+                // HOLES_MAX of the highest, so a hand-edited file cannot grow the set.
+                for (int h : t.getIntArray("holes"))
+                    if (h >= 0 && h < n.spawned)
+                        n.holes.add(h);
+                while (n.holes.size() > Nest.HOLES_MAX)
+                    n.holes.pollFirst();
                 n.stage = Math.max(1, t.getInt("stage"));
                 n.broken = t.getBoolean("broken");
                 n.reform = t.getBoolean("reform");
