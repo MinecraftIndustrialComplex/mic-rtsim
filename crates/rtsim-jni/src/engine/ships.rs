@@ -270,6 +270,10 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
+/// The session's replay end (docs/replay-gate.md §3.2): nothing yet. Its bodies still end at
+/// SESSION_START (`session_start`), until slice S moves that work into its engine's `replay_done`.
+pub(super) fn replay_end(_st: &mut State) {}
+
 /// SESSION_START: Java forgot the engine's dictionary; the ships' bodies are gone (their reset
 /// runs as soon as the ships run, now or when switched on).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
@@ -353,7 +357,8 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 return;
             }
             if let Ok((_, _, _, o)) = boundary::decode_obs(b) {
-                let at = Tick(phase1::world_tick(st, st.game_time));
+                // At the hand-over's time, held while replaying (docs/replay-gate.md §3.6).
+                let at = shared::hand_over_target(st);
                 ingest(st, &o, at);
             }
         }
@@ -407,8 +412,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     }
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
-    // Everything before it happens first: the dragons, the ships and the world, in time order.
-    shared::run_to(st, at);
+    // Everything before it happens first: the dragons, the ships and the world, in time order
+    // (the replay clock rises to it while replaying).
+    shared::catch_up_to(st, at);
     match &o {
         Obs::PortFound(p) if st.phase1.world.node_of_key(p.village).is_none() => {
             // A port names an adopted village (VILLAGE_ADOPTED comes at its structure start,
@@ -501,7 +507,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
     if !st.ships.engine.is_built() {
         let mut groups: BTreeSet<(u16, rtsim_travel::Medium)> = BTreeSet::new();
@@ -616,7 +622,7 @@ fn reject(st: &mut State, agent: u64, epoch: u32, reason: u32) {
         reason,
         cmd_seq: 0,
     });
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     ingest(st, &o, at);
 }
 
