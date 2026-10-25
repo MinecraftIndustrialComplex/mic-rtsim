@@ -492,6 +492,17 @@ mod tests {
             IndustryOps::default().derive_with(5, Tick(100), &channel(3), &7u64.to_le_bytes()),
             x
         );
+        // A numbered id (a package, RP-259) is its number's at any tick, and two numbers at one
+        // tick (the review's table: several packages of one pool at one tick) are two ids.
+        let n1 = IndustryOps::default().derive_numbered(5, Tick(100), &channel(3), 1);
+        assert_eq!(
+            IndustryOps::default().derive_numbered(5, Tick(9_000), &channel(3), 1),
+            n1
+        );
+        let mut e = IndustryOps::default();
+        assert_eq!(e.derive_numbered(5, Tick(100), &channel(3), 1), n1);
+        assert_ne!(e.derive_numbered(5, Tick(100), &channel(3), 2), n1);
+        assert_ne!(n1, x);
     }
 
     /// The slice R review's P2-3 (RP-275): two identical decisions of one tick more than
