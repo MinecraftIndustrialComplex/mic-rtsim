@@ -1966,7 +1966,12 @@ train ring takes it since RP-257 (docs/choices-mowzie-build.md), in place of RP-
 side follows the same rule since RP-285 (docs/choices-journal-barrier.md): with the industry module off,
 U10's ignore no longer covers an answer to an industry command. It takes the command out of the outbox
 or the queue and books its effect at once, so a command whose ring entry Java pruned at the
-acknowledgement is never written again at the switch-on.
+acknowledgement is never written again at the switch-on. The native checker (rtsim-jni `tests/industry.rs`,
+module `ack_never_resends`) proves that the engine never sends an op again after acknowledging its live
+answer, across a crash before the page save, between the save and the acknowledgement, and after it, and
+around the switch. Its gap: the harness's running line decides only exchanges, loot and reconciles, so
+deposit deltas, package writes and chain writes are decoded but never produced on a line (one ordered
+package write is the only package case).
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 
