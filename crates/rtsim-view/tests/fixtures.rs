@@ -184,7 +184,7 @@ fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
     // store whose hops Java measured is on it.
     for st in &view.saved().industry.as_ref().unwrap().stores {
         let n = st.frogports.len();
-        let links = rtsim_layers::industry::store_mark(st).links;
+        let links = rtsim_layers::industry::chain_links(st, n, usize::MAX);
         eprintln!("store {}: {n} frogports, links {links:?}", st.id.0);
         assert!(
             links.len() <= n.saturating_sub(1),

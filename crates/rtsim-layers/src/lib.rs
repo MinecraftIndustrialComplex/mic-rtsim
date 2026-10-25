@@ -703,7 +703,8 @@ pub fn specs() -> Vec<Spec> {
             )
             .describe(
                 "Packages in transit on a chain whose frogports sit in more than one district: an \
-                 edge between each pair of its frogports, wider with more packages held",
+                 edge between frogports that follow one another along the chain, wider with more \
+                 packages held",
             )
             // Over the track and the lines, under the stations.
             .priority(83)

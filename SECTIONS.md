@@ -1019,7 +1019,8 @@ the pool toward each frogport and the no-route pool (packages, goods by name); t
 the packages held at each frogport with their keys, and at positions the store dropped; the drawn
 keys; what it `left` and is `owed` per position; the counts (SC171, SC182). A world with no package
 store, or no industry pages, says so and exits 0; a store page that does not read is named and
-skipped; a bad argument exits 64, a world that does not open exits 1.
+skipped; a bad argument exits 64, a world that does not open or whose industry pages do not read
+exits 1.
 
 ### 8.3 Viewer
 
@@ -1616,11 +1617,13 @@ The options below stay as the record of what was offered.
     legend, and an edge's by its card. A network of one known part is a ring, with no edge.
   - The reach layers draw at most 64 sections a district, 16 links a store (the first 16 of its
     chain, in frogport order) and 16 edges a network (its first 16 other parts); a bigger one is
-    drawn partly, and its card still lists all (SC178). A store whose hop table is a tree with an
-    undeclared hub links its leaves pairwise; the cap bounds that. Java's hops are the shortest
-    walk, so a ring of frogports whose longest gap is at least the way round through the others
-    loses the link across that gap and draws as a chain; frogports 0 hops apart (on one conveyor) draw as one stop,
-    each linked to the lowest of them.
+    drawn partly, and its card still lists all (SC178); the links are found in frogport order
+    until the 16th, so a draw's work is about 16 n squared for a store of n frogports, not n
+    cubed. A store whose hop table is a tree with an undeclared hub links its leaves pairwise; the
+    cap bounds that. Java's hops are the shortest walk, so a ring of frogports whose longest gap
+    is at least the way round through the others loses the link across that gap and draws as a
+    chain; frogports 0 hops apart (on one conveyor) draw as one stop, each linked to the lowest
+    frogport 0 hops from it.
   - A store page or a glass page past the 4,096 the viewer reads is not read (SC181); the viewer
     and `rtsim-cli stores` name the first 8 bad pages and count the rest (SC182).
   - The create GameTest fixture's glass pages are in an older page format (the format drops them),

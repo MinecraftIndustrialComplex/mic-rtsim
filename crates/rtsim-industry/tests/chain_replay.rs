@@ -327,10 +327,13 @@ fn a_pair_of_unknown_hops_replays_no_chain_link() {
     away(&mut e, MINE, 100);
     away(&mut e, MILL, 100);
     e.advance_to(Tick(100 + 24_000));
-    let mine = e.sim_stock(MINE).map_or(1_000, |s| s.get(IRON));
+    // No pool joins their clusters, and the mine keeps the day's 1,200 it would have sent.
+    assert!(e.replays(MINE) && e.replays(MILL));
+    assert_eq!(e.cluster_count(), 2, "no chain pool joins their clusters");
+    let mine = e.sim_stock(MINE).expect("mine").get(IRON);
     let mill = e.sim_stock(MILL).map_or(0, |s| s.get(IRON));
     assert!(
-        mine >= 1_000,
+        (2_160..=2_240).contains(&mine),
         "the mine sends nothing down the chain: {mine}"
     );
     assert_eq!(mill, 0, "the mill gets nothing by the chain");
