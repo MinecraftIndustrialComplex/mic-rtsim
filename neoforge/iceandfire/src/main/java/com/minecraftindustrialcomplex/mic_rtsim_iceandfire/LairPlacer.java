@@ -10,18 +10,23 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.neoforged.neoforge.common.IOUtilities;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -53,6 +58,11 @@ import java.util.Set;
  * once (LAIR_FOUND, flag late). Ice and Fire's roost spawns its own dragon while it builds (verified from
  * the piece's {@code postProcess}): that dragon joins untagged and the engine adopts it as the lair's
  * occupant.
+ *
+ * <p><b>Durable first, checked again</b> (RP-243, RP-244): the saved state is written to its own file at the placement,
+ * before the tick ends, so no chunk of the roost can reach the disk ahead of the record that it was placed (a crash
+ * between the two would place a second roost at the next request); and each placed lair's start is looked for once per
+ * session when its chunk loads, and placed again at the same chunk when it is not there (a crash the other way round).
  */
 public final class LairPlacer {
     /** Sites tried (one {@code Structure.generate} each) per tick, PLACEHOLDER. */
@@ -70,9 +80,12 @@ public final class LairPlacer {
     /** One PLACE_LAIR still waiting for a free site. */
     public record Request(long field, String dimension, String structure, int x, int z, int radius) {}
 
-    /** One placed lair, for the log and the tests. */
+    /**
+     * One placed lair, for the log and the tests. {@code start} is the chunk the structure's start is stored in, the one
+     * the lair's id comes from (RP-244); null for a lair from a file from before it, which is never checked.
+     */
     public record Placed(long field, long lair, String dimension, String structure, BoundingBox box, BlockPos pivot,
-                         long gameTime, int sitesTried, long placeNanos) {}
+                         long gameTime, int sitesTried, long placeNanos, ChunkPos start) {}
 
     private final DragonBridge bridge;
     /** Per waiting request: its candidate chunks, nearest first, and the index of the next to look at. */
@@ -90,8 +103,11 @@ public final class LairPlacer {
         }
     }
 
-    /** This session's counts. */
-    public long requests, repeats, refused, badRequests, placedCount, sitesTried, sitesFailed, exhausted;
+    /** Placed lairs this session has found with their start, or given up on (by field): never looked at again. */
+    private final Set<Long> verified = new HashSet<>();
+
+    /** This session's counts: {@code savedNow} the placements written at once, {@code replaced} the lairs whose start was missing. */
+    public long requests, repeats, refused, badRequests, placedCount, sitesTried, sitesFailed, exhausted, savedNow, replaced, replaceFailed;
     /** This session's placements, oldest first. */
     public final List<Placed> placements = new ArrayList<>();
 
@@ -102,6 +118,8 @@ public final class LairPlacer {
     void clear() {
         cursors.clear();
         requests = repeats = refused = badRequests = placedCount = sitesTried = sitesFailed = exhausted = 0;
+        savedNow = replaced = replaceFailed = 0;
+        verified.clear();
         placements.clear();
     }
 
@@ -144,6 +162,8 @@ public final class LairPlacer {
         if (!DragonConfig.placeLairs())
             return;
         Data d = data();
+        if (verified.size() < d.placed.size())
+            verifyPlaced(d, now);
         if (d.pending.isEmpty())
             return;
         int checks = CHECKS_PER_TICK, tries = TRIES_PER_TICK;
@@ -161,7 +181,7 @@ public final class LairPlacer {
                     continue;
                 checks--;
                 ChunkPos at = c.candidates.get(k);
-                if (!free(level, at))
+                if (!free(level, at, true))
                     continue;
                 tries--;
                 c.tried++;
@@ -171,7 +191,9 @@ public final class LairPlacer {
                     it.remove();
                     cursors.remove(r.field());
                     d.placed.add(p);
+                    verified.add(p.field());
                     d.setDirty();
+                    saveNow(d);
                     break;
                 }
                 sitesFailed++;
@@ -186,6 +208,75 @@ public final class LairPlacer {
                     break;
                 }
             }
+        }
+    }
+
+    /**
+     * Writes the saved state to its own file now (RP-243): this file alone, never {@code DimensionDataStorage.save()}, which
+     * would write the journal and the other stores out of their order. {@code SavedData.save(File, Provider)} (NeoForge's)
+     * serializes at once, clears the dirty flag and queues the write behind the writes already queued, on a chain
+     * {@code IOUtilities.waitUntilIOWorkerComplete()} then joins, so the file is on disk when this returns. It runs on the
+     * server thread, where vanilla's background chunk saver runs too, so no chunk of the roost is written between the
+     * placement and this. The overworld's data folder is {@code <world>/data}. Once per lair placed, and lairs are rare.
+     */
+    void saveNow(Data d) {
+        try {
+            MinecraftServer server = bridge.session().server();
+            File file = server.getWorldPath(LevelResource.ROOT).resolve("data").resolve(Data.NAME + ".dat").toFile();
+            d.setDirty();
+            d.save(file, server.registryAccess());
+            IOUtilities.waitUntilIOWorkerComplete();
+            savedNow++;
+        } catch (RuntimeException e) {
+            MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] PLACE_LAIR: the placed lairs' file could not be written at once", e);
+        }
+    }
+
+    /**
+     * The first time in a session a placed lair's start chunk is loaded, its structure start is looked for (RP-244): a start
+     * that is not there means the chunk is older than the record that the lair was placed (a crash after the record, before
+     * the chunks: with {@link #saveNow} the record is on disk before any chunk of the roost can be), and the lair is placed
+     * again at the same chunk, once. The lair's id comes from that chunk, so it stays the same and the engine, which holds
+     * the lair by it, is told nothing new. Waits while the site is not loaded around or a player is near, as a placement does.
+     * One lair a tick; once the check ran (found, placed again or failed) the lair is not looked at again this session.
+     */
+    private void verifyPlaced(Data d, long now) {
+        for (int i = 0; i < d.placed.size(); i++) {
+            Placed p = d.placed.get(i);
+            if (verified.contains(p.field()))
+                continue;
+            ServerLevel level = p.start() == null ? null : level(p.dimension());
+            if (level == null) {
+                verified.add(p.field()); // a lair from before the start was kept, or of a dimension that is not here
+                continue;
+            }
+            LevelChunk home = level.getChunkSource().getChunkNow(p.start().x, p.start().z);
+            if (home == null)
+                continue; // not loaded yet: looked at again when it is
+            Registry<Structure> reg = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
+            Structure structure = reg.get(ResourceLocation.parse(p.structure()));
+            StructureStart start = structure == null ? null : home.getStartForStructure(structure);
+            if (structure == null || (start != null && start.isValid())) {
+                verified.add(p.field());
+                continue;
+            }
+            if (!free(level, p.start(), false))
+                continue;
+            verified.add(p.field());
+            Placed again = place(level, new Request(p.field(), p.dimension(), p.structure(), p.start().getMiddleBlockX(),
+                    p.start().getMiddleBlockZ(), 0), p.start(), 1, now);
+            if (again == null) {
+                replaceFailed++;
+                MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] lair of field {}: its start is missing from chunk {} and {} does not generate there again",
+                        p.field(), p.start(), p.structure());
+            } else {
+                replaced++;
+                d.placed.set(i, again);
+                d.setDirty();
+                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] lair of field {}: its start was missing from chunk {}: placed again",
+                        p.field(), p.start());
+            }
+            return;
         }
     }
 
@@ -211,8 +302,11 @@ public final class LairPlacer {
         return ex * ex + ez * ez;
     }
 
-    /** A free site: loaded around, no lair structure there, nobody close. */
-    private static boolean free(ServerLevel level, ChunkPos at) {
+    /**
+     * A free site: loaded around, no lair structure there (when {@code references}), nobody close. A lair placed again at its
+     * own chunk (RP-244) skips the reference test: its own references may survive in the box chunks that were saved.
+     */
+    private static boolean free(ServerLevel level, ChunkPos at, boolean references) {
         if (level.getChunkSource().getChunkNow(at.x, at.z) == null)
             return false;
         Registry<Structure> reg = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
@@ -221,6 +315,8 @@ public final class LairPlacer {
                 LevelChunk c = level.getChunkSource().getChunkNow(at.x + dx, at.z + dz);
                 if (c == null)
                     return false;
+                if (!references)
+                    continue;
                 for (Structure s : c.getAllReferences().keySet()) {
                     ResourceLocation id = reg.getKey(s);
                     if (id != null && IafDragons.lairKind(id.toString()) != null && !c.getReferencesForStructure(s).isEmpty())
@@ -266,7 +362,7 @@ public final class LairPlacer {
         ChunkPos.rangeClosed(from, to).forEach(p -> level.getChunkSource().getChunkNow(p.x, p.z).addReferenceForStructure(structure, ref));
         BlockPos pivot = start.getPieces().isEmpty() ? box.getCenter() : start.getPieces().get(0).getBoundingBox().getCenter();
         Lairs.Lair lair = bridge.lairs.placed(level, r.structure(), start, now);
-        Placed p = new Placed(r.field(), lair.id(), r.dimension(), r.structure(), box, pivot, now, tried, nanos);
+        Placed p = new Placed(r.field(), lair.id(), r.dimension(), r.structure(), box, pivot, now, tried, nanos, at);
         placements.add(p);
         placedCount++;
         MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_LAIR: placed a {} for oil field {} at {} (chunk {}, {} tried, {} us)",
@@ -308,6 +404,8 @@ public final class LairPlacer {
                 t.putIntArray("box", new int[] {x.box().minX(), x.box().minY(), x.box().minZ(), x.box().maxX(), x.box().maxY(), x.box().maxZ()});
                 t.putLong("pivot", x.pivot().asLong());
                 t.putLong("gameTime", x.gameTime());
+                if (x.start() != null)
+                    t.putLong("start", x.start().toLong());
                 l.add(t);
             }
             tag.put("placed", l);
@@ -328,7 +426,8 @@ public final class LairPlacer {
                 int[] b = t.getIntArray("box");
                 BoundingBox box = b.length == 6 ? new BoundingBox(b[0], b[1], b[2], b[3], b[4], b[5]) : new BoundingBox(0, 0, 0, 0, 0, 0);
                 d.placed.add(new Placed(t.getLong("field"), t.getLong("lair"), t.getString("dimension"), t.getString("structure"), box,
-                        BlockPos.of(t.getLong("pivot")), t.getLong("gameTime"), 0, 0));
+                        BlockPos.of(t.getLong("pivot")), t.getLong("gameTime"), 0, 0,
+                        t.contains("start", Tag.TAG_LONG) ? new ChunkPos(t.getLong("start")) : null));
             }
             return d;
         }

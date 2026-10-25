@@ -221,7 +221,7 @@ public final class DragonBridge implements SessionPlugin {
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, adopted, discarded, captured, died, hurtRecords, ateRecords, untagged, stateRecords,
-            steered, malformed, breathRecords, breathsReported, fireCancelled, chargesStopped, oilConfigs;
+            steered, malformed, breathRecords, breathsReported, fireCancelled, chargesStopped, oilConfigs, superseded;
     /** The flags of the last OIL_CONFIG sent this session (-1 none). */
     public int oilConfigSent = -1;
     /** The obsSeq of this session's first OIL_CONFIG (the one sent at session start); -1 before it. */
@@ -270,7 +270,7 @@ public final class DragonBridge implements SessionPlugin {
         nests.clear();
         materializeFlags.clear();
         materialized = rejected = adopted = discarded = captured = died = hurtRecords = ateRecords = untagged = stateRecords = steered = malformed = 0;
-        breathRecords = breathsReported = fireCancelled = chargesStopped = oilConfigs = 0;
+        breathRecords = breathsReported = fireCancelled = chargesStopped = oilConfigs = superseded = 0;
         oilConfigSent = -1;
         sessionOilConfigSeq = -1;
         // Java's dictionary names the species and lair structures from the start (docs/boundary.md §6.2).
@@ -681,7 +681,9 @@ public final class DragonBridge implements SessionPlugin {
     /**
      * DRAGON_ADOPT: an untagged dragon becomes a puppet as it stands (docs/boundary.md §6.5), answered
      * DRAGON_MATERIALIZED with its UUID; DRAGON_SPAWN_REJECTED(5) when the body is gone, dead or tamed
-     * (a tamed dragon is a player's, A10), (4) when it is already a puppet.
+     * (a tamed dragon is a player's, A10), (4) when it is already a puppet. An agent that holds a puppet at a
+     * strictly older epoch has it superseded first (RP-245): the engine adopts a dragon again under a new epoch and
+     * no longer has the old body; the same or a newer epoch, and a target that is itself a puppet, are still (4).
      */
     private void adopt(ByteBuffer b, int at, long now) {
         long cmdSeq = b.getLong(at + com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd.CMD_SEQ);
@@ -692,7 +694,8 @@ public final class DragonBridge implements SessionPlugin {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.BAD_RECORD, now);
             return;
         }
-        if (byAgent.containsKey(agent)) {
+        Puppet held = byAgent.get(agent);
+        if (held != null && !Epochs.supersedes(held.epoch, epoch)) {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.ALREADY_EMBODIED, now);
             return;
         }
@@ -700,6 +703,16 @@ public final class DragonBridge implements SessionPlugin {
         if (e != null && RtsimAttachments.isTagged(e)) {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.ALREADY_EMBODIED, now);
             return;
+        }
+        if (held != null) {
+            // The engine adopts again (adopt_again) under a newer epoch a dragon it holds, and the body it held at
+            // the older one is not its body any more: every record of it is dropped at that epoch (RP-245). The old
+            // puppet is released the way an epoch's end releases one (captured, then removed; puppets are never saved),
+            // so the adopted one is the only body and the old one is not a second dragon beside it.
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] dragon {}: ADOPT at epoch {} supersedes the puppet held at epoch {}",
+                    Long.toHexString(agent), Integer.toUnsignedString(epoch), Integer.toUnsignedString(held.epoch));
+            capture(held, DragonRecords.Dematerialized.COMMAND, now);
+            superseded++;
         }
         if (!(e instanceof DragonBaseEntity d) || d.isRemoved() || IafDragons.dead(d) || d.isTame()
                 || !(d.level() instanceof ServerLevel level)) {

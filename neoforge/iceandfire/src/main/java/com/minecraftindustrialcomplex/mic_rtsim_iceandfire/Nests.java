@@ -97,6 +97,17 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public final class Nests {
     /** Persistent data: the nest id of one of its worms (long). */
     public static final String TAG = "mic_rtsim_nest";
+    /**
+     * Persistent data: the ordinal of one of the nest's worms (int), the count of worms the nest had spawned before it
+     * (RP-242): the nest's {@link Nest#spawned} when the worm was placed. Beside {@link #TAG}, in the entity's own file.
+     */
+    public static final String ORDINAL_TAG = "mic_rtsim_nest_ordinal";
+    /**
+     * Persistent data of a nest's heart (a spawner block entity, saved under NeoForge's "NeoForgeData" in the chunk's
+     * own file beside the carved blocks): the nest id (long). A PLACE_NEST again for a nest the Nests lost finds its
+     * chamber by it instead of carving a second one (RP-240).
+     */
+    public static final String HEART_TAG = "mic_rtsim_nest_heart";
     /** Persistent data: the worm is out on a sortie (cleared when it is home). */
     public static final String SORTIE_TAG = "mic_rtsim_nest_sortie";
     public static final ResourceLocation DEATHWORM = ResourceLocation.fromNamespaceAndPath("iceandfire", "deathworm");
@@ -145,6 +156,12 @@ public final class Nests {
         public final BlockPos heart;
         /** Worms owed (NEST_RENEW) and not yet placed, and the size stage they will have. */
         public int owed, stage = 1;
+        /**
+         * How many worms the nest has ever spawned (RP-242): each worm carries the count it was spawned at as its
+         * ordinal ({@link Nests#ORDINAL_TAG}), so a copy of a worm a restore spawned again, or one that died, is told
+         * from the worm the nest holds. Saved in the same file as {@link #owed}; a file from before it loads 0.
+         */
+        public int spawned;
         /**
          * The heart is gone: no worm is placed until a PLACE_NEST (or a NEST_RENEW) re-forms it; {@code reform}:
          * one asked for it, to be done when the heart's chunk is loaded.
@@ -253,6 +270,64 @@ public final class Nests {
         public long nextSerial(long engineLife) {
             return lastUnder(engineLife) + 1;
         }
+
+        /** What a worm joining a level means to its nest (RP-242). */
+        public enum Join {
+            /** The nest holds it, or the worm carries no ordinal (a worm from before it): left alone, as it always was. */
+            NORMAL,
+            /** A copy of a worm the nest spawned again after a rollback, or that has died: cancelled and discarded. */
+            STALE,
+            /** A worm a later session spawned whose count the nest's file lost: taken into the list. */
+            ADOPT
+        }
+
+        /**
+         * The join rule of a nest worm (RP-242). {@code ordinal} is the worm's {@link Nests#ORDINAL_TAG}, or
+         * {@code -1} for a worm that has none. A worm the list holds is normal whatever its ordinal. An unlisted one
+         * below {@link #spawned} is a stale copy: lose, never double (the count it was spawned at was spawned again,
+         * or it died, and either way the nest's books no longer owe it). One at or above it was spawned by a session
+         * whose count did not reach this file, and is adopted.
+         */
+        public Join judge(UUID worm, int ordinal) {
+            if (ordinal < 0 || worms.contains(worm))
+                return Join.NORMAL;
+            return ordinal < spawned ? Join.STALE : Join.ADOPT;
+        }
+
+        /**
+         * Takes an adopted worm into the nest (RP-242): listed, its ordinal counted as spawned, and one worm
+         * less owed (never below 0: a gap of skipped ordinals stays a gap, their stale copies are discarded as they
+         * load, and {@link #owed} still covers them).
+         */
+        public void adopt(UUID worm, int ordinal) {
+            worms.add(worm);
+            spawned = Math.max(spawned, ordinal + 1);
+            if (owed > 0)
+                owed--;
+        }
+
+        /**
+         * Whether the death of {@code worm} is the nest's loss (RP-242): not for an unlisted worm of an ordinal, which
+         * the nest never counted (the census would not have held it, and the engine does not either).
+         */
+        public boolean countsLoss(UUID worm, int ordinal) {
+            return ordinal < 0 || worms.contains(worm);
+        }
+    }
+
+    /** Stamps nest {@code nest}'s id on a heart's persistent data (RP-240). */
+    static void markHeart(CompoundTag persistent, long nest) {
+        persistent.putLong(HEART_TAG, nest);
+    }
+
+    /**
+     * Whether a spawner block entity's saved custom data ({@code saveCustomOnly}, which carries the NeoForge persistent
+     * data under "NeoForgeData") is nest {@code nest}'s heart (RP-240). A spawner of the world's own, or of another
+     * nest, is not.
+     */
+    static boolean marksNest(CompoundTag spawnerSave, long nest) {
+        CompoundTag persistent = spawnerSave.getCompound("NeoForgeData");
+        return persistent.contains(HEART_TAG, Tag.TAG_LONG) && persistent.getLong(HEART_TAG) == nest;
     }
 
     /** How a worm's last sortie went (GameTests and the log). */
@@ -317,7 +392,7 @@ public final class Nests {
     // Counters for logs and the GameTests (this session).
     public long requests, repeats, refused, badRequests, placedCount, failedCount, renews, renewsUnknown, renewsRepeated, reformed, wormsPlaced,
             censuses, losses, heartsBroken, sorties, wormsSent, stoppedUnderArmour, surfaced, homeComings, spawnerCancelled,
-            griefCancelled, mended;
+            griefCancelled, mended, heartsRecognised, staleWorms, adoptedWorms, lossesSkipped;
 
     Nests(DragonBridge bridge) {
         this.bridge = bridge;
@@ -337,6 +412,7 @@ public final class Nests {
         requests = repeats = refused = badRequests = placedCount = failedCount = renews = renewsUnknown = renewsRepeated = reformed = wormsPlaced = 0;
         censuses = losses = heartsBroken = sorties = wormsSent = stoppedUnderArmour = surfaced = homeComings = spawnerCancelled = 0;
         griefCancelled = mended = 0;
+        heartsRecognised = staleWorms = adoptedWorms = lossesSkipped = 0;
     }
 
     // ---- the saved state and its indexes -----------------------------------------------------------
@@ -647,7 +723,13 @@ public final class Nests {
             it.remove();
             d.pending.remove(id);
             unindex(p.dim(), ChunkPos.asLong(p.cx(), p.cz()), id);
-            BlockPos heart = carve(level, chunk, id, p.depth());
+            // A nest the saved state lost but whose chamber is in the chunk (this file older than the chunk's, RP-240): its
+            // heart is found by the nest id it carries, and nothing is carved. A second chamber would be a second heart
+            // and a second brood.
+            BlockPos heart = findHeart(level, chunk, id);
+            boolean standing = heart != null;
+            if (!standing)
+                heart = carve(level, chunk, id, p.depth());
             if (heart == null) {
                 failedCount++;
                 MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: no natural ground for a chamber in chunk {} of {}",
@@ -656,9 +738,15 @@ public final class Nests {
                 Nest n = new Nest(id, p.dim(), heart);
                 d.placed.put(id, n);
                 indexNest(n);
-                placedCount++;
-                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: chamber carved, heart at {} in {}", id,
-                        heart.toShortString(), p.dim());
+                if (standing) {
+                    heartsRecognised++;
+                    MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: its chamber stands, heart at {} in {}: nothing carved",
+                            id, heart.toShortString(), p.dim());
+                } else {
+                    placedCount++;
+                    MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: chamber carved, heart at {} in {}", id,
+                            heart.toShortString(), p.dim());
+                }
             }
             d.setDirty();
             found(id, p.dim(), heart, now);
@@ -724,15 +812,35 @@ public final class Nests {
                     for (int dy = 1; dy <= AIR; dy++)
                         level.setBlock(p.set(centre.getX() + dx, centre.getY() + dy, centre.getZ() + dz), Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS);
                 }
-            if (!setHeart(level, centre))
+            if (!setHeart(level, centre, nest))
                 return null;
             return centre.immutable();
         }
         return null;
     }
 
-    /** A spawner at {@code heart}, set to the Death Worm, that never spawns (RequiredPlayerRange 0). */
-    private static boolean setHeart(ServerLevel level, BlockPos heart) {
+    /**
+     * The heart of nest {@code nest} in {@code chunk}, or null: a spawner whose NeoForge persistent data carries the nest's
+     * id ({@link #HEART_TAG}, RP-240). One pass over the chunk's block entity positions, once per placement, never per tick;
+     * only a spawner is read, through {@code saveCustomOnly}, so no foreign block entity gets a persistent-data compound
+     * allocated (and saved) by a {@code getPersistentData()} call. The lowest position wins, should two chambers carry it.
+     */
+    static BlockPos findHeart(ServerLevel level, LevelChunk chunk, long nest) {
+        BlockPos found = null;
+        for (BlockPos pos : chunk.getBlockEntitiesPos()) {
+            if (!chunk.getBlockState(pos).is(Blocks.SPAWNER) || (found != null && found.asLong() <= pos.asLong()))
+                continue;
+            if (chunk.getBlockEntity(pos) instanceof SpawnerBlockEntity sp && marksNest(sp.saveCustomOnly(level.registryAccess()), nest))
+                found = pos.immutable();
+        }
+        return found;
+    }
+
+    /**
+     * A spawner at {@code heart}, set to the Death Worm, that never spawns (RequiredPlayerRange 0), and marked with the
+     * nest's id in its persistent data (RP-240): saved in the chunk's own file, beside the blocks this carved.
+     */
+    private static boolean setHeart(ServerLevel level, BlockPos heart, long nest) {
         level.setBlock(heart, Blocks.SPAWNER.defaultBlockState(), Block.UPDATE_CLIENTS);
         EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getOptional(DEATHWORM).orElse(null);
         if (!(level.getBlockEntity(heart) instanceof SpawnerBlockEntity sp) || type == null)
@@ -742,6 +850,7 @@ public final class Nests {
         CompoundTag t = b.save(new CompoundTag());
         t.putShort("RequiredPlayerRange", (short) 0);
         b.load(level, heart, t);
+        markHeart(sp.getPersistentData(), nest);
         sp.setChanged();
         return true;
     }
@@ -799,7 +908,6 @@ public final class Nests {
                 DeathWormEntity w = spawnWorm(level, n);
                 if (w == null)
                     break;
-                n.worms.add(w.getUUID());
                 n.owed--;
                 placed++;
             }
@@ -819,7 +927,7 @@ public final class Nests {
         BlockState s = level.getBlockState(n.heart);
         if (!(s.isAir() || s.is(BlockTags.SAND) || natural(s) || s.is(Blocks.SPAWNER)))
             return;
-        if (setHeart(level, n.heart)) {
+        if (setHeart(level, n.heart, n.id)) {
             n.broken = false;
             reformed++;
             MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: its heart re-formed at {}", n.id, n.heart.toShortString());
@@ -839,7 +947,17 @@ public final class Nests {
         w.setWormHome(n.heart);
         w.setPersistenceRequired();
         w.getPersistentData().putLong(TAG, n.id);
-        return level.addFreshEntity(w) ? w : null;
+        // The worm's ordinal (RP-242), and the worm in the list before it joins: its own join runs the join rule, which
+        // must find it listed (it is the normal case). A refused join takes both back.
+        int ordinal = n.spawned;
+        w.getPersistentData().putInt(ORDINAL_TAG, ordinal);
+        n.worms.add(w.getUUID());
+        n.spawned = ordinal + 1;
+        if (level.addFreshEntity(w))
+            return w;
+        n.worms.remove(w.getUUID());
+        n.spawned = ordinal;
+        return null;
     }
 
     // ---- reports ----------------------------------------------------------------------------------
@@ -887,6 +1005,13 @@ public final class Nests {
         long nest = dead.getPersistentData().getLong(TAG);
         glides.remove(dead.getUUID());
         Nest n = data(dead.getServer()).placed.get(nest);
+        int ordinal = ordinal(dead);
+        if (n != null && !n.countsLoss(dead.getUUID(), ordinal)) {
+            // A worm of an ordinal the nest does not hold (RP-242): its books never counted it, so its death is no loss of
+            // theirs. The join rule keeps such a worm out of a level; this is for one that got in some other way.
+            lossesSkipped++;
+            return;
+        }
         if (n != null && n.worms.remove(dead.getUUID()))
             data(dead.getServer()).setDirty();
         RtsimSession s = live();
@@ -1016,6 +1141,53 @@ public final class Nests {
             return;
         event.setCanceled(true);
         griefCancelled++;
+    }
+
+    /** The worm's {@link #ORDINAL_TAG}, or -1 for a worm without one. */
+    private static int ordinal(DeathWormEntity w) {
+        CompoundTag t = w.getPersistentData();
+        return t.contains(ORDINAL_TAG, Tag.TAG_INT) ? Math.max(0, t.getInt(ORDINAL_TAG)) : -1;
+    }
+
+    /**
+     * A nest worm is about to join a level (EntityJoinLevelEvent, RP-242): true when it is a stale copy, to be cancelled
+     * and discarded by the caller the way core discards a stale puppet. A copy is a worm whose ordinal the nest spawned
+     * again after a rollback of its file, or which has died: the entity file holding it is older than the nest's.
+     * Journals nothing (it is not a death). A worm no later session spawned the ordinal of is adopted into its nest
+     * (one less owed), a worm in the list, a worm with no ordinal and a worm of a nest the file does not know are left to
+     * today's rules. Once per worm join, a set lookup: never per tick.
+     */
+    boolean staleCopy(DeathWormEntity w) {
+        CompoundTag t = w.getPersistentData();
+        int ordinal = ordinal(w);
+        if (ordinal < 0 || !t.contains(TAG, Tag.TAG_LONG) || w.getServer() == null)
+            return false;
+        Data d = data(w.getServer());
+        Nest n = d.placed.get(t.getLong(TAG));
+        if (n == null)
+            return false;
+        switch (n.judge(w.getUUID(), ordinal)) {
+            case STALE -> {
+                staleWorms++;
+                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: worm {} of ordinal {} is a stale copy (the nest has spawned {}): discarded",
+                        n.id, w.getUUID(), ordinal, n.spawned);
+                return true;
+            }
+            case ADOPT -> {
+                boolean wasOwed = n.owed > 0;
+                n.adopt(w.getUUID(), ordinal);
+                d.setDirty();
+                adoptedWorms++;
+                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: worm {} of ordinal {} adopted (spawned now {}, {} owed)",
+                        n.id, w.getUUID(), ordinal, n.spawned, n.owed);
+                // With nothing owed to cover it the nest holds one more worm than the engine was told.
+                if (!wasOwed && live() != null && w.level() instanceof ServerLevel level && level.isLoaded(n.heart))
+                    census(n, level, live().gameTime());
+            }
+            default -> {
+            }
+        }
+        return false;
     }
 
     /** A Death Worm joined a level: a nest worm saved mid-glide gets its AI back and glides home. */
@@ -1252,6 +1424,7 @@ public final class Nests {
                 t.putString("dimension", n.dim);
                 t.putLong("heart", n.heart.asLong());
                 t.putInt("owed", n.owed);
+                t.putInt("spawned", n.spawned);
                 t.putInt("stage", n.stage);
                 t.putBoolean("broken", n.broken);
                 t.putBoolean("reform", n.reform);
@@ -1298,6 +1471,8 @@ public final class Nests {
                 if (serialled)
                     for (Tag x : t.getList("lives", Tag.TAG_COMPOUND))
                         n.remember(((CompoundTag) x).getLong("life"), ((CompoundTag) x).getLong("serial"));
+                // The worms ever spawned (RP-242): a file from before it loads 0, and no worm it holds carries an ordinal.
+                n.spawned = Math.max(0, t.getInt("spawned"));
                 n.stage = Math.max(1, t.getInt("stage"));
                 n.broken = t.getBoolean("broken");
                 n.reform = t.getBoolean("reform");
