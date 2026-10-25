@@ -3673,6 +3673,21 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   session, so nothing stays in the world. The sampler's lurk work is a list scan per sample over the lurks
   (at most one per lurking party). The every-tick reads are for trains within 64 blocks of a live puppet
   only, and the hold is one call per live puppet a tick.
+  - Amendment (review C, item 1; the GameTest is written and compiled, not run): "nothing stays in the world"
+    was false for a take. `gone(keepBody=true)` (a player's Carry On pickup, or anything else's take) left the
+    body in the world as an ordinary mob, and `forget` cleared the slot's hold spot without asking the
+    `Lurker`, so the body kept `restrictTo(spot, 2)` and its `alwaysActive` true for good (it is in the
+    Frostmaw's NBT), which breaches UR-1. `forget` now calls `releaseLurk(sl)`, which asks the Lurker to undo
+    the hold and clears the spot, and `take` returns before Carry On saves the body, so the saved NBT is the
+    released one. The other paths that clear a hold or drop a slot were read and need nothing: `despawn`
+    (a requeue, a recall, `capture` at a session's end or the module's switching off, a hand-back) discards
+    the body, so no hold outlives it; a death or a removal by something else leaves a dead or removed body
+    (`forget` now releases a dying one too, which is harmless); a recall or a moved or ended lurk already
+    called `releaseLurk`. A body unloaded with its chunk is saved held, but the join check refuses it as a
+    stale copy and discards it.
+    `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (mowziesmobs, batch `frostmaw_lurk_taken`):
+    on the unfixed code the first check after the take fails, "the taken body has no restriction (true)", and
+    the next would read "not always-active (true)" and the saved `alwaysActive` true.
 - **MZB-370** (test choices):
   - Test 8's rider is `helper.makeMockPlayer(GameType.SURVIVAL)` added with `addFreshEntity`, as M6's thief
     (MZB-281), so the ice ball's `getEntitiesOfClass` sees it. It is seated with `addSittingPassenger`.

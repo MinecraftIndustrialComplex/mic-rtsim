@@ -1846,7 +1846,8 @@ public final class ConflictBridge implements SessionPlugin {
         if (sl.goal != null && sl.entity != null)
             sl.entity.goalSelector.removeGoal(sl.goal);
         sl.goal = null;
-        sl.holdAt = null;
+        // A body that outlives the party (a take) is an ordinary mob again: no restriction, not awake for good (UR-1, MZB-369)
+        releaseLurk(sl);
         if (sl.uuid != null)
             byUuid.remove(sl.uuid, sl);
     }
