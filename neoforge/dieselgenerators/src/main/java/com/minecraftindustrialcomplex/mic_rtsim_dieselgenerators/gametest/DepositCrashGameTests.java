@@ -6,9 +6,11 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Deposits;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.DieselOilPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.MicRtsimDieselGenerators;
+import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.OilRingHolder;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -47,15 +49,17 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.
  * IND_DEPOSIT_DELTA across a crash inside a world save (slice U; docs/choices-journal-barrier.md RP-200 on).
  *
  * <p>The deposit's amount is Diesel's {@code cdg_oil_chunks} SavedData, one file per dimension; Java's dedup of the
- * op is the journal's applied set, {@code mic_rtsim_journal.dat} in the overworld's. Each test draws 1,234 mB from a
- * chunk holding 5,000,000, saves the world as an autosave does, and at one instant of the journal's write on the
- * SavedData IO chain (right after it, or right before it) reads what a crash then leaves on disk: the chunk's oil
- * and whether the journal holds the op. The restart is emulated on the live state: the oil is set to what the file
- * holds, the op is forgotten if the journal's file lacks it, and the engine sends the same op again.
+ * op is that file's own ring of applied ops ({@code mic_rtsim:applied_ops}, RP-204) or the journal's applied set,
+ * {@code mic_rtsim_journal.dat} in the overworld's. Each test draws 1,234 mB from a chunk holding 5,000,000, saves
+ * the world as an autosave does, and at one instant of the journal's write on the SavedData IO chain (right after
+ * it, or right before it) reads what a crash then leaves on disk: the chunk's oil, the oil file's ring, and whether
+ * the journal holds the op. The restart is emulated on the live state: the oil and the ring are set to what the oil
+ * file holds, the journal's knowledge of the op to what its file holds, and the engine sends the same op again.
  *
  * <p>A crash right after the journal's write must never leave the deposit undrawn: the oil the delta took is in
  * the tanks (the reconcile's chunks reach disk before the journal, ChunkWriteBarrier), so a deposit that keeps it
- * too is oil from nothing. A crash right before it may draw the deposit twice (a loss, the residual RP-202 records).
+ * too is oil from nothing. A crash right before it must not draw the deposit twice: the oil file holds the draw
+ * and its ring the op.
  */
 @GameTestHolder(MicRtsimDieselGenerators.MODID)
 @PrefixGameTestTemplate(false)
@@ -64,13 +68,16 @@ public final class DepositCrashGameTests {
 
     private static final int START = 5_000_000, DELTA = -1234;
 
-    /** What a crash at the hook's instant leaves on disk. */
-    private record OnDisk(int oil, boolean journalHasOp, String error) {}
+    /** What a crash at the hook's instant leaves on disk; {@code oilData} is the oil file's {@code data} tag. */
+    private record OnDisk(int oil, boolean ringHasOp, boolean journalHasOp, CompoundTag oilData, String error) {}
 
     /**
      * Nether oil, the server dead right after the journal's file is written. Before the fix the nether's
      * SavedData were queued after the overworld's journal: the journal on disk knew the op, the oil file did not
-     * hold the draw, and the op sent again was a duplicate (5,000,000 left, the dupe).
+     * hold the draw, and the op sent again was a duplicate (5,000,000 left, the dupe). The failing-first run read
+     * exactly that on disk; its restart then applied the op again only because the live journal had dropped the
+     * op at the engine's acknowledgement, which a restart from the file does not, so the restart now takes the
+     * journal's knowledge from its file.
      */
     @GameTest(template = "yard", batch = "diesel_crash_nether_after", timeoutTicks = 2400)
     public static void aNetherDrawIsOnDiskWhenTheServerDiesRightAfterTheJournal(GameTestHelper helper) {
@@ -89,12 +96,13 @@ public final class DepositCrashGameTests {
 
     /**
      * Nether oil, the server dead right before the journal's file is written: the oil file holds the draw and the
-     * journal does not know the op, so the op sent again is applied again. Two draws, 4,997,532 left: the loss
-     * writing the journal last leaves (RP-202), never a dupe.
+     * journal does not know the op. Its ring does, so the op sent again is refused: one draw, 4,998,766 left. With the
+     * journal written last and no ring the op was applied again (4,997,532 left, the loss RP-202 recorded); before
+     * the journal was written last the oil file was not on disk yet at this instant.
      */
     @GameTest(template = "yard", batch = "diesel_crash_nether_before", timeoutTicks = 2400)
-    public static void aNetherDrawIsTakenTwiceWhenTheServerDiesRightBeforeTheJournal(GameTestHelper helper) {
-        crash(helper, "aNetherDrawIsTakenTwiceWhenTheServerDiesRightBeforeTheJournal", Level.NETHER, false, false, START + 2 * DELTA);
+    public static void aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal(GameTestHelper helper) {
+        crash(helper, "aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal", Level.NETHER, false, false, START + DELTA);
     }
 
     private static void crash(GameTestHelper helper, String test, ResourceKey<Level> dim, boolean afterJournal, boolean journalFirst, int expected) {
@@ -157,12 +165,16 @@ public final class DepositCrashGameTests {
                     OnDisk d = disk.get();
                     check("read the disk: " + d.error(), d.error() == null);
                     record(test, "on disk at the crash (" + (afterJournal ? "right after" : "right before") + " the journal's write)",
-                            "oil " + d.oil() + ", the journal " + (d.journalHasOp() ? "knows" : "does not know") + " the op; "
-                                    + saves[0] + " saves; " + barrierLine());
+                            "oil " + d.oil() + ", its ring " + (d.ringHasOp() ? "knows" : "does not know") + " the op, the journal "
+                                    + (d.journalHasOp() ? "knows" : "does not know") + " it; " + saves[0] + " saves; " + barrierLine());
                     check("the oil file holds the chunk: " + d.oil(), d.oil() >= 0);
+                    check("the oil file's ring holds the op beside its draw", d.oil() != START + DELTA || d.ringHasOp());
                     // The restart: the server holds what is on disk, and the engine sends the op again.
                     OilChunksSavedData.setChunkOilAmount(level, cp, d.oil());
-                    if (!d.journalHasOp())
+                    ((OilRingHolder) OilChunksSavedData.load(level)).mic_rtsim$setRing(DurableOpRings.read(d.oilData()));
+                    if (d.journalHasOp())
+                        RtsimSession.current().journal().journal().rememberAppliedForTest(op);
+                    else
                         RtsimSession.current().journal().journal().forgetAppliedForTest(op);
                     depositDelta(op, IndRecords.DepositPlugin.DIESEL_OIL, level, cp.x, cp.z, good, DELTA);
                 })
@@ -183,18 +195,24 @@ public final class DepositCrashGameTests {
         IOUtilities.withIOWorker(() -> passed.set(true));
     }
 
-    /** On the IO chain, at the hook: the chunk's oil in its file, and whether the journal's file knows the op. */
+    /**
+     * On the IO chain, at the hook: the chunk's oil in its file, whether the file's ring and the journal's file know
+     * the op, and the oil file's data for the restart.
+     */
     private static OnDisk peek(Path oilFile, Path journalFile, ChunkPos cp, long op, HolderLookup.Provider registries) {
         try {
             int oil = oilOnDisk(oilFile, cp);
+            CompoundTag oilData = Files.isRegularFile(oilFile)
+                    ? NbtIo.readCompressed(oilFile, NbtAccounter.unlimitedHeap()).getCompound("data") : new CompoundTag();
+            boolean ring = DurableOpRings.read(oilData).contains(op);
             boolean has = false;
             if (Files.isRegularFile(journalFile)) {
                 CompoundTag j = NbtIo.readCompressed(journalFile, NbtAccounter.unlimitedHeap());
                 has = JournalSavedData.load(j.getCompound("data"), registries).journal().commandOpApplied(op);
             }
-            return new OnDisk(oil, has, null);
+            return new OnDisk(oil, ring, has, oilData, null);
         } catch (Exception e) {
-            return new OnDisk(-1, false, e.toString());
+            return new OnDisk(-1, false, false, new CompoundTag(), e.toString());
         }
     }
 

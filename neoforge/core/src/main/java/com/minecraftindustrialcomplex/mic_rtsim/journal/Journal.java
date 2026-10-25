@@ -93,6 +93,14 @@ public final class Journal {
         appliedCmdOps.remove(opId);
     }
 
+    /**
+     * GameTests: a restart read a journal file that holds this op id as applied, though the live journal may have
+     * trimmed it since (the engine acknowledged it).
+     */
+    public void rememberAppliedForTest(long opId) {
+        appliedCmdOps.putIfAbsent(opId, 1);
+    }
+
     // ---- observation side -----------------------------------------------------------------------
 
     public long nextObsSeq() {

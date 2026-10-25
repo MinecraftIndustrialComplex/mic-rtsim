@@ -374,9 +374,14 @@ public final class Industry {
 
     /**
      * IND_DEPOSIT_DELTA (docs/industry-boundary.md §4.3): a deposit in level SavedData (Diesel's
-     * {@code OilChunksSavedData}), applied at once, loaded or not. The store and the journal reach disk at
-     * the same save, so the journal's applied set is the dedup (as H17 for train cargo). Answered APPLIED
-     * when a plugin owns the good, FAILED when none does.
+     * {@code OilChunksSavedData}, one file per dimension), applied at once, loaded or not. The dedup is the store's
+     * own ring of applied ops ({@link IndustryPlugin#depositRing}) or the journal's applied set
+     * (docs/choices-journal-barrier.md RP-204). The journal's file is written last in a world save (RP-200), so a
+     * journal on disk that knows the op implies the store on disk holds it; a crash after the store's write and
+     * before the journal's leaves a store that holds the op and a journal that does not, and the store's ring then
+     * refuses the resend. The ring's entry goes in the same tick as the store's change, so a save of the store has
+     * both or neither. Answered APPLIED when a plugin owns the good, FAILED when none does, DUPLICATE_OP on a known
+     * op (a ring hit the journal does not know is stamped with that answer: kept until the journal on disk holds it).
      */
     private void depositDelta(ByteBuffer b, int at, int size, int plugin, long cmdSeq) {
         if (size < IndRecords.DepositDelta.SIZE) {
@@ -385,14 +390,20 @@ public final class Industry {
             return;
         }
         long opId = b.getLong(at + IndRecords.DepositDelta.OP_ID);
-        if (opApplied(opId)) {
-            commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
-            return;
-        }
         ServerLevel level = engineLevel(b.getInt(at + IndRecords.DepositDelta.DIM));
         String good = engineName(IndRecords.DICT_GOOD, b.getInt(at + IndRecords.DepositDelta.GOOD));
         long delta = b.getLong(at + IndRecords.DepositDelta.DELTA);
         int cx = b.getInt(at + IndRecords.DepositDelta.CHUNK_X), cz = b.getInt(at + IndRecords.DepositDelta.CHUNK_Z);
+        com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing ring = level == null || good == null ? null : depositRing(level, cx, cz, good);
+        if (opApplied(opId)) {
+            commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            return;
+        }
+        if (ring != null && ring.contains(opId)) {
+            depositRingHits++;
+            ring.add(opId, commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP));
+            return;
+        }
         Long applied = null;
         if (level != null && good != null) {
             for (IndustryPlugin p : IndustryApi.PLUGINS) {
@@ -413,8 +424,32 @@ public final class Industry {
             commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
         } else {
             lastDepositApplied = applied;
-            commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+            long seq = commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+            if (ring != null)
+                ring.add(opId, seq);
         }
+    }
+
+    /** The first plugin's ring for the deposit, or null (a plugin that fails here is reported and skipped). */
+    private com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing depositRing(ServerLevel level, int cx, int cz, String good) {
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                var r = p.depositRing(level, cx, cz, good);
+                if (r != null)
+                    return r;
+            } catch (RuntimeException e) {
+                fail("the applied ops of deposit " + good + " in " + cx + ", " + cz, e);
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** IND_DEPOSIT_DELTA resends a store's ring refused that the journal did not know (a crash between the two). */
+    long depositRingHits;
+
+    public long depositRingHits() {
+        return depositRingHits;
     }
 
     long depositDeltas;
