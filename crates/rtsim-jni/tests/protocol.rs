@@ -4039,6 +4039,56 @@ mod herds {
         assert!(after > before, "epoch {after} after {before}");
     }
 
+    /// RP-81: a record the herds ignore (they are switched off while the journal replays) still
+    /// names an epoch their engine must not decide again once they are switched on. The old
+    /// session journals a HERD_MATERIALIZED of epoch 9 for the saved herd and crashes; the next
+    /// session starts with the herds `off` (or on, the control), replays it, switches them on if
+    /// they were off, and a player stands at the herd. Returns the epoch of the group he sees.
+    fn the_epoch_after_a_replay_with_the_herds(name: &str, off: bool) -> u32 {
+        let mut old = the_old_session(name, Script::QUIET);
+        let mut b = Vec::new();
+        let o = O::Materialized(hb::Materialized {
+            agent: old.agent,
+            epoch: 9,
+            dimension: 0,
+            spawned: 3,
+        });
+        hb::encode_obs(0, old.gt, &o, &mut b);
+        let seq = old.saved.next_obs;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        old.saved.journal.push_back((seq, b));
+        old.saved.next_obs += 1;
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, false);
+        if off {
+            j.module_mask = 0b1111;
+        }
+        replay_quietly(&e, &mut j);
+        if off {
+            j.modules(MODULES);
+            j.idle();
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, old.pos)];
+        let epoch = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        epoch
+    }
+
+    #[test]
+    fn a_record_replayed_while_the_herds_are_off_still_raises_their_epoch_floor() {
+        let epoch = the_epoch_after_a_replay_with_the_herds("herds-rp81-off", true);
+        assert!(epoch > 9, "epoch {epoch} after a replayed 9");
+    }
+
+    /// Control: the herds on all along.
+    #[test]
+    fn a_record_replayed_while_the_herds_are_on_raises_their_epoch_floor() {
+        let epoch = the_epoch_after_a_replay_with_the_herds("herds-rp81-on", false);
+        assert!(epoch > 9, "epoch {epoch} after a replayed 9");
+    }
+
     /// RP-66's twin for the herds: a test's herd command joins the engine's queue around the
     /// gate, so one ordered while the replay runs waits for the replay end. A STEER is a kind
     /// the gate drops while replaying; the command is Java's, though, not the engine's.
