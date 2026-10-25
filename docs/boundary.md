@@ -707,16 +707,27 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      page changed. Pages this build cannot read are dropped with a loud log, deleted at start, and
      the phase 1 world starts afresh (`when_pages_unreadable`, S5; Ben chose "Drop and start
      fresh").
-   - **The switch** (C25; U10, Ben: "Ignore everything"; choice PR13). Phase 1 runs only with all
-     four of its modules on (knowledge, settlements, trade, travel). Switched off it captures every
-     puppet back (one last write), drops what was queued for the session, ignores its records
-     (journaled ones are admitted by `Replay` for their sequence and op id, then counted and
-     dropped; censuses too), runs nothing and materializes nothing. Commands the bridge answers by
-     op id decided before the switch and not yet written wait unsequenced until it is on again;
-     resends of ones already written still go out with their sequences; COMMAND_RESULT and
-     HOUSE_PLACED are still taken (the protocol finishing, not the module running). On again, the world runs to
-     now at once. The dragons, ships, herds and conflict live in its world and run its clock while
-     they run.
+   - **The switch** (C25; U10, Ben: "Ignore everything"; choices PR13 and RP-300). Phase 1 runs
+     only with all four of its modules on (knowledge, settlements, trade, travel). The rule:
+     **the switch gates only new decisions; every record of what already happened is heard; a
+     record applied while off goes in at its own tick, never at the frozen clock.** Switched off it
+     captures every puppet back (one last write), drops what was queued for the session, runs
+     nothing, decides nothing new and materializes nothing; censuses (latest state, sent again) are
+     ignored and counted. The journaled records of what happened (TRADE, CARGO_CHANGED, TAKEN and
+     DIED, HURT, RESCUE, TALKED, BASE_MARKED and BASE_UNMARKED, VILLAGE_ADOPTED, HOUSE_PLACED, a
+     work's COMMAND_RESULT) are heard by the same code as when on: the engine acknowledges every
+     record it admits whatever the switch, and Java drops what it saw acknowledged, so ignoring one
+     meant the sim's row kept goods a player had already taken (and a dupe at the switch-on). Their
+     world inputs wait in a list in the meta page, in time order at the records' own ticks, and are
+     applied each after the world (and the modules sharing its clock) has run to its tick: at the
+     switch-on, at the top of the next step, and before a viewer module (dragons, ships, herds,
+     conflict) runs the shared clock past them. A despawn's capture check skips a caravan that has
+     such goods-moving inputs waiting (its row has not heard them yet). Commands the bridge
+     answers by op id decided before the switch and not yet written wait unsequenced until it is on
+     again; resends of ones already written still go out with their sequences. On again, the world
+     runs to now at once. The dragons, ships, herds and conflict live in its world and run its
+     clock while they run. WORK_CATALOG is latest state sent once a session, not journaled, and is
+     still taken while off at the frozen clock.
    - **News** travels separately from cargo (Ben: "News travels separately"; choice PR6): every road
      has messengers on their own schedule, so a news packet never waits for a caravan's dock; touring
      bands carry gossip on their circuits (P16). Nothing of this crosses the boundary.

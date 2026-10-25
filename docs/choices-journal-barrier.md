@@ -100,3 +100,105 @@ no longer grows with the backlog.
 4. **The fsync of noted region files when DSYNC is off (JB3).** It only matters for a power cut or an OS
    crash, not a JVM crash. Options: (a) keep it (recommended: one to four files per autosave, on an IO
    thread); (b) skip it and accept that a power cut can leave the journal ahead of a chunk under C2ME.
+
+## RP-300: phase 1 switched off hears its journaled records (slice U-d, findings U10 and PR13)
+
+**The rule.** The switch gates only new decisions; every record of what already happened is heard; a
+record applied while off goes in at its own tick, never at the frozen clock.
+
+**Chosen.**
+
+- Every journaled phase 1 record goes through one path, `phase1::book` (`engine/phase1.rs`): on, the
+  input is applied now; off, it is kept in `Link::kept`, a list in time order (equal ticks in the
+  order heard) at the record's own world tick (`wt(GAME_TIME)`). The kinds: TRADE (a village
+  resident's and a caravan's), CARGO_CHANGED (robbery, goods in), TAKEN and DIED, HURT, RESCUE,
+  TALKED, BASE_MARKED and BASE_UNMARKED, VILLAGE_ADOPTED (its Join and village type), HOUSE_PLACED
+  and a work's COMMAND_RESULT. The census (VILLAGE_CENSUS, latest state, sent again) is still
+  ignored and counted in `ignored`, which now means only that.
+- `drain_kept` applies the list in order, each input after `shared::run_rounds` has run the world
+  and the modules sharing its clock to its tick (so the dragons, ships, herds and conflict meet it
+  in order, S13). It runs at the switch-on (`set_enabled`), at the top of `simulate`, at the top of
+  `shared::run_to` (a viewer module running the clock while phase 1 is off must not run it past a
+  kept input) and in the ships' `ingest` before it runs its engine. Each input is removed before it
+  is applied, because applying runs the clock again, which comes back to the drain. Off with no
+  viewer running nothing moves the clock, so nothing drains; while the session's replay runs with a
+  viewer the drain stops at the replay clock (`clock_target`).
+- The list is saved in the meta page (`META_VERSION` 4 to 5, after the queue), in the same atomic
+  commit as the pages of the save that acknowledged its records, so a crash while off brings back
+  exactly the inputs whose records Java dropped. Before release a version 4 save is read as
+  unreadable pages and dropped (S5): no migration.
+- TAKEN and DIED book at `wt(GAME_TIME)` on and off. They booked at `world.now()`, the world's
+  tick when the record was heard, which a replay hears at another tick (hazard J3).
+- Guards resolve against what will be applied: a village is known if it is a node or a kept Join
+  or MarkBase names it, so a HOUSE_PLACED or a work style heard while off for a village adopted
+  in the same window is not refused; a repeat of a record already kept (a copy after a crash) is
+  not kept twice.
+- `check_capture` (the check at a caravan's despawn that its members' items equal the sim's row)
+  returns early while a kept input moves that caravan's goods (Rob, CargoIn, CaravanTrade, Member,
+  MemberHeld): the row has not heard them yet, so a difference is not a bug and was logged as a
+  false mismatch. The check runs again once they are applied.
+- HOUSE_PLACED and the work COMMAND_RESULT went onto the deferral for the order's sake (item 4 of
+  the brief, see Tests): a record applied at once while an earlier one of its village waits would
+  be applied before it, and the input log would not be in time order.
+- WORK_CATALOG is left alone: it is latest state (the whole catalogue), sent once a session and
+  not journaled, so a replay never brings it back at another tick. It is still taken while off, at
+  the frozen clock.
+
+**Why.** The engine acknowledges every journaled record it admits, whatever a module's switch
+(`Replay`), and Java drops what it saw acknowledged and does not send it again. Phase 1 used to
+ignore its records while off (U10, PR13), so a caravan robbed or traded with between the switch-off
+and its despawn kept in the sim's row the goods the player now has, and a dupe followed at the
+switch-on. Booking at the frozen clock instead would be wrong too: tick-derived op ids and events
+differ between the live run and a replay (J3).
+
+**Cost.** One list in the meta page (empty on, a few bytes), a second path through the records
+(`book` and `apply_booked`, which the on path takes too), a drain at four call sites, and one more
+thing the capture check must know. While off and no viewer runs, the kept list grows with the
+window's records, one input each; it is applied at the switch-on in one go, before the world runs
+to now.
+
+**Tests** (`crates/rtsim-jni/tests/protocol.rs`, `mod p1_off` and `mod p1_off_fork`; unit tests in
+`engine/phase1.rs`). Failing first on the base (4e694452), what each printed:
+
+- T1 robbery heard while off, then on again: the sim's row never booked it, `ROBBERIES 0 (want 1)`.
+- T1b a despawn capture with a kept robbery: `capture_mismatches 1 (want 0)`.
+- T2 trade: `CARAVAN_TRADES 0 (want 1)`. T3 member taken: `REPORTS 0 (want 1)`.
+- D1 determinism, fork A/B: run to pages at S, switch phase 1 off, let the window's records in
+  (a robbery, a trade, a taken member; nothing else), crash right after with the journal restored
+  from its file, copy the page dir and clone the `WorldSave`, restart twice. Arm A restarts with
+  phase 1 off and switches on later, arm B restarts with it on (the records replay at their own
+  ticks); both run to the same world tick and compare `phase1_state().0` and the op ids decided
+  after. An A/A control first (two B restarts are equal) and a sensitivity control (a record
+  missing from one arm shows). On the base: A hash 16904006048110328712 with no ops and nothing
+  booked, B hash 2294602932434821836 with nine gossip ops and the three bookings. On the fix A == B.
+- D3 a crash while off after a save that carries the kept inputs: they come back from the pages and
+  are applied once at the switch-on. On the base the list does not exist (0 kept, want 2).
+- Unit tests: the list across a save and load (`the_kept_inputs_come_back_from_a_save_in_order`),
+  the drain order (`kept_inputs_drain_in_time_order_each_at_its_own_tick`: heard 3000, 1000, 2000,
+  2000 applied 1000, 2000, 2000, 3000 and the world at 3000) and a `run_to` with a viewer running
+  and phase 1 off (`a_run_to_with_a_viewer_running_drains_the_inputs_it_passes`: the input before
+  the target in, the one after waiting).
+- Item 3 (TAKEN/DIED tick): with only that booking set back to `world.now()` on the fixed tree D1
+  diverges (A hash 7001903515526480207, B 2294602932434821836, the gossip ops after differ). At
+  `wt(GAME_TIME)` it does not. It is the one on-path behaviour change.
+- Item 4 (HOUSE_PLACED and the work COMMAND_RESULT) under the determinism test first: D2 (HOUSE_PLACED
+  of a growth house, three Ribbit villages) and D2b (a work's answer arriving a day after the
+  switch-off) both pass on the base, that is with both taken at the frozen clock: A == B, same
+  hash, same ops. D2b is sensitive (without the answer the hash and the ops differ), but the answer's
+  tick does not change what the world decides after it: `work_result` only wakes the village's next
+  purchase at `max(at, now)`, and `house_placed` has no tick-derived state. So no divergence was
+  found and neither is a J3 hazard in these setups; they stay on the deferral for the order's sake
+  (above) and because one rule with no exceptions is easier to keep true. Reversible: take them at
+  once as before.
+- All kinds of the brief's item 5 (VILLAGE_ADOPTED, BASE, HURT, RESCUE, TALKED) go through `book`
+  with their guards resolved; the quiet-window control (a window with no records changes nothing,
+  the capture matches) and the existing TALK, works and adoption tests cover them.
+
+**Left.**
+
+- The census stays ignored while off (latest state; the next one after the switch-on lands).
+- WORK_CATALOG is taken at the frozen clock while off (see Chosen), which is harmless because the
+  engine's reply to a catalogue is not tick-derived.
+- `docs/deploy-rehearsal-omegasrv.md` still describes phase 1 ignoring its records while off, as it
+  was when the rehearsal ran.
+- The kept list has no cap: a window of hours with many players trading is a few thousand inputs.

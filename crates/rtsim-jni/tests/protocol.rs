@@ -1761,6 +1761,41 @@ fn a_member_taken_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// A caravan hurt and a caravan rescued in the window (HURT, RESCUE) are the sim's news of what
+/// the player did; they are booked once, when phase 1 is on again.
+#[test]
+fn a_hurt_and_a_rescue_heard_while_phase1_is_off_are_booked_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4C_u64;
+    let (_dir, e, mut j, _cargo) = caravan_session("p1off-reports", agent);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.journal(obs::HURT, obs::hurt::SIZE, obs::hurt::PUPPET_HURT, |r| {
+            wire::put_u64(r, obs::hurt::AGENT, agent);
+            wire::put_u32(r, obs::hurt::EPOCH, 1);
+            wire::put_u64(r, obs::hurt::ATTACKER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::hurt::ATTACKER_LEAST, PLAYER.1);
+            wire::put_u32(r, obs::hurt::ATTACKER_KIND, obs::hurt::ATTACKER_PLAYER);
+        });
+        j.journal(obs::RESCUE, obs::rescue::SIZE, obs::rescue::PUPPET, |r| {
+            wire::put_u64(r, obs::rescue::AGENT, agent);
+            wire::put_u32(r, obs::rescue::EPOCH, 1);
+            wire::put_u64(r, obs::rescue::RESCUER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::rescue::RESCUER_LEAST, PLAYER.1);
+        });
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, REPORTS), 0, "nothing applied while off");
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, REPORTS),
+        2,
+        "the hurt and the rescue heard in the window are booked, once each"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// The fork variant of the determinism check (RP-300, hazard J3). A world is run to a save (S),
 /// phase 1 is switched off, the records under test reach the journal, and the server dies. The
 /// page directory is copied and the journal cloned, and the same crash is restarted twice: arm A
@@ -2106,7 +2141,7 @@ fn a_work_answer_heard_while_phase1_is_off_makes_the_world_a_restart_with_it_on_
     save_durable(&e, &mut j);
     assert_eq!(p1_stat(&e, P1_WORKS_PLACED), 0, "not answered yet");
     switch_then(&e, &mut j, OFF, |j| {
-        j.game_time += 61;
+        j.game_time += 24_000;
         j.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
             wire::put_u64(r, obs::house_placed::OP_ID, op);
             wire::put_u64(r, obs::house_placed::VILLAGE, a);
@@ -2342,6 +2377,37 @@ mod talk {
         j.idle();
         assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(6));
         assert_eq!(e.talk_stats().talked, 1);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A talk heard while phase 1 is off (TALKED is journaled, so the engine acknowledged it and
+    /// Java will not send it again) credits its village once phase 1 is on again; the same op id
+    /// reported once more after that changes nothing.
+    #[test]
+    fn a_talk_heard_while_phase1_is_off_credits_its_village_once_when_it_is_on_again() {
+        use super::p1_off::{OFF, switch_on, switch_then};
+        let dir = tmpdir("talked-off");
+        let (e, mut j) = session(&dir, WorldSave::fresh());
+        let op = wire::JAVA_OP_BIT | 0x7b1;
+        switch_then(&e, &mut j, OFF, |j| {
+            j.talked(RIBBIT_VILLAGE, PLAYER, op);
+        });
+        j.idle();
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 0, "not applied while off");
+        assert_eq!(e.talk_stats().talked_refused, 0, "and not refused");
+        switch_on(&mut j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.talk_stats().talked, 1, "applied once it is on");
+        assert_eq!(j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER), Some(3));
+        j.talked(RIBBIT_VILLAGE, PLAYER, op);
+        j.idle();
+        assert_eq!(
+            e.talk_stats().talked,
+            1,
+            "the same op id once more: nothing"
+        );
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(3));
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
