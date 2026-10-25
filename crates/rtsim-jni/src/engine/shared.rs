@@ -165,11 +165,14 @@ pub(super) fn introduce_conflict(st: &mut State) {
 
 // ---- the interest areas ---------------------------------------------------------------------------
 
-/// SESSION_START: every player's area goes (the world forgets where players were). The dragons,
-/// the ships and the herds hear it (their bodies end at the arm until their slices move that
-/// work into their replay end); the conflict does not (docs/replay-gate.md §2.1, §5.1, RP-26):
-/// its `player_left` would recall the bands the pages hold in view, whose replayed records count
-/// against them, and its replay end does that player work for every player (§5.6).
+/// SESSION_START: every player's area goes (the world forgets where players were). The ships and
+/// the herds hear it (their bodies end at the arm until their slices move that work into their
+/// replay end). The dragons hear it too, and it does nothing to them (RP-70, RP-76): their
+/// `Viewer` has no `player_left` override, so it is as if they were left out of the arm, and
+/// their bodies are kept to the replay end, whose `replay_done` does the player work (§5.6). The
+/// conflict does not hear it (docs/replay-gate.md §2.1, §5.1, RP-26): its `player_left` would
+/// recall the bands the pages hold in view, whose replayed records count against them, and its
+/// replay end does that player work for every player (§5.6).
 pub(super) fn session_start(st: &mut State) {
     st.shared.pending.clear();
     st.shared.present.clear();

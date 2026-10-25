@@ -614,13 +614,18 @@ fn runs_the_clock(o: &Order) -> bool {
 /// A test's order that waits for the replay end, with every unit after it (RP-33): one that runs
 /// the clock, a conflict command (RP-66), which joins the conflict's queue around its gate
 /// (docs/replay-gate.md §4.4), and a dragon command (RP-74), which joins the dragons' around
-/// theirs (§4.5), and NEST_DAY (RP-74), which books the nests' next watch from the engine's own
-/// clock: none of them must go while the replay runs.
+/// theirs (§4.5), NEST_DAY (RP-74), which books the nests' next watch from the engine's own
+/// clock, and a phase 1 advance (RP-74), which raises the offset every record's game time takes
+/// (`phase1::world_tick`) and so shifts the replayed records still to come: none of them must go
+/// while the replay runs.
 fn waits_for_the_replay_end(o: &Order) -> bool {
     runs_the_clock(o)
         || matches!(
             o,
-            Order::ConflictCommand { .. } | Order::DragonCommand { .. } | Order::NestDay(_)
+            Order::ConflictCommand { .. }
+                | Order::DragonCommand { .. }
+                | Order::NestDay(_)
+                | Order::Phase1Advance(_)
         )
 }
 
@@ -1392,7 +1397,7 @@ impl Engine {
         // the replay end, and so does every unit after it, in order (docs/replay-gate.md §3.6,
         // RP-33): taken now it would carry the modules past the replayed records still to come.
         // A conflict command waits too, as it bypasses the gate (RP-66), and so do a dragon
-        // command and NEST_DAY (RP-74).
+        // command, NEST_DAY and a phase 1 advance (RP-74).
         if !st.replaying {
             for unit in std::mem::take(&mut st.held_units) {
                 self.take_unit(&mut st, unit);
