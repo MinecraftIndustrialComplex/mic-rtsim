@@ -5184,7 +5184,9 @@ impl Conflict {
             }));
         }
         // The fight's first record is its first wave's. A walked-in band has no such wave: its
-        // members are placed, and a later wave answers nothing of this decision (MZB-492).
+        // members are placed, so its record is the empty marker `spawn_wave` sends (MZB-700), and
+        // a later wave answers nothing of this decision (MZB-492). The marker's gap is not
+        // measured, to keep RP-51's figure about the first wave of bodies.
         if !walked_in {
             self.fights_unanswered.insert(p, (epoch, at));
         }
@@ -5192,7 +5194,7 @@ impl Conflict {
         self.book_leg(w, p, here, here, at, ends);
         let plan = self.bump(p);
         self.schedule(ends, Ev::Party { party: p, plan });
-        self.spawn_wave(w, p, player, Some((centre, bearing)), at);
+        self.spawn_wave(w, p, player, Some((centre, bearing)), at, walked_in);
         self.schedule(
             at + self.tun.wave_interval_ticks,
             Ev::Wave { party: p, plan },
@@ -5211,6 +5213,14 @@ impl Conflict {
 
     /// One wave (or the whole group when seen on the march): members up to the quota that are
     /// not in Minecraft yet.
+    ///
+    /// `walked_in`: the fight's decision is a band that walked in in its bodies (MZB-461). Its
+    /// members are all placed by then, yet the fight's record is still sent, BAND_FIGHT-flagged
+    /// and with no members (MZB-700): Java echoes it and spawns nothing, and the echo is what a
+    /// restart's replay finds to release the hold of the held arrival (MZB-491, MZB-492). That
+    /// record carries a wave number (`wave` advances, as `honour` reads it) but no bodies, so it
+    /// is not counted in `stats.waves` or `stats.materialized`, which count bodies sent. Any
+    /// other call with nothing to place sends nothing.
     fn spawn_wave(
         &mut self,
         w: &World,
@@ -5218,6 +5228,7 @@ impl Conflict {
         player: ActorId,
         arc: Option<((i32, i32), f32)>,
         at: Tick,
+        walked_in: bool,
     ) {
         // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-11).
         if self.outbox.defer() {
@@ -5226,7 +5237,7 @@ impl Conflict {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let fill = self.wave_fill(p, 0);
-        if fill.is_empty() {
+        if fill.is_empty() && !walked_in {
             return;
         }
         let x = &self.parties[p];
@@ -5309,8 +5320,10 @@ impl Conflict {
         self.outbox.push(cmd);
         self.place(p, &fill);
         self.parties[p].wave += 1;
-        self.stats.waves += 1;
-        self.stats.materialized += 1;
+        if !fill.is_empty() {
+            self.stats.waves += 1;
+            self.stats.materialized += 1;
+        }
     }
 
     /// The way a band met on the march faces, in degrees from +x toward +z as `start_fight` takes
@@ -5420,7 +5433,7 @@ impl Conflict {
             );
             let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
             let wave = self.parties[p].wave;
-            self.spawn_wave(w, p, player, Some((centre, bearing)), at);
+            self.spawn_wave(w, p, player, Some((centre, bearing)), at, false);
             // A wave commanded is in Minecraft by the books, also after Java refused the first
             // one and left the band unembodied: its bodies' records find the band again, and the
             // fight's end recalls them.
@@ -5794,7 +5807,7 @@ impl Conflict {
         if self.parties[p].kind == PartyKind::Envoy {
             self.materialize_envoy(w, p, player, at);
         } else {
-            self.spawn_wave(w, p, player, None, at);
+            self.spawn_wave(w, p, player, None, at, false);
         }
         let x = &self.parties[p];
         if matches!(x.phase, Phase::Out | Phase::Home) {

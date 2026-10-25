@@ -4762,7 +4762,8 @@ mod conflict {
         });
         // Nobody fights the raid: it is met on its road (a column, the whole band under the
         // quota), walks into the base where the player stands, waits there, gets bored and goes
-        // home. With every member placed the director has no wave to send (MZB-461).
+        // home. With every member placed the director has no body to send, only the walk-in's empty
+        // fight record (MZB-461, MZB-700).
         advance_until(&mut j, 1_000, 6 * DAY, "a war band at the base", |j| {
             cmds(j).any(|c| {
                 matches!(c, C::Steer(s) if s.flags & cb::STEER_ATTACK != 0 && s.arrive == 0)
@@ -4783,7 +4784,9 @@ mod conflict {
 
         // The invasion: more than the spawn quota, so the sighting places the quota and the rest
         // comes in waves on an arc as the players kill four in ten of what stands (then its war
-        // chief), each wave only as many as the quota has room for.
+        // chief), each wave only as many as the quota has room for. The walk-in itself sends the
+        // fight's flagged record with no member (MZB-700: the quota is full, nothing is left to
+        // place), which is no wave of bodies.
         j.conflict_plugin.fight = Some(synth::Fight {
             kill_share: 0.4,
             after: 200,
@@ -4793,7 +4796,11 @@ mod conflict {
         let arcs_of = |j: &Java, agent: u64| -> Vec<cb::BandMaterialize> {
             cmds(j)
                 .filter_map(|c| match c {
-                    C::Materialize(m) if m.agent == agent && m.arc_radius > 0 => Some(m.clone()),
+                    C::Materialize(m)
+                        if m.agent == agent && m.arc_radius > 0 && !m.members.is_empty() =>
+                    {
+                        Some(m.clone())
+                    }
                     _ => None,
                 })
                 .collect()
@@ -4820,6 +4827,20 @@ mod conflict {
         assert!(first <= 16, "the sighting within the spawn quota: {first}");
         assert_eq!(inv.wave, 0);
         assert_eq!(inv.arc_radius, 0, "met on its road");
+        let walk_ins: Vec<cb::BandMaterialize> = cmds(&j)
+            .filter_map(|c| match c {
+                C::Materialize(m)
+                    if m.agent == inv.agent
+                        && m.flags & cb::BAND_FIGHT != 0
+                        && m.members.is_empty() =>
+                {
+                    Some(m.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(walk_ins.len(), 1, "the walk-in's empty fight record: {walk_ins:?}");
+        assert!(walk_ins[0].epoch == inv.epoch && walk_ins[0].arc_radius > 0);
         assert!(
             waves[0].wave >= 1 && waves[0].epoch == inv.epoch,
             "the walk-in keeps the epoch: {waves:?}"
@@ -10463,11 +10484,14 @@ mod conflict {
     /// target sees the band leave the camp (a sighting: the whole band, under the quota, is
     /// placed in a column); a save while it is on its way; its arrival is a walk-in (BAND_STEER
     /// with the attack flag, the same epoch, and no wave, since nobody is left to send), a
-    /// quarter of the band falls (BAND_CASUALTIES); a crash. S1 replays the sighting's record
-    /// and the casualties from the pages taken before the arrival: the arrival is held and the
-    /// first casualty ends the hold, decided unwatched (no fight record exists to honour, the
-    /// gap MZB-492 names). The casualties count once, at the sighting's epoch, so the band's
-    /// books and epoch are S0's, and the band is abstract and walking home at the replay end.
+    /// quarter of the band falls (BAND_CASUALTIES); a crash. The walk-in also sends the fight's
+    /// one record, a BAND_MATERIALIZE flagged as the fight's with no members (MZB-700: the gap
+    /// MZB-492 named, where no record existed for the replay to honour), which Java echoes and
+    /// spawns nothing for. S1 replays the sighting's record, the walk-in's echo and the
+    /// casualties from the pages taken before the arrival: the arrival is held, the echo ends
+    /// the hold and the fight is honoured as watched, once (MZB-491). The casualties count once,
+    /// at the sighting's epoch, so the band's books and epoch are S0's, and the band is waiting
+    /// and abstract at the replay end, as any fighting band is after a restart.
     #[test]
     fn a_held_arrivals_replayed_fight_counts_its_casualties_once() {
         let resolved = |e: &Engine| {
@@ -10490,6 +10514,7 @@ mod conflict {
         });
         save(&e, &mut j);
         let durable = e.durable_obs_seq();
+        let sighted = e.with_conflict(|c, _| c.parties[p].epoch);
         let (n, at_save) = (books(&e, p).0, books(&e, p).1);
         let watched = e.conflict_stats().0.raids_watched;
         let from = j.conflict.len();
@@ -10504,9 +10529,21 @@ mod conflict {
         j.idle();
         assert_eq!(
             materialized_epochs(&j, from, p),
-            Vec::<u32>::new(),
-            "the band met on the road walks into its fight: no new epoch, no wave"
+            [sighted],
+            "the band met on the road walks into its fight: no new epoch"
         );
+        let fights: Vec<usize> = j.conflict[from..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                C::Materialize(m)
+                    if m.agent == Party::agent(p) && m.flags & cb::BAND_FIGHT != 0 =>
+                {
+                    Some(m.members.len())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fights, [0], "the fight's one record has no member to place");
         let replayed = |kind: u16| {
             j.journal
                 .iter()
@@ -10518,8 +10555,9 @@ mod conflict {
             replayed(cb::BAND_CASUALTIES),
         );
         assert!(
-            m == 1 && c > 20,
-            "the sighting's record and the fight's casualties after the pages: {m}, {c}"
+            m == 2 && c > 20,
+            "the sighting's record, the walk-in's echo and the fight's casualties after the \
+             pages: {m}, {c}"
         );
         let live = books(&e, p);
         assert!(live.0 < n && live.1 == at_save, "{live:?}");
@@ -10536,13 +10574,13 @@ mod conflict {
             "the pages from before the arrival"
         );
         assert_eq!(resolved(&e), 0, "the held arrival resolved nothing");
-        // The walked-in fight left no fight record to honour (MZB-492): the first casualty ended
-        // the held arrival, decided unwatched, and the casualties count against the sighting's
-        // stack. The session that went on had fought it watched.
+        // The walk-in's echo is the fight's record to honour (MZB-700, MZB-491): it ended the
+        // held arrival, which is fought watched as the session that went on had it, and the
+        // casualties count against the sighting's stack.
         assert_eq!(
             e.conflict_stats().0.raids_watched,
-            watched,
-            "no BAND_MATERIALIZED to honour as the arrival's fight"
+            watched + 1,
+            "the walk-in's echo honoured as the arrival's fight"
         );
         let b = books(&e, p);
         assert_eq!(
@@ -10552,8 +10590,8 @@ mod conflict {
         );
         assert_eq!(
             party(&e, p),
-            Some((Phase::Home, false)),
-            "the arrival decided unwatched, abstract at the replay end"
+            Some((Phase::Waiting, false)),
+            "the arrival fought watched, abstract after the replay as a fighting band is"
         );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);

@@ -1801,7 +1801,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
 | 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
-| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z; at arcRadius 0 the way the band on the march faces, MZB-457, MZB-482), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54; a walked-in band's fight sends this flag with m = 0 members when every member is placed already, MZB-700: see "A band seen on the march"), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z; at arcRadius 0 the way the band on the march faces, MZB-457, MZB-482), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
@@ -1996,6 +1996,20 @@ as any band on the march is, at its place on the way, facing the way it walks (t
 BAND_MATERIALIZE at `arcRadius` 0, MZB-457), steered along the rest of its route, and recalled where the
 walk leaves the view. Java's walk-in places the stacks as the arrival of a band on the march does
 (MZB-469 to MZB-472).
+
+**A walked-in fight sends an empty record (MZB-700; M10b's Java owes it).** A band that walked in in
+its bodies (MZB-461) fights in them: the engine steers it (BAND_STEER with the attack flag, `arrive`
+0) and sends a BAND_MATERIALIZE flagged BAND_FIGHT (8) for the members not in Minecraft yet. When
+every member is placed already (a band met on its road with the quota's room full, or under the
+quota, has them all out) that record has **no members** (m = 0), and it is still sent: it is the
+fight's one record, the one a restart's replay finds to release the held arrival (docs/replay-gate.md
+§6.1, RP-23; MZB-491), and without it the replay resolves the walked-in fight a second time as an
+abstract raid. **Java must echo an empty flagged record and spawn nothing**: place no stack, take its
+`wave` number as one had (the next wave's `wave` is higher, so no ALREADY_EMBODIED), and answer
+BAND_MATERIALIZED at once with the command's flags (8) and `spawned` 0. It must not answer it with
+BAND_SPAWN_REJECTED BAD_RECORD, as a record with m <= 0 is answered today: a refusal of this record
+is read by a replay as the fight's refusal (RP-54) and loses the fight's live parity. The engine
+counts such a record in neither `waves` nor `materialized`, which count bodies sent.
 
 **Mowzie's later records** (MOWZIE.md §4; the Java half of each comes with the slice that builds its
 engine half, §9.6). The train sampler (M7, built; `mic_rtsim_create.TrainSampler`) samples each Create

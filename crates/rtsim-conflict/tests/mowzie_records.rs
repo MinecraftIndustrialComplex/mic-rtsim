@@ -4523,7 +4523,8 @@ fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
         Then::Fight => {
             assert!(next + 6_000 < r.c.parties[band].bored_at, "a next round");
             // Not routed: the band waits at its quota, so a sighting would place all of it and
-            // the fight would send no wave to record (MZB-492).
+            // the fight would be a walk-in's (MZB-461, MZB-492), its record an empty one
+            // (MZB-700), not the arrival of an abstract band that this case replays.
             r.sight = false;
             r.watch = true;
             r.next_obs = Tick(next.0 - 600);
@@ -6777,4 +6778,115 @@ fn a_casualty_copy_of_an_ended_party_does_nothing_across_a_paged_save() {
         "the old agent's copy does nothing"
     );
     assert_eq!(c.stats.casualties, cas);
+}
+
+/// The raid of `a_raid_arriving_after_the_save`, but the player's area is routed from the save
+/// on, so the band is met on its road and walks into its fight in its bodies (MZB-461, MZB-492).
+/// Every member is placed by then, so the fight's one record is the walk-in's empty BAND_FIGHT
+/// one (MZB-700): the held arrival of a restart's replay finds it and the fight is not resolved
+/// again (MZB-491). `crash`: a restart from the pages replays the journal.
+fn a_raid_met_on_its_road_after_the_save(crash: bool) -> Arrival {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let f = r.f;
+    let now = r.c.now();
+    r.c.factions[f as usize].pool = 10.0;
+    r.c.factions[f as usize].pool_at = now;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (casualties, raids_watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
+    journal.clear();
+    r.watch = true;
+    r.sight = true;
+    r.next_obs = r.c.now();
+    let mut end = arrival;
+    while r.c.parties.get(band).is_some() {
+        end += 600;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    // Met on its road: the band's first record after the pages is the sighting's (unflagged),
+    // and the walk-in's is the fight's: flagged, with no member to place (MZB-700).
+    let flags: Vec<u32> = journal
+        .iter()
+        .filter_map(|(_, o)| match o {
+            Obs::Materialized(m) if m.agent == Party::agent(band) => Some(m.flags),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        flags[0] & u32::from(boundary::BAND_FIGHT),
+        0,
+        "a sighting: {flags:?}"
+    );
+    let fights: Vec<usize> = r
+        .cmds
+        .iter()
+        .filter_map(|(_, c)| match c {
+            Cmd::Materialize(m)
+                if m.agent == Party::agent(band) && m.flags & boundary::BAND_FIGHT != 0 =>
+            {
+                Some(m.members.len())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fights, [0], "the walk-in's empty fight record");
+    journal.push((end, fillers_casualty()));
+    let arrival_of = |c: &Conflict, walls: &Walls| Arrival {
+        raids: walls.raids.iter().copied().collect(),
+        casualties: c.stats.casualties - casualties,
+        watched: c.stats.raids_watched - raids_watched,
+        pool: f64::NAN,
+    };
+    if !crash {
+        let a = arrival_of(&r.c, &walls);
+        eprintln!("live: {a:?}");
+        return a;
+    }
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let tun = r.c.tun.clone();
+    let cultures = r.c.cultures.clone();
+    let mut back = Conflict::load(tun, cultures, &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.run_until(&mut w, &mut walls, end + 2 * TICKS_PER_DAY);
+    let a = arrival_of(&back, &walls);
+    eprintln!("crash: {a:?}");
+    a
+}
+
+#[test]
+fn a_walked_in_fight_in_the_replayed_window_is_resolved_once() {
+    let live = a_raid_met_on_its_road_after_the_save(false);
+    assert!(
+        live.raids.is_empty(),
+        "fought in its bodies, not raided: {live:?}"
+    );
+    assert_eq!(live.watched, 1, "{live:?}");
+    let crash = a_raid_met_on_its_road_after_the_save(true);
+    assert_eq!(
+        crash.raids, live.raids,
+        "no abstract raid on top of the fight"
+    );
+    assert_eq!(crash.watched, live.watched);
+    assert_eq!(crash.casualties, live.casualties);
 }

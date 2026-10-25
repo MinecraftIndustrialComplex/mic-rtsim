@@ -1066,8 +1066,11 @@ fn an_arrival_with_a_player_170_blocks_off_is_abstract_and_150_is_a_fight() {
 }
 
 /// MZB-461: the walked-in fight's arc sends only the members not placed yet, at the band's own
-/// epoch, flagged as a fight's wave; a band with every member placed (up to the quota) sends none
-/// (MZB-492).
+/// epoch, flagged as a fight's wave. A band with every member placed (up to the quota) sends the
+/// same record with no members (MZB-700, MZB-492): the fight's one flagged record, which Java
+/// echoes and spawns nothing for, and which a restart's replay needs to release the hold of the
+/// arrival (the gap the first version of this test pinned). It is not counted in `stats.waves` or
+/// `stats.materialized`, which count bodies sent.
 #[test]
 fn a_band_walking_into_its_fight_sends_only_the_members_not_placed() {
     for placed in [false, true] {
@@ -1081,6 +1084,7 @@ fn a_band_walking_into_its_fight_sends_only_the_members_not_placed() {
         let agent = Party::agent(band);
         let alive = r.c.parties[band].alive();
         let mark = r.cmds.len();
+        let (waves_before, materialized_before) = (r.c.stats.waves, r.c.stats.materialized);
         let arrive = *r.c.parties[band].times.last().unwrap();
         r.run(arrive + 10);
         let waves: Vec<boundary::BandMaterialize> = r.cmds[mark..]
@@ -1094,17 +1098,27 @@ fn a_band_walking_into_its_fight_sends_only_the_members_not_placed() {
             r.c.parties[band].epoch, epoch,
             "placed {placed}: same epoch"
         );
+        assert_eq!(waves.len(), 1, "placed {placed}: {waves:?}");
+        let w = &waves[0];
+        assert_eq!(w.epoch, epoch);
+        assert!(w.arc_radius > 0 && w.flags & boundary::BAND_FIGHT != 0);
+        let sent = w.members.iter().map(|s| s.count).sum::<u32>();
         if placed {
-            assert!(waves.is_empty(), "everything is there already: {waves:?}");
-        } else {
-            assert_eq!(waves.len(), 1, "{waves:?}");
-            let w = &waves[0];
-            assert_eq!(w.epoch, epoch);
-            assert!(w.arc_radius > 0 && w.flags & boundary::BAND_FIGHT != 0);
+            assert!(w.members.is_empty(), "everything is there already: {w:?}");
             assert_eq!(
-                w.members.iter().map(|s| s.count).sum::<u32>(),
+                (r.c.stats.waves, r.c.stats.materialized),
+                (waves_before, materialized_before),
+                "no bodies sent, no wave counted"
+            );
+        } else {
+            assert_eq!(
+                sent,
                 alive.min(r.c.tun.spawn_quota) - 3,
                 "the members left, within the room under the quota"
+            );
+            assert_eq!(
+                (r.c.stats.waves, r.c.stats.materialized),
+                (waves_before + 1, materialized_before + 1)
             );
         }
     }

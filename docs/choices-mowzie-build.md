@@ -5,7 +5,7 @@ MZB-#, and each slice takes ids from its own range so slices built side by side 
 M1 1 to 49, M2 50 to 99, M3 100 to 149, M4 150 to 199, M5 200 to 249, M6 250 to 299, M7 300 to 349,
 M8 350 to 399, M9 400 to 449, M10 450 to 499, M11 500 to 549, M12 550 to 599. Each slice writes only
 under its own heading. MZB-589 is lent from M12's range to M6 (the BAND_CASUALTIES op id, which rides with
-M6's branch); M12 skips it.
+M6's branch); M12 skips it. MZB-700 to 719 are M10's review fixes (its range was full).
 
 ## M1 Records
 
@@ -7923,7 +7923,7 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   own epoch with the party's arrival held (`held_since`); a flagged record of the own epoch with no hold is a
   later wave of a fight in progress, and counts nothing new. A sighting's record (unflagged) only embodies
   and keeps the hold, as RP-56 has it.
-- **MZB-492** (a walked-in fight may send no wave, so the fight leaves no record; open for the review): the arc
+- **MZB-492** (a walked-in fight may send no wave, so the fight leaves no record; closed by MZB-700 at the review): the arc
   of `start_fight` on an embodied band sends only the members not placed yet (MZB-461), and a band met on
   the road has all of them placed up to the quota already (`wave_fill`'s room is the quota less `spawned`,
   and the sighting filled it; a band under the quota has everyone out). The arc wave is then empty and
@@ -7984,7 +7984,8 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   after the pages, no fight record exists to honour (MZB-492's gap, which M10b or the review may close with
   an echo of the attack steer), and the casualties count once at the sighting's epoch; the band is Home,
   abstract, at the replay end. Taken the conservative way: the tests pin what the engine does now and say
-  where it is a gap, rather than building a fight record the engine does not have.
+  where it is a gap, rather than building a fight record the engine does not have. (MZB-700 closed the gap
+  and changed both tests: the walk-in sends an empty fight record.)
 
 - **MZB-497** (the four rtsim-jni protocol tests of M10, and where the `lose_units` one lives; forks): in
   tests/protocol.rs's conflict module, beside the replayed-casualty tests, each with the live player out of
@@ -8064,6 +8065,49 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   - The arrival with the only player 170 blocks off is abstract and walked home; at 150 it is a fight.
   - The abstract fight's dead are counted once: 8 of 12, 6 left, 5 after the despawn, the same across a
     save/load restart.
+
+### M10a review fixes (MZB-700 to MZB-719)
+
+The Opus review of 16f853cc (one P1, two P2s, three P3s) and its fixes, one commit each, each with the
+reviewer's repro made into a test that failed before the fix. Ids here, since M10's range (MZB-450 to
+MZB-499) is full.
+
+- **MZB-700** (a walked-in fight always sends its BAND_FIGHT record, empty when every member is placed;
+  closes MZB-492; amends MZB-496): the P1 of the review. A band met on its road and placed by its sighting
+  walks into its fight (MZB-461) with nothing left to send, so `spawn_wave` sent no record, and a restart
+  from pages saved before the arrival replayed a held arrival that never met a BAND_FIGHT-flagged record
+  (MZB-491): the slack (RP-48) resolved it as an unwatched abstract raid, with loot, on top of the
+  casualties the Minecraft fight had already booked. Repro (`a_walked_in_fight_in_the_replayed_window_is_
+  resolved_once`, tests/mowzie_records.rs): before the fix the restart's run had the abstract raid at tick
+  55870 and no watched raid, where the live run had no raid and one watched; after it both agree.
+  - **The fix is the reviewer's sketch (e6b123c).** `start_fight` passes `walked_in` to `spawn_wave`, which
+    sends the BAND_MATERIALIZE flagged BAND_FIGHT (arc, bearing, epoch of the sighting, `wave` the
+    band's next) with no members when `wave_fill` is empty. Any other call with an empty fill still sends
+    nothing. The record is journaled by Java's echo; `honour` reads it as the walked-in fight (own epoch,
+    the hold present) and `fight_held` releases the hold, which is MZB-491's `held` rule at work.
+  - **Fork (the lead's, conservative): the empty record counts in neither `stats.waves` nor
+    `stats.materialized`,** which count bodies sent. `wave` does advance, since `honour` sets a replayed
+    band's wave to the record's plus one and the next wave of the live band must carry a number Java has
+    not seen (Java refuses a repeated one as ALREADY_EMBODIED). `fights_unanswered` is still not set for a
+    walk-in: RP-51's gap stat stays about the first wave of bodies.
+  - **The scripted plugin needs nothing:** it echoes every BAND_MATERIALIZE, and its fight on an empty
+    stack list does nothing (the walk-in's attack steer, sent first, played the fight).
+  - **The three tests that pinned the gap now expect the record.**
+    `a_band_walking_into_its_fight_sends_only_the_members_not_placed` (tests/mowzie_march.rs): a placed band
+    sends one flagged record at its own epoch with no members and the stats do not move (before: no record);
+    the unplaced arm is as it was, with the stats up by one. `a_held_arrivals_replayed_fight_counts_its_
+    casualties_once` (rtsim-jni): the walk-in sends one flagged empty record at the sighting's epoch (before:
+    no new epoch and no wave); the restart replays two records after the pages (the sighting's and the echo),
+    honours the fight (`raids_watched` is the live session's plus one, before: unchanged, unwatched), and the
+    band is Waiting and abstract at the replay end as any fighting band is (before: Home, abstract).
+    `factions_take_notice_send_envoys_take_tribute_once_and_raid_in_waves_across_a_crash`: the invasion's
+    walk-in is asserted as exactly one empty flagged record, and its wave list counts waves of bodies only
+    (before: the first "arc wave" came after the arrival and the casualties; the empty record is an arc record
+    sent at the arrival, so the list would have ended before the casualties).
+  - **For M10b (Java, later), a requirement written in docs/boundary.md:** Java must accept a BAND_FIGHT
+    BAND_MATERIALIZE with m = 0, spawn nothing, and echo BAND_MATERIALIZED with flags 8 and `spawned` 0.
+    `ConflictBridge.materialize` answers m <= 0 with BAND_SPAWN_REJECTED BAD_RECORD today, which a replay
+    reads as the fight's refusal (RP-54).
 
 ## M11 Aloft
 

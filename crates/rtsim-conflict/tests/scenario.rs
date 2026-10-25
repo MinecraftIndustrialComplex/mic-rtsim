@@ -86,8 +86,9 @@ fn ignored_the_band_marches_and_raids_while_the_player_is_offline() {
         .filter(|c| c.starts_with("BAND_MATERIALIZE") && c.contains("arc 112 blocks"))
         .collect();
     // A band met on its march walks into its fight in the bodies it was met in (MZB-461): its
-    // waves on the arc send only the members not placed yet, often none (MZB-492). So the
-    // fight is the arc's waves or the order to attack where it stands.
+    // waves on the arc send only the members not placed yet, often none (MZB-492), and then an
+    // empty record (MZB-700). So the fight is the arc's waves or the order to attack where it
+    // stands.
     let attacked = o
         .plugin
         .commands
