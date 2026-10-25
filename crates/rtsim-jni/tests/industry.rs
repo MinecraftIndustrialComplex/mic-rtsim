@@ -1677,6 +1677,12 @@ fn a_train_raid_decided_again_after_a_crash_is_applied_once() {
 /// reaches `command_result`, which must drop the loot exchange. J4 keeps the journal and loses the
 /// trains: the ring came back without the op, so the raid is applied again to the goods the
 /// restart restored, and its result takes the exchange.
+///
+/// `j3-late` is J3 with the raid decided again only after the engine's first durable save past the
+/// replay end (RP-252: the raider re-decides at its own pace, RP-188). The ring keeps the op, its
+/// answer unknown, through that save. `j3-late-pruned` drops the op from the fake world's applied
+/// set at that save, as a ring trimmed on the first durable save (or on the journal's mark) would:
+/// the raid is then taken twice and the world no longer conserves.
 fn a_train_raid_across_javas_two_files(case: &str) {
     use rtsim_industry::cmd::CarriageReason;
     use rtsim_industry::ids::TrainId;
@@ -1753,7 +1759,7 @@ fn a_train_raid_across_javas_two_files(case: &str) {
     assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
     let (jsave, msave) = match case {
         // J3: the trains (with their ring) from after the raid, the journal from before it.
-        "j3" => (jsave_before, msave_after),
+        "j3" | "j3-late" | "j3-late-pruned" => (jsave_before, msave_after),
         // J4: the journal from after the raid, the trains from before it (the chunks from after:
         // the chunk barrier holds the journal, never the chunks).
         "j4" => (jsave_after, msave_before.with_chunks_of(&msave_after)),
@@ -1767,6 +1773,22 @@ fn a_train_raid_across_javas_two_files(case: &str) {
     j.mc = Some(mc);
     j.module_mask = MODULE_INDUSTRY;
     j.mc_tick();
+    if case.starts_with("j3-late") {
+        // The first durable save past the replay end: the pages hold this session's first record.
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(&mut j, through);
+        assert!(
+            loot_ops(&j).is_empty(),
+            "{case}: nothing decided the raid again yet"
+        );
+        if case == "j3-late-pruned" {
+            assert!(
+                j.mc_mut().forget_applied(OpId(live)),
+                "the ring held the op from the tracks file"
+            );
+        }
+    }
     j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
     while loot_ops(&j).is_empty() {
         j.mc_tick();
@@ -1784,6 +1806,18 @@ fn a_train_raid_across_javas_two_files(case: &str) {
         "{case}: stolen live {stolen}, after {stolen_after}, loot exchange pending {pending}, outbox {}",
         j.e.with_industry(|_, l| l.outbox)
     );
+    if case == "j3-late-pruned" {
+        let mc = j.mc();
+        let double = j.e.with_industry(|ie, _| mc.conservation_with(ie));
+        eprintln!("{case}: the world against the books: {double:?}");
+        assert!(
+            double.is_err(),
+            "{case}: the op left the ring at the first durable save, so the raid decided after it \
+             is applied a second time and the world loses the goods twice"
+        );
+        j.e.close(true, Duration::from_secs(5)).unwrap();
+        return;
+    }
     assert!(
         !pending,
         "{case}: the loot exchange of op {live:#x} is still pending"
@@ -1805,6 +1839,23 @@ fn a_crash_that_kept_the_trains_and_not_the_journal_takes_a_train_raid_once() {
 #[test]
 fn a_crash_that_kept_the_journal_and_not_the_trains_takes_a_train_raid_once() {
     a_train_raid_across_javas_two_files("j4");
+}
+
+/// J3 with the raid decided again after the engine's first durable save past the replay end
+/// (RP-252): the ring settled the op to an unknown answer and kept it through that save, so the
+/// raid is answered DUPLICATE and taken once.
+#[test]
+fn a_j3_raid_decided_again_after_the_first_durable_save_is_taken_once() {
+    a_train_raid_across_javas_two_files("j3-late");
+}
+
+/// The same J3 under a ring trimmed at the first durable save past the replay end (the reviewer's
+/// rule, or a trim on the journal's mark, RP-252): the op has left the ring when the raid is decided
+/// again, so it is applied twice. Pins why the ring prunes only on the acknowledgement of its own
+/// answer.
+#[test]
+fn a_j3_raid_decided_again_after_a_ring_trimmed_at_the_first_durable_save_is_taken_twice() {
+    a_train_raid_across_javas_two_files("j3-late-pruned");
 }
 
 /// A station exchange the engine derived from a simulated arrival, applied by Java, then lost with
