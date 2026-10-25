@@ -891,17 +891,24 @@ public final class MowzieGameTests {
         return p;
     }
 
-    /** Inside {@code thenWaitUntil}: the band's one stack is placed and every member is embodied; the puppets. */
+    /**
+     * Inside {@code thenWaitUntil}: the band's stacks (the column's rows: two warriors a row, a raptor a stack of its
+     * own, MZB-722) are all placed and every member is embodied; the puppets, in stack order.
+     */
     private static Mob[] bandStands(long agent, int n) {
         ConflictBridge.Party p = ConflictKit.party(agent);
-        check("one stack", p.stacks().size() == 1);
-        ConflictBridge.Stack st = p.stacks().get(0);
-        check("placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+        check("a stack", !p.stacks().isEmpty());
         Mob[] out = new Mob[n];
-        int stand = 0;
-        for (ConflictBridge.Slot s : st.slots())
-            if (s.entity() != null && !s.entity().isRemoved() && stand < n)
-                out[stand++] = s.entity();
+        int stand = 0, members = 0;
+        for (ConflictBridge.Stack st : p.stacks()) {
+            check("stack " + st.index + " placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+            for (ConflictBridge.Slot s : st.slots()) {
+                members++;
+                if (s.entity() != null && !s.entity().isRemoved() && stand < n)
+                    out[stand++] = s.entity();
+            }
+        }
+        check(n + " members (" + members + ")", members == n);
         check(n + " puppets stand (" + stand + ")", stand == n);
         return out;
     }
@@ -2493,8 +2500,9 @@ public final class MowzieGameTests {
                         check("a follower carries the band's tag", RtsimAttachments.isTagged(f) && RtsimAttachments.tag(f).agent() == agent[0]);
                         check("a follower has its leader", f.getLeaderUUID().isPresent());
                     }
-                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
-                        check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
+                    for (ConflictBridge.Stack rows : ConflictKit.party(agent[0]).stacks())
+                        for (ConflictBridge.Slot s : rows.slots())
+                            check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
                     // The recall walks them toward spot.x - 200, out of the area before they go: the wait is on
                     // the objects, not on the area (MZB-673).
                     taken[0] = puppet[0][0];
@@ -2503,7 +2511,7 @@ public final class MowzieGameTests {
                         taken[2 + i] = followers.get(i);
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, grove.spot.x - 200, grove.spot.z);
                 })
-                .thenWaitUntil(gone(level, taken))
+                .thenWaitUntil(waits.chunks(gone(level, taken)))
                 .thenExecute(() -> {
                     // The recall discards them: none was saved with a chunk instead (MZB-673).
                     for (Entity e : taken)

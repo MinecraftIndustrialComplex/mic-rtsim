@@ -85,14 +85,17 @@ public final class CarryOnConflictGameTests {
                 })
                 .thenWaitUntil(() -> check("the territory", ConflictKit.bridge().territories().get(camp[0]) != null))
                 .thenExecute(() -> ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(ConflictKit.WARRIOR, 3, true))))
-                .thenWaitUntil(() -> check("placed", ConflictKit.party(agent).stacks().get(0).bodies().size() == 4))
+                // The column (MZB-722): the warriors stand as a row of two and a row of one, the chief alone at the rear.
+                .thenWaitUntil(() -> check("placed: three warriors and the chief (" + ConflictKit.bridge().bodies(agent).size() + ")",
+                        ConflictKit.party(agent).stacks().size() == 3 && ConflictKit.bridge().bodies(agent).size() == 4))
                 .thenExecute(() -> {
                     counted[0] = ConflictKit.bridge().signalsCounted;
                     ConflictBridge.Stack st = ConflictKit.party(agent).stacks().get(0);
                     Mob warrior = st.slots().get(0).entity();
-                    for (ConflictBridge.Slot sl : st.slots())
-                        if (sl.chief)
-                            chief[0] = sl.entity();
+                    for (ConflictBridge.Stack rows : ConflictKit.party(agent).stacks())
+                        for (ConflictBridge.Slot sl : rows.slots())
+                            if (sl.chief)
+                                chief[0] = sl.entity();
                     for (Mob m : List.of(warrior, chief[0])) {
                         check("a puppet: Entity.save refuses it", RtsimApi.isPuppet(m) && !m.save(new CompoundTag()));
                         check("held persistence-required", m.isPersistenceRequired());
