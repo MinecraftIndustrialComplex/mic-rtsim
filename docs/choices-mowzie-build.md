@@ -7519,6 +7519,16 @@ the engine's acknowledgement of each op's answer, not by a count.
   station exchange host test fails on the loot-only drop (still pending); the trimmed arms of RP-252
   are the failures themselves, pinned as such. Results of the whole create suite on this branch: see
   the end of this record.
+  The whole create suite at d80abe54 (`gametest.sh create`, the native engine, create/run-gametest/world
+  deleted first): 234 required tests in 155 batches, 233 passed. The one failure was this record's
+  `anAppliedOpRingSavesUnderItsKeyBesideTheOwnersKeys` (`train_ring_8`) at "the generation": the test
+  expected four keys in a compound that holds five (the owner's, the foreign string it put there
+  earlier, and the ring's ops, `_at` and `_gen`), a wrong count in the test and not in the ring; fixed
+  at 2ba80f53. That test's body then ran alone at 2ba80f53 against the run's own classes (Minecraft's
+  `CompoundTag` and this branch's `AppliedOpRing`, outside a server) and passed every check, the
+  ones after "the generation" included. It was not run again as a GameTest: the shared lock had four
+  other worktrees' suites queued. The rtsim-host test `gametest_worlds_open_in_the_host_with_their_saved_state`
+  then opened that run's world and both fixtures: restore the same, strides the same.
 - **RP-255** (what is left, review2's residuals): (1) Leftovers (D1): ops kept with an unknown answer.
   They come from a crash whose tracks file holds answers past the pages (the J1 and J3 windows), from a
   view that proves nothing (the pages ahead of the loaded journal file, P29; a journal naming no
