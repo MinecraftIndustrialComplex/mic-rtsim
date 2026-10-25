@@ -1138,11 +1138,38 @@ public final class ConflictBridge implements SessionPlugin {
         p.speed = speed;
         p.attack = (flags & ConflictRecords.Steer.FLAG_ATTACK) != 0;
         double x = b.getDouble(at + ConflictRecords.Steer.X), z = b.getDouble(at + ConflictRecords.Steer.Z);
+        if (!Double.isFinite(x) || !Double.isFinite(z)) {
+            malformed++;
+            return;
+        }
         long arrive = b.getLong(at + ConflictRecords.Steer.ARRIVE);
-        for (Stack st : p.stacks)
-            if (st.state != StackState.GONE)
-                st.walk(x + st.offX, z + st.offZ, speed, arrive, now);
+        // The column turns (MZB-470): its head is the front stack's anchor less its offset, the new heading runs from
+        // the head to the point, and every stack takes its place in the turned column.
+        Stack front = frontStack(p);
+        if (front != null) {
+            double[] a = front.anchor(now);
+            double[] h = MarchColumn.turn(a[0] - front.offX, a[1] - front.offZ, x, z, p.hdx, p.hdz);
+            p.hdx = h[0];
+            p.hdz = h[1];
+        }
+        for (Stack st : p.stacks) {
+            if (st.state == StackState.GONE)
+                continue;
+            double[] off = MarchColumn.offset(p.hdx, p.hdz, st.back, st.side);
+            st.offX = off[0];
+            st.offZ = off[1];
+            st.walk(x + st.offX, z + st.offZ, speed, arrive, now);
+        }
         steered++;
+    }
+
+    /** The column's front: the stack still in play with the least {@code back}, the lower index on a tie; null with none. */
+    static Stack frontStack(Party p) {
+        Stack front = null;
+        for (Stack st : p.stacks)
+            if (st.state != StackState.GONE && (front == null || st.back < front.back))
+                front = st;
+        return front;
     }
 
     /**

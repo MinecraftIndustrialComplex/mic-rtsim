@@ -130,6 +130,39 @@ class MarchColumnTest {
     }
 
     @Test
+    void aSteerTurnsTheColumnTowardThePointFromTheHead() {
+        // Heading east, a point due south of the head: the column turns to face south.
+        double[] h = MarchColumn.turn(10, 10, 10, 50, 1, 0);
+        assertEquals(0.0, h[0], EPS);
+        assertEquals(1.0, h[1], EPS);
+        // A point behind turns it right round; a point on the head keeps the heading it had.
+        double[] back = MarchColumn.turn(0, 0, -5, 0, 1, 0);
+        assertEquals(-1.0, back[0], EPS);
+        assertEquals(0.0, back[1], EPS);
+        double[] same = MarchColumn.turn(3, 4, 3, 4, 0.6, 0.8);
+        assertEquals(0.6, same[0], EPS);
+        assertEquals(0.8, same[1], EPS);
+        double[] near = MarchColumn.turn(3, 4, 3 + 1e-9, 4, 0.6, 0.8);
+        assertEquals(0.6, near[0], EPS);
+    }
+
+    @Test
+    void aTurnedColumnKeepsEachStacksDistanceFromTheHead() {
+        // Two stacks of one column, 3 back and 2 to the right, and 6 back on the line: a turn moves where they stand
+        // in the plane, never how far each is from the head.
+        for (double deg : new double[] {0, 37, 90, 135, 180, -60}) {
+            double[] h = MarchColumn.heading(deg);
+            double[] a = MarchColumn.offset(h[0], h[1], 3, 2);
+            double[] b = MarchColumn.offset(h[0], h[1], 6, 0);
+            assertEquals(Math.hypot(3, 2), Math.hypot(a[0], a[1]), 1e-9);
+            // The line stack is exactly 6 behind: against the heading.
+            assertEquals(-6.0, b[0] * h[0] + b[1] * h[1], 1e-9);
+            // The side stack is 2 to the right: along r = (-hz, hx).
+            assertEquals(2.0, a[0] * -h[1] + a[1] * h[0], 1e-9);
+        }
+    }
+
+    @Test
     void anOffsetIsBehindTheHeadAndToItsRight() {
         // Facing east (+x), right is +z (south): 3 back, 2 right is 3 west and 2 south.
         double[] o = MarchColumn.offset(1, 0, 3, 2);
