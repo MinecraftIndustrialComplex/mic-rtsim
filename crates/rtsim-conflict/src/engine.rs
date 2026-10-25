@@ -3727,6 +3727,15 @@ impl Conflict {
                 .collect::<Vec<_>>()
         };
         let parties: Vec<Handle<Party>> = match o {
+            // One the party counted already (a REASSERT, a copy of one: MZB-589) moves nothing, so it
+            // ends no hold: `casualties` drops it after this.
+            Obs::Casualties(cs)
+                if Party::of_agent(cs.agent)
+                    .and_then(|p| self.parties.get(p))
+                    .is_some_and(|x| x.casualty_ops.contains(&cs.op)) =>
+            {
+                return;
+            }
             Obs::Casualties(cs) => by_epoch(cs.agent, cs.epoch),
             Obs::ChiefKilled(ck) if !copy => by_epoch(ck.agent, ck.epoch),
             Obs::Difficulty(d)

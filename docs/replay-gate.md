@@ -465,6 +465,8 @@ What the merge checked:
    `observe_state`), so it is newer than every replayed record. While the outbox replays it now
    waits for `replay_done`, the latest for each faction, as RP-68's world save does. Before, a
    replayed FACTION_FOUND's census byte undid it, or it found its faction unknown and was dropped.
+   It is held while the host replays too (`st.replaying`), since the engine's own replay begins only once
+   the conflict is in the world, after a replayed FACTION_FOUND.
 5. **RP-66:** M6 adds no `Order::ConflictCommand` test in Rust. Its GameTests order reconciles
    and materializes through `ConflictKit` in the middle of a session, after no restart. One ordered
    while a server's start replays waits for the replay end.
@@ -894,6 +896,20 @@ reach the new session's Java. The engines' outboxes are nearly always empty at a
 rtsim-jni (commands are taken after each ingest and step), so this was rare; the queued column
 closes it.
 
+**As built (slice S, RP-90).** rtsim-ships `outbox.rs`: `gate()` is an exhaustive match on `Cmd`
+with no `_` arm, and the commands are a private `Vec`, so a push around the gate does not compile.
+The table above is the code: the only "never" kind is Materialize (the early returns of §6 make it
+impossible by construction; a bug is counted, kept for the log, not queued, and a `debug_assert!`
+with no release panic). Every other kind drops while replaying, and every kind drops from the
+queue at `begin_replay`. The books stay right for each dropped kind (RP-90): a Timetable, Steer,
+Depart and Despawn are orders to a body of this session, and no body of this session exists
+while replaying (the bodies of the last one are gone, §5.1), so the only reader of a dropped order
+is a body that is not there; a SetCargo sets a hold on a body, and the hold the books keep is
+`cargo_of(&World, ..)`, pure of any command, so dropping it changes no number (the engine's own
+holds and the world's flows are untouched); the Materialize is never decided, so there is none to
+drop. Other routes: `Order::ShipCommand` is held (RP-96, below); a copy goes to `ingest_copy`
+(RP-97).
+
 ## 5. The observation side
 
 ### 5.1 The session start keeps the bodies (RP-5)
@@ -1075,7 +1091,10 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   lowers it, RP-84): nothing founds a herd while replaying, and a herd founded after, on a handle
   the last session used for another herd (the pages lack what it founded after its last save), is
   not the one a copy names (such a copy counts late; its floor still counts).
-- **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
+- **Dragons:** nothing is carried; a copied DRAGON_MATERIALIZED would raise the floor only.
+- **Ships:** nothing is carried, and every copy, whatever its kind, raises the floor only
+  (`Ships::ingest_copy`, RP-97): the handle a copy names may be another ship than the earlier
+  session's, so a copy of a sinking or of loot is lost rather than booked to a stranger (§10).
 
 ### 5.8 The DEPART trap (RP-16)
 
@@ -1620,6 +1639,61 @@ GameTests: none (no ships plugin in Java); rtsim-host's ships runs.
 
 Opus review checks: as slice C's; a kept ship's NextLeg events while replaying drop their commands
 and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
+
+**As built (slice S, RP-90 to RP-99 and RP-120 to RP-122).** The records are in docs/choices-mowzie-build.md, "Slice S
+(ships)".
+
+- **The gate** (§4.7, RP-90): rtsim-ships `outbox.rs`; one "never" kind (Materialize), the rest drop.
+- **The replay's start and end** (§5.1, §5.6, RP-91): `begin_replay(from_pages)` changes no body;
+  `replay_done(&mut World)` makes every ship abstract, cancels every player's interest leg, folds
+  the epoch floors into the ships' epochs, then lays up a ship that was kept sailing only for its
+  view (`lay_up_if_waiting`, §2.4.6a rule 7).
+- **Floors** (§5.3, RP-57, RP-92, RP-99): nine ships kinds name an epoch (State, Materialized,
+  SpawnRejected, Dematerialized, Damaged, Sunk, Boarded, Captured, CargoLooted); Fight, PortFound
+  and HavenFound name none. `Obs::ship_epoch` is an exhaustive match, so a new kind does not
+  compile until it says. A floor for a ship the engine does not have yet is kept past the replay end
+  (a port or haven that joins after, or a ship the replay allocated later). The fold comes before
+  every drop (RP-122): a module switched off for the session, ships with no dock yet and an
+  engine that has not begun its replay all fold, keyed on the session's replay.
+- **The honour and every by-agent lookup** (§5.2, RP-93, RP-120): only on a ship that existed when
+  the session began (`replay_next`, taken once by `Ships::begin_session` from `ships::session_start`;
+  `begin_replay` keeps the smaller bound and the first call's `from_pages`). The bound is not the
+  honour's alone: `ship_of`, `ship_of_op`, both ships of a Fight, the capturing ship and the doer
+  all go through `named_ship`, because the arena's handles are allocated in order and the replay
+  allocates in its own (the network built, ports and havens joined, inside the replayed window).
+  A record about a handle at or above the bound only raises the floor.
+- **Early returns** (§6, RP-94): `seen`, the `SeenPirate` event, `materialize_timetabled`,
+  `materialize_pirate`.
+- **Pirate coast raids** (§6.1, RP-95): `coast_raid` is skipped whole while replaying (not held:
+  nothing retries it); the answer, its reasons and the residual are in the record.
+- **The blind watcher** (§6.1, RP-95): no player is routed to the ships until the replay end, so
+  `point_in_view` and `relaunch_in_view` answer true while replaying (every dock is watched). A
+  relaunch then waits for the slot's next stay, a shut haven's refound reschedules at
+  + `base_days` and bumps the haven's epoch, a navy's assault waits for its next period, and a
+  direct `port_raid` is not made; none is held to the replay end, each looks again at its own next
+  time and the first look after the end is judged by the players routed by then.
+- **Test orders** (§3.6, §4.4, RP-96): `Order::ShipCommand` waits for the replay end.
+- **Copies** (§5.7, RP-97): rtsim-jni routes a REASSERT to `Ships::ingest_copy`, which folds the
+  epoch and does nothing more for every kind; a copied HAVEN_FOUND joins no haven node to the
+  world either.
+- **The link** (§3.2, RP-98): `replay_end` logs the counts; the ships' pages, the outbox and
+  every other format are unchanged.
+
+The paths that hand the ships engine a command or a decision, each with its verdict (RP-96):
+
+| Path | Verdict |
+|---|---|
+| The engine's own events (`run_until`, from `shared::run_to` and from each ingest) | commands go through the gate; decisions that embody return early (RP-94) |
+| `Ships::ingest` of a journaled record (rtsim-jni `journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57), before the module's switch is asked (RP-122) |
+| A copy (REASSERT) | `ingest_copy`: the floor only (RP-97) |
+| `ships::simulate`'s network build, `add_port`, `add_haven`, `add_navy`, `connect` (from journaled PORT_FOUND and HAVEN_FOUND, and from the step) | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 and RP-120 |
+| `reject` (the host's own SPAWN_REJECTED for a command it cannot write) | only after a queued Materialize, which the gate never lets through while replaying |
+| `Order::ShipCommand` | held to the replay end with the units after it (RP-96) |
+| `Order::Phase1Advance` and the other clock orders | held by slice D (RP-74), not in S's `matches!`; the merge takes the union |
+| `lift_closures` (a switch-off) | unchanged: it queues no command |
+| `with_ships_mut` | a test accessor, not a route in the game |
+| The `Viewer` impl's `player_left` | not overridden for ships, so the arm's leave is a no-op for them (U8) |
+| Sightings (`shared::simulate`) | wait for the replay end (§6) |
 
 ## 10. Questions for Ben
 

@@ -22,7 +22,9 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -113,6 +115,17 @@ public final class GlassGraphCommand {
             boolean loaded = level != null && level.getChunkSource().getChunkNow(cx, cz) != null;
             w.name("loaded").value(loaded);
             w.name("ticking").value(loaded && level.shouldTickBlocksAt(c));
+            w.endObject();
+        }
+        w.endArray();
+        // The saved joins between member chunks (SECTIONS.md §2.3, slice S6), in chunk order.
+        List<District.Join> joins = new ArrayList<>(d.joins);
+        joins.sort(java.util.Comparator.comparingLong(District.Join::a).thenComparingLong(District.Join::b));
+        w.name("joins").beginArray();
+        for (District.Join j : joins) {
+            w.beginObject();
+            w.name("ax").value(ChunkPos.getX(j.a())).name("az").value(ChunkPos.getZ(j.a()));
+            w.name("bx").value(ChunkPos.getX(j.b())).name("bz").value(ChunkPos.getZ(j.b()));
             w.endObject();
         }
         w.endArray();

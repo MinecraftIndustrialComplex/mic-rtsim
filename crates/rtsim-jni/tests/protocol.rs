@@ -6406,6 +6406,63 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// RP-100: a CHIEF_STATE that arrives while the host replays, before the replayed FACTION_FOUND
+    /// has put the faction in the world, is held for the replay end (the engine's own replay begins
+    /// only once the conflict runs, so its hold did not cover this). It used to find its faction
+    /// unknown and be dropped, and the FACTION_FOUND's census byte then put the crystal back. The
+    /// pages hold no camp (`pages_first`) or the camp already (the control): the chief robbed of its
+    /// crystal either way once the replay is over.
+    #[test]
+    fn a_chief_state_before_the_replayed_faction_found_is_applied_at_the_replay_end() {
+        for pages_first in [true, false] {
+            let name = format!("chief-state-replay-{pages_first}");
+            let (dir, e, mut j) = camp_of(
+                &name,
+                "mowziesmobs:frostmaw_spawn",
+                FROSTMAW,
+                1,
+                (cb::CENSUS_CHIEF | cb::CENSUS_CRYSTAL) as u8,
+                pages_first,
+            );
+            if !pages_first {
+                save(&e, &mut j);
+            }
+            let gt = j.game_time;
+            let saved = j.crash();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.game_time = gt;
+            assert_eq!(e.conflict_restore_check(), (None, false));
+            // The steal's record, live, ahead of the journal the session replays.
+            j.conflict_obs(&O::ChiefState(cb::ChiefState {
+                faction: CAMP,
+                flags: 0,
+                health: 100.0,
+            }));
+            let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+            for _ in 0..64 {
+                j.idle();
+                if j.sent_obs >= last {
+                    break;
+                }
+            }
+            assert!(j.sent_obs >= last, "the whole journal handed over");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let crystal = e.with_conflict(|c, _| {
+                c.factions[c.faction_of_key(CAMP).expect("the camp is found") as usize].crystal
+            });
+            assert!(
+                !crystal,
+                "pages_first {pages_first}: the replay's census byte put the crystal back"
+            );
+            let (_, link) = e.conflict_stats();
+            assert_eq!(link.chief_states, 1, "{link:?}");
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+    }
+
     /// MOWZIE.md §4.9 through the journal: a census (CAMP_CENSUS) is journaled, the engine orders
     /// (CAMP_RECONCILE, with the engine's body ids in Java's) an adoption for each stray, the plugin
     /// applies them and answers (CAMP_BODIES, journaled), and the slots are booked home, body; the
@@ -7539,7 +7596,7 @@ mod conflict {
             })
         };
         let first = casualty(next_casualty_op());
-        j.conflict_obs(&first);
+        let first_seq = j.conflict_obs(&first);
         j.idle();
         j.idle();
         assert_eq!(books(&e, p).0, n - 1, "the first copy counted");
@@ -7560,6 +7617,26 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         assert_eq!(books(&e, p).0, n - 1, "the copy took no second unit");
         assert_eq!(e.with_conflict(|c, _| c.stats.casualties), 1, "one death");
+        // The same record as a holder's REASSERT (the path a carried record takes, through the
+        // engine's `ingest_copy`), journaled by a generation this engine never heard: applied as
+        // a copy, and the party's own list still skips it.
+        let applied = |e: &Engine| {
+            e.stats
+                .copies_applied
+                .load(std::sync::atomic::Ordering::Acquire)
+        };
+        let before = applied(&e);
+        let original = j.journaled(first_seq).unwrap();
+        j.reassert(0x0E41_11E4_0000_0002, &original);
+        j.idle();
+        j.idle();
+        assert_eq!(applied(&e), before + 1, "the copy took the REASSERT path");
+        assert_eq!(books(&e, p).0, n - 1, "the REASSERT took no second unit");
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            1,
+            "still one death"
+        );
         // Another member's death is its own op.
         j.conflict_obs(&casualty(next_casualty_op()));
         j.idle();
