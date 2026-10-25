@@ -37,6 +37,22 @@ public final class Territories {
             return signal >= 0 && signal < 32 && (mask & (1 << signal)) != 0;
         }
 
+        /** Whether the segment (x0, z0) to (x1, z1) meets the circle: its nearest point to the centre is within the radius. */
+        public boolean meets(double x0, double z0, double x1, double z1) {
+            double dx = x1 - x0, dz = z1 - z0;
+            double len2 = dx * dx + dz * dz;
+            double u = len2 > 0.0 ? ((x - x0) * dx + (z - z0) * dz) / len2 : 0.0;
+            u = u < 0.0 ? 0.0 : Math.min(u, 1.0);
+            double ex = x0 + u * dx - x, ez = z0 + u * dz - z;
+            return ex * ex + ez * ez <= (double) radius * radius;
+        }
+
+        /** Whether (px, pz) is within the radius plus {@code margin} of the centre (M7's pass hysteresis, MZB-390). */
+        public boolean within(double px, double pz, double margin) {
+            double dx = px - x, dz = pz - z, r = radius + margin;
+            return dx * dx + dz * dz <= r * r;
+        }
+
         /** Horizontal distance from (px, pz) to the centre. */
         public double distance(double px, double pz) {
             return Math.hypot(px - x, pz - z);
@@ -49,11 +65,14 @@ public final class Territories {
     private final Long2ObjectLinkedOpenHashMap<Territory> byFaction = new Long2ObjectLinkedOpenHashMap<>();
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<List<Territory>>> cells = new HashMap<>();
     private final List<Territory> wide = new ArrayList<>();
+    /** How many territories mind each signal (bit n of the mask), kept by {@link #put}, {@link #remove} and {@link #clear}. */
+    private final int[] mindingCount = new int[32];
 
     /** Adds or replaces a faction's territory. */
     public void put(Territory t) {
         remove(t.faction());
         byFaction.put(t.faction(), t);
+        count(t, 1);
         if (cellCount(t) > MAX_CELLS)
             wide.add(t);
         else {
@@ -70,6 +89,8 @@ public final class Territories {
     /** Removes a faction's territory; the removed one, or null. */
     public Territory remove(long faction) {
         Territory old = byFaction.remove(faction);
+        if (old != null)
+            count(old, -1);
         if (old != null && wide.remove(old))
             return old;
         Long2ObjectOpenHashMap<List<Territory>> dim = old == null ? null : cells.get(old.dimension());
@@ -92,6 +113,7 @@ public final class Territories {
         byFaction.clear();
         cells.clear();
         wide.clear();
+        java.util.Arrays.fill(mindingCount, 0);
     }
 
     public boolean isEmpty() {
@@ -135,6 +157,65 @@ public final class Territories {
             if (t.dimension().equals(dimension) && t.minds(signal) && t.contains(x, z))
                 return t;
         return null;
+    }
+
+    /**
+     * Whether any territory, in any dimension, minds {@code signal}: one array read, for a caller that has
+     * nothing to do in a world with none (M7's train sampler, MZB-324).
+     */
+    public boolean anyMinding(int signal) {
+        return signal >= 0 && signal < 32 && mindingCount[signal] > 0;
+    }
+
+    /**
+     * Appends to {@code out} each territory in {@code dimension} that minds {@code signal} and whose circle the
+     * segment (x0, z0) to (x1, z1) meets, once each (M7's train sampler, MZB-324). The cells of the segment's
+     * box are read, and the wide list; a box over {@value #MAX_CELLS} cells reads every territory instead. The
+     * caller clears {@code out} and keeps its segments short. Allocates nothing.
+     */
+    public void crossing(ResourceKey<Level> dimension, double x0, double z0, double x1, double z1, int signal,
+                         List<Territory> out) {
+        if (!anyMinding(signal))
+            return;
+        Long2ObjectOpenHashMap<List<Territory>> dim = cells.get(dimension);
+        if (dim != null) {
+            int cx0 = cellOf(Math.min(x0, x1)), cx1 = cellOf(Math.max(x0, x1));
+            int cz0 = cellOf(Math.min(z0, z1)), cz1 = cellOf(Math.max(z0, z1));
+            if ((long) (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > MAX_CELLS) {
+                for (Territory t : byFaction.values())
+                    meet(t, dimension, x0, z0, x1, z1, signal, out);
+                return;
+            }
+            for (int cx = cx0; cx <= cx1; cx++)
+                for (int cz = cz0; cz <= cz1; cz++) {
+                    List<Territory> l = dim.get(ChunkPos.asLong(cx, cz));
+                    if (l != null)
+                        for (int i = 0, n = l.size(); i < n; i++)
+                            meet(l.get(i), dimension, x0, z0, x1, z1, signal, out);
+                }
+        }
+        for (int i = 0, n = wide.size(); i < n; i++)
+            meet(wide.get(i), dimension, x0, z0, x1, z1, signal, out);
+    }
+
+    private static void meet(Territory t, ResourceKey<Level> dimension, double x0, double z0, double x1, double z1, int signal,
+                             List<Territory> out) {
+        if (!t.minds(signal) || !t.dimension().equals(dimension) || !t.meets(x0, z0, x1, z1))
+            return;
+        for (int i = 0, n = out.size(); i < n; i++)
+            if (out.get(i) == t)
+                return;
+        out.add(t);
+    }
+
+    private static int cellOf(double v) {
+        return Math.floorDiv((int) Math.floor(v), CELL);
+    }
+
+    private void count(Territory t, int by) {
+        for (int bit = 0; bit < 32; bit++)
+            if ((t.mask() & (1 << bit)) != 0)
+                mindingCount[bit] += by;
     }
 
     private List<Territory> cell(ResourceKey<Level> dimension, int x, int z) {

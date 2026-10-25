@@ -226,7 +226,11 @@ captured member before it), TAKEN or DIED.
   chest holds; cargo is never dropped silently).
 - DEMATERIALIZED reasons: 1 command, 2 a member stopped entity-ticking, 3 a member left tracking or
   unloaded, 4 session end, 5 no members left (all taken or dead), 6 not embodied: the answer to a
-  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits.
+  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits. A
+  dragon's DEMATERIALIZED (0x0502) uses the same codes, and DragonBridge answers a DRAGON_DEPART for
+  a dragon it does not hold with reason 6 too; that record carries only the agent and the epoch
+  (the rest is zero and means nothing), and the engine takes no position, health or hunger from it
+  (docs/replay-gate.md §5.8, RP-73).
 - TAKEN how: 1 lead, 2 taming, 3 pickup (Carry On, later plugin), 4 removed by vanilla or another mod,
   5 a plugin.
 - TRANSFER kinds: 1 generic (the only one so far).
@@ -1040,7 +1044,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flag 1 LATE) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
 | 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
-| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 reserved | 40 | NEST_CENSUS once they spawn |
+| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
@@ -1093,7 +1097,10 @@ Write its NBT before it ticks (verified keys and types, `DragonBaseEntity.addAdd
 **Depart.** Steer the dragon to the target and, when it is outside every player's entity-ticking
 range (or `timeoutTicks` pass), capture it and despawn it: DRAGON_DEMATERIALIZED with its health,
 hunger, age and position. Any other loss of the body (its chunk unloads, the session ends) is
-captured the same way with §2.3's reasons.
+captured the same way with §2.3's reasons. A Depart for a dragon the plugin does not hold (no
+puppet for the agent, or one of another epoch) is answered with DRAGON_DEMATERIALIZED of reason 6
+(not embodied), agent and epoch only; the engine leaves the dragon's health, hunger and rest as it
+had them and lets it go on from there.
 
 **Adopt** tags an untagged entity with the agent and epoch, makes it persistent, and sets its home
 when flag 1 is set; from then on it is an embodied puppet like a materialized one, and leaves view
@@ -1201,8 +1208,12 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
   answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
   placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
-  Death Worms, sized by the stage), placed on the chamber floor when the heart's chunk ticks entities
-  with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
+  Death Worms, sized by the stage), only when its serial is above the last one the nest applied under
+  the same engine life (RP-14, RP-19, RP-232: a renewal the engine decides again carries the serial it
+  had and owes nothing; a life the nest has not seen starts its serial afresh, and the owed count
+  stays; the nest remembers the last serial of its last eight lives; a Nests file from before the
+  serial loads every nest owed 0, serial 0, life 0), placed on the chamber floor
+  when the heart's chunk ticks entities with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
   chunk. A nest worm breaks no blocks. A worm's death is NEST_LOSS (the boss rule), the heart's breaking
   NEST_HEART. NEST_SORTIE glides the nest's loaded worms through the ground to the raided column and up
   it; a worm stops under a block tagged `#mic_rtsim:armoured_floor` or `#mic_rtsim:burrow_spared` and
@@ -1626,7 +1637,7 @@ are untouched.
 | 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x080A | GIFT_GIVEN | n | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u64 opId, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
 | 0x080B | BAND_LOOTED | n | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 opId, 48 n × (u32 item, i32 count, u64 reserved) | 48 + 16n |
-| 0x080C | RAIL_PASS | 0 | 24 u64 faction, 32 u64 train, 40 u64 ownerMost, 48 u64 ownerLeast ((0, 0): none), 56 u32 dimension, 60 reserved, 64 f64 x, 72 y, 80 z (the sampled point nearest the camp), 88 i64 entryTick, 96 i64 exitTick | 104 |
+| 0x080C | RAIL_PASS | 0 | 24 u64 faction, 32 u64 train, 40 u64 ownerMost, 48 u64 ownerLeast ((0, 0): none), 56 u32 dimension, 60 reserved, 64 f64 x, 72 y, 80 z (the train's own sample nearest the camp's centre: a point on the track), 88 i64 entryTick, 96 i64 exitTick (both game time) | 104 |
 | 0x080D | TRAIN_PASSED | flags: 1 watched | 24 u64 agent, 32 u32 epoch, 36 u32 carriage (the nearest the track point, from 0), 40 u64 train | 48 |
 | 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief, 8 the crystal is on this body (a chief body only); u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
@@ -1764,8 +1775,16 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   faction (docs/replay-gate.md §5.6, RP-100). **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`),
   with that body's slot and generation; **TRADED** a masked trade with the grove's minions;
   **HAVEN_CHEST** a grove chest tribute can go into.
-- **RAIL_PASS** is one Create train's pass through a camp's range, at the sampled point nearest the
-  camp (MOWZIE.md §4.3); **TRAIN_PASSED** a train passing a lurking party's AMBUSH_SPOT (§4.4).
+- **RAIL_PASS** is one Create train's pass through a camp's range, a TERRITORY circle whose mask
+  has the rail's bit (6) (MOWZIE.md §4.3, MZB-320 to MZB-326, MZB-333). Its point is a sample on the
+  track, the one nearest the circle's centre among the train's samples in the pass (a sample is the
+  first carriage's leading point on its edge, one block above the rail, which is Create's
+  normal; never the chord between two samples, so a curve is read where it is). `entryTick` and
+  `exitTick` are game time: the time of the sample the pass began at, and of the first sample that found
+  the train out of the circle (a train gone from Create's list: its last sample). Like every record
+  in 0x0100 to 0x7FFF it is **journaled**, kept until the engine acknowledges it; the engine counts
+  it at its exit and holds it for the train's next arrival to name the line (MZB-311, MZB-319).
+  **TRAIN_PASSED** is a train passing a lurking party's AMBUSH_SPOT (§4.4).
 
 ### 9.4 Commands
 
@@ -1859,8 +1878,8 @@ should get there); it is recalled (reason 4) where its walk leaves the view. Ban
 are not materialized.
 
 **Mowzie's later records** (MOWZIE.md §4; the Java half of each comes with the slice that builds its
-engine half, §9.6). The train sampler reports RAIL_PASS for each Create train through a camp's range
-(§4.3). Against an AMBUSH_SPOT it samples the track point, sends TRAIN_PASSED for each train within
+engine half, §9.6). The train sampler (M7, built; `mic_rtsim_create.TrainSampler`) samples each Create
+train once every 20 ticks and reports RAIL_PASS for each pass through a camp's range (§4.3). Against an AMBUSH_SPOT it samples the track point, sends TRAIN_PASSED for each train within
 the reach (watched when a player watches the spot), and stops at the removed flag; it plays the
 robbed-train roar for TRAIN_ROBBED when that train next reaches a station with a player near (§4.4).
 The camp reconciler (§4.9) sends a census when a camp comes in and CAMP_OUT when it goes out, applies
@@ -1926,8 +1945,8 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
 - **Deferred kinds.** The engine halves of HAVEN_CHEST, TRADED and CHIEF_PAID
-  (M9), RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
-  not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
+  (M9) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
+  not send yet. RAIL_PASS is built (M7): the engine counts it and the train sampler sends it. Until then rtsim-jni decodes each, translates its ids, counts it
   (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
   catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
   `Conflict::ingest`, so the same record again is not counted twice (MZB-23).

@@ -378,7 +378,8 @@ fn tribute_goes_to_the_lairs_chest_in_stacks() {
         }
         assert_eq!(d.lairs.get(l).unwrap().placed, 250);
         // The chest is this session's only.
-        d.session_start(&mut w, t1);
+        d.begin_replay(false);
+        d.replay_done(&mut w, t1);
         assert_eq!(d.chest(l), None);
         d.check(&w, None).unwrap();
         (stacks, again, d.state_hash())
@@ -625,9 +626,12 @@ fn tribute_continues_exactly_after_a_restart_and_when_paged() {
             let mut re = restart(&a, seed);
             assert_eq!(re.d.state_hash(), a.d.state_hash());
             let t = Tick::from_days(k - 1);
-            re.d.session_start(&mut re.w, t);
-            a.d.session_start(&mut a.w, t);
-            b.d.session_start(&mut b.w, t);
+            re.d.begin_replay(true);
+            re.d.replay_done(&mut re.w, t);
+            a.d.begin_replay(false);
+            a.d.replay_done(&mut a.w, t);
+            b.d.begin_replay(false);
+            b.d.replay_done(&mut b.w, t);
             e = Some(re);
             // A second engine from (a copy of) the paged store, with nothing resident.
             std::fs::create_dir_all(&dir_c).unwrap();
@@ -650,7 +654,8 @@ fn tribute_continues_exactly_after_a_restart_and_when_paged() {
                 &b.w.save(),
             )
             .expect("the world loads");
-            d.session_start(&mut w, t);
+            d.begin_replay(true);
+            d.replay_done(&mut w, t);
             assert_eq!(d.state_hash(), a.d.state_hash(), "opened from its pages");
             c = Some(Run {
                 w,

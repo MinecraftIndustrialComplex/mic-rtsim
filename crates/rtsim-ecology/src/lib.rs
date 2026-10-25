@@ -41,6 +41,7 @@ pub mod index;
 pub mod infra;
 pub mod nest;
 pub mod oil;
+mod outbox;
 mod persist;
 pub mod prey;
 pub mod species;
@@ -49,6 +50,7 @@ pub mod tunables;
 
 pub use dragon::{Dragon, DragonId, Lair, LairId, LairKind, Lairs};
 pub use engine::{Chest, DragonStats, Dragons, NewDragon, Placing, TRIBUTE_STACK, TributeRow};
+pub use outbox::GateCounts;
 pub use persist::{DragonsPaging, DragonsTickets};
 pub use species::{Gender, Species};
 pub use tunables::{DragonTunables, PreyKind};
