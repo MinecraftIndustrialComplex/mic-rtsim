@@ -87,6 +87,30 @@ public final class TrainSampler {
      */
     public static final double STRIKE_REACH = 6.0;
     /**
+     * Mirror of {@code SPOT_BLOCKS} in the engine's {@code crates/rtsim-conflict/src/engine/rail.rs}: how far from the
+     * track point (blocks, toward the den, whole blocks) the engine puts a lurking body's spot. The engine owns the
+     * number and a Rust test pins it (lurk.rs); change both, and the contract below, together (MZB-374).
+     */
+    public static final double SPOT_BLOCKS = 5.0;
+    /** The nearest a lurking body's box may come to the rail's centre line (blocks): clear of the carriages' boxes (MZB-370). */
+    public static final double RAIL_CLEARANCE = 1.5;
+
+    /**
+     * The spot-distance contract (MZB-374, one rule in two inequalities), for a Lurker that rests its body within
+     * {@code stand} blocks of the spot and whose body is {@code halfWidth} blocks across to its side: the far side of
+     * its stand is still inside the strike reach ({@code SPOT_BLOCKS + stand <= STRIKE_REACH}) and the near side of its
+     * box is still off the rail ({@code SPOT_BLOCKS - stand - halfWidth >= RAIL_CLEARANCE}). Null when both hold, else
+     * the one that fails, as a sentence.
+     */
+    public static String spotContract(double stand, double halfWidth) {
+        double far = SPOT_BLOCKS + stand, near = SPOT_BLOCKS - stand - halfWidth;
+        if (far > STRIKE_REACH)
+            return "the far side of the stand is " + far + " blocks from the track point, past the strike reach (" + STRIKE_REACH + ")";
+        if (near < RAIL_CLEARANCE)
+            return "the near edge of the body at the near side of the stand is " + near + " blocks from the rail's centre line (" + RAIL_CLEARANCE + " needed)";
+        return null;
+    }
+    /**
      * Ticks from a strike's call to the blow landing: the jar's swipe hits at animation tick 9
      * ({@code FrostmawLurker.SWIPE_HIT_TICK}, which turns the puppet to {@code at + motion * 9}). The create project
      * names no Mowzie class, so the number is here too; a plugin whose swing takes longer reads a stale aim.

@@ -3622,6 +3622,23 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     held puppet's path searches and dropped paths per second (MZB-370's item 4 amendment). The body's own
     goals search besides, and the jar's navigation (`MMPathNavigateGround`) may restart a path of its own: the
     counters measure what the hold asked for, not the pathfinder's total. No threshold: a count, not a check.
+  - Amendment (the build lead's spot-distance choice, with a wide-body fix found writing it; compiled, not run):
+    - `STAND` is 0.5 (it was 1.5): the contract in MZB-365's fourth amendment. `Lurker.stand()` returns it.
+    - The walk-back aimed the navigation at the spot, and a wide body does not end a path on its target. A path's
+      last node is the box's corner and vanilla puts the body's centre `(int) (width + 1) * 0.5` past it
+      (`Path.getEntityPosAtNode`): 2.5 blocks for the 4-wide Frostmaw, against a spot at a block's centre. So a
+      walk back to the spot ended 2.0 blocks east and 2.0 south of it (toward the rail where the spot lies north
+      of the rail, as in test 9, and 2.8 blocks from the spot in any case). `hold` now aims at `spot - nodeOffset` on both axes (`(int) (width + 1) * 0.5 - 0.5`: 2.0 for the
+      Frostmaw, 0 for a body under a block wide), with accuracy 0 (`moveTo(x, y, z, 0, speed)`, the node itself,
+      not one short). The D1 test (no search while the navigation heads there) compares the navigation's target
+      block with that aimed block.
+    - A body that cannot get within `STAND` would search every tick. By my reading of the sources, not measured:
+      the Mowzie navigation finishes a path when the body is within 0.5 on each axis of the node's position (up to
+      0.71 off in a corner), its move control turns 7 degrees a tick (`new MMEntityMoveHelper(this, 7.0f)`) at a
+      speed attribute of 0.3, so it does not stop on a point and 0.5 is below what a walk leaves it at. A walk-back
+      is therefore searched at most once in `RESEARCH_TICKS` (10) ticks of one body (a game-time stamp by body, in
+      a weak map, dropped in `release`), and the figure test 9 logs (searches per second) shows the rate.
+    - Test 9 asserts where the body rests, not that it rests within `STAND` (MZB-370's amendment).
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
@@ -3718,6 +3735,25 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       (the swing lands 4.5 on, 0.35 past the closest approach: 5.0 horizontal), while the 1.0 and 1.4 runs miss
       (landing 6.96 and about 9.8 horizontally) and fail with "the zombie was hurt at <speed> (health 1000.0
       of 1000.0)". Nothing has run.
+  - Fourth amendment (the build lead's choice after review C; written and compiled, not run): the spot-distance
+    contract. The gate's 6.0 left a puppet resting 1.5 off its spot (the old `STAND`) on the far side from the
+    rail 6.5 from the track: inside the jar's reach (a target is hit when its horizontal centre distance less its
+    half-width is at most 6.5, so a player at about 6.8 from the Frostmaw's centre) and outside the gate, so such
+    a puppet never struck. The choice, reversible: keep `STRIKE_REACH` at 6.0, which leaves about 0.8 for the
+    prediction's error, and shrink the hold's `STAND` to 0.5 (MZB-361's amendment). The rule is one check in two
+    inequalities, `TrainSampler.spotContract(stand, halfWidth)`:
+    - `SPOT_BLOCKS + stand <= STRIKE_REACH`: 5.0 + 0.5 = 5.5 <= 6.0, a margin of 0.5.
+    - `SPOT_BLOCKS - stand - halfWidth >= RAIL_CLEARANCE`: 5.0 - 0.5 - 2.0 = 2.5 >= 1.5, a margin of 1.0.
+    `TrainSampler.SPOT_BLOCKS` (5.0) mirrors rail.rs's constant beside `STRIKE_REACH`, with a comment naming
+    rail.rs, and `RAIL_CLEARANCE` (1.5) is the clearance test 9 already asserted. The Rust side pins its own
+    number: `the_spots_distance_is_the_one_the_java_plugin_mirrors` (`crates/rtsim-conflict/tests/lurk.rs`;
+    compiled and run, it passes), whose message names what else moves with it. `Lurker.stand()` (default
+    `Lurkers.STRAY`, 4.0, a body that never strikes) exposes the number so create's test reads it without naming
+    a Mowzie class. Test 9 in every variant records the figures and fails if the rule does not hold for the
+    Lurker's stand and the live body's half-width (`getBbWidth() / 2`); `LATERAL` is `(int)
+    TrainSampler.SPOT_BLOCKS`, so the test lays the engine's spot by construction. A fourth variant pins the
+    puppet at the far side of its stand and asserts the strike at 1.4 blocks a tick (MZB-370's amendment).
+    A Lurker of another body kind registers its own `stand()`, and its own gate if its reach differs.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -3855,6 +3891,28 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
         (0/4, balls thrown at it: n)". It stays a measurement for the other speeds. This is a new gate on a
         test that had none, so there is no earlier failing value to quote; the first run decides whether one pass
         in four at the slowest speed is a fair floor.
+    - Amendment (the build lead's spot-distance choice; written and compiled, not run), superseding the 1.5 stand
+      in the item 4 amendment above:
+      - With `STAND` at 0.5 the near edge is 2.5 at the nearest the hold lets the body rest (5.0 - 0.5 - 2.0),
+        against the 1.5 clearance: a margin of 1.0, where the 1.5 stand had none. The clearance check reads the
+        body's width (`getBbWidth() / 2`) and `TrainSampler.RAIL_CLEARANCE`.
+      - Every variant records the spot, stand, half-width, reach and clearance, and fails if
+        `TrainSampler.spotContract(Lurkers.of(puppet).stand(), halfWidth)` is not null, or if `LATERAL` is not the
+        sampler's `SPOT_BLOCKS`.
+      - The full test also records where the puppet rests 60 ticks after the bait goes, and fails if that is more
+        than `STRIKE_REACH - SPOT_BLOCKS` (1.0) from the spot: the strike gate's margin, not `STAND`, because the
+        body may rest beyond its stand (MZB-361's amendment). That check can fail on the first run; if it does,
+        the figure it prints is what the hold really leaves, and the contract's numbers move to it.
+      - `aLurkingFrostmawAtTheFarSideOfItsStandStillSwipesAtOnePointFourBlocksATick` (batch
+        `rail_frostmaw_lurk_far`, 2400 ticks): the 1.4 pass without the bait, the hold's checks or the hearer, with
+        `LurkRun.pin()` setting the puppet at `stand - 0.001` from the spot on the line away from the rail, with no
+        horizontal motion, at the rider's setup and every poll until the zombie's health first drops. It asserts
+        what the other passes do: a strike, the zombie hurt, the bearing within 30 degrees, no carriage box in
+        the puppet's, the block counts unchanged, one TRAIN_PASSED. With the old stand (1.5) the contract check
+        fails first ("the far side of the stand is 6.5 blocks from the track point, past the strike reach (6.0)"),
+        and without it the pinned puppet, 6.5 from the rail, would see the landing no nearer than 6.5 and never
+        strike ("the lurk struck at 1.4 (0)"). With the stand at 0.5 the landing comes to 5.5 at the nearest,
+        inside the gate.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
@@ -3995,10 +4053,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - Amendment (review C, item 4): boundary.md's AMBUSH_SPOT section now states the spot-distance contract:
     rail.rs `SPOT_BLOCKS` (5.0) against `AMBUSH_REACH` (8.0, the TRAIN_PASSED radius only), the sampler's
     `STRIKE_REACH` (6.0, horizontal, on the landing point `SWING_TICKS` = 9 ticks on) and the Lurker's stand
-    (1.5) and restriction radius (2); the margin is 1.0 at the spot and nil-to-negative at the far side of the
-    stand, so the three move together. Its TRAIN_ROBBED section says who hears the station roar: a non-spectator
+    (1.5 at the time; now 0.5, below) and restriction radius (2); the margin is 1.0 at the spot and was
+    nil-to-negative at the far side of a stand of 1.5, so the numbers move together. Its TRAIN_ROBBED section says who hears the station roar: a non-spectator
     player in range who is not a NeoForge `FakePlayer` (`ConflictBridge.trainCalled` skips those; the
     GameTests' `FakePlayers` hearer is a plain `ServerPlayer`, so it hears).
+  - Amendment (the build lead's spot-distance choice): boundary.md's contract paragraph is rewritten as the
+    checked rule of MZB-365's fourth amendment: `SPOT_BLOCKS + stand <= STRIKE_REACH` and `SPOT_BLOCKS - stand -
+    halfWidth >= RAIL_CLEARANCE`, with the stand 0.5, `SPOT_BLOCKS` mirrored in the sampler and pinned in Rust,
+    and the body's real rest looked at by the GameTest rather than assumed.
 
 ### M8 design for the implementer
 

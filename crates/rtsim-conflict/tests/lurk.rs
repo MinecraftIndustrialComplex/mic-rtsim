@@ -6,7 +6,7 @@ use rtsim_conflict::boundary::{
     self, AMBUSH_REMOVED, AmbushSpot, Cmd, Obs, PASSED_WATCHED, TrainPassed, TrainRobbed,
 };
 use rtsim_conflict::culture::PartyKind;
-use rtsim_conflict::engine::rail::AMBUSH_REACH;
+use rtsim_conflict::engine::rail::{AMBUSH_REACH, SPOT_BLOCKS};
 use rtsim_conflict::engine::{Conflict, Party, Phase, Target, body_id};
 use rtsim_conflict::synth::{self, CAMP, CAMP_POS, PLAYER};
 use rtsim_ecology::infra::{
@@ -1289,4 +1289,16 @@ fn a_lurk_survives_a_save_mid_wait_blob_and_paged() {
     assert_eq!(whole.2[6], whole.1.len() as u64, "a told robbery each");
     assert_eq!(lurk_run(85, Trip::Blob), whole, "blob");
     assert_eq!(lurk_run(85, Trip::Paged), whole, "paged");
+}
+
+/// The spot's distance from the track point is a contract with the Java plugin (MZB-374): create's
+/// `TrainSampler.SPOT_BLOCKS` mirrors it, and the strike gate (`STRIKE_REACH` 6.0) and the Lurker's stand
+/// are written against it (`SPOT_BLOCKS + stand <= STRIKE_REACH`). A change here fails this test, which
+/// names what else moves with it.
+#[test]
+fn the_spots_distance_is_the_one_the_java_plugin_mirrors() {
+    assert_eq!(
+        SPOT_BLOCKS, 5.0,
+        "TrainSampler.SPOT_BLOCKS mirrors this; change it, the strike reach and the Lurker's stand together (boundary.md, AMBUSH_SPOT)"
+    );
 }

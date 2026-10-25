@@ -1659,20 +1659,29 @@ passing carriage's riders (the plugin's `Lurker`). `reach` is the distance from 
 the sampler sends TRAIN_PASSED (8.0 blocks). A lurk is not saved: the engine derives it from the party's
 phase, kind and target, so the pages stay at M7's format (MZB-357).
 
-**The spot's distance is a contract between three numbers** (MZB-374, review C). The engine puts the spot
-`SPOT_BLOCKS` (rail.rs, 5.0) from the track point toward the den, in whole blocks (the block plus 0.5 as a
-double). `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it is not
-how far the body can strike. A strike is the plugin's call, and it is gated on a smaller number: the create
-plugin's sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider (else its bogey
-point) will be within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks
-on, at the train's present speed. That is the Frostmaw's swipe (range 6.5, 135 degree arc, a 3D feet-to-feet
-filter that adds the target's half-width and counts a rider seated above the floor), less the margin the 3D
-test takes. A spot 5 blocks off therefore leaves 1.0 block of margin, and the puppet rests anywhere within
-`FrostmawLurker.STAND` (1.5) of the spot (its restriction radius is 2). A puppet that rests 1.5 off the spot
-on the far side from the rail is 6.5 from the track, which is past the gate for a bogey point on the centre
-line. So a change to `SPOT_BLOCKS` is a change to the sampler's gate and to the Lurker's reach, made
-together, and a body kind with another swing registers its own reach, hit frame and stand. GameTest 9
-(`RailFrostmawGameTests`, three speeds) runs at the engine's own 5 blocks, not at a distance chosen to pass.
+**The spot's distance is a contract between four numbers** (MZB-374; review C and the build lead's choice). The
+engine puts the spot `SPOT_BLOCKS` (rail.rs, 5.0) from the track point toward the den, in whole blocks (the block
+plus 0.5 as a double). `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it
+is not how far the body can strike. A strike is the plugin's call, gated on a smaller number: the create plugin's
+sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider (else its bogey point) will be
+within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks on, at the train's
+present speed. The Frostmaw's swipe hits a target whose horizontal centre distance less its half-width is at most
+6.5 and whose 3D feet-to-feet distance is at most 6.5 plus its half-width (about 6.8 for a player), so the gate
+leaves about 0.8 for the prediction's error. The fourth number is the Lurker's `stand()` (the Frostmaw's `STAND`,
+0.5): how far from the spot its hold lets the body rest. The rule, in two inequalities, is checked by
+`TrainSampler.spotContract` against the Lurker's stand and the live body's half-width (create's GameTest 9, every
+variant):
+
+```
+SPOT_BLOCKS + stand                <= STRIKE_REACH     5.0 + 0.5       <= 6.0   the far side of the stand is in reach
+SPOT_BLOCKS - stand - halfWidth    >= RAIL_CLEARANCE   5.0 - 0.5 - 2.0 >= 1.5   the near edge of the box is off the rail
+```
+
+`SPOT_BLOCKS` is mirrored in `TrainSampler` and pinned on the Rust side (`tests/lurk.rs`): a change to it, the
+strike reach or a stand is a change to all of them, made together. A body kind with another swing registers its own
+stand through `Lurker.stand()`, and its own gate if its reach differs. Where a body actually rests is the hold's
+doing and is looked at in the GameTest (the Frostmaw's 4-wide body steers loosely, so it may rest beyond its
+stand; the test allows what the gate allows, `STRIKE_REACH - SPOT_BLOCKS` = 1.0).
 
 **TRAIN_ROBBED** tells the plugin a lurk took something from a train (the engine's roll hit and the
 train's cargo lost at least one item, of any good). `faction` is the robbing camp's key and `train` the

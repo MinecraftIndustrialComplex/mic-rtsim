@@ -31,6 +31,16 @@ public interface Lurker {
     void roar(Mob mob);
 
     /**
+     * How far from its spot (blocks, horizontal) this Lurker's hold lets a body rest: it walks one back that is
+     * farther. The spot-distance contract (MZB-374) reads it: a Lurker that strikes must keep the engine's spot
+     * distance plus this under the sampler's strike reach, and its body's near edge off the rail. The default is the
+     * core's walk-back distance for a body that never strikes.
+     */
+    default double stand() {
+        return Lurkers.STRAY;
+    }
+
+    /**
      * D1 diagnostics (MZB-361): how many path searches this Lurker's holds have asked for since the game started
      * (a {@code moveTo} is a search whether or not its path differs); zero for a Lurker that keeps no count.
      */
