@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::graph::{Graph, carries_goods, term_amount};
 use super::q::Q;
 use super::records::{
-    DomainSource, EdgeKind, GraphDomain, NodeKind, edge_flags, heat as heat_level, model,
-    node_flags, recipe_type, rule, term_flags,
+    DomainLevel, DomainSource, EdgeKind, GraphDomain, NodeKind, edge_flags, heat as heat_level,
+    model, node_flags, recipe_type, rule, term_flags,
 };
 use super::report::why;
 use crate::ids::Good;
@@ -53,7 +53,18 @@ pub fn domain_stress(dom: &GraphDomain, speed: f64) -> f64 {
     stress
 }
 
-/// A driven source's row at boiler level `level`: the largest selector at or below it.
+/// A driven source's row while its boiler is passive (choice SC154): its row with selector
+/// [`DomainLevel::PASSIVE`], else its row at level 0.
+pub fn passive_row(src: &DomainSource) -> Option<u32> {
+    src.levels
+        .iter()
+        .position(|l| l.selector == DomainLevel::PASSIVE)
+        .map(|i| i as u32)
+        .or_else(|| source_row(src, 0))
+}
+
+/// A driven source's row at boiler level `level`: the largest selector at or below it (the
+/// passive row's selector is above every level).
 pub fn source_row(src: &DomainSource, level: i64) -> Option<u32> {
     let mut best: Option<(u32, u32)> = None;
     for (i, l) in src.levels.iter().enumerate() {
@@ -83,6 +94,45 @@ pub(super) fn speed_row_at(dom: &GraphDomain, v: f64) -> Option<u32> {
     best.map(|b| b.1)
 }
 
+/// What the rest of a shared network gives one of its parts (SEC-1 S5-2, `glass::net`), in the
+/// part's own frame (its reference's speed): the evaluation's input for a SHARED domain.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NetInput {
+    /// Per source of the domain: this part owns it, so its rows here count (another part's
+    /// copy of it does not).
+    pub own: Vec<bool>,
+    /// The fastest forward and backward reference speed (magnitudes, RPM) the other owners'
+    /// sources give.
+    pub fwd: f64,
+    pub back: f64,
+    /// Their capacity, SU: every counted source adds its row's, a slower one included.
+    pub cap: f64,
+    /// The other parts' stress per RPM of this part's reference speed.
+    pub stress: f64,
+    /// This part counts the members in no district's chunks (its tail): one part does.
+    pub tail: bool,
+}
+
+/// Create's stress on part `dom` of a network at reference speed `speed` under `net`: its own
+/// members (the tail only when it counts it), and the other parts' at that speed. Without an
+/// input, every member it lists.
+pub fn part_stress(dom: &GraphDomain, speed: f64, net: Option<&NetInput>) -> f64 {
+    let Some(n) = net.filter(|_| dom.shared()) else {
+        return domain_stress(dom, speed);
+    };
+    let own = if n.tail {
+        dom.members.len()
+    } else {
+        dom.members.len().saturating_sub(dom.foreign as usize)
+    };
+    let mut stress = 0.0f64;
+    for m in &dom.members[..own] {
+        let ratio = f64::from(m.ratio_num) / f64::from(m.ratio_den.max(1));
+        stress += f64::from(m.count) * (ratio * speed).abs() * m.impact;
+    }
+    stress + n.stress * speed.abs()
+}
+
 /// Domain `d`'s state with its sources at `rows` (flat by `Graph::src_off`): its speed row, None
 /// when it is stopped or overstressed, and its capacity in SU (§9.3; SECTIONS.md §2.6). A domain
 /// no boiler drives runs at its one row. Otherwise, as Create's propagation has it, the fastest
@@ -90,12 +140,28 @@ pub(super) fn speed_row_at(dom: &GraphDomain, v: f64) -> Option<u32> {
 /// sources that disagree in sign stop it (`RotationPropagator` breaks a block there). Every source
 /// adds its row's capacity at its own speed, a slower one included; the domain runs while that
 /// carries its members' stress at that speed, or always with stress disabled.
-pub fn domain_state(g: &Graph, d: u32, rows: &[Option<u32>]) -> (Option<u32>, f64) {
+///
+/// A part of a shared network (SEC-1 S5-2) with an input `net` counts the sources it owns and
+/// what the input gives, against its own stress and the other parts' (`part_stress`), driven or
+/// not. Without one it is decoupled (its network is incomplete or too big): it keeps the speed
+/// row it ran at at compile, as S1 runs an unstable domain, and the solve makes its members
+/// bounded (`why::SHARED_NETWORK`).
+pub fn domain_state(
+    g: &Graph,
+    d: u32,
+    rows: &[Option<u32>],
+    net: Option<&NetInput>,
+) -> (Option<u32>, f64) {
     let dom = &g.domains[d as usize];
+    let shared = dom.shared();
+    let net = net.filter(|_| shared);
     let mut cap = 0.0f64;
     let mut fastest = 0.0f64;
     let mut signs = (false, false);
-    for (src, row) in dom.sources.iter().zip(&rows[g.sources_of(d)]) {
+    for (i, (src, row)) in dom.sources.iter().zip(&rows[g.sources_of(d)]).enumerate() {
+        if net.is_some_and(|n| !n.own.get(i).copied().unwrap_or(false)) {
+            continue;
+        }
         let Some(lv) = row.and_then(|r| src.levels.get(r as usize)) else {
             continue;
         };
@@ -116,7 +182,25 @@ pub fn domain_state(g: &Graph, d: u32, rows: &[Option<u32>]) -> (Option<u32>, f6
             fastest = v;
         }
     }
-    let row = if !dom.driven() {
+    if let Some(n) = net {
+        cap += n.cap;
+        if n.fwd > 0.0 {
+            signs.1 = true;
+            if n.fwd > fastest.abs() {
+                fastest = n.fwd;
+            }
+        }
+        if n.back > 0.0 {
+            signs.0 = true;
+            if n.back > fastest.abs() {
+                fastest = -n.back;
+            }
+        }
+    }
+    if shared && net.is_none() {
+        return (dom.current, cap);
+    }
+    let row = if !shared && !dom.driven() {
         (!dom.levels.is_empty()).then_some(0u32)
     } else if signs.0 && signs.1 || fastest == 0.0 {
         None
@@ -130,7 +214,7 @@ pub fn domain_state(g: &Graph, d: u32, rows: &[Option<u32>]) -> (Option<u32>, f6
         return (Some(r), cap);
     }
     // The stress at the row's own speed, as the LP bound weighs it (`lp::possible_rows`).
-    if cap < domain_stress(dom, dom.levels[r as usize].speed()) {
+    if cap < part_stress(dom, dom.levels[r as usize].speed(), net) {
         (None, cap)
     } else {
         (Some(r), cap)
@@ -183,6 +267,9 @@ pub struct Regime {
     pub demoted: BTreeSet<u32>,
     /// Per node: a heater's [`burn`] phase (the engine tracks its remaining burn between solves).
     pub burning: Vec<u8>,
+    /// Per SHARED domain of a coupled network: what the other parts give it (SEC-1 S5-2). A
+    /// SHARED domain without one is decoupled ([`domain_state`]).
+    pub net: BTreeMap<u32, NetInput>,
 }
 
 impl Regime {
@@ -195,6 +282,7 @@ impl Regime {
             derate: BTreeMap::new(),
             demoted: BTreeSet::new(),
             burning: vec![burn::OUT; n],
+            net: BTreeMap::new(),
         }
     }
 
@@ -224,6 +312,16 @@ impl Regime {
         }
         for m in &self.demoted {
             mix(u64::from(*m) | 1 << 40);
+        }
+        for (d, n) in &self.net {
+            mix(u64::from(*d) | 2 << 40);
+            for (i, &o) in n.own.iter().enumerate() {
+                mix(i as u64 | u64::from(o) << 32);
+            }
+            for x in [n.fwd, n.back, n.cap, n.stress] {
+                mix(x.to_bits());
+            }
+            mix(u64::from(n.tail));
         }
         h
     }
@@ -632,7 +730,7 @@ impl<'a> Solver<'a> {
         s.src_row = g.source_rows_at_compile();
         s.src_next = s.src_row.clone();
         s.dom_level = (0..g.domains.len() as u32)
-            .map(|d| domain_state(g, d, &s.src_row).0)
+            .map(|d| domain_state(g, d, &s.src_row, s.rg.net.get(&d)).0)
             .collect();
         s.dom_next = s.dom_level.clone();
         s
@@ -1944,14 +2042,18 @@ impl<'a> Solver<'a> {
             return;
         };
         let duty = std::mem::take(&mut self.duty);
-        let level = self.boiler_level(v, w, &duty, false);
+        let (level, passive) = self.boiler_state(v, w, &duty, false);
         self.duty = duty;
         for (i, src) in g.sources_of(d).zip(&g.domains[d as usize].sources) {
             if src.driver == Some(v) {
-                self.src_next[i] = source_row(src, level);
+                self.src_next[i] = if passive {
+                    passive_row(src)
+                } else {
+                    source_row(src, level)
+                };
             }
         }
-        self.dom_next[d as usize] = domain_state(g, d, &self.src_next).0;
+        self.dom_next[d as usize] = domain_state(g, d, &self.src_next, self.rg.net.get(&d)).0;
         // Heaters at part duty make the boiler's goods bounded (§9.3).
         for &e in g.heat_in.of(v) {
             let h = g.edge(e).from as usize;
@@ -1965,8 +2067,17 @@ impl<'a> Solver<'a> {
     /// `min(activeHeat, min(18, ceil(w) / 10), min(18, tankBlocks / 4))`, activeHeat summing the
     /// Heat edges of lit heaters (L: at duty 1; `upper`: any duty above 0).
     pub fn boiler_level(&self, v: u32, water: Q, duty: &[Q], upper: bool) -> i64 {
+        self.boiler_state(v, water, duty, upper).0
+    }
+
+    /// The boiler's level ([`Self::boiler_level`]) and whether it is passive (choice SC154): no
+    /// active heat, a heater under it that is out (a blaze burner smoulders: Create's
+    /// `BoilerHeaters.blazeBurner` gives passive heat for anything below FADING), and water and
+    /// size enough for a level (`BoilerData.isPassive`).
+    pub fn boiler_state(&self, v: u32, water: Q, duty: &[Q], upper: bool) -> (i64, bool) {
         let g = self.g;
         let mut heat = 0i64;
+        let mut out = false;
         for &e in g.heat_in.of(v) {
             let ed = g.edge(e);
             let h = ed.from as usize;
@@ -1979,8 +2090,13 @@ impl<'a> Solver<'a> {
             } else {
                 true
             };
-            if lit {
-                heat += ed.param.max(1);
+            if lit && ed.param > 0 {
+                heat += ed.param;
+            } else {
+                // Out, or lit at no heat (a creative burner set to SMOULDERING): passive heat
+                // either way, as `BoilerHeaters.blazeBurner` gives 0 at SMOULDERING (an empty
+                // burner, NONE, gives none, but it has no block entity and is no heater node).
+                out = true;
             }
         }
         let water_level = if water.is_inf() {
@@ -1993,7 +2109,8 @@ impl<'a> Solver<'a> {
         };
         let tank = g.node(v).params[0];
         let size_level = if tank > 0 { (tank / 4).min(18) } else { 18 };
-        heat.min(water_level).min(size_level).max(0)
+        let level = heat.min(water_level).min(size_level).max(0);
+        (level, heat == 0 && out && water_level > 0 && size_level > 0)
     }
 
     /// Runs the rounds to the fixed point (or the cap).
@@ -2449,6 +2566,14 @@ pub(crate) fn classes(s: &mut Solver<'_>, converged: bool) -> Classes {
         if priority_tie(s, v) {
             raise(BOUNDED, why::PRIORITY_TIE);
         }
+        // A part of a shared network the registry could not couple runs at its compile speed,
+        // which the rest of the network may not keep (SEC-1 S5-2).
+        if node
+            .domain
+            .is_some_and(|d| g.domains[d as usize].shared() && !s.rg.net.contains_key(&d))
+        {
+            raise(BOUNDED, why::SHARED_NETWORK);
+        }
         if t > EXACT {
             put(&mut uf, &mut taint, &mut reason, out_side(v), t, (w, v));
         }
@@ -2787,7 +2912,7 @@ pub(crate) fn solve_with(
             .collect(),
         dom_level: s.dom_level.clone(),
         dom_cap: (0..g.domains.len() as u32)
-            .map(|d| domain_state(g, d, &s.src_row).1)
+            .map(|d| domain_state(g, d, &s.src_row, s.rg.net.get(&d)).1)
             .collect(),
         src_row: s.src_row.clone(),
         duty: s.duty.clone(),

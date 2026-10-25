@@ -790,7 +790,8 @@ fn a_refound_missed_while_off_waits_for_live_time() {
         c.ships.lift_closures(&mut c.world);
         let on = back + 10 * TICKS_PER_DAY;
         c.world.run_until(on);
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         let dock = c.ships.havens[h as usize].dock;
         let pos = rtsim_settle::Pos::new(c.ships.havens[h as usize].frame, dock.0 + 100, dock.2);
         let player = c.ships.player_stays(
@@ -1248,7 +1249,8 @@ fn a_navy_look_missed_while_off_waits_for_live_time() {
         c.ships.lift_closures(&mut c.world);
         let on = off + 30 * TICKS_PER_DAY;
         c.world.run_until(on);
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         let dock = c.ships.havens[h as usize].dock;
         let pos = rtsim_settle::Pos::new(c.ships.havens[h as usize].frame, dock.0 + 100, dock.2);
         c.ships.player_stays(

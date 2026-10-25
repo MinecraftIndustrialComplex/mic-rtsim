@@ -175,11 +175,17 @@ pub struct Seen {
     pub sheared_at: Option<Tick>,
 }
 
+/// The player slot of a group honoured from a replayed HERD_MATERIALIZED (docs/replay-gate.md
+/// §5.2, RP-82): the last session's player is not known while the replay runs, so no slot owns
+/// it, and no puppet count carries it. It lives until the replay end.
+pub const NO_PLAYER: u32 = u32::MAX;
+
 /// A materialized group (C25: one puppet unit).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Embodied {
     pub epoch: u32,
-    /// The player slot it was materialized for.
+    /// The player slot it was materialized for ([`NO_PLAYER`]: none, a group honoured from a
+    /// replayed record).
     pub player: u32,
     pub members: Vec<u64>,
     pub since: Tick,

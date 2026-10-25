@@ -52,8 +52,11 @@ use super::boundary::{
 use super::climate::{Climate, Subs, Uniform};
 use super::cohort::Class;
 use super::forage::{CELL_BLOCKS, CellKey, Forage, cell_of};
-use super::herd::{Embodied, Herd, HerdId, HerdLedger, Route, agent_of, herd_of, route_regions};
+use super::herd::{
+    Embodied, Herd, HerdId, HerdLedger, NO_PLAYER, Route, agent_of, herd_of, route_regions,
+};
 use super::members::{self, member};
+use super::outbox::{GateCounts, Outbox};
 use super::route::{self, Ask, Obstacles};
 use super::species::{Cohort, HerdSpecies, HerdSpeciesData};
 use super::tunables::HerdTunables;
@@ -254,7 +257,28 @@ pub struct Herds {
     /// Cells herds settled on in sub-season `claims_sub`.
     pub(crate) claims: PagedMap<CellKey, u64>,
     pub(crate) claims_sub: i64,
-    pub(crate) outbox: Vec<Cmd>,
+    /// The commands to the plugin, behind the replay gate (docs/replay-gate.md §4.6): the only way
+    /// to queue one is `Outbox::push`.
+    pub(crate) outbox: Outbox,
+    /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30, RP-57, RP-81): agent to the
+    /// highest epoch a replayed record or a copy named for it that its herd's own `epoch` does
+    /// not hold. A herd's next group takes an epoch above both. Folded into the herds' epochs at
+    /// the replay end; in memory only.
+    pub(crate) floors: BTreeMap<u64, u32>,
+    /// Whether the session's replay runs on an engine that came back from its pages (RP-31):
+    /// only then is a replayed HERD_MATERIALIZED the last session's answer to this engine's
+    /// decision (docs/replay-gate.md §5.2). Set by [`Herds::begin_replay`]; in memory only.
+    pub(crate) replay_from_pages: bool,
+    /// Groups the replay honoured since it began (the replay end's log line); in memory only.
+    pub(crate) replay_honoured: u64,
+    /// One past the highest herd handle index at the session's start (RP-84): the handles the
+    /// last session's records can name. A herd founded later takes an index at or above it, and
+    /// may be another herd than the one the last session had under that index (the world model
+    /// founds in the order the world is explored), so neither a replayed HERD_MATERIALIZED nor a
+    /// copy is applied to one. Set by [`Herds::begin_session`] and only lowered by
+    /// [`Herds::begin_replay`], which a switch-on or a first herd runs later in the session;
+    /// `u32::MAX` before any session (every handle counts). In memory only.
+    pub(crate) replay_bound: u32,
     /// Predator → herds it follows.
     pub(crate) follows: BTreeMap<u64, BTreeSet<HerdId>>,
     /// Plugin op ids applied, and when (forgotten after a while at the yearly sweep).
@@ -440,7 +464,11 @@ impl Herds {
             player_by_key: BTreeMap::new(),
             claims: PagedMap::new(),
             claims_sub: i64::MIN,
-            outbox: Vec::new(),
+            outbox: Outbox::default(),
+            floors: BTreeMap::new(),
+            replay_from_pages: false,
+            replay_honoured: 0,
+            replay_bound: u32::MAX,
             follows: BTreeMap::new(),
             ops: BTreeMap::new(),
             stats: HerdStats::default(),
@@ -555,7 +583,31 @@ impl Herds {
     }
 
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.take()
+    }
+
+    /// Whether the session's replay runs (between [`Herds::begin_replay`] and
+    /// [`Herds::replay_done`]).
+    pub fn replaying(&self) -> bool {
+        self.outbox.replaying()
+    }
+
+    /// The replay gate's counts (docs/replay-gate.md §4.3): what the gate dropped, what it saw
+    /// of a kind that embodies, and the decisions that embody it returned from early. Since the
+    /// engine was built or loaded.
+    pub fn replay_gate_counts(&self) -> GateCounts {
+        self.outbox.counts()
+    }
+
+    /// Whether the session's replay honours HERD_MATERIALIZED (RP-31): the engine came back from
+    /// its pages.
+    pub fn replay_from_pages(&self) -> bool {
+        self.replay_from_pages
+    }
+
+    /// Groups the session's replay honoured (§5.2).
+    pub fn replay_honoured(&self) -> u64 {
+        self.replay_honoured
     }
 
     pub fn herd(&self, h: HerdId) -> Option<&Herd> {
@@ -1850,6 +1902,14 @@ impl Herds {
     }
 
     fn seen(&mut self, legs: &mut LegIndex, h: HerdId, slot: u32, m: Meeting, at: Tick) {
+        // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-3, RP-83):
+        // a meeting booked before the session (the pages' wheel holds them) is a sighting of the
+        // last session's world, and the player is not known again until the replay end. The group
+        // is not decided; the herd stays abstract and consistent, and the sighting the replay end
+        // routes books its own meeting.
+        if self.outbox.defer() {
+            return;
+        }
         if !legs.is_meeting_live(&m) || self.herds.get(h).is_none_or(|x| x.embodied.is_some()) {
             self.stats.seen_stale += 1;
             return;
@@ -1917,7 +1977,10 @@ impl Herds {
         let x = self.herds.get_mut(h).expect("live");
         members::reconcile(x, &sp, yd, day);
         let picked = members::pick(x, &sp, yd, day, n, at, seen_cap);
-        x.epoch = x.epoch.wrapping_add(1).max(1);
+        // Above the herd's own epoch and above its floor, which it spends (§5.3, RP-81). The
+        // floor goes in before the wrap rule, so that it survives it.
+        let floor = self.floors.remove(&agent_of(h)).unwrap_or(0);
+        x.epoch = x.epoch.max(floor).wrapping_add(1).max(1);
         let epoch = x.epoch;
         let d = (((centre.0 - p.0) as f64).powi(2) + ((centre.1 - p.1) as f64).powi(2)).sqrt();
         let inner = (view - 4.0).max(1.0);
@@ -2021,14 +2084,16 @@ impl Herds {
         else {
             return;
         };
-        let slot = e.player;
-        let p = &self.players[slot as usize];
-        let gone = p.pos.is_none() || !p.interest.is_some_and(|s| legs.is_live(s));
+        // A slot the engine does not hold (a group the pages kept for a player it no longer
+        // knows) is a player who is gone.
+        let p = self.players.get(e.player as usize);
+        let gone =
+            p.is_none_or(|p| p.pos.is_none() || !p.interest.is_some_and(|s| legs.is_live(s)));
         if gone {
             self.despawn(h, 2, at);
             return;
         }
-        let (pos, _) = p.pos.expect("checked");
+        let (pos, _) = p.and_then(|p| p.pos).expect("checked");
         let r = f64::from(self.footprint(h, at));
         let far = f64::from(self.tun.view_radius) + r + f64::from(self.tun.hysteresis);
         if dist(
@@ -2104,10 +2169,51 @@ impl Herds {
         self.note(at, "despawn", Some(h), format!("reason {reason}"));
     }
 
-    /// A new session: no group outlives one (docs/boundary.md §2.3). Every embodied group is
-    /// abstract again with what the engine knew, and every leg booked for a player goes (the
-    /// players report again).
-    pub fn session_start(&mut self, legs: &mut LegIndex, at: Tick) {
+    /// A session's replay begins (docs/replay-gate.md §5.1, RP-5, RP-80): no group changes. What
+    /// the pages hold embodied stays embodied, at its epoch, with its members, so that the
+    /// journal's records of the last session's bodies (their casualties, their shearing, their
+    /// capture) count against the bodies they were. What is still queued takes its verdict (every
+    /// kind goes: a command of an earlier session names a group Java no longer has), and every
+    /// push is gated until [`Herds::replay_done`]. The players' work waits for it too (§5.6,
+    /// RP-26): the host leaves the herds out of the session start's `player_left`.
+    ///
+    /// `from_pages`: whether this engine came back from its pages (RP-31): only then is a
+    /// replayed HERD_MATERIALIZED honoured (§5.2).
+    pub fn begin_replay(&mut self, from_pages: bool) {
+        self.replay_from_pages = from_pages;
+        self.replay_honoured = 0;
+        // Never raised: a herd founded since the session began is not one it can name, whenever
+        // the replay begins (a first herd, a switch-on in mid-session).
+        self.replay_bound = self.replay_bound.min(self.herds.next_index());
+        self.outbox.begin_replay();
+    }
+
+    /// A session begins, whether or not the herds run (RP-84): the herds it can name are the ones
+    /// the engine holds now (its pages, and any founded earlier in the process). Nothing founds a
+    /// herd while replaying (the host holds every founding to the replay end), so these are the
+    /// herds the replay sees; a herd founded after, on a handle the last session used for another
+    /// herd, takes none of that session's copies. The replay itself begins later (the first herd,
+    /// a switch-on), and keeps this bound.
+    pub fn begin_session(&mut self) {
+        self.replay_bound = self.herds.next_index();
+    }
+
+    /// Whether herd `h` existed when the session began (RP-84): only such a herd is the one the
+    /// last session's records name.
+    fn existed_at_replay(&self, h: HerdId) -> bool {
+        h.index() < self.replay_bound
+    }
+
+    /// The session's replay has caught up (docs/replay-gate.md §5.6): no group outlives a
+    /// session (docs/boundary.md §2.3). Every embodied group is abstract again with what the
+    /// engine knew (its members seen at `at`), every leg booked for a player goes (the players
+    /// report again), the players' puppet counts end, and the epoch floors become the herds'
+    /// epochs (§5.3). Then pushes are queued as usual. A no-op unless a replay runs.
+    pub fn replay_done(&mut self, legs: &mut LegIndex, at: Tick) {
+        if !self.outbox.replaying() {
+            return;
+        }
+        self.outbox.replay_done();
         let ids: Vec<HerdId> = std::mem::take(&mut self.active).into_iter().collect();
         for h in ids {
             for (_, s) in std::mem::take(&mut self.herds.get_mut(h).expect("live").clips) {
@@ -2127,6 +2233,43 @@ impl Herds {
             }
             p.puppets = 0;
             p.pos = None;
+        }
+        // Every group is abstract now: a floor becomes its herd's epoch, for the pages (§5.3). A
+        // floor of an agent with no herd yet stays: its first group takes an epoch above it.
+        let floors = std::mem::take(&mut self.floors);
+        for (agent, floor) in floors {
+            match herd_of(agent).and_then(|h| self.herds.get_mut(h)) {
+                Some(x) => x.epoch = x.epoch.max(floor),
+                None => {
+                    self.floors.insert(agent, floor);
+                }
+            }
+        }
+    }
+
+    // ---- epochs --------------------------------------------------------------------------------
+
+    /// No epoch is used twice (docs/replay-gate.md §5.3, RP-7, RP-57, RP-81): a replayed record or
+    /// a copy that names a group's epoch ([`Obs::group_epoch`]) raises the agent's floor,
+    /// whatever its kind and whatever the record does after (a refusal, a stale capture, a record
+    /// of a herd not held), before any check that drops it. Live records name this session's
+    /// epochs, which the herd holds. rtsim-jni calls it for every journaled record that decodes,
+    /// before it knows whether the herds run or have a herd yet: the engine's own fold in
+    /// [`Herds::ingest`] only runs while its replay does.
+    pub fn fold_epoch(&mut self, o: &Obs) {
+        if let Some((agent, epoch)) = o.group_epoch() {
+            self.raise_floor(agent, epoch);
+        }
+    }
+
+    /// An epoch the engine has seen for `agent` that its herd may not hold (§5.3).
+    fn raise_floor(&mut self, agent: u64, epoch: u32) {
+        let held = herd_of(agent)
+            .and_then(|h| self.herds.get(h))
+            .is_some_and(|x| x.epoch >= epoch);
+        if !held {
+            let f = self.floors.entry(agent).or_insert(0);
+            *f = (*f).max(epoch);
         }
     }
 
@@ -2152,10 +2295,49 @@ impl Herds {
         true
     }
 
-    /// Applies one record from the plugin.
+    /// Applies one record from the plugin. While the session's replay runs, the record's epoch
+    /// reaches the floor first, whatever the record does after (RP-57, RP-81).
     pub fn ingest(&mut self, legs: &mut LegIndex, o: &Obs, at: Tick) {
+        if self.outbox.replaying() {
+            self.fold_epoch(o);
+        }
+        self.apply(legs, o, at);
+    }
+
+    /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
+    /// RP-8, RP-9, RP-84), called by the host instead of [`Herds::ingest`] while it applies one.
+    /// Its group is gone, so a copy matches no body. Every copy raises the floor to the epoch it
+    /// names, live or replayed (RP-57). Then HERD_KILLED, HERD_TAKEN and HERD_SHEARED, which go
+    /// by member key (and op id) already, as [`Herds::ingest`], to a herd that existed when the
+    /// session began (RP-84; any other counts as late); every other kind (a
+    /// HERD_MATERIALIZED, a refusal, a capture, an obstacle, a group state) only counts as late.
+    pub fn ingest_copy(&mut self, legs: &mut LegIndex, o: &Obs, at: Tick) {
+        self.fold_epoch(o);
         match o {
-            Obs::GroupState(_) | Obs::Materialized(_) => {}
+            Obs::Killed(_) | Obs::Sheared(_) | Obs::Taken(_) => {
+                // Only a herd the last session could have named (RP-84); the floor has the rest.
+                let known = o
+                    .group_epoch()
+                    .and_then(|(agent, _)| herd_of(agent))
+                    .is_some_and(|h| self.existed_at_replay(h));
+                if known {
+                    self.apply(legs, o, at);
+                } else {
+                    self.stats.late_records += 1;
+                }
+            }
+            Obs::GroupState(_)
+            | Obs::Materialized(_)
+            | Obs::SpawnRejected(_)
+            | Obs::Dematerialized(_)
+            | Obs::Obstacle(_) => self.stats.late_records += 1,
+        }
+    }
+
+    fn apply(&mut self, legs: &mut LegIndex, o: &Obs, at: Tick) {
+        match o {
+            Obs::GroupState(_) => {}
+            Obs::Materialized(m) => self.honour(m, at),
             Obs::SpawnRejected(r) => {
                 if let Some(h) = self.embodied_for(r.agent, r.epoch) {
                     self.stats.rejected += 1;
@@ -2226,9 +2408,87 @@ impl Herds {
                     self.stats.late_records += 1;
                     return;
                 };
+                // A group honoured from a replayed record has no chart (its player is not known),
+                // so on a topology that folds, its report cannot be put back on the route's cell.
+                let honoured = self.herds[h]
+                    .embodied
+                    .as_ref()
+                    .is_some_and(|e| e.player == NO_PLAYER);
+                if honoured && !self.topo(self.herds[h].frame).is_flat() {
+                    self.stats.late_records += 1;
+                    return;
+                }
                 self.obstacle(legs, h, ob, at);
             }
         }
+    }
+
+    /// A replayed HERD_MATERIALIZED (docs/replay-gate.md §5.2, RP-82): the last session's answer
+    /// to a decision of this engine. On an engine that came back from its pages the group is
+    /// honoured: the herd is embodied at the record's epoch with the members the decision picked
+    /// (the engine's own pick, from the herd as it is now: seen members first, then fresh), and no
+    /// player, so that the records that follow (a capture, a loss, an obstacle) count against the
+    /// group they were. It places nothing and sends nothing; no puppet count carries it; no check
+    /// is booked. The replay end makes it abstract. An epoch at or below the herd's group changes
+    /// nothing (the pages hold it, or a newer one). A live record, a fresh engine's and a copy's
+    /// are not honoured (RP-31, RP-8); the floor has them all.
+    fn honour(&mut self, m: &boundary::Materialized, at: Tick) {
+        if !self.outbox.replaying() || !self.replay_from_pages {
+            return;
+        }
+        let Some(h) = herd_of(m.agent)
+            .filter(|h| self.herds.contains(*h))
+            .filter(|h| self.existed_at_replay(*h))
+        else {
+            return;
+        };
+        // Above the herd's own epoch (§5.2: "above the agent's") and above the group the pages
+        // hold. The pages' state need not be a prefix of the journal: a herd abstract at epoch 7
+        // has already used 5, and a replayed record of 5 is history, not a group to honour.
+        if self.herds[h].epoch >= m.epoch
+            || self.herds[h]
+                .embodied
+                .as_ref()
+                .is_some_and(|e| e.epoch >= m.epoch)
+        {
+            return;
+        }
+        let yd = self.year_days();
+        let day = day_of(at);
+        let sp = self.sp(h).clone();
+        let alive = self.count(h, at);
+        let n = u64::from(m.spawned).min(alive) as usize;
+        if n == 0 {
+            return;
+        }
+        // An older group of the pages' whose end was not journaled: its record is lost, its
+        // members stay seen.
+        self.release(h);
+        let heading = self.at_pos(&self.herds[h], at);
+        let seen_cap = self.tun.seen_cap;
+        let x = self.herds.get_mut(h).expect("live");
+        members::reconcile(x, &sp, yd, day);
+        let picked = members::pick(x, &sp, yd, day, n, at, seen_cap);
+        x.embodied = Some(Embodied {
+            epoch: m.epoch,
+            player: NO_PLAYER,
+            members: picked,
+            since: at,
+            steer: (heading.0 as i32, heading.1 as i32),
+            leaving: false,
+            chart: Iso::IDENTITY,
+        });
+        self.active.insert(h);
+        self.replay_honoured += 1;
+        self.note(
+            at,
+            "honour",
+            Some(h),
+            format!(
+                "a replayed materialization of epoch {} ({n} members)",
+                m.epoch
+            ),
+        );
     }
 
     fn release(&mut self, h: HerdId) {
@@ -2746,6 +3006,15 @@ impl Herds {
     pub fn player_area(&self, uuid: Uuid) -> Option<Stamp> {
         let slot = *self.player_by_key.get(&player_key(uuid))?;
         self.players.get(slot as usize).and_then(|p| p.interest)
+    }
+
+    /// Herd puppets embodied for a player: 0 for one the herds do not know. They end at the
+    /// session's replay end (docs/replay-gate.md §5.6).
+    pub fn puppets(&self, uuid: Uuid) -> u32 {
+        self.player_by_key
+            .get(&player_key(uuid))
+            .and_then(|s| self.players.get(*s as usize))
+            .map_or(0, |p| p.puppets)
     }
 
     fn slot_of_actor(&self, actor: u64) -> Option<u32> {
