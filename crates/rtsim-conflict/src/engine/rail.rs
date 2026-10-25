@@ -851,7 +851,8 @@ impl Conflict {
     /// does not care whether a player watched: a watched line loses what an unwatched one would
     /// (P28). A hit is I24's attack on the train; when it took anything, of any good, the plugin
     /// is told the train was robbed (MOWZIE.md's cue is the cargo gone, and a good the world has
-    /// no name for is gone from the train all the same, MZB-356).
+    /// no name for is gone from the train all the same, MZB-356). A pass replayed is counted and
+    /// rolls nothing (RP-154).
     pub fn train_passed(
         &mut self,
         w: &mut World,
@@ -870,6 +871,13 @@ impl Conflict {
         self.stats.passes += 1;
         if tp.flags & boundary::PASSED_WATCHED != 0 {
             self.stats.passes_watched += 1;
+        }
+        // A pass the replay brings back is counted and never rolls (RP-154): the live session
+        // may have robbed it already, industry is not held while replaying (docs/replay-gate.md
+        // §3.6) and `attack_train` derives its op from industry's present, so a second robbery
+        // would be a different op that Java applies again. Lose, never double.
+        if self.outbox.replaying() {
+            return;
         }
         let roll = StreamKey::new(self.seed, SYS_AMBUSH, p.to_bits())
             .slot(tp.train ^ at.0.rotate_left(32))
