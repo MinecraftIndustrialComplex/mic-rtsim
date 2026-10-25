@@ -5730,7 +5730,20 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   is applied, the crash taken, and the raid sent again under the same op, as the replay re-decides it
   (slice T's key). The raider holds the 10 the surviving decision credits it, so the goods are
   conserved when the train and the raider hold 32 between them. The crash is at the data level (RP-198):
-  no test runs a real save or depends on the order the server writes SavedData in. RESULTS
+  no test runs a real save or depends on the order the server writes SavedData in. Results (the whole
+  create suite on db221b97's code plus two temporary demo tests, native engine; 227 tests in 20.4 min): all
+  eight ring GameTests pass, and 224 of the 225 required tests pass. The one failure is
+  `anAwayDistrictOnAChainStaysAway` ("the first package reaches FB: 0"), a SEC-1 fixture flake of the same
+  cause as `aCompileLoadsNoChunk` (its build waited for FULL chunks, not ticking ones), which main fixes
+  at 4500d8f1, not in this branch's base. The records (second answer, iron on the train, train plus
+  raider): J1 on the ring DUPLICATE, 22, 32; J2 APPLIED, 22, 32; J3 DUPLICATE, 22, 32; J4 APPLIED, 22, 32
+  (all conserved); on the journal (the fallback, slice T's dedup) J3 APPLIED, 12, 22 (a double) and J4
+  DUPLICATE, 32, 42 (a dupe); UR-1: 20 keys saved with the module off, the ring key dropped. The demo
+  tests, optional and removed before the commit, ran T2's conservation check on the fallback branch,
+  that is slice T's code: J3 failed "the goods are conserved: train 12 plus raider 10 = 22, not 32" and
+  J4 failed "train 32 plus raider 10 = 42, not 32". So J3 doubles and J4 dupes on T alone, and neither
+  happens on T2. The probe's INFO ("the train op ring is on") and one WARN for each fallback switch were
+  logged.
 - **RP-196** (the four cases, J1 to J4; the coordinator's table): which of Java's two saves landed
   after the raid's application (RP-184), the raider's pages older than the raid:
 
@@ -5750,7 +5763,9 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   only when the ring's mixin did not apply); docs/industry-boundary.md §4.3's IND_CARRIAGE_DELTA
   bullet names the ring as the dedup; TrainWatch's comment at the dedup says the same. RP-183's case
   table has a column for the ring. docs/boundary.md does not describe the carriage delta's dedup (it
-  defers industry's records to industry-boundary.md), so it is unchanged.
+  defers industry's records to industry-boundary.md), so it is unchanged. PATCHES.md has the mixin as
+  row 85 (the coordinator's number; one row covers both injections), the train's key in its attached-data
+  table, and the one exception to `defaultRequire 1` in its contract-test note.
 - **RP-198** (the build lead's two additions, for SEC-1's slice U): (1) `AppliedOpRing` is reusable,
   with no Train dependency: `new AppliedOpRing(capacity)`, `capacity()`, `size()`, `isEmpty()`,
   `contains(op)`, `add(op)` (false for an op already held; full, it drops the oldest), `clear()`,
