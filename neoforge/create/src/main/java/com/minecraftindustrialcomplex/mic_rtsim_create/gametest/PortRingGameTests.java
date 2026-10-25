@@ -375,6 +375,8 @@ public final class PortRingGameTests {
         GlobalStation[] st = {null};
         CompoundTag[] before = {null};
         long[] carried = {0};
+        // The answers the engine heard for the op before the resend.
+        int[] heard = {0};
         long op = engineOp();
         Map<String, Long> copper = Map.of("i/64/minecraft:copper_ingot", 30L);
         helper.startSequence()
@@ -407,17 +409,26 @@ public final class PortRingGameTests {
                     boolean carries = ind().chunkCarriesOp(level.getChunkAt(postbox), op);
                     check(checks ? "the chunk carries the op" : "the chunk does not carry the op", carries == checks);
                     check("carried at the restore", PortRing.chunkCountsForTest()[0] - carried[0] == (checks ? 1 : 0));
+                })
+                // The carry journals a copy of the op's APPLIED (the chunk's, Industry.carryAppliedInChunk): the engine
+                // hears it before the resend, so the resend's answer is the one after it.
+                .thenWaitUntil(() -> check("the carry's copy is heard", commandResults(op).size() == (checks ? 2 : 1)))
+                .thenExecute(() -> {
+                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    check(checks ? "the chunk still carries the op" : "the chunk does not carry the op",
+                            ind().chunkCarriesOp(level.getChunkAt(postbox), op) == checks);
                     // The crash: the postbox's chunk reached disk after the restore; the tracks file and the journal are from before the write.
                     journal().forgetAppliedForTest(op);
                     loadStation(level, st[0], before[0]);
                     GlobalPackagePort back = st[0].connectedPorts.get(postbox);
                     check("the port came back from before the write", back != port && packages(back.offlineBuffer) == 0
                             && !back.primed && !PortRing.wroteToBuffer(back, op));
+                    heard[0] = commandResults(op).size();
                     writePackage(op, 0, 0, postbox, "Mill", 1, copper);
                 })
-                .thenWaitUntil(() -> check("the resend is answered", commandResults(op).size() == 2))
+                .thenWaitUntil(() -> check("the resend is answered", commandResults(op).size() == heard[0] + 1))
                 .thenExecute(() -> {
-                    int second = commandResults(op).get(1);
+                    int second = commandResults(op).get(heard[0]);
                     PostboxBlockEntity pb = (PostboxBlockEntity) level.getBlockEntity(postbox);
                     int got = packages(pb.inventory);
                     record(test, "restored, the chunk newer than the tracks and the journal, loaded resend: answer, packages in the postbox",
