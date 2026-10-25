@@ -11,8 +11,8 @@ import java.util.Arrays;
  * effect is saved in a SavedData other than the journal's: kept in the same compound as the effect, it
  * is saved by the same write, so whichever save holds the effect holds the op (a crash keeps both or
  * neither). It knows nothing of its owner. A Create train's ring is {@link TrainRing} (capacity
- * {@link TrainRing#CAPACITY}, key {@link TrainRing#KEY}); slice U reuses the class for Create's
- * GlobalPackagePort offline buffer, also in create_tracks.dat.
+ * {@link TrainRing#CAPACITY}, key {@link TrainRing#KEY}); a station port's two rings are {@link PortRing}
+ * (slice U, docs/choices-journal-barrier.md RP-206), beside its offline buffer, also in create_tracks.dat.
  *
  * <p>{@link #add} skips an op already held (a resend) and, when full, drops the oldest; the capacity is
  * the owner's bound. Only {@link #writeTo}, {@link #readFrom} and {@link #savedIn} touch Minecraft (the
