@@ -1198,7 +1198,10 @@ fn a_late_out_for_an_older_epoch_ends_nothing() {
 
 /// §4.9: a CAMP_CENSUS replayed from an earlier session only marks its camp out; its bodies are
 /// not the world as it is now. The session's replay window opens as the host opens it
-/// (`begin_replay`, which makes every camp out first), and the census changes nothing after it.
+/// (`begin_replay`, which makes every camp out first), and the census changes nothing after it
+/// but the epoch answered: an answer of the replayed epoch, journaled twice (a holder's copy), is
+/// booked once (RP-65; `begin_replay` has marked the camp out already, so this is what shows the
+/// census was read).
 #[test]
 fn a_replayed_census_only_marks_its_camp_out() {
     let mut r = grove(30, 9);
@@ -1223,6 +1226,35 @@ fn a_replayed_census_only_marks_its_camp_out() {
             traded: Vec::new(),
         }),
         at,
+    );
+    let (slot, generation) = {
+        let s = &r.c.camp(r.f).unwrap().slots[0];
+        (s.id, s.generation)
+    };
+    let answers = r.c.stats.camp_answers;
+    for _ in 0..2 {
+        r.c.ingest(
+            &mut r.w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            &Obs::CampBodies(boundary::CampBodies {
+                faction: r.key,
+                epoch: 12345,
+                op: 0xA11,
+                lines: vec![boundary::LineAnswer {
+                    line: 0,
+                    slot,
+                    generation,
+                    action: boundary::ACTION_SPAWN,
+                    outcome: boundary::LINE_DONE,
+                }],
+            }),
+            at,
+        );
+    }
+    assert_eq!(
+        r.c.stats.camp_answers,
+        answers + 1,
+        "the replayed epoch's answer, booked once"
     );
     r.c.replay_done();
     r.flush(at);

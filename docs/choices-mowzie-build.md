@@ -3639,3 +3639,12 @@ conservative option at its fork.
   voids its lines), so it still tests the census alone. No M5 `Cmd` or `Obs` kind is new, so no
   gate or `party_epoch` arm is added: camp epochs are Java's. `obs_seq` and `durable_obs_seq` stay
   as main sets them.
+- **RP-65** (the M5 merge check's P2; RP-64): tests/camp.rs's
+  `a_replayed_census_only_marks_its_camp_out` could not catch a census arm that skipped `see`,
+  since `begin_replay` puts the camp out before the census comes. It now feeds an answer of the
+  replayed epoch twice (a holder's copy) and asserts it is booked once. With `see(epoch)` dropped
+  from the replaying arm it fails: `camp_answers` 9 against 10. The arm's `epoch = 0` is
+  equivalent after the merge (dropped, the 64 camp tests pass): `camp_session_start` has made
+  every camp out at the window's start, and only a live census brings one in. It stays as a
+  defence. The option not taken: a window opened without `camp_session_start`, which no host
+  opens.
