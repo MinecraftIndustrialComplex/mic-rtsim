@@ -1314,3 +1314,199 @@ fn a_result_the_engine_does_not_wait_for_raises_no_epoch() {
         chunk_rounds(&out)
     );
 }
+
+// ---- packages named by their number (P1-4 of the review, RP-259) -------------------------------
+
+const ADDRESS: u32 = 7;
+
+/// The postbox's stock sample of `held` iron, with the vault's, in sweep `sweep`.
+fn post_sweep(at: u64, sweep: u32, held: i64) -> Vec<Timed> {
+    let mut v: Vec<Timed> = [(VAULT, 5_000), (1, held)]
+        .into_iter()
+        .map(|(inventory, n)| {
+            t(
+                at,
+                Obs::StockSample {
+                    district: MILL,
+                    inventory,
+                    sweep,
+                    goods: GoodVec::from_pairs([(IRON, n)]),
+                },
+            )
+        })
+        .collect();
+    v.push(t(
+        at,
+        Obs::SweepEnd(SweepEnd {
+            district: MILL,
+            sweep,
+            records: 2,
+            inventories: 2,
+            live: true,
+            creative: false,
+            overstressed: false,
+        }),
+    ));
+    v
+}
+
+/// A mill whose packager fills a postbox (inventory 1, 18 slots) with packages of 64 iron for
+/// address 7 at 0.02 iron a tick while it is away: a package each 3,200 ticks, in the room the
+/// postbox's offline buffer has. The postbox holds `held` iron when the engine starts.
+fn post_mill(held: i64) -> Engine {
+    let mut e = Engine::new(SEED, Tunables::default(), Tick(0));
+    e.define_good(IRON, GoodInfo::item("iron", 64));
+    let send = |e: &mut Engine, rec: Timed| e.ingest(&rec);
+    send(
+        &mut e,
+        t(
+            0,
+            Obs::District(DistrictDecl {
+                district: MILL,
+                revision: 1,
+                dim: 0,
+                name: 0,
+                not_learnable: None,
+                inventory_count: 2,
+            }),
+        ),
+    );
+    for (index, pos, kind, slots) in [
+        (VAULT, vault_pos(), InvKind::ITEMS, 100u32),
+        (1, frog_pos(), InvKind::ITEMS | InvKind::POSTBOX, 18),
+    ] {
+        send(
+            &mut e,
+            t(
+                0,
+                Obs::Inventory(InventoryDecl {
+                    district: MILL,
+                    revision: 1,
+                    index,
+                    pos,
+                    kind: InvKind(kind),
+                    item_slots: slots,
+                    fluid_capacity: 0,
+                    energy_capacity: 0,
+                }),
+            ),
+        );
+    }
+    send(&mut e, chunk_loaded(0, 0));
+    send(&mut e, chunk_loaded(0, 1));
+    send(&mut e, load_state(0, LoadState::Live, 2));
+    for rec in post_sweep(10, 1, held) {
+        send(&mut e, rec);
+    }
+    e.adopt_model(
+        MILL,
+        Learned {
+            at: Tick(20),
+            window_ticks: 12_000,
+            rates: vec![],
+            links: vec![(
+                rtsim_industry::learn::LinkKey::Mail {
+                    inventory: 1,
+                    address: ADDRESS,
+                    good: IRON,
+                },
+                -0.02,
+            )],
+            confidence: 1.0,
+            points: 0,
+            longest_gap: 0,
+            latency_ticks: 0,
+        },
+        vec![],
+    );
+    e.advance_to(Tick(50));
+    let _ = e.drain_commands();
+    e
+}
+
+/// The packages `cmds` write: each op with its count and iron.
+fn packages(cmds: &[Cmd]) -> Vec<(u64, u32, i64)> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Cmd::WritePackage(p) => Some((p.op.0, p.count, p.goods.get(IRON))),
+            _ => None,
+        })
+        .collect()
+}
+
+fn written(v: &[(u64, u32, i64)]) -> u32 {
+    v.iter().map(|p| p.1).sum()
+}
+
+/// A package the live run wrote at a tick the replay does not write one is written again (P1-4 of
+/// the review). The pages hold the postbox with 9 packages' worth (room for 9). Live, a postbox
+/// sample at 90 (latest-wins: never replayed) shows 8 (room for 10), and the mill unloads at 100:
+/// 10 packages, the 10th at about 32,100. A crash; the replay has no sample and room for 9, so it
+/// writes the first 9 under the live ops (answered DUPLICATE) and stops. A train takes a package
+/// at 45,000 (journaled), which makes room, and the replay writes its 10th at about 48,200. On
+/// 2a975cc3 that package was named by its tick, a new op, so the world wrote it again: 11 packages
+/// in the world against the 10 the engine booked out of the mail pool (64 iron made). Named by
+/// its number, it is the live run's 10th, answered DUPLICATE.
+#[test]
+fn a_package_written_live_is_never_written_again_by_the_replay() {
+    let mut away = Step::new(40_000);
+    away.deferred = post_sweep(90, 2, 8 * 64);
+    away.journaled.push(load_state(100, LoadState::Unloaded, 0));
+    let mut train = Step::new(60_000);
+    train.journaled.push(t(
+        45_000,
+        Obs::Package(rtsim_industry::obs::PackageEvent {
+            district: MILL,
+            inventory: 1,
+            direction: rtsim_industry::obs::Direction::Out,
+            address: ADDRESS,
+            packages: 1,
+            op: None,
+            goods: GoodVec::from_pairs([(IRON, 64)]),
+        }),
+    ));
+    let mut live = post_mill(9 * 64);
+    let pages = live.snapshot();
+    let mut before = Vec::new();
+    live_step(&mut live, &away, &mut before);
+    // The crash: the world has applied what the live run sent.
+    let live_pkgs = packages(&before);
+    let mut replay = Engine::restore(pages, Tunables::default()).expect("the pages restore");
+    let mut after = Vec::new();
+    replay_step(&mut replay, &away, &mut after);
+    replay.session_start(Tick(away.g));
+    after.extend(replay.drain_commands());
+    let replayed_pkgs = packages(&after);
+    live_step(&mut replay, &train, &mut after);
+    let all = packages(&after);
+    let what =
+        format!("live {live_pkgs:x?}; replayed {replayed_pkgs:x?}; after the train {all:x?}");
+    assert_eq!(written(&live_pkgs), 10, "live: room for 10: {what}");
+    assert_eq!(written(&replayed_pkgs), 9, "replayed: room for 9: {what}");
+    assert!(
+        all.iter().all(|p| p.2 == 64),
+        "every package is a batch of 64: {what}"
+    );
+    // The world: each op applied once, a known one answered DUPLICATE.
+    let mut world: std::collections::BTreeMap<u64, (u32, i64)> = live_pkgs
+        .iter()
+        .map(|&(op, n, iron)| (op, (n, iron)))
+        .collect();
+    for &(op, n, iron) in &all {
+        if let Some(&(ln, liron)) = world.get(&op) {
+            assert_eq!(
+                (ln, liron),
+                (n, iron),
+                "an op decided again carries the content it carried live: {what}"
+            );
+        } else {
+            world.insert(op, (n, iron));
+        }
+    }
+    let in_world: u32 = world.values().map(|p| p.0).sum();
+    assert_eq!(
+        (in_world, written(&all)),
+        (10, 10),
+        "the packages the world wrote, against those the engine booked out of the mail pool: {what}"
+    );
+}
