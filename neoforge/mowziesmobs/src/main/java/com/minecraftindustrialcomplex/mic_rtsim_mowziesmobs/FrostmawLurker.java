@@ -6,9 +6,16 @@ import com.ilexiconn.llibrary.server.animation.IAnimatedEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.goal.MoveTowardsRestrictionGoal;
+import net.minecraft.world.entity.ai.goal.RandomStrollGoal;
+import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -46,6 +53,30 @@ public final class FrostmawLurker implements Lurker {
     /** The game time of a body's last walk-back search, by body. */
     private final Map<Mob, Long> searched = new WeakHashMap<>();
 
+    /**
+     * The bodies the hold has in hand, by the game time of its last hold: the one thing that moves a held puppet is
+     * the hold (MZB-361). The jar's own chase of its target is switched off for them in {@code EntityFrostmawMixin}
+     * ({@link #holds}), and its goals that walk a body about (a stroll, the pull back into a restriction) are taken
+     * out while it is held and put back on release. Synchronised: the mixin reads it on the server thread only, but
+     * the map is shared by the class.
+     */
+    private static final Map<Mob, Long> HELD = Collections.synchronizedMap(new WeakHashMap<>());
+
+    /** The walking goals taken out of a held body, with the priority each had, by body (put back in {@link #release}). */
+    private final Map<Mob, List<Object[]>> taken = new WeakHashMap<>();
+
+    /**
+     * Whether the hold has this body in hand: it held it on the tick just gone (or this one). A body the hold stopped
+     * holding without a release (the core drops a lurk, a chunk unloads) is the jar's again within a few ticks.
+     */
+    public static boolean holds(Mob f) {
+        Long at = HELD.get(f);
+        return at != null && f.level().getGameTime() - at <= HELD_FRESH;
+    }
+
+    /** Ticks a hold stays fresh: the core holds once a tick, after the levels ticked, so the jar's tick reads the last tick's. */
+    private static final int HELD_FRESH = 3;
+
     @Override
     public void hold(Mob mob, Vec3 spot) {
         if (!(mob instanceof EntityFrostmaw f) || !f.isAlive())
@@ -56,6 +87,9 @@ public final class FrostmawLurker implements Lurker {
         BlockPos centre = BlockPos.containing(spot);
         if (!f.hasRestriction() || !centre.equals(f.getRestrictCenter()) || f.getRestrictRadius() != RADIUS)
             f.restrictTo(centre, RADIUS);
+        HELD.put(f, f.level().getGameTime());
+        if (!taken.containsKey(f))
+            takeOutWalkingGoals(f);
 
         if (f.getAnimation() == EntityFrostmaw.SWIPE_ANIMATION && f.getAnimationTick() <= SWIPE_HIT_TICK) {
             Float yaw = bearings.get(f);
@@ -98,6 +132,24 @@ public final class FrostmawLurker implements Lurker {
         searches++;
         // Accuracy 0: the path ends on the aimed node itself, not a node short of it
         nav.moveTo(ax, spot.y, az, 0, 1.0);
+    }
+
+    /**
+     * Takes out the goals that walk a body about on their own, a stroll and the pull back into a restriction (a
+     * Frostmaw has both, priorities 7 and 5): the stroll wanders it up to its restriction's radius (2) about the
+     * spot's block, which is beyond {@link #STAND}, and the pull paths to a point that a wide body ends two blocks
+     * off. The hold is the one thing that walks a held puppet. Remembered to put back in {@link #release}.
+     */
+    private void takeOutWalkingGoals(EntityFrostmaw f) {
+        List<Object[]> out = new ArrayList<>();
+        for (WrappedGoal w : new ArrayList<>(f.goalSelector.getAvailableGoals())) {
+            Goal g = w.getGoal();
+            if (g instanceof RandomStrollGoal || g instanceof MoveTowardsRestrictionGoal)
+                out.add(new Object[] {w.getPriority(), g});
+        }
+        for (Object[] o : out)
+            f.goalSelector.removeGoal((Goal) o[1]);
+        taken.put(f, out);
     }
 
     /**
@@ -153,8 +205,13 @@ public final class FrostmawLurker implements Lurker {
     public void release(Mob mob) {
         bearings.remove(mob);
         searched.remove(mob);
+        HELD.remove(mob);
+        List<Object[]> out = taken.remove(mob);
         if (!(mob instanceof EntityFrostmaw f))
             return;
+        if (out != null)
+            for (Object[] o : out)
+                f.goalSelector.addGoal((Integer) o[0], (Goal) o[1]);
         f.setAlwaysActive(false);
         f.clearRestriction();
     }

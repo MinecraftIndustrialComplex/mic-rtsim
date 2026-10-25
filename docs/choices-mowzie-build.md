@@ -3639,6 +3639,33 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       is therefore searched at most once in `RESEARCH_TICKS` (10) ticks of one body (a game-time stamp by body, in
       a weak map, dropped in `release`), and the figure test 9 logs (searches per second) shows the rate.
     - Test 9 asserts where the body rests, not that it rests within `STAND` (MZB-370's amendment).
+  - Amendment (the re-check's P1, the hold lost to the jar's chase; compiled, not run): the core's `aim` gives a
+    held puppet the nearest player within 50 blocks, and the jar's `EntityFrostmaw.tick` then walks it to that
+    target every tick it is more than 5.5 blocks off (`getNavigation().moveTo(target, 1.0)`, 0.95 in the slam),
+    replacing the hold's path, while the hold looked again once in `RESEARCH_TICKS` (10): the puppet followed a
+    player to the rail. Inside the stand the jar's `getNavigation().stop()` each tick cleared the hold's path
+    and a fresh A* ran each tick. Fix: `EntityFrostmawMixin` wraps the three `PathNavigation.moveTo(Entity, double)`
+    and the three `PathNavigation.stop()` calls in `tick()` (counted in the jar by javap and cfr, `require = 3,
+    allow = 3`) with `@WrapOperation`; for a body that `FrostmawLurker.holds(f)` the chase is not made and the
+    stop is not made (`moveTo` returns false, as the jar reads a failed path). `holds` is a game-time stamp the
+    hold sets each tick it runs, good for 3 ticks (`HELD_FRESH`) and dropped in `release`, so a hold that lapses
+    without a release (a plugin or lurk table reset) frees the jar's chase again within three ticks, and a body
+    that is not held is never touched. While held the Frostmaw's `RandomStrollGoal` and `MoveTowardsRestrictionGoal`
+    are taken out of its goal selector (kept with their priority in a weak map, put back by `release`): the
+    stroll walks a body up to its restriction radius (2) from the spot's block, which is past `STAND` and toward
+    the rail. Not taken out: the jar's attack animations and their turn toward the target (a swipe at a player in
+    reach is the jar's own; the strike's bearing is MZB-361's amendment above). The 10 tick throttle stays: with
+    the chase gated it only limits repeated tiny searches when the body rests just beyond `STAND` (the navigation
+    ends a path within 0.5 on each axis, so a rest at 0.55 to 0.7 is possible; the round decides whether a rest
+    within `STAND` is reliable, and the steady-stretch check allows `STEADY_PATHS` = 2 new paths).
+    `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget` (mowziesmobs, batch `frostmaw_lurk_chase`): a held
+    puppet with no crystal is moved 2 blocks north of its spot and set on a hovering 1000 health player 8
+    blocks west (past the jar's 5.5 and 6.5); it must be within `STAND` of the spot within 200 ticks, never
+    nearer the player than the spot is less `STAND`, and then for 100 ticks stay within `STAND` and be given at
+    most 2 new paths (a new non-null `getPath()` instance, polled each tick). Expected on the unfixed code: the
+    jar's chase runs nine ticks in ten and the puppet walks west: "back within 0.5 blocks of its spot in 200
+    ticks (... the closest it came to the spot ...)" fails first, or if it stands the later checks (nearest
+    approach, new paths) fail. The figures are recorded (`back`, `steady`).
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
