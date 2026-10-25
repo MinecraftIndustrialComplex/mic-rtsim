@@ -933,6 +933,9 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
             let n = r.len_prefix(8)?;
             (0..n).map(|_| r.u64()).collect::<codec::Result<Vec<_>>>()?
         },
+        march_rev: 0,
+        march_due: false,
+        unseen_due: Tick::ZERO,
     })
 }
 

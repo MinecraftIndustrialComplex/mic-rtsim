@@ -430,6 +430,18 @@ pub struct Party {
     /// after the party has ended finds no party (`party_of` checks the handle's generation and the
     /// epoch). Saved with the party.
     pub casualty_ops: Vec<u64>,
+    /// The revision of the march record last built for it (BAND_MARCH, MZB-451): it rises by one
+    /// for each record, so Java keeps the latest of a session (a map of its own, per session).
+    /// Saved with the party (RTC11, MZB-453).
+    pub march_rev: u32,
+    /// What the march record says has changed since the record last built: the party is on
+    /// [`Conflict::march_due`] while this is set. Saved with the party, as the outbox is, so a mark
+    /// made before a crash is not lost (MZB-453).
+    pub march_due: bool,
+    /// The tick of the party's one `Unseen` that acts (MZB-458): `book_unseen` sets it to the tick
+    /// it books, and an `Unseen` popped at another tick finds it moved and does nothing, so a
+    /// re-bind adds no event that fires with the old ones. Saved with the party.
+    pub unseen_due: Tick,
 }
 
 impl Party {
@@ -990,6 +1002,10 @@ pub struct Conflict {
     /// The CHIEF_STATE records ingested while replaying (RP-100), the latest for each faction key:
     /// applied at the replay end, after every replayed record. Not state.
     pub(crate) chief_states_held: BTreeMap<u64, boundary::ChiefState>,
+    /// The parties whose march record is due (`Party::march_due` set), in the order marked
+    /// (MZB-451). Derived: `take_commands` sorts it by handle and empties it, and a load rebuilds
+    /// it from the flags. Not saved.
+    pub(crate) march_due: Vec<Handle<Party>>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -1103,6 +1119,7 @@ impl Conflict {
             rail_held_n: 0,
             durable_held: 0,
             chief_states_held: BTreeMap::new(),
+            march_due: Vec::new(),
         }
     }
 
@@ -1197,8 +1214,112 @@ impl Conflict {
         m
     }
 
+    /// The commands the engine has queued, taken by the host. The march records of the parties
+    /// whose march changed since the last take come first, one for each party in handle order,
+    /// the rest of the outbox after them unchanged (MZB-451). While the session's replay runs
+    /// none is built and the flags stay set (MZB-484): the replay's records are the last
+    /// session's, Java's map holds nothing of them, and the first take after the replay sends each
+    /// party the state the replay left. A party that is gone is skipped.
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        self.outbox.take()
+        if self.outbox.replaying() || self.march_due.is_empty() {
+            return self.outbox.take();
+        }
+        let mut due = std::mem::take(&mut self.march_due);
+        due.sort();
+        due.dedup();
+        let rest = self.outbox.take();
+        let per = crate::tables::FACTIONS_PER_PAGE as usize;
+        let mut built = 0;
+        for p in due {
+            let Some(x) = self.parties.get_mut(p).filter(|x| x.march_due) else {
+                continue;
+            };
+            x.march_due = false;
+            x.march_rev = x.march_rev.saturating_add(1);
+            let record = self.march_record(p, false);
+            self.outbox.push(Cmd::March(record));
+            built += 1;
+            if built % per == 0 {
+                self.enforce_budget();
+            }
+        }
+        let mut out = self.outbox.take();
+        out.extend(rest);
+        out
+    }
+
+    /// The party's march has changed (MZB-451): its next take builds one record with what it
+    /// is then. Several changes between takes make one record. A party gone is no one's.
+    pub(crate) fn march_changed(&mut self, p: Handle<Party>) {
+        let Some(x) = self.parties.get_mut(p) else {
+            return;
+        };
+        if !x.march_due {
+            x.march_due = true;
+            self.march_due.push(p);
+        }
+    }
+
+    /// The party's BAND_MARCH as it stands (MOWZIE.md §4.16, MZB-452), carrying `march_rev` as the
+    /// caller has set it. `ended`: the party has ended (`home` removed its row).
+    pub(crate) fn march_record(&self, p: Handle<Party>, ended: bool) -> boundary::BandMarch {
+        let x = &self.parties[p];
+        let f = &self.factions[x.faction as usize];
+        let c = self.culture(x.faction);
+        let phase = match x.phase {
+            Phase::Mustering => boundary::MARCH_MUSTERING,
+            Phase::Out => boundary::MARCH_OUT,
+            Phase::Waiting => boundary::MARCH_WAITING,
+            Phase::Fighting => boundary::MARCH_FIGHTING,
+            Phase::Home => boundary::MARCH_HOME,
+        };
+        let mut units: Vec<(u32, u32)> = Vec::new();
+        for &(u, n) in &x.units {
+            if n == 0 {
+                continue;
+            }
+            let body = body_id(&self.cultures, &c.unit(u).body);
+            match units.iter_mut().find(|e| e.0 == body) {
+                Some(e) => e.1 += n,
+                None => units.push((body, n)),
+            }
+        }
+        units.sort_unstable();
+        let seg = (x.seg as usize).min(x.route.len().saturating_sub(1));
+        let at = |i: usize| (x.route[i].0, x.route[i].1, x.times[i].0 as i64);
+        let waypoints: Vec<(i32, i32, i64)> = match x.phase {
+            Phase::Mustering => (0..x.route.len()).map(at).collect(),
+            Phase::Out | Phase::Home => (seg..x.route.len()).map(at).collect(),
+            Phase::Waiting | Phase::Fighting => {
+                let (px, pz) = *x.route.last().expect("a route");
+                vec![(px, pz, x.until.0 as i64)]
+            }
+        };
+        let mut flags = 0;
+        if x.chief {
+            flags |= boundary::MARCH_CHIEF;
+        }
+        if ended || (x.alive() == 0 && !x.chief) {
+            flags |= boundary::MARCH_ENDED;
+        }
+        boundary::BandMarch {
+            agent: Party::agent(p),
+            revision: x.march_rev,
+            dimension: u32::from(x.frame),
+            faction: f.key,
+            culture: u32::from(f.culture) + 1,
+            kind: x.kind as u8,
+            phase,
+            flags,
+            partner: 0,
+            muster_end: if x.phase == Phase::Mustering {
+                x.until.0 as i64
+            } else {
+                0
+            },
+            units,
+            waypoints,
+        }
     }
 
     /// Between [`Conflict::begin_replay`] and [`Conflict::replay_done`]: the session's replay
@@ -1628,6 +1749,7 @@ impl Conflict {
             .collect();
         for p in led {
             self.parties[p].chief = false;
+            self.march_changed(p);
         }
         // News of the fall (TALK.md §9.4, TK26), witnessed by the new chief and heir, so the camp
         // tells its own loss (its chief's Killing names the dead chief, who has left the camp).
@@ -3135,7 +3257,11 @@ impl Conflict {
             breaker: None,
             fight_strength: 0.0,
             casualty_ops: Vec::new(),
+            march_rev: 0,
+            march_due: false,
+            unseen_due: Tick::ZERO,
         });
+        self.march_changed(p);
         self.stats.parties[kind.index()] += 1;
         if kind.is_war() {
             self.factions[f as usize].away += start_units;
@@ -3277,6 +3403,7 @@ impl Conflict {
                 self.camp_set_out(p, at);
                 self.parties[p].phase = Phase::Out;
                 self.parties[p].seg = 0;
+                self.march_changed(p);
                 self.start_segment(w, infra, p, at);
             }
             Phase::Out | Phase::Home => {
@@ -3339,6 +3466,10 @@ impl Conflict {
         let (kind, phase, embodied, epoch, frame) = (x.kind, x.phase, x.embodied, x.epoch, x.frame);
         // A band bound for a track has its trains from sampling (MOWZIE.md ledger 8).
         let to_track = matches!(x.target, Target::Track { .. });
+        // A route the record cannot hold whole sends the window from this segment on (MZB-455).
+        if x.route.len() - s >= boundary::MAX_ENTRIES {
+            self.march_changed(p);
+        }
         self.book_leg(w, p, a, b, t0.max(at), t1);
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
@@ -3774,6 +3905,7 @@ impl Conflict {
         x.phase = Phase::Waiting;
         x.until = until;
         let here = *x.route.last().expect("a route");
+        self.march_changed(p);
         self.book_leg(w, p, here, here, at, until);
         let plan = self.bump(p);
         self.schedule(until, Ev::Party { party: p, plan });
@@ -4629,6 +4761,7 @@ impl Conflict {
         x.phase = Phase::Home;
         x.feud = x.feud.filter(|_| x.kind != PartyKind::Envoy);
         let (a, b, t1) = (x.route[0], x.route[1], x.times[1]);
+        self.march_changed(p);
         self.book_leg(w, p, a, b, at, t1);
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
@@ -4743,6 +4876,7 @@ impl Conflict {
                 x.target = Target::Pos(track);
             }
             x.phase = Phase::Waiting;
+            self.march_changed(p);
         }
         self.note(
             at,
@@ -4868,6 +5002,7 @@ impl Conflict {
             x.wave = 0;
             x.spawned.clear();
         }
+        self.march_changed(p);
         self.fights_unanswered.insert(p, (epoch, at));
         let here = *self.parties[p].route.last().expect("route");
         self.book_leg(w, p, here, here, at, ends);
@@ -5679,6 +5814,12 @@ impl Conflict {
         // notices go again from what is kept, after the replay (`resend_notices`). Every push is
         // gated from here to `replay_done`.
         self.outbox.begin_replay();
+        // Java's map of marches is per session (MOWZIE.md §4.16, MZB-451): every party is marked,
+        // and the first take after the replay sends each what it is then.
+        let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
+        for p in ids {
+            self.march_changed(p);
+        }
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
@@ -5715,6 +5856,7 @@ impl Conflict {
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
             }
+            self.march_changed(p);
         }
         self.fill_deaths.clear();
         // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
@@ -6721,6 +6863,7 @@ impl Conflict {
             return;
         }
         self.parties[p].chief = false;
+        self.march_changed(p);
         let (x, z) = self.party_pos(p, at);
         let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
@@ -7214,6 +7357,7 @@ impl Viewer for Conflict {
             // A watched fight with nobody watching goes on abstractly at its next event.
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
+                self.march_changed(p);
             }
         }
     }

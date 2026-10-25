@@ -1174,6 +1174,10 @@ impl Conflict {
     /// whose bodies are gone first, so fewer bodies are removed later; a slot left behind that
     /// dies is dead, left. The room they leave refills (`unblock`).
     pub(super) fn party_lost(&mut self, p: Handle<Party>, lost: u32, at: Tick) {
+        // Every unit loss of every kind reaches the march record's counts (MZB-451).
+        if lost > 0 {
+            self.march_changed(p);
+        }
         if lost == 0 || !self.parties[p].kind.is_war() {
             return;
         }
@@ -2614,6 +2618,8 @@ impl Conflict {
         };
         let x = &mut self.parties[p];
         x.units[k].1 -= 1;
+        self.march_changed(p);
+        let x = &mut self.parties[p];
         let u = x.units[k].0;
         let left = x.units[k].1;
         if let Some(s) = x.spawned.iter_mut().find(|s| s.0 == u) {
