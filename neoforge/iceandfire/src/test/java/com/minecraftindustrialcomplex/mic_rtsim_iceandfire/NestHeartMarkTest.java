@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
  */
 class NestHeartMarkTest {
     private static final long NEST = 0x0001_0000_0000_0007L;
+    /** A nest id that fits an int, so a mark of the wrong (int) type reads back as the same number through getLong. */
+    private static final long SMALL_NEST = 7L;
 
     /** What a spawner block entity's {@code saveCustomOnly} holds once its persistent data carries {@code persistent}. */
     private static CompoundTag spawnerSave(CompoundTag persistent) {
@@ -43,12 +45,17 @@ class NestHeartMarkTest {
 
     @Test
     void aMarkOfTheWrongTypeIsNotOne() {
+        // A nest id that fits an int: without the type check, getLong on an int tag would read it back as the very id.
         CompoundTag persistent = new CompoundTag();
-        persistent.putInt(Nests.HEART_TAG, (int) NEST);
-        assertFalse(Nests.marksNest(spawnerSave(persistent), NEST));
+        persistent.putInt(Nests.HEART_TAG, (int) SMALL_NEST);
+        assertFalse(Nests.marksNest(spawnerSave(persistent), SMALL_NEST));
         persistent = new CompoundTag();
-        persistent.putString(Nests.HEART_TAG, Long.toString(NEST));
-        assertFalse(Nests.marksNest(spawnerSave(persistent), NEST));
+        persistent.putString(Nests.HEART_TAG, Long.toString(SMALL_NEST));
+        assertFalse(Nests.marksNest(spawnerSave(persistent), SMALL_NEST));
+        // And the right type for the same id is the nest's.
+        persistent = new CompoundTag();
+        Nests.markHeart(persistent, SMALL_NEST);
+        assertTrue(Nests.marksNest(spawnerSave(persistent), SMALL_NEST));
     }
 
     @Test
