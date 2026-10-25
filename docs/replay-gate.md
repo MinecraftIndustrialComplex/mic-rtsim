@@ -686,8 +686,8 @@ ahead:
   clock to the hand-over's time. It founds nothing while replaying: the regions stay pending (in
   memory, as today between steps) and are founded after the replay end.
 - **Industry** keeps its own clock (`industry::simulate` runs first in the step,
-  `advance_to(tick(game_time))`) and its own replay rules; it is not held. The modules meet it in two
-  ways. Explicit-time lookups, `trains_crossed(frame, regions, from, to)` over industry's legs:
+  `advance_to(tick(game_time))`) and its own replay rules. It was not held; since slice R it is
+  (below, and RP-274 in docs/choices-mowzie-build.md). The modules meet it in two ways. Explicit-time lookups, `trains_crossed(frame, regions, from, to)` over industry's legs:
   conflict's ambush at a segment's start (rtsim-conflict engine.rs about L2943), dragons'
   `train_scan` (rtsim-ecology engine.rs about L1596) and ships' `coast_raid` (rtsim-ships engine.rs
   about L3493). While held, a module asks about a window that industry has already passed, and a leg
@@ -699,7 +699,22 @@ ahead:
   body). Dragons' and pirates' raids are slices D's and S's check. **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
   industry's own replay); the long-replay tests run with industry on and off. Slice R found that a replay of several hand-overs then derives different industry op ids
-  (RP-262, RP-263 in docs/choices-mowzie-build.md).
+  (RP-262, RP-263 in docs/choices-mowzie-build.md), and that a station exchange is then loaded
+  twice (RP-277). **Reversed for slice R, as the coordinator approved (RP-274):** industry is held
+  while replaying, by its own flag check rather than the replay clock. `industry::simulate` returns
+  while `st.replaying` (no session start, no deferred latest-wins records, no threats, no run of the
+  clock, no commands into the queue), and `journaled` does not flush the deferred records then; the
+  replayed records still run the engine at their own ticks. The first step after the replay end
+  (`replay_end_if_due` runs before `industry::simulate`) runs the held step in the order the first
+  replayed hand-over ran it before: the session start at SESSION_START's game time, the deferred
+  records, the threats, the clock to the hand-over's time, the commands. The reasons above still
+  hold or are answered: industry has no gate and embodies nothing, so the commands its replayed
+  records decide wait in its outbox and go after the end, answered DUPLICATE by op where Java
+  applied them (RP-272); the threats and the deferred records are this session's, at its present,
+  past every replayed record; the module switch sets the session start that runs at the end. Every
+  industry op id derives with its decision's own tick, never the clock (RP-270, RP-271). The
+  dragons' and pirates' raids still run industry's clock to their own tick when they land while
+  it is held (`IndustryLink`): slices D and S.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
   `industry::journaled` after `shared::catch_up` to the record's time, so they follow the records
   like every other journaled record (§4.4's note).
@@ -1437,6 +1452,16 @@ rustfmt only on files whose base is clean (protocol.rs is not: hand-format). The
 player positions only in the first hand-over at each game time. A long replay needs enough fillers
 to span three or more hand-overs on a `MIN_CAPACITY` engine (`MAX_RECORD + 128`, about 64 KB):
 4,000 small records, not 1,500.
+
+**Crash tests replay over several hand-overs (slice R, RP-276 in docs/choices-mowzie-build.md).** A
+replay of one hand-over hides every fault that needs a later replayed hand-over to meet what an earlier
+one did: slice R's industry crash tests passed on one hand-over and failed on several (other op ids, a
+station exchange loaded twice, a chunk reconciled twice). So every crash test of a module's own slice
+replays at least two hand-overs (fillers after the pages and a `MIN_CAPACITY` reopen), asserts the count
+(`stats.replay_handovers`), and the slice has one test with nine or more; a one-hand-over test stays
+only as a control. Start the reopened harness at the world's present (`Java::open` resets game time to
+1000; `mc_tick` then follows the fake world). This is filed for the dragons' (§9.2), herds' (§9.4),
+ships' (§9.5) and conflict's crash tests, in their own slices; slice R changed none of their tests.
 
 ### 9.1 Slice C: the flag, the replay end, the clock, conflict
 
