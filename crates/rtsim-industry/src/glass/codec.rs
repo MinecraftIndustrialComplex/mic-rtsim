@@ -13,7 +13,7 @@ use super::records::{
     GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NONE, NodeKind,
     ProbeSample, ProbeSet, RateEntry, Term,
 };
-use crate::ids::{ChunkPos, Good};
+use crate::ids::{ChunkPos, DistrictId, Good};
 use crate::wire::{R, W, WireError, check, n32, sized};
 
 pub const IND_GRAPH_NODE: u16 = 0x0048;
@@ -50,6 +50,7 @@ pub const DOMAIN_FIXED: usize = 88;
 pub const LEVEL24: usize = 24;
 pub const SOURCE32: usize = 32;
 pub const MEMBER24: usize = 24;
+pub const PEER8: usize = 8;
 pub const END_SIZE: usize = 80;
 pub const PROBE_FIXED: usize = 40;
 pub const TICKING_SIZE: usize = 48;
@@ -246,7 +247,7 @@ pub fn encode_obs(
             w.put_u32(n32(d.sources.len()));
             w.put_u32(n32(rows));
             w.put_u32(d.foreign);
-            w.zero(4);
+            w.put_u32(n32(d.peers.len()));
             let level = |w: &mut W, l: &DomainLevel| {
                 w.put_u32(l.selector);
                 w.put_i32(l.speed_num);
@@ -277,6 +278,9 @@ pub fn encode_obs(
                 w.put_i32(m.ratio_num);
                 w.put_u32(m.ratio_den);
                 w.put_f64(m.impact);
+            }
+            for p in &d.peers {
+                w.put_u64(p.0);
             }
             w.finish()
         }
@@ -443,17 +447,22 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
             let ns = r.get_u32(72) as usize;
             let nr = r.get_u32(76) as usize;
             let foreign = r.get_u32(80);
+            let np = r.get_u32(84) as usize;
             check(
                 kind,
                 size,
                 sized(
                     sized(
-                        sized(sized(DOMAIN_FIXED, l, LEVEL24), ns, SOURCE32),
-                        nr,
-                        LEVEL24,
+                        sized(
+                            sized(sized(DOMAIN_FIXED, l, LEVEL24), ns, SOURCE32),
+                            nr,
+                            LEVEL24,
+                        ),
+                        n,
+                        MEMBER24,
                     ),
-                    n,
-                    MEMBER24,
+                    np,
+                    PEER8,
                 ),
             )?;
             if foreign as usize > n {
@@ -462,6 +471,7 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
             let s0 = DOMAIN_FIXED + LEVEL24 * l;
             let r0 = s0 + SOURCE32 * ns;
             let m0 = r0 + LEVEL24 * nr;
+            let p0 = m0 + MEMBER24 * n;
             let level = |e: usize| DomainLevel {
                 selector: r.get_u32(e),
                 speed_num: r.get_i32(e + 4),
@@ -513,6 +523,9 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
                             impact: r.get_f64(e + 16),
                         }
                     })
+                    .collect(),
+                peers: (0..np)
+                    .map(|i| DistrictId(r.get_u64(p0 + PEER8 * i)))
                     .collect(),
             })
         }
@@ -764,6 +777,7 @@ mod tests {
                 ratio_den: 2,
                 impact: 4.0,
             }],
+            peers: vec![DistrictId(3), DistrictId(1 << 33)],
         };
         let end = GraphEnd {
             district: DistrictId(7),

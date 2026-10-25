@@ -252,6 +252,7 @@ pub fn factory(cells: u32, slack: bool) -> Vec<GlassObs> {
             levels: vec![DomainLevel::speed_row(32)],
             sources: vec![DomainSource::fixed(i64::from(d), 32, 4096.0)],
             foreign: 0,
+            peers: Vec::new(),
             members: vec![
                 member(mixer, 4.0),
                 member(presses[0], 8.0),

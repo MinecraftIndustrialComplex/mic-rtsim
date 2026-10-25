@@ -359,8 +359,8 @@ pub struct GraphRecipe {
 /// One row (Level24). A domain's speed row is a speed of its reference (the frame of its
 /// members' ratios) that its sources can give, with `selector` and `capacity` 0. A source's row
 /// is one of its states: `selector` the boiler level that selects it (0 to 18) for a driven
-/// source, 0 for a fixed one; `speed` its own generated speed, signed; `capacity` its capacity in
-/// SU at that speed.
+/// source, or [`DomainLevel::PASSIVE`] for its passive row, 0 for a fixed one; `speed` its own
+/// generated speed, signed; `capacity` its capacity in SU at that speed.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct DomainLevel {
     pub selector: u32,
@@ -370,6 +370,11 @@ pub struct DomainLevel {
 }
 
 impl DomainLevel {
+    /// The selector of a driven source's passive row: its boiler has passive heat and no active
+    /// heat, and water and size enough for a level (Create's `BoilerData.isPassive`: the engines
+    /// run at an eighth of their efficiency; choice SC154).
+    pub const PASSIVE: u32 = 19;
+
     pub fn speed(&self) -> f64 {
         f64::from(self.speed_num) / f64::from(self.speed_den.max(1))
     }
@@ -482,9 +487,14 @@ pub struct GraphDomain {
     pub levels: Vec<DomainLevel>,
     /// Sorted by position.
     pub sources: Vec<DomainSource>,
-    /// The last `foreign` members lie in chunks of no district (a shared network's part, SEC-1 S5).
+    /// The last `foreign` members lie in chunks of no district (a shared network's part, SEC-1 S5):
+    /// the tail one part of the network counts.
     pub foreign: u32,
     pub members: Vec<Member>,
+    /// A shared part's peers: the other districts whose chunks hold a listed member or source of
+    /// the network, or a chunk it reaches. Ascending, distinct, never the own; empty unless
+    /// [`domain_flags::SHARED`].
+    pub peers: Vec<DistrictId>,
 }
 
 impl GraphDomain {
@@ -497,6 +507,11 @@ impl GraphDomain {
     pub fn driven(&self) -> bool {
         self.sources.iter().any(|s| s.driver.is_some())
     }
+
+    /// Whether it is a part of a network that spans districts ([`domain_flags::SHARED`]).
+    pub fn shared(&self) -> bool {
+        self.flags & domain_flags::SHARED != 0
+    }
 }
 
 pub mod domain_flags {
@@ -504,7 +519,9 @@ pub mod domain_flags {
     pub const OVERSTRESSED: u32 = 1;
     /// Stress is disabled in the server config (never overstressed).
     pub const STRESS_DISABLED: u32 = 2;
-    /// A part of a network that spans districts (SEC-1 S5).
+    /// A part of a network that spans districts (SEC-1 S5-2): its sources are every source Create
+    /// lists (a foreign one, in another district's chunks, with no rows), its members its own and
+    /// the tail in no district's chunks, its peers the other districts on it.
     pub const SHARED: u32 = 4;
 }
 

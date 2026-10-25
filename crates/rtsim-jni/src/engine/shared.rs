@@ -81,18 +81,41 @@ fn with_viewers<R>(
     st: &mut State,
     f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
 ) -> R {
-    with_viewers_of(st, true, f)
+    with_viewers_of(st, Hear::ALL, f)
 }
 
-/// [`with_viewers`], the conflict among them only when `conflict` (the session start leaves it
-/// out, RP-26).
+/// The modules that hear a player leave through [`with_viewers_of`], beyond those that always do
+/// (the dragons and the ships, which hear it and do nothing at SESSION_START: neither `Viewer`
+/// overrides `player_left`, so the trait's no-op default runs).
+#[derive(Clone, Copy)]
+struct Hear {
+    herds: bool,
+    conflict: bool,
+}
+
+impl Hear {
+    const ALL: Hear = Hear {
+        herds: true,
+        conflict: true,
+    };
+    /// The session start's arm (docs/replay-gate.md §2.1, §5.1, §5.6, RP-26): the conflict and the
+    /// herds do their player work at their replay end, so that the groups the pages hold in view
+    /// stay what they were while the journal's records of them are applied.
+    const SESSION_START: Hear = Hear {
+        herds: false,
+        conflict: false,
+    };
+}
+
+/// [`with_viewers`], the herds and the conflict among them only when `hear` says so.
 fn with_viewers_of<R>(
     st: &mut State,
-    conflict: bool,
+    hear: Hear,
     f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
 ) -> R {
-    let (d_on, s_on, h_on) = (dragons::running(st), ships::running(st), herds::running(st));
-    let c_on = conflict && conflict::running(st);
+    let (d_on, s_on) = (dragons::running(st), ships::running(st));
+    let h_on = hear.herds && herds::running(st);
+    let c_on = hear.conflict && conflict::running(st);
     let w = &mut st.phase1.world;
     let mut v: Vec<&mut dyn Viewer> = Vec::with_capacity(4);
     if d_on {
@@ -165,14 +188,14 @@ pub(super) fn introduce_conflict(st: &mut State) {
 
 // ---- the interest areas ---------------------------------------------------------------------------
 
-/// SESSION_START: every player's area goes (the world forgets where players were). The ships and
-/// the herds hear it (their bodies end at the arm until their slices move that work into their
-/// replay end). The dragons hear it too, and it does nothing to them (RP-70, RP-76): their
-/// `Viewer` has no `player_left` override, so it is as if they were left out of the arm, and
-/// their bodies are kept to the replay end, whose `replay_done` does the player work (§5.6). The
-/// conflict does not hear it (docs/replay-gate.md §2.1, §5.1, RP-26): its `player_left` would
-/// recall the bands the pages hold in view, whose replayed records count against them, and its
-/// replay end does that player work for every player (§5.6).
+/// SESSION_START: every player's area goes (the world forgets where players were). The dragons
+/// and the ships hear it, and it does nothing to either (RP-70, RP-76, RP-91): their `Viewer`s have
+/// no `player_left` override, so the trait's no-op default runs, as if they were left out of the
+/// arm. The dragons' bodies are kept to the replay end, whose `replay_done` does the player work
+/// (§5.6), and the ships' end at the replay end too. The herds and the conflict do not hear it
+/// (docs/replay-gate.md §2.1, §5.1, RP-26, RP-87): a `player_left` would recall the bands and
+/// despawn the groups the pages hold in view, whose replayed records count against them, and
+/// their replay ends do that player work for every player (§5.6).
 pub(super) fn session_start(st: &mut State) {
     st.shared.pending.clear();
     st.shared.present.clear();
@@ -188,7 +211,7 @@ pub(super) fn session_start(st: &mut State) {
         return;
     }
     for p in with_area {
-        with_viewers_of(st, false, |w, v| w.leave_area(p, v));
+        with_viewers_of(st, Hear::SESSION_START, |w, v| w.leave_area(p, v));
     }
     st.phase1.taint();
 }
@@ -392,11 +415,14 @@ fn replay_end(st: &mut State) {
     st.replays_ended += 1;
     let g = conflict::gate_counts(st);
     let dg = dragons::gate_counts(st);
+    let h = herds::gate_counts(st);
     log_info(&format!(
         "the session's replay is over after {} hand-overs: {} records applied while replaying; \
-         conflict: {} commands dropped while replaying, {} of a kind that embodies (a bug), {} \
-         decisions that embody deferred; dragons: {} commands dropped while replaying, {} of a kind \
-         that embodies (a bug), {} decisions that embody deferred",
+         totals since each engine started: conflict: {} commands dropped while replaying, {} of \
+         a kind that embodies (a bug), {} decisions that embody deferred; dragons: {} commands \
+         dropped, {} of a kind that embodies (a bug), {} decisions that embody deferred; herds: \
+         {} commands dropped, {} of a kind that embodies (a bug), {} decisions that embody \
+         deferred, {} groups honoured",
         st.replay_handovers,
         st.replay_records,
         g.dropped,
@@ -404,7 +430,11 @@ fn replay_end(st: &mut State) {
         g.deferred,
         dg.dropped,
         dg.never,
-        dg.deferred
+        dg.deferred,
+        h.dropped,
+        h.never,
+        h.deferred,
+        herds::honoured(st)
     ));
     dragons::replay_end(st);
     ships::replay_end(st);
