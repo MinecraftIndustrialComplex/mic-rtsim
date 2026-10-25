@@ -1873,71 +1873,189 @@ fn a_stack_decided_again_from_more_is_another_op() {
     ok(&mut b);
 }
 
-/// MZB-446 (amended at the re-check): the real bound of a crash's gift. A session names the chest
-/// and then takes three payments (30, 50, 40), each stack put down and answered before the next
-/// payment: 120 nuggets are in the chest and nothing is owed. The chest's chunk is saved after
-/// those stacks but the pages are not, and then the server dies. The replay books the three
-/// payments and the chest, places nothing (the camp is out), and the census decides stacks of 64
-/// and 56 from the 120 owed: ops the plugin never saw (the amount is in the op), so both are put
-/// down, on top of the 120 the chunk kept. The gift is every stack answered since the last save
-/// (120, not one stack), the journal ahead of the world, as a replayed CHIEF_PAID after a
-/// player's inventory rolled back gifts the same way. Nothing is ever lost, and the books stay
-/// right.
+/// A record of the journal's tail for the tribute's crash tests: an observation, or Java's answer
+/// to a stack (the COMMAND_RESULT rtsim-jni's `after_core` hands to `tribute_placed` or
+/// `tribute_failed`).
+enum TributeRec {
+    Obs(Obs),
+    Placed(u64),
+    Failed(u64),
+}
+
+/// The session that goes on: each record at its game time, the world run to it first, and each
+/// answer to the stack in flight. Returns the tail as the journal holds it.
+fn play_tribute(
+    r: &mut CampRun,
+    steps: &[(Tick, Option<Obs>, Option<bool>)],
+) -> Vec<(Tick, TributeRec)> {
+    let mut tail = Vec::new();
+    for (t, o, answer) in steps {
+        r.run(*t);
+        if let Some(o) = o {
+            r.c.ingest(&mut r.w, &mut *r.infra, o, *t);
+            tail.push((*t, TributeRec::Obs(o.clone())));
+        }
+        if let Some(placed) = answer {
+            let (op, _) = r.c.placings().next().expect("a stack in flight to answer");
+            if *placed {
+                assert!(r.c.tribute_placed(&mut r.w, op, *t));
+                tail.push((*t, TributeRec::Placed(op)));
+            } else {
+                assert!(r.c.tribute_failed(&mut r.w, op, *t));
+                tail.push((*t, TributeRec::Failed(op)));
+            }
+        }
+    }
+    tail
+}
+
+/// The restart after a crash with the answers in the tail: the session starts, the tail is
+/// replayed as the host replays it (each record at its game time, each answer through the
+/// engine's own entry), and the replay is over. The camp is still out.
+fn replay_tribute(r: &mut CampRun, tail: &[(Tick, TributeRec)]) {
+    r.restart_to_replay();
+    for (t, rec) in tail {
+        r.run(*t);
+        match rec {
+            TributeRec::Obs(o) => r.c.ingest(&mut r.w, &mut *r.infra, o, *t),
+            TributeRec::Placed(op) => {
+                r.c.tribute_placed(&mut r.w, *op, *t);
+            }
+            TributeRec::Failed(op) => {
+                r.c.tribute_failed(&mut r.w, *op, *t);
+            }
+        }
+    }
+    r.c.replay_done();
+}
+
+/// RP-134 (the M9 check, P3-1): a stack decided and answered APPLIED after the last save is booked
+/// from its replayed answer, so the census after the replay decides the next stack, not this one
+/// again from a stock that has moved. The session names the chest and takes 30 nuggets (a stack of
+/// 30, answered), then 40 more (a stack of 40, in flight at the crash). The replay finds no
+/// placing for the first answer and books it by its op; the census then decides the stack of 40 at
+/// the next index, the op the session sent: Java answers it DUPLICATE_OP if it put it down, and
+/// puts it down if not. Without the booking the census decides one stack of 64 from the 70 owed,
+/// an op Java never saw, and the 30 go twice.
 #[test]
-fn a_crash_after_several_answered_stacks_gifts_those_stacks_and_loses_nothing() {
+fn a_stack_answered_after_the_save_is_booked_from_its_replayed_answer() {
+    let (mut a, mut b, id) = twin_groves(28);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let tail = play_tribute(
+        &mut a,
+        &[
+            (t1, Some(chest_record(key, 27)), None),
+            (t1 + 50, Some(pay_record(key, id, 0x6301, 30)), None),
+            (t1 + 60, None, Some(true)),
+            (t1 + 100, Some(pay_record(key, id, 0x6302, 40)), None),
+        ],
+    );
+    let (op2, p2) = a.c.placings().next().expect("the second stack in flight");
+    assert_eq!(p2.amount, 40 * MILLI);
+    assert_eq!(a.c.camp(a.f).unwrap().stacks, 2);
+    let TributeRec::Placed(op1) = tail[2].1 else {
+        panic!("the first stack's answer")
+    };
+    // Live, an answer to an op no placing holds is no tribute's.
+    let at = a.c.now();
+    assert!(
+        !a.c.tribute_placed(&mut a.w, op1, at),
+        "live, a spent op books nothing"
+    );
+    replay_tribute(&mut b, &tail);
+    assert_eq!(b.c.placings().count(), 0, "the camp is out in the replay");
+    assert_eq!(owed(&b), 40, "the first stack is booked from its answer");
+    assert_eq!(b.c.camp(b.f).unwrap().stacks, 1, "the count passes it");
+    assert_eq!(b.c.stats.tribute_stacks, a.c.stats.tribute_stacks);
+    b.camp_in();
+    let to = b.c.now() + 10;
+    b.run(to);
+    let (again, q) = b.c.placings().next().expect("the next stack");
+    assert_eq!(
+        (again, q.amount),
+        (op2, p2.amount),
+        "the stack the session sent, not the first again"
+    );
+    let at = b.c.now();
+    assert!(
+        b.c.tribute_placed(&mut b.w, again, at),
+        "DUPLICATE_OP is an answer"
+    );
+    assert_eq!(owed(&b), 0);
+    assert_eq!(b.c.placings().count(), 0, "nothing goes twice");
+    ok(&mut b);
+}
+
+/// RP-134: a replayed FAILED for a stack decided after the save passes its index and forgets the
+/// chest, as the session did. The session's first stack of 30 fails, the plugin names the chest
+/// again, the stack goes again at the next index and is answered APPLIED. The replay books both
+/// answers, so the census places nothing: without them it decides the first index again, an op Java
+/// answered FAILED and so puts down, on top of the second.
+#[test]
+fn a_replayed_failure_of_a_stack_after_the_save_passes_its_index() {
+    let (mut a, mut b, id) = twin_groves(29);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let tail = play_tribute(
+        &mut a,
+        &[
+            (t1, Some(chest_record(key, 27)), None),
+            (t1 + 50, Some(pay_record(key, id, 0x6401, 30)), None),
+            (t1 + 60, None, Some(false)),
+            (t1 + 100, Some(chest_record(key, 27)), None),
+            (t1 + 110, None, Some(true)),
+        ],
+    );
+    assert_eq!(owed(&a), 0);
+    assert_eq!(a.c.camp(a.f).unwrap().stacks, 2);
+    replay_tribute(&mut b, &tail);
+    assert_eq!(owed(&b), 0, "the second stack is booked from its answer");
+    assert_eq!(b.c.camp(b.f).unwrap().stacks, 2, "both indexes passed");
+    b.camp_in();
+    let to = b.c.now() + 10;
+    b.run(to);
+    assert_eq!(b.c.placings().count(), 0, "nothing goes again");
+    ok(&mut b);
+}
+
+/// MZB-446 (amended at the re-check, and by RP-134): a crash after several answered stacks. A
+/// session names the chest and then takes three payments (30, 50, 40), each stack put down and
+/// answered before the next payment: 120 nuggets are in the chest and nothing is owed. The pages
+/// are not saved after them, and then the server dies. The replay books the three payments and
+/// the chest, and each stack from its replayed answer (RP-134), so the census places nothing: the
+/// 120 are in the chest once, the books are right, and nothing is lost. Before RP-134 the replay
+/// found no placing for the answers, the census decided stacks of 64 and 56 from the 120 owed, ops
+/// the plugin never saw, and every stack answered since the save went twice.
+#[test]
+fn a_crash_after_several_answered_stacks_books_them_and_gifts_nothing() {
     let (mut a, mut b, id) = twin_groves(27);
     let key = a.key;
     let t1 = a.c.now() + 100;
-    let tail = [
-        (t1, chest_record(key, 27)),
-        (t1 + 50, pay_record(key, id, 0x6201, 30)),
-        (t1 + 100, pay_record(key, id, 0x6202, 50)),
-        (t1 + 150, pay_record(key, id, 0x6203, 40)),
-    ];
-    let paid = 30 + 50 + 40;
-    let mut in_chest = 0;
-    let mut answered = Vec::new();
-    for (t, o) in &tail {
-        a.run(*t);
-        a.c.ingest(&mut a.w, &mut *a.infra, o, *t);
-        loop {
-            let next = a.c.placings().next();
-            let Some((op, p)) = next else { break };
-            in_chest += p.amount / MILLI;
-            answered.push(op);
-            let at = a.c.now();
-            assert!(a.c.tribute_placed(&mut a.w, op, at));
-        }
-    }
-    assert_eq!(in_chest, paid);
+    let tail = play_tribute(
+        &mut a,
+        &[
+            (t1, Some(chest_record(key, 27)), None),
+            (t1 + 50, Some(pay_record(key, id, 0x6201, 30)), Some(true)),
+            (t1 + 100, Some(pay_record(key, id, 0x6202, 50)), Some(true)),
+            (t1 + 150, Some(pay_record(key, id, 0x6203, 40)), Some(true)),
+        ],
+    );
+    let answered = tail
+        .iter()
+        .filter(|e| matches!(e.1, TributeRec::Placed(_)))
+        .count();
+    assert_eq!(answered, 3, "a stack for each payment");
     assert_eq!(owed(&a), 0);
-    assert_eq!(answered.len(), 3, "a stack for each payment");
-    // The crash. The COMMAND_RESULTs of the three stacks replay too, but no stack is in flight
-    // in the replay (the camp is out), so `tribute_placed` finds none of them.
-    restart_and_replay(&mut b, &tail);
-    let mut replayed = Vec::new();
-    loop {
-        let next = b.c.placings().next();
-        let Some((op, p)) = next else { break };
-        replayed.push(p.amount / MILLI);
-        assert!(!answered.contains(&op), "an op the plugin answered once");
-        let at = b.c.now();
-        assert!(b.c.tribute_placed(&mut b.w, op, at));
-    }
+    replay_tribute(&mut b, &tail);
     assert_eq!(owed(&b), 0, "the books are right");
+    assert_eq!(b.c.camp(b.f).unwrap().stacks, 3);
+    b.camp_in();
+    let to = b.c.now() + 10;
+    b.run(to);
+    assert_eq!(b.c.placings().count(), 0, "no stack goes twice");
+    assert_eq!(b.c.stats.tribute_stacks, a.c.stats.tribute_stacks);
     ok(&mut b);
-    // The chunk kept the first session's stacks and the replay puts the owed ones down again.
-    let replayed_total: i64 = replayed.iter().sum();
-    assert!(
-        replayed_total >= paid,
-        "nothing lost: the replay owes all {paid}, stacks {replayed:?}"
-    );
-    let chest_holds = in_chest + replayed_total;
-    let gift = chest_holds - paid;
-    assert_eq!(
-        gift, in_chest,
-        "the gift is every stack answered since the save: {replayed:?}"
-    );
 }
 
 /// Review P3-6: the stack in flight is resident, so the engine's memory counts it.
