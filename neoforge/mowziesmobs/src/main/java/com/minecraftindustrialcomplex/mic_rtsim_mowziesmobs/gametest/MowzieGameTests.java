@@ -2540,6 +2540,10 @@ public final class MowzieGameTests {
                     else
                         record(test, "event", "no ticket event fired for the den's chunks (C2ME?): the premise does not hold; the poll found "
                                 + (camps.pollChanges - n[0]) + " chunks moved");
+                    record(test, "agree", events[0][0] + " ticket events, " + (camps.pollChanges - n[0]) + " chunk levels found by the poll after the unload");
+                })
+                // In a wait of its own: under C2ME a level still changing is waited out, not raced (re-check P3).
+                .thenWaitUntil(() -> {
                     // Where no ticket event fired (C2ME) the chunks may still hold a holder above FULL when they are
                     // unloaded to memory, so only that the camp reads them out is asserted (MZB-663).
                     int[] stored = den.site().levels();
@@ -2558,7 +2562,6 @@ public final class MowzieGameTests {
                             check("footprint chunk " + i + " stores the holder's current level (" + l + " against " + now + ")", l == now);
                         }
                     }
-                    record(test, "agree", events[0][0] + " ticket events, " + (camps.pollChanges - n[0]) + " chunk levels found by the poll after the unload");
                 })
                 .thenSucceed();
     }

@@ -2870,7 +2870,7 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
     `strayHold` keeps the age of the hold, and once it is HOLD_MAX ticks old runs the 81-chunk scan once every 100
     ticks instead of each tick. With saving off (`/save-off`: vanilla skips the entity manager's `autoSave`, the only
     thing that clears a C2ME-dropped unload) a late den waits for saving to resume.
-  - The hold's reach (re-check P3): `strayChunkHidden` skips a chunk of the 9 x 9 square whose nearest point to the
+  - The hold's reach (re-check P3): `strayChunkHidden` skips a chunk of the square of chunks round the radius whose nearest point to the
     spot is beyond the radius (the radius is a circle, the square its bounding box). Not taken: skipping the hold when
     the footprint's own strays already fill the free slots (`wideStrays` counts `freeSlots - strayInside`), since it
     needs the footprint scan on every held tick for a case that only delays the census.
@@ -2897,7 +2897,8 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
   Frostmaw test bounds "placed" against the first tick `camps().heldLines() > 0`, not the test's send; the
   ticket-event-live test asserts NO_HOLDER only when a ticket event fired, else that every level reads above FULL and
   equals the holder's own current level (through `getUpdatingChunkIfPresent`, after the `norm` clamp), so a stale
-  stored level fails.
+  stored level fails. The comparison runs in a `thenWaitUntil` of its own, so a level still changing under C2ME is
+  waited out instead of racing the poll.
   `gametest.sh mowziesmobs -Pc2me` runs once after the main round and its result is recorded there.
 - **MZB-664** (P3, doc): `MowzieKit.acknowledge()`'s javadoc said a GameTest server never reaches the periodic
   save. It does, every 6,000 ticks (`MinecraftServer.tickServer`, `saveEverything`; the entity manager's
