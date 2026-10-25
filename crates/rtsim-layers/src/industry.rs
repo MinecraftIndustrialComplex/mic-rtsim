@@ -349,6 +349,11 @@ pub trait IndustrySource {
     /// The sections of the districts with ids in `ids` (slice S7): none by default, as only a
     /// save holds the glass pages.
     fn sections(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&SectionMark)) {}
+    /// Why a save's glass pages give no sections, when some did not read (the sections and
+    /// networks layers say so when they are empty).
+    fn glass_why(&self) -> Option<String> {
+        None
+    }
     /// The package stores with ids in `ids`.
     fn stores(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&StoreMark)) {}
     /// The shared networks with indices in `ids`.

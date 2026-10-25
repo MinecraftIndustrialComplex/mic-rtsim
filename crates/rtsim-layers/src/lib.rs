@@ -1466,7 +1466,10 @@ fn sections(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
             ],
         );
     });
-    Some("no compiled district has sections in this save".into())
+    Some(
+        v.glass_why()
+            .unwrap_or_else(|| "no compiled district has sections in this save".into()),
+    )
 }
 
 fn stores(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
@@ -1546,7 +1549,10 @@ fn networks(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
             );
         }
     });
-    Some("no kinetic network spans two districts in this save".into())
+    Some(
+        v.glass_why()
+            .unwrap_or_else(|| "no kinetic network spans two districts in this save".into()),
+    )
 }
 
 fn trains(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {

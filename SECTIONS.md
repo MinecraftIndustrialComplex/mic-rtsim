@@ -982,27 +982,58 @@ No migration code (no backward compatibility before release; G2-85). On load:
 
 ### 8.1 Commands
 
-- `/rtsim district sections [id]`: per section, its nodes, stores, verdict (learning, passed, failed,
-  stale, frozen, replaying), the last window's worst good, and the shared stores with their counting
-  state and residue. `/rtsim district info` gains one line: sections, and how many replay.
+- `/rtsim district sections [name|id]` (permission 2, as the other `/rtsim district` commands): a
+  header (sections, how many may replay and how many replay, the units or the district's window,
+  the shared stores), then one line per section: its lowest node, state (learning, passed, FAILED,
+  stale, frozen, replaying), judging unit or the district's window, group, working or storage, nodes
+  and stores (an inventory number each, `*` when another section shares it, `-` for a store with no
+  inventory), box, fingerprint, open window, windows done, strikes. The first section of a unit
+  names the unit's worst good: the good its last window missed its band by the most, with measured
+  and predicted rates and the excess (SC167). Then one line per store shared by sections: its
+  sections; held by one unit and judged inside it, or counted at its movers (pairs), whether the
+  latest sweep counted it, and its residue per good (SC168). On the stub engine, with no compile,
+  or with no complete compile it says so in one line. `/rtsim district info` gains one line:
+  sections, how many may replay and replay, the shared stores.
 - `/rtsim district graph <id>`: writes the district's compile and members to a file in the server's
   debug folder, the operator command the dump of §1 needed (slice S1); its sections, package stores,
   shared networks and join pairs join the file as slices S2, S4, S5 and S6 bring them. It reads only
   what the engine and the index already hold.
+- Both read the district's live report (`Report::to_f64s`, `GlassReport.decode`), which is built
+  on request: no tick pays for it. The report's sections and shared stores follow its units in the
+  flat array, each with its stride constant (SC165, SC166). A district with one unit or none has no
+  units in the report; its sections then take the district's own window, verdict and replay.
 
 ### 8.2 rtsim-cli
 
 `rtsim-cli glass <world> [district] [--json | --graph]`: the paged glass state of a saved world, read
 only through the read-only open, as `rtsim-cli lines` reads train lines (`crates/rtsim-cli/src/lines.rs`).
-`--graph` writes the compile with `section_of` for offline checks (§9.4). `rtsim-cli stores <world>`
-lists package stores with their pools, held packages and drawn keys.
+`--graph` writes the compile with `section_of` for offline checks (§9.4).
+
+`rtsim-cli stores <world> [--json]`: the package stores of a saved world (the `STORE_TABLE` pages),
+read only the same way. Per store: its id and dimension; its frogports (position, district, star);
+the pool toward each frogport and the no-route pool (packages, goods by name); the census residue;
+the packages held at each frogport with their keys; the drawn keys; the counts (SC171). A world with
+no package store says so and exits 0; a bad argument exits 64, a world that does not open exits 1.
 
 ### 8.3 Viewer
 
-- rtsim-view's district card gains its sections (verdict, nodes, shared stores) and the district's
-  join pairs; the map gains a sections layer below 1 block per pixel (VIEWER.md §7 already plans a glass
-  layer), package stores as edges between frogports, and shared networks.
-- mic-viewer is a public repository: the layer is code only; no world data goes into it.
+- The district card (rtsim-view) gains its sections (state, nodes, stores, a link to each), the
+  stores they share, the package stores with a frogport in the district and the districts they reach,
+  and the shared networks it is a part of. A section, a package store and a shared network each
+  have a card of their own.
+- The map gains three layers (VIEWER.md §7): `industry.sections` below 1 block per pixel (a box a
+  section, coloured by state, SC172), `industry.stores` (an edge between each pair of a store's
+  frogports whose conveyors have a known hop count, wider with the packages held, SC173) and
+  `industry.networks` (an edge from a network's first part to each other part, SC174).
+- A save's glass pages are decoded as the engine decodes them (`read_district_page`), so the viewer
+  shows what the server would report from the same pages, less what only a live sweep knows: a
+  shared store reads as not counted this sweep, with no residue (SC176). A page the save's format
+  dropped is named in the empty layer's reason. The live tap draws the stores only; sections and
+  networks come from saves.
+- Join pairs are not in rtsim's pages (Java's `IndustryData` keeps them), so the viewer cannot draw
+  or list them; the card says which districts a district reaches through a store or a network
+  instead (SC175).
+- mic-viewer is a public repository: the layers are code only; no world data goes into it.
 
 ---
 
@@ -1107,7 +1138,7 @@ repeated on the laptop copy after each slice. That check stays local; nothing fr
 | **S4** | Package stores (Q4): `IndustryData` format 3 with the drop and the engine reset (§6), the store record and identity, `CHAIN_OUT` and `CHAIN_IN` at the frogports of package stores, no `CHAIN` edges on them, pools per destination with routing, room and the census, and the both-away replay on the first cluster that couples districts (a pool shared between them); then the frontier (Q5): routes kept, the hold, `CHAIN_HELD`, drawn keys and their removal | `aChainInsideOneDistrictStaysEdges`, `aChainBetweenTwoFactoriesLeavesThemTwo`, `twoFrogportsOfOneDistrictOnASharedChain`, `aPlayerTakesAPackageOffTheChain`, then `aRouteToAnAwayFrogportIsKept`, `aHeldPackageDrawnIsRemovedOnce`, the store's engine tests | S1. Useful before S6: chains between districts that are apart today are counted nowhere since DS-10 |
 | **S5** | Shared kinetic networks (Q2), in two parts: S5-1 every domain's sources and speed rows within a district (SC144 to SC148), then S5-2 a part per compile, the network registry, the network's state in each part's solve, readers settled at each change (SC151 to SC154) | the extended `aNetworkRecountKeepsAnUnloadedSource` first (S5-1), then `aBoilerOnAChainDrivesTheNextDistrict` (away part), the shared network's engine tests | S1, S2 (the domain check), S4 (the clusters) |
 | **S6** | Level 1: joins J1 to J6, no bare adjacency, saved join pairs, the station rule with `TrainWatch.ports` resolving any district, `IndustryData` format 4 through S4's reset; the stale comment in `CreatePlugin` on chain conveyors | §9.1's join and station rows, and the existing detection tests | S1, S4, S5: no district is split before its packages and its network have somewhere to go |
-| **S7** | Reach: `sections` command, info line, `rtsim-cli stores`, viewer layer and card | command GameTests, rtsim-view fixtures | S2; S4 and S5 for stores and networks |
+| **S7** | Reach: `sections` command, info line, `rtsim-cli stores`, viewer layers and cards (built, §8) | `GlassReportTest`, the report's engine tests, `theSectionsCommandPrintsOneLinePerSection`, rtsim-view card, layer and fixture tests | S2; S4 and S5 for stores and networks |
 
 New mixins go in PATCHES.md (P7) with contract tests.
 
@@ -1424,6 +1455,18 @@ The options below stay as the record of what was offered.
 | SC157 | Join pairs are replaced at chunk grain: a saved pair goes when the walk walked both its chunks, unless either holds a block whose links are not known yet (`IndustryPlugin.linksKnown`: an arm with saved points it has not read, PATCHES.md row 84), whose chunk keeps every saved pair it is in and whose walk reaches their other chunks. A loaded chunk with a saved pair to a member that is not loaded roots the walk (`Rescan.joinedToAway`) while it holds an industrial block entity. Each district keeps the pairs whose two chunks it holds | SC5's rule: what the walk did not see stays as it was last seen, and an arm's empty lists before its first tick are not a sighting |
 | SC158 | A station serves the district holding the most of the inventories its docked interfaces reach (ties to the lowest id). `IND_STATION_PORTS` still names the station's own district and its inventories only, where its cargo is booked | the engine matches a call's cargo against the ports of the district its arrival names (the station's chunk's), so a record for another district would join that district's units for cargo that never comes there (SC75) and leave the station's own exchange without ports; after the attach the two are one |
 | SC159 | A touch of a station or a chain conveyor is no touch: it joins nothing and gives no crossing code (`notLearnable` at a split); a station's touch names J6's candidates. Test districts (`addChunkForTest`) join a new chunk to an 8-adjacent member, else to the district's anchor chunk | J1's exceptions; a crossing code describes a join the operator cut, and these never join. The test helper keeps the fixtures' districts whole now adjacency joins nothing |
+| SC165 | The live report carries the compile's sections and shared stores after its units, flat like the rest, each with a stride constant (`SECTION_STRIDE` 27, `SECTION_STORE_STRIDE` 3, `SHARED_STRIDE` 12, `SHARED_LINK_STRIDE` 2, `SHARED_RESIDUE_STRIDE` 3). A section's verdict, strikes, window and flags are its unit's; with one unit or none (no units in the report) they are the district's own | `Report` already keeps the units apart (SC74), and a district with one unit judges by its own window (`fresh_units`), so a section has nothing else to show; the report is built on request, so the new part costs no tick |
+| SC166 | A section's state is, first that applies: frozen (its unit's replay fell back), stale (an edit inside its box after its pass), replaying (the district replays in glass and the unit may replay), failed (its last window's verdict), passed, else learning | the order of what the engine does with it: a fallback and an edit make a pass count for nothing, a replay is what the player sees, and a pass that does not replay (a unit that may not) is still `passed` |
+| SC167 | The unit's worst good is the failed good of its last window that missed its band by the most (an exact good's band is its prediction, a bounded good's is [lo, hi]); ties to the lowest good. It is not `most_optimistic`, which ranks only the goods the model over-predicts for the derate | the command answers "which good failed this window"; the derate's ranking answers another question and leaves out goods the model under-predicts |
+| SC168 | A counted store's residue in the report is its residue per good since the sweep that took the baseline under the current counters, kept per store (`StoreRes`) and not saved; "counted this sweep" is that the latest count sample covered every pair at it | what `sample_counted` already computes at each sweep is all the report needs; saving it would add a page format for a number a restart makes again within a window |
+| SC169 | `/rtsim district sections` takes a district by name or id, else the district at the player's position, as the other district commands do, prints every section and shared store (the report is already capped by `sectionsMax`), and uses permission 2. Its text is built in `GlassSectionsText`, which needs no Minecraft class | a district's name is what a player knows it by; the formatter on its own is tested by `GlassSectionsTextTest` without a server |
+| SC170 | `/rtsim district info` gains one line, "glass sections: N, M may replay, K replaying, S shared stores (/rtsim district sections)", with the glass lines, whenever the engine gives a report | the line points at the command; a district with no report has no glass lines at all |
+| SC171 | `rtsim-cli stores` lists every store in id order, with the viewer's names from the save: goods from the globals page's goods table, a district and a dimension by Java's names when the world's journal file has them, else by number. `--json` is the same data as one object a store (every census, hold and drawn count included) | one reader of the pages and one set of names for the viewer and the cli; the numbers stay in the output for `/rtsim district sections` |
+| SC172 | The `industry.sections` layer draws each section's node box, grown by one block, as an area coloured by state through the layer's legend (learning amber with a dashed edge, passed teal, failed red with the "bad" hatch, stale red, frozen grey dotted, replaying green) and is drawn from 0 to 1 block per pixel | mic-viewer's area mark takes a legend index and a style among dash, dot and bad, nothing richer; the colour says the state and the style says whether it is a problem; above one block per pixel a box is a speck |
+| SC173 | The `industry.stores` layer draws an edge for each pair of a store's frogports whose conveyors have a known hop count (the store's `hops`), 2 pixels wide for an empty store and up to 7 as `2 + 2 log10(1 + packages)` | the pairs with a known hop are the chain that connects them, so the edges are the chain; a store with several districts shows as the chain between them |
+| SC174 | The `industry.networks` layer draws a shared kinetic network as an edge from its first part's first kinetic source to each other part's, 3 pixels wide, red with the hatch when the network is not coupled; a network of one part known is a ring on its source. The network's id is its place in the registry, so it holds for one save only | the registry's parts are one per district, joined at the sources they share; the simplest mark that names the network and its parts is a star from one of them |
+| SC175 | The viewer does not draw join pairs; the district card names the districts it reaches through a package store or a shared network | the pairs are in Java's `IndustryData`, not in rtsim's pages, and mic-viewer has no way to read the game's world data; the stores and networks are the joins the engine knows |
+| SC176 | The viewer decodes the glass pages in process with the engine's page reader and builds the sections from them with the report's own code (`DistrictSections::of`), so a card and the command agree; the networks are built from the same pages by the registry (`Nets::build`). A page the save's format dropped, or that does not decode, is left out and the layer's reason names it | one reader for the page; a save from an older build then shows the stores and the rest, and says why the sections are missing |
 
 ---
 
@@ -1543,3 +1586,18 @@ The options below stay as the record of what was offered.
   bound the cost either way, at the price of coarser sections.
 - **Stores shared by many sections** are few after the fold, measured on the reference base, see the
   local notes; the design handles them (counting at movers, groups) but they are untested at scale.
+- **What the viewer cannot show of S7** (§8.3, SC172 to SC176):
+  - Join pairs are Java's, not in rtsim's pages: the viewer names the districts a district reaches
+    through a store or a network, and draws no join.
+  - A save has no live count sample: its shared stores read as not counted this sweep with no
+    residue, so a save cannot show a residue the server would. The live tap draws no sections and
+    no networks (only stores), as they are decoded from pages.
+  - A network's id is its place in the registry (the compiles' order), so a card's link to a
+    network holds for one save only; the sections' ids are the district's and the section's index
+    in its compile, which change with a recompile.
+  - mic-viewer's area mark has a legend index and the styles dash, dot and bad only, and an edge
+    mark has no label: a section's state is told by colour and edge, its words by the card and the
+    legend, and an edge's by its card. A network of one known part is a ring, with no edge.
+  - The create GameTest fixture's glass pages are in an older page format (the format drops them),
+    so its sections and networks are empty; its six package stores have frogports in no district. A
+    fresh GameTest run would give the layers something to draw.
