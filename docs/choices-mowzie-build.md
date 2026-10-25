@@ -2878,8 +2878,8 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
   answer is NOTHING). Not run.
   - The untagged stray (P3): a REMOVE or ADOPT by UUID of a stray whose chunk went hidden after its census also
     answered NOTHING and left it alive (the engine's books were right). Each `Site` now keeps the strays its last
-    census listed by UUID (`strayBodies`, rebuilt by each census, emptied when the camp goes out, at most the census
-    cap) and `byUuid` falls back to it (alive, same level). The same GameTest as the radius check ends with that
+    census listed by UUID (`strayBodies`, rebuilt by each census, emptied when the camp goes out and when a session starts
+    (`sessionStarted` sets the epoch to 0 without `out()`, so it clears the map itself), at most the census cap) and `byUuid` falls back to it (alive, same level). The same GameTest as the radius check ends with that
     REMOVE: DONE, the stray goes. Not run.
 - **MZB-662** (P2, test): `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart` waits on `w[0].isRemoved()`
   instead of `unloadedWithout` (`!hasChunk` plus `getEntity == null`, which under C2ME both flip before
