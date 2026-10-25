@@ -7,6 +7,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
@@ -94,8 +95,9 @@ public final class FrostmawGameTests {
      * census that follows reads the chief without its crystal. A second den's scripted SPAWN with the chief
      * flag only is DONE with a crystal-less, persistence-required, sleeping Frostmaw.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "frostmaw_robbed", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_robbed", skyAccess = true)
     public static void aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -112,7 +114,7 @@ public final class FrostmawGameTests {
                     den.force();
                     fresh.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     fresh.lay().declare();
@@ -121,13 +123,13 @@ public final class FrostmawGameTests {
                     check("the Frostmaw has its crystal", f[0].getHasCrystal());
                     check("and no persistence of its own", !f[0].isPersistenceRequired());
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("the den's census", MowzieKit.censusCount(den.faction) >= 1);
                     check("the second den's census", MowzieKit.censusCount(fresh.faction) >= 1);
-                })
+                }))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, id[0]))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("the Frostmaw is tagged (faction, 0, 1)", MowzieKit.tagged(f[0], den.faction, 0, 1));
@@ -136,11 +138,11 @@ public final class FrostmawGameTests {
                     queued[0] = MowzieKit.camps().chiefStatesQueued;
                     thief[0] = MowzieKit.thief(helper, f[0], GameType.SURVIVAL, true, false);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("the thief holds the crystal (" + MowzieKit.crystals(thief[0]) + ")", MowzieKit.crystals(thief[0]) == 1);
                     check("the Frostmaw has lost it", !f[0].getHasCrystal());
                     check("a CHIEF_STATE", !ConflictKit.chiefStates(den.faction).isEmpty());
-                })
+                }))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> cs = ConflictKit.chiefStates(den.faction);
                     check("exactly one CHIEF_STATE (" + cs.size() + ")", cs.size() == 1);
@@ -157,14 +159,14 @@ public final class FrostmawGameTests {
                     FakePlayers.removeSeen(thief[0]);
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(gone(level, () -> f[0]))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(gone(level, () -> f[0])))
                 .thenExecute(() -> {
                     check("no second census yet", MowzieKit.censusCount(den.faction) == 1);
                     den.force();
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     Entity e = level.getEntity(id[0]);
                     check("the Frostmaw is back", e instanceof EntityFrostmaw);
@@ -191,7 +193,7 @@ public final class FrostmawGameTests {
                     op[1] = MowzieKit.reconcile(fresh.faction, MowzieKit.epoch(MowzieKit.census(fresh.faction, 1)),
                             List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(fresh.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(fresh.faction, op[1], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the second den's SPAWN", ConflictKit.outcomes(fresh.faction, op[1]), DONE);
                     List<Entity> h = MowzieKit.held(fresh.faction, 0, 1);
@@ -214,8 +216,9 @@ public final class FrostmawGameTests {
      * snowball, a {@code Projectile} that is no arrow (TaCZ's bullet is one, MZB-282), last, since a hit that
      * lands makes it invulnerable for 10 ticks: true, and the health falls.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1200, batch = "frostmaw_arrows", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_arrows", skyAccess = true)
     public static void anArrowAndATridentDoNothingAndABulletHurtsAFrostmaw(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "anArrowAndATridentDoNothingAndABulletHurtsAFrostmaw";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -225,7 +228,7 @@ public final class FrostmawGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> far.forceRect(cx - 1, cz - 1, cx + 1, cz + 1))
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     int top = MowzieKit.platform(level, (cx - 1) * 16, (cx + 1) * 16 + 15, (cz - 1) * 16, (cz + 1) * 16 + 15);
                     f[0] = MowzieKit.frostmaw(level, new Vec3(cx * 16 + 8.5, top + 1, cz * 16 + 8.5), true);
@@ -274,8 +277,9 @@ public final class FrostmawGameTests {
      * see a real player: only the spectator's Frostmaw is asserted asleep, and whether the other two woke is
      * recorded.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_thieves", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_thieves", skyAccess = true)
     public static void anInvisiblePlayerStealsTheCrystalFromASleepingFrostmaw(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "anInvisiblePlayerStealsTheCrystalFromASleepingFrostmaw";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -294,7 +298,7 @@ public final class FrostmawGameTests {
                     for (int i = 0; i < n; i++)
                         far.forceRect(cx[i] - 1, cz - 1, cx[i] + 1, cz + 1);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     int top = MowzieKit.platform(level, (cx[0] - 1) * 16, (cx[n - 1] + 1) * 16 + 15, (cz - 1) * 16, (cz + 1) * 16 + 15);
                     for (int i = 0; i < n; i++) {
@@ -310,12 +314,12 @@ public final class FrostmawGameTests {
                     thief[3] = MowzieKit.thief(helper, f[3], GameType.SURVIVAL, false, false);
                     thief[4] = MowzieKit.thief(helper, f[4], GameType.SPECTATOR, true, false);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("the invisible survival thief holds a crystal (" + MowzieKit.crystals(thief[0]) + ")", MowzieKit.crystals(thief[0]) == 1);
                     check("the visible creative thief holds a crystal (" + MowzieKit.crystals(thief[1]) + ")", MowzieKit.crystals(thief[1]) == 1);
                     check("the first Frostmaw has lost its crystal", !f[0].getHasCrystal());
                     check("the second Frostmaw has lost its crystal", !f[1].getHasCrystal());
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         check("Frostmaw " + i + " is awake", f[i].getActive());
@@ -357,8 +361,9 @@ public final class FrostmawGameTests {
      * fourth: by a mob, no killer. A generic kill of the fifth with no hit before: by none. Nothing of it
      * reaches the player's chat, action bar or talk.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3500, batch = "frostmaw_kill", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_kill", skyAccess = true)
     public static void aChiefKilledAtTheCampIsReportedWithTheKiller(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3500);
         String test = "aChiefKilledAtTheCampIsReportedWithTheKiller";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -380,7 +385,7 @@ public final class FrostmawGameTests {
                     for (Den d : den)
                         d.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     for (int i = 0; i < n; i++) {
                         den[i].lay().declare();
@@ -394,19 +399,19 @@ public final class FrostmawGameTests {
                             removed[0] = level.getGameTime();
                     });
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < n; i++)
                         check("den " + i + "'s census", MowzieKit.censusCount(den[i].faction) >= 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < n; i++)
                         op[i] = MowzieKit.reconcile(den[i].faction, MowzieKit.epoch(MowzieKit.census(den[i].faction, 1)),
                                 List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[i].getUUID())));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < n; i++)
                         MowzieKit.answered(den[i].faction, op[i], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < n; i++) {
                         check("Frostmaw " + i + " is tagged (faction, 0, 1)", MowzieKit.tagged(f[i], den[i].faction, 0, 1));
@@ -420,7 +425,7 @@ public final class FrostmawGameTests {
                     died[0] = level.getGameTime();
                     MowzieKit.kill(f[0], level.damageSources().playerAttack(hearer[0]));
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH of den 0", ConflictKit.campDeaths(den[0].faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH of den 0", ConflictKit.campDeaths(den[0].faction).size() == 1)))
                 .thenExecute(() -> {
                     chiefDeath("the player's kill", ConflictKit.campDeaths(den[0].faction).get(0), ConflictRecords.BY_PLAYER, hearer[0].getUUID());
                     List<Markers.Seen> m = markers[0].near(fell[0], 4);
@@ -431,7 +436,7 @@ public final class FrostmawGameTests {
                     for (int i = 1; i < n; i++)
                         check("den " + i + " has booked nothing", ConflictKit.campDeaths(den[i].faction).isEmpty());
                 })
-                .thenWaitUntil(() -> check("the body is out of the level", removed[0] != 0))
+                .thenWaitUntil(waits.logic(() -> check("the body is out of the level", removed[0] != 0)))
                 .thenExecute(() -> {
                     long after = removed[0] - died[0];
                     check("removed 70 to 80 ticks after the death (" + after + ")", after >= 70 && after <= 80);
@@ -445,7 +450,7 @@ public final class FrostmawGameTests {
                     check("the wolf's owner is the player", wolf.getOwner() == hearer[0]);
                     MowzieKit.kill(f[1], level.damageSources().mobAttack(wolf));
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH of den 1", ConflictKit.campDeaths(den[1].faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH of den 1", ConflictKit.campDeaths(den[1].faction).size() == 1)))
                 .thenExecute(() -> {
                     chiefDeath("the wolf's kill", ConflictKit.campDeaths(den[1].faction).get(0), ConflictRecords.BY_PLAYER, hearer[0].getUUID());
                     check("the news hook was reached twice (" + (ConflictNews.posted() - news[0]) + ")", ConflictNews.posted() == news[0] + 2);
@@ -459,7 +464,7 @@ public final class FrostmawGameTests {
                     check("the Frostmaw lives after the hit", f[2].isAlive() && ConflictKit.campDeaths(den[2].faction).isEmpty());
                     MowzieKit.kill(f[2], level.damageSources().genericKill());
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH of den 2", ConflictKit.campDeaths(den[2].faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH of den 2", ConflictKit.campDeaths(den[2].faction).size() == 1)))
                 .thenExecute(() -> {
                     chiefDeath("the generic kill after the hit", ConflictKit.campDeaths(den[2].faction).get(0), ConflictRecords.BY_PLAYER, hearer[0].getUUID());
                     check("the news hook was reached three times (" + (ConflictNews.posted() - news[0]) + ")", ConflictNews.posted() == news[0] + 3);
@@ -469,14 +474,14 @@ public final class FrostmawGameTests {
                     zombie.moveTo(f[3].position().add(-2, 0, 0));
                     MowzieKit.kill(f[3], level.damageSources().mobAttack(zombie));
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH of den 3", ConflictKit.campDeaths(den[3].faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH of den 3", ConflictKit.campDeaths(den[3].faction).size() == 1)))
                 .thenExecute(() -> {
                     chiefDeath("the zombie's kill", ConflictKit.campDeaths(den[3].faction).get(0), ConflictRecords.BY_MOB, null);
                     check("the news hook was reached four times (" + (ConflictNews.posted() - news[0]) + ")", ConflictNews.posted() == news[0] + 4);
                     // a generic kill with no hit before
                     MowzieKit.kill(f[4], level.damageSources().genericKill());
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH of den 4", ConflictKit.campDeaths(den[4].faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH of den 4", ConflictKit.campDeaths(den[4].faction).size() == 1)))
                 .thenExecute(() -> {
                     chiefDeath("the generic kill with no hit", ConflictKit.campDeaths(den[4].faction).get(0), ConflictRecords.BY_NONE, null);
                     check("the news hook was reached five times (" + (ConflictNews.posted() - news[0]) + ")", ConflictNews.posted() == news[0] + 5);
@@ -505,8 +510,9 @@ public final class FrostmawGameTests {
      * holds nothing. A stack of count 1 with the chief flag made two (the den's, and a fresh one with a
      * crystal for the extra chief slot).
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "frostmaw_raid_one", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_raid_one", skyAccess = true)
     public static void aFrostmawRaidMadeFromTheDensBodyEmbodiesOneFrostmaw(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aFrostmawRaidMadeFromTheDensBodyEmbodiesOneFrostmaw";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -516,15 +522,15 @@ public final class FrostmawGameTests {
 
         helper.startSequence()
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     was[0] = MowzieKit.camps().handedOff;
@@ -543,11 +549,11 @@ public final class FrostmawGameTests {
                         ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 0, true)));
                     });
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(den.faction, op[1], 1);
                     check("the band is placed", !ConflictKit.party(agent[0]).stacks().isEmpty()
                             && ConflictKit.party(agent[0]).stacks().get(0).state() == ConflictBridge.StackState.PLACED);
-                })
+                }))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
@@ -573,8 +579,9 @@ public final class FrostmawGameTests {
      * Frostmaw with no crystal (the plugin's {@code registerBare}), and the same stack without the flag, beside
      * it, is a fresh one with its crystal, since the jar's {@code finalizeSpawn} gives every new Frostmaw one.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_raid_bare", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_raid_bare", skyAccess = true)
     public static void anUnwatchedRaidOfARobbedDenPlacesAFrostmawWithoutItsCrystal(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "anUnwatchedRaidOfARobbedDenPlacesAFrostmawWithoutItsCrystal";
         Far far = new Far(helper, test);
         int[] cx = {far.k, far.k + 4};
@@ -585,7 +592,7 @@ public final class FrostmawGameTests {
                     for (int x : cx)
                         far.forceRect(x - 1, far.z0 - 1, x + 1, far.z0 + 1);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         agent[i] = ConflictKit.newAgent();
@@ -599,11 +606,11 @@ public final class FrostmawGameTests {
                         ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 0, true, i == 0)));
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < 2; i++)
                         check("band " + i + " is placed", !ConflictKit.party(agent[i]).stacks().isEmpty()
                                 && ConflictKit.party(agent[i]).stacks().get(0).state() == ConflictBridge.StackState.PLACED);
-                })
+                }))
                 .thenExecute(() -> {
                     Mob[] p = new Mob[2];
                     for (int i = 0; i < 2; i++) {
