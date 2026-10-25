@@ -13,6 +13,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.GroveKind;
@@ -44,6 +46,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.entity.Visibility;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -55,6 +58,7 @@ import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -63,6 +67,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 
@@ -295,16 +300,75 @@ public final class MowzieKit {
     }
 
     /**
-     * Inside {@code thenWaitUntil}: the chunk is unloaded (not just hidden: a hidden chunk forced again is
-     * promoted with no join), and none of the entities is in the level. After this a forced chunk reads its
-     * entities from disk, and each joins as a new object.
+     * Inside {@code thenWaitUntil}: the chunk is unloaded and each entity object is saved and unloaded with it
+     * ({@link #removed}). After this a forced chunk reads its entities from disk, and each joins as a new object.
      */
-    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, UUID... ids) {
+    @SafeVarargs
+    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, Supplier<? extends Entity>... objects) {
+        Runnable removed = removed(level, objects);
         return RtsimTests.io(() -> {
+            removed.run();
             check("chunk (" + cx + ", " + cz + ") is unloaded", !level.hasChunk(cx, cz));
-            for (UUID id : ids)
-                check("entity " + id + " is unloaded", level.getEntity(id) == null);
         });
+    }
+
+    /** Ticks into a {@link #removed} wait after which an object alive in a HIDDEN chunk has its unload queued again. */
+    public static final int REQUEUE_AFTER = 40;
+
+    /**
+     * Inside {@code thenWaitUntil}: every entity object is removed. For a body whose chunk went out that is saved
+     * and unloaded: vanilla's {@code storeChunkSections} writes the chunk's entities, then removes each object
+     * ({@code UNLOADED_TO_CHUNK}), and a forced chunk reads them from disk as new objects. Neither a null
+     * {@code getEntity} nor {@code !hasChunk} says that: under C2ME a re-force inside the hide window tracks the
+     * same object again with no join (MZB-662). The objects are read at each poll: a sequence's arguments are
+     * evaluated when it is built, before its {@code thenExecute} steps fill the test's arrays (a UUID read then is
+     * null, and {@code getEntity(null)} is null, so the UUID waits this replaces passed at once).
+     *
+     * <p>C2ME's {@code processUnloads} can drop a chunk's entity unload (MZB-664): the object then stays alive in
+     * a HIDDEN chunk until the next autosave, up to 6,000 ticks. When an object is still alive
+     * {@link #REQUEUE_AFTER} ticks into the wait, its chunk reads HIDDEN and is not queued to unload, the wait
+     * queues it again through MZB-660's accessor (vanilla's own retry: a chunk whose entities could not be
+     * stored yet stays queued) and logs it, once per chunk each {@link #REQUEUE_AFTER} ticks.
+     */
+    @SafeVarargs
+    public static Runnable removed(ServerLevel level, Supplier<? extends Entity>... objects) {
+        long[] since = {-1};
+        Map<Long, Long> requeuedAt = new HashMap<>();
+        return RtsimTests.io(() -> {
+            long now = level.getGameTime();
+            if (since[0] < 0)
+                since[0] = now;
+            List<Entity> es = new ArrayList<>(objects.length);
+            for (Supplier<? extends Entity> s : objects) {
+                Entity e = s.get();
+                check("the entity object is known", e != null);
+                es.add(e);
+            }
+            if (now - since[0] >= REQUEUE_AFTER)
+                for (Entity e : es)
+                    if (!e.isRemoved())
+                        requeueDroppedUnload(level, e, now, requeuedAt);
+            for (Entity e : es)
+                check("entity " + e.getUUID() + " is saved and unloaded (alive " + e.isAlive() + ", removal " + e.getRemovalReason()
+                        + ", chunk " + e.chunkPosition() + ")", e.isRemoved());
+        });
+    }
+
+    /** The retry of a dropped entity unload, for {@link #removed} (MZB-664). */
+    private static void requeueDroppedUnload(ServerLevel level, Entity e, long now, Map<Long, Long> requeuedAt) {
+        ChunkPos cp = e.chunkPosition();
+        long key = cp.toLong();
+        Long last = requeuedAt.get(key);
+        if (last != null && now - last < REQUEUE_AFTER)
+            return;
+        var manager = (EntitySectionManagerAccessor) ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+        // The map's default is HIDDEN: an absent chunk reads hidden, as vanilla's processUnloads reads it.
+        if (manager.mic_rtsim$chunkVisibility().get(key) != Visibility.HIDDEN || manager.mic_rtsim$chunksToUnload().contains(key))
+            return;
+        manager.mic_rtsim$chunksToUnload().add(key);
+        requeuedAt.put(key, now);
+        LogUtils.getLogger().warn("[gametest] entity {} is alive in the HIDDEN chunk {} with no unload queued, {} ticks into the wait: "
+                + "C2ME dropped its entity unload, queued again (MZB-664)", e.getUUID(), cp, REQUEUE_AFTER);
     }
 
     // ---- test camps -----------------------------------------------------------------------------

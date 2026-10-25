@@ -40,9 +40,9 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
-import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -64,12 +64,13 @@ public final class FrostmawGameTests {
     private static final int CHIEF = ConflictRecords.CampReconcile.LINE_CHIEF;
     private static final int SET_OUT = ConflictRecords.CampReconcile.SET_OUT;
 
-    /** Inside {@code thenWaitUntil}: the entity is out of the level (its chunk is unloaded). */
-    private static Runnable gone(ServerLevel level, UUID... ids) {
-        return io(() -> {
-            for (UUID id : ids)
-                check("entity " + id + " is unloaded", level.getEntity(id) == null);
-        });
+    /**
+     * Inside {@code thenWaitUntil}: each entity object is saved and unloaded with its chunk, read at each poll
+     * ({@link MowzieKit#removed}: under C2ME a null {@code getEntity} is not a save, MZB-662).
+     */
+    @SafeVarargs
+    private static Runnable gone(ServerLevel level, Supplier<? extends Entity>... objects) {
+        return MowzieKit.removed(level, objects);
     }
 
     /** Every CHIEF_STATE the engine has received, whatever the faction. */
@@ -157,7 +158,7 @@ public final class FrostmawGameTests {
                     den.release();
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(gone(level, id[0]))
+                .thenWaitUntil(gone(level, () -> f[0]))
                 .thenExecute(() -> {
                     check("no second census yet", MowzieKit.censusCount(den.faction) == 1);
                     den.force();
@@ -166,7 +167,8 @@ public final class FrostmawGameTests {
                 .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
                 .thenExecute(() -> {
                     Entity e = level.getEntity(id[0]);
-                    check("the Frostmaw is back, a new object", e instanceof EntityFrostmaw && e != f[0]);
+                    check("the Frostmaw is back", e instanceof EntityFrostmaw);
+                    check("a new object: the old one was saved and unloaded, not tracked again (MZB-662)", e != f[0]);
                     EntityFrostmaw nf = (EntityFrostmaw) e;
                     check("tagged (faction, 0, 1)", MowzieKit.tagged(nf, den.faction, 0, 1));
                     check("persistence-required", nf.isPersistenceRequired());

@@ -78,6 +78,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
@@ -1078,12 +1079,13 @@ public final class MowzieGameTests {
         return MowzieKit.stray(g.far.level, EntityHandler.UMVUTHANA_MINION.get(), p.x, p.y, p.z, true);
     }
 
-    /** Inside {@code thenWaitUntil}: none of the entities is in the level now (unloaded or removed). */
-    private static Runnable gone(ServerLevel level, UUID... ids) {
-        return io(() -> {
-            for (UUID id : ids)
-                check("entity " + id + " is unloaded", level.getEntity(id) == null);
-        });
+    /**
+     * Inside {@code thenWaitUntil}: each entity object is removed, saved with its chunk or gone otherwise, read at
+     * each poll ({@link MowzieKit#removed}: under C2ME a null {@code getEntity} is not a save, MZB-662).
+     */
+    @SafeVarargs
+    private static Runnable gone(ServerLevel level, Supplier<? extends Entity>... objects) {
+        return MowzieKit.removed(level, objects);
     }
 
     // ---- 3: a member comes home -------------------------------------------------------------------
@@ -1448,6 +1450,7 @@ public final class MowzieGameTests {
         ServerLevel level = far.level;
         Grove g = new Grove(far, far.k, far.z0);
         UUID[] id = new UUID[2];
+        Entity[] w = new Entity[2];
         long[] e = new long[2], op = new long[3];
         Set<Entity> bodies = new HashSet<>();
         List<CampLine> adopt = new ArrayList<>();
@@ -1457,8 +1460,10 @@ public final class MowzieGameTests {
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
                     g.lay().declare();
-                    id[0] = warriorAt(g, 4, 0).getUUID();
-                    id[1] = warriorAt(g, -4, 3).getUUID();
+                    w[0] = warriorAt(g, 4, 0);
+                    w[1] = warriorAt(g, -4, 3);
+                    id[0] = w[0].getUUID();
+                    id[1] = w[1].getUUID();
                 })
                 .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(g.faction) >= 1))
                 .thenExecute(() -> {
@@ -1468,7 +1473,7 @@ public final class MowzieGameTests {
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(g.faction).size() == 1))
-                .thenWaitUntil(gone(level, id[0], id[1]))
+                .thenWaitUntil(gone(level, () -> w[0], () -> w[1]))
                 .thenExecute(g::force)
                 .thenWaitUntil(far.ready())
                 .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(g.faction) >= 2))
@@ -1624,6 +1629,7 @@ public final class MowzieGameTests {
         long[] op = new long[2];
         Vec3[] fell = new Vec3[2];
         UUID[] deathMarker = new UUID[1];
+        Entity[] deathMarkerObject = new Entity[1];
         int[] copiesBefore = new int[1];
         String[] seen = new String[1];
         // The markers hold records of generations the next run's engine never heard (a copy of one is new to
@@ -1743,6 +1749,8 @@ public final class MowzieGameTests {
                             .getShort(Layout.R_KIND)) == ConflictRecords.CAMP_DEATH);
                     check("the grove booked exactly three deaths", ConflictKit.campDeaths(grove.faction).size() == 3);
                     deathMarker[0] = mk.id();
+                    deathMarkerObject[0] = level.getEntity(mk.id());
+                    check("the marker object is in the level", deathMarkerObject[0] instanceof Marker);
                     copiesBefore[0] = ConflictKit.bodiesCopies(den.faction).size();
                     // The marker is saved with its chunk, the chunk unloads and loads again: Java journals
                     // the marker's records again, each named by the generation that journaled it (MZB-652).
@@ -1753,7 +1761,7 @@ public final class MowzieGameTests {
                     // applying the copy that names it (MZB-655).
                     den.release();
                 })
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, deathMarker[0]))
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> deathMarkerObject[0]))
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenWaitUntil(() -> check("the marker's records were journaled again",
@@ -1806,6 +1814,7 @@ public final class MowzieGameTests {
         long[] removeOp = new long[1];
         Vec3[] stood = new Vec3[1];
         UUID[] taken = new UUID[1];
+        Marker[] mk = new Marker[2], takenObject = new Marker[1];
         int[] copiesBefore = new int[1];
         String[] seen = new String[1];
         // The markers hold records of generations the next run's engine never heard: they do not stay in the
@@ -1842,6 +1851,7 @@ public final class MowzieGameTests {
                             List.of(new PendingRecords.Entry(gen, adopt.clone()))));
                     check("the marker is added", level.addFreshEntity(m));
                     id[1] = m.getUUID();
+                    mk[0] = m;
                     // A marker whose record is of another engine life: the same bytes under another op id, so the
                     // engine receiving it would show (RG14).
                     byte[] old = adopt.clone();
@@ -1854,12 +1864,13 @@ public final class MowzieGameTests {
                             List.of(new PendingRecords.Entry(gen, old))));
                     check("the stale marker is added", level.addFreshEntity(sm));
                     id[2] = sm.getUUID();
+                    mk[1] = sm;
                     stale[0] = RtsimSession.current().stalePending();
                     stale[1] = RtsimSession.current().reasserted();
                     den.release();
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, id[0], id[1], id[2]))
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> f[0], () -> mk[0], () -> mk[1]))
                 .thenExecute(() -> {
                     check("the old Frostmaw object is removed", f[0].isRemoved());
                     check("no second census yet", MowzieKit.censusCount(den.faction) == 1);
@@ -1892,7 +1903,7 @@ public final class MowzieGameTests {
                             && (b.flags() & ConflictRecords.CampCensus.BODY_CHIEF) != 0 && (b.flags() & ConflictRecords.CampCensus.BODY_STRAY) == 0);
                     RtsimSession s = RtsimSession.current();
                     Entity sm = level.getEntity(id[2]);
-                    check("the stale marker is back, a new object", sm instanceof Marker);
+                    check("the stale marker is back, a new object", sm instanceof Marker && sm != mk[1]);
                     check("its records of another engine life are dropped (stale " + (s.stalePending() - stale[0]) + ")",
                             !sm.hasData(RtsimAttachments.PENDING) && s.stalePending() == stale[0] + 1);
                     check("the Frostmaw's and the live marker's records were journaled again (" + (s.reasserted() - stale[1]) + ")",
@@ -1925,11 +1936,13 @@ public final class MowzieGameTests {
                     check("a record marker where it stood (" + m.size() + ")", m.size() == 1);
                     check("it carries the records", m.get(0).carriesRecords());
                     taken[0] = m.get(0).id();
+                    takenObject[0] = level.getEntity(taken[0]) instanceof Marker tm ? tm : null;
+                    check("the marker object is in the level", takenObject[0] != null);
                     check("the takeover journaled no copy: the earlier record was never journaled in this session",
                             ConflictKit.bodiesCopies(den.faction).size() == copiesBefore[0]);
                     den.release();
                 })
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, taken[0]))
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> takenObject[0]))
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenWaitUntil(() -> check("the marker's records were journaled again",
@@ -2093,7 +2106,7 @@ public final class MowzieGameTests {
                     grove.far.releaseRect(grove.cx - 2, grove.cz - 2, grove.cx + 2, grove.cz + 2);
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(grove.faction).size() == 1))
-                .thenWaitUntil(gone(level, id[2]))
+                .thenWaitUntil(gone(level, () -> w[2]))
                 .thenExecute(grove::force)
                 .thenWaitUntil(far.ready())
                 .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(grove.faction) >= 2))
@@ -2356,7 +2369,7 @@ public final class MowzieGameTests {
                     den.release();
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(gone(level, id[0]))
+                .thenWaitUntil(gone(level, () -> f[0]))
                 .thenExecute(() -> check("the Frostmaw object is removed", f[0].isRemoved()))
                 .thenIdle(Camps.POLL_PERIOD + 3)
                 .thenExecute(() -> {
