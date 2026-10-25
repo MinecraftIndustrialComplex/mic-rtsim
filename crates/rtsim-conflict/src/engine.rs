@@ -4600,6 +4600,17 @@ impl Conflict {
                 self.stats.casualties += u64::from(t);
             }
         }
+        // The bodies in Minecraft are no more than the members left (MZB-462): the books of a band
+        // that stands there while the engine resolves a fight abstractly. `recalled` stays: an
+        // older epoch's stack is counted by its own BAND_DEMATERIALIZED (MZB-131), and clamping it
+        // would hide deaths in Minecraft. The puppets over the count are Java's to trim (MZB-473).
+        if x.embodied {
+            for s in &mut x.spawned {
+                if let Some(e) = x.units.iter().find(|e| e.0 == s.0) {
+                    s.1 = s.1.min(e.1);
+                }
+            }
+        }
         let at = self.now;
         if lost > 0
             && self.parties[p].alive() == 0
@@ -4848,10 +4859,19 @@ impl Conflict {
                 items,
             )
             .text(|| format!("{} home: {alive} left, {items} items", kind.name()));
+        let mut handled = false;
         if kind.is_war() {
-            self.camp_home(p, at);
+            handled = self.camp_home(p, at);
             self.pool_return(f, alive, at);
             self.unblock(f, at);
+        }
+        // A band still in Minecraft that no hand-back line or recall took (every member Left, a
+        // faction with no camp ledger, a homecoming with no line to send) is recalled toward its
+        // camp, so no puppet outlives its band's row (MZB-463, P2-7).
+        if !handled && self.parties[p].embodied {
+            let epoch = self.parties[p].epoch;
+            let camp = self.factions[f as usize].pos;
+            self.recall(p, epoch, boundary::RECALL_DONE, (camp.x, camp.z));
         }
         if chief {
             self.factions[f as usize].chief_out = false;
