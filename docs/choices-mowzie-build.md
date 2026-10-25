@@ -7944,6 +7944,10 @@ pointer above; P3-4 is the RP-134 wording above. No format change: RTC9 / META 8
     and `peaceful_ends_the_holds_in_the_order_they_were_decided` (the Peaceful variant: the bands'
     handles run against their arrivals). Both failed before the fix (24 animals for 16, the next
     session sent a hunt) and pass after.
+  - Residual: an older band's hold that is a watched fight awaiting its BAND_MATERIALIZED ends
+    with the later band's, unwatched, as a HUNT_APPLIED already ends it (RP-59's class, normally 1
+    to 2 ticks, docs/replay-gate.md §6.1's losses); the two bands raid one district within the
+    older one's slack.
 - **RP-136** (a decision after the replay end hashes the arrival; P3-2). A raid decided at a poll
   after a replay's end owed its hunt under an op hashed from the poll's tick, while a later replay
   of the same journals holds the arrival and decides it at its own tick: S1 owes the hunt at T and
