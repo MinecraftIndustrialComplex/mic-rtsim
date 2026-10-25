@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass;
 
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
@@ -18,6 +19,7 @@ import net.neoforged.neoforge.items.IItemHandler;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.FEED;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.MIXER;
@@ -150,6 +152,81 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
         SectionsFx.check(run, "Java sends the counts in samples before the sweeps' ends", c.samplesSent() > 0, c.samplesSent() + " samples sent");
     }
 
+    // ---- /rtsim district sections ----------------------------------------------------------------------
+
+    private static final Pattern SECTION_LINE = Pattern.compile("^ {2}s(\\d+)[ :].*");
+
+    /**
+     * The command's text against the report it was built from (SECTIONS.md §8.1): the district holds the two lines
+     * sharing the vault and the bystander, so the report has several sections and a shared store. The report is
+     * fetched in the same tick as the command, on the server thread, so the two see one state. Checks the header,
+     * one {@code  sN} line per section (counted on its own, apart from the shared store lines, which start
+     * {@code  shared}), each line's state word and unit, the vault's shared-store line (counted at its movers, with
+     * the report's pair count) and the return value.
+     */
+    static void sectionsCommand(GlassReplayGameTests.Run run, BlockPos vault) {
+        District d = IndustryKit.ind().district(run.fd);
+        var fetch = d == null ? null : IndustryKit.ind().diagnostics().glassReportOf(d);
+        if (fetch == null || fetch.report() == null) {
+            SectionsFx.check(run, "/rtsim district sections has a report to print", false, fetch == null ? "no district" : fetch.note());
+            return;
+        }
+        GlassReport r = fetch.report();
+        IndustryKit.Said said = IndustryKit.say(run.level(), vault, "rtsim district sections");
+        List<String> lines = said.lines();
+        SectionsFx.info(run, "the sections command", String.join(" | ", lines));
+        int sections = r.sections().size(), shared = r.shared().size();
+        SectionsFx.check(run, "the report has sections to print (a vault between lines, and a bystander)", sections >= 4 && shared >= 1,
+                sections + " sections, " + shared + " shared stores");
+        SectionsFx.check(run, "the command returns the report's section count", said.ran() == sections, said.ran() + " vs " + sections);
+        SectionsFx.check(run, "its header names the district and the counts", !lines.isEmpty()
+                && lines.get(0).startsWith("district " + run.fd + " '") && lines.get(0).contains(": " + sections + " sections")
+                && lines.get(0).contains(", " + shared + " shared stores"), lines.isEmpty() ? "no lines" : lines.get(0));
+        String[] bySection = new String[sections];
+        int sectionLines = 0, sharedLines = 0;
+        for (String l : lines) {
+            var m = SECTION_LINE.matcher(l);
+            if (m.matches()) {
+                sectionLines++;
+                int i = Integer.parseInt(m.group(1));
+                if (i >= 0 && i < sections)
+                    bySection[i] = l;
+            } else if (l.startsWith("  shared store ")) {
+                sharedLines++;
+            }
+        }
+        SectionsFx.check(run, "one line per section, exactly", sectionLines == sections, sectionLines + " lines for " + sections + " sections");
+        SectionsFx.check(run, "one line per shared store, counted on its own", sharedLines == shared, sharedLines + " lines for " + shared + " stores");
+        boolean words = true;
+        String wrong = "";
+        for (int i = 0; i < sections; i++) {
+            GlassReport.Section s = r.sections().get(i);
+            String word = s.state() == GlassReport.FAILED ? "FAILED" : s.stateName();
+            String unit = s.unit() < 0 ? ", district window" : ", unit " + s.unit();
+            if (bySection[i] == null || !bySection[i].contains(": " + word + unit + ",")) {
+                words = false;
+                wrong = "s" + i + " should say '" + word + unit + "': " + bySection[i];
+                break;
+            }
+        }
+        SectionsFx.check(run, "each section line carries its state word and unit from the report", words, words ? "all " + sections : wrong);
+        BlockPos mixer = run.far.absolutePos(MIXER);
+        int unit = SectionsFx.indexOf(r, SectionsFx.unitAt(r, mixer));
+        GlassReport.Section first = unit < 0 ? null : r.sectionsAt(mixer.getX(), mixer.getY(), mixer.getZ()).stream()
+                .filter(x -> x.unit() == unit).findFirst().orElse(null);
+        int at = first == null ? -1 : r.sections().indexOf(first);
+        SectionsFx.check(run, "the mixing line's section reads passed (it has learned)", at >= 0 && bySection[at] != null && bySection[at].contains(": passed,"),
+                at < 0 ? "no section at the mixer" : bySection[at]);
+        GlassReport.Shared vaultRec = null;
+        for (GlassReport.Shared h : r.shared())
+            if (h.counted())
+                vaultRec = h;
+        String want = vaultRec == null ? "" : ": counted at its movers (" + vaultRec.pairs() + " pairs), ";
+        SectionsFx.check(run, "the vault's line says it is counted at its movers, with the report's pair count",
+                vaultRec != null && vaultRec.pairs() >= 2 && lines.stream().anyMatch(l -> l.startsWith("  shared store ") && l.contains(want)),
+                vaultRec == null ? "no counted shared store" : want);
+    }
+
     // ---- the checks ----------------------------------------------------------------------------------
 
     static final class Check implements GlassReplayGameTests.Scenario {
@@ -259,6 +336,7 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             BlockPos chute = run.far.absolutePos(new BlockPos(VAULT.getX(), VAULT.getY() + 1, VAULT.getZ()));
             SectionsFx.check(run, "the pairs' movers are the filling chute above the vault and the smart chute under it",
                     hasMover(run.fd, chute) && hasMover(run.fd, run.far.absolutePos(FEED)), pairsText(run.fd));
+            sectionsCommand(run, vault);
         }
 
         // ---- COUNT: no move missed, none counted twice -----------------------------------------------
