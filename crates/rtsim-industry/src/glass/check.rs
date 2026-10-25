@@ -543,14 +543,51 @@ pub(crate) fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64, fe
 /// One counted store's residue as the report shows it (SECTIONS.md §8.1, choice SC168): the
 /// store's residue per good ([`Compiled::sample_counted`]'s `r`) at the sweep that took the
 /// baseline, and at the latest sweep that counted every pair at it. Not saved: the report is
-/// built on request, from what the sweeps already computed.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// built on request, from what the sweeps already computed. Noting a sweep allocates only when
+/// the baseline or the residue changes (SC177).
+#[derive(Clone, Debug, Default)]
 pub struct StoreRes {
-    /// The pairs' `since` (in pair order) the baseline was taken under: a pair Java forgot starts
-    /// it again.
-    since: Vec<i64>,
-    base: BTreeMap<Good, i64>,
+    /// The baseline, once a sweep that counted every pair at the store took one.
+    base: Option<Baseline>,
     now: BTreeMap<Good, i64>,
+    /// The pass in flight over the pairs.
+    pass: Pass,
+}
+
+/// The residue a store started from, and the pairs' `since` (in pair order) it was taken under: a
+/// pair Java forgot starts it again.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Baseline {
+    since: Vec<i64>,
+    goods: BTreeMap<Good, i64>,
+}
+
+/// How the pairs at a store compared with its baseline in one sweep.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pass {
+    /// The pairs seen so far.
+    seen: usize,
+    /// Every pair seen so far had the baseline's `since`.
+    same: bool,
+    /// Every pair seen so far was counted whole in the sweep.
+    whole: bool,
+}
+
+impl Default for Pass {
+    fn default() -> Pass {
+        Pass {
+            seen: 0,
+            same: true,
+            whole: true,
+        }
+    }
+}
+
+impl PartialEq for StoreRes {
+    /// By what the report shows; the pass in flight is scratch.
+    fn eq(&self, o: &StoreRes) -> bool {
+        self.base == o.base && self.now == o.now
+    }
 }
 
 impl StoreRes {
@@ -559,7 +596,13 @@ impl StoreRes {
         self.now
             .iter()
             .filter_map(|(&g, &v)| {
-                let d = v.saturating_sub(self.base.get(&g).copied().unwrap_or(0));
+                let from = self
+                    .base
+                    .as_ref()
+                    .and_then(|b| b.goods.get(&g))
+                    .copied()
+                    .unwrap_or(0);
+                let d = v.saturating_sub(from);
                 (d != 0).then_some((g, d))
             })
             .collect()
@@ -567,38 +610,62 @@ impl StoreRes {
 }
 
 /// Records the counted stores' residue `r` (by store and good) of the sweep `t` counted, for the
-/// stores whose every pair `t` covers. One pass over the pairs.
-fn note_residue(
+/// stores whose every pair `t` covers. Two passes over what exists already, comparing in place:
+/// nothing is allocated unless a store's baseline or residue changed.
+pub(crate) fn note_residue(
     res: &mut BTreeMap<u32, StoreRes>,
     units: &Units,
     t: &CountTake,
     r: &BTreeMap<(u32, Good), i64>,
 ) {
-    let mut sinces: BTreeMap<u32, Option<Vec<i64>>> = units
-        .counted
-        .iter()
-        .map(|&h| (h, Some(Vec::new())))
-        .collect();
-    for &(m, h) in &units.pairs {
-        if let Some(slot) = sinces.get_mut(&h) {
-            match (t.since_of((m, h)), slot.as_mut()) {
-                (Some(s), Some(v)) => v.push(s),
-                _ => *slot = None,
-            }
-        }
+    for &h in &units.counted {
+        res.entry(h).or_default().pass = Pass::default();
     }
-    for (h, since) in sinces {
-        let Some(since) = since else { continue };
-        let st = res.entry(h).or_default();
-        let now: BTreeMap<Good, i64> = r
-            .range((h, Good(0))..=(h, Good(u32::MAX)))
-            .map(|(&(_, g), &v)| (g, v))
-            .collect();
-        if st.since != since {
-            st.since = since;
-            st.base = now.clone();
+    for &(m, h) in &units.pairs {
+        let Some(st) = res.get_mut(&h) else { continue };
+        let Some(since) = t.since_of((m, h)) else {
+            st.pass.whole = false;
+            continue;
+        };
+        let was = st
+            .base
+            .as_ref()
+            .and_then(|b| b.since.get(st.pass.seen))
+            .copied();
+        st.pass.same &= was == Some(since);
+        st.pass.seen += 1;
+    }
+    for &h in &units.counted {
+        let Some(st) = res.get_mut(&h) else { continue };
+        if !st.pass.whole {
+            continue;
         }
-        st.now = now;
+        let at = (h, Good(0))..=(h, Good(u32::MAX));
+        let unchanged = st
+            .base
+            .as_ref()
+            .is_some_and(|b| st.pass.same && b.since.len() == st.pass.seen);
+        if !unchanged {
+            // A new baseline: the pairs' `since`, read again, and the residue now.
+            let since = units
+                .pairs
+                .iter()
+                .filter(|p| p.1 == h)
+                .filter_map(|&p| t.since_of(p))
+                .collect();
+            let goods = r.range(at.clone()).map(|(&(_, g), &v)| (g, v)).collect();
+            st.base = Some(Baseline { since, goods });
+        }
+        let now = r.range(at);
+        if st.now.len() != now.clone().count()
+            || !st
+                .now
+                .iter()
+                .zip(now.clone())
+                .all(|(a, (k, v))| *a.0 == k.1 && a.1 == v)
+        {
+            st.now = now.map(|(&(_, g), &v)| (g, v)).collect();
+        }
     }
 }
 
