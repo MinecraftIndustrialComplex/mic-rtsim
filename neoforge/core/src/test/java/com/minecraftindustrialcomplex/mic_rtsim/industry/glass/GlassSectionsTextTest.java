@@ -43,10 +43,10 @@ class GlassSectionsTextTest {
                 && out.get(2).contains(": FAILED, unit 1, working"), out.get(2));
         assertEquals("      worst good sheet: measured 60.000/min, predicted 120.000/min, 60.000/min beyond its band", out.get(3));
         assertTrue(out.get(4).contains(": FAILED, unit 1"), out.get(4));
-        assertEquals("      same unit as s1: its worst good is there", out.get(5));
         assertEquals("  shared store n12 inv 4 at (1 62 3) of s0, s1: counted at its movers (2 pairs), counted this sweep (last sample sweep 41), residue sheet -68",
-                out.get(6));
-        assertEquals("  shared store n13 of s1, s2: held by one unit, judged inside it", out.get(7));
+                out.get(5));
+        assertEquals("  shared store n13 of s1, s2: held by one unit, judged inside it", out.get(6));
+        assertEquals(7, out.size(), "the second section of a unit repeats no worst good");
     }
 
     @Test
@@ -56,5 +56,16 @@ class GlassSectionsTextTest {
         assertEquals("district 1 'a': 1 sections (0 may replay, 0 replaying) in the district's window, 0 shared stores", out.get(0));
         assertTrue(out.get(1).contains(": passed, district window, working"), out.get(1));
         assertEquals(2, out.size());
+    }
+
+    @Test
+    void aDistrictOfOneWindowNamesItsWorstGoodOnceUnderTheHeader() {
+        GlassReport r = report(List.of(
+                section(-1, 0, GlassReport.FAILED, GlassReport.Section.WORKING, 7),
+                section(-1, 1, GlassReport.FAILED, GlassReport.Section.WORKING, 7)), List.of(), 0);
+        List<String> out = GlassSectionsText.lines(1, "a", r, id -> "sheet");
+        assertTrue(out.get(1).startsWith("      worst good sheet"), out.get(1));
+        assertTrue(out.get(2).startsWith("  s0 ") && out.get(3).startsWith("  s1 "), out.toString());
+        assertEquals(4, out.size());
     }
 }

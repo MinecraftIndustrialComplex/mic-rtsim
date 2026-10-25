@@ -157,6 +157,10 @@ class GlassReportTest {
         // A truncated sections part is refused, not read past.
         assertThrows(IllegalArgumentException.class, () -> GlassReport.decode(Arrays.copyOf(v, v.length - 1)));
         assertThrows(IllegalArgumentException.class, () -> GlassReport.decode(Arrays.copyOf(v, sectionsAt + 1)));
+        // A section naming a unit the report lacks is refused.
+        double[] bad = v.clone();
+        bad[sectionsAt + 1] = 1;
+        assertThrows(IllegalArgumentException.class, () -> GlassReport.decode(bad));
         assertNull(GlassReport.decode(null));
         assertThrows(IllegalArgumentException.class, () -> GlassReport.decode(new double[GlassReport.HEADER + 3]));
     }
