@@ -23,12 +23,15 @@
 //!   a replayed answer is a no-op by its engine op id, and one for a generation the slot no longer
 //!   holds books nothing.
 
+use rtsim_kernel::renewal::{LossCause, Pressure};
+
 use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
-    BODY_ELSEWHERE, BODY_STRAY, CENSUS_THRONE, CampBodies, CampCensus, CampDeath, CampOut,
-    CampReconcile, CensusBody, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING,
-    ReconcileLine,
+    BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL,
+    CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut, CampReconcile,
+    CensusBody, ChiefState, DEATH_CHIEF, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE,
+    LINE_NOTHING, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -102,6 +105,11 @@ pub struct Slot {
     /// The first of those.
     pub missed_at: Tick,
     pub line: Option<Line>,
+    /// The faction's chief when the slot was made: the notable whose body this is, if it is the
+    /// chief's body. A chief body's death fells the chief only while the faction's chief is still
+    /// that one; a chief the books have since replaced (dead of age, succeeded by whatever asked
+    /// for the chief first) is no one's death to answer for, whatever the order of the records.
+    pub chief: ActorId,
 }
 
 /// A generation a slot last retired, and whether at a death (its body, if found later, is
@@ -154,6 +162,12 @@ pub struct Camp {
     pub slots: Vec<Slot>,
     pub retired: Vec<Retired>,
     pub throne: Option<Throne>,
+    /// Recent player-caused losses of a renewal culture's camp (EQUILIBRIUM.md §2.2, MZB-254).
+    pub pressure: Pressure,
+    /// The stamp of the booked arrival event, and its tick: a renewal culture's wait for its next
+    /// member, booked whether the camp is in or out.
+    pub arrival: u32,
+    pub arrival_at: Option<Tick>,
 }
 
 impl Camp {
@@ -342,10 +356,16 @@ impl Conflict {
     /// A line's flags: the chief's slot (a unit with a row of its own without its crystal is the
     /// camp's chief, ledger 9) and whether its crystal is held.
     fn line_flags(&self, f: u32) -> u8 {
-        let u = self.home_unit(f);
-        let chief = self.culture(f).bare[usize::from(u)] != u;
+        let chief = self.chief_camp(f);
         let crystal = self.factions[f as usize].crystal;
         (if chief { LINE_CHIEF } else { 0 }) | (if crystal { LINE_CRYSTAL } else { 0 })
+    }
+
+    /// Whether the camp's pool member is its chief: its home unit has a row of its own without
+    /// the crystal (`bare[u] != u`, ledger 9). Only such a camp has a crystal to hold or lose.
+    fn chief_camp(&self, f: u32) -> bool {
+        let u = self.home_unit(f);
+        self.culture(f).bare[usize::from(u)] != u
     }
 
     fn line(&self, f: u32, s: &Slot, action: u8, a: u64, b: u64) -> ReconcileLine {
@@ -366,7 +386,12 @@ impl Conflict {
     /// the census at discovery found, the camp's cap that count (one at least) bounded by the
     /// culture's, and every slot starts owed, for the first census's strays to fill. Only for a
     /// culture whose bodies a census counts.
-    pub(super) fn camp_found(&mut self, f: u32, bodies: u16, at: Tick) {
+    ///
+    /// `census` is the record's byte (`CENSUS_CHIEF`, `CENSUS_CRYSTAL`): with the chief present it
+    /// sets the faction's crystal (MZB-257). A renewal culture's camp found with no bodies starts
+    /// at the cap wait, as if farmed to it, since no site ledger says otherwise (EQUILIBRIUM item 6),
+    /// and books its arrival; one found with its member books nothing.
+    pub(super) fn camp_found(&mut self, f: u32, bodies: u16, census: u8, at: Tick) {
         if !self.culture(f).def.camp_bodies {
             return;
         }
@@ -376,7 +401,17 @@ impl Conflict {
         x.cap = n.max(1).min(ceiling);
         x.pool = f64::from(n);
         x.pool_at = at;
+        if u32::from(census) & CENSUS_CHIEF != 0 {
+            x.crystal = u32::from(census) & CENSUS_CRYSTAL != 0;
+        }
         self.camp_create(f, at);
+        if let Some(r) = self.culture(f).renewal
+            && bodies == 0
+        {
+            let day = (at.0 / TICKS_PER_DAY) as u32;
+            self.camp_mut(f).expect("created").pressure = Pressure::at_cap(&r.rule, day);
+        }
+        self.plan_arrival(f, at);
     }
 
     /// The ledger of a camp that has none, from the books as they are: a slot owed for each whole
@@ -414,6 +449,7 @@ impl Conflict {
         party: Handle<Party>,
     ) -> u32 {
         let key = self.factions[f as usize].key;
+        let chief = self.factions[f as usize].chief;
         let camp = self.camp_mut(f).expect("a ledger");
         let id = (0..)
             .find(|id| camp.slots.binary_search_by_key(id, |s| s.id).is_err())
@@ -431,6 +467,7 @@ impl Conflict {
                 misses: 0,
                 missed_at: Tick::ZERO,
                 line: None,
+                chief,
             },
         );
         id
@@ -515,6 +552,7 @@ impl Conflict {
             }
         }
         self.plan_refill(f, at);
+        self.plan_arrival(f, at);
     }
 
     // ---- refills ---------------------------------------------------------------------------
@@ -541,6 +579,108 @@ impl Conflict {
         if let Some(t) = t {
             self.schedule(t, Ev::Refill { faction: f, stamp });
         }
+    }
+
+    /// Why a member of a renewal culture's camp was lost, by who killed it (MZB-258): a player's
+    /// kill and a body carried off are a player's loss, an unclaimed death (`BY_NONE`, `BY_OTHER`, a
+    /// kind this build does not know) is a player's too when the culture's renewal is a boss's
+    /// (EQUILIBRIUM.md §2.2: an unclaimed death of a boss kind) and no one's otherwise, and a
+    /// mob's kill is a predator's.
+    pub(super) fn renewal_cause(&self, f: u32, by: u32) -> LossCause {
+        let boss = self.culture(f).renewal.is_some_and(|r| r.boss);
+        match by {
+            boundary::BY_PLAYER | boundary::BY_TAKEN => LossCause::Player,
+            boundary::BY_MOB => LossCause::Predator,
+            _ if boss => LossCause::Player,
+            _ => LossCause::Other,
+        }
+    }
+
+    /// `n` members of a renewal culture's camp were lost at `at` from `cause`: only a player's loss
+    /// (`LossCause::Player`) adds `n / cap` to the camp's pressure, as of the loss's day (MZB-258).
+    /// It goes before whatever plans the next wait (`unblock`), which reads it. A camp with no
+    /// ledger has nowhere to keep it.
+    pub(super) fn renewal_bump(&mut self, f: u32, n: u32, cause: LossCause, at: Tick) {
+        let Some(r) = self.culture(f).renewal else {
+            return;
+        };
+        if cause != LossCause::Player || n == 0 {
+            return;
+        }
+        let cap = self.factions[f as usize].cap.max(1);
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        camp.pressure
+            .bump(day, n as f32 / cap as f32, r.rule.half_life_days);
+        self.stats.renewal_losses += u64::from(n);
+    }
+
+    /// Books the wait for a renewal culture's next member (MZB-255), whether the camp is in or
+    /// out: short (the pool and the members away under the cap) with no wait booked, an arrival
+    /// after `delay_ticks` of the pressure as it stands now; no longer short with one booked, the
+    /// wait is cancelled. A wait running is never read again, so later losses do not push it out
+    /// (the kernel's rule). `plan_refill` books nothing for such a camp, since its rate is 0. A
+    /// faction with no ledger never refills.
+    pub(super) fn plan_arrival(&mut self, f: u32, at: Tick) {
+        let Some(r) = self.culture(f).renewal else {
+            return;
+        };
+        let x = &self.factions[f as usize];
+        let short = self.pool_at(f, at).floor() as u32 + x.away < x.cap;
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        match (short, camp.arrival_at) {
+            (true, None) => {
+                let t = at + r.rule.delay_ticks(camp.pressure, day).max(1);
+                camp.arrival = camp.arrival.wrapping_add(1);
+                camp.arrival_at = Some(t);
+                let stamp = camp.arrival;
+                self.schedule(t, Ev::Arrival { faction: f, stamp });
+            }
+            (false, Some(_)) => {
+                camp.arrival = camp.arrival.wrapping_add(1);
+                camp.arrival_at = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// A renewal culture's wait ran out (MZB-256): its camp gains a member, owed a body, and with
+    /// it the crystal a new Frostmaw holds (MZ-4 (a)). A camp that is in is ordered to spawn it at
+    /// once, so one that never unloads gets its arrival when the wait ends (EQUILIBRIUM item 8); one
+    /// that is out has it spawned by its next census, as any owed slot is.
+    pub(super) fn camp_arrival(&mut self, f: u32, stamp: u32, at: Tick) {
+        match self.camp_mut(f) {
+            Some(c) if c.arrival == stamp && c.arrival_at.is_some() => c.arrival_at = None,
+            _ => {
+                self.stats.stale += 1;
+                return;
+            }
+        }
+        // `pool_add` syncs first, so the slot the arrival adds is the one the sync after it makes.
+        self.pool_add(f, 1.0, at);
+        self.camp_sync(f, at);
+        // A new chief holds its crystal; a camp whose member has no such row has none to give
+        // (MZB-256).
+        if self.chief_camp(f) {
+            self.factions[f as usize].crystal = true;
+        }
+        self.stats.arrivals += 1;
+        self.note(
+            at,
+            Some(f),
+            "arrival",
+            "a member arrives at the camp".to_string(),
+        );
+        if self.camp_is_in(f) {
+            let lines = self.spawn_lines(f, &[]);
+            self.send_lines(f, lines, at);
+        }
+        self.unblock(f, at);
     }
 
     pub(super) fn camp_refill(&mut self, f: u32, stamp: u32, at: Tick) {
@@ -789,6 +929,57 @@ impl Conflict {
 
     // ---- CAMP_CENSUS -----------------------------------------------------------------------
 
+    /// A camp's chief at home reported its crystal (CHIEF_STATE, latest-wins, MZB-268): the steal
+    /// sends it with the flag off, and the faction's crystal follows, so the next body asked for
+    /// (an arrival, a body handed back) is asked for without it. A change only is noted. The
+    /// health is not kept: nothing of M6 reads it (the census carries it). A record for a faction
+    /// this engine does not know, or one whose camp holds no bodies, is ignored.
+    ///
+    /// While the outbox replays it waits for the replay end, the latest for each faction (RP-100):
+    /// nothing journals it, so it is newer than every record the replay brings back, and one of
+    /// those (a FACTION_FOUND's census byte) would undo it or find its faction unknown.
+    /// A CHIEF_STATE held by the host while its own replay runs, before this engine's replay began
+    /// (the host begins the engine's replay once the conflict is in the world, and a faction is
+    /// known only after its FACTION_FOUND is replayed): kept, the latest for each faction, as
+    /// [`Self::chief_state`] keeps one while the outbox replays, and applied at `replay_done` (RP-100).
+    pub fn hold_chief_state(&mut self, c: &ChiefState) {
+        self.chief_states_held.insert(c.faction, *c);
+    }
+
+    /// The host's replay ended with the conflict not in the world (no faction, source or party): the
+    /// chiefs' states held for it describe no camp this engine knows, and a faction found live
+    /// later must not be handed a state from before the session (RP-100).
+    pub fn discard_held_chief_states(&mut self) {
+        self.chief_states_held.clear();
+    }
+
+    pub(super) fn chief_state(&mut self, c: &ChiefState, at: Tick) {
+        if self.outbox.replaying() {
+            self.chief_states_held.insert(c.faction, *c);
+            return;
+        }
+        let Some(&f) = self.by_key.get(&c.faction) else {
+            return;
+        };
+        if !self.culture(f).def.camp_bodies {
+            return;
+        }
+        let crystal = c.flags & CHIEF_CRYSTAL != 0;
+        if self.factions[f as usize].crystal == crystal {
+            return;
+        }
+        self.factions[f as usize].crystal = crystal;
+        self.note(
+            at,
+            Some(f),
+            "crystal",
+            format!(
+                "the chief's crystal is {}",
+                if crystal { "back" } else { "gone" }
+            ),
+        );
+    }
+
     /// A camp's entities have all come in: it is in at the census's epoch, every line of an
     /// earlier epoch is void, and each slot is compared with the bodies found (MOWZIE.md §4.9's
     /// table). A census replayed from an earlier session only marks its camp out: its bodies are
@@ -829,7 +1020,10 @@ impl Conflict {
         }
         let cap = self.factions[f as usize].cap;
         let body = self.home_body(f);
+        let mut written_off = 0;
         let mut lines: Vec<ReconcileLine> = Vec::new();
+        // The flags the lines are made with; the crystal in them is mended below, once the bodies
+        // the books keep are known (MZB-269, 299).
         let flags = self.line_flags(f);
         let line = |s: &Slot, action: u8, a: u64, b: u64| ReconcileLine {
             slot: s.id,
@@ -874,11 +1068,18 @@ impl Conflict {
         // Each slot against its body.
         let ids: Vec<(u32, u32)> = camp.slots.iter().map(|s| (s.id, s.generation)).collect();
         let mut matched: BTreeSet<(u32, u32)> = BTreeSet::new();
+        // Whether a chief body the books keep is among the bodies, and whether the crystal is on
+        // it (MZB-269, amended at review C: the body's own bit, not the camp's byte).
+        let mut kept_chief = false;
+        let mut kept_crystal = false;
         for (id, generation) in ids {
             let Some(i) = camp.index(id, generation) else {
                 continue;
             };
             let found = held.contains_key(&(id, generation));
+            let chief_body = held
+                .get(&(id, generation))
+                .filter(|b| b.flags & BODY_CHIEF != 0);
             if found {
                 matched.insert((id, generation));
             }
@@ -900,6 +1101,7 @@ impl Conflict {
                             camp.free(i, false);
                             self.pool_shift(f, -1.0, at);
                             self.stats.camp_written_off += 1;
+                            written_off += 1;
                         }
                     }
                 }
@@ -943,6 +1145,16 @@ impl Conflict {
                     }
                 }
             }
+            // A found body of a slot that is a member of the camp now (a Dead slot's is removed,
+            // and a body the books do not keep says nothing about the chief the books do).
+            if let Some(b) = chief_body
+                && camp.index(id, generation).is_some_and(|i| {
+                    matches!(camp.slots[i].state, SlotState::Body | SlotState::Left)
+                })
+            {
+                kept_chief = true;
+                kept_crystal |= b.flags & BODY_CRYSTAL != 0;
+            }
         }
         // Tagged bodies no slot holds, and strays: a body whose generation the books retired at
         // a death is removed; the rest fill slots owed, then new slots while the pool and the
@@ -979,8 +1191,12 @@ impl Conflict {
                 if b.body != 0 {
                     camp.slots[i].body = b.body;
                 }
+                kept_chief |= b.flags & BODY_CHIEF != 0;
+                kept_crystal |= b.flags & (BODY_CHIEF | BODY_CRYSTAL) == BODY_CHIEF | BODY_CRYSTAL;
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
             } else if camp.home_count() + camp.away_count() < cap {
+                kept_chief |= b.flags & BODY_CHIEF != 0;
+                kept_crystal |= b.flags & (BODY_CHIEF | BODY_CRYSTAL) == BODY_CHIEF | BODY_CRYSTAL;
                 self.factions[f as usize].camp = Some(camp);
                 self.pool_shift(f, 1.0, at);
                 let id = self.camp_alloc(
@@ -1003,6 +1219,24 @@ impl Conflict {
             lines.push(line(&camp.slots[i], ACTION_SPAWN, 0, 0));
         }
         self.factions[f as usize].camp = Some(camp);
+        // The chief the census found says whether its crystal is on it, when it is a chief the
+        // books keep: this mends a CHIEF_STATE lost in a crash, which is latest-wins and not
+        // journaled (MZB-269). The camp's crystal byte names no body, and the plugin's chief may
+        // be the leftover body of a slot that died away (a robbed Frostmaw killed on a raid, its
+        // body left in the den): that one is to be removed and says nothing. So the crystal is
+        // read off the kept chief body's own `BODY_CRYSTAL` bit, never off the camp's byte, which
+        // a leftover body nearest the spot could set or clear (amended at review C). The lines
+        // made so far are asked again with the crystal as it now stands.
+        if c.flags & CENSUS_CHIEF != 0 && kept_chief {
+            self.factions[f as usize].crystal = kept_crystal;
+            let now = self.line_flags(f);
+            for l in lines.iter_mut().filter(|l| l.generation != 0) {
+                l.flags = now;
+            }
+        }
+        // A body missing from the camp is a player's loss (EQUILIBRIUM item 11; rtsim cannot tell
+        // an absence, MZB-260), booked once the camp is put back and before the wait is planned.
+        self.renewal_bump(f, written_off, LossCause::Player, at);
         self.send_lines(f, lines, at);
         self.unblock(f, at);
     }
@@ -1205,19 +1439,38 @@ impl Conflict {
             return;
         };
         self.stats.camp_deaths += 1;
-        let (state, party) = {
+        let (state, party, body_of) = {
             let s = &self.camp(f).expect("a ledger").slots[i];
-            (s.state, s.party)
+            (s.state, s.party, s.chief)
         };
+        // A member that died away was lost then: its body's death at the camp is no second loss.
+        // The bump goes first: the `unblock` that follows plans the wait from it.
+        let cause = self.renewal_cause(f, d.by);
+        if state != SlotState::Dead {
+            self.renewal_bump(f, 1, cause, at);
+        }
+        // The chief's body falls the chief at its camp (MZB-265); a Dead slot's is no second fall.
+        // Who killed it is a player for a player's kill or a body taken, else no one.
+        let chief = d.flags & DEATH_CHIEF != 0 && state != SlotState::Dead;
+        let named = matches!(d.by, boundary::BY_PLAYER | boundary::BY_TAKEN) && d.killer != (0, 0);
+        let killer = (chief && named).then(|| self.player(w, d.killer));
         match state {
             SlotState::Body | SlotState::Owed => {
                 self.camp_mut(f).expect("a ledger").free(i, true);
                 self.pool_shift(f, -1.0, at);
+                if chief {
+                    self.chief_killed_at_camp(w, f, body_of, killer, at);
+                }
             }
             SlotState::Dead => self.camp_mut(f).expect("a ledger").free(i, true),
             SlotState::Left | SlotState::Gone => {
                 self.camp_mut(f).expect("a ledger").free(i, true);
                 self.pool_shift(f, 0.0, at);
+                // Before the member's loss to its party, so a band that loses its chief unit
+                // routs as a chief's band.
+                if chief {
+                    self.chief_killed_at_camp(w, f, body_of, killer, at);
+                }
                 self.member_died(w, party, d.body, at);
             }
         }
@@ -1341,5 +1594,30 @@ impl Conflict {
             }
         }
         bad
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::synth::CampRun;
+
+    /// What a Frostmaw's loss does to the den's pressure depends on who dealt it (MZB-259): a
+    /// district's walls are a player's, a village's are the faction's own affair. Either way a boss
+    /// whose last unit falls loses its chief (MZB-266).
+    #[test]
+    fn a_villages_walls_are_no_players_loss_and_a_districts_are() {
+        for (cause, pressure) in [(LossCause::Faction, 0.0), (LossCause::Player, 1.0)] {
+            let mut r = CampRun::new(61, "frostmaw", 1);
+            r.camp_in();
+            let to = r.c.now() + 10;
+            r.run(to);
+            let p = r.raid().expect("a raid goes");
+            r.c.lose_units(&mut r.w, p, |_| true, 1, cause);
+            assert_eq!(r.c.stats.chiefs_killed, 1, "{cause:?}");
+            let camp = r.c.camp(r.f).expect("a ledger");
+            assert_eq!(camp.pressure.parts().0, pressure, "{cause:?}");
+            assert!(camp.arrival_at.is_some(), "{cause:?}: a wait is booked");
+        }
     }
 }

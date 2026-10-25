@@ -11,8 +11,8 @@
 //! mirrors:
 //!
 //! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
-//!   are BAND_STATE (counted), CHIEF_STATE and HAVEN_CHEST (counted as deferred; 0x0093 is
-//!   retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
+//!   are BAND_STATE (counted), CHIEF_STATE (given to the engine at its own time, M6) and
+//!   HAVEN_CHEST (counted as deferred; 0x0093 is retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
 //!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID by
 //!   their op ids too) into `Conflict::ingest`, at their own time with the other modules and the
 //!   world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY among them (no war
@@ -149,6 +149,8 @@ pub(super) struct Link {
     pub(super) commands_written: u64,
     /// Latest-wins BAND_STATE records seen (read for nothing yet).
     pub(super) band_states: u64,
+    /// Latest-wins CHIEF_STATE records given to the engine (M6, MZB-270).
+    pub(super) chief_states: u64,
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
     pub(super) deferred: u64,
@@ -273,6 +275,7 @@ impl Link {
             ignored: 0,
             commands_written: 0,
             band_states: 0,
+            chief_states: 0,
             deferred: 0,
             from_pages: false,
             replay_end_due: false,
@@ -420,6 +423,10 @@ fn reset_if_due(st: &mut State) {
 /// cleared its notice by now. A notice a replayed record made again is dropped from the queue
 /// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
 pub(super) fn replay_end(st: &mut State) {
+    if !running(st) {
+        // The host's replay is over and no camp came back: nothing the held chiefs' states name.
+        st.conflict.engine.discard_held_chief_states();
+    }
     if !st.conflict.replay_end_due || !running(st) {
         return;
     }
@@ -465,6 +472,27 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 // The engine reads nothing from BAND_STATE yet (a party's place is its march's
                 // closed form); it is counted.
                 Obs::State(_) => st.conflict.band_states += 1,
+                // The chief's crystal (the steal sends it off, M6, MZB-270): given to the engine at
+                // the conflict's own time, so no module catches up for it, through the hand-over
+                // the journaled records use. Latest wins and nothing journals it: a lost one is
+                // mended by the den's next census.
+                Obs::ChiefState(c) => {
+                    st.conflict.chief_states += 1;
+                    if st.replaying {
+                        // The host's replay, not the engine's: the engine's begins once the conflict
+                        // is in the world, after a replayed FACTION_FOUND, and a state arriving before
+                        // it finds its faction unknown. Held for the replay end, where the engine
+                        // applies it over the census bytes the replay brings back (RP-100).
+                        st.conflict.engine.hold_chief_state(&c);
+                        return;
+                    }
+                    with_infra(st, |c, w, infra| {
+                        let now = c.now();
+                        c.ingest(w, infra, &o, now);
+                    });
+                    st.phase1.taint();
+                    take_commands(st);
+                }
                 _ => st.conflict.deferred += 1,
             }
         }
@@ -1180,6 +1208,8 @@ pub struct ConflictLinkStats {
     pub ignored: u64,
     pub commands_written: u64,
     pub band_states: u64,
+    /// CHIEF_STATE records given to the engine.
+    pub chief_states: u64,
     /// Records whose engine half comes with a later slice, dropped.
     pub deferred: u64,
     /// Sources the industry engine's districts set or changed.
@@ -1245,6 +1275,7 @@ impl super::Engine {
                 ignored: l.ignored,
                 commands_written: l.commands_written,
                 band_states: l.band_states,
+                chief_states: l.chief_states,
                 deferred: l.deferred,
                 fed: l.fed,
                 replay_dropped: g.dropped,

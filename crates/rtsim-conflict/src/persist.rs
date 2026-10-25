@@ -31,6 +31,7 @@ use rtsim_kernel::meta_pages::{
 };
 use rtsim_kernel::page::{PageError, PageKey, Result as PageResult, SaveBatch};
 use rtsim_kernel::paging::SaveTicket;
+use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rng::fnv1a64;
 use rtsim_kernel::rows::{PageSource, PagedRows, RowStats};
 use rtsim_knowledge::ActorId;
@@ -59,15 +60,17 @@ use crate::tunables::ConflictTunables;
 /// start and the last notice's serial follow presence, and a feud carries its kept notice and its
 /// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22). RTC5: a party's recalled stacks are kept by
 /// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
-/// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC6");
+/// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
+/// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
+/// arrival (M6, MZB-271); a party ends with the op ids of the casualties it counted (MZB-589).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC7");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
-/// event may differ.
+/// event may differ. 6: a camp carries its pressure and arrival (M6).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 5;
+const META_VERSION: u16 = 6;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -360,6 +363,7 @@ fn put_camp(w: &mut Writer, c: &Camp) {
             w.u8(l.action);
             w.u64(l.op);
         });
+        w.u64(s.chief.to_bits());
     }
     put_usize(w, c.retired.len());
     for t in &c.retired {
@@ -373,6 +377,11 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.f64(t.spot.2);
         w.f32(t.direction);
     });
+    let (p, at_day) = c.pressure.parts();
+    w.f32(p);
+    w.u32(at_day);
+    w.var_u64(u64::from(c.arrival));
+    put_opt(w, &c.arrival_at, |w, t| w.u64(t.0));
 }
 
 fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
@@ -397,7 +406,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let seq = get_u32(r)?;
     let refill = get_u32(r)?;
     let refill_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
-    let n = r.len_prefix(25)?;
+    let n = r.len_prefix(33)?;
     let mut slots: Vec<Slot> = Vec::with_capacity(n);
     for _ in 0..n {
         let id = get_u32(r)?;
@@ -415,6 +424,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
                 op: r.u64()?,
             })
         })?;
+        let chief = handle(r)?;
         if slots.last().is_some_and(|l| l.id >= id) || generation == 0 {
             return bad(format!("slot {id} out of order or with generation 0"));
         }
@@ -427,6 +437,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             misses,
             missed_at,
             line,
+            chief,
         });
     }
     let n = r.len_prefix(6)?;
@@ -444,6 +455,13 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             direction: r.f32()?,
         })
     })?;
+    let p = r.f32()?;
+    if !p.is_finite() || p < 0.0 {
+        return bad(format!("camp pressure {p}"));
+    }
+    let pressure = Pressure::from_parts(p, r.u32()?);
+    let arrival = get_u32(r)?;
+    let arrival_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
     Ok(Camp {
         epoch,
         seen,
@@ -454,6 +472,9 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         slots,
         retired,
         throne,
+        pressure,
+        arrival,
+        arrival_at,
     })
 }
 
@@ -639,6 +660,10 @@ fn put_party(w: &mut Writer, x: &Party) {
     w.bool(x.chief);
     put_opt(w, &x.breaker, |w, a| w.u64(a.to_bits()));
     w.f64(x.fight_strength);
+    put_usize(w, x.casualty_ops.len());
+    for op in &x.casualty_ops {
+        w.u64(*op);
+    }
 }
 
 fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
@@ -695,6 +720,10 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
         chief: r.bool()?,
         breaker: get_opt(r, handle)?,
         fight_strength: r.f64()?,
+        casualty_ops: {
+            let n = r.len_prefix(8)?;
+            (0..n).map(|_| r.u64()).collect::<codec::Result<Vec<_>>>()?
+        },
     })
 }
 
@@ -765,6 +794,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::Arrival { faction, stamp } => {
+            w.u8(8);
+            w.var_u64(u64::from(faction));
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -802,6 +836,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             stamp: get_u32(r)?,
         },
         7 => Ev::Refill {
+            faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        8 => Ev::Arrival {
             faction: get_u32(r)?,
             stamp: get_u32(r)?,
         },
@@ -885,6 +923,8 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.camp_answers,
         s.camp_deaths,
         s.camp_written_off,
+        s.arrivals,
+        s.renewal_losses,
     ]);
     v
 }
@@ -941,6 +981,8 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.camp_answers = n();
     s.camp_deaths = n();
     s.camp_written_off = n();
+    s.arrivals = n();
+    s.renewal_losses = n();
     s
 }
 
