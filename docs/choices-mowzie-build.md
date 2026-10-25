@@ -908,7 +908,8 @@ M6's branch); M12 skips it.
   Both are printing checks that must pass (`sim mowzie` exits 1 otherwise, and a test runs it).
   Where run 10 still falls short of MOWZIE.md §7: no line is held (Rule U's holds, the Frostmaw's
   spawn wait: Java's, deferred by MZB-164, so the fake plugin applies every line in the tick it
-  arrives) and no heir is seated, no Umvuthi marches (M10), and a chief's or the Umvuthi's death
+  arrives; since review P3-7 it can hold a chief's SPAWN and the heir's pair on a player at the throne,
+  MZB-445, which run 10 does not set) and no heir is seated, no Umvuthi marches (M10), and a chief's or the Umvuthi's death
   waits for M6 and M9; what it does reach is camps in and out with a player at the edge, musters,
   homecomings with hand-backs, refills, deaths at home, left behind and of strays, answers lost,
   late, replayed and stale, restarts and saves, with the invariants checked after every event.
@@ -2517,6 +2518,23 @@ The tests:
     generation.
   - **Same tick.** These tests ingest the copy at the first's tick: the feud's grievance decays by the
     clock, so a copy a tick later would differ in the sixth digit with nothing counted twice.
+  - **A counted casualty ends no hold** (the M6 merge check's P3): `release_before` ran ahead of the dedupe in
+    `casualties`, and BAND_CASUALTIES has no `Obs::op()` for `first_time`, so a casualty the party counted already
+    (a plain recommit at an epoch at or below the party's, or any `ingest_copy`) still ended a held arrival:
+    `end_hold` decided it unwatched, `casualties` counted nothing, and the hold's own fight record found no hold.
+    `release_before` now skips a Casualties whose op is in that party's `casualty_ops`. Failing first,
+    `a_casualty_the_party_counted_already_does_not_end_a_held_arrival` (a raid's arrival held in a replay, the
+    band's casualty counted, then the same op again, as a copy and as a plain recommit): one raid decided and the
+    hold gone against none; the control `a_new_casualty_still_ends_a_held_arrival` (a new op) keeps one raid and one
+    death, as before.
+  - **The copy tests take the real path** (the same check's P3): the restart leg of
+    `a_casualty_copy_after_a_save_and_reopen_counts_once` ingested the copy with `ingest`, a live commit; it now
+    goes through `ingest_copy`, as the host delivers a REASSERT. rtsim-jni's
+    `a_casualty_committed_again_after_a_world_save_counts_once` also sends the first record as a REASSERT (a
+    generation the engine never heard) and checks `copies_applied` moved and nothing counted twice.
+  - **Declined: `MowzieKit.removed()` does not assert `UNLOADED_TO_CHUNK`** (the same check's optional item).
+    The `gone(...)` wrappers' contract is "saved with its chunk or gone otherwise", and a call site may see
+    another removal reason; the stricter check could not be tried without GameTests, so it is left out.
 
 ### M6 design for the implementer
 
@@ -5297,7 +5315,1625 @@ each at its own far base, scripted engine):
 
 ## M9 Umvuthana
 
-(none yet)
+M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under "M9b build choices" below.
+
+- **MZB-400** (ids and base): M9 takes MZB-400 to 449, the header's range (the design was first written as
+  300 to 343 and renumbered by the lead). M5 has also written MZB-290 to 292, inside M6's range; M6 uses
+  250 to 289. The design
+  reads M4 at `feat/mowzie-m4` 2b239fe2 (the engine, as `target/m4-src`) and M5 at `feat/mowzie-m5`
+  d5b45b22 (the Java). They are separate branches, so M9's branch merges both before anything else.
+- **MZB-401** (the chief's slot): a culture with `chief_body: Option<String>` keeps its chief in one slot of
+  id `CHIEF_SLOT` = `u32::MAX` (-1 as a Java int). Umvuthana's is `mic_rtsim:conflict/umvuthana/umvuthi`, a
+  new body dictionary entry with stand-in `mowziesmobs:umvuthi`. The id sorts last, so `Camp::index`'s binary
+  search holds. The slot is outside the pool. These all skip it: `home_count`, `away_count`, `drawable`, the
+  draw order, `spawn_lines`, `party_lost`, the units, the pool and its refill, the audit sums (I1 to I6)
+  and the stray count. The den is untouched: its Frostmaw is its one unit (M6), and frostmaw's `chief_body`
+  is None.
+- **MZB-402** (the Umvuthi is a census body; replaces MZB-220):
+  - `GroveKind.isBody` takes `EntityUmvuthi` as well as the exact minion type, and `isChief` is true for it.
+  - The census lists it with BODY_CHIEF, its slot and generation, as well as in the chief fields (CHIEF,
+    THRONE, health, position, direction).
+  - An untagged Umvuthi in the footprint is a stray only while a grove found without its Umvuthi waits for
+    its heir (MZB-405). The engine then ADOPTs it with LINE_CHIEF. After a chief's death, a stray does not
+    cut the heir's wait.
+  - Any other untagged Umvuthi is left alone, as the jar's own. A tagged one of a retired generation is
+    REMOVEd under Rule U (MZB-433).
+  - Followers, cranes and raptors stay uncounted.
+  - Built in M9b: the core's `CampKind.pooled(e)` (default true, the den's Frostmaw) is false for the Umvuthi,
+    so a census lists it with BODY_CHIEF while FACTION_FOUND's home bodies leave it out.
+- **MZB-403** (per-slot line flags; the mask in flight):
+  - Each line's flags come from `line_flags(f, slot)`: LINE_CHIEF for CHIEF_SLOT, and the den's crystal
+    flag as M4 sets it.
+  - CAMP_BODIES' answer lines carry no flags, so the engine knows the chief by its slot id alone.
+  - A MASK line names no slot (MZB-408), and `send_lines` marks a slot in flight only when its generation
+    is not 0. So the engine keeps the MASK in flight as `Camp.mask: Option<(u64, u32)>` (op, line), and
+    counts it in `in_flight`.
+- **MZB-404** (the throne):
+  - The engine keeps the throne from the grove's first census with CENSUS_THRONE (M4's `Camp.throne`).
+  - Every CAMP_RECONCILE to a grove sets FLAG_THRONE, with THRONE_X, Y and Z and DIRECTION.
+  - Java keeps the latest on the site (`Camps.Site.throne`, for that epoch).
+  - With none known (a grove found without its Umvuthi), FLAG_THRONE is clear. Java then uses the fire pit's
+    centre (MZB-218, MZB-242) and direction 1, as §7 test 30 says.
+- **MZB-405** (a grove found without its Umvuthi):
+  - The grove gets no chief slot, and `Camp.heir = Some(Heir { due, found_empty: true })` at
+    `Pressure::at_cap`, so its heir comes after the cap's wait of 192 days.
+  - MOWZIE.md states no wait. EQUILIBRIUM.md §2.3 takes a camp found empty as one farmed to the cap.
+  - An untagged Umvuthi seen in the footprint before then cancels the wait and is ADOPTed into a new chief
+    slot.
+  - M6 uses the same rule for a den found empty (its migrant), and whichever slice lands first writes
+    `Pressure::at_cap`.
+- **MZB-406** (a chief killed at the grove): this is CAMP_DEATH on the chief slot, while Body, or while Left
+  with its take still held (MOWZIE.md ledger 5). In order:
+  1. M6's `chief_killed_at_camp(w, f, killer, at)` runs: `ensure_chief`, the fall, only the killer's own
+     feud steps down, and every party not Home routs.
+  2. `Camp.pressure` steps up by 1, unless the killer kind is BY_MOB (another mob's kill is no player's
+     pressure).
+  3. The slot is freed with died true, and the trade memory is cleared.
+  4. `heir_due = max(cowed_until, at + wait)` is set, and `Ev::CampHeir { faction, stamp }` is booked for
+     then. It is wheel tag 9: M4's Refill is 7 and M6's Arrival is 8.
+- **MZB-407** (the heir's wait): a culture field `chief_renewal: Option<RenewalDef>`. Umvuthana's is
+  `{ base_days: 6, cap_days: 192, half_life_days: 96, boss: true }` (MZ-14 (a)). The wait is
+  `min(cap, base × 2^P)` days, with P decaying at the half-life, as in M6's den renewal.
+  - It reuses M6's `RenewalDef` type and resolution, but as a field of its own: M6 validates its `renewal`
+    to need `recruits_per_day == 0` (a culture of one), and the grove recruits 2 a day.
+  - Nothing is ordered while no warrior is home (Body with no line). The heir then waits, and the camp is
+    looked at again at each census.
+- **MZB-408** (the heir takes a warrior): when the heir is due, one CAMP_RECONCILE carries two lines.
+  - The first is a new `ACTION_MASK` = 8: slot 0, generation 0, the warrior body. Java takes the camp's
+    warrior farthest from every non-spectator player that has no line in flight or held.
+  - The second is SEAT_HEIR: slot CHIEF_SLOT, a new generation, the umvuthi body and LINE_CHIEF. L_A is
+    the old generation when the chief slot is Dead, else 0.
+  - Java plays the two together: it makes the heir first, then removes the warrior (its record on a marker,
+    as a take). If either cannot be done, both are STALE and nothing changes.
+  - MASK is answered with the taken warrior's slot and generation.
+- **MZB-409** (booking the heir):
+  - MASK DONE frees that slot (died false) and calls `pool_shift(-1)`, since the warrior becomes the chief.
+  - SEAT_HEIR DONE makes the chief slot Body, and clears `Camp.heir` and the trade memory. NOTHING does the
+    same: the body already stands, tagged.
+  - STALE on either line orders the pair again at the next census.
+  - While the pair is in flight `camp_drawable` is 0, so no muster takes the warrior about to be masked.
+  - A MASK answer can name a slot whose own line is still in flight. The slot is freed all the same, and
+    that line's late answer finds a retired generation and is ignored.
+  - The SEAT_HEIR spawn waits under the chief's spawn hold (MZB-433), and MASK waits with it.
+- **MZB-410** (seated in place): this is SEAT_HEIR with L_A not 0, while the old generation's body stands
+  tagged in the footprint.
+  - Java waits while that body is in a fight: it has a player target, and a player hit it within 600
+    ticks (PLACEHOLDER). The plugin keeps the hits in a weak map. The wait has no time limit: it ends with the
+    fight (amended at review, P2-4; before, `HOLD_MAX` also ended it). The old body is the one of the L_A
+    generation inside the camp's footprint, no other chief-slot body (P2-3).
+  - Then, in one tick, Java answers the old body's held lines STALE, removes it with no CAMP_DEATH, and
+    makes the heir where it stood: at full health, in its direction, with an empty trade memory.
+  - With the old body gone, it is a plain SEAT_HEIR at the throne.
+  - In M9 only scripted lines reach it (test 30), since a chief slot is Dead only after a death away
+    (MZB-412).
+- **MZB-411** (a chief written off): a chief slot missed 3 times over 2 days (camp.rs's write-off rule) is
+  booked as a death at the grove with BY_NONE.
+  - P steps up (EQUILIBRIUM.md §2.2 counts a missing home body), the memory clears and the heir waits.
+  - `chief_killed_at_camp` is not called: no one saw it die, so there is no report, no feud steps down and
+    no party routs.
+- **MZB-412** (a chief killed away, the engine half):
+  - A Left chief slot becomes Dead. The census REMOVEs its throne body under Rule U, or the heir is seated
+    over it (MZB-410).
+  - A Gone chief slot is freed with died true.
+  - Both step P up, clear the memory and set the heir.
+  - Nothing sends a chief's death away before M11 (BAND_CASUALTIES with the chief, ledger 24), so only Rust
+    tests reach it. (Amended at review, P3-1: this no longer holds. With `chief_leads` an Umvuthi leads
+    Invasions from M9 on, and M3's Java already sends CHIEF_KILLED for a chief puppet, so M9b reaches it.
+    `chief_killed_by` calls `chief_died_away` when the faction's chief slot is away with that party, after
+    `chief_falls` booked the cowing, so the heir is due after it. The fall, the cowing and the band's rout
+    are booked once, by `chief_killed_by`; `chief_died_away` adds only the slot and the heir, and the
+    chief's pressure step, for a player's kill. The member renewal's bump (`renewal_bump`) is a boss
+    culture's and a grove has none, so the pressure steps once. The band comes home without the chief: its
+    slot is Dead with no party. A crash between the CHIEF_KILLED and the DEMATERIALIZED finds the slot
+    Dead in the save, so the replay has no chief to bring home.)
+- **MZB-413** (who leads, MOWZIE.md ledger 4): two culture fields.
+  - `chief_leads: Vec<PartyKind>`: the default is raid, invasion and siege (today's "any war party").
+    Umvuthana's is `["invasion"]`; frostmaw's is M6's.
+  - `chief_strength: f32`: umvuthana's is 5.0.
+
+  `chief_can_lead` holds when the chief slot exists, is Body or Owed, has no line in flight, and no heir
+  waits. A draw for a party the chief leads takes the chief too: Body becomes Left, Owed becomes Gone.
+  While it leads, `strength` and `strength_by_class` add `chief_strength` in the first unit's class, so a
+  full Invasion (6 warriors, 2 raptors) is 6 × 0.4 + 2 × 2.6 + 5.0 = 12.6.
+- **MZB-414** (no chief stack before M11):
+  - BAND_CHIEF and MEMBER_CHIEF are written only when `chief_stack(c)` holds, which is false for a culture
+    with `chief_body`. So MZB-109's stand-in chief never appears with a grove's band.
+  - The chief's SET_OUT line finds no puppet to claim it, so it is a take (MZB-222), held under Rule U
+    (MZB-433). The Umvuthi stays on its throne until no player is near, then goes.
+  - M11 turns `chief_stack` on, with the aloft puppet and CHIEF_BODY's travel.
+- **MZB-415** (coming home): a party with the chief ends Home.
+  - A Left chief slot becomes Body.
+  - A Gone one becomes Owed. The engine sends CHIEF_BODY (MZB-421), then a chief SPAWN, held as MZB-433
+    says.
+  - M9 sends no chief HAND_BACK, since there is no puppet.
+  - A held take can apply after the party is home. Its late DONE makes the slot Owed, and a SPAWN follows.
+    This is accepted: both wait until no player is near.
+- **MZB-416** (gifts at the grove's price, the rest of ledger 12):
+  - When the market has no price for the tribute good, `gift_value` prices it at `1 / tribute_per_coin`.
+    Today it uses `m.price(g) / PRICE_ONE`, which is 0 for an unpriced good, so every gift of gold was
+    worth nothing.
+  - So the Umvuthi's 7 gold blocks, 567 nuggets, are 63 coins.
+- **MZB-417** (TRADED):
+  - A masked trade with a grove's minion is worth `nuggets / tribute_per_coin` coins. It is booked through
+    `Conflict::traded`, once by op id.
+  - Java writes it only for a minion tagged by a grove or standing in a grove's footprint. The count is
+    the gold nuggets on either side of the trade, and a trade with no gold side writes nothing.
+  - A trade with a band's puppet writes nothing.
+- **MZB-418** (CHIEF_PAID):
+  - It calls `pay_tribute(w, faction, payer, None, goods, at)`. That settles the payer's open demand, else
+    the settlers', else it books a gift (MZB-416).
+  - The payer goes into the trade memory only when the slot and generation are the live chief's (Body).
+  - PAID_STRAY (flags 1) is a payment to an untagged Umvuthi standing in a grove's footprint. It is booked
+    as tribute, with no memory entry.
+  - A payment to an Umvuthi outside every grove writes nothing.
+- **MZB-419** (gold blocks and ingots):
+  - The Umvuthi wants gold blocks (the config's gold_block × 7), but the catalogue has only `gold_nugget`.
+  - So rtsim-jni's CHIEF_PAID translation maps items through `TRIBUTE_EQUIVALENTS` (gold_block 81 nuggets,
+    gold_ingot 9) before `own_items`, merging entries. The engine sees 567 gold_nugget.
+  - TRIBUTE_PAID (M3's) is untouched.
+- **MZB-420** (trade memory): `Camp.traded: Vec<(u64, u64)>`, sorted, of at most 1,024 players
+  (PLACEHOLDER, the census's own cap).
+  - Past the cap, a payment is still tribute but is not remembered.
+  - It is fed by CHIEF_PAID, and by the census's traded list when TRADED_SLOT and TRADED_GENERATION are the
+    live chief's. The two are unioned, so a payment the engine has and the body has not yet written stays.
+  - It is saved. It is cleared when the chief dies or is written off, and when an heir is seated.
+- **MZB-421** (CHIEF_BODY at home):
+  - It holds agent 0, the camp's epoch, health 0 (the body keeps its own), flags 0 and the memory.
+  - It is sent before every chief SPAWN, and whenever a census's traded list is shorter than the engine's.
+    It is never sent before SEAT_HEIR, since an heir's memory is empty.
+  - Java core keeps the latest for each faction for that epoch, and drops it at CAMP_OUT.
+  - Java writes it through a new `CampKind.chiefBody(Mob, ChiefBody)` (a default no-op): when the chief's
+    body is made, and at once onto a standing chief body of that slot and generation.
+  - GroveKind writes it with `setTradedPlayersCompound` (a ListTag of `NbtUtils.createUUID`), never with
+    `rememberTrade`, so nothing is journaled.
+  - Its puppet and travel use (agent not 0) are M11's.
+- **MZB-422** (HAVEN_CHEST):
+  - rtsim-jni decodes it in a new `observe_latest` arm, shared with M6's CHIEF_STATE. Today `observe_state`
+    drops latest-wins kinds.
+  - The engine keeps the chests by faction, unsaved, and forgets one at CAMP_OUT.
+  - The plugin's `GroveChests`, after Ice and Fire's `Lairs.java`, looks at each grove that is in every 200
+    ticks (PLACEHOLDER). It picks the chest or barrel (`ChestBlockEntity`, `BarrelBlockEntity`) in the
+    footprint nearest the centre that has room or a loot table not yet rolled.
+  - It sends HAVEN_CHEST when the choice or its free slots change, and one with 0 free slots when there is
+    none.
+  - Amended at review (MZB-446, P3-3): HAVEN_CHEST is journaled at 0x0817, so it is no `observe_latest` arm
+    and the engine's copy is still unsaved. The plugin sends it from the server (never carried by a holder),
+    at most once per tick per grove, and once at the start of a session for a grove that is in or comes in,
+    since the pages do not hold the chest.
+- **MZB-423** (tribute into the chest):
+  - Each booked payment (CHIEF_PAID, the envoy's TRIBUTE_PAID, a gift) adds its goods to
+    `Camp.owed_tribute`.
+  - While the grove's chest is known with free slots and nothing is being placed, the engine takes one good
+    out of the books: the least of what is owed, the faction's stock and free × 64. It uses a new
+    `World::stock_to_players(i, goods, at)` (player_out).
+  - It sends TRANSFER_TO_CONTAINER through rtsim-jni's outbox with an op id, as the dragons do, and keeps it
+    as `Camp.placing: Option<Placing { op, good, amount }>` (saved).
+  - APPLIED or DUPLICATE_OP lowers what is owed by the amount. FAILED returns the goods through
+    `stock_from_players`.
+  - A grove whose chest is gone keeps owing.
+- **MZB-424** (owed hunts, ledger 11): a unit field `hunts: u32` (raptor 2, PLACEHOLDER) and a culture field
+  `hunt_cap: u32` (8, PLACEHOLDER).
+  - `raid_district` adds `survivors × hunts` for each class it did not skip, capped at `hunt_cap` per
+    district.
+  - A watched raid adds nothing, since there the jar's raptors hunt for themselves.
+  - The hunts are kept in `Faction.hunts: Vec<Hunt { district, count, op }>`, a small Vec, never a one-entry
+    BTreeMap.
+  - Amended at the re-check, R3: `stats.hunts_owed` counted a replacement's whole sum again (5 owed, then
+    3 more, made 13). It counts what the raid adds to the held hunt after the cap: 8 for 5 and 3, and for 6
+    and 6 more the 6 and the 2 the cap leaves.
+- **MZB-425** (the hunt records; the ids are provisional):
+  - OWED_HUNT (0x880C, engine to Java, latest-wins for each faction and district): faction, district,
+    dimension, centre x and z, radius 48 (PLACEHOLDER), count and op id.
+  - HUNT_APPLIED (0x0816, journaled): faction, district, op id and killed.
+  - They are the next free ids after today's DIFFICULTY 0x0815 and BAND_MARCH 0x880B. Another slice may
+    take them first, so they are settled at landing.
+  - One hunt is in flight for each district. It is resent at each session start and booked once by the engine's own books (the hunt's op id, MZB-449).
+    HUNT_APPLIED clears it whatever `killed` is.
+  - Amended at the re-check, R2: OWED_HUNT gains `replaced: u64` (the op of the hunt this one replaced in
+    flight, 0 none) and `rest: u32` (the animals to kill instead of `count` if the plugin's last applied op
+    for the faction and district is `replaced`: what the replacing raid owes on its own, `min(hunt_cap, n)`).
+    The u64 goes at offset 40, in MZB-1's pattern (the u64s first), so the u32s move to dimension 48,
+    count 52, centreX 56, centreZ 60, radius 64 and `rest` 68 (it took the 4 reserved bytes); the record is
+    72 bytes, not 64. It is an unreleased internal record with no reader yet, so there is no compat question
+    (the coordinator approved it). The layout is in boundary.md §9.
+- **MZB-426** (applying a hunt): core `conflict/OwedHunts.java`, vanilla only.
+  - It keeps the latest command for each faction and district, unsaved.
+  - Once the circle's chunks tick entities, it kills up to `count` animals in it, nearest the centre first.
+    They must pass the jar's raptor test, rewritten in vanilla calls: no ATTACK_DAMAGE or less than 3, and
+    0.1 < width² × height < 6 (`EntityUmvuthana.registerHuntingTargetGoals`).
+  - It spares tamed, named and leashed animals (MZB-442), and kills with `kill()`, so their drops fall.
+  - It journals HUNT_APPLIED even when it killed none (the hunt is spent), with the circle's entity chunks
+    in M5's barrier.
+  - A crash between the kills and the save can apply one hunt twice, bounded by the cap.
+  - Amended at the re-check, R2: the plugin's rule is exact, for each faction and district. It keeps the last
+    op it applied (unsaved). An OWED_HUNT whose `op` is that op is ignored, although a hunt answered once is
+    still answered once. One whose `replaced` is that op kills `rest` animals, the replaced hunt's having died
+    already. Anything else kills `count`. Applying a hunt sets the last op to its `op`. This closes the race
+    in which the plugin applies a replacement at once, before the engine has read the replaced hunt's answer:
+    the late answer re-sends the replacement with `rest`, which the plugin ignores, since it applied that op,
+    and 13 animals no longer die for 8 owed (MZB-449).
+- **MZB-427** (plunder takes livestock goods, the rest of ledger 11):
+  - A culture field `plunder_goods: Vec<String>`. Umvuthana's is `["leather", "wool"]`; the catalogue has no
+    meat good.
+  - When it is not empty, `raid_node`'s plunder takes those goods only, and its cap counts those goods
+    only. It ignores the units' `carry`: raptors carry 0, so today their plunder takes nothing.
+  - The goods are eaten: taken out of the node's stock through `take_stocks` and booked to no one.
+  - Only witnesses learn of it first-hand (CL-D61); the rest learn by gossip.
+- **MZB-428** (body makers and extras):
+  - The new `ConflictBodies.registerMaker(String body, Maker)`, with
+    `Mob make(ServerLevel level, double x, double y, double z, float yaw, List<Mob> extras)`. ConflictBridge's
+    placing (`ConflictBodies.create` at ConflictBridge.java:1145) asks the maker first.
+  - Extras get the AGENT tag before they join and are kept in `Slot.extras`. They despawn with their slot
+    or stack, book nothing and are never saved.
+  - The leader's death is the unit's casualty. A follower's death is nothing, and a follower left with no
+    leader fights on until its stack despawns.
+  - The raptor maker:
+    1. the constructor, then `moveTo`;
+    2. no `finalizeSpawn`, which would add 4 or 5 untagged followers (MZB-216's stand-in leaks them today);
+    3. exactly 4 followers through `EntityUmvuthanaFollowerToRaptor(type, level, leader)`, on the jar's
+       0.1-block circle with its weapon roll (`random.nextInt(3) == 0 ? 1 : 0`).
+
+    With exactly 4 followers, a pack's strength is the unit's 2.6.
+  - M11's summons reuse the extras.
+- **MZB-429** (raptors on Peaceful; extends MZB-234):
+  - A raptor and its followers discard themselves on Peaceful (their own `tick`), so the maker returns null
+    on Peaceful and the stack stays pending.
+  - A pack that discards itself is a despawn, not a casualty.
+- **MZB-430** (the mixins): in the plugin's `mic_rtsim_mowziesmobs.mixins.json`, shared with M6 (see *Shared
+  with M6* below).
+  - `EntityUmvuthiMixin` at `rememberTrade` HEAD sends CHIEF_PAID:
+    - the items from `getDesires()`, which still names what `fulfillDesire` just took;
+    - the player from its game profile id;
+    - the slot and generation from the body's CampMember;
+    - PAID_STRAY when it is untagged in a footprint, and nothing outside a grove.
+  - `EntityUmvuthiMixin` also gives `die`'s `getEntitiesNearby` call an empty list for a second body
+    (MZB-431).
+  - `ContainerUmvuthanaTradeSlotResultMixin` at `onTake`'s `ItemStack.shrink` sends TRADED, server side
+    only.
+- **MZB-431** (a second body): a chief body whose REMOVE line is held, or whose member already died, is a
+  second body.
+  - Its LivingDropsEvent is cancelled.
+  - Its death journals nothing; `Camps.onDeath` skips it.
+  - Its `die` takes no warriors with it (MZB-430), and it is removed.
+- **MZB-432** (the killer, shared with M6): core's `Camps.killer(dead, source)` takes the first of:
+  1. the source's entity, when it is a player;
+  2. the player owner of an `OwnableEntity` source;
+  3. `dead.getKillCredit()`, when it is a player (vanilla keeps one 100 ticks);
+  4. any other source entity, as BY_MOB;
+  5. else BY_NONE.
+
+  It applies to Camps only. M11 adopts it for BAND_CASUALTIES.
+- **MZB-433** (Rule U's holds):
+  - The new `CampKind.holdRemoval(level, site, body)` defaults to false. GroveKind returns true for an
+    Umvuthi with a non-spectator player within 160 blocks or a player target.
+  - TAKE, REMOVE and SET_OUT-as-take lines on such a body are held with no time limit, and an epoch's end
+    answers them STALE.
+  - A chief SPAWN or SEAT_HEIR waits on `holdSpawn`: a player within 160 blocks of the throne, for at most
+    `HOLD_MAX` 6,000 ticks.
+- **MZB-434** (GroveKind's chief; supersedes MZB-209 and MZB-202):
+  - `chiefLines()` is true.
+  - `make` for the umvuthi body:
+    1. the constructor and `moveTo`;
+    2. `setDirection` before `addFreshEntity`, since the jar reads it only at tick 1;
+    3. `finalizeSpawn(STRUCTURE)` and `restrictTo(fire pit, -1)`, as worldgen does;
+    4. CHIEF_BODY's memory.
+  - `spawnAt` uses the site's throne (MZB-404), else the fire pit.
+  - `joined` restricts it again.
+  - The census writes TRADED t, TRADED_SLOT and TRADED_GENERATION from the chief body's
+    `getTradedPlayers()`.
+  - `sound()` returns `mowziesmobs:block.gong`, the grove's notice sound.
+- **MZB-435** (strength in observed fights, ledger 19, shared with M6): the plugin registers one
+  IndustryPlugin whose `fightStrength` gives:
+
+  | Body | Strength |
+  |---|---|
+  | Frostmaw (M6's) | 41.7 |
+  | Umvuthi | 5.0 |
+  | Any other `EntityUmvuthana` | 0.4 |
+  | Raptor | 1.0 |
+
+  So a pack of a raptor and 4 followers is 2.6.
+- **MZB-436** (the envoy):
+  - Its body is a grove minion. M3's guard is unchanged: it strips the jar's player and hurt-by goals while
+    the demand is open, and lifts them at an insult.
+  - The payment is taken at EntityInteract HIGHEST (MZB-110) and the event is cancelled, so the jar's trade
+    screen does not open.
+- **MZB-437** (the page format):
+  - RTC7 and META 6, shared with M6. The second slice to land bumps again.
+  - Camp gains `pressure` (M6's), `heir`, `traded`, `owed_tribute`, `placing` and `mask`.
+  - Faction gains `hunts`, and the wheel gains `Ev::CampHeir`.
+  - Fixtures are regenerated, with no migration.
+- **MZB-438** (rtsim-jni):
+  - CHIEF_PAID, TRADED and HAVEN_CHEST leave boundary.md §9.6's deferred list.
+  - CHIEF_BODY and OWED_HUNT get writers, and HUNT_APPLIED gets a decoder.
+  - The tribute's TRANSFER_TO_CONTAINER rides the existing `Outbox<TransferCmd>`, completed by
+    COMMAND_RESULT.
+- **MZB-439** (where the GameTests' camps come from):
+  - Tests 13, 15, 16 and 25's payment half declare their grove under `mowziesmobs:umvuthana_grove` at a far
+    base, so the native engine claims it as umvuthana's.
+  - Tests 27 and 30, and test 29's throne clauses, use scripted test camps (MZB-227).
+  - A GameTest cannot restart the session (MZB-228), so every restart case goes to the Rust protocol tests.
+- **MZB-440** (test 29's throne clauses are built in M9): its first three clauses are built in M9:
+  - the take and the removal held past 6,000 ticks;
+  - the spawn held for the player or 6,000 ticks;
+  - an epoch's end answering them STALE.
+
+  M11 adds the rest (the puppet, re-binding and the four exceptions). Its second-body clause needs a
+  puppet, so M11 builds it, on M9's MZB-431.
+- **MZB-441** (test 25 in three parts):
+  - a GameTest on a real grove for the payment;
+  - a scripted test camp for CHIEF_BODY's write;
+  - Rust protocol tests for the restart, the Invasion round trip, a dead slot's census and payment, and a
+    succession.
+
+  The puppet clauses are M11's.
+- **MZB-442** (an owed hunt spares tamed, named and leashed animals; the question for Ben, decided on the
+  recommendation): an owed hunt kills only stock that nobody has marked as theirs. Embodied raptors do what
+  the jar's AI does: its damage test already spares wolves (ATTACK_DAMAGE 4), but not a named cow.
+- **MZB-443** (the seams M9 leaves):
+  - M10 owns BAND_MARCH, the column and the walk-in. M9 touches none of them: a grove's band, with or
+    without its chief, marches as M10 makes any band march.
+  - M11 owns the aloft movement, CHIEF_BODY's travel (agent not 0, ledger 24), `chief_stack` for the grove
+    (its stack and puppet, MEMBER_CHIEF), the chief's HAND_BACK, the summons (a mixin at
+    `EntityUmvuthi.java:1050` adding to MZB-428's extras), the chief's death away through BAND_CASUALTIES
+    (MZB-412's engine half) and test 29's other clauses.
+- **MZB-444** (the culture fields' checks, M9a; fills a gap in "Validation" of the design): `Culture::resolve`
+  refuses each of these on its own.
+  - `chief_body` empty, or equal to a unit's body: a chief's body kind must be one no unit has, so a census
+    never reads one as the other. It needs `camp_bodies`.
+  - `chief_renewal`, `chief_leads` or a non-zero `chief_strength` with no `chief_body`.
+  - `chief_strength` not finite or below 0.
+  - `chief_leads` naming an unknown party, a kind other than raid, invasion and siege (scouts, envoy and
+    plunder have no chief), or one twice. An empty list is allowed: the chief leads nothing.
+  - `plunder_goods` with an empty name or a name twice; a unit with `hunts` and a `hunt_cap` of 0.
+  - Whether each `plunder_goods` name is in the catalogue cannot be known at resolve time. A test checks the
+    built-in cultures against the default catalogue, and the engine skips a name the catalogue lacks.
+  - `body_names` appends a culture's `chief_body` after its units, so every existing body id keeps its
+    number (the Umvuthi's is the last).
+
+- **MZB-445** (the heir's pair, M9a; design gaps):
+  - The heir's generation is derived from the faction key, the chief slot and the tick the heir is due, and
+    never the generation the slot last held (`Camp::heir_generation`), so a census can tell the heir from
+    an answer to a lost reconcile made over an old chief's body.
+  - The pair is tried at the heir's due event, at each census and at each `unblock` (`camp_heir`), never at a
+    `camp_sync`, so a camp that is out or has no warrior home orders nothing and is looked at again.
+    (Amended at review, P2-1: "at each census only" left a grove that stayed in with no heir for good when
+    its due tick found no warrior home or its pair was answered stale. `unblock` ends with `camp_heir`,
+    which returns at once unless the heir is due, the camp is in and no pair is in flight.) A pair answered
+    so that no one is seated is not ordered again by that very answer, which would be one pair a tick while
+    Java answers STALE: the answer books an `Ev::CampHeir` one game hour on (`HEIR_RETRY`, PLACEHOLDER)
+    under the heir's stamp, and its `unblock` does not look at the heir.
+  - A camp found without its Umvuthi whose wait an untagged one cancels resets its pressure to none: the
+    cap's pressure was a stand-in, as if the camp had never been found empty.
+  - A MASK answered for a warrior the books have `Left` was booked as a take, the slot going `Gone` and
+    keeping its place in the party. (Amended at review, P3-5: that left the grove one warrior over, the
+    band still counting a unit whose body the heir now was.) The MASK of M9b names only a warrior whose slot
+    is home and not set out (see M9b's notes), but a raid can muster it between the pair's order and its
+    answer. The engine then books the party's loss, as a member dying at its camp is (`member_died`): the
+    slot is freed, not retired at a death (the body is the heir's, not to be removed), the party loses a
+    unit and so does the faction's count away, `casualties` counts one, and the recalled stacks a replay
+    keeps are clamped to the unit's count as the spawned stack is. A band left with no one ends as
+    `casualties` ends it. The unit leaves the party, not the pool: the pool refills into the room it
+    leaves, as for any casualty. A MASK for a `Gone` slot (its body was taken, so none is at the camp to
+    mask) books nothing, as before. The answer is booked after the camp is back in the faction
+    (`camp_bodies` returns the party, as `camp_death` books it).
+  - An unanswered pair is void at CAMP_OUT and at a session start with the other lines.
+  - `seated` seats only the heir that waits (amended at review, P3-1): an answer whose generation is not
+    `heir_generation` while an heir waits changes nothing. A holder's copy of an old SEAT_HEIR, booked by
+    state after its answer is forgotten, raised a chief that had died away (its Dead slot freed, its
+    generation seated again, the waiting heir cancelled) and, reaching a live chief of a newer generation,
+    cleared its trade memory and moved the heir's stamp. The generation of an heir whose death the books
+    have is never the next heir's, which derives from a later due tick.
+  - The heir killed before its seat is answered (found by run 10's grove chaos): a CAMP_DEATH on
+    `CHIEF_SLOT` whose generation is the heir's, while the books hold no chief slot of that generation,
+    seats the heir first (`seat_before_death`) and then books its death as any
+    chief's: the pressure steps for a player's kill, the heir is due again, the memory is cleared. The answer
+    that comes late, from a holder's record at the next camp-in, finds the generation retired at a death and
+    seats no one (`seated`). Without it the death booked nothing and the late answer seated a chief with no
+    body, written off after three misses with its fall never booked. A generation retired by a write-off is
+    untouched. (Amended at review: the first version asked the SEAT_HEIR line to be in flight, which a
+    CAMP_OUT or a session start voids, and run 10's chaos found the same ghost with the camp out when the
+    heir was killed. A body tagged with the waiting heir's generation exists only if the world did the seat,
+    whether or not the line is still held here.)
+  - The emulator plays the pair whole (`synth`, a gap): `FakeConflict` does both lines of a reconcile that
+    carries a MASK, or neither (`pair_possible`): a warrior that is tagged, not the chief and not elsewhere,
+    and no body of the seat's slot and generation standing already. If either cannot be done both are
+    answered STALE, as MZB-408 has Java do. Before this the emulator could take a warrior and not seat the
+    heir, which the engine's invariant (every MASK done with its SEAT_HEIR done) rightly called a bug of the
+    emulator.
+    (Amended at review, P3-7: the first version also skipped a warrior a player stood near, so that with
+    every warrior near a player the pair was answered STALE, where MZB-408 has Java take the warrior farthest
+    from every player and answer STALE only with none at home. The emulator has no distances, so `mask`
+    takes the last tagged warrior no player stands near and, when every warrior at home has one near, the
+    last tagged one; `near` orders the choice and never refuses the pair. The design's "no line in flight or
+    held" needs nothing in the emulator: a line is applied the tick it arrives, and the only lines held are
+    the chief's, which are never a warrior.)
+  - The emulator plays `holdSpawn` (review P3-7; MZB-433 gives the numbers, 160 blocks and `HOLD_MAX` 6,000
+    ticks). `CampWorld.watched` says a non-spectator player stands within 160 blocks of the throne
+    (`FakeConflict::watch_throne` sets it). While it is set, the lines of a reconcile that wait (a chief
+    SPAWN, SEAT_HEIR and the MASK that goes with it, so the pair stays whole) are held with the tick they
+    arrived and answered when they go: at once when the player leaves, else `HOLD_MAX` ticks after they
+    arrived, and answered STALE if the camp goes out first (an epoch's end) or the plugin's session ends
+    (its memory is lost, as at the camp's out the engine voids the pair). The lines that do not wait are
+    applied and answered on arrival. The engine sees the pair in flight meanwhile and orders nothing again.
+    What the emulator first left out of MZB-433 was the other hold, the Umvuthi's removal: a TAKE, REMOVE
+    or SET_OUT-as-take of the chief body waits with no time limit while a player is within 160 blocks of it
+    or has it as a target, and an epoch's end answers it STALE. (Amended at review, MZB-613 (c): the emulator
+    now holds a chief body's removal on a flag with no limit and answers it STALE at a census or an out, and a
+    pair seated in place waits on a fight flag, not on `watched`. The Java GameTest 29 plays the real hold.)
+  - Amended at the re-check, R5 (P3-7): no rtsim-cli run sets `watched` or `near`, so runs 10 and 12 do not
+    exercise the hold or the farthest-warrior choice; the unit tests do (the throne tests in
+    `tests/grove.rs`). The throne hold is at most `HOLD_MAX`, 6,000 ticks, against a heir wait of 192 days
+    at the cap, so it is immaterial to those runs' numbers; no run sets the removal or fight holds of
+    MZB-613 (c) either.
+  - Amended at the re-check, R5: `Culture::resolve` refuses a culture with both `renewal.boss` and a
+    `chief_body`. A boss's chief is the band's one unit (`chief_unit_lost`, `renewal_cause` read
+    `renewal.boss`), a camp chief a body outside its units with a slot of its own, and a culture with both
+    would lose the chief twice. The Frostmaw has the first, the Umvuthana the second (its `chief_renewal`
+    has `boss`, which the check leaves alone: it is the heir's wait, not a `renewal`).
+  - The sim's grove checks, where the design leaves the detail open. Run 5 (`grove_rest`): plunder (livestock
+    only, eaten, no village defence; 8 raids ate 240 items), an Invasion led by the chief (fights of strength
+    3.8 and 12.6), the grove in and out (6 rounds, its own plunder drive quiet), hunts owed to the cap (2, 4,
+    6, 8, 8, 8, 8, 8) and the relief of a gift in nuggets equal to the same value in emeralds and to a trade
+    at the tenth. Run 6 (`grove_renewal`): the grove's wait, pressure and farmed rate from the culture's own
+    rule. Run 10 (`chief_chaos`): 32 groves of 220 events beside M4's 64-camp chaos, an Invasion ordered one
+    time in eight, the pair, the pool counts, the one live chief body and the write-offs checked after every
+    event; where holders journal again no member is written off. Run 12 (`heir_farmed`): the Umvuthi killed a
+    few ticks after its seat for 60 game years (96 days each): base 6 gives 1.822 a year against the closed
+    form's 1.810 and the doc's 1.8, base 24 gives 1.003 against 1.000, every wait the kernel's own
+    `min(192, base x 2^P)` on its day.
+- **MZB-446** (the tribute stack, M9a; settles MZB-423's open edges):
+  - One op is one stack: at most 64 items, the least of what is owed, the stock and 64. Core's
+    TRANSFER_TO_CONTAINER fails above an item's own stack size, so only the tribute good is owed (the gold
+    nugget stacks to 64), never a gift's other goods.
+  - `Placing` carries the chest (Java's dimension and position) as well as the good and amount, so a
+    transfer rewritten after a restart knows where it goes. The stacks in flight are `Conflict.placing`, a
+    resident list of (faction, `Placing`) saved in the meta page, never a field of a paged row.
+  - The op id is `identity_op(faction key, hash(TRIBUTE_SLOT, stacks, good, amount))` over a counter saved in
+    the camp (amended at review, P3-3, below), so the same decision after a crash has the same id.
+  - Each stack takes one free slot off the chest's count until HAVEN_CHEST says otherwise; FAILED forgets
+    the chest; CAMP_OUT and a session start clear it.
+  - The engine books the goods as left to the players (`World::stock_to_players`, `player_out`) when it
+    sends them, and back (`stock_from_players`) on FAILED.
+  - Amended at review, P3-2: the stock is read after the world is caught up to the tick of the decision
+    (`run_until`), as `stock_to_players` does, and a take short of what was read places the whole items it
+    got and puts the rest back with `stock_from_players`. The grove's stock of the tribute good draws about
+    two a day in the test world, so a stack read at the world's older clock was taken short and left the
+    books with no stack to show for it.
+  - Amended at review, P3-3: HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired, as DIFFICULTY's 0x0093
+    is), with obsSeq at 8 and gameTime at 16, and rtsim-jni takes it through `Replay` into `Conflict::ingest`
+    at its own time like the other grove records, not through `observe_state`. It names a state (the
+    chest's place and free slots), the latest record wins, and nothing carries it: a holder does not (it is
+    sent from the server), so there is no old copy to overwrite a newer chest, and the journal's order is
+    the order of the chest's changes. The chest itself is still unsaved (forgotten at CAMP_OUT and at a
+    session start), so a replay gives the engine the chest that a record after the last save named, and
+    the plugin's session-start record gives it the rest.
+  - Amended at review, P3-3, the op id: `tribute_op(key, stacks, good, amount)`, the hash of the counter,
+    the good and the amount over the faction (docs/boundary.md §2.2: the same decision after a crash gets
+    the same id, a different one never does). The journal alone does not make a replay decide the same
+    stack: the camp is out during a replay (a replayed census only marks it), so no stack is placed until
+    the live census and the chest record after it, and the stack is then decided from everything the replay
+    owed. When that is the stack decided before the crash (one payment, then the chest), the op and the
+    amount are the same and the plugin's DUPLICATE_OP answer books what it put down. When a second
+    payment, journaled after the first stack went, is owed too, the amount differs (60 against 30) and so
+    does the op: the plugin puts the new stack down, and the chest holds the first stack too, a gift and
+    never a loss (the bound is the re-check's below: not one stack, every stack answered since the save).
+    With the counter alone the same op would have been answered
+    DUPLICATE_OP for 60 nuggets when 30 were in the chest. What is left of the window: a stack decided
+    again from different state is put down twice, the first in the chest by Java's save and the second by
+    the replay, since the pages lack the first's answer.
+  - Amended at the re-check, R4: the bound above is wrong, and the mechanism stays. The ordering: the chest
+    is named, then 30, 50 and 40 are paid, each stack put down and answered, so the chest holds 120; the
+    chest's chunk is saved after those stacks but the pages are not; the server dies. The replay books the
+    three payments and the chest, places nothing (the camp is out), and the census decides stacks of 64 and
+    56 from the 120 owed, under new ops (the amount is in the op), which the plugin puts down: 240 nuggets
+    in the chest for 120 paid. The real bound, in the ordering where the chest's chunk was saved after the
+    stacks and the pages were not, is that the gift is every stack answered since the last save. Nothing is
+    ever lost, and the books stay right (nothing is owed afterwards). The lead accepts this as the
+    journal-ahead-of-world class: a replayed CHIEF_PAID after a player's inventory rolled back gifts the
+    same way, and the engine cannot tell a rolled-back world from a kept one. The coordinator's reasoning,
+    so that nobody reopens it: a player cannot crash a server process on purpose without a separate crash
+    bug, and in single player killing the process is no worse than the cheats already open there. The
+    test is `a_crash_after_several_answered_stacks_gifts_those_stacks_and_loses_nothing` (the re-check's
+    repro, renamed for what it asserts now: nothing lost, and the gift equals the stacks answered since
+    the save).
+  - Amended at review, P3-6, memory: `Conflict::memory()` counts `placing` (a Vec of at most one stack for
+    each grove with a chest, 40 bytes or so each) as "tribute stacks". HUNT_APPLIED left `applied_ops` (see
+    MZB-449). CHIEF_PAID and TRADED stay in it, for correctness first: their op ids are the plugin's, one
+    per record, and only the set tells a copy of a payment from a second one. What they cost: each op id is
+    8 bytes in the page and 16 resident (`BTREE_U64_BYTES`), and it is never forgotten, so the set grows by
+    one entry for each payment to the Umvuthi (CHIEF_PAID) and each trade with it (TRADED). The sim has no
+    stream of either (run 5 makes one gift and one trade, for the relief's sake), so there is no sim rate to
+    quote. A game year is 96 days, 32 hours of a server at 20 ticks a second. At 5 records an hour of play
+    for one grove (a player trading now and then) that is 160 op ids a game year, 2.5 KB resident; a busy
+    grove of 4 players at 10 an hour each is 1,280 a year, 20 KB resident and 10 KB saved; one a minute, all
+    day, is 11,520 a year, 180 KB and 90 KB for that grove. The other kinds of op (CHIEF_KILLED,
+    TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED) are older and add as the player acts. The general fix is the
+    lead's and the coordinator's, not built here: a copy reasserted with its original OBS_SEQ would let the
+    replay drop it, and no op set would be needed.
+  - Amended at review, P3-4: `camp_census` ends with `place_tribute`, so tribute owed to a chest named while
+    the camp was out (or by a replayed record, MZB-446 above) goes at the census that brings the camp in, and
+    the plugin's session-start HAVEN_CHEST is no longer what places it. A duplicate census (the camp's own
+    epoch) and a replayed one place nothing.
+- **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
+  tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
+  coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.
+- **MZB-448** (the page numbers, M9a): the M9 save is RTC8 and meta page 7, with wheel tag 9 for `CampHeir`,
+  kept in `persist.rs`'s two constants, `MAGIC` and `META_VERSION`, so that a renumber (M7's rail may take
+  RTC8 first) is a two-line change. There is no migration: the mods are unreleased. Since the M9 merge
+  (M7 took RTC8 and meta page 7 first, and lands first): RTC9 and meta page 8. One state carries both:
+  M7's tracks, pins, rail meters, wheel tag 10 (`Rail`) and held passes, M9's camp ledger, hunts, wheel
+  tag 9 (`CampHeir`) and tribute stacks being placed. No tag or page table is shared (wheel tags 0 to
+  10, each once; no new page table on either side); the faction row is M9's hunts and camp inside
+  `put_faction`, then M7's rail meters after the row's sources; the resident state ends with M7's held
+  passes, then M9's placing; the stats are M9's three, then M7's seven. Save and load read the same
+  fields in the same order; no migration.
+- **MZB-449** (hunts, M9a; settles MZB-424 to MZB-427's open edges):
+  - A hunt is `Hunt { district, pos, count, op, replaced }` in `Faction.hunts` (`replaced` added at review,
+    P3-8, below; at the re-check, R2, it is `Option<(op, rest)>` and OWED_HUNT carries both). The op is
+    the 0x43 allocator byte over `identity_op(key, HUNT_SLOT ^ hash(district, tick, held op))`.
+  - A raid on a district that already has a hunt adds its count to the old one, capped at `hunt_cap`, with a
+    new op; the plugin keeps the latest command for the district, so the old one never applies after the
+    new one is read. (Amended at review, P3-8: "a late HUNT_APPLIED for a replaced op is spent and clears
+    nothing" paid the animals twice when the plugin had applied the old hunt before it read the new one:
+    5 died, the answer was still on its way, and the 8 the replacement owed died on top. See the rule
+    below.)
+  - Nothing is owed on Peaceful, by a culture with no `hunt_cap`, or by a raid the infrastructure skipped.
+    A hunt already owed when Peaceful begins stays owed.
+  - A replacement's op folds in the op it replaces (`owe_hunt` hashes district, tick and the held op), so
+    a replacement in the very tick of the first gets a new op all the same.
+  - HUNT_APPLIED is booked by the state of the faction's hunts, in one rule (amended at review, P3-6 and
+    P3-8, with the coordinator's condition): an answer clears a hunt only when its op id is that hunt's own
+    op or the op it replaced, and never whatever hunt the faction happens to hold.
+    - A hunt keeps the op it replaced and `rest`, what the replacing raid owes on its own (`Hunt.replaced`,
+      one entry deep, saved in RTC8 with the hunt, which is M9's own unreleased format, so no bump; the u32
+      held the replaced hunt's count before the re-check and has the same width, and `memory()` counts the
+      `Hunt` whole).
+    - The answer for the held op spends the hunt, with the replaced entry it carried. `killed` is booked.
+    - The answer for the replaced op sets the held hunt's count to `rest`, clears the replaced entry, books
+      `killed`, and sends the held hunt to the plugin again, under its op, with that count and `replaced`
+      0 (the plugin keeps the latest command for a district, so the one it holds is replaced; a plugin that
+      applied the held op meanwhile ignores the repeat, MZB-426). A held hunt left at 0 (a replacing raid
+      that owed nothing of its own) is cleared and sent as a count of 0, which the plugin applies as a hunt
+      that kills none: its pending animals are cancelled. Without the second send the engine's books were
+      right and the plugin still killed them.
+    - An answer for any other op finds no hunt: a copy (replayed after a save, or a holder's), an answer
+      for an op booked already, or an op older than the replaced one. It changes nothing and sends nothing.
+    - So HUNT_APPLIED is out of `applied_ops` (`Obs::op()` and rtsim-jni's `op_of` no longer name it): each
+      op is cleared at its first answer, so no set of them is needed and none would stop growing. A copy
+      for a replaced op, delivered once its first answer is booked, finds the entry gone.
+    - Residual, named: a third raid owed inside one answer's flight, with the plugin having skipped the
+      second hunt, replaces the second's `replaced` entry (the entry is one deep). The plugin reads the
+      third hunt, whose `replaced` is the skipped second op and not its last applied (the first), so it
+      kills the third's whole `count`, which holds the first hunt's animals again; the first's late answer
+      then finds no hunt. The first hunt's animals are paid twice, the overpay bounded by the cap (13
+      killed for 10 owed in `a_third_raid_inside_one_answers_flight_overpays_by_at_most_the_cap`). It needs
+      two answers in flight and a plugin that skipped a hunt, which the chunks that tick make rare.
+      The other residual of review P3-8 (a re-sent hunt reaching a plugin that applied the held op in the
+      meantime) is closed at the re-check, R2: Java ignores an OWED_HUNT with the last op it applied, and
+      the emulator models that.
+  - The hunts go again with the notices, after the replay has caught up (`resend_notices`), and not in
+    `session_start`: a HUNT_APPLIED journaled last session must clear its hunt before the plugin hears of it,
+    or the animals die twice.
+  - Amended at the re-check, R1: a crash replay re-sent a spent hunt. `owe_hunt` and `hunt_applied`'s send
+    of the rest pushed an OWED_HUNT while `replaying`; rtsim-jni moves every command out of the engine's
+    outbox after each ingest and writes its queue at each hand-over, so the engine's own filters of the
+    outbox (`session_start`, `resend_notices`) never saw it, and the plugin of the next session, whose
+    applied-op memory is unsaved, killed the animals again. Now neither pushes while `replaying`: the books
+    change as before, and `resend_notices` sends every hunt still held once the replay has caught up. The
+    two guards are TEMPORARY and marked in the code: fix/replay-push adds one choke point for every
+    conflict outbox push, with each `Cmd` kind declared in an exhaustive match, and when feat/mowzie-m9
+    merges main after it lands OWED_HUNT is declared not-while-replaying there and the guards go. The
+    audit found no other M9 path that leaks: every camp RECONCILE, CHIEF_BODY and tribute TRANSFER is gated
+    on `is_in`, which is false all through a replay. The two `outbox.retain` filters for OwedHunt
+    (`session_start`, `resend_notices`) were dead under rtsim-jni, because `take_commands` has emptied the
+    outbox, and no host test needed them, so they went. Leaks on main (`seen()` re-sighting a band,
+    NOTICE) are not M9's and are not touched. The tests cover a replay of one hand-over and one over
+    several (1,500 filler records on a minimum-size buffer, the answer in a later hand-over than the
+    session start), with the second hunt's answer journaled (spent, nothing sent) and lost (the rest goes
+    once).
+  - Amended at the re-check, R2: the race paid the replaced hunt on top when the plugin applied the
+    replacement at once. The plugin applies op1 (5); before op1's answer is read a second raid sends
+    OWED_HUNT(op2, 8) and the plugin applies it at once; the late answer re-sent op2 with 3, which the plugin
+    ignores (MZB-426): 13 animals died for 8 owed. The fix is in the record, not in a wait: OWED_HUNT carries
+    `replaced` (op1) and `rest` (`min(cap, n)`, the second raid's own count, as if op1's answer had been read
+    first), and the plugin's rule (MZB-426) kills `rest` when the last op it applied is `replaced`. On a
+    replacement the engine sets the new op, `count = min(cap, held + n)` and `replaced = Some((old op,
+    min(cap, n)))`; the late answer for the replaced op sets the held count to `rest` and re-sends with
+    `replaced` 0, and a `rest` of 0 is the hunt cancelled, as before. This also fixes the capped race:
+    6 owed and applied, then 6 more before the answer is read, with the cap at 8, ended at 8 killed (the
+    capped sum less the 6 left the second raid 2) and now ends at 12, each raid its own 6.
+    `FakeConflict` models the plugin's rule, and `every_ordering_of_two_raids_kills_the_animals_owed` plays
+    the orderings (op1's answer read before the second raid; op1 applied with its answer late and op2
+    applied before and after that answer; the capped pair) with a save and load before each step, asserting
+    that the animals killed equal what is owed. The coordinator's late-copy test passes unchanged.
+  - The hunt's centre is the party's target position (the district's centre) and its radius 48
+    (PLACEHOLDER).
+  - Plunder with `plunder_goods` takes those goods and no others, and what the survivors take is the whole of
+    their reach (the goods' surplus over target times the culture's loot share), not their `carry`; no one
+    is left alive, nothing is taken. The goods are eaten: `take_stocks`, `ledger.destroyed`, whatever the
+    culture's `loot_destroyed`.
+
+### M9 design for the implementer
+
+**Where it stands.** Designed only; no code. Branch `design/mowzie-m9` (this doc). The implementation
+branch starts from `feat/mowzie-m5` with `feat/mowzie-m4` merged in (MZB-400). Compile as M5 does, in this
+worktree's own target dir; the Rust is `nice -n 10 nix develop .# -c cargo test -p rtsim-conflict -p
+rtsim-jni` from the repo root.
+
+**Jar facts** (Mowzie's Mobs 1.21.1-1.8.2, read with cfr in `target/m9-mowzie-cfr/src`, signatures checked
+with javap):
+
+*Registry and the Umvuthi*
+- `EntityHandler`: `UMVUTHI` (id `mowziesmobs:umvuthi`), `UMVUTHANA_MINION` (`mowziesmobs:umvuthana`),
+  `UMVUTHANA_RAPTOR` (`mowziesmobs:umvuthana_raptor`), `UMVUTHANA_FOLLOWER_TO_RAPTOR`
+  (`mowziesmobs:umvuthana_follower_raptor`), `UMVUTHANA_CRANE`.
+- `EntityUmvuthi`:
+  - `public boolean requiresCustomPersistence()` (393) returns true.
+  - `public void tick()` (438) reads `getDirectionData()` only when `this.tickCount == 1` (446), so
+    `public void setDirection(int direction)` (701) takes only before the first tick.
+  - `public ItemStack getDesires()` (725) is synched data, the config's `gold_block` × 7 (ConfigHandler
+    470 to 471).
+- Trade memory:
+  - `public void setTradedPlayersCompound(ListTag players)` (729) makes a new compound, so it syncs.
+  - `public Set<UUID> getTradedPlayers()` (735) reads list type 11 (int arrays).
+  - `public boolean fulfillDesire(Slot input)` (757) does `input.remove(desires.getCount())`.
+  - `public boolean hasTradedWith(Player player)` (766) keys on `player.getGameProfile().getId()`.
+  - `public void rememberTrade(Player player)` (770) appends `NbtUtils.createUUID(profile id)` to "players"
+    with no dedupe. Its only caller is `MessageUmvuthiTrade.handleServer` (61):
+    `if (!hasTradedWith && umvuthi.fulfillDesire(trade.getSlot(0))) umvuthi.rememberTrade(player)`. It runs
+    only when `umvuthi.getCustomer() == player` and `player.containerMenu instanceof ContainerUmvuthiTrade`;
+    a player who has traded already gets Sun's Blessing instead.
+- `public void die(DamageSource cause)` (859) calls `super.die(cause)` twice, so two LivingDeathEvents.
+  Between them it calls `this.getEntitiesNearby(EntityUmvuthana.class, 30.0, 20.0, 30.0, 30.0)` (861) and
+  sets `timeUntilDeath = random.nextInt(20)` on each that `isUmvuthiDevoted()`. That warrior then
+  `hurt(indirectMagic(this, null), health + 1)` itself, a source with no causing entity.
+  - The bytecode is invokespecial `MowzieGeckoEntity.die`, invokevirtual
+    `getEntitiesNearby:(Ljava/lang/Class;DDDD)Ljava/util/List;`, `isUmvuthiDevoted`, invokespecial
+    `MowzieGeckoEntity.die`.
+  - The second `die` finds `dead` already set, so it drops nothing. M5's `Camps.onDeath` books one death,
+    since its `dying.putIfAbsent` keys on the UUID.
+- `public SpawnGroupData finalizeSpawn(ServerLevelAccessor world, DifficultyInstance difficulty,
+  MobSpawnType reason, SpawnGroupData livingData)` (945).
+- Worldgen (`UmvuthanaGrovePieces` 278 to 287) does `new EntityUmvuthi(UMVUTHI.get(), level)`,
+  `setDirection(i)`, `finalizeSpawn(level, difficulty, STRUCTURE, null)`, then `restrictTo(firePitPos, -1)`.
+  The loot (the Sol Visage) is `LootTableHandler.UMVUTHI`.
+
+*Minion trades*
+- `ContainerUmvuthanaTrade` holds `private final EntityUmvuthanaMinion umvuthanaMinion`.
+- Its private inner `SlotResult extends Slot` has `public void onTake(Player player, ItemStack stack)` (106).
+  It calls `ItemStack.shrink:(I)V` once (113), and only after `getOfferingTrade()` and `Trade.getInput()`
+  match the input.
+- `Trade` is `record Trade(ItemStack input, ItemStack output, int weight)`.
+- The minion's default trades pay or take gold nuggets on one side, except flint for feathers and back.
+
+*Targeting*
+- `EntityUmvuthana.registerHuntingTargetGoals` (338 to 356):
+  - animals that have no ATTACK_DAMAGE or less than 3.0, with 0.1 < width² × height < 6.0;
+  - zombies, skeletons and zoglins;
+  - it avoids creepers;
+  - players, but never on Peaceful, and skipping one whose `armor.get(3)` (the head) is an `UmvuthanaMask`.
+- The raptor (88 to 89) and a leaderless follower (`setLeaderUUID(ABSENT_LEADER)`, 96) use it. The minion
+  does not hunt animals.
+- `EntityUmvuthanaMinion.registerTargetGoals` (131 to 147): `UmvuthanaHurtByTargetAI`, and a player goal
+  that skips masked players unless `target == getMisbehavedPlayer()`.
+
+*Raptors*
+- `EntityUmvuthanaRaptor.finalizeSpawn` (191 to 201):
+  - `size = random.nextInt(2) + 3`, `for (i = 0; i <= size; ++i)`: 4 or 5 followers.
+  - Each is `new EntityUmvuthanaFollowerToRaptor(UMVUTHANA_FOLLOWER_TO_RAPTOR.get(), level(), this)`, put
+    at 0.1 × (cos, sin)(theta × i), with `setWeapon(random.nextInt(3) == 0 ? 1 : 0)` and
+    `world.addFreshEntity`.
+- The follower's constructor is
+  `(EntityType<? extends EntityUmvuthanaFollowerToRaptor>, Level, EntityUmvuthanaRaptor leader)`.
+- `public void addPackMember(EntityUmvuthanaFollowerToRaptor)` (142).
+- The raptor's tick keeps its pack on a 3-block circle (it moves a follower more than 20 blocks off), and
+  at 117 to 118 does `if (!isClientSide && difficulty == PEACEFUL) this.discard();`. The follower's tick
+  (49 to 50) does the same.
+- `remove` in the first tick kills the pack, and `die` sets them leaderless.
+- ATTACK_DAMAGE 6 and MAX_HEALTH 10 (97 to 98).
+- `checkSpawnRules` (221) refuses Peaceful.
+- `ConfigHandler.SpawnConfig`'s constructor takes `heightMax` before `heightMin`, so the Umvuthana's
+  `-65, 60` is a minimum of 60 with no maximum.
+
+*Other*
+- `sounds.json` has `block.gong`, so the sound is `mowziesmobs:block.gong`.
+- The mixin target strings:
+  - `Lcom/bobmowzie/mowziesmobs/server/entity/umvuthana/EntityUmvuthi;getEntitiesNearby(Ljava/lang/Class;DDDD)Ljava/util/List;`
+  - `com.bobmowzie.mowziesmobs.server.inventory.ContainerUmvuthanaTrade$SlotResult`
+- MixinExtras 0.5.3 is NeoForge's (`mixinextras-neoforge` in the Gradle cache), so `@WrapOperation` is
+  there.
+
+**Contradictions with MOWZIE.md and other slices:**
+1. **Peaceful.** MZB-215, MZB-234 and M6's draft say the jar keeps its own mobs on Peaceful. Raptors and
+   their followers discard themselves (MZB-429).
+2. **The raptor stand-in.** MZB-216 makes it through `finalizeSpawn`, which adds 4 or 5 untagged followers
+   per raptor, and they leak (MZB-428).
+3. **Pack size.** §4.13's 2.6 for a pack fits 4 followers; the jar makes 4 or 5. The maker makes 4.
+4. **The trade event.** Ledger 18 says "an event on minion trades". There is none, so a mixin is used at
+   `SlotResult.onTake`.
+5. **The set-out.** §4.5 hands the Umvuthi's slot at its set-out "to its puppet". There is no puppet before
+   M11, so it is a held take (MZB-414).
+6. **A grove found empty.** No wait is stated for a grove found without its Umvuthi. MZB-405 takes
+   EQUILIBRIUM.md's cap.
+7. **The census body.** MZB-220 kept the Umvuthi out of the census bodies, and MZB-402 replaces it.
+   MZB-202 and MZB-209 are superseded by MZB-420 and MZB-434.
+8. **The id range.** See MZB-400.
+
+**What M5 must provide** (it is built; keep these as they are): `Camps.onDeath`'s `putIfAbsent` by UUID
+(test 27 counts on it), `holdSpawn`, `HOLD_MAX`, `playerNear`, `playable` (MZB-233), the census writer's
+chief fields and traded fields, and `MowzieCamps.groveCentre` (MZB-242). M9 changes `GroveKind` (MZB-434),
+the line dispatch's `chiefLines` gate and the raptor stand-in (MZB-428).
+
+**Shared with M6** (each is built once, by whichever slice lands first; the other uses it):
+- `Camp.pressure: Pressure` with `Pressure::at_cap`, and the found-empty rule (MZB-405).
+- The `RenewalDef` type and its resolution (MZB-407 adds its own field).
+- `chief_killed_at_camp` (MZB-406).
+- The mixin config `mic_rtsim_mowziesmobs.mixins.json`: required true, minVersion 0.8, JAVA_21,
+  defaultRequire 1, no refmap. M6 adds `EntityFrostmawMixin`; M9 adds `EntityUmvuthiMixin`,
+  `ContainerUmvuthanaTradeSlotResultMixin` and `ContainerUmvuthanaTradeAccessor`.
+- rtsim-jni's `observe_latest` arm (CHIEF_STATE; HAVEN_CHEST is journaled since review, MZB-446).
+- `Camps.killer` (MZB-432).
+- The one `fightStrength` plugin (MZB-435).
+- The page bump (MZB-437).
+- The wheel tags: Arrival 8, CampHeir 9.
+
+Two fixes for M6:
+- its draft's Peaceful wording (item 1 above);
+- its `renewal` validation, which must not be read as the grove's (MZB-407).
+
+**Engine** (rtsim-conflict, rtsim-jni):
+- `culture.rs`:
+  - `CultureDef` and `Culture` gain `chief_body`, `chief_renewal`, `chief_leads`, `chief_strength`,
+    `plunder_goods` and `hunt_cap`; `UnitDef` gains `hunts`.
+  - Validation: `chief_body` names a dictionary body, `chief_renewal` needs `camp_bodies`, and every
+    `plunder_goods` entry is a catalogue good.
+  - `data/cultures/umvuthana.json`: chief_body umvuthi, chief_renewal {6, 192, 96, true}, chief_leads
+    [invasion], chief_strength 5.0, plunder_goods [leather, wool], hunt_cap 8, raptor hunts 2.
+- `engine/camp.rs`:
+  - `CHIEF_SLOT`, the exclusions (MZB-401), `Camp` fields `heir: Option<Heir>`,
+    `traded: Vec<(u64, u64)>`, `owed_tribute: Vec<(u32, i64)>` (good, milli), `placing: Option<Placing>`
+    and `mask: Option<(u64, u32)>`.
+  - `line_flags(f, slot)` (MZB-403).
+  - The census: the chief stray (MZB-402, MZB-405), the traded union (MZB-420), CHIEF_BODY when short
+    (MZB-421), and the chief's write-off (MZB-411).
+  - `chief_can_lead`, and `camp_draw` taking the chief (MZB-413).
+  - `camp_heir(w, f, at)`, which sends the pair (MZB-408) or waits. The booking of ACTION_MASK and
+    SEAT_HEIR answers (MZB-409), and of a Dead chief slot (MZB-412).
+- `engine.rs`:
+  - `strength` and `strength_by_class` (3098, 3120) add the leading chief.
+  - The `chief_stack(c)` gate at MEMBER_CHIEF (3976) and BAND_CHIEF (4022).
+  - The party's end at Home for the chief (MZB-415).
+  - CAMP_DEATH on CHIEF_SLOT runs MZB-406.
+  - `gift_value` (2508), MZB-416.
+  - TRADED to `traded` (2477), MZB-417; CHIEF_PAID to `pay_tribute` (2404), MZB-418.
+  - `owed_tribute` and `place_tribute(w, f, at)`, MZB-423.
+  - `raid_district` (3453) owes hunts and `raid_node` (3579) plunders, MZB-424 and MZB-427.
+  - `send_hunts(at)` at session start and on a new hunt; `hunt_applied`.
+- `rtsim-world`: `World::stock_to_players(i, goods, at)`, the mirror of `stock_from_players`.
+- `boundary.rs`: `ACTION_MASK` = 8, OWED_HUNT and HUNT_APPLIED (MZB-425), and the CHIEF_BODY writer. The
+  decoders of CHIEF_PAID, TRADED and HAVEN_CHEST are wired into `Conflict::observe` (HAVEN_CHEST journaled
+  at 0x0817 since review, MZB-446).
+- `persist.rs`: RTC7 and META 6 (MZB-437), `Ev::CampHeir` on tag 9.
+- rtsim-jni:
+  - `TRIBUTE_EQUIVALENTS` in the CHIEF_PAID translation (MZB-419).
+  - `observe_latest` (MZB-422; CHIEF_STATE only since review, HAVEN_CHEST goes through `journaled`).
+  - Writers for CHIEF_BODY and OWED_HUNT, and the HUNT_APPLIED decoder.
+  - `place_tribute`'s TRANSFER_TO_CONTAINER through `st.outbox.push_with_op`, with COMMAND_RESULT
+    completing it (engine.rs 1563 to 1568) and its outcome handed to the conflict as `placed(op, outcome)`.
+- `synth.rs` emulator, for run 10:
+  - `CampBody` gains `chief: bool` and `traded: Vec<Uuid>`;
+  - `CampWorld` gains `near: bool` (a player within 160 blocks);
+  - `apply_line` plays ACTION_MASK and SEAT_HEIR as the plugin does: the pair together, the farthest
+    warrior, the holds and seating in place.
+
+**Java, core** (`neoforge/core/.../mic_rtsim/`):
+- `ConflictRecords`:
+  - `CampReconcile.ACTION_MASK` = 8.
+  - Layouts for CHIEF_PAID (0x0814), TRADED (0x0810), HAVEN_CHEST (0x0817, review MZB-446), CHIEF_BODY (0x880A),
+    OWED_HUNT and HUNT_APPLIED, matching boundary.md byte for byte.
+- `conflict/CampKind`: `default boolean holdRemoval(ServerLevel, Camps.Site, Mob body)` (false) and
+  `default void chiefBody(Mob body, ChiefBody memory)` (no-op).
+- `conflict/Camps`:
+  - FLAG_THRONE read into `Site.throne` (MZB-404).
+  - The dispatch plays chief lines when `chiefLines()` holds.
+  - ACTION_MASK with SEAT_HEIR as one unit, and the seating in place (MZB-408, MZB-410).
+  - `holdRemoval` holds with no limit, answered STALE at the epoch's end (MZB-433).
+  - The CHIEF_BODY store and its write (MZB-421).
+  - `killer(dead, source)` (MZB-432), replacing `byKind(source.getEntity())` in `onDeath` (1203).
+  - The second body: a weak set, a LivingDropsEvent cancel at LOWEST, and a skip in `onDeath` (MZB-431).
+- `conflict/ConflictBodies`: `registerMaker` and `Maker`. `ConflictBridge`: `Slot.extras`, the maker at
+  1145, and the extras' despawn on recall, dematerialize and failure (MZB-428).
+- `conflict/OwedHunts` (MZB-426).
+
+**Java, plugin** (`neoforge/mowziesmobs/.../mic_rtsim_mowziesmobs/`):
+- `GroveKind` (MZB-402, MZB-433, MZB-434), plus a `FightWatch` weak map of the last player hit on an
+  Umvuthi (LivingDamageEvent.Post, a player by `Camps.killer`'s rule) for MZB-410.
+- `RaptorMaker` (MZB-428, MZB-429), registered in `MicRtsimMowziesMobs` for `conflict/umvuthana/raptor`.
+- `GroveChests` (MZB-422).
+- `MowzieStrength implements IndustryPlugin` (MZB-435).
+- Mixins in `mixin/`:
+  - `@Mixin(EntityUmvuthi.class)`, with
+    `@Inject(method = "rememberTrade", at = @At("HEAD")) private void mic_rtsim_mowziesmobs$paid(Player player, CallbackInfo ci)`.
+    The same class has
+    `@WrapOperation(method = "die", at = @At(value = "INVOKE", target = "<the getEntitiesNearby string above>")) private List<?> mic_rtsim_mowziesmobs$devoted(EntityUmvuthi self, Class<?> c, double a, double b, double cc, double r, Operation<List<?>> op)`,
+    which returns `List.of()` for a second body and otherwise calls `op`.
+  - `@Mixin(targets = "com.bobmowzie.mowziesmobs.server.inventory.ContainerUmvuthanaTrade$SlotResult")`,
+    with `@Shadow @Final ContainerUmvuthanaTrade this$0;` and
+    `@Inject(method = "onTake", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/item/ItemStack;shrink(I)V")) private void mic_rtsim_mowziesmobs$traded(Player player, ItemStack stack, CallbackInfo ci)`.
+  - `@Mixin(ContainerUmvuthanaTrade.class) interface ContainerUmvuthanaTradeAccessor` with
+    `@Accessor("umvuthanaMinion") EntityUmvuthanaMinion mic_rtsim_mowziesmobs$minion();`.
+  - All at the default priority 1000. Whether another pack mod mixes into these methods is UNVERIFIED;
+    `defaultRequire 1` fails the boot loudly if one moves them.
+- No bespoke entity anywhere (D3). Everything Mowzie is in the plugin (D4); core gets only generic hooks.
+- UR-1: every body is the jar's own type, the memory is the jar's own field, and extras and owed hunts are
+  never saved. The mixins only observe, or empty a list for a body the reconciler made and removes.
+  Uninstalling leaves vanilla entities and items.
+- D1: GroveChests looks only at groves that are in, every 200 ticks. OwedHunts runs only while it holds a
+  command. The memory is at most 16 KiB a grove. No per-tick scan is added.
+
+**GameTests** (`MowzieGameTests` unless noted; one batch per test, each on its own far base, MZB-247):
+
+12. `aMaskedPlayerIsNotTargetedByTheBand`:
+    - Setup: BAND_MATERIALIZE a raid (3 warriors, 1 raptor through the maker) 12 blocks from two fake
+      players, one with an `UmvuthanaMask` on the head.
+    - Assert, after 100 ticks: no body or follower targets the masked player, and some target the bare one.
+    - The masked player strikes warrior 0. Assert that it targets that player within 20 ticks.
+13. `theUmvuthisTradeIsReportedAsTributeAtTheCamp` (native engine):
+    - Setup: a real grove; the census adopts its Umvuthi as the chief (ADOPT, LINE_CHIEF, CHIEF_SLOT).
+    - A masked fake player opens its trade and pays 7 gold blocks through `MowzieKit.payUmvuthi`
+      (`MessageUmvuthiTrade.handleServer`, with a test `IPayloadContext` that runs `enqueueWork` at once).
+    - Assert one CHIEF_PAID: the chief's slot and generation, gold_block 7, flags 0. The engine books a
+      63-coin gift (no demand is open).
+    - A second payment: Sun's Blessing and no record.
+    - A nugget trade with a grove minion: one TRADED with the trade's count.
+    - An Umvuthi outside every grove: no record.
+14. `anUmvuthanaEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment`: core's test 14 (M3) again,
+    with the jar's minions as the envoy and its guards.
+    - Assert that while the demand is open, no minion targets the unmasked fake player, whatever its own
+      player goal says.
+    - Paying opens no `ContainerUmvuthanaTrade`.
+    - The rest is M3's extended clauses: ownerless projectile, golem and skeleton no damage, a player's
+      arrow an insult, `/kill` withdraws.
+15. `aChiefKilledAtTheCampIsReportedWithTheKiller`, the Umvuthi half (M6 does the Frostmaw's):
+    - Setup: a real grove with its chief adopted.
+    - A fake player kills it. Assert one CAMP_DEATH on CHIEF_SLOT with BY_PLAYER and that player. The
+      engine books the Killing, `cowed_until`, P = 1 and the heir due at max(cowed, 12 days).
+    - Again with a tamed wolf of the player as the killer: BY_PLAYER, the owner.
+    - Again with the player's hit followed by a fall within 100 ticks: BY_PLAYER.
+16. `tributeLandsInAGroveChestWhenTheGroveLoads` (native engine):
+    - Setup: a real grove with no chest. Pay the Umvuthi as test 13 does. The engine owes the tribute.
+    - Release the grove, place a chest in its footprint, and force it again.
+    - Assert, in order: HAVEN_CHEST (27 free); TRANSFER_TO_CONTAINER; 567 gold nuggets in the chest;
+      COMMAND_RESULT APPLIED; owed 0.
+    - A full chest: nothing is sent until there is room.
+17. `raptorsHuntTheBasesAnimalsAndAnOwedHuntIsAppliedOnLoad`:
+    - Embodied: a raptor pack (the maker) beside cows and sheep at a test district kills them by the jar's
+      AI.
+    - Owed: a scripted OWED_HUNT (count 5, radius 48) on a far base that is not loaded, holding 4 cows, a
+      sheep, a tamed wolf, a named cow and a leashed sheep. Force it. Assert:
+      - Nothing dies before the chunks tick entities.
+      - Then the 5 eligible animals die, nearest first, with their drops on the ground.
+      - The tamed, named and leashed animals live.
+      - HUNT_APPLIED (killed 5) is journaled with the op id.
+      - The same op again kills nothing.
+    - A second hunt of 10 with none left: HUNT_APPLIED, killed 0.
+20. `eachMowzieBodysFightStrengthIsItsShare` (test 18's pattern, ConflictGameTests 986 to 1040):
+    - Setup: each body in turn (Umvuthi, minion, raptor pack, and M6's Frostmaw) attacks the industry yard.
+    - Assert that IND_FIGHT carries `Threats.strength` at 5.0, 0.4, 2.6 (summed over the pack) and 41.7,
+      within 0.01.
+25. `theTradeMemoryRoundTripsThroughTheEngine`, in three parts (MZB-441):
+    - Real grove, native engine: the adopt, then a masked payment. Assert CHIEF_PAID with the chief's slot
+      and generation, a settled demand or a gift, and no second record.
+    - Scripted test camp: CHIEF_BODY with two players, then a chief SPAWN. Assert `hasTradedWith` is true
+      for both, and that the write journals nothing.
+    - Rust protocol tests: see below.
+27. `killingTheUmvuthiKillsDevotedUmvuthanaWithin30Blocks`:
+    - Setup: a test camp; ADOPT an Umvuthi as the chief, and warriors 10, 25 and 35 blocks off. A
+      player-bound follower stands at 10 blocks.
+    - The fake player kills the Umvuthi. Assert one CAMP_DEATH for the chief, and one Sol Visage on the
+      ground.
+    - The warriors at 10 and 25 die within 20 ticks, each a CAMP_DEATH with BY_NONE. The 25-block one is
+      BY_PLAYER when the player hit it 40 ticks before.
+    - The warrior at 35 and the follower live.
+29. `theUmvuthisLinesWaitWhileAPlayerIsNear`, the first three clauses (MZB-440):
+    - A TAKE and a REMOVE on a test camp's chief wait 6,100 ticks with the fake player 150 blocks off. With
+      the player moved 170 blocks off and set as the Umvuthi's target each tick, they still wait. With
+      neither, they apply the next tick.
+    - A chief SPAWN waits for the player to leave, or for 6,000 ticks.
+    - Out and in: every held line is STALE.
+30. `anUmvuthiHeirTakesAWarrior`:
+    - The scripted pair on a test camp with three warriors, one with a held TAKE. Assert the warrior removed
+      is the farthest from the fake player and not the held one. The heir:
+      - stands at the throne line's spot, in its direction;
+      - was made by `finalizeSpawn(STRUCTURE)`;
+      - is restricted to the pit;
+      - has `getTradedPlayers()` empty.
+
+      MASK is answered with the warrior's slot and generation, and SEAT_HEIR DONE.
+    - With no warrior, both are STALE.
+    - With FLAG_THRONE clear: the fire pit, direction 1.
+    - Seated in place: L_A is the old generation, the old body is tagged, and its REMOVE is held by the
+      player at 150 blocks. The heir appears where the old body stood in one tick, at full health with an
+      empty memory, and the REMOVE is STALE.
+    - The old body targets the player and was hit by it 100 ticks ago: the seat waits. 600 ticks after that
+      hit, the seat is done.
+
+**Rust tests:**
+- `rtsim-conflict` unit tests:
+  - The chief slot is never drawn or counted.
+  - A grove found empty waits 192 days, and a stray cancels the wait.
+  - A chief killed at the grove: P, the heir's due time, and no order while no warrior is home.
+  - The pair's booking: DONE, NOTHING, STALE, a masked slot with a line in flight, and `drawable` 0.
+  - Seating over a Dead slot.
+  - The write-off.
+  - The away death, Left and Gone.
+  - The chief leads only an Invasion: 12.6, Body to Left, Owed to Gone, and no MEMBER_CHIEF.
+  - Home: Left to Body; Gone to CHIEF_BODY, then SPAWN.
+  - `gift_value`: 567 nuggets are 63.
+  - TRADED is booked once by op.
+  - CHIEF_PAID on a live slot, a dead slot and a stray.
+  - The memory: its cap, its union with the census, and its clearing.
+  - Hunts are owed by surviving raptors, capped, and nothing is owed for a watched raid.
+  - Plunder of leather and wool only, eaten.
+  - Placing: an amount, then APPLIED, DUPLICATE or FAILED.
+  - Save and load with every new field.
+- `rtsim-jni` protocol tests:
+  - The CHIEF_PAID gold equivalents.
+  - HAVEN_CHEST is journaled (0x0817, MZB-446), replayed after a crash.
+  - A restart after a payment and before any CHIEF_BODY keeps the memory (test 25).
+  - The Invasion round trip (test 25): the chief Gone, home, CHIEF_BODY before SPAWN.
+  - A dead slot's census and a payment to it add nothing, and the payment is still tribute (test 25).
+  - A succession clears the memory (test 25).
+  - An owed hunt is resent at the session start and booked once.
+  - The tribute transfer through the outbox, across a restart.
+
+**Sim runs** (`rtsim-cli sim mowzie`; `RUNS` and `main`'s dispatch in `crates/rtsim-cli/src/sim/mowzie.rs`):
+- **Run 5, the rest** (`grove_ladder` grows), must show:
+  - plunder takes only leather and wool, eaten;
+  - an Invasion draws the chief and fights at 12.6;
+  - the grove in and out through `CampWorld`: raids leave and come home, no census books a living survivor
+    dead, and a refill while a band is out returns to the cap with each survivor's slot kept;
+  - hunts are never over the cap;
+  - gold gifts are worth nuggets / 9.
+- **Run 6, the grove** (a new `grove_renewal`), must show:
+  - an emptied grove refills to its cap of 9 at 2 a day, with the chief slot untouched;
+  - a grove found without its Umvuthi seats its heir at 192 days, or at once when a stray turns up.
+- **Run 10** (`camp_reconciler`) gains held lines and heirs in the emulator. After every event it checks
+  that no grove holds two live chief bodies, that the chief is in no pool count, and that each MASK DONE
+  has its SEAT_HEIR DONE in the same reconcile.
+- **Run 12** (a new `heir_farmed`): an Umvuthi killed by a player as soon as its body stands, for 60 game
+  years. It must show about 1.8 Sol Visages a game year at base 6 and about 1.0 at base 24, within 10%
+  (PLACEHOLDER) of EQUILIBRIUM.md's model, with each wait `min(192, base × 2^P)`.
+
+**Work split** (each sub-slice is committed and tested on its own):
+- **M9a, engine:**
+  1. Merge M4 into the M5 base.
+  2. The culture fields.
+  3. `CHIEF_SLOT` and its exclusions.
+  4. `line_flags` and the throne.
+  5. The census's chief stray and the found-empty heir.
+  6. `chief_can_lead`, the draw, strength and the `chief_stack` gate.
+  7. Home.
+  8. The death at the grove, the write-off and the away half.
+  9. `Ev::CampHeir`, `camp_heir` and the pair's booking.
+  10. `gift_value`, TRADED, CHIEF_PAID, the memory and CHIEF_BODY.
+  11. The chests, `stock_to_players` and `place_tribute`.
+  12. Hunts and plunder.
+  13. `boundary.rs` and `persist.rs` (RTC7), then the regenerated fixtures.
+  14. The rtsim-jni arms.
+  15. The Rust tests, and runs 5, 6, 10 and 12.
+
+  **Opus review here**, focused on the books: the pool and audit sums with the chief slot, and the pair's
+  booking under answers lost, late and replayed.
+- **M9b, Java camp and chief:**
+  1. The `ConflictRecords` layouts.
+  2. The `CampKind` hooks.
+  3. In `Camps`: the throne, the chief dispatch, the MASK and SEAT_HEIR pair, seating in place, the
+     `holdRemoval` holds, `killer`, the second body, and the CHIEF_BODY store.
+  4. In `GroveKind`: the chief body, `make`, `spawnAt`, `joined`, `holdRemoval`, `chiefBody`, the census's
+     TRADED list, the gong, and `FightWatch`.
+  5. The mixins and the accessor, in the shared config.
+  6. `MowzieKit.payUmvuthi`.
+  7. GameTests 15 (the Umvuthi half), 25 (the Java parts), 27, 29 (MZB-440) and 30.
+
+  **Opus review here**, focused on Rule U and the second body: no line applies in a player's sight, and no
+  path journals a second body's death.
+
+  **Notes from the M9a review for M9b** (the engine's side is built, MZB-445, MZB-446):
+  - The MASK picks only a warrior whose slot is home and not set out: a body tagged with a slot and a
+    generation, no line of its own in flight, not elsewhere, not near a player. The engine books a MASK that
+    names a set-out warrior as that band's loss (a unit short, never a body home), so a Java that masks one
+    anyway costs the grove a warrior it did not mean to.
+  - A copy of a SEAT_HEIR answer for an older generation changes nothing (`seated`), whenever it comes.
+  - HAVEN_CHEST is sent from the server, never carried by a holder, at a session start and on each change
+    of the chest's position or its free-slot count, at most once a tick for a grove. It is the chest's
+    current state, so a copy changes nothing the next one does not.
+  - CHIEF_KILLED for an Umvuthi puppet that leads a band reaches `chief_killed_by`, which now books the
+    camp's chief slot as dying away (MZB-412).
+- **M9c, bands and the world:**
+  1. `registerMaker`, `Slot.extras` and `RaptorMaker`, with Peaceful.
+  2. `OwedHunts` and the hunt records. Java keeps, for each faction and district, the last op it applied
+     (unsaved, cleared at a session start), and reads each OWED_HUNT by this rule (MZB-426 and MZB-449,
+     amended at the re-check; boundary.md §9 has it too):
+     - an OWED_HUNT naming that op again is ignored (the engine may send the held hunt a second time,
+       with `rest`); a hunt answered once is still answered once;
+     - one whose `replaced` equals that op kills `rest` animals, not `count` (the replaced hunt's animals
+       have died already, and `rest` is what the replacing raid owes on its own);
+     - anything else kills `count`.
+     Applying a hunt sets the last op to its `op`. A count of 0 is applied as a hunt that kills none and is
+     answered all the same. The records are 72 bytes with `replaced` at 40 and `rest` at 68.
+  3. `GroveChests` and HAVEN_CHEST, with the tribute's transfer. Java sends HAVEN_CHEST after every stack
+     it places, whether or not the chest's free-slot count changed (the re-check, R5): the engine takes a
+     slot off its count for each stack it sends, as if the stack filled one, and a stack that merged into
+     a partly filled slot leaves the engine's count one short until a record says otherwise. The record is
+     the chest's state, so an extra copy changes nothing (boundary.md §9.3).
+  4. `MowzieStrength`.
+  5. GameTests 12, 13, 14, 16, 17 and 20.
+
+  **Opus review at the end**, of M9 whole against MOWZIE.md §4.5 and §4.9.
+
+**Question for Ben** (the design follows the recommendation, MZB-442):
+1. May an owed hunt (a raptor raid on a base nobody watched) kill tamed, named or leashed animals?
+   Recommended: no. It takes unmarked stock only, so a named pet never dies off-screen to a raid the player
+   could not see. Embodied raptors still do what the jar's AI does.
+
+**Traps.**
+- **Two death events.** `EntityUmvuthi.die` posts LivingDeathEvent twice. Key a death on the UUID, never on
+  the event.
+- **Direction.** `setDirection` is read only at tick 1: set it before `addFreshEntity`, never after.
+- **Gold gifts.** An unpriced good makes `gift_value` 0. Gold gifts were worth nothing until MZB-416.
+- **Latest-wins kinds.** `observe_state` drops them: CHIEF_STATE needs `observe_latest`. HAVEN_CHEST is
+  journaled since review (0x0817, MZB-446), so it is no latest-wins kind: it replays after a crash.
+- **Gold blocks.** gold_block and gold_ingot are not in the catalogue. Translate them in rtsim-jni, never
+  in the engine.
+- **The base.** M4 and M5 are separate branches, so merge M4 in first.
+- **Answer flags.** CAMP_BODIES' answer lines carry no flags, and `send_lines` marks a slot in flight only
+  when its generation is not 0. Know the chief by its slot id, and track MASK apart.
+- **Raptor followers.** The raptor stand-in through `finalizeSpawn` leaks 4 or 5 untagged followers each.
+  A raptor removed in its first tick kills its pack.
+- **Raptor plunder.** With `carry` 0, plunder takes nothing unless `plunder_goods` is set.
+- **Spawn heights.** `SpawnConfig` takes `heightMax` before `heightMin`: the Umvuthana's `-65, 60` is
+  a minimum of 60.
+- **Duplicate payers.** `rememberTrade` does not dedupe. A union with the census must dedupe.
+- **The empty grove.** A grove found empty waits the full cap, 192 days, not 6.
+- **Trade-memory keys.** The jar keys trade memory on the game profile id. A fake player's profile id is
+  what counts, not its entity UUID.
+- **M6's renewal.** M6's `renewal` validation needs `recruits_per_day == 0`, so the grove needs its own
+  `chief_renewal` field.
+- **Wheel tags.** M6's Arrival takes wheel tag 8; CampHeir is 9.
+- **Peaceful.** M6's wording is false for raptors: they discard themselves.
+- **Ids in M6's range.** M5 took MZB-290 to 292 from M6's range.
+- **The minion's container.** `ContainerUmvuthanaTrade.umvuthanaMinion` is private, and `SlotResult` is a
+  private inner class. Use an accessor and `this$0`. Keep the accessor out of a GameTest holder's
+  signatures (nest it).
+
+### M9b build choices
+
+M9b (the Java camp and chief) takes MZB-600 to 624; MZB-625 to 649 are M9c's. The branch is `feat/mowzie-m9`,
+the GameTests are written and compiled only (the lead runs them). Refinements of M9a ids are amended in
+place (MZB-402), not given new ids.
+
+- **MZB-600** (the gold of one trade): `GroveTrade.nuggets(Trade)` is the larger of the gold on the trade's
+  input side and on its output side, with ingots at 9 nuggets and blocks at 81 (MZB-419). A trade of gold for
+  gold is not counted twice, and a trade with no gold side is worth nothing (TRADED is not sent for it).
+- **MZB-601** (what test 25 reads from Java): the Java half of test 25 asserts the CHIEF_PAID record (faction,
+  the chief's slot and generation, flags 0 for a tagged chief, the payer's profile id, the desires' item and
+  count, a Java op id) and that a second trade by the same player journals nothing more. What the engine does
+  with the payment (a settled demand or a gift, the engine's P) is booked inside the engine and is not
+  visible from Java; it is the Rust tests' and M9c's test 13's to assert. The test runs on the native engine
+  only and records a skip on the stub (a camp is the engine's only under a structure a culture claims).
+- **MZB-602** (test 15 runs scripted; deviates from MZB-439): a chief killed at its grove is reported with its
+  killer on one scripted camp (`mic_rtsim_mowziesmobs:test_grove`), five Umvuthi adopted one after another as
+  generations 1 to 5 in the chief slot, killed by a player, by his tame wolf, by a generic kill 40 ticks after
+  his hit (vanilla's kill credit), by a zombie and by a generic kill. The reason is the same as for the den's
+  test 15 half: the engine's own bookings after the death (the Killing signal, `cowed_until`, P = 1, the heir
+  due) are not visible from Java, and a native grove would book them and move the camp under the test. The
+  Rust tests cover them. The jar's double death event (`EntityUmvuthi.die` posts it twice) is covered by
+  asserting exactly one CAMP_DEATH per Umvuthi.
+- **MZB-603** (`HoldingKind`, a test-only kind): `GroveKind` never holds a warrior's removal (a warrior goes at
+  once), so test 30's "a line in flight keeps a warrior out of the pair" cannot be had from the real kind.
+  `MowzieKit.HoldingKind` is `GroveKind` with `holdRemoval` true for the warrior it is told to hold, and a
+  grove declares it under the test grove name. The pair's own holds (a player near the throne, a fight) are
+  the real kind's.
+- **MZB-604** (thrones on every reconcile): a CAMP_RECONCILE without FLAG_THRONE resets the camp's throne to
+  the fire pit for that epoch, so every test reconcile that needs a throne carries it
+  (`MowzieKit.reconcile(faction, epoch, throne, direction, lines)`, on `ConflictKit`'s new overload). A test
+  that wants the fire pit sends the plain overload.
+- **MZB-605** (test 29 is three tests): 29a (a TAKE and a REMOVE of the chief held while a player is near, then
+  while the Umvuthi has a player as its target, then played), 29b (a chief SPAWN held until the player leaves
+  or `Camps.HOLD_MAX` ticks pass) and 29c (an epoch's end answers every held line stale). The brief's three
+  clauses (MZB-440) are three methods because the second takes 6,000 ticks and the first 6,100. The groves of
+  one test stand 320 blocks apart in x and a test's players are offset in z only, so that no player is near a
+  grove that is not its own (the holds read 160 blocks).
+- **MZB-606** (test 30 is two tests; one batch each): 30a (the pair takes the farthest free warrior: plain,
+  stale with no warrior, held for a player at the throne) and 30b (an heir seated in place over a held REMOVE,
+  and held until the fight is 600 ticks old). Every test has a batch of its own, since the reconciler's
+  counters are global; the tests read them as deltas. A held pair is one held line (`Camps.heldLines()` rises
+  by one for a pair, not two), and `heldPairs` counts the first hold only.
+- **MZB-607** (test-support forks in test 27): the warriors wear a FEAR mask (a FURY mask blocks a player's
+  hit); the Umvuthi is marked as last hurt by the player (`setLastHurtByPlayer`) before the kill, because the
+  Sol Visage is dropped under `killed_by_player` and `MowzieKit.kill`'s fallback bypasses `hurt`. The Sol
+  Visage is asserted as at least one (the count is recorded), not exactly one. The devoted warrior within 30
+  blocks dies on the jar's own timer (up to 20 ticks, `random.nextInt(20)`), so the deaths are asserted within
+  30 ticks of the kill. The player's follower (`UMVUTHANA_FOLLOWER_TO_PLAYER`, not devoted) stays alive.
+- **MZB-608** (the hit must land; amended at review, P3-11): test 30b hits the old Umvuthi with a 1 point player
+  attack and asserts that the hit lands and that the fight watch saw it. The first version told `FightWatch.hit`
+  directly, as the hit event does, when the Umvuthi refused the hit (a NoAi stray in a far place), and recorded a
+  note. That fallback let the test pass without the event path it exists to cover, so it is gone: a hit that does
+  not land fails the test, and the failure says so.
+- **MZB-609** (the hunt records are M9c's): by the lead's change, M9b writes no Java layout, constant or code
+  for OWED_HUNT or HUNT_APPLIED (the M9a re-check changes OWED_HUNT's layout). HAVEN_CHEST has its layout
+  only, with no code behind it.
+- **MZB-610** (tolerances to settle in the first run): a chief or an heir stands within 5 blocks of its throne
+  (the place is exact unless the first try is blocked, then jittered by up to 3 blocks on each axis); at the
+  fire pit, within 6 (7 for the restriction centre); a held chief SPAWN is answered 5,990 to 6,040 ticks
+  after the reconcile; an heir over a fight is answered 600 to 640 ticks after the hit (`inFight` is
+  `now - at <= 600`); the player-hit and target assertions of 29a and 30b depend on `setTarget` sticking on a
+  NoAi Umvuthi. These are the numbers to adjust if the first run shows a different quantum.
+- **MZB-611** (a second body is a mark that outlives the held lines; amends MZB-431, closes P1 and P3-7): the
+  first version asked whether a held or draining line named the body. A census, a CAMP_OUT and a session start
+  clear those lines, so a second body killed after one journaled a CAMP_DEATH, dropped a Sol Visage and
+  experience and took its warriors with it. `Camps.second` is now a weak identity set (memory only, never saved),
+  and `secondBody` answers from it first. A chief-slot body is marked when a chief REMOVE naming it arrives (held
+  or not, before the hold is decided), when a SEAT_HEIR pair names its generation in L_A (held or played), and
+  lazily by `secondBody` itself: a tagged chief-slot body of another generation than `Site.chiefGeneration`, the
+  generation the lines of this session last made, adopted or seated as the chief. The mark leaves with the body
+  (`onLeave`). `GroveKind.chief` (the census) and the `die` mixin read the same answer, so a second body is never
+  reported as the chief and takes no warriors. After a server restart the set is empty and `chiefGeneration` is 0
+  until a line names a chief, so the lazy rule is silent; a retired chief body is marked when the engine's REMOVE
+  for it arrives, which a census brings (MZB-412), and that arrival is the mark whether or not a player holds the
+  line. The window is the time from the load to the answer to the first census. A retired body killed in it
+  journals a CAMP_DEATH of its generation, which the engine books as a Dead slot's death (no second fall, `camp_death`)
+  and drops, experience and its warriors' deaths leak. The conservative reading (any chief-slot body of a
+  generation the camp does not know is second) is not taken at generation 0: Java does not know the engine's
+  chief then, and the first chief a restart loads would be called second. The residual (a retired chief body
+  killed after a restart and before the first census's REMOVE marks it) is accepted as named by the coordinator,
+  2026-10-24.
+- **MZB-612** (the heir waits for a muster to end; closes P2-5): a MASK takes a warrior at home with no line of
+  its own, and the engine's books call a warrior of a band that is mustering `Left` with no line yet, so the pair
+  could mask a warrior the band is about to send out. `camp_heir` now orders nothing while a slot of the camp is
+  `Left` with `line.is_none()` in a party whose phase is `Mustering`, and looks at the camp again when the muster
+  ends: `camp_set_out` calls `camp_heir` after `send_lines` (the phase is still Mustering, but the slots now have
+  lines, which opens the gate), and `home` (through `unblock`) and the stand-down look again. No format
+  change. The heir is delayed by at most one muster (the umvuthana's `muster_days` is 1.0), and a plunder band that
+  musters over the due tick delays it; musters can follow one another, and nothing caps that. Hashes: `sim conflict`
+  (seed 7) is identical to the base apart from `wall_ms`, and the `sim mowzie` save-load state hashes did not move.
+  What moved is `sim mowzie`'s grove chaos with heirs (58 heirs seated and 18 of 416 Invasions took the Umvuthi,
+  now 54 and 20 of 418). Run 12 (`heir_farmed`, the default plunder drive) failed with the gate alone, since it
+  expected the seat within 10 ticks of its due tick; its harness now waits up to 96 steps of a muster/24 for the
+  seat. Its seat counts (106 and 59) and rates (1.822 and 1.003 a game year) are the base's; the last waits it
+  prints differ by under a muster in their decimals. Tests in `tests/grove.rs`: an heir due during a muster
+  waits and is ordered at the muster's end, no warrior of a mustering band is masked, a chief killed leading a
+  band, and a raid across the due tick. Tests that run the plunder drive and look at the heir on its due day use
+  `quiet_grove` (no plunder) or wait a muster.
+- **MZB-613** (the emulator against Java; closes the review's four divergences): two are fixed, two are
+  documented.
+  - (a), documented: Java answers the pair in two CAMP_BODIES records (the MASK's with the warrior's marker, then
+    the SEAT_HEIR's with the heir), the emulator in one. The engine books each answer by (op, line) in either shape.
+    The one difference is that the first record clears the MASK marker with no seat yet, so `camp_bodies` schedules
+    a CampHeir retry an hour on (`HEIR_RETRY`); the second record's seating bumps `heir_stamp`, and the retry
+    finds a changed stamp and does nothing. No book differs.
+  - (b), fixed (P2-3): the emulator kept any chief-slot body for a SEAT_HEIR. Java seats in place over the body of
+    the L_A generation only (`oldChief`), and a body of another generation is left alone. `watch_throne`'s
+    SEAT_HEIR `retain` now replaces the L_A generation's body only.
+  - (c), fixed: Java holds a chief's TAKE or REMOVE with no limit while a player is near it or it has a player as
+    a target (answered STALE at each census and each CAMP_OUT, the body reported in every census), and seats a pair
+    over it only when the fight is over, with the REMOVE's STALE and the pair's DONE in one batch. The emulator
+    now has a hold flag on a chief body (no limit; STALE at a census, at the camp's out and when a heir sits over the body), a fight
+    flag on a pair seated in place in place of `watched`, and the same order of answers. `FakeConflict::hold_chief`
+    sets a hold. Tests in `tests/grove.rs`: a removal held on a dead chief's body is answered STALE in the batch of
+    the pair that sits over it (the books checked: the new chief alone), and a pair over a chief in a fight waits
+    on the fight alone and leaves a second body of another generation standing (P2-3).
+  - (d), documented: `watched` is a boolean and Java reads 160 blocks. The engine sees no distance, only whether an
+    answer comes now or later, and the scenario sets `watched` at the moments a player crosses the line. The
+    boolean is the engine-visible content of the distance, so no outcome differs; the 160 blocks and the order
+    in which two players cross it are the GameTests' (29b, 30a).
+- **MZB-614** (test 29d, a second body's death is nobody's; closes P3-9): `aSecondChiefBodysDeathIsNobodys` is a
+  test of its own, not an addition to 29a, because 29a ends with grove B's REMOVE played (the playback of a held
+  REMOVE keeps its coverage) and a kill would have to replace that. It has three groves, each with an adopted
+  Umvuthi and an adopted FEAR-masked warrior 10 blocks from it: C (a REMOVE of the chief, held for a player at
+  150 blocks), D (the same, then `Camps.forceRecount`: a new epoch, the REMOVE answered STALE, no held line) and
+  E (the control, no line). Each Umvuthi, last hurt by a player, is killed by him. E books two deaths (the chief
+  and its warrior) and drops a Sol Visage and experience; C and D book nothing, drop neither, and their
+  warriors live, tagged. C's REMOVE, held when its body died, is answered NOTHING. D is the P1 ordering. The
+  test needed one hook in core: `Camps.forceRecount(faction)` (public, GameTests only), which sets the camp's
+  recount flag as a body read from disk outside its footprint does. The experience is read from the orbs about
+  the grove; no player stands within 8 blocks to draw them off. Test 27 is unchanged: E is its control for the
+  experience, since its warriors' own deaths would make an experience count there unclear.
+- **MZB-615** (test 30a's all-near case; closes P3-10): a fourth grove, G4, has three warriors 6, 14 and 22 blocks
+  south of its centre in slots 1, 0 and 2, a throne 10 blocks north and a player 165 blocks south. The warriors
+  are 159, 151 and 143 blocks from the player (every one within 160) and the throne 175 (no hold, since the
+  pair waits on the throne). The pair is played at once and its MASK names slot 1, the farthest of the three: not the
+  lowest slot (ties go to the lower slot) and not the nearest. `pickWarrior` takes the largest distance to the
+  nearest player, so the case with every warrior near a player and the case with one far are one rule; the test
+  covers the first, which G1 of the same test (the 5-block warrior at 175 blocks) did not.
+
+#### Notes (which fix closes which finding)
+
+The review of 253f8d45..9d55c2b7 (the lead's brief `m9b-review-fixes`), the fixes in order:
+- P1, the second body set, and P3-7, the census filter: MZB-611 (`Camps.second`, `markSecond`, the lazy
+  `chiefGeneration` rule; `ConflictBridge` and `GroveKind.chief` read `secondBody`).
+- P2-2, the restriction asserts: tests 30a and 30b assert `getRestrictRadius() == -1` and the centre, since vanilla's
+  `hasRestriction()` is false at -1.
+- P2-3, `oldChief`: it returns the body of the L_A generation inside `c.contains`, else null (MZB-410), and the
+  emulator narrowed to match (MZB-613 (b)).
+- P2-4, the fight wait: a seat in place waits on `inFight` alone, with no `HOLD_MAX` term; the wait ends with the
+  fight (MZB-410, MOWZIE.md §4.10).
+- P2-5, the MASK takes a mustering warrior: MZB-612.
+- P2-6, the kin signal counted twice: `ConflictBridge.onDeath` counts the kin killing signal once per UUID per
+  tick (`killedThisTick`, cleared each server tick), since `EntityUmvuthi.die` posts the event twice.
+- P3-8, D1: `pairNow` decides the hold first and looks for a warrior only when the pair can go. `oldChief` is still
+  called first, because the hold depends on whether an old body exists; `pickWarrior` is the deferred call.
+- Emulator divergences (a) to (d): MZB-613.
+- P3-9, P3-10: MZB-614 and MZB-615.
+- P3-11: MZB-608 (amended).
+- P3-12: test 25 is `aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine`, per MZB-601.
+
+### M9c build choices
+
+M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the brief, in M9b's range. The branch is
+`feat/mowzie-m9`; the GameTests are written and compiled only (the lead runs them).
+
+- **MZB-616** (the heir goes before any new muster; closes the open end of MZB-612; decided by the coordinator,
+  2026-10-24): since MZB-612 an heir waits while a band of its camp musters, and musters can follow one another
+  with no cap (a plunder drive and a feud's raids, each starting before the last has set out), so a grove might
+  never seat its heir. The rule: while an heir is due, its camp is in and its pair is not in flight (`Camp::mask`
+  and `Camp::seat` both clear), no new war party of the camp musters (`Conflict::heir_first`, tested in
+  `send_party` for the war kinds, which covers raids, invasions, plunder and `order_party`). The heir then waits at
+  most the muster already under way at its due tick, and the pair is ordered at that muster's end
+  (`camp_set_out` and `home` look at the camp again, MZB-612) or at once when none is. Once the pair is in flight the
+  camp's draw is already 0 (`Camp::drawable`, MZB-409), so the next muster starts after the pair's answer, and a
+  MASK that names a warrior a later muster drew is that band's loss as before (MZB-445). The details:
+  - A feud that wants a war party while the rule holds waits with `bodies_ready` = `BLOCKED` (no event booked),
+    and `camp_heir` plans the camp's feuds again (`unblock_lines`) the moment it orders the pair, so a feud's
+    raid musters in the same tick as the pair, after it. The plunder drive tries again at its next gap, as it does
+    when it has no warriors.
+  - A camp that is out is not held: `heir_first` needs the camp in, since a camp that nobody loads can order
+    nothing, and holding its raids would stop a grove that is never in. (A grove left out has no heir to
+    seat until it comes in; its census runs `camp_heir`, which orders the pair at once if no muster is under way.)
+  - A culture with no chief body has no heir and is never held (`heir_first` is false), so the goblin, bandit and
+    Frostmaw runs are unchanged.
+  - Hashes: `sim conflict` (seed 7) is identical to the base apart from `wall_ms` (checked against this tree with
+    the rule stubbed out; the committed `scenario/results/sim-conflict.json` is older than M9a's stats and
+    differs from both in `hunts_owed`, `hunts_killed`, `tribute_stacks` and its state hashes, which M9a moved and
+    this does not). `sim mowzie` moves in one place against the base (this tree with the rule stubbed out): run 10's
+    grove chaos with heirs (54 heirs seated and 20 of 418 Invasions took the Umvuthi at the base, now 56 and 20 of 416:
+    the heirs that waited for a muster chain seat sooner). Run 12 is identical to the base (106 and 59 seats, 1.822
+    and 1.003 a game year; its last waits alternate by a third of a day, a plunder muster under way at some due ticks,
+    MZB-612). The committed `scenario/results/sim-mowzie.json` was never regenerated after MZB-612 (it held 58 and 18
+    of 416, and waits without the alternation), so this commit regenerates it, which brings in both.
+  - Tests in `tests/grove.rs`: `musters_back_to_back_seat_the_heir_within_one_muster_of_due` (a grove of 120 with a
+    plunder drive every few hours and a raid ordered every tenth of a day from 1.5 days before the due tick to 3
+    days after it: nothing musters between the due tick and the pair, and the pair goes within one muster of due;
+    six seeds), `with_no_muster_under_way_the_heir_is_ordered_at_its_due_tick` (the control, the drive off: the
+    pair goes at the due tick, and a band musters again once it is ordered), and
+    `a_feud_that_climbs_while_the_heir_waits_musters_after_the_pair` (the feud waits `BLOCKED` and its raid
+    musters after the pair, in the tick the muster ends). The first and the third fail with the rule stubbed out.
+
+- **MZB-625** (the maker contract and the extras' lifetime; fills in MZB-428): `ConflictBodies.registerMaker(body,
+  Maker)` is keyed by the full body name a command carries. `ConflictBridge.spawn` asks the maker for a slot's body
+  by `sl.body` and falls back to `ConflictBodies.create` when none is registered (the camp hand-off's `copy` still
+  runs on a maker's body). What the maker adds to `extras` is the bridge's from there:
+  - each extra gets the party's AGENT tag and is made persistence-required before it joins, is kept in `Slot.extras`
+    and in `extraOf` (UUID to slot) so that `admit` lets exactly that object join, and joins the level right after
+    its own body, since a raptor's follower looks for its leader in its first tick;
+  - a body that fails to join takes the whole stack back as before (all or none), extras included;
+  - `dropExtras(slot)` discards a slot's extras. It runs in `despawn(slot)` (so recall, dematerialize, a failed
+    spawn, the pass's requeue of a lost body and the Peaceful requeue all take them), and again for every slot,
+    dead ones too, when a stack goes back to pending, when a recall's stack is GONE, and when the party
+    ends (`unregister`). A follower whose raptor died therefore fights on until its stack despawns (MZB-428), and
+    no longer;
+  - extras book nothing: not in BAND_STATE's `present`, not in a BAND_DEMATERIALIZED survivor, and a death among
+    them reaches no journal (`live(e)` is null for them, and they are tagged, which `onDeath`'s territory path
+    skips). A raptor taken by Carry On leaves its extras to the stack's end;
+  - they are never saved (a tagged entity refuses to be), so a reload cannot bring one back, and a copy that tries
+    to join with a stale tag is refused like any other (`admit` checks the object, the party and its epoch);
+  - the spawn quota (`spendSpawnBudget`) counts bodies, not extras: a raptor is one against it with its four.
+- **MZB-626** (the raptor maker; fills in MZB-428 and MZB-429): `RaptorMaker` makes the jar's raptor with
+  `EntityType.create` and `moveTo`, and exactly 4 `EntityUmvuthanaFollowerToRaptor(type, level, leader)` on the
+  jar's 0.1-block circle with its weapon roll. It does not call `finalizeSpawn` (the raptor's own makes the pack;
+  `Mob`'s follow-range bonus and left-handedness go with it) and does not call `addPackMember`: a follower finds its
+  leader in its own first tick (`getLeader` within 32 blocks) and joins the pack there, so a call here would put
+  each in twice. The raptor stand-in is now `mowziesmobs:umvuthana_raptor` (it was the grove warrior until here,
+  MZB-594). On Peaceful the maker returns null (MZB-429): the raptor is a MONSTER, so `tryPlace` already keeps the
+  stack pending on Peaceful, and this is the second guard for a difficulty that changes between that test and the
+  spawn; a raptor placed before the change discards itself in its tick, which the pass takes as Peaceful's removal
+  and requeues, dropping the followers. The jar's rule that a raptor removed in its first tick sets its pack to be
+  discarded is harmless here: the pack is empty before the followers' first tick, and the bridge discards them itself.
+- GameTest `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (MZB-594) is rewritten for the maker: two
+  raptor units are two jar raptors with packs of 4, the area holds 8 followers all carrying the band's tag and
+  none untagged, each slot holds 4 extras, and a recall that times out leaves no raptor and no follower.
+- **MZB-627** (when a hunt applies; fills in MZB-426): `OwedHunts` keeps the latest OWED_HUNT of each faction and
+  district in memory and looks at the held ones every 20 ticks, and in the tick after one arrives, only while it holds
+  any (`ConflictBridge.endOfTick`, before the `held` early return: a hunt needs no party). A hunt applies when every
+  chunk the circle touches (the chunks whose square lies within the radius of the centre, at most 7 by 7 for 48) has
+  its entities loaded and ticking (`entitiesTickAt`, which also needs a player or a forced chunk in the level);
+  until then it waits, and a district nobody loads keeps its debt, as the engine's books say it should. Answered at
+  once, without waiting for any chunk, with `killed` 0: an amount of 0 (a count of 0, or a `rest` of 0 when the last
+  op applied is `replaced`), a dimension the server has not got, and a radius under 0 or over 128 (the engine's is 48,
+  so a wider one is a malformed record; nothing is killed). An exception while applying drops the hunt for the session
+  (logged); the engine sends it again at the next. A command whose op is the last one applied is ignored and counted
+  (`ignored`); `received`, `appliedHunts` and `killed` are the session's counters. A session start, a session failure,
+  a server stop and the conflict module going off clear the held hunts and the last ops; a command that arrives while
+  the module is off is dropped, as the camp reconcile's are.
+- **MZB-628** (what a hunt spares; fills in MZB-426 and MZB-442): the jar's raptor test as MZB-426 has it (no
+  ATTACK_DAMAGE or under 3, 0.1 < width² × height < 6, an `Animal`), and nobody's animal: not tamed (`TamableAnimal`,
+  tamed `AbstractHorse`), not owned (`OwnableEntity` with an owner), not named, not leashed, not ridden and not
+  riding. The last two and the owner test are beyond MZB-442's list, taken as the conservative reading of "marked as
+  somebody's". A herd puppet (tagged, vanilla animal) is not spared: `kill()` runs the death event, and the herd
+  plugin books its own death (a herd that a raid left dead is a herd the engine should know lost animals). The
+  animals nearest the centre die first, ties by UUID, so a repeat on the same stock picks the same ones; `kill()` is
+  checked afterwards (`isAlive`), so a mod that cancels the death is no kill and does not count.
+- **MZB-629** (the answer and its barrier; fills in MZB-426 and MZB-449): HUNT_APPLIED (0x0816, 56 bytes, journaled)
+  carries faction, district, the engine's op, and `killed`, even when that is 0; the hunt is spent and the last op
+  applied for the faction and district is set to its op in the same step. The commit comes after the kills, and the
+  circle's entity chunks are then noted in the barrier (`dependsOnEntities`, after the commit, as the camp records
+  do), so the journal's next file waits for the entity chunks to be written and a restart cannot see the answer
+  without the deaths. An answer given without applying (the cases above) notes no chunk. The record carries no Java
+  op id: the engine books it by the hunt's own op, not by a journal op set (MZB-449).
+- **MZB-630** (the grove's chest; fills in MZB-422): `GroveChests` (plugin) is a `SessionPlugin` and sends HAVEN_CHEST
+  (0x0817, 56 bytes, journaled, never carried by a holder). The chest is a `ChestBlockEntity` or `BarrelBlockEntity`
+  (trapped chests are chests) in a loaded footprint chunk, inside the footprint's circle, with an empty slot or a loot
+  table not rolled yet (all its slots count free; a slot is never read on such a chest, which would roll it); the
+  nearest to the fire pit's centre, ties by position. A double chest's halves are two chests, each counted by its own
+  slots: the handler at one half takes into both, so a half that reports room is never wrong, only short, and a
+  full half with an empty twin names the twin. Every 200 ticks (PLACEHOLDER) each grove that is in is looked at, and
+  nothing else is scanned (D1); a grove that is out drops its record of what it told. A record goes:
+  - when the grove is new to the engine in this epoch (`Sent.epoch` differs from the site's: a session start, or a
+    grove that came in, since the engine forgets the chest at CAMP_OUT and a session start), with the chest found;
+  - when the chest or its free count changed since the last record;
+  - with 0 free at the chest last told of, once, when that chest is gone or full and there is no other (a grove never
+    told of a chest has nothing to take back, so it sends nothing);
+  - after every answer to a transfer into the chest last told of (MZB-631), whether or not the free count changed
+    (the re-check, R5), and after a FAILED, which makes the engine forget the chest. They are collected in a set and
+    handled at the end of the tick, so a grove sends at most once a tick, however many stacks went in.
+  It does not ask the chunk barrier for the chest's chunk: the record names a place and a count and claims nothing the
+  world must keep, and a replay that names a chest the world lost meets a FAILED transfer, which this answers with the
+  chest as it is. A grove that comes in is told of at the first scan after its census (up to 200 ticks, a tribute
+  waits that long and no longer). The conflict module going off forgets what was told, so a switch back on tells
+  again. `GroveChests.scanNextTick()` and `chestOf` / `freeOf` are for the GameTests.
+- **MZB-631** (the tribute's transfer; fills in MZB-423 and MZB-446): no Java applies the tribute but the core's own
+  TRANSFER_TO_CONTAINER (`CommandDispatcher.transferToContainer`), which already refuses a stack above the item's size,
+  inserts all or nothing, answers APPLIED, DUPLICATE_OP (the journal's applied op, or the chunk's carried op) or FAILED,
+  and drops a remainder at the container if a handler disagrees with its own simulation. The grove's plugin adds one
+  generic hook to the core: `SessionPlugin.containerTransferred(session, level, pos, status)`, called for every plugin
+  after each of that command's answers (any status, every plugin, whoever sent the command; nothing for a dimension the
+  server has not got). `transferToContainer` now reads the dimension and position before the duplicate test so the hook
+  has them, which changes no answer. `GroveChests` is the only user. Dragon tribute transfers call it too and are
+  ignored, since it matches by the dimension and position it told the engine of.
+- **MZB-632** (MowzieStrength; fills in MZB-435): one `IndustryPlugin` for the whole mod (the Frostmaw, which is M6's
+  row, shares the table), registered in `MicRtsimMowziesMobs`, giving IND_FIGHT's attacker strength by the entity's
+  class: `EntityFrostmaw` 41.7, `EntityUmvuthi` 5.0, `EntityUmvuthanaRaptor` 1.0, any other `EntityUmvuthana` 0.4
+  (a grove warrior, a raptor's follower, a player's follower, a crane; the Umvuthi is a `MowzieGeckoEntity`, not an
+  `EntityUmvuthana`, so it is tested by its own class), and NaN for anything else, which leaves the core's 1 and the
+  tag `mic_rtsim:threat/ignored` for the foliaath. Raptor 1.0 plus four followers at 0.4 is 2.6; the sum is the
+  core's (each attacker joins a fight once, `Threats.join`), not this class's, so a pack counts 2.6 only once its
+  followers have each hit something. The checks are `instanceof`, so a body made by `RaptorMaker` and one the jar
+  made are the same. The order is Frostmaw, Umvuthi, raptor, then the base class.
+
+- **MZB-633** (the world GameTests, in one class; fills in MOWZIE.md section 7 tests 12, 13, 14, 16, 17 and 20):
+  `gametest/UmvuthanaWorldGameTests` in the mowziesmobs module holds the seven tests (17 is two), each with a batch
+  of its own (the bridge's counters are global and read as deltas) and a place of its own in the far base (`Far`,
+  which also turns Peaceful to Normal, since a hostile body is removed on Peaceful). Written and compiled, not run.
+  The common rules:
+  - Players are `FakePlayers` ones, never ticked, so a test that lets bodies strike one raises its health every tick
+    (`tough`: max health 4000, healed by `MowzieKit.everyTick`, which swallows exceptions, so a test records what it
+    saw in a list and asserts on the list afterwards).
+  - Every body a player strikes carries the jar's fear mask: only a mask with `canBlock` (fury) turns a blow aside.
+  - A wait is a `thenWaitUntil` of checks; the first-body lookups come after the "placed" wait, never before.
+  - The engine-only tests (13 and 16) start with the native-engine skip, as the camp tests do.
+- **MZB-634** (test 12, a masked player; fills in MOWZIE.md test 12): a band of three grove warriors and a raptor
+  (with its four followers), hostile and standing still (speed 0), with a masked player 12 blocks to one side and a
+  bare one 12 blocks to the other. The test asserts that a body is within 14 blocks of the masked player (so the
+  check is not vacuous), that no body or extra targets the masked player from the first tick to the bare player's
+  being targeted plus 100 ticks (a per-tick list, since `everyTick` swallows a thrown check), and that a body does
+  target the bare one. The masked player then strikes warrior 0 (landed) and 20 ticks later that warrior targets
+  it: the jar's hurt-by goal is not mask-filtered, which is what the jar does. The raptor's and followers' goals
+  are the mask-filtered ones; the minion's `UmvuthanaHurtByTargetAI` is in its target selector, theirs in the goal
+  selector. A recall ends the test.
+- **MZB-635** (test 13, trade and tribute at the camp; fills in MOWZIE.md test 13): native engine only. A real
+  grove (under `GROVE_STRUCTURE`, kind `GroveKind`) with its Umvuthi adopted and a masked payer:
+  - the Umvuthi's own desires paid through the jar's handler (`MowzieKit.payUmvuthi`) are exactly one CHIEF_PAID
+    with the chief's slot and generation, flags 0, the payer, the desires and a Java op id, and `Camps.chiefPaid`
+    +1. The engine's gift for it (the nuggets owed) is a command to Java that the test cannot see (MZB-601); it is
+    shown by test 16's effect, not here.
+  - a nugget trade (4 gold nuggets for sticks) with a stray grove warrior made by `MowzieKit.stray(.., finalize
+    false)`, so its trade store is empty and the set `Trade` survives: the test builds the jar's
+    `ContainerUmvuthanaTrade`, puts the input in slot 0, takes the result of slot 1 and calls `onTake`, the jar's
+    own path (which `GroveTrade`'s mixin hooks): exactly one TRADED with 4 nuggets and the payer, and
+    `Camps.traded` +1.
+  - a second Umvuthi 36 blocks off the centre (outside the 25-block footprint, in a forced chunk), paid the same
+    way, writes no CHIEF_PAID and does not move `Camps.chiefPaid`.
+- **MZB-636** (test 14, the envoy party of the jar's bodies; fills in MOWZIE.md test 14): the core's test 14
+  condensed to what differs for the Umvuthana: two parties (a player-bound demand of 6 emeralds with an envoy and
+  two warriors, a settlers' demand with an envoy and a warrior), a masked payer (so that a click the bridge did not
+  take would open the jar's trade window; the envoy is made to offer a trade and the test asserts it does) and an
+  unmasked bystander three blocks off. Asserted: the envoy is named by the speaker key and visible, guards are not
+  named, all target selectors empty while guarded, nothing targets anyone for 40 ticks, a golem's target, a
+  guard's target, a golem's blow, an owner-less arrow, a skeleton's arrow and a golem's blow on the envoy are all
+  refused (two blocked targets, four blocked hits, no damage, no ENVOY_ANSWER), two payments (3 emeralds from the
+  main hand, 1 from the off hand with the main hand empty) are two TRIBUTE_PAID with Java op ids, and the payer's
+  open menu stays the inventory menu after the paying clicks and an empty-hand click. There is no dirt-in-hand
+  click (it is an ordinary click the bridge leaves to the jar, which would open the window for a masked player and
+  is not a bug) and no talk-line assertion (the core's test makes that on its own bodies). A player's arrow on a
+  guard is one ENVOY_ANSWER ANSWER_ATTACKED and lifts the guard (the target goals come back); the settlers' guard
+  killed by `/kill` is a casualty with no killer and no answer, and the engine's SETTLED_WITHDRAWN takes its demand
+  and its name.
+- **MZB-637** (test 16, tribute in a grove's chest; fills in MOWZIE.md test 16): native engine only. The gift is
+  `GroveTrade.nuggets(desires)` (7 gold blocks, 567 nuggets, 9 stacks) and the test derives it from the desires
+  rather than assuming it. Steps: pay with no chest standing (the grove sends no HAVEN_CHEST: it was never told of
+  one); release the 5 x 5 (CAMP_OUT, the Umvuthi unloaded); load only the middle chunk and set a chest there (the
+  camp is still out); load the rest and bring the scan forward each tick (`GroveChests.scanNextTick`). Then the
+  first HAVEN_CHEST has the chest's place, the dimension's dictionary id and FREE 27, the COMMAND_RESULTs after it
+  in arrival order are APPLIED (at least one, none FAILED), the grove saw the chest take them
+  (`GroveChests.transfers`), the chest holds exactly the nuggets and stays so for 100 ticks, and the last
+  HAVEN_CHEST's free count is the chest's empty slots (18 for 9 stacks). The full-chest half fills the empty slots
+  with dirt, waits for FREE 0, has a second masked payer pay the Umvuthi (found again by its UUID) and for 100 ticks
+  asserts the chest took nothing, no transfer was answered into it and it is still told as full; clearing the dirt
+  (and a scan) lets the second gift land. The last check is that the total is more than the first gift, not exactly
+  twice, since the second gift is the engine's accounting (a recorded total, not an invariant of this module).
+- **MZB-638** (test 17 is two tests; fills in MOWZIE.md test 17): 17a, `raptorsHuntTheBasesAnimals`, is the embodied
+  half and runs the jar's own raptor unit (made by `RaptorMaker`) next to two cows and a sheep (no AI, persistent):
+  the raptor's hunting goal picks a target at random (about one evaluation in 200), so the test waits for the first
+  death and asks that the animal's last attacker be a raptor or a follower; it does not demand more than one. The
+  grove warrior (the minion) has no Animal goal, so a band of warriors would show nothing; that is the jar's, and is
+  why the unit is the raptor. 17b is the owed half (MZB-639).
+- **MZB-639** (test 17b, the owed hunt; fills in MOWZIE.md test 17): the circle is 30 blocks, not the brief's 48
+  (21 chunks instead of 69), by the same algorithm; 7 eligible animals (6 cows, a sheep) stand 3, 5, 7, 9, 11.3, 14
+  and 17 blocks from the middle, with a named cow, a tamed parrot (a wolf has an attack damage of 4 and is excluded
+  anyway; the parrot has an owner, since the save keeps a taming only through the owner) and a leashed sheep, all
+  nearer than most of the eligible. After a reload the test asserts the name, the taming and the leash held (a
+  fixture check, so a lost leash is not blamed on the hunt). The ladder: held with every chunk out; still held with
+  the middle 3 x 3 loaded (60 ticks, nobody dies); applied when the 5 x 5 loads (the five nearest die, the other
+  two and the ineligible three live, at least five drops lie on the ground, HUNT_APPLIED with the op and 5); the
+  same op again is ignored (no second record); a hunt that replaces the last applied one kills `rest` (1, the
+  14-block cow); a hunt that names a stale replaced op kills `count` (1, the 17-block cow); a hunt with nothing left
+  is answered with 0 killed. Each HUNT_APPLIED is looked up by op id.
+- **MZB-640** (test 20, fight strengths; fills in MOWZIE.md test 20 and ledger 19): the yard template is copied into
+  the mowziesmobs module (`data/mic_rtsim_mowziesmobs/structure/industry_yard.nbt`, the core's file) since a
+  template is looked up under the holder's namespace. In a district with a player-placed machine, for each body in
+  turn (the Umvuthi, a grove warrior, a raptor with four followers made as `RaptorMaker` does, the Frostmaw) a
+  player-created iron golem and the body stand in the machine's chunk; the body is hurt by the golem (1 damage) and
+  also targeted at it (the two engage routes, since the Frostmaw and the Umvuthi may turn a blow aside in an
+  animation), then both are discarded at once and the test waits for that fight's IND_FIGHT (all the mod's bodies
+  are untagged ground melee and share one fight per district, so they run one after another, each fight ended by
+  the 20-tick gap before the next). Asserted: attackers 1, 1, 5, 1 and strengths 5.0, 0.4, 2.6, 41.7 (within 0.01).
+- **MZB-641** (a test helper in the core; no engine change): `ConflictKit.owedHunt(faction, district, op, replaced,
+  dimension, count, centreX, centreZ, radius, rest)` scripts an OWED_HUNT command (the script field is private to
+  that class), with the dimension in the dictionary the core's tests use.
+
+- **MZB-642** (a grove's chest needs an item handler; amends MZB-422; review P2-1): `GroveChests.find` skips a chest
+  or barrel with no `Capabilities.ItemHandler.BLOCK` at its place. The pack ships Lootr 1.11.38.125 (checked in the
+  pack's jar, sha512 2e8fe46f...): `LootrChestBlockEntity extends ChestBlockEntity` and keeps its loot table, so
+  `free()` counts all 27 slots, and the jar mentions neither `Capabilit` nor `ItemHandler` anywhere; NeoForge
+  21.1.249 registers the chest's item handler only for `Blocks.CHEST` and `Blocks.TRAPPED_CHEST`
+  (`CapabilityHooks`, line 73). So every TRANSFER_TO_CONTAINER into a Lootr chest met a null handler and FAILED, and
+  `containerTransferred` then forced HAVEN_CHEST(27) again, for ever. Now such a chest is never a haven. A grove
+  whose only chests are skipped sends nothing (it was never told of one; the engine has no chest, `place_tribute`
+  sends nothing and the tribute stays in `owed_tribute`, the existing rule for a grove with no chest). A grove that
+  had been told of a chest which then turned out to have no handler is told FREE 0 once, as for a chest that is gone
+  or full. The test is `aChestWithNoItemHandlerIsNeverTheGrovesHaven`: a `ChestBlockEntity` subclass of the test's own
+  on the enchanting table's block (no item handler registered there; its type is unregistered, so the test removes
+  it before the chunk could be saved) nearer the middle than a vanilla chest. It is written and compiled, not run; on
+  the base it would fail by the first HAVEN_CHEST naming the nearer chest (FREE 27) in place of the vanilla one.
+
+- **MZB-643** (a body's extras drop nothing; amends MZB-428 and MZB-431; review P2-2): `ConflictBridge.isExtra`
+  says whether an entity is one of a live slot's extras (a raptor's follower) and `ConflictEvents` cancels
+  LivingDropsEvent and LivingExperienceDropEvent for such an entity, as it does for a chief's second body (MZB-431).
+  A follower is no member, so its death books nothing, yet a stack that comes back (the raptor lives, the players
+  walk off and return) is made again with four new followers: each of the old ones was a mask (the jar's
+  `umvuthana_*` loot) and 6 experience to farm. A member's own drops are unchanged (they carry its record,
+  `onDrops`). Test 12 now has a player kill the raptor's four followers and asserts the counts of item entities and
+  experience orbs within 40 blocks are unchanged ten ticks later (a follower's `xpReward` is 6, so a base that
+  dropped would show orbs); written and compiled, not run.
+
+- **MZB-644** (leashed means a leash on the save, not a holder; amends MZB-442; review P2-3): the hunt's
+  eligibility test asks `Leashable.mayBeLeashed()` (leash data present), not `isLeashed()` (a holder present). An
+  animal that has just loaded has its leash data from the save and no holder until `Leashable.tickLeash` restores it
+  in its first ticks (up to 100 when the holder is an entity not loaded yet, then the lead drops), and the hunt is
+  applied on the tick its last chunk is entities-loaded, before most of them have ticked. `mayBeLeashed` is
+  `getLeashData() != null` in the 1.21.1 sources (checked in the decompiled `Leashable`), so it also covers a
+  restored leash. The test is 17b's outer-ring leashed animal (MZB-645).
+
+- **MZB-645** (test 17b catches the owner, tame and leash rules; amends MZB-442; review P2-4): the first form of the
+  test used a tamed parrot as the tame animal, and a parrot has an attack damage of 3.0, which the damage rule
+  spares at the threshold whatever its taming (`OwedHunts.eligible`, lines 220 to 222), so deleting the owner and
+  tame rules (lines 231 to 235) still passed. The test now has two horses (no attack damage in
+  `createBaseHorseAttributes`, volume 3.1): one with an owner and not tame, one tame with no owner (a horse saves
+  its `Tame` flag and its `Owner` apart, so both survive the unload; a `TamableAnimal` keeps a taming only through
+  its owner). Each stands nearer than the fifth prey, so with either rule deleted the first hunt kills it and
+  "five killed", "prey 4 (near) is dead" and "the ineligible ... lives" all fail. A leashed sheep stands in a chunk
+  of the circle's outer ring (26 blocks out, on a 9 x 9 pad the test lays) and loads with the hunt; the fourth hunt
+  (count 10) is sent with every chunk released again, so it meets all the animals as they load together, and it
+  must still find nothing: with the `mayBeLeashed` line (MZB-644) back to `isLeashed` it kills a leashed sheep
+  whose holder is not restored yet, if the hunt's tick comes before the sheep's first (the race is the review's;
+  the test cannot make the order, only offer it on each load). The tame rule on `TamableAnimal` (line 233) is not
+  reachable with vanilla animals (the cat, wolf and parrot all have a damage of 3.0 or more) and has no test.
+
+- **MZB-646** (a hunt that throws partway is still answered; amends MZB-426; review P3-1): `OwedHunts.tryApply`
+  kills inside a try/finally whose finally always calls `answer` with the number dead so far. Before, an exception
+  from `Animal.kill` (a drops or death handler of another mod) escaped to `tick`, which logged it and dropped the hunt
+  without HUNT_APPLIED: the engine, holding the hunt unanswered, sent it again at the next session start and its full
+  count was killed on top of the animals already dead: up to twice the count for one hunt.
+  An animal that died before its handler threw counts as dead. `tick`'s catch still logs and removes the hunt (a
+  no-op now: `answer` removed it). No GameTest: an exception in a kill needs another mod's handler to throw, and the
+  integration's own handlers do not.
+
+- **MZB-647** (the MZB-616 test counts the plunder drive and varies by seed; test only; review P3-2):
+  `musters_back_to_back_seat_the_heir_within_one_muster_of_due` read its party count after `r.run(t)`, so a party the
+  plunder drive started inside the step was never counted, only the raid the test ordered. The count is now read
+  before the step. And `busy_grove(seed)` was one grove six times (the seed changes nothing on this path: all six
+  runs had the same due tick, 4608001, and the same counts), so the seed now sets the grove's size (96 plus 6 times
+  the seed: 102 to 132, pool cap the same) and the drive's mean (0.02 plus 0.01 times the seed, in days), and the
+  start of the sampling grid (a sixth of a step further in for each seed). The six runs now differ (the drive's
+  extra parties fall at 4605601 for seed 1, at 4596801 and 4668801 for seed 3, and so on, before and after the
+  due tick) and none starts a party between the due tick and the pair.
+
+- **MZB-648** (test 16 counts the transfers into its chest, not every result; review P3-3): the test counted every
+  COMMAND_RESULT journaled after the first HAVEN_CHEST, applied and failed alike, but a result carries only a command
+  sequence and an op id, not the container, so any other command of the engine's (a spawn, a trade's transfer for
+  another place) counted: an unrelated APPLIED let `applied >= 1` pass with no gift landed, and an unrelated FAILED
+  failed the test with the gift in the chest. `GroveChests` now counts the answers `containerTransferred` reports
+  for the chest a grove told of, by status (`transfersApplied`, `transfersFailed`, with `transfers` as before), and
+  the test reads those. The unused `mark` of the second payment (the size of the COMMAND_RESULT list) is gone.
+
+- **MZB-649** (the heir goes first in `unblock`; amends MZB-616; review P3-4): `unblock` called `unblock_lines` and then
+  `camp_heir`, which when it orders the pair ends with `unblock_lines` too, so the lines were looked at twice in one
+  step. `camp_heir` now returns whether it ordered the pair, and `unblock` calls it first and calls `unblock_lines`
+  only when it did not. This changes nothing a run can see, and the A/B says so: the second look was a no-op already
+  (it plans only a feud whose wait is `BLOCKED`, and the first look cleared those; `plan_refill` and `plan_arrival`
+  book nothing the second time). The state hash, `stats.stale` and `stats.feud_wakes` at the end of all 283 `ok`
+  checks of the `camp`, `frostmaw` and `grove` test files are identical on the base (46c589c0 plus the review's earlier
+  items) and on this change, so no hash moved and nothing is regenerated (the conflict tests pin no hash literal;
+  the viewer's `core` and `create` save data carry hashes of GameTest worlds, which no engine edit rewrites).
+  The first look planned the feuds before the pair was ordered, but a feud wakes at an event after the handler
+  returns, so it found the pair in flight either way.
+
+### The M9 merge (MZB-670 to MZB-672)
+
+- **MZB-670** (FACTION_FOUND's home count after the M6 merge; MZB-401 with MZB-653): M6 counts a
+  tagged body loaded away from the footprint in `home` (`Camps.census`'s ELSEWHERE loop, MZB-653),
+  so that a grove found after a sim reset with bodies away caps at its size; M9 counts in `home`
+  only the pool's bodies (`CampKind.pooled`), since a grove's chief slot is outside the pool and
+  the cap is the pool's (MZB-401). The merge keeps both: the ELSEWHERE `home++` is under
+  `pooled(e)`, as M9's inside and wide-stray counts are. An Umvuthi loaded away is listed
+  ELSEWHERE and not counted, as one inside is not. The only reading that keeps M9's cap and M6's
+  fix; no format change. Not run (no GameTest); M6's
+  `aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll` uses Umvuthana bodies only, so
+  its "home 3" is unchanged by the wrap.
+- **MZB-671** (M9's GameTest unload waits, converted as 6d6c6658 did; MZB-662's trap): M9's two
+  `gone()` helpers took UUIDs and checked `getEntity(id) == null`, the "saved and unloaded" wait
+  MZB-662 found false under C2ME, and they took their arguments when the sequence was built, before
+  the `thenExecute` steps that fill the arrays. Four waits, found by reading (M9's GameTests were
+  compiled, never run):
+  - `tributeLandsInAGroveChestWhenTheGroveLoads` (UmvuthanaWorldGameTests): `List.of(id[0])` with
+    `id[0]` null at build time, so `List.of` throws a NullPointerException when the test is built,
+    before its first tick: the test could not run at all.
+  - `anOwedHuntIsAppliedWhenItsDistrictLoadsAndKillsTheNearestEligibleAnimals` (UmvuthanaWorldGameTests), first unload: a
+    `Stream.concat(...).toList()` of the `prey` and `no` UUIDs, all null at build time;
+    `toList()` allows nulls and `getEntity(null)` is null, so the wait passed at once.
+  - The same test's second unload: `List.of(no)`, null elements, the NullPointerException again.
+  - `anEpochsEndAnswersEveryHeldLineStale` (UmvuthiGameTests): `gone(level, id[0])`, a null
+    varargs element, so the wait passed at once.
+  Both `gone()`s now delegate to `MowzieKit.removed` with suppliers read at each poll (each
+  object's own `isRemoved()`, with MZB-664's re-queue of a dropped unload). The callers keep the
+  objects: the Umvuthi as made (`() -> u[0]`), the hunt test's prey and ineligible animals as made
+  (`preyMade`, `noMade`) and, for the second unload, the ineligible animals resolved with
+  `getEntity` before the release (`noLoaded`, checked not null). Both chief tests check after the
+  reload that the Umvuthi is a new object, as MZB-662's robbed Frostmaw does. MowzieGameTests and
+  MowzieKit have no M9 wait of either kind. In a separate commit; compiled, not run.
+  Trap, added to MZB-662's: `List.of` with a null element throws at the sequence's build, so a
+  holder read there fails the test before it starts; `toList()` and varargs let the null through
+  and the wait passes. Either way the wait never waited.
+- **MZB-672** (M7's resident size pin over M9's faction row): tests/rail.rs
+  `a_world_with_no_rail_keeps_base_layout_but_for_pointers` pins `FactionRow` at 200 + 8 (f6321fa5's
+  row and M7's one rail pointer, MZB-313, MZB-314). M9's `Faction.hunts` (MZB-449), an empty Vec
+  when no hunt is owed, adds 24 bytes to every faction row whether or not the world has rail, so the
+  merged row is 232 and the pin read 232 against 208. The pin is now 200 + 24 + 8: the test's claim
+  (a world with no rail pays one pointer for M7) still holds, and the 24 are M9's base. M9 itself
+  pinned no size. Not taken: boxing `hunts` as M7 boxed its meters; a design change for M9's owner,
+  not the merge's.
 
 ## M10 March
 
@@ -6733,11 +8369,12 @@ conservative option at its fork.
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
 | 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
-| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102) |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
 | Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
 | Herds (HERD_*) | the herds' own | Built by slice H: RP-81 (every kind that names an epoch folds, `Obs::group_epoch`), RP-84 (the session's handle bound). |
-| Dragons (DRAGON_*), ships (SHIP_*) | the module's own | No floor yet in either (until slices D and S land): their `replay_end` is empty (rtsim-jni `dragons.rs:280`, `ships.rs:275`) and a copy is applied as a live record. Their epochs come from rtsim-ecology `engine.rs:3011`, `:4364` and `:4402`, rtsim-ships `engine.rs:2802` and `:3983`. Slices D and S build them (§9.2, §9.5), to this rule: every kind of theirs that names an epoch, not only the *_MATERIALIZED. Reported, not built here (slice C is the conflict's) |
+| Dragons (DRAGON_*) | the module's own | No floor yet (until slice D lands): its `replay_end` is empty (rtsim-jni `dragons.rs:280`) and a copy is applied as a live record. Its epochs come from rtsim-ecology `engine.rs:3011`, `:4364` and `:4402`. Slice D builds it (§9.2), to this rule: every kind of its that names an epoch, not only the *_MATERIALIZED. Reported, not built here (slice C is the conflict's) |
+| Ships (SHIP_*) | the ships' own | Built by slice S: RP-99 (every kind that names an epoch folds, `Obs::ship_epoch`, with the list), RP-97 (a copy folds and does nothing more), RP-120 to RP-122 (the session's handle bound, the blockade's bump, the fold before the module's switch). |
 
   A live copy's floor stays in memory until the party's next body (`next_epoch`), as RP-30's did,
   and a save before it does not write it. Not a gap: the session that issued that epoch moved the
@@ -6930,6 +8567,20 @@ conservative option at its fork.
   same order. The option not taken: carry the record's game time into the engine and keep the
   crystal's time in state, so that a mend older than the last CHIEF_STATE is skipped. That is a
   format change, which this merge does not make.
+  - The host's replay (the M6 merge check's P3): the hold above keyed on the engine's replay
+    (`outbox.replaying()`), which rtsim-jni begins only once the conflict runs (a faction, source or party in
+    the world). A session that starts with the conflict enabled and no camp (the pages saved before it was
+    found) has the replay of the host (`st.replaying`) running while the engine's has not begun, so a live
+    CHIEF_STATE arriving before the replayed FACTION_FOUND found its faction unknown and was dropped, and the
+    census byte then put the crystal back. Taken: the host side. `observe_state` holds a CHIEF_STATE while
+    `st.replaying` (`Conflict::hold_chief_state`, into the same `chief_states_held`), whatever the engine's replay,
+    and `replay_done` applies it as above. Not taken: holding a record for an unknown faction until
+    `replay_done`, which would also hold one for a live camp the engine has not been told of, with nothing to end
+    the hold. The residual: if the host's replay ends with the conflict still not in the world,
+    `conflict::replay_end` discards what was held (`discard_held_chief_states`), so a faction found live later is
+    not handed a state from before the session. Failing first, protocol.rs
+    `a_chief_state_before_the_replayed_faction_found_is_applied_at_the_replay_end` (pages saved before the camp
+    was found; the control saves them after): the crystal read true after the replay.
 - **RP-101** (M6's `chief_unit_lost` and RP-27; the M6 merge; a residual, not built): the boss's
   unit lost with its chief takes from a stack by M6's own rule (`!embodied` and a recalled stack
   of the epoch), not by `casualties`' (RP-27: `spawned` only when embodied at the record's epoch,
@@ -6982,6 +8633,73 @@ conservative option at its fork.
   longer trusts that: `ingest_copy` drops a RAIL_PASS. Test: tests/rail.rs
   `a_copy_of_a_rail_pass_counts_nothing` (the copy counts and holds nothing; the control, the same
   pass live, is counted and held; without the arm the copy counts 1).
+
+### The M9 merge (RP-130 to RP-132)
+
+M9 (feat/mowzie-m9 at 2f3941d0) merged M6 at 1290d0b7 (788820c9), M7 at 39c819f1 (56c55d8d) and main;
+docs/replay-gate.md §2.7 "The M9 merge" has the conflicts and §4.4 the gate rows.
+
+- **RP-130** (a copied HAVEN_CHEST; the M9 merge, point 2): HAVEN_CHEST (0x0817, journaled since M9)
+  names a faction, the grove's chest and its free slots, with no op id, and no holder carries it:
+  `GroveChests` journals it when the chest loads or changes (§4.4). It is the chest's state, latest
+  wins. `ingest_copy` sent every kind it did not name to `ingest`, so a copy, were one ever sent,
+  could put an older chest or free count over a newer one, and a tribute stack would go to it. Java
+  never sends one; as RP-104 does for RAIL_PASS, `ingest_copy` no longer trusts that and drops a
+  HAVEN_CHEST. M9's other kinds need no arm: TRADED and CHIEF_PAID carry Java's op ids (`Obs::op`,
+  the engine's `first_time`), so a copy of one booked is skipped; HUNT_APPLIED is booked by the
+  state of the faction's hunts (MZB-449), so a copy of a spent answer finds no hunt. None names an
+  epoch (RP-57's table, "After the M9 merge"). Test: tests/grove.rs
+  `a_copy_of_a_haven_chest_names_no_chest` (the copy leaves the camp with no chest; the control, the
+  same record live, names it with 27 free; without the arm the copy names the chest, checked and
+  undone).
+- **RP-131** (OWED_HUNT through the gate; the M9 merge, point 1; §7.4; MZB-449): M9's one new `Cmd`
+  kind gets its row, "drop" queued and "drop" while replaying. A hunt is the faction's state, saved
+  with it: a raid replayed owes its hunt again into the books as live, and the plugin already had
+  the command, so nothing is sent while replaying; once the replay has caught up `resend_notices`
+  sends every hunt still held (a journaled HUNT_APPLIED having cleared its own). Built as §7.4 asked:
+  M9's two TEMPORARY guards (`owe_hunt` and `hunt_applied` pushed nothing while `replaying`) are
+  deleted, both pushes go through `push` and the gate, and the re-send is kept.
+  - Queued "drop" is a change from M9's own `session_start`, which kept a queued OWED_HUNT (its
+    filter dropped agent kinds, Territory, Notice and Reconcile only): the replay end sends every
+    hunt held, so a queued copy would only have gone twice. The plugin keeps the latest command per
+    (faction, district) and ignores an op it has applied, so the twice was harmless; the drop is
+    the cleaner of the two.
+  - M9 had deleted its own two OwedHunt `outbox.retain` filters at its re-check (MZB-449 R1), so the
+    merge had none left to delete. At the first merge commit I had added `Cmd::OwedHunt` to
+    `resend_notices`'s retain beside main's NOTICE; reverted at the audit: with the queued and
+    replaying "drop" no OWED_HUNT is in the outbox at the replay end, so the filter was dead, and
+    §7.4 keeps main's NOTICE filter alone.
+  - Tests: outbox.rs `every_command_kind_has_its_replay_verdicts` gains the row (13 kinds; the sample holds two
+    OwedHunts, so `dropped` is 8), and its check against the old `session_start` filter excepts
+    OwedHunt, the one kind the gate and that filter disagree on. The behaviour is held by M9's own
+    tests, unchanged and passing on the merged head: grove.rs
+    `a_hunt_owed_while_replaying_goes_once_when_the_replay_is_over`,
+    `a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over`,
+    `a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session`, and protocol.rs's five
+    `replayed_hunt` cases and `an_owed_hunt_is_written_and_spent_by_its_answer_once`.
+- **RP-132** (M9's decisions while replaying, the rest of the eight points; the M9 merge, points 3
+  to 6; no change):
+  - Point 3. A tribute priced while replaying (TRADED, CHIEF_PAID) is booked as live through
+    `pay_tribute`; its stack is placed only for a camp that is in (`place_tribute`, `is_in`), and
+    `begin_replay` puts every camp out (`camp_session_start`) while a replayed census only marks
+    its camp out, so no stack and no CAMP_RECONCILE line is decided while replaying. The heir is
+    seated only for a camp that is in (`camp_heir`). The chief's slot: CHIEF_STATE is held while
+    replaying and applied at the replay end (RP-100), and M9 changes neither `chief_state` nor the
+    hold; M9 reads the crystal and the line flags only for a camp that is in, so after the replay
+    end has applied the held states. CAMP_DEATH on the chief slot (`chief_death`) is idempotent by
+    slot and generation, and CHIEF_KILLED by its op (`chief_killed_by`), replayed or live.
+  - Point 4 (RP-66). M9 has no Rust test that orders a conflict command across a restart, and its
+    GameTests do not restart the engine, so there is nothing to change.
+  - Point 5 (MZB-589). The fillers of protocol.rs's `replayed_hunt` (1,500 BAND_CASUALTIES) now
+    carry `op: next_casualty_op()`; at 72 bytes each the replay still overflows one hand-over
+    (`MIN_CAPACITY`), which is the case the test is for. No M9 test counts hand-overs, so
+    `ONE_HAND_OVER` is not needed. Java reads BAND_CASUALTIES by its named offsets only.
+  - Point 6. `arrive()` is M6's at 58a5551a in M9, unchanged, so the merged arm order is M7's
+    (Envoy, Scouts, peaceful, Track, then the hold, §6.1). M9's grove arrivals add no arm: a hunt
+    is owed in `resolve`, after the hold arm, from a raid on an unwatched district. `casualty_ops`
+    is for BAND_CASUALTIES only; M9's chief kill paths are CHIEF_KILLED (op id) and CAMP_DEATH on
+    the chief slot (slot and generation), and an Umvuthi that leads a party has no stack in it
+    (MZB-414), so no chief death goes through `casualty_ops`.
 
 ### Slice H (herds)
 
@@ -7292,3 +9010,490 @@ changes (RP-89).
   (`rtsim-cli sim herds` and `sim dragons`, the two the herds engine feeds, run to files in /tmp
   and compared with `scenario/results` at the base, wall and timing fields left out): no
   difference.
+
+### Slice S (ships)
+
+The ships' replay gate (docs/replay-gate.md §9.5; branch `fix/replay-ships`, base f2cf3d69): the
+outbox and its gate, `begin_replay` and `replay_done`, the honoured SHIP_MATERIALIZED, the epoch
+floors, the early returns, the pirate coast raid, the host's copies and a test's ship command.
+Slice C (RP-1 to RP-69) is the pattern; slices D and H keep RP-70 to RP-89 on their own branches.
+No page, record or wire format changes: the floors, the counts and the replay flags are in memory,
+and the ships' pages hold what they held. Tests: rtsim-ships `tests/replay.rs` (23, the engine
+level), `tests/blockade.rs` (one more), `outbox.rs` (3 unit tests), `engine/blockade.rs` (two
+in-crate tests: the blind watcher and the blockade bumps), rtsim-jni
+`tests/ships_replay.rs` (13, the host level). The Opus review of the first round (216e21a5) found
+the handle shift on every by-agent lookup but the honour, four holes in the session's bound and
+fold, and five smaller things; the fixes round amended RP-93, RP-95, RP-96, RP-97 and RP-99 and
+added RP-120 to RP-122. What each fails with on the base is in RP-90 to RP-99 and RP-120 to RP-122;
+the engine-level tests need the new API and cannot be built on the base, so for them the check is a
+mutation of the fix (the list is under RP-99).
+
+- **RP-90** (the gate; §4.7; RP-3, RP-4): rtsim-ships `outbox.rs`, as conflict's. `gate()` is an
+  exhaustive match on `Cmd` with no `_` arm; the commands are a private `Vec` behind
+  `Outbox::push`, so a push around the gate does not compile. As built:
+
+  | Kind | Queued | While replaying |
+  | --- | --- | --- |
+  | Materialize | drop | never |
+  | Timetable | drop | drop |
+  | Steer | drop | drop |
+  | Depart | drop | drop |
+  | SetCargo | drop | drop |
+  | Despawn | drop | drop |
+
+  "Never" is counted, its kind kept for the log, not queued, with a `debug_assert!` and no release
+  panic (the replay end makes every ship abstract, which heals the skip). `Replaying::Send` exists
+  and no kind uses it. Why dropping each kind leaves the books right: a Timetable, Steer, Depart or
+  Despawn is an order to a body of this session, and while replaying no body of this session exists
+  (RP-91), so the only reader of a dropped order is a body that is not there; the engine's voyage
+  times, leg bookings and flows are its own state and do not move with the command. A SetCargo
+  sets the body's hold, and the books' hold is `cargo_of(&World, ..)`, which reads the world and
+  no command. The engine pushes no Despawn today (the plugin ends a body and answers
+  DEMATERIALIZED), so that row is for the day one does. The queued column drops everything: the
+  ships filtered nothing at the session start before, and a restored command was a body of the
+  last session. Tests: `outbox.rs`'s `every_command_kind_has_its_replay_verdicts` (one row per
+  kind), `a_never_kind_decided_while_replaying_is_counted_and_not_queued` (should_panic in a debug
+  build; `cargo test --release -p rtsim-ships a_never_kind_decided_while_replaying_is_counted_and_not_queued`
+  runs the counting arm), and tests/replay.rs's
+  `a_command_queued_in_the_pages_is_dropped_at_the_replay_start` and
+  `a_kept_ships_next_leg_while_replaying_drops_its_commands` (a kept ship's NextLeg while replaying
+  drops one Timetable and one SetCargo each, `dropped` equals the legs, the voyage's times are
+  those of the control).
+- **RP-91** (`begin_replay(from_pages)` and `replay_done(&mut World)`; §5.1, §5.6; RP-5):
+  `Ships::session_start()` is split. `begin_replay` changes no body (what the pages hold embodied
+  stays embodied, at its epoch, so the journal's damage, loss and loot of that body count against
+  it), applies the queued verdicts and gates every push. `replay_done` is a no-op unless a replay
+  runs; then it makes every ship abstract and clears `seen_by`, cancels every player's interest
+  leg (a no-op under the native link, which keeps none), folds the floors (RP-92), and lays up a
+  ship that was kept sailing only because it was in view (`lay_up_if_waiting`). The engine's own
+  tests choose: the `session_start()` calls in port_raids, lifecycle, blockade and paged (nine
+  lines) are `begin_replay(true); replay_done(&mut world)`.
+  Tests: tests/replay.rs's `no_ship_embodies_while_the_replay_runs` (a player at a dock for days,
+  with a no-replay control that embodies; `deferred` above 0, `never` 0, the ships embody again
+  after the end), tests/blockade.rs's `a_ship_kept_for_its_view_lays_up_at_the_replay_end` (control
+  without the end: embodied and not laid up), and `a_player_leaving_the_arm_ends_no_ship_body`
+  (the ships do not override `Viewer::player_left`, so the arm's leave is a no-op for them; the
+  test pins it).
+- **RP-92** (floors of ships the engine does not have yet are kept; §5.3; RP-7, RP-30; the lead's
+  lesson): the floor map (agent to the highest epoch a replayed or copied record named that the
+  ship does not hold) folds into each existing ship's epoch at `replay_done`, as conflict's does.
+  A floor for an agent whose ship the engine does not hold is kept, not cleared: the arena hands out
+  indices in order and never reuses one, so a port or haven that joins after the replay, or the
+  network the host builds after it, gives that agent its ship later, and its first body must be above
+  every epoch the journal named. The option not taken is conflict's clear-all. The map is in memory
+  and a restart rebuilds it from the records it replays. Test: tests/replay.rs's
+  `a_floor_for_a_ship_not_yet_allocated_survives_the_replay_end` (a Damaged of epoch 6 for the
+  ship the network's first service will get, the replay end, then the build: first epoch 7;
+  control without the record: 1).
+- **RP-93** (the honour only on ships that existed at `begin_replay`; §5.2; RP-6, RP-22, RP-31; the
+  lead's lesson): a replayed SHIP_MATERIALIZED sets the ship's epoch and embodied only when the
+  engine came from its pages, the ship's handle index is below the arena's next index as
+  `begin_replay` saw it (`replay_next`), the ship is active and the record's epoch is above the
+  ship's. Any other one (a copy, a fresh engine, a ship the replay allocated) only raises the
+  floor. The reason is that the host builds the network while replaying: a replayed window that
+  crosses the build, or a PORT_FOUND or HAVEN_FOUND, allocates ships the live run may have
+  allocated in another order, and an honour on that index would embody the wrong ship. The first
+  round accepted the op-id kinds (SHIP_SUNK, SHIP_CAPTURED, CARGO_LOOTED, by `ship_of_op`) as a
+  narrow exposure and missed SHIP_FIGHT, which finds both its ships by bare handle. The review
+  showed the exposure is not narrow, and RP-120 closes it: the bound binds every by-agent lookup,
+  not the honour alone. Test: tests/replay.rs's
+  `the_honour_lands_on_a_ship_the_pages_held_not_one_the_replay_allocated` (control: the pirate
+  the pages held is honoured).
+- **RP-94** (nothing embodies while replaying; §6): `seen`, the `Ev::SeenPirate` arm,
+  `materialize_timetabled` and `materialize_pirate` return at their top while replaying through
+  `Outbox::defer`, which counts it (`deferred`). The two `materialize_*` are backstops behind
+  `seen` and `SeenPirate`. Failing without them: removing all four is caught
+  by tests/replay.rs's `no_ship_embodies_while_the_replay_runs` and
+  `a_kept_ships_next_leg_while_replaying_drops_its_commands` (the table at the end of the section).
+  The host level is a guard only: rtsim-jni `no_ship_is_materialized_while_a_long_replay_runs`
+  passes on the base too, because the ships have no player until the replay ends
+  (`shared::simulate` routes none while replaying, RP-11), so no sighting reaches them through the
+  host. It stands a player at a lane at the save, journals 8,000 fillers over ten minutes of game
+  time on a `wire::MIN_CAPACITY` engine, checks every idle of the replay for a ship command, and
+  then sees the lane's ships materialize after the end.
+- **RP-95** (the pirate coast raid, and the blind watcher; §6.1): the answer to the brief's
+  question is that `coast_raid` is skipped whole while replaying (`defer()` at its top, counted as
+  deferred), not gated branch by branch. It is skipped, not held: nothing retries it. Its three branches book against state that the replay
+  has not reached or settled: a player's district by the coast and a player's booked leg crossing
+  the lane go through the industry threat interface, and industry is not held during the replay
+  (it runs to the hand-over's time), so the raid would book at industry's present, not the
+  replayed past; the port village's raid asks a watcher that no replayed record settles. The hunt
+  goes on without its raid, and a raid decided after the last save is lost with the session that
+  took it, never made twice or made worse (§10's lose rather than repeat). What that costs, the
+  residual: a raid the live run would have booked in the replayed window never happens in the
+  replay, and since the roll is keyed by the ship's plan (the hunt's), the hunt that skipped it does
+  not roll again after the replay end. The books stay consistent (nothing is half booked, and
+  what the live raid did to industry is in industry's pages or lost with the session), and the
+  count of coast raids is lower than the live run's by the window's.
+  The option not taken: run the village branch and hold the other two; it needs a watcher the
+  replay cannot give. `point_in_view` and `relaunch_in_view` answer true while replaying (every dock is
+  watched), because no player is routed to the ships until the replay end (RP-11) and the questions
+  would otherwise be answered "nobody watches" about a window in which somebody did. The four
+  decisions that ask, and what each really does: a direct `port_raid` returns, and is not made; a
+  shut haven's refound (`try_refound`) reschedules itself at + `refound.base_days` and bumps the
+  haven's epoch (so the stale event is dropped), as a watched site's does; a navy's assault
+  (`dock_in_view`) skips the haven this pass and waits for its next period; a Lost slot's relaunch
+  (`relaunch`) is put off to the slot's next stay at its home dock and counted in
+  `relaunches_put_off`. The first round's wording said each "waits for the players routed after the
+  replay end", which is not what the code does: none of the three is held until the end, each looks
+  again at its own next time, and the first look after the end is judged by the players routed
+  by then. So the cost of the answer is a delay, never a decision made twice or against a present
+  the replay has not reached. Tests: tests/replay.rs's `a_coast_raid_decided_while_replaying_is_deferred` (seeds 1 to
+  6, 120 days over `sea_havens`; control without a replay raids; with the replay the raid books
+  none and `deferred` counts it while the hunts go on), and blockade.rs's in-crate
+  `a_replaying_engine_takes_every_dock_as_watched` (the two predicates answer true while
+  replaying with no area, false before `begin_replay` and after `replay_done`; added after the
+  mutation run showed no test caught the blind answers). The decisions' own behaviour under the
+  blind answer is pinned by that predicate and by the coast-raid test (the raid), not by a test
+  per decision: a refound, an assault and a relaunch put off while replaying are untested
+  directly.
+- **RP-96** (a test's ship command waits for the replay end; §3.6, §4.4; RP-33, RP-66): rtsim-jni's
+  `order_command` puts a TEST order's command straight into the host's queue, around the gate,
+  so a SHIP_MATERIALIZE (a "never" kind) could be written while the replay runs.
+  `waits_for_the_replay_end` now holds `Order::ShipCommand` with the units that run the clock and
+  `Order::ConflictCommand`, and every unit after it, in order. The audit of every path that hands the
+  ships engine a command or a decision, each with its verdict:
+
+  | Path | Verdict |
+  | --- | --- |
+  | The engine's own events (`run_until`, from `shared::run_to` and from each ingest) | commands through the gate; decisions that embody return early (RP-94) |
+  | `Ships::ingest` of a journaled record (`journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57), before the module's switch and the engine's own replay flag are asked (RP-122) |
+  | A copy (REASSERT) | `ingest_copy`: the floor only (RP-97) |
+| `ships::simulate`'s network build, and `add_port`, `add_haven`, `add_navy`, `connect` from journaled PORT_FOUND and HAVEN_FOUND | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 and RP-120 |
+  | `reject` (the host's own SPAWN_REJECTED for a command it cannot write) | only after a queued Materialize, which the gate never lets through while replaying |
+  | `Order::ShipCommand` | held (this record) |
+  | `Order::Phase1Advance` and the other orders that run the clock | held by slice D (RP-74), and not in S's `waits_for_the_replay_end`; the merge takes the union |
+  | `lift_closures` (a switch-off) | unchanged: it queues no command |
+  | `with_ships_mut` | a test accessor, not a route in the game |
+  | `Viewer::player_left` | not overridden for ships: the arm's leave is a no-op for them |
+  | Sightings (`shared::simulate`) | wait for the replay end (§6, RP-11) |
+
+  `Order::DragonCommand` and `Order::HerdCommand` are the same kind of route; slices D and H hold
+  them (the merge takes the union in `waits_for_the_replay_end`). Failing first, rtsim-jni
+  `a_ship_command_ordered_while_replaying_waits_for_the_replay_end` (about 8,000 fillers on a
+  `wire::MIN_CAPACITY` engine, a SHIP_DESPAWN ordered while the replay runs): "not written while
+  the replay runs" on the base; after, it is written once the replay ended. Control
+  `a_ship_command_ordered_without_a_replay_is_written_at_once` passes on both.
+- **RP-97** (a copy is applied by identity; §2.3, §5.7, RP-8, RP-9): rtsim-jni's ships `ingest`
+  calls `Ships::ingest_copy` when `st.applying_copy` is set (the journaled dispatch of a REASSERT),
+  else `Ships::ingest`. A copy names a body that is gone, so it embodies nothing: every copy raises
+  the floor (RP-57) and does nothing more, whatever its kind. The first round ran every kind but
+  SHIP_MATERIALIZED through `ingest` as a live record, by the ship's epoch as held or by op id;
+  the review showed that a copy's handle may name another ship than the earlier session's (a ship
+  allocated since), and that a post-replay copy of a sinking or of damage was then booked to it.
+  **Fork, taken as the brief wrote it:** `ingest_copy` folds and returns for every kind. The
+  option not taken (D's: during the replay a copy of a ship the pages hold is still ingested
+  through the bounded lookups, and only a copy past the bound or after the replay folds only)
+  would have kept a copy of an op-id kind such as SHIP_SUNK. It is lost instead, rather than
+  repeated (§10): the copy is only the holder's second telling of a record whose original the
+  crash may or may not have kept. Without the routing a copy goes through `ingest` and is honoured
+  like the session's own record. The host's HAVEN_FOUND arm joined the haven's node to the world
+  before it called `ingest_copy`, for a copy too; it joins nothing for one now (the re-check's
+  P3.4), since a node no haven of the engine stands behind is a market with no pirates
+  (`a_copy_of_a_haven_found_joins_no_node_to_the_world`, control: the session's own record
+  joins). Tests: rtsim-jni
+  `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor` (mid-replay the ship is not
+  embodied and keeps its epoch; at the end the floor has folded, and the next body is above it)
+  against the control `a_replayed_materialization_is_honoured_on_the_pages_ship` (mid-replay
+  embodied at the record's epoch). On the base the control fails at "mid-replay: embodied at the
+  record's epoch" (left (false, 0), right (true, 5)) and the copy test at "the replay end folds the
+  floor" (left (false, 0), right (false, 5)). The routing itself cannot fail on the base, which
+  honours nothing; the mutation list (RP-99) proves it. The engine-level
+  `a_copy_of_a_materialization_embodies_nothing` is the same at the engine.
+- **RP-98** (the host's link; §3.2, §4.3): rtsim-jni `engine/ships.rs`: `Link` carries
+  `from_pages` (set by `load`; RP-31), `replay_end_due` and `never_logged`. `session_start` takes the
+  session's bound (`begin_session`, RP-120); `reset_if_due` calls
+  `begin_replay(from_pages)`; `replay_end` calls `replay_done`, takes the commands, and logs
+  "ships: N commands dropped while replaying, N of a kind that embodies (a bug), N decisions that
+  embody or book a raid deferred". `take_commands` logs a rising "never" count at once, as an
+  error. `Engine::ship_gate_counts()` reads the counts for the tests. A switch-on mid-session
+  runs the end at once. Left alone: `engine/shared.rs` (`with_viewers_of`, `session_start`,
+  and its comment that the ships' "bodies end at the arm", which is stale: they end at the replay
+  end), which slices D and H also edit.
+- **RP-99** (the RP-57 list for ships; §5.3; RP-37; the lead's lesson on epoch increments): every
+  ships kind that names an epoch raises the floor, whatever the record does after, before the op-id
+  dedupe and any check that drops it: while replaying `Ships::ingest` folds first, and
+  `ingest_copy` folds every copy, live or replayed. `Obs::ship_epoch` is an exhaustive match, so a
+  new kind does not compile until it says. Every ships kind:
+
+  | Kind | Epoch | Reaches the floor |
+  | --- | --- | --- |
+  | 0x0070 SHIP_STATE | the ship's | Latest-wins and not journaled, so a replay does not carry it; its `ingest` arm does nothing, and the fold covers it should one arrive |
+  | 0x0600 SHIP_MATERIALIZED | the ship's | `ingest`'s fold, then the honour (RP-93) or not; a copy, `ingest_copy`'s |
+  | 0x0601 SHIP_SPAWN_REJECTED | the ship's | `ingest`'s fold, held or not; a copy, `ingest_copy`'s |
+  | 0x0602 SHIP_DEMATERIALIZED | the ship's | `ingest`'s fold, a stale epoch too; a copy, `ingest_copy`'s |
+  | 0x0603 SHIP_DAMAGED | the ship's | `ingest`'s fold; a copy, `ingest_copy`'s |
+  | 0x0604 SHIP_SUNK | the ship's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+  | 0x0605 SHIP_BOARDED | the ship's | `ingest`'s fold; a copy, `ingest_copy`'s |
+  | 0x0606 SHIP_CAPTURED | the ship's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+  | 0x0607 CARGO_LOOTED | the ship's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+  | 0x0608 SHIP_FIGHT, 0x0609 PORT_FOUND, 0x060A HAVEN_FOUND | none | Nothing to fold: the fight names two agents and no epoch, the port and the haven no body |
+
+  The increment is `max(epoch, floor).wrapping_add(1).max(1)` (`next_epoch`, which the two bumps in
+  blockade.rs's `lay_up_merchant` and `relaunch_laid_up` take too since the review, RP-121; the
+  first round's record said they did and they used a plain `wrapping_add(1).max(1)`): a corrupt
+  record at `u32::MAX` must not wrap to epoch 0, which the plugin reads as no body. Tests: tests/replay.rs's
+  `every_kind_that_names_an_epoch_raises_the_floor` (nine kinds on three paths: an engine from its
+  pages, a fresh engine, a live copy; the live `ingest` control raises none; the three kinds
+  without an epoch raise none), `an_ending_epoch_is_never_reused` (from the pages and fresh, with
+  the live engine's next epoch as the control: every post-replay materialization is above the
+  journal's), `a_corrupt_epoch_does_not_wrap_the_next_epoch_to_zero`, and rtsim-jni
+  `an_epoch_the_last_session_ended_is_not_reused_after_a_crash` (a merchant materialized and ended
+  after the save: on the base "the ship's next body is numbered 1, and the last session spent 1").
+  The named test, §9.5 test 1: rtsim-jni and rtsim-ships
+  `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash` (a merchant materialized after a
+  save, damaged in view, a crash): crew, hull and epoch are (3, 800, 1) in the session that went on
+  and (4, 1000, 0) after the crash on the base, where the replayed Materialized was a no-op and the
+  replayed Damaged named an epoch the ship did not hold; after the fix the replay honours it and
+  the triple is (3, 800, 1). Controls: the session that went on, and a clean stop and restart
+  (`..._after_a_clean_stop`, passing on both).
+
+- **RP-120** (every by-agent lookup is bound by the session's bound, taken once; §5.2, §10; RP-93,
+  RP-94; the review of 216e21a5, P1-1, P2.1, P2.2): the arena allocates handles in order and never
+  reuses one, and the replay allocates in its own order (the network is built inside the replayed
+  window, and ports and havens join there), so a record's agent id may name another ship than the
+  live run's. RP-93 bounded the honour (`materialized`) and nothing else; the review found the
+  other lookups open. Now one door, `named_ship`, serves them all: while the outbox replays it
+  returns a ship only if the engine came from its pages and the handle's index is below
+  `replay_next`, the arena's next index when the session began. Its callers are `ship_of` (SpawnRejected,
+  Dematerialized and Damaged, which also check the epoch; State reads no ship), `ship_of_op`
+  (SHIP_SUNK, SHIP_CAPTURED, CARGO_LOOTED), both lookups of SHIP_FIGHT, the capturing ship of a
+  By::Ship capture and loot, and `doer` (the archive row's doer of a loss). A record that names a
+  handle at or above the bound raises the floor (RP-57) and does nothing else: lost, not repeated
+  or booked to a stranger (§10). The cost is the real records for pirates that joined in the
+  replayed window (a haven found after the save): the haven was found in the replay too, the
+  pirate is in the engine, but a fight or a capture it took part in is lost.
+  The bound is taken once per session. `Ships::begin_session` sets `replay_next` from the arena;
+  `ships::session_start` calls it first, whether or not the ships run and before the module's own
+  switch logic, so nothing the replay ingests can be inside it; `begin_replay` keeps the smaller
+  of the bounds and the first call's `from_pages` while the outbox replays (a second call, from a
+  switch off and on inside the replay, widened the bound over the replay's own ships and could
+  turn a replay from the pages into one without); `replay_done` resets the bound to `u32::MAX`, so
+  a replay later in a live session (a switch-on after a switch-off) takes its own. The first
+  round took the bound inside `begin_replay` and so inside the first activating record: the
+  HAVEN_FOUND that wakes the engine put its pirates inside the bound (P2.2). Tests, all in
+  tests/replay.rs unless noted: `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle`
+  (pages predate the network build; the replay ingests four PORT_FOUND and the HAVEN_FOUND, the
+  step builds; its pirate is at handle 0, where the live run had merchant 0; a replayed SUNK and
+  CAPTURED for merchant 0 leave the pirate and the counts alone, the floor takes the epoch, on
+  the pages and without; the control, pages that hold the merchant, takes both),
+  `a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost` (the pirate joined
+  inside the window; the merchant keeps its hold; control: a pirate the pages held takes it),
+  `a_replayed_fight_between_handles_the_replay_allocated_is_lost` (control: pages hold both),
+  `a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody` (the tape row's doer is 0,
+  control: the pages' pirate is named), `an_epoch_checked_lookup_finds_only_a_ship_the_pages_held`
+  (the epoch check is no wall: `lay_up_merchant` and `relaunch_laid_up` bump a merchant the
+  replay allocated during the replay (RP-121), so a real record can name the epoch it then holds;
+  the bound is the only wall, and the test goes through the lookup with an epoch 0 report, the
+  epoch such a ship holds at allocation; control: the pages' merchant takes it),
+  `a_second_begin_replay_keeps_the_sessions_bound_and_flag` (with the control of one call),
+  `the_pirates_of_the_first_activating_haven_are_inside_no_bound`, `a_later_replay_takes_its_own_bound`
+  (an engine API guard only: the host begins one replay per session, after `begin_session` set the
+  bound anew, so the host never reaches a second replay of one engine; its control, a haven found
+  after the later `begin_replay`, is a ship the later replay allocated and takes the floor only),
+  and rtsim-jni `a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate`
+  and `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` (pages with an empty
+  ships engine, the coast found with the haven reported before the ports and after them, the
+  haven's pirate materialized at epoch 3 in a replayed window: never seen embodied, epoch 3 as the
+  floor, next 4; the control is `a_replayed_materialization_is_honoured_on_the_pages_ship`). The
+  haven-first order is the one that matters at the host: with the ports first the engine is
+  already running when the haven is found, and the bound was right even on the first round's code. Mutations of each are in the list
+  below.
+
+- **RP-121** (the blockade's bumps go through `next_epoch`, and the honour spends a floor only
+  when it reaches it; §5.3; RP-57, RP-99; review P3.2, P3.3): `lay_up_merchant` and
+  `relaunch_laid_up` took `epoch.wrapping_add(1).max(1)` of the ship's own epoch, ignoring a floor
+  a replayed record had raised above it; they now take `next_epoch(s)` and spend the floor.
+  `set_epoch` (the honour's and the blockade's) removes the agent's floor only when the floor is
+  at or below the epoch it sets: a floor above it names a body that really lived, and removing
+  it would let the next materialization reuse the number. Tests: the in-crate
+  `a_blockade_bump_goes_above_the_epochs_a_replayed_record_named` (floor 7 gives a laid-up epoch
+  of 8 and spends the floor, the relaunch is above the folded top; control: no floor, plain +1)
+  and `the_honour_spends_only_a_floor_it_reaches` (a floor of 9 survives an honour at epoch 3, so
+  the next body is 10; a floor of 2 is spent, the next is 4).
+  **Residual, recorded and not closed (the re-check's P3.5):** the replay's own clock can lay a
+  ship up (epoch E+1) or relaunch it (E+2) before the replayed record that names that epoch is
+  read. The record's floor is then not kept, the ship already holding the epoch, and a record
+  naming E+2 that arrives after the relaunch (a live SHIP_DAMAGED for the last session's body of
+  that number) passes `ship_of`'s epoch check on the abstract slot and is booked to it. It was
+  possible before this round (the plain +1 had it), it involves one agent's own epochs only (no
+  stranger's ship is booked), and the number is not reused for a body: the next one is above both.
+
+- **RP-122** (the fold comes before every drop, and is keyed on the session's replay; §5.3, §9.5;
+  RP-57; review P2.2, P2.3, P2.4): rtsim-jni `journaled` and `observe_state` decode the record and
+  fold its epoch before they ask whether the module is on, and `fold_epoch` asks `st.replaying`
+  or a copy being applied, not the engine's own replay flag (which is not set until the ships
+  run, and which a module that stays off never sets). So an epoch named while the ships were
+  switched off, or before they had a dock or a haven, is not lost: the first round dropped such
+  records before the fold, and the next materialization of the ship reused the number the
+  journal had spent. `ingest_copy` folds and returns for every kind (RP-97). Tests: rtsim-jni
+  `an_epoch_named_while_the_ships_were_off_is_not_reused_once_they_are_on` (a body ended after
+  the save, the crash, the next session starts with the ships off and switches them on after the
+  replay end; control: ships on through the replay), `an_epoch_named_before_the_ships_had_a_dock_is_not_reused`
+  (the record is journaled before any dock; control: the coast on the pages),
+  `an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused` (the same for a SHIP_STATE
+  that the plugin's second hand-over carries into a replay of several; control: ships on), and
+  tests/replay.rs's
+  `a_copy_after_the_replay_end_only_moves_the_floor` (a post-replay copy of a Sunk or a Damaged
+  moves the floor and no ship).
+
+What was run, and what each test did on the base (f2cf3d69). The host-level tests build on the base
+once the new engine calls are stubbed; where they fail there, the value is quoted. The
+engine-level tests need the new API and cannot be built on the base, so their proof is a
+mutation of the fix, run on a scratch copy (each mutation applied alone; every one is caught by
+at least the test named):
+
+| Mutation | Caught by |
+| --- | --- |
+| the early returns of `seen`, `SeenPirate` and both `materialize_*` removed | `no_ship_embodies_while_the_replay_runs`, `a_kept_ships_next_leg_while_replaying_drops_its_commands` |
+| `coast_raid` not deferred | `a_coast_raid_decided_while_replaying_is_deferred` |
+| the honour without the `replay_next` guard | `the_honour_lands_on_a_ship_the_pages_held_not_one_the_replay_allocated` |
+| floors of absent ships dropped at the replay end | `a_floor_for_a_ship_not_yet_allocated_survives_the_replay_end` |
+| `next_epoch` wraps to 0 | `a_corrupt_epoch_does_not_wrap_the_next_epoch_to_zero` |
+| no lay-up at the replay end | `a_ship_kept_for_its_view_lays_up_at_the_replay_end` |
+| SetCargo sent while replaying | five tests, among them `a_kept_ships_next_leg_while_replaying_drops_its_commands` and `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash` |
+| a queued Materialize kept at the replay start | `a_command_queued_in_the_pages_is_dropped_at_the_replay_start` |
+| `point_in_view` not blind; `relaunch_in_view` not blind | none at first; now `a_replaying_engine_takes_every_dock_as_watched` |
+| `ingest` does not fold the floor while replaying | five tests, among them `every_kind_that_names_an_epoch_raises_the_floor` |
+| `ingest_copy` does not fold the floor | `a_copy_of_a_materialization_embodies_nothing`, `every_kind_that_names_an_epoch_raises_the_floor` |
+| a copy applied as a live record (rtsim-jni) | `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor` |
+| a test's ship command not held (rtsim-jni) | `a_ship_command_ordered_while_replaying_waits_for_the_replay_end` |
+
+The review's fixes round (RP-120 to RP-122) added these, each applied alone to a scratch copy of the
+committed tree, one driver at a time. Each line gives the tests that fail and the first failing
+assertion of the one named, which is the before value of its fail-first (the engine-level tests
+cannot be built on f2cf3d69, which has none of the calls, so a mutation of the fix is their
+before; the host-level tests quote the same mutations):
+
+| Mutation | Caught by, first failing assertion |
+| --- | --- |
+| `named_ship` without its bound (every by-agent lookup open) | nine tests, among them `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle` ("sunk, pages true: the pirate is not the merchant") |
+| `ship_of_op` unbounded | `a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle` (the same message) |
+| `ship_of` unbounded | `an_epoch_checked_lookup_finds_only_a_ship_the_pages_held` ((hull, crew) (100, 5) against (1000, 6)); none before the test's epoch-0 record: the epoch check is no wall (the blockade bumps a replay-allocated merchant), but the first round's records named epoch 1 on a ship at epoch 0 |
+| the capturing ship's lookups unbounded | `a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost` ("captured: the merchant stays") |
+| Fight's lookups unbounded | `a_replayed_fight_between_handles_the_replay_allocated_is_lost` (fights observed 1 against 0) |
+| `doer` unbounded | `a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody` (the row's doer [4294967308] against [0]); none before the test |
+| `begin_replay` takes the bound at each call | `a_second_begin_replay_keeps_the_sessions_bound_and_flag`, `the_pirates_of_the_first_activating_haven_are_inside_no_bound` ("not honoured" and the pirate embodied) |
+| `begin_replay` overwrites `from_pages` | `a_second_begin_replay_keeps_the_sessions_bound_and_flag` |
+| `begin_session` does nothing | `the_pirates_of_the_first_activating_haven_are_inside_no_bound`, and rtsim-jni `a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate` and `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` ("haven first true: the replay's pirate was embodied by a record that named a live ship"). With the ports first the host ran no differently, since the engine is running before the haven: the tests take both orders |
+| `ships::session_start` does not call it (rtsim-jni) | the two host tests above, the same message |
+| `ingest_copy` ingests as well | `a_copy_after_the_replay_end_only_moves_the_floor` (the merchant sunk by a post-replay copy), `a_copy_of_a_materialization_embodies_nothing` |
+| `set_epoch` spends any floor | `the_honour_spends_only_a_floor_it_reaches` (floor 9: next 4 against 10) |
+| the blockade bumps a plain +1 | `a_blockade_bump_goes_above_the_epochs_a_replayed_record_named` (above the floor of 7: 1 against 8) |
+| `replay_done` keeps the bound | `a_later_replay_takes_its_own_bound` ("joined before the later replay") |
+| `begin_replay` sets the bound wide (`u32::MAX`) | `a_later_replay_takes_its_own_bound`, its control ("joined during the later replay: the honour covers the ships the later replay began with, not the ones it allocates") |
+| the bound widens only on a second call (`begin_replay` takes `meta().1` outright while the outbox replays, else the `min`) | rtsim-jni `a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour` ("haven first true: the replay's pirate was embodied by a record that named a live ship") and the engine's `a_second_begin_replay_keeps_the_sessions_bound_and_flag`; the first-activating-haven host test passes under it, so the host switch test is the one that pins it at the host (rtsim-jni 13 pass, 1 fails; rtsim-ships replay 22 pass, 1 fails) |
+| a copied HAVEN_FOUND joins its node (the `applying_copy` guard removed, rtsim-jni) | `a_copy_of_a_haven_found_joins_no_node_to_the_world` ("copy true: the haven node is in the world only when the record was the session's", left true, right false); its control, the session's own record, joins it |
+| `journaled` folds after the switch check (rtsim-jni) | `an_epoch_named_before_the_ships_had_a_dock_is_not_reused` (1 against 8) and `an_epoch_named_while_the_ships_were_off_is_not_reused_once_they_are_on` ("ships off true: the next body is numbered 1, and the last session spent 1") |
+| `observe_state` does not fold (rtsim-jni) | `an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused` ("ships off true: the next body is numbered 2, and the state record spent 6"); none before the test |
+| the fold keyed on the engine's replay flag (rtsim-jni) | the three tests above |
+
+
+Two mutation runs were wasted and are worth knowing. Once two copies of the driver ran on the same
+scratch tree (a relaunch while the first still lived), and each saw the other's half-applied
+mutation: "did not apply" for a mutation that applies, and a link error. Check `pgrep` for the
+driver before a relaunch, and read a "did not apply" or a link error as a collision before as a
+bug. The second: a host test that passes under the mutation it should catch is a test that does
+not reach the line: the first draft of the first-activating-haven host test passed with
+`begin_session` removed, because the coast it used reports its ports first (the engine runs
+before the haven's record, so the bound is right on either code), and the first draft of the
+state-record test saw its record before the session's SESSION_START and with an empty replay.
+Both were found by running the mutation, and both are fixed by their tests.
+
+One mutation run was wasted and is worth knowing: the scratch copy was cut from a commit older than
+the floor test, so the first run of the "floors dropped" mutation printed "0 failed". A mutation
+that no test catches proves nothing until the copy is checked to hold the test.
+
+On the base, the host tests give: `damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash`
+fails ((4, 1000, 0) against (3, 800, 1): the replayed Materialized was a no-op and the replayed
+Damaged named an epoch the ship did not hold, so the dead sailor and the hull came back);
+`an_epoch_the_last_session_ended_is_not_reused_after_a_crash` fails ("the ship's next body is
+numbered 1, and the last session spent 1"); `a_ship_command_ordered_while_replaying_waits_for_the_replay_end`
+fails ("not written while the replay runs"); `a_replayed_materialization_is_honoured_on_the_pages_ship`
+fails ((false, 0) against (true, 5)); `a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor`
+fails ((false, 0) against (false, 5)). The controls pass on both:
+`damage_to_a_ship_seen_after_a_save_is_counted_after_a_clean_stop` and
+`a_ship_command_ordered_without_a_replay_is_written_at_once`. `no_ship_is_materialized_while_a_long_replay_runs`
+passes on both and is kept as a regression guard (RP-94).
+
+Known limits and traps, recorded where they bind: the op-id kinds' exposure (RP-93); the three
+untested decisions under the blind watcher (RP-95); `leave_area` is a no-op for the ships (the
+guard test `a_player_leaving_the_arm_ends_no_ship_body`, RP-91); the relaunch path's watcher under a
+real replay is pinned by its predicate only (RP-95). A test that registers a player during a replay
+cannot be written through the host, because `shared::simulate` routes no player while replaying
+(RP-11), so the host-level quiet test cannot fail on the base; the engine-level one can.
+
+The sims: `rtsim-cli sim ships` (seed 7, 12 days, 192 persist days) on this branch is identical,
+ignoring `wall_ms`, to the same command on the base code, so the ships' unreplayed behaviour is
+unchanged. The checked-in `scenario/results/sim-ships.json` is stale against the base code (it
+predates the blockade stats) and was left alone; the conflict, dragons, herds, mowzie and phase1
+sims do not run the ships engine. The full `cargo test --workspace --no-fail-fast` passed except two
+timing tests that failed under a machine load of about 98 and passed on rerun (rtsim-jni's
+`tap` test `a_commit_at_a_step_the_tap_stood_down_carries_the_states_time` and rtsim-host's `tap`
+`a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one`); a third,
+`the_server_threads_hand_over_keeps_its_timing_class`, failed in three of five reruns at load about
+40 and passed four of four at load about 8 on this branch (and four of four on the base at load
+about 20). None touches the ships (the host calls no replay API of the ships).
+
+The fixes round's runs: `cargo test --workspace --no-fail-fast` passed except rtsim-cli's `view`
+test `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap` (the
+district card carried a `note` under a machine load with the mutation driver running; it passed
+alone at once, and it touches no ships); the full `cargo test -p rtsim-ships -p rtsim-jni
+--no-fail-fast` passed on the final tree (the workspace run was before the renumbering of the
+records and the two host tests of the end of the round, which change no source line), and
+`cargo clippy -p rtsim-ships -p rtsim-jni --all-targets -- -D warnings` is clean. The sims were not
+run again: the round changes no line an unreplayed run reaches but the blockade's bump, which is
+`next_epoch` (the same number with no floor) and `named_ship`, which answers its handle when the
+outbox is not replaying.
+
+Forks taken in the review's fixes round (each can be undone; the lead decides whether to keep it):
+
+- **Copies fold only, for every kind (RP-97).** The brief said so, and the code does it. D's
+  precedent differs: during the replay a copy of a ship the pages hold is still ingested through
+  the bounded lookups, and only a copy of a ship past the bound, or after the replay end, folds
+  alone. D's way keeps a copy of an op-id kind (SHIP_SUNK, SHIP_CAPTURED, CARGO_LOOTED); here such
+  a copy is lost, which is §10's lose rather than repeat (the copy is the holder's second telling
+  of a record whose original the crash may or may not have kept). Changing it is one arm of
+  `ingest_copy` and the test `a_copy_after_the_replay_end_only_moves_the_floor`.
+- **`begin_session` is called unconditionally at `ships::session_start`.** The brief asked for the
+  bound "whether or not ships run" and "whenever ships are enabled"; both are covered by taking it
+  before the module's own logic. A session that runs the ships later (a switch-on) has the bound
+  from the session start, which is the pages' ships.
+- **The reset of the bound at `replay_done` is kept** (`replay_next = u32::MAX`), though no
+  replayed record can name a ship after the end: a later replay of the same engine (a switch-on
+  after a switch-off, in a live session) takes its own bound with it
+  (`a_later_replay_takes_its_own_bound`). It is hygiene, and costs one assignment.
+- **The tests for a live capturer past the bound build the scenario directly** (a haven that
+  joins inside the replayed window, its pirate past the pages' ships): realistic orderings rarely
+  map the replay's pirate onto a live capturer's handle, so a replay of a real journal would not
+  reach the line. The tests say so in their docs.
+- **`ship_of`'s bound is the only wall** (the re-check's P3.2; the first round called it a second
+  wall behind the epoch check, which was wrong): a ship the replay allocated is not at epoch 0
+  until the replay ends, since `lay_up_merchant` and `relaunch_laid_up` bump a replay-allocated
+  merchant during the replay (RP-121), and a real record can name the epoch it then holds. The test
+  goes through the lookup with an epoch 0 report, the epoch such a ship holds at allocation, as
+  the one record it can build without the blockade; a record of epoch 0 is not one the plugin
+  writes.
+- **`coast_raid` is skipped, not held** (P3.5): the raid decided in the replayed window never
+  happens in the replay, and nothing retries it (RP-95 has the residual).
+
+Merge notes for the integration (S lands after slice H and before D; the merge of origin/main
+8bfd5742 into S is ef7403e5):
+
+- S's `Order::ShipCommand` is in the union `matches!` of `waits_for_the_replay_end` (rtsim-jni
+  engine.rs ~618) and in the comment at the SESSION_START hand-over (~1399) that names the held
+  orders. `write_order`'s list (~2538) already names it. D adds its own orders to the union at its
+  merge; the audit table says the clock orders are held by D (RP-74), and S adds no clock order of
+  its own.
+- `ships::session_start` stays before `shared::session_start` in the SESSION_START arm (engine.rs
+  ~1638): the ships take their bound (`begin_session`) from the pages before anything shared reads
+  or ingests, and nothing in the order between them replays.
+- H's `Hear` and `session_start` comments (rtsim-jni shared.rs) said the ships have a
+  `player_left` override. They do not: the `Viewer` impl for `Ships` (engine.rs ~6302) overrides
+  only `owns`, `area_booked` and `crossings`, and `Ships::player_left` is an inherent method that
+  no host code calls on a leave (RP-91's guard test `a_player_leaving_the_arm_ends_no_ship_body`
+  pins it). The merge corrected both: the arm's leave does nothing to the ships, whose bodies end
+  at the replay end.
+- RP-57's table in this file had one row for "Dragons, ships"; the merge split it as H split the
+  herds' (a dragons row, still without a floor until D, and a ships row pointing at RP-99, RP-97
+  and RP-120 to RP-122).

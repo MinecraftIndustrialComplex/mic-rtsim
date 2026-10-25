@@ -361,6 +361,12 @@ public final class ConflictBridge implements SessionPlugin {
         final double lat, back;
         UUID uuid;
         Mob entity;
+        /**
+         * The entities that came with its body (a raptor's pack, MZB-428): tagged and held by the bridge, kept
+         * in {@link ConflictBridge#extraOf} so that they may join, and gone with the slot's despawn or the
+         * party's end. They book nothing and are never saved.
+         */
+        List<Mob> extras = List.of();
         /** Whether the body was persistence-required before the bridge made it so (a take gives that back). */
         boolean ownPersistence;
         /** The chunk its place was in when its pending stack was last watched ({@link #NO_CHUNK}: none). */
@@ -444,6 +450,11 @@ public final class ConflictBridge implements SessionPlugin {
             return entity;
         }
 
+        /** The entities that came with its body (GameTests): a raptor's followers; empty for any other. */
+        public List<Mob> extras() {
+            return extras;
+        }
+
         public boolean alive() {
             return alive;
         }
@@ -491,7 +502,15 @@ public final class ConflictBridge implements SessionPlugin {
     private RtsimSession session;
     private final Map<Long, Party> byAgent = new LinkedHashMap<>();
     private final Map<UUID, Slot> byUuid = new HashMap<>();
+    /** The slot each extra entity came with (MZB-428), so that it may join the level. */
+    private final Map<UUID, Slot> extraOf = new HashMap<>();
     private final Territories territories = new Territories();
+    /**
+     * The camp kin whose killing signal was counted in the tick {@link #killedAt}, by UUID (P2-6): the jar's Umvuthi
+     * posts LivingDeathEvent twice for one death, and one kill is one signal. Reset when the tick moves on.
+     */
+    private final Set<UUID> killedThisTick = new HashSet<>();
+    private long killedAt = Long.MIN_VALUE;
     /** Kept across sessions: a plugin reports a camp when it finds it. Cleared when the server stops. */
     private final Map<Long, Camp> camps = new HashMap<>();
     private final Map<NoticeKey, Notice> notices = new LinkedHashMap<>();
@@ -501,6 +520,8 @@ public final class ConflictBridge implements SessionPlugin {
     private boolean held;
     /** The camp reconciler (M5): the camps plugins declare, their censuses and reconciles. */
     private final Camps reconciler = new Camps(this);
+    /** The animals raids on unwatched districts owe (M9c): held until their district loads. */
+    private final OwedHunts owedHunts = new OwedHunts();
     /**
      * M8 (MZB-359): the lurk table, by agent (never by epoch), in the order the engine said them. Per session: it
      * is empty at a session's start and end, and the engine says each lurk once more after a start (MZB-353).
@@ -529,6 +550,11 @@ public final class ConflictBridge implements SessionPlugin {
         return reconciler;
     }
 
+    /** The owed hunts (GameTests). */
+    public OwedHunts owedHunts() {
+        return owedHunts;
+    }
+
     // ---- SessionPlugin: lifecycle ---------------------------------------------------------------
 
     @Override
@@ -543,6 +569,7 @@ public final class ConflictBridge implements SessionPlugin {
         session = s;
         byAgent.clear();
         byUuid.clear();
+        extraOf.clear();
         territories.clear();
         notices.clear();
         signals.clear();
@@ -554,6 +581,7 @@ public final class ConflictBridge implements SessionPlugin {
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
         lastSettled = 0;
+        owedHunts.clear();
         clearLurks();
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
@@ -581,9 +609,11 @@ public final class ConflictBridge implements SessionPlugin {
             discardAll(p);
         byAgent.clear();
         byUuid.clear();
+        extraOf.clear();
         watches.clear();
         signals.clear();
         notices.clear();
+        owedHunts.clear();
         clearLurks();
         reconciler.sessionFailed();
     }
@@ -595,8 +625,10 @@ public final class ConflictBridge implements SessionPlugin {
     void serverStopped() {
         camps.clear();
         reconciler.clear();
+        owedHunts.clear();
         byAgent.clear();
         byUuid.clear();
+        extraOf.clear();
         territories.clear();
         notices.clear();
         signals.clear();
@@ -634,7 +666,12 @@ public final class ConflictBridge implements SessionPlugin {
         if (s != session)
             return false;
         Slot sl = byUuid.get(e.getUUID());
-        return sl != null && sl.entity == e && sl.alive && sl.stack.party.agent == tag.agent()
+        if (sl != null)
+            return sl.entity == e && sl.alive && sl.stack.party.agent == tag.agent()
+                    && sl.stack.party.epoch == tag.epoch() && byAgent.get(tag.agent()) == sl.stack.party;
+        // A body's extra (a raptor's follower, MZB-428): the exact object the bridge made for a live party's slot.
+        sl = extraOf.get(e.getUUID());
+        return sl != null && sl.extras.contains(e) && sl.stack.party.agent == tag.agent()
                 && sl.stack.party.epoch == tag.epoch() && byAgent.get(tag.agent()) == sl.stack.party;
     }
 
@@ -708,6 +745,14 @@ public final class ConflictBridge implements SessionPlugin {
             case ConflictRecords.CAMP_RECONCILE -> {
                 if (RtsimConfig.on(Module.CONFLICT))
                     reconciler.reconcile(b, at, size, aux, names, now);
+            }
+            case ConflictRecords.CHIEF_BODY -> {
+                if (RtsimConfig.on(Module.CONFLICT))
+                    reconciler.chiefBody(b, at, size, aux);
+            }
+            case ConflictRecords.OWED_HUNT -> {
+                if (RtsimConfig.on(Module.CONFLICT))
+                    owedHunts.owed(b, at, names);
             }
             default -> unknownCommands++; // a later slice's command (MOWZIE.md §9): nothing here plays it
         }
@@ -1183,6 +1228,8 @@ public final class ConflictBridge implements SessionPlugin {
         float yaw = (float) (Mth.atan2(st.hz, st.hx) * (180.0 / Math.PI)) - 90.0f;
         List<Mob> made = new ArrayList<>();
         Map<Slot, Vec3> holds = new HashMap<>();
+        // What came with each body (a raptor's pack, MZB-428), in the order of todo.
+        List<List<Mob>> madeExtras = new ArrayList<>();
         // A camp body this party set out with in this hand-over is handed to its puppet where it stands (§4.9).
         List<Camps.SetOut> handOffs = new ArrayList<>();
         Lurk lk = lurks.get(p.agent);
@@ -1198,6 +1245,9 @@ public final class ConflictBridge implements SessionPlugin {
                 lurksRefused++;
                 for (Mob q2 : made)
                     q2.discard();
+                for (List<Mob> xs : madeExtras) // and what came with them (a raptor's pack, MZB-428)
+                    for (Mob q2 : xs)
+                        q2.discard();
                 for (Camps.SetOut h : handOffs)
                     reconciler.unclaim(h);
                 return false;
@@ -1227,8 +1277,10 @@ public final class ConflictBridge implements SessionPlugin {
                 y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
             }
             Mob m;
+            List<Mob> extras = new ArrayList<>();
             try {
-                m = ConflictBodies.create(level, sl.type, x, y, z, yw);
+                ConflictBodies.Maker maker = ConflictBodies.maker(sl.body);
+                m = maker != null ? maker.make(level, x, y, z, yw, extras) : ConflictBodies.create(level, sl.type, x, y, z, yw);
                 // A bare unit's body is made without its crystal, then a camp body's own state is copied over it.
                 if (m != null && sl.bare)
                     BodyKinds.makeBare(sl.body, m);
@@ -1243,13 +1295,23 @@ public final class ConflictBridge implements SessionPlugin {
             if (m == null) {
                 for (Mob q : made)
                     q.discard();
+                for (List<Mob> xs : madeExtras)
+                    for (Mob q : xs)
+                        q.discard();
+                for (Mob q : extras)
+                    q.discard();
                 for (Camps.SetOut h : handOffs)
                     reconciler.unclaim(h);
                 return false;
             }
             m.setData(RtsimAttachments.AGENT, tag);
             sl.ownPersistence = ConflictBodies.hold(m);
+            for (Mob x2 : extras) {
+                x2.setData(RtsimAttachments.AGENT, tag);
+                ConflictBodies.hold(x2);
+            }
             made.add(m);
+            madeExtras.add(extras);
         }
         // Registered before any joins: the join check already knows them.
         for (int i = 0; i < todo.size(); i++) {
@@ -1259,9 +1321,16 @@ public final class ConflictBridge implements SessionPlugin {
             sl.removing = false;
             sl.holdAt = holds.get(sl); // M8: set at once, so the follow goal's place is the hold point from the first tick
             byUuid.put(sl.uuid, sl);
+            sl.extras = madeExtras.get(i);
+            for (Mob x2 : sl.extras)
+                extraOf.put(x2.getUUID(), sl);
         }
         for (int i = 0; i < todo.size(); i++) {
-            if (!level.addFreshEntity(made.get(i))) {
+            // A body joins before what came with it: a raptor's follower looks for its leader in its first tick.
+            boolean in = level.addFreshEntity(made.get(i));
+            for (Mob x2 : madeExtras.get(i))
+                in = in && level.addFreshEntity(x2);
+            if (!in) {
                 for (Slot sl : todo)
                     despawn(sl);
                 for (Camps.SetOut h : handOffs)
@@ -1284,6 +1353,21 @@ public final class ConflictBridge implements SessionPlugin {
         return true;
     }
 
+    /**
+     * Takes a slot's extras out of the world (MZB-428): a body's despawn, a stack's going back to pending and a
+     * party's end do, and so a follower whose raptor died goes with them. Books nothing.
+     */
+    private void dropExtras(Slot sl) {
+        if (sl.extras.isEmpty())
+            return;
+        for (Mob x : sl.extras) {
+            extraOf.remove(x.getUUID(), sl);
+            if (!x.isRemoved())
+                x.discard();
+        }
+        sl.extras = List.of();
+    }
+
     /** Takes a member's body out of the world (it stays a living member, not in Minecraft). */
     private void despawn(Slot sl) {
         Mob m = sl.entity;
@@ -1299,6 +1383,7 @@ public final class ConflictBridge implements SessionPlugin {
         }
         if (sl.uuid != null)
             byUuid.remove(sl.uuid, sl);
+        dropExtras(sl);
         sl.goal = null;
         sl.stripped = null;
         sl.entity = null;
@@ -1424,6 +1509,7 @@ public final class ConflictBridge implements SessionPlugin {
             if (held)
                 switchedOff(now);
             reconciler.switchedOff(now);
+            owedHunts.clear();
             return;
         }
         Difficulty d = s.server().getWorldData().getDifficulty();
@@ -1435,6 +1521,7 @@ public final class ConflictBridge implements SessionPlugin {
                     if (st.state == StackState.PENDING)
                         st.dirty = true;
         }
+        owedHunts.tick(s, now);
         held = !idle(); // a lurk or a pending roar is held too: a switch-off clears them (MZB-359)
         if (!held) {
             reconciler.tick(now); // nothing without a camp declared (D1)
@@ -1562,9 +1649,11 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** Takes a placed stack back to pending: its bodies out of the world, made again no sooner than {@value #REQUEUE_COOLDOWN} ticks on. */
     private void requeue(Stack st, ServerLevel level, long now) {
-        for (Slot x : st.slots)
+        for (Slot x : st.slots) {
             if (x.alive && x.pendingDeath == null)
                 despawn(x);
+            dropExtras(x); // a dead raptor's followers fight on until the stack goes (MZB-428)
+        }
         if (st.party.recalling) {
             st.state = StackState.GONE;
             return;
@@ -1585,9 +1674,11 @@ public final class ConflictBridge implements SessionPlugin {
             if (st.state != StackState.PLACED)
                 continue;
             if (timeUp || level == null || !seen(st, level)) {
-                for (Slot sl : st.slots)
+                for (Slot sl : st.slots) {
                     if (sl.alive && sl.pendingDeath == null)
                         despawn(sl);
+                    dropExtras(sl);
+                }
                 st.state = StackState.GONE;
             } else {
                 any = true;
@@ -1710,9 +1801,11 @@ public final class ConflictBridge implements SessionPlugin {
         for (Stack st : p.stacks) {
             unwatch(st);
             st.state = StackState.GONE;
-            for (Slot sl : st.slots)
+            for (Slot sl : st.slots) {
                 if (sl.uuid != null)
                     byUuid.remove(sl.uuid, sl);
+                dropExtras(sl);
+            }
         }
     }
 
@@ -1763,6 +1856,8 @@ public final class ConflictBridge implements SessionPlugin {
     /** LivingDeathEvent (lowest, not cancelled): a member's death is journaled at the end of the tick, once certain. */
     void onDeath(LivingEntity dead, DamageSource source, long now) {
         reconciler.onDeath(dead, source);
+        if (reconciler.secondBody(dead))
+            return; // no path journals a second body's death, and it kills nobody's kin (MZB-431)
         Slot sl = live(dead);
         Entity killer = source.getEntity();
         if (sl != null) {
@@ -1784,6 +1879,12 @@ public final class ConflictBridge implements SessionPlugin {
         for (Territories.Territory t : territories.containing(level.dimension(), x, z)) {
             Camp c = camps.get(t.faction());
             if (c != null && c.kin() != null && t.minds(ConflictRecords.SIGNAL_KILLING) && c.kin().test(dead)) {
+                if (killedAt != now) {
+                    killedAt = now;
+                    killedThisTick.clear();
+                }
+                if (!killedThisTick.add(dead.getUUID()))
+                    return; // the same death posted again in this tick
                 count(ConflictRecords.SIGNAL_KILLING, t.faction(), actor(pl), level.dimension(), dead.blockPosition(), t, now);
                 return;
             }
@@ -1900,6 +2001,15 @@ public final class ConflictBridge implements SessionPlugin {
     Slot live(Entity e) {
         Slot sl = byUuid.get(e.getUUID());
         return sl != null && sl.entity == e ? sl : null;
+    }
+
+    /**
+     * Whether an entity is a live member's extra (a raptor's follower, MZB-428). Its death books nothing (it is no
+     * member), so it drops no loot and no experience either (MZB-643): the stack is made again with new ones.
+     */
+    public boolean isExtra(Entity e) {
+        Slot sl = extraOf.get(e.getUUID());
+        return sl != null && sl.extras.contains(e);
     }
 
     // ---- the envoy: guard, answers, payment -----------------------------------------------------

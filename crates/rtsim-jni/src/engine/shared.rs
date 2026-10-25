@@ -85,7 +85,8 @@ fn with_viewers<R>(
 }
 
 /// The modules that hear a player leave through [`with_viewers_of`], beyond those that always do
-/// (the dragons and the ships, until their slices move their player work into their replay end).
+/// (the dragons, until their slice moves their player work into their replay end, and the ships,
+/// which hear it and do nothing).
 #[derive(Clone, Copy)]
 struct Hear {
     herds: bool,
@@ -188,11 +189,12 @@ pub(super) fn introduce_conflict(st: &mut State) {
 // ---- the interest areas ---------------------------------------------------------------------------
 
 /// SESSION_START: every player's area goes (the world forgets where players were). The dragons
-/// and the ships hear it (their bodies end at the arm until their slices move that work into
-/// their replay end); the herds and the conflict do not (docs/replay-gate.md §2.1, §5.1, RP-26,
-/// RP-87): a `player_left` would recall the bands and despawn the groups the pages hold in view,
-/// whose replayed records count against them, and their replay ends do that player work for every
-/// player (§5.6).
+/// and the ships hear it: the dragons' bodies end at the arm until their slice moves that work
+/// into their replay end, and it does nothing to the ships, whose `Viewer` has no `player_left`
+/// override (their bodies end at the replay end, RP-91). The herds and the conflict do not hear it
+/// (docs/replay-gate.md §2.1, §5.1, RP-26, RP-87): a `player_left` would recall the bands and
+/// despawn the groups the pages hold in view, whose replayed records count against them, and
+/// their replay ends do that player work for every player (§5.6).
 pub(super) fn session_start(st: &mut State) {
     st.shared.pending.clear();
     st.shared.present.clear();

@@ -4484,6 +4484,7 @@ mod conflict {
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
     use rtsim_settle::Pos;
+    use std::collections::BTreeSet;
 
     /// The core's four phase 1 modules and CONFLICT (bit 5).
     const MODULES: u32 = 0b1111 | MODULE_CONFLICT;
@@ -5725,15 +5726,17 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the tribute's; the
-    /// camp's came with M4, the chief's state with M6 and the rail's with M7) is decoded, counted
-    /// as deferred and dropped; one with an op id spends it, so the same record again is not counted
-    /// twice. CHIEF_STATE is counted as its own and given to the engine (a camp with no bodies
-    /// to count ignores it).
+    /// MOWZIE.md §9: no record waits for a later slice now (the camp's came with M4, the chief's
+    /// state with M6, the rail's RAIL_PASS with M7, the lurk's TRAIN_PASSED with M8, the grove's
+    /// with M9), so none is counted as deferred. CHIEF_STATE is counted as its own and given to the
+    /// engine (a camp with no bodies to count ignores it); a CHIEF_PAID is the grove's: it reaches
+    /// the engine and spends its op id, so the same record again changes nothing; and a
+    /// TRAIN_PASSED reaches the engine, which finds no party by its agent: stale.
     #[test]
-    fn later_slices_records_are_counted_and_dropped() {
+    fn no_record_is_deferred_and_each_reaches_the_engine() {
         let (_dir, e, mut j) = camp("conflict-deferred");
         let casualties = e.with_conflict(|c, _| c.stats.casualties);
+        let stale = e.with_conflict(|c, _| c.stats.stale);
         let paid = O::ChiefPaid(cb::ChiefPaid {
             faction: CAMP,
             slot: 3,
@@ -5745,6 +5748,13 @@ mod conflict {
         });
         j.conflict_obs(&paid);
         j.conflict_obs(&paid);
+        j.conflict_obs(&O::TrainPassed(cb::TrainPassed {
+            agent: 0,
+            epoch: 0,
+            flags: 0,
+            carriage: 0,
+            train: 7,
+        }));
         j.conflict_obs(&O::ChiefState(cb::ChiefState {
             faction: CAMP,
             flags: 1,
@@ -5753,11 +5763,16 @@ mod conflict {
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let (_, link) = e.conflict_stats();
-        assert_eq!((link.deferred, link.ignored), (1, 0), "{link:?}");
+        assert_eq!((link.deferred, link.ignored), (0, 0), "{link:?}");
         assert_eq!(link.chief_states, 1, "{link:?}");
         assert!(
             e.with_conflict(|c, _| c.op_applied((1 << 63) | 0xDEAD)),
             "the engine spent the op id, as Conflict::ingest does (MZB-23)"
+        );
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.stale),
+            stale + 1,
+            "the TRAIN_PASSED reached the engine"
         );
         assert_eq!(
             e.with_conflict(|c, _| c.stats.casualties),
@@ -6718,6 +6733,63 @@ mod conflict {
         );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-100: a CHIEF_STATE that arrives while the host replays, before the replayed FACTION_FOUND
+    /// has put the faction in the world, is held for the replay end (the engine's own replay begins
+    /// only once the conflict runs, so its hold did not cover this). It used to find its faction
+    /// unknown and be dropped, and the FACTION_FOUND's census byte then put the crystal back. The
+    /// pages hold no camp (`pages_first`) or the camp already (the control): the chief robbed of its
+    /// crystal either way once the replay is over.
+    #[test]
+    fn a_chief_state_before_the_replayed_faction_found_is_applied_at_the_replay_end() {
+        for pages_first in [true, false] {
+            let name = format!("chief-state-replay-{pages_first}");
+            let (dir, e, mut j) = camp_of(
+                &name,
+                "mowziesmobs:frostmaw_spawn",
+                FROSTMAW,
+                1,
+                (cb::CENSUS_CHIEF | cb::CENSUS_CRYSTAL) as u8,
+                pages_first,
+            );
+            if !pages_first {
+                save(&e, &mut j);
+            }
+            let gt = j.game_time;
+            let saved = j.crash();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.game_time = gt;
+            assert_eq!(e.conflict_restore_check(), (None, false));
+            // The steal's record, live, ahead of the journal the session replays.
+            j.conflict_obs(&O::ChiefState(cb::ChiefState {
+                faction: CAMP,
+                flags: 0,
+                health: 100.0,
+            }));
+            let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+            for _ in 0..64 {
+                j.idle();
+                if j.sent_obs >= last {
+                    break;
+                }
+            }
+            assert!(j.sent_obs >= last, "the whole journal handed over");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let crystal = e.with_conflict(|c, _| {
+                c.factions[c.faction_of_key(CAMP).expect("the camp is found") as usize].crystal
+            });
+            assert!(
+                !crystal,
+                "pages_first {pages_first}: the replay's census byte put the crystal back"
+            );
+            let (_, link) = e.conflict_stats();
+            assert_eq!(link.chief_states, 1, "{link:?}");
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
     }
 
     /// MOWZIE.md §4.9 through the journal: a census (CAMP_CENSUS) is journaled, the engine orders
@@ -7853,7 +7925,7 @@ mod conflict {
             })
         };
         let first = casualty(next_casualty_op());
-        j.conflict_obs(&first);
+        let first_seq = j.conflict_obs(&first);
         j.idle();
         j.idle();
         assert_eq!(books(&e, p).0, n - 1, "the first copy counted");
@@ -7874,6 +7946,26 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         assert_eq!(books(&e, p).0, n - 1, "the copy took no second unit");
         assert_eq!(e.with_conflict(|c, _| c.stats.casualties), 1, "one death");
+        // The same record as a holder's REASSERT (the path a carried record takes, through the
+        // engine's `ingest_copy`), journaled by a generation this engine never heard: applied as
+        // a copy, and the party's own list still skips it.
+        let applied = |e: &Engine| {
+            e.stats
+                .copies_applied
+                .load(std::sync::atomic::Ordering::Acquire)
+        };
+        let before = applied(&e);
+        let original = j.journaled(first_seq).unwrap();
+        j.reassert(0x0E41_11E4_0000_0002, &original);
+        j.idle();
+        j.idle();
+        assert_eq!(applied(&e), before + 1, "the copy took the REASSERT path");
+        assert_eq!(books(&e, p).0, n - 1, "the REASSERT took no second unit");
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            1,
+            "still one death"
+        );
         // Another member's death is its own op.
         j.conflict_obs(&casualty(next_casualty_op()));
         j.idle();
@@ -10415,6 +10507,737 @@ mod conflict {
             "the market and the caravan in its first hand-over: {:?}",
             r.after
         );
+    }
+
+    /// The transfers Java applied (or held), by op id.
+    fn tribute_ops(j: &Java) -> BTreeSet<u64> {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op)
+            .collect()
+    }
+
+    /// What the grove still owes its chest (items of its tribute good), the stacks in flight and
+    /// the stacks it has sent so far.
+    fn owed_tribute(e: &Engine) -> (i64, usize, u32) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let camp = c.camp(f).unwrap();
+            (
+                camp.owed_tribute.iter().map(|e| e.1).sum::<i64>() / rtsim_trade::MILLI,
+                c.placings().count(),
+                camp.stacks,
+            )
+        })
+    }
+
+    fn chest_report(j: &mut Java, chest: [i32; 3]) {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.conflict_obs(&O::HavenChest(cb::HavenChest {
+            faction: CAMP,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+            free: 27,
+        }));
+    }
+
+    /// M9 (MZB-418, MZB-419, MZB-422, MZB-423): a player's seven gold blocks to a stray Umvuthi
+    /// (CHIEF_PAID) are 567 nuggets of tribute, owed to the grove's chest. With no chest reported
+    /// nothing is sent; a chest reported in a world whose chunk is gone fails its stack, which
+    /// goes back to the grove's stock and forgets the chest; reported again while Minecraft holds
+    /// the commands (a world save that is lost), the stack is in the outbox at the save, so after
+    /// a crash it is sent again under the same op id and lands once, and the rest wait for the
+    /// camp to come in again. The CHIEF_PAID's op id is spent by the replay too.
+    #[test]
+    fn a_groves_tribute_lands_in_its_chest_once_across_a_failure_and_a_crash() {
+        let (dir, e, mut j) = grove("grove-tribute", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let paid = O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6001,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        });
+        j.conflict_obs(&paid);
+        j.conflict_obs(&paid);
+        j.idle();
+        j.idle();
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 0),
+            "seven blocks are 567 nuggets, owed once; no chest yet, nothing sent"
+        );
+        assert!(tribute_ops(&j).is_empty());
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+
+        // The chest is named, but its chunk is gone: the stack fails, goes back and waits.
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.fail_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let failed = tribute_ops(&j);
+        assert_eq!(failed.len(), 1, "one stack at a time");
+        assert_eq!(owed_tribute(&e), (567, 0, 1), "back in the grove's stock");
+        assert!(j.containers.is_empty());
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.haven_chests, 1, "{link:?}");
+        assert!(
+            j.cmd_dict
+                .iter()
+                .any(|((k, _), n)| *k == wire::DICT_ITEM && n == "minecraft:gold_nugget"),
+            "the tribute is the grove's gold nuggets"
+        );
+        // The forgotten chest sends nothing until it is reported again.
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), failed);
+
+        // Reported again while the commands are held: a new op in the outbox, then a crash.
+        j.fail_transfers = false;
+        j.hold_commands = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let held: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(held.len(), 1);
+        assert!(held.is_disjoint(&failed), "a failed stack goes as a new op");
+        assert_eq!(owed_tribute(&e), (567, 1, 2));
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        // After the crash the outbox sends it again under the same op id, and it lands once.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 1, 2),
+            "the stack in flight is saved"
+        );
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), held, "the held stack, by its op id");
+        assert_eq!(j.containers.get(&chest).copied(), Some(64), "one stack");
+        assert_eq!(
+            owed_tribute(&e),
+            (503, 0, 2),
+            "placed: 64 nuggets less owed; the camp is out, so no more is sent"
+        );
+        // The same answer again changes nothing.
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.deferred, 0, "{link:?}");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-446, review P3-3): HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired). A payment
+    /// and the chest named after the last save are in Java's journal when the server dies: the
+    /// replay brings both back, so the chest the session knew is known again, and once the camp
+    /// is in, the stack the engine decides is the op and the amount it decided before the crash
+    /// (and so the plugin's DUPLICATE_OP answer books what it put down).
+    #[test]
+    fn a_haven_chest_journaled_after_a_save_is_replayed_and_its_stack_is_the_same() {
+        let (dir, e, mut j) = grove("grove-chest-replay", 3);
+        camp_in(&mut j);
+        save(&e, &mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        // Minecraft holds the commands, so the first stack is the only one decided.
+        j.hold_commands = true;
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6003,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let before: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(before.len(), 1, "the stack went at the chest");
+        assert_eq!(owed_tribute(&e), (567, 1, 1));
+        let saved = j.world_save();
+        assert!(
+            saved
+                .journal
+                .iter()
+                .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == 0x0817),
+            "the chest is in Java's journal, which the pages lack"
+        );
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (e, mut j) = reopen(&dir, saved, gt);
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.haven_chests, 1, "the replay gave the chest: {link:?}");
+        e.with_conflict(|c, _| {
+            let camp = c.camp(c.faction_of_key(CAMP).unwrap()).unwrap();
+            assert_eq!(camp.chest.map(|k| k.free), Some(27), "the chest is known");
+        });
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 0),
+            "the payment is owed again; the camp is out in the replay, so nothing is placed"
+        );
+        // The camp comes in, and its census places the stack again (MZB-446, review P3-4).
+        camp_in(&mut j);
+        j.idle();
+        j.idle();
+        // The plugin applies each stack as it comes, so more than the first go in these hand-overs:
+        // the first is the stack of before the crash, its op and its 64 nuggets.
+        let first = j
+            .commands
+            .iter()
+            .find(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op);
+        assert_eq!(first, before.iter().next().copied(), "the same op");
+        let (owed, in_flight, sent) = owed_tribute(&e);
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(64 * sent as i32),
+            "stacks of the same 64"
+        );
+        assert_eq!(
+            owed + 64 * (i64::from(sent) - in_flight as i64),
+            567,
+            "what is owed is what is not answered"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (review P3-6, and the rule that a HUNT_APPLIED clears a hunt by its op id alone): the
+    /// first hunt is answered and booked, a raid a day later makes another the held hunt, and a
+    /// late copy of the first's answer, live and again after a save and a reopen, leaves it with
+    /// its whole count; its OWED_HUNT goes again whole at the new session, and its own answer
+    /// spends it. No op set holds the first's id: the copy finds no hunt of that op.
+    #[test]
+    fn a_late_copy_of_a_booked_hunts_answer_leaves_the_hunt_now_held_alone_after_a_reopen() {
+        let (dir, e, mut j) = grove("grove-hunt-copy", 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owe = |e: &Engine, n: u32| {
+            e.with_conflict_mut(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                let now = c.now();
+                c.owe_hunt(
+                    f,
+                    rtsim_industry::ids::DistrictId(77),
+                    Pos::new(dim as u16, at.0, at.1),
+                    n,
+                    now,
+                );
+            })
+        };
+        let hunts = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                c.factions[f as usize]
+                    .hunts
+                    .iter()
+                    .map(|h| (h.district.0, h.count, h.op))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        let applied = |op: u64, killed: u32| {
+            O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 77,
+                op,
+                killed,
+            })
+        };
+        owe(&e, 2);
+        j.idle();
+        let op1 = hunts(&e)[0].2;
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "booked");
+        assert_eq!(killed(&e), 2);
+        j.game_time += 24_000;
+        j.idle();
+        owe(&e, 4);
+        j.idle();
+        let held = hunts(&e);
+        let [(77, 4, op2)] = held[..] else {
+            panic!("{held:?}");
+        };
+        assert_ne!(op1, op2);
+        // The copy, live.
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), held, "the whole count");
+        assert_eq!(killed(&e), 2, "booked once");
+        // Saved, the server dies, and the copy comes again in the new session.
+        save(&e, &mut j);
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        let saved = j.world_save();
+        let gt = j.game_time;
+        let _ = j.crash();
+        let (e, mut j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            hunts(&e),
+            held,
+            "the replay's copy finds no hunt of that op"
+        );
+        assert_eq!(killed(&e), 2);
+        j.idle();
+        j.idle();
+        let sent: Vec<_> = cmds(&j)
+            .filter_map(|c| match c {
+                C::OwedHunt(h) => Some((h.op, h.count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, vec![(op2, 4)], "its spawn goes out, whole");
+        // The plugin applies it, killing 4, and its answer comes.
+        let now = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.apply_hunts(4, now);
+        j.conflict_flush();
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "its own answer spends it");
+        assert_eq!(killed(&e), 6);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-423): with the camp in and the chest named, the stacks go one at a time, each after
+    /// the last one's answer, whole stacks of at most 64, and the chest ends with every nugget.
+    #[test]
+    fn a_groves_tribute_goes_in_stacks_one_after_another() {
+        let (_dir, e, mut j) = grove("grove-stacks", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        chest_report(&mut j, chest);
+        j.idle();
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6002,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        advance_until(&mut j, 10, 1_000, "all 567 nuggets in the chest", |j| {
+            j.containers.get(&chest).copied() == Some(567)
+        });
+        assert_eq!(tribute_ops(&j).len(), 9, "8 full stacks and one of 55");
+        assert_eq!(owed_tribute(&e), (0, 0, 9));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-424 to MZB-426): a hunt owed after a raid on an unwatched district is written as
+    /// OWED_HUNT with the dimension's name; the plugin's HUNT_APPLIED (journaled, booked by the
+    /// state of the hunts, review P3-6) spends it; a hunt owed again before the answer replaces the
+    /// first with a new op, and the first one's late answer takes its count off the new one and
+    /// sends the rest again (review P3-8).
+    #[test]
+    fn an_owed_hunt_is_written_and_spent_by_its_answer_once() {
+        let (_dir, e, mut j) = grove("grove-hunt", 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owe = |e: &Engine, n: u32| {
+            e.with_conflict_mut(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                let now = c.now();
+                c.owe_hunt(
+                    f,
+                    rtsim_industry::ids::DistrictId(77),
+                    Pos::new(dim as u16, at.0, at.1),
+                    n,
+                    now,
+                );
+            })
+        };
+        let hunts = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                c.factions[f as usize]
+                    .hunts
+                    .iter()
+                    .map(|h| (h.district.0, h.count, h.op))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let written = |j: &Java| {
+            cmds(j)
+                .filter_map(|c| match c {
+                    C::OwedHunt(h) => Some(*h),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        owe(&e, 2);
+        j.idle();
+        j.idle();
+        let first = written(&j);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!((first[0].district, first[0].count), (77, 2));
+        assert_eq!(first[0].centre, at);
+        assert_eq!(
+            java_name(&j, wire::DICT_DIMENSION, first[0].dimension).as_deref(),
+            Some(OVERWORLD),
+            "the dimension is written by name"
+        );
+        let op1 = first[0].op;
+        assert_eq!(hunts(&e), vec![(77, 2, op1)]);
+
+        // Owed again before the answer: the sum, a new op.
+        owe(&e, 3);
+        j.idle();
+        j.idle();
+        let both = written(&j);
+        assert_eq!(both.len(), 2, "{both:?}");
+        let op2 = both[1].op;
+        assert_ne!(op1, op2, "the replacement is a new hunt");
+        assert_eq!(both[1].count, 5);
+        assert_eq!(hunts(&e), vec![(77, 5, op2)]);
+
+        // The first one's answer is late: the 2 it owed are not owed again, and the hunt goes
+        // again with the 3 that are left.
+        let applied = |op: u64, killed: u32| {
+            O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 77,
+                op,
+                killed,
+            })
+        };
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        j.idle();
+        assert_eq!(
+            hunts(&e),
+            vec![(77, 3, op2)],
+            "5 less the 2 that were killed"
+        );
+        assert_eq!(killed(&e), 2);
+        let again = written(&j);
+        assert_eq!(again.len(), 3, "{again:?}");
+        assert_eq!(
+            (again[2].op, again[2].count),
+            (op2, 3),
+            "the rest, sent again"
+        );
+        // The second's clears it, once: a repeat of the record finds no hunt.
+        let before = killed(&e);
+        j.conflict_obs(&applied(op2, 3));
+        j.conflict_obs(&applied(op2, 3));
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "spent");
+        assert_eq!(killed(&e), before + 3, "booked once");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- M9a re-check: replayed hunts and the hunt race ----------------------------------------
+
+    /// Stands in for a raid on district 77, 400 blocks from the camp.
+    fn hunt_owe(e: &Engine, dim: u32, at: (i32, i32), n: u32) {
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let now = c.now();
+            c.owe_hunt(
+                f,
+                rtsim_industry::ids::DistrictId(77),
+                Pos::new(dim as u16, at.0, at.1),
+                n,
+                now,
+            );
+        })
+    }
+
+    /// The hunts the camp owes: (district, count, op).
+    fn hunt_books(e: &Engine) -> Vec<(u64, u32, u64)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.factions[f as usize]
+                .hunts
+                .iter()
+                .map(|h| (h.district.0, h.count, h.op))
+                .collect::<Vec<_>>()
+        })
+    }
+
+    /// Every OWED_HUNT Java received: (op, count, replaced, rest).
+    fn hunt_written(j: &Java) -> Vec<(u64, u32, u64, u32)> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::OwedHunt(h) => Some((h.op, h.count, h.replaced, h.rest)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The plugin's answer to a hunt of district 77.
+    fn hunt_answer(op: u64, killed: u32) -> O {
+        O::HuntApplied(cb::HuntApplied {
+            faction: CAMP,
+            district: 77,
+            op,
+            killed,
+        })
+    }
+
+    fn game_tick(j: &Java) -> rtsim_kernel::clock::Tick {
+        rtsim_kernel::clock::Tick(j.game_time.max(0) as u64)
+    }
+
+    /// M9a re-check, R1: a late answer replayed after a crash. op1 (5) is replaced by op2 (8) and
+    /// both are in the saved pages. After the save: op1's late answer (the engine takes it as the
+    /// 3 the second raid owes alone and sends op2 with 3) and, if `second`, op2's answer (3
+    /// killed, the hunt spent). The server dies; the replay books the answers again. The engine
+    /// used to push OWED_HUNT while replaying; the host moves every command out of the engine's
+    /// outbox after each ingest and writes its queue at each hand-over, so the hunt reached the
+    /// next session's plugin, which had forgotten that it applied it: the animals died twice. Now
+    /// the replay sends nothing, and `resend_notices` sends the hunt still held, once.
+    /// `filler` records of a band the engine never had come before the answers in the journal: a
+    /// small observation buffer spreads the replay over several hand-overs, the answer in a later
+    /// one than the session start (the fake Java sends the players' positions only in the first
+    /// hand-over at each game time). `earlier` journals one answer for a district with no hunt.
+    fn replayed_hunt(name: &str, earlier: bool, filler: usize, second: bool) {
+        let (dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        hunt_owe(&e, dim, at, 5);
+        j.idle();
+        let op1 = hunt_books(&e)[0].2;
+        hunt_owe(&e, dim, at, 3);
+        j.idle();
+        let [(77, 8, op2)] = hunt_books(&e)[..] else {
+            panic!("{:?}", hunt_books(&e));
+        };
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        if earlier {
+            // Any journaled conflict record ahead of the late answer in the replay: an answer
+            // for a district with no hunt changes nothing.
+            j.conflict_obs(&O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 78,
+                op: 1,
+                killed: 0,
+            }));
+            j.idle();
+        }
+        for _ in 0..filler {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: 0,
+                epoch: 0,
+                by: cb::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+                op: next_casualty_op(),
+            }));
+        }
+        j.conflict_obs(&hunt_answer(op1, 5));
+        j.idle();
+        j.idle();
+        assert_eq!(
+            hunt_books(&e),
+            vec![(77, 3, op2)],
+            "the second raid's own 3"
+        );
+        assert_eq!(
+            hunt_written(&j).last(),
+            Some(&(op2, 3, 0, 0)),
+            "the rest, sent"
+        );
+        if second {
+            j.conflict_obs(&hunt_answer(op2, 3));
+            j.idle();
+            j.idle();
+            assert_eq!(hunt_books(&e), vec![], "spent: 5 + 3 = 8 animals killed");
+        }
+        let saved = j.world_save();
+        if filler > 0 {
+            let bytes = saved
+                .journal
+                .iter()
+                .filter(|(s, _)| *s >= first)
+                .map(|(_, r)| r.len())
+                .sum::<usize>();
+            assert!(
+                bytes > wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        let gt = j.game_time;
+        let _ = j.crash();
+        let (e, mut j) = if filler > 0 {
+            reopen_with(&dir, saved, gt, wire::MIN_CAPACITY)
+        } else {
+            reopen(&dir, saved, gt)
+        };
+        let want = if second { vec![] } else { vec![(77, 3, op2)] };
+        assert_eq!(hunt_books(&e), want, "the replay books the answers again");
+        for _ in 0..4 {
+            j.idle();
+        }
+        let sent = hunt_written(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        if second {
+            assert_eq!(
+                sent,
+                vec![],
+                "a spent hunt goes to the plugin of the next session (its animals die twice)"
+            );
+        } else {
+            assert_eq!(
+                sent,
+                vec![(op2, 3, 0, 0)],
+                "the hunt still held goes once, when the replay is over"
+            );
+            // The new plugin kills them and answers; the hunt is spent.
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            j.conflict_flush();
+            j.idle();
+            j.idle();
+            assert_eq!(hunt_books(&e), vec![], "its own answer spends it");
+            assert_eq!(j.conflict_plugin.animals_killed, 3);
+        }
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session() {
+        replayed_hunt("hunt-replay", false, 0, true);
+    }
+
+    #[test]
+    fn a_replayed_late_answer_after_another_record_sends_no_spent_hunt() {
+        replayed_hunt("hunt-replay-2", true, 0, true);
+    }
+
+    #[test]
+    fn a_replayed_late_answer_in_a_later_hand_over_sends_no_spent_hunt() {
+        replayed_hunt("hunt-replay-long", false, 1_500, true);
+    }
+
+    #[test]
+    fn a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over() {
+        replayed_hunt("hunt-replay-rest", false, 0, false);
+    }
+
+    #[test]
+    fn a_hunt_left_owed_by_a_replayed_late_answer_in_a_later_hand_over_goes_once() {
+        replayed_hunt("hunt-replay-rest-long", false, 1_500, false);
+    }
+
+    /// M9a re-check, R2: the hunt race. Raid 1 owes `n1`, the plugin applies it (its answer
+    /// journaled but not yet read) and raid 2 owes `n2` before the engine reads that answer. The
+    /// OWED_HUNT of raid 2 carries the op it replaced and `rest`, the `n2` it owes alone, so the
+    /// plugin, whose last applied op is the replaced one, kills `rest` and not the sum. With
+    /// `at_once` the plugin applies raid 2's hunt before the late answer is read (the common
+    /// ordering: the circle's chunks still tick), and the hunt the engine sends again is ignored,
+    /// that op being the last it applied; otherwise it applies the hunt sent again. Either way
+    /// each raid's animals die once: `n1` and `n2`, each capped at 8.
+    fn hunt_race(name: &str, n1: u32, n2: u32, at_once: bool) {
+        let (_dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owed = n1.min(8) + n2.min(8);
+        hunt_owe(&e, dim, at, n1);
+        j.idle();
+        let op1 = hunt_books(&e)[0].2;
+        // Applied: the animals die; the answer is journaled but not yet read.
+        j.conflict_plugin.apply_hunts(99, game_tick(&j));
+        assert_eq!(j.conflict_plugin.animals_killed, n1.min(8));
+        hunt_owe(&e, dim, at, n2);
+        j.idle();
+        let [(77, held, op2)] = hunt_books(&e)[..] else {
+            panic!("{:?}", hunt_books(&e));
+        };
+        assert_eq!(held, (n1 + n2).min(8));
+        assert_eq!(
+            hunt_written(&j).last(),
+            Some(&(op2, held, op1, n2.min(8))),
+            "the replacement names the op it replaced and what the second raid owes alone"
+        );
+        if at_once {
+            // The chunks still tick: op2 is applied as soon as it is read.
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            assert_eq!(j.conflict_plugin.animals_killed, owed, "rest, not the sum");
+        }
+        j.conflict_flush();
+        j.idle();
+        j.idle();
+        let resent = *hunt_written(&j).last().unwrap();
+        assert_eq!(resent, (op2, n2.min(8), 0, 0), "the rest, sent again");
+        if at_once {
+            assert!(
+                j.conflict_plugin.hunts.is_empty(),
+                "which the plugin ignores"
+            );
+        } else {
+            assert_eq!(j.conflict_plugin.hunts.len(), 1, "which the plugin keeps");
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            j.conflict_flush();
+            j.idle();
+            j.idle();
+        }
+        assert_eq!(hunt_books(&e), vec![], "spent");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let booked = e.with_conflict(|c, _| c.stats.hunts_killed);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(j.conflict_plugin.animals_killed, owed, "animals killed");
+        assert_eq!(
+            booked,
+            u64::from(owed),
+            "and the engine's books say the same"
+        );
+    }
+
+    #[test]
+    fn a_replacement_applied_before_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+        hunt_race("hunt-race", 5, 3, true);
+    }
+
+    #[test]
+    fn a_replacement_applied_after_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+        hunt_race("hunt-race-after", 5, 3, false);
+    }
+
+    #[test]
+    fn a_capped_race_owes_the_second_raid_its_own_animals() {
+        hunt_race("hunt-race-capped", 6, 6, true);
+    }
+
+    #[test]
+    fn a_capped_race_applied_after_the_late_answer_owes_the_second_raid_its_own_animals() {
+        hunt_race("hunt-race-capped-after", 6, 6, false);
     }
 }
 

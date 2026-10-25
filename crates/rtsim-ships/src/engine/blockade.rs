@@ -572,13 +572,16 @@ impl Ships {
             (_, None) => [(at, LAID_UP), NO_SPELL],
         };
         self.idle.insert(s, spells);
+        // Above the epochs a replayed record named too (RP-121): a body that ended on the next
+        // epoch of a ship laid up here must not be taken for this one's.
+        let next = self.next_epoch(s);
         let x = &mut self.ships[s];
         x.status = Status::Lost {
             since: at,
             back: LAID_UP,
         };
         x.quotes.clear();
-        x.epoch = x.epoch.wrapping_add(1);
+        self.set_epoch(s, next);
         let booked: Vec<u64> = self
             .booked
             .range((s, 0)..=(s, u64::MAX))
@@ -607,11 +610,12 @@ impl Ships {
             return;
         }
         let back = self.relaunch_time(s, at);
+        let next = self.next_epoch(s);
         let x = &mut self.ships[s];
         if let Status::Lost { back: b, .. } = &mut x.status {
             *b = back;
         }
-        x.epoch = x.epoch.wrapping_add(1);
+        self.set_epoch(s, next);
         self.wait_to_relaunch(s, back);
     }
 
@@ -662,6 +666,12 @@ impl Ships {
     /// (its timetable's place then, its home dock's berth): the view radius and a body's radius,
     /// as a meeting counts it, on the same frame.
     fn relaunch_in_view(&self, w: &World, s: ShipId, at: Tick) -> bool {
+        // Watched while the last session's journal replays, as `point_in_view` (RP-95): the
+        // relaunch waits for the slot's next stay, and the first one after the replay end is
+        // judged by the players routed then.
+        if self.outbox.replaying() {
+            return true;
+        }
         let frame = self.ships[s].frame;
         let here = self.position(w, s, at);
         let reach = u64::from(self.tun.view_radius) + u64::from(self.tun.body_radius);
@@ -1625,5 +1635,102 @@ mod tests {
         );
         // Before the area begins, nobody watched.
         assert!(!c.ships.point_in_view(&c.world, frame, here, Tick(at.0 - 1)));
+    }
+
+    /// While the last session's journal replays no player is routed to the ships, so the view
+    /// rules take every dock as watched (docs/replay-gate.md §6.1, RP-95): a relaunch waits for the
+    /// slot's next stay, a raid is not made, a refound reschedules itself and an assault waits for
+    /// its next period; the first look after the replay end is judged by the players routed by
+    /// then. After it the world's areas answer again. Control: the same engine and place with no
+    /// replay and no area is unwatched.
+    #[test]
+    fn a_replaying_engine_takes_every_dock_as_watched() {
+        let mut c = quiet_coast(1);
+        let (v, a, _) = two_port_service(&c);
+        let t1 = Tick::from_days(10);
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        let s = c.ships.service_ships[v as usize]
+            .ids()
+            .find(|&id| c.ships.ships[id].is_laid_up())
+            .expect("a laid-up slot");
+        let at = c.ships.now();
+        let here = c.ships.position(&c.world, s, at);
+        let frame = c.ships.ships[s].frame;
+        assert!(!c.ships.relaunch_in_view(&c.world, s, at), "control");
+        assert!(!c.ships.point_in_view(&c.world, frame, here, at), "control");
+        c.ships.begin_replay(true);
+        assert!(c.ships.relaunch_in_view(&c.world, s, at), "replaying");
+        assert!(
+            c.ships.point_in_view(&c.world, frame, here, at),
+            "replaying"
+        );
+        c.ships.replay_done(&mut c.world);
+        assert!(!c.ships.relaunch_in_view(&c.world, s, at), "after the end");
+        assert!(
+            !c.ships.point_in_view(&c.world, frame, here, at),
+            "after the end"
+        );
+    }
+
+    /// A laid-up or relaunched slot's new epoch is above the epochs a replayed record named
+    /// (RP-121): a floor of 7 for its last body makes the epoch 8, not 1, so a late report of that
+    /// body cannot match the slot's next one (the exact-epoch arms). The floor is spent. Control:
+    /// with no floor the bump is the plain +1.
+    #[test]
+    fn a_blockade_bump_goes_above_the_epochs_a_replayed_record_named() {
+        let named = |id: ShipId, epoch: u32| {
+            crate::boundary::Obs::Dematerialized(crate::boundary::Dematerialized {
+                agent: Ship::agent(id),
+                epoch,
+                reason: 3,
+                dimension: 0,
+                hull_milli: 1000,
+                crew: 3,
+                pos: (0.0, 64.0, 0.0),
+            })
+        };
+        // (the epoch before, after the lay-up, after the relaunch's bump; floors left)
+        let run_it = |floor: Option<u32>| {
+            let mut c = quiet_coast(1);
+            let (v, a, _) = two_port_service(&c);
+            let t1 = Tick::from_days(10);
+            run(&mut c, t1);
+            let slots: Vec<ShipId> = c.ships.service_ships[v as usize].ids().collect();
+            let before: Vec<u32> = slots.iter().map(|&id| c.ships.ships[id].epoch).collect();
+            if let Some(e) = floor {
+                for &id in &slots {
+                    c.ships.fold_epoch(&named(id, e));
+                }
+            }
+            close(&mut c, a, t1);
+            let s = slots
+                .iter()
+                .copied()
+                .find(|&id| c.ships.ships[id].is_laid_up())
+                .expect("a laid-up slot");
+            let at = slots.iter().position(|&id| id == s).unwrap();
+            let laid = c.ships.ships[s].epoch;
+            let spent = !c.ships.floors.contains_key(&Ship::agent(s));
+            // A later record names a higher epoch of the laid-up slot's last body.
+            let top = laid + 10;
+            c.ships.fold_epoch(&named(s, top));
+            let now = c.ships.now();
+            c.ships.relaunch_laid_up(s, now);
+            (before[at], laid, spent, c.ships.ships[s].epoch, top)
+        };
+        let (before, laid, spent, relaunched, top) = run_it(Some(7));
+        assert!(before < 7);
+        assert_eq!(laid, 8, "above the floor of 7");
+        assert!(spent, "and the floor is spent");
+        assert_eq!(
+            relaunched,
+            top + 1,
+            "the relaunch is above the floor it met"
+        );
+        let (before, laid, spent, relaunched, top) = run_it(None);
+        assert_eq!(laid, before + 1, "control: no floor, the plain bump");
+        assert!(spent);
+        assert_eq!(relaunched, top + 1);
     }
 }

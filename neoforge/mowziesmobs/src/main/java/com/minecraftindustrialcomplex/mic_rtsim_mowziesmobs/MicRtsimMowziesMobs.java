@@ -3,11 +3,14 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBodies;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -33,6 +36,8 @@ public final class MicRtsimMowziesMobs {
     public static final String WARRIOR = "mic_rtsim:conflict/umvuthana/warrior";
     public static final String RAPTOR = "mic_rtsim:conflict/umvuthana/raptor";
     public static final String ENVOY = "mic_rtsim:conflict/umvuthana/envoy";
+    /** The grove's chief (MZB-401, MZB-434): the jar's Umvuthi, the camp's chief slot. */
+    public static final String UMVUTHI = "mic_rtsim:conflict/umvuthana/umvuthi";
 
     /** The jar's camp structures (its worldgen/structure ids). */
     public static final String DEN_STRUCTURE = "mowziesmobs:frostmaw_spawn";
@@ -40,13 +45,14 @@ public final class MicRtsimMowziesMobs {
 
     public MicRtsimMowziesMobs(IEventBus modBus, ModContainer container) {
         // Each culture body is the jar's own entity (MZB-216): the grove's warrior and envoy are its
-        // grove warrior (mowziesmobs:umvuthana, EntityUmvuthanaMinion). The raptor is the same warrior until M9
-        // (MZB-594): the jar's raptor adds 4 or 5 untagged followers in its finalizeSpawn, which a party's bodies
-        // may not bring.
+        // grove warrior (mowziesmobs:umvuthana, EntityUmvuthanaMinion), the raptor its raptor. A raptor is made by
+        // RaptorMaker (MZB-428), not through finalizeSpawn, which adds 4 or 5 followers no party tags.
         BodyKinds.registerStandIn(FROSTMAW, "mowziesmobs:frostmaw");
         BodyKinds.registerStandIn(WARRIOR, "mowziesmobs:umvuthana");
-        BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana");
+        BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana_raptor");
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
+        BodyKinds.registerStandIn(UMVUTHI, "mowziesmobs:umvuthi");
+        ConflictBodies.registerMaker(RAPTOR, new RaptorMaker());
         // A Frostmaw robbed of its crystal raids without it (review C): the jar's finalizeSpawn gives every new
         // Frostmaw one, so the core's bare flag has the crystal taken off after the body is made.
         BodyKinds.registerBare(FROSTMAW, m -> {
@@ -57,7 +63,10 @@ public final class MicRtsimMowziesMobs {
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
         // A Frostmaw party lies in wait by a rail awake, swipes a carriage's riders and roars at a robbed train's call (M8, MZB-361)
         RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker());
+        RtsimApi.registerPlugin(GroveChests.INSTANCE); // HAVEN_CHEST (MZB-422): the chest a grove's tribute goes into
+        IndustryApi.register(MowzieStrength.INSTANCE); // IND_FIGHT's attacker strength (MZB-435)
         IEventBus bus = NeoForge.EVENT_BUS;
+        bus.addListener(LivingDamageEvent.Post.class, FightWatch::onDamage);
         bus.addListener(ChunkEvent.Load.class, MowzieCamps::onChunkLoad);
         bus.addListener(ServerTickEvent.Post.class, e -> MowzieCamps.drain());
         bus.addListener(ServerStoppedEvent.class, e -> MowzieCamps.clear());

@@ -465,6 +465,8 @@ What the merge checked:
    `observe_state`), so it is newer than every replayed record. While the outbox replays it now
    waits for `replay_done`, the latest for each faction, as RP-68's world save does. Before, a
    replayed FACTION_FOUND's census byte undid it, or it found its faction unknown and was dropped.
+   It is held while the host replays too (`st.replaying`), since the engine's own replay begins only once
+   the conflict is in the world, after a replayed FACTION_FOUND.
 5. **RP-66:** M6 adds no `Order::ConflictCommand` test in Rust. Its GameTests order reconciles
    and materializes through `ConflictKit` in the middle of a session, after no restart. One ordered
    while a server's start replays waits for the replay end.
@@ -545,6 +547,74 @@ RP-102 put it, at the top of `journaled()`. Its filler records are the herds' ow
 BAND_CASUALTIES, so MZB-589's 72 bytes change none of its hand-over counts. Nothing in this merge
 reaches a conflict gate, epoch or replayed decision, and the two sims are the same as after the
 first merge under the filter.
+
+**The M9 merge** (feat/mowzie-m9 at 2f3941d0, M9 on M6's 58a5551a, merging M6 at 1290d0b7, then M7
+at 39c819f1, each its own merge commit, 788820c9 and 56c55d8d; RP-130 to RP-132, MZB-670 to
+MZB-672). Main at e75265e7 came in with M6, which had merged it (1290d0b7), so the third merge had
+nothing to bring. The first merge brings slice C, SEC-1 S5-2, slices H and S and M6's review fixes;
+thirteen files conflicted in it, and slice C's outbox.rs, new to M9, needed M9's row:
+
+1. **engine.rs:** `Conflict` keeps M9's `placing` beside slice C's replay fields; M9's `replaying`
+   field goes and M9 reads `outbox.replaying()`. `spawn_wave` takes M6's `wave_fill`, with M9's
+   `chief_stack` gating MEMBER_CHIEF and BAND_CHIEF beside M6's BAND_FIGHT. `begin_replay`
+   replaces `session_start`. In `resend_notices` the hunts held go with the kept notices, pushed one
+   by one through the gate (RP-131).
+2. **outbox.rs** (no conflict): OWED_HUNT's verdict row in the exhaustive `gate`; M9's two
+   TEMPORARY guards in `owe_hunt` and `hunt_applied` are deleted (§7.4).
+3. **engine/camp.rs:** M6's crystal off the kept chief body's BODY_CRYSTAL bit, with M9's
+   `chief_camp` guard and per-slot line flags; `chief_short`'s CHIEF_BODY through the gate.
+4. **boundary.rs:** HUNT_APPLIED is in `party_epoch`'s list of kinds that name none (RP-57).
+5. **persist.rs:** M9's numbers, with M6's casualty-op note on the party record; the second merge
+   bumps them.
+6. **rtsim-jni engine.rs and engine/conflict.rs:** the shared `answered_again` calls the
+   conflict's too; a CHIEF_STATE is held while the host replays (RP-100), else `give_latest`;
+   `journaled` sets `obs_seq` first, then counts M9's HAVEN_CHEST.
+7. **Camps.java:** M6's stray index, census hold and recount holds and its `PendingRecords.Entry`
+   records, on M9's heir pair and `removeBody`; a body loaded elsewhere counts in FACTION_FOUND's
+   `home` only when pooled (MZB-670).
+8. **CampKind.java, ConflictBridge.java, MicRtsimMowziesMobs.java, docs/boundary.md:** both
+   sides.
+9. **rtsim-jni tests/protocol.rs:** the filler BAND_CASUALTIES of `replayed_hunt` carry their op
+   (MZB-589; RP-132).
+10. **scenario/results/sim-mowzie.json:** regenerated on the merged head (below).
+
+The second merge brings M7's rail (RTC8 / META 7, RP-102 to RP-104). Eight files conflicted:
+engine.rs (both re-exports, wheel events `CampHeir` 9 and `Rail` 10, both sides' stats and their
+names; `later` is TRAIN_PASSED alone; `ingest` runs M7's `rail_pass` and M9's `haven_chest`,
+`trade_booked` and `chief_paid`), persist.rs (both imports, wheel tags, stats, resident tails),
+tables.rs (the faction row's heap counts M9's hunts and M7's meters), rtsim-jni engine/conflict.rs
+(the module doc names both; `translate` keeps M7's RAIL_PASS ticks and M9's `tribute_items`),
+protocol.rs (the later-kinds test uses a TRAIN_PASSED, since RAIL_PASS and CHIEF_PAID are both
+live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mowzie.json.
+
+- **Formats:** the merged M9 is RTC9 and META 8 (MZB-448, persist.rs's format history): M7 took
+  RTC8 and META 7 first and lands first. Wheel tags 0 to 10 each once (M9's 9, M7's 10); no page
+  table on either side; the faction row is M9's hunts and camp in `put_faction`, then M7's rail
+  meters; the resident state ends with M7's held passes, then M9's placing; the stats are M9's
+  three, then M7's seven. Save and load read the same fields in the same order. No migration.
+- **The eight points:** the gate covers every M9 push (§4.4's M9 paragraph; RP-131), RP-57's table
+  has M9's kinds (none names an epoch) and `ingest_copy` drops a HAVEN_CHEST copy (RP-130); M9's
+  decisions while replaying, RP-66, MZB-589's fillers, the arrive order and the chief kill paths
+  need no change (RP-132). M7's resident size pin takes M9's hunts list in the base (MZB-672).
+- **GameTests:** M9's four unload waits (two built a `List.of` of null UUIDs and threw at the
+  sequence's build, two passed at once on null ids) wait on the objects' own `isRemoved()` through
+  `MowzieKit.removed` (MZB-671), in a commit of their own.
+- **Sims** (wall_ms, fights_unheld and fight_record_gap_max filtered): sim-conflict is M7's but for
+  the conflict state hashes (the state carries M7's and M9's fields) and M9's three stats at 0;
+  against M9 it adds M7's seven rail stats at 0 and M6's own changes since 58a5551a (an invasion
+  home with 20 left and a raid with 8, from slice C through M6's merge of main, and wire bytes 3,104
+  for 3,080, MZB-589's op on three BAND_CASUALTIES); against main, M6's stats too. The world hash
+  is d450929438383fb2 in all five. sim-mowzie has M9's runs and checks (all ok) and M7's rail runs
+  and checks (all ok) together; against M7 its one changed line is M9's (the plunder at node 4
+  finds 0 items spare, not 1: plunder takes leather and wool only), against M9 nothing but M7's
+  runs, hashes, stats at 0 and slice labels; against M6 and main both sides' runs, and against main
+  M6's changes as on M6. No check of any parent changed its outcome.
+- **Fixtures:** main's, conflict meta page 5, so the five tests that read the conflict's pages fail
+  on META 8 as on M7's merge: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`
+  and `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 5, this
+  build reads 8"), `every_gametest_save_carries_and_matches_each_modules_hash` and
+  `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
+  `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
 
 ## 3. The flag
 
@@ -780,11 +850,13 @@ The counts live in the module's JNI stats, not saved.
 | TrainRobbed | keep | drop | a roar (RP-12) |
 | ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
 | March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
-| OwedHunt (M9, not on main) | drop | drop | held hunts go again at the replay end (§7.4) |
+| OwedHunt (M9) | drop | drop | the faction's hunts are state: a raid replayed owes its hunt again, which the plugin had; every hunt still held goes at the replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (§7.4, MZB-449, RP-131) |
 
 The queued column is the old `session_start` filter exactly (agent kinds, Territory, Notice and
 Reconcile dropped); M5's `session_start` had the same filter, which the merge left to the gate
-(RP-64). After the M5 merge, Territory, Notice, Settled, Envoy, Materialize, Steer, Recall and
+(RP-64). OwedHunt is the one kind that filter would keep (it names no agent): M9's
+`session_start` kept it, and the gate drops it, since the replay end sends every hunt held
+(RP-131). After the M5 merge, Territory, Notice, Settled, Envoy, Materialize, Steer, Recall and
 Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4830, 4880, 5065,
 5127; engine/camp.rs about 629, `send_lines`, which M5 wrote as a `Vec` extend around the gate and
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
@@ -834,6 +906,35 @@ before the merge asked:
 - **Presence** (RP-103, a residual): an ownerless pass counts against the player with the most time
   near it (`presence.top_of`), which while replaying holds no position of the window; P14's
   `owner_of` reads it the same way.
+
+**M9's camp, hunts and tribute (the M9 merge, §2.7; RP-130 to RP-132).** M9 adds one `Cmd` kind,
+OwedHunt, with its row above, and new push sites for two kinds that had rows:
+
+- **OWED_HUNT** goes from `owe_hunt` (a raid on an unwatched district, in `resolve`) and from
+  `hunt_applied` (the rest of a hunt whose replaced op was answered). Both push through the gate,
+  which drops them while replaying; the books change as live. M9's two TEMPORARY guards (no push
+  while `replaying`, MZB-449 R1) are deleted with the merge, as §7.4 asked, and `resend_notices`
+  sends each hunt still held from the faction's state once the replay has caught up.
+- **CAMP_RECONCILE** gains M9's lines, the heir's pair among them (MASK of a warrior at home and
+  SEAT_HEIR, one order, `camp_heir`). engine/camp.rs builds a CAMP_RECONCILE in one place,
+  `send_lines`, which orders only a camp that is in, so the Reconcile row's "never" covers every
+  line M9 adds; `camp_heir` asks `is_in` itself too.
+- **CHIEF_BODY** goes ahead of a chief SPAWN line in `send_lines` and from a census that found the
+  chief short (`chief_body_cmd`, which asks `is_in`). Never while replaying: the ChiefBody row's
+  "never" holds.
+- **Tribute stacks** are no conflict `Cmd`: `place_tribute` books a TRANSFER_TO_CONTAINER that
+  rtsim-jni writes through the core outbox (`placings`, `push_with_op`) under a deterministic op
+  (`tribute_op`), only for a camp that is in. So none is decided while replaying; the census that
+  brings the camp in after the replay places the stack, and a stack decided again after a crash is
+  the same op and amount, which Java answers DUPLICATE_OP (MZB-446).
+- **Raptors and the envoy party** use main's BAND_MATERIALIZE and ENVOY_MATERIALIZE sites, with
+  §6's early returns; M9 adds no site of either.
+- **Observations, not commands:** HAVEN_CHEST, TRADED, CHIEF_PAID and HUNT_APPLIED come from Java.
+  TRADED and CHIEF_PAID carry Java op ids (`Obs::op`, read by the engine's `first_time` and by
+  rtsim-jni `op_of`), so a replayed or copied one is skipped by the op-id dedupe. HUNT_APPLIED's op is the engine's own and is booked by the state of
+  the faction's hunts: a second answer finds no hunt (MZB-449). HAVEN_CHEST has no op id and no
+  holder carries one (GroveChests journals it at once); it is the chest's state, latest wins, so
+  `ingest_copy` drops a copy, as it drops RAIL_PASS (RP-130).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
@@ -893,6 +994,20 @@ Today dragons, herds and ships filter nothing at the session start, so a restore
 reach the new session's Java. The engines' outboxes are nearly always empty at a save under
 rtsim-jni (commands are taken after each ingest and step), so this was rare; the queued column
 closes it.
+
+**As built (slice S, RP-90).** rtsim-ships `outbox.rs`: `gate()` is an exhaustive match on `Cmd`
+with no `_` arm, and the commands are a private `Vec`, so a push around the gate does not compile.
+The table above is the code: the only "never" kind is Materialize (the early returns of §6 make it
+impossible by construction; a bug is counted, kept for the log, not queued, and a `debug_assert!`
+with no release panic). Every other kind drops while replaying, and every kind drops from the
+queue at `begin_replay`. The books stay right for each dropped kind (RP-90): a Timetable, Steer,
+Depart and Despawn are orders to a body of this session, and no body of this session exists
+while replaying (the bodies of the last one are gone, §5.1), so the only reader of a dropped order
+is a body that is not there; a SetCargo sets a hold on a body, and the hold the books keep is
+`cargo_of(&World, ..)`, pure of any command, so dropping it changes no number (the engine's own
+holds and the world's flows are untouched); the Materialize is never decided, so there is none to
+drop. Other routes: `Order::ShipCommand` is held (RP-96, below); a copy goes to `ingest_copy`
+(RP-97).
 
 ## 5. The observation side
 
@@ -1075,7 +1190,10 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   lowers it, RP-84): nothing founds a herd while replaying, and a herd founded after, on a handle
   the last session used for another herd (the pages lack what it founded after its last save), is
   not the one a copy names (such a copy counts late; its floor still counts).
-- **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
+- **Dragons:** nothing is carried; a copied DRAGON_MATERIALIZED would raise the floor only.
+- **Ships:** nothing is carried, and every copy, whatever its kind, raises the floor only
+  (`Ships::ingest_copy`, RP-97): the handle a copy names may be another ship than the earlier
+  session's, so a copy of a sinking or of loot is lost rather than booked to a stranger (§10).
 
 ### 5.8 The DEPART trap (RP-16)
 
@@ -1334,6 +1452,12 @@ mz9f's re-check (R1) adds two temporary guards: no OWED_HUNT is pushed while `re
 gate gives OwedHunt "drop" while replaying and "drop" queued. When feat/mowzie-m9 merges main after
 slice C, the merger deletes both guards (each carries a comment naming fix/replay-push), keeps the
 re-send, and deletes the `outbox.retain` filters for OwedHunt, which `Outbox` replaces.
+
+As built (the M9 merge, RP-131): both guards are deleted and both pushes go through the gate; the
+re-send in `resend_notices` is kept, behind main's NOTICE filter only. M9 had deleted its own two
+OwedHunt filters at its re-check (MZB-449 R1), so none was left to delete. The gate's queued "drop"
+differs from M9's `session_start`, which kept a queued OWED_HUNT: the replay end sends every hunt
+held, so a queued one would only have gone twice.
 
 ## 8. Formats
 
@@ -1620,6 +1744,61 @@ GameTests: none (no ships plugin in Java); rtsim-host's ships runs.
 
 Opus review checks: as slice C's; a kept ship's NextLeg events while replaying drop their commands
 and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
+
+**As built (slice S, RP-90 to RP-99 and RP-120 to RP-122).** The records are in docs/choices-mowzie-build.md, "Slice S
+(ships)".
+
+- **The gate** (§4.7, RP-90): rtsim-ships `outbox.rs`; one "never" kind (Materialize), the rest drop.
+- **The replay's start and end** (§5.1, §5.6, RP-91): `begin_replay(from_pages)` changes no body;
+  `replay_done(&mut World)` makes every ship abstract, cancels every player's interest leg, folds
+  the epoch floors into the ships' epochs, then lays up a ship that was kept sailing only for its
+  view (`lay_up_if_waiting`, §2.4.6a rule 7).
+- **Floors** (§5.3, RP-57, RP-92, RP-99): nine ships kinds name an epoch (State, Materialized,
+  SpawnRejected, Dematerialized, Damaged, Sunk, Boarded, Captured, CargoLooted); Fight, PortFound
+  and HavenFound name none. `Obs::ship_epoch` is an exhaustive match, so a new kind does not
+  compile until it says. A floor for a ship the engine does not have yet is kept past the replay end
+  (a port or haven that joins after, or a ship the replay allocated later). The fold comes before
+  every drop (RP-122): a module switched off for the session, ships with no dock yet and an
+  engine that has not begun its replay all fold, keyed on the session's replay.
+- **The honour and every by-agent lookup** (§5.2, RP-93, RP-120): only on a ship that existed when
+  the session began (`replay_next`, taken once by `Ships::begin_session` from `ships::session_start`;
+  `begin_replay` keeps the smaller bound and the first call's `from_pages`). The bound is not the
+  honour's alone: `ship_of`, `ship_of_op`, both ships of a Fight, the capturing ship and the doer
+  all go through `named_ship`, because the arena's handles are allocated in order and the replay
+  allocates in its own (the network built, ports and havens joined, inside the replayed window).
+  A record about a handle at or above the bound only raises the floor.
+- **Early returns** (§6, RP-94): `seen`, the `SeenPirate` event, `materialize_timetabled`,
+  `materialize_pirate`.
+- **Pirate coast raids** (§6.1, RP-95): `coast_raid` is skipped whole while replaying (not held:
+  nothing retries it); the answer, its reasons and the residual are in the record.
+- **The blind watcher** (§6.1, RP-95): no player is routed to the ships until the replay end, so
+  `point_in_view` and `relaunch_in_view` answer true while replaying (every dock is watched). A
+  relaunch then waits for the slot's next stay, a shut haven's refound reschedules at
+  + `base_days` and bumps the haven's epoch, a navy's assault waits for its next period, and a
+  direct `port_raid` is not made; none is held to the replay end, each looks again at its own next
+  time and the first look after the end is judged by the players routed by then.
+- **Test orders** (§3.6, §4.4, RP-96): `Order::ShipCommand` waits for the replay end.
+- **Copies** (§5.7, RP-97): rtsim-jni routes a REASSERT to `Ships::ingest_copy`, which folds the
+  epoch and does nothing more for every kind; a copied HAVEN_FOUND joins no haven node to the
+  world either.
+- **The link** (§3.2, RP-98): `replay_end` logs the counts; the ships' pages, the outbox and
+  every other format are unchanged.
+
+The paths that hand the ships engine a command or a decision, each with its verdict (RP-96):
+
+| Path | Verdict |
+|---|---|
+| The engine's own events (`run_until`, from `shared::run_to` and from each ingest) | commands go through the gate; decisions that embody return early (RP-94) |
+| `Ships::ingest` of a journaled record (rtsim-jni `journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57), before the module's switch is asked (RP-122) |
+| A copy (REASSERT) | `ingest_copy`: the floor only (RP-97) |
+| `ships::simulate`'s network build, `add_port`, `add_haven`, `add_navy`, `connect` (from journaled PORT_FOUND and HAVEN_FOUND, and from the step) | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 and RP-120 |
+| `reject` (the host's own SPAWN_REJECTED for a command it cannot write) | only after a queued Materialize, which the gate never lets through while replaying |
+| `Order::ShipCommand` | held to the replay end with the units after it (RP-96) |
+| `Order::Phase1Advance` and the other clock orders | held by slice D (RP-74), not in S's `matches!`; the merge takes the union |
+| `lift_closures` (a switch-off) | unchanged: it queues no command |
+| `with_ships_mut` | a test accessor, not a route in the game |
+| The `Viewer` impl's `player_left` | not overridden for ships, so the arm's leave is a no-op for them (U8) |
+| Sightings (`shared::simulate`) | wait for the replay end (§6) |
 
 ## 10. Questions for Ben
 

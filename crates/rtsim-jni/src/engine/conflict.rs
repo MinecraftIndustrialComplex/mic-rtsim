@@ -11,20 +11,28 @@
 //! mirrors:
 //!
 //! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
-//!   are BAND_STATE (counted), CHIEF_STATE (given to the engine at its own time, M6) and
-//!   HAVEN_CHEST (counted as deferred; 0x0093 is retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
-//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID by
-//!   their op ids too) into `Conflict::ingest`, at their own time with the other modules and the
-//!   world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY among them (no war
-//!   party leaves on Peaceful, MZB-17). The Mowzie kinds whose engine half comes with a later
-//!   slice (`Conflict::later`) are decoded, counted as deferred and given to the conflict at its
-//!   present, before the clock runs, so that it spends their op ids as `Replay` does (MZB-23).
-//!   RAIL_PASS is live (M7): its times are translated to world ticks and the conflict holds it
-//!   until its train's arrival; the industry module's journaled TRAIN_ARRIVED and TRAIN_UNWATCHED
-//!   then call [`rail_call`] with the line the train ran (MZB-312).
+//!   are BAND_STATE (counted) and CHIEF_STATE (given to the engine at its own time, M6); 0x0092
+//!   and 0x0093 are retired. The journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
+//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID by their op ids
+//!   too; CAMP_DEATH and HUNT_APPLIED by the engine's own books, which a copy finds spent) into
+//!   `Conflict::ingest`, at their own time with the other
+//!   modules and the world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY
+//!   among them (no war party leaves on Peaceful, MZB-17), and HAVEN_CHEST (M9, MZB-446: a replay
+//!   after a crash knows the chest the session knew; it names the chest's state, so a copy is
+//!   idempotent). A Mowzie kind whose engine half comes with a later
+//!   slice (`Conflict::later`, none since M8's TRAIN_PASSED and M9's grove kinds) is decoded,
+//!   counted as deferred and given to the conflict at its present, before the clock runs, so that
+//!   it spends its op id as `Replay` does (MZB-23). RAIL_PASS is live (M7): its times are
+//!   translated to world ticks and the
+//!   conflict holds it until its train's arrival; the industry module's journaled TRAIN_ARRIVED
+//!   and TRAIN_UNWATCHED then call [`rail_call`] with the line the train ran (MZB-312).
 //!   Java's ids are translated to the conflict's own first (C2-4): items to
-//!   the phase 1 catalogue's goods, bodies to the culture data's, structures and pollution types
+//!   the phase 1 catalogue's goods (a CHIEF_PAID's gold blocks and ingots as the nuggets they are
+//!   worth, MZB-419), bodies to the culture data's, structures and pollution types
 //!   to the conflict's own dictionary; dimensions are Java's ids (the conflict's frames).
+//!   The tribute stacks a grove sends its chest ([`write_tribute`], MZB-423) are written into the
+//!   core's outbox as the dragons' are, and their COMMAND_RESULTs reach the conflict through
+//!   [`after_core`] and [`answered_again`].
 //! - **Signals inside the engine** ([`simulate`], C2-7 to C2-9): each district's learned pollution
 //!   (the Destroy plugin's attribution, I14, written as deposit goods) and, while unloaded, the
 //!   deposits it drains, become continuous sources counted against the player who spent the most
@@ -39,7 +47,7 @@
 //!   view materialize.
 //! - **Commands** ([`write_queue`]): TERRITORY, FACTION_NOTICE, ENVOY_MATERIALIZE,
 //!   BAND_MATERIALIZE, BAND_STEER, BAND_RECALL, DEMAND_SETTLED and the Mowzie kinds (AMBUSH_SPOT,
-//!   CAMP_RECONCILE, TRAIN_ROBBED, CHIEF_BODY, BAND_MARCH), with sequences from the core's
+//!   CAMP_RECONCILE, TRAIN_ROBBED, CHIEF_BODY, BAND_MARCH, OWED_HUNT), with sequences from the core's
 //!   counter after every other module's: all per session (K2-27, as the dragons' S11), so the
 //!   link keeps nothing and none but CAMP_RECONCILE carries an op id; TERRITORY goes again for
 //!   every faction at a session start, and every feud's notice not played yet (NOTICE_SHOWN),
@@ -156,6 +164,8 @@ pub(super) struct Link {
     pub(super) band_states: u64,
     /// Latest-wins CHIEF_STATE records given to the engine (M6, MZB-270).
     pub(super) chief_states: u64,
+    /// Journaled HAVEN_CHEST records given to the engine (M9, MZB-422, MZB-446).
+    pub(super) haven_chests: u64,
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
     pub(super) deferred: u64,
@@ -281,6 +291,7 @@ impl Link {
             commands_written: 0,
             band_states: 0,
             chief_states: 0,
+            haven_chests: 0,
             deferred: 0,
             from_pages: false,
             replay_end_due: false,
@@ -431,6 +442,10 @@ fn reset_if_due(st: &mut State) {
 /// `resend_notices`) says each lurk once. Switched off, it stays due; the reset on switch-on runs
 /// it.
 pub(super) fn replay_end(st: &mut State) {
+    if !running(st) {
+        // The host's replay is over and no camp came back: nothing the held chiefs' states name.
+        st.conflict.engine.discard_held_chief_states();
+    }
     if !st.conflict.replay_end_due || !running(st) {
         return;
     }
@@ -481,20 +496,33 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 // the conflict's own time, so no module catches up for it, through the hand-over
                 // the journaled records use. Latest wins and nothing journals it: a lost one is
                 // mended by the den's next census.
-                Obs::ChiefState(_) => {
+                Obs::ChiefState(c) => {
                     st.conflict.chief_states += 1;
-                    with_infra(st, |c, w, infra| {
-                        let now = c.now();
-                        c.ingest(w, infra, &o, now);
-                    });
-                    st.phase1.taint();
-                    take_commands(st);
+                    if st.replaying {
+                        // The host's replay, not the engine's: the engine's begins once the conflict
+                        // is in the world, after a replayed FACTION_FOUND, and a state arriving before
+                        // it finds its faction unknown. Held for the replay end, where the engine
+                        // applies it over the census bytes the replay brings back (RP-100).
+                        st.conflict.engine.hold_chief_state(&c);
+                        return;
+                    }
+                    give_latest(st, &o);
                 }
                 _ => st.conflict.deferred += 1,
             }
         }
         _ => {}
     }
+}
+
+/// A latest-wins record given to the engine at its own time (no module catches up for it).
+fn give_latest(st: &mut State, o: &Obs) {
+    with_infra(st, |c, w, infra| {
+        let now = c.now();
+        c.ingest(w, infra, o, now);
+    });
+    st.phase1.taint();
+    take_commands(st);
 }
 
 // ---- hooks: journaled records -------------------------------------------------------------------
@@ -545,6 +573,40 @@ fn own_items(st: &State, items: &[Item]) -> Vec<Item> {
         .collect()
 }
 
+/// What an Umvuthi's gold is worth in gold nuggets, the only gold the catalogue trades (MZB-419).
+const TRIBUTE_EQUIVALENTS: [(&str, i32); 3] = [
+    ("minecraft:gold_block", 81),
+    ("minecraft:gold_ingot", 9),
+    ("minecraft:gold_nugget", 1),
+];
+
+/// The items of a CHIEF_PAID as the conflict's goods, gold blocks and ingots counted as the nuggets
+/// they are worth and the entries merged (MZB-419). M3's TRIBUTE_PAID is not translated this way.
+fn tribute_items(st: &State, items: &[Item]) -> Vec<Item> {
+    let nugget = phase1::catalog_good(st, "minecraft:gold_nugget").map(item_of);
+    let mut out: Vec<Item> = Vec::new();
+    for it in items {
+        let name = st.world.java_dict.get(&(wire::DICT_ITEM, it.item));
+        let worth = name.and_then(|n| TRIBUTE_EQUIVALENTS.iter().find(|e| e.0 == n.as_str()));
+        let entry = match (worth, nugget) {
+            (Some(&(_, k)), Some(item)) => Item {
+                item,
+                count: it.count.saturating_mul(k),
+            },
+            (Some(_), None) => continue,
+            (None, _) => match own_item(st, it.item) {
+                Some(item) => Item { item, ..*it },
+                None => continue,
+            },
+        };
+        match out.iter_mut().find(|e| e.item == entry.item) {
+            Some(e) => e.count = e.count.saturating_add(entry.count),
+            None => out.push(entry),
+        }
+    }
+    out
+}
+
 /// Java's ids in an observation as the conflict's own (C2-4). Dimensions stay Java's (frames).
 fn translate(st: &State, o: &mut Obs) {
     match o {
@@ -583,7 +645,7 @@ fn translate(st: &State, o: &mut Obs) {
             p.entry = phase1::world_tick(st, p.entry) as i64;
             p.exit = phase1::world_tick(st, p.exit) as i64;
         }
-        Obs::ChiefPaid(p) => p.items = own_items(st, &p.items),
+        Obs::ChiefPaid(p) => p.items = tribute_items(st, &p.items),
         Obs::TributePaid(t) => t.items = own_items(st, &t.items),
         Obs::GiftGiven(g) => g.items = own_items(st, &g.items),
         Obs::Looted(l) => l.items = own_items(st, &l.items),
@@ -621,6 +683,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         st.conflict.copies_refused += 1;
         st.conflict.engine.fold_epoch(&o);
         return;
+    }
+    if matches!(o, Obs::HavenChest(_)) {
+        st.conflict.haven_chests += 1;
     }
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
@@ -1032,6 +1097,7 @@ fn names_needed(st: &State, q: &Queued) -> Result<Vec<Named>, (String, u32)> {
             }
         }
         Cmd::AmbushSpot(a) => need(wire::DICT_DIMENSION, a.dimension)?,
+        Cmd::OwedHunt(h) => need(wire::DICT_DIMENSION, h.dimension)?,
         Cmd::Reconcile(r) => {
             for l in r.lines.iter().filter(|l| l.body != 0) {
                 need(wire::DICT_BODY, l.body)?;
@@ -1091,7 +1157,10 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         st.conflict.queue.clear();
         return (0, false);
     }
-    let mut highest = 0;
+    let (mut highest, more) = write_tribute(st, w);
+    if more {
+        return (highest, true);
+    }
     while let Some(q) = st.conflict.queue.front().cloned() {
         let names = match names_needed(st, &q) {
             Ok(n) => n,
@@ -1163,6 +1232,7 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
                 }
             }
             Cmd::AmbushSpot(a) => a.dimension = id(wire::DICT_DIMENSION, a.dimension),
+            Cmd::OwedHunt(h) => h.dimension = id(wire::DICT_DIMENSION, h.dimension),
             Cmd::Reconcile(r) => {
                 for l in r.lines.iter_mut().filter(|l| l.body != 0) {
                     l.body = id(wire::DICT_BODY, l.body);
@@ -1193,6 +1263,129 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         st.conflict.queue.pop_front();
     }
     (highest, false)
+}
+
+/// Writes the tribute stacks the groves send to their chests (MZB-423) that are not in the core
+/// outbox yet, as the dragons' lairs' are. Each joins it under its own op id, derived from the
+/// grove and a saved counter, so a restart sends it again and Java answers a stack it already put
+/// DUPLICATE_OP. Returns the highest sequence written and whether some wait for the next buffer.
+fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    if st.conflict.engine.placings().next().is_none() {
+        return (0, false);
+    }
+    let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
+    let todo: Vec<(u64, rtsim_conflict::engine::Placing)> = st
+        .conflict
+        .engine
+        .placings()
+        .filter(|(op, _)| !sent.contains(op))
+        .collect();
+    let mut highest = 0;
+    for (op, p) in todo {
+        let dimension = st
+            .world
+            .java_dict
+            .get(&(wire::DICT_DIMENSION, p.dimension))
+            .cloned();
+        let item = phase1::catalog_item(st, GoodId(u16::try_from(p.good).unwrap_or(u16::MAX)));
+        let (Some(dimension), Some(item)) = (dimension, item) else {
+            // Never written: the goods go back to the grove's stock, and the chest waits to be
+            // reported again.
+            log_error(&format!(
+                "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its grove",
+                p.dimension
+            ));
+            fail_tribute(st, op);
+            continue;
+        };
+        let t = super::TransferCmd {
+            dimension,
+            item: item.to_string(),
+            pos: [p.pos.0, p.pos.1, p.pos.2],
+            count: (p.amount / rtsim_trade::MILLI) as i32,
+        };
+        let need = st.dict_bytes(&[
+            (wire::DICT_DIMENSION, &t.dimension),
+            (wire::DICT_ITEM, &t.item),
+        ]) + wire::cmd::transfer_to_container::SIZE;
+        if need > w.remaining() {
+            return (highest, true);
+        }
+        // The DICT records go first, and the sequence is taken only now, so the buffer's
+        // sequences rise in buffer order.
+        st.dict_id(w, wire::DICT_DIMENSION, &t.dimension);
+        st.dict_id(w, wire::DICT_ITEM, &t.item);
+        let seq = st
+            .outbox
+            .push_with_op(t.clone(), rtsim_kernel::journal::OpId(op));
+        super::write_transfer(st, w, seq, rtsim_kernel::journal::OpId(op), &t);
+        highest = highest.max(seq);
+    }
+    (highest, false)
+}
+
+/// The tick an answer to a tribute stack is booked at: the conflict's and the world's present, or
+/// the record's if later.
+fn tribute_tick(st: &State, gt: i64) -> Tick {
+    Tick(phase1::world_tick(st, gt))
+        .max(st.conflict.engine.now())
+        .max(st.phase1.world.now())
+}
+
+fn fail_tribute(st: &mut State, op: u64) {
+    let at = tribute_tick(st, st.game_time);
+    let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
+    c.tribute_failed(w, op, at);
+    st.phase1.taint();
+}
+
+/// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a stack
+/// of tribute sent to a grove's chest (MZB-423). Applied or a duplicate, the stack is in the
+/// chest and the next goes; failed, the goods go back to the grove's stock and the chest is
+/// forgotten until the plugin reports one again.
+pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
+        return;
+    }
+    if !st.conflict.enabled {
+        // U10: ignored. The stack stays in the core outbox until it is answered again, and Java
+        // answers DUPLICATE_OP if it is already in the chest (`answered_again`).
+        return;
+    }
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
+    let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
+    let known = match rec.aux {
+        obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
+            c.tribute_placed(w, op, at)
+        }
+        obs::command_result::FAILED => c.tribute_failed(w, op, at),
+        _ => false,
+    };
+    if known {
+        st.phase1.taint();
+        take_commands(st);
+    }
+}
+
+/// A COMMAND_RESULT for an op `Replay` already admitted: a tribute stack sent again after the
+/// pages lost its first answer (the conflict was off, or a crash came before a save). Java
+/// answered it DUPLICATE_OP: it is in the chest.
+pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind != obs::COMMAND_RESULT
+        || rec.size() < obs::command_result::SIZE
+        || !st.conflict.enabled
+    {
+        return;
+    }
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
+    let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
+    if c.tribute_placed(w, op, at) {
+        st.outbox.complete(rtsim_kernel::journal::OpId(op));
+        st.phase1.taint();
+        take_commands(st);
+    }
 }
 
 // ---- saves --------------------------------------------------------------------------------------
@@ -1235,6 +1428,8 @@ pub struct ConflictLinkStats {
     pub band_states: u64,
     /// CHIEF_STATE records given to the engine.
     pub chief_states: u64,
+    /// HAVEN_CHEST records (journaled) given to the engine.
+    pub haven_chests: u64,
     /// Records whose engine half comes with a later slice, dropped.
     pub deferred: u64,
     /// Sources the industry engine's districts set or changed.
@@ -1301,6 +1496,7 @@ impl super::Engine {
                 commands_written: l.commands_written,
                 band_states: l.band_states,
                 chief_states: l.chief_states,
+                haven_chests: l.haven_chests,
                 deferred: l.deferred,
                 fed: l.fed,
                 replay_dropped: g.dropped,

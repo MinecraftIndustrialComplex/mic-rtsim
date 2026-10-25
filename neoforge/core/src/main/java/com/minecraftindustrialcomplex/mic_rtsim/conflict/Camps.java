@@ -24,13 +24,17 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.OwnableEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.util.FakePlayer;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -42,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.WeakHashMap;
 
 /**
  * The camp reconciler's Java half (MOWZIE.md §4.9, ledgers 16 and 22; slice M5), mod-agnostic (D4): a
@@ -117,8 +122,18 @@ public final class Camps {
         /** The epoch a census opened; 0 while out. */
         long epoch;
         boolean waiting, recount, reported;
+        /** The throne the latest CAMP_RECONCILE named (MZB-404); null when it named none, and while out. */
+        Vec3 throne;
+        float throneDirection;
+        /** The chief's trade memory the engine sent for this epoch (CHIEF_BODY, MZB-421); null while out. */
+        ChiefMemory memory;
         /** A body of the kind joined beyond the footprint: the next census looks wide for strays (MZB-232). */
         boolean strayWatch;
+        /**
+         * The generation of the chief body this session's lines made, adopted or seated last (memory only; 0 while
+         * none has been this session): a chief-slot body of another generation is a second body (MZB-611).
+         */
+        int chiefGeneration;
         /** The tick a census began being held for a hidden stray chunk (-1 when not held), and the tick of the last scan for one. */
         long holdSince = -1, holdScan;
         /**
@@ -190,6 +205,21 @@ public final class Camps {
             return epoch != 0;
         }
 
+        /** Whether the latest CAMP_RECONCILE named the chief's throne (MZB-404). */
+        public boolean hasThrone() {
+            return throne != null;
+        }
+
+        /** Where the chief sits: the throne the engine named, else the fire pit's centre ({@link #spot}). */
+        public Vec3 throne() {
+            return throne != null ? throne : spot;
+        }
+
+        /** The throne's direction as the jar numbers it (1 to 4): the engine's, else 1 (the fire pit's, MOWZIE.md §7 test 30). */
+        public int throneDirection() {
+            return throne != null ? Math.round(throneDirection) : 1;
+        }
+
         public long epoch() {
             return epoch;
         }
@@ -219,8 +249,17 @@ public final class Camps {
     /** One CAMP_RECONCILE line, as read. */
     record Line(int index, int slot, int generation, String body, int action, int flags, long a, long b) {}
 
-    /** A SPAWN line that waits (a Frostmaw's while a player is near, or the spawn budget). */
-    private record Held(Site site, long epoch, long op, Line line, long since) {}
+    /**
+     * A line that waits. A SPAWN (a Frostmaw's while a player is near, the spawn budget, a chief's while a player
+     * is near its throne), the heir's pair (its SEAT_HEIR in {@code line}, its MASK in {@code mask}; MZB-433), or
+     * a removal (TAKE, REMOVE or SET_OUT-as-take of a body a player is near, Rule U; no time limit).
+     */
+    private record Held(Site site, long epoch, long op, Line line, long since, Line mask, int type) {}
+
+    private static final int HELD_SPAWN = 0, HELD_PAIR = 1, HELD_REMOVAL = 2;
+
+    /** A chief's CHIEF_BODY memory and the epoch it was sent for (MZB-421). */
+    private record ChiefMemory(long epoch, CampKind.ChiefBody body) {}
 
     /** A SET_OUT line, played at the end of the tick unless a materialize hands its body off first. */
     static final class SetOut {
@@ -256,7 +295,16 @@ public final class Camps {
     private int declared;
     /** The camps whose kind looks for strays (a stray radius above zero), by dimension (MZB-595). */
     private final Map<ResourceKey<Level>, List<Site>> strayers = new HashMap<>();
+    /**
+     * The chief bodies the engine has booked dead already, the second bodies (MZB-431, MZB-611). Memory only, never
+     * saved: a weak set that keeps no entity alive. A body is marked when a chief REMOVE naming it arrives (held or
+     * not) or a SEAT_HEIR pair names its generation in L_A, and leaves the set when it leaves the level. Held lines
+     * come and go (a census, CAMP_OUT or a session start clears them), the marks do not.
+     */
+    private final Set<Entity> second = Collections.newSetFromMap(new WeakHashMap<>());
     private final List<Held> held = new ArrayList<>();
+    /** The held lines {@link #playHeld} has still to look at this tick (a seat in place answers the old body's lines stale). */
+    private final ArrayDeque<Held> draining = new ArrayDeque<>();
     private final List<SetOut> setOuts = new ArrayList<>();
     private final Map<UUID, Dying> dying = new LinkedHashMap<>();
     /** CHIEF_STATE records not yet written, by faction, the latest of each (MZB-274). */
@@ -270,6 +318,8 @@ public final class Camps {
     public long polls, pollChanges;
     /** CHIEF_STATE records written, and reports queued (a later one for the same faction replaces the first; MZB-287). */
     public long chiefStates, chiefStatesQueued;
+    /** The Umvuthana's (M9): removals held, pairs held, heirs seated, warriors masked, second bodies met, CHIEF_BODY records taken and written. */
+    public long heldRemovals, heldPairs, heirs, masks, secondBodies, chiefBodies, chiefBodiesWritten, chiefPaid, traded;
 
     /**
      * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
@@ -293,17 +343,22 @@ public final class Camps {
             c.reported = false;
             c.waiting = false;
             c.recount = false;
+            c.throne = null;
+            c.memory = null;
+            c.chiefGeneration = 0; // nothing is known of the chief's generation until a line makes or adopts it (MZB-611)
             c.strayBodies.clear();
             c.holdSince = -1;
             attention.add(c);
         }
         held.clear();
+        draining.clear();
         setOuts.clear();
         dying.clear();
         chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
+        heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = 0;
         polls = pollChanges = 0;
         chiefStates = chiefStatesQueued = 0;
     }
@@ -316,6 +371,7 @@ public final class Camps {
 
     void sessionFailed() {
         held.clear();
+        draining.clear();
         setOuts.clear();
         dying.clear();
         chiefStatesPending.clear();
@@ -332,7 +388,9 @@ public final class Camps {
         byChunk.clear();
         index.clear();
         attention.clear();
+        second.clear();
         held.clear();
+        draining.clear();
         setOuts.clear();
         dying.clear();
         chiefStatesPending.clear();
@@ -354,6 +412,7 @@ public final class Camps {
             if (c.in())
                 out(c, now);
         held.clear();
+        draining.clear();
     }
 
     // ---- kinds and camps ------------------------------------------------------------------------
@@ -516,19 +575,21 @@ public final class Camps {
      * tag off first) is gone from its camp: CAMP_DEATH, killer kind none (§4.9).
      */
     void onLeave(Entity e) {
-        CampMember m = RtsimAttachments.campMember(e);
-        if (m == null)
-            return;
         if (e.getRemovalReason() == null)
             return;
-        Set<Entity> s = index.get(m.faction());
-        if (s != null) {
-            s.remove(e);
-            if (s.isEmpty())
-                index.remove(m.faction());
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m != null) {
+            Set<Entity> s = index.get(m.faction());
+            if (s != null) {
+                s.remove(e);
+                if (s.isEmpty())
+                    index.remove(m.faction());
+            }
+            // A second body discarded by anything else is no death either: death() looks at the mark first.
+            if (e.getRemovalReason() == Entity.RemovalReason.DISCARDED && live() && !RtsimAttachments.isTagged(e))
+                death(e, ConflictRecords.BY_NONE, null, bridge.session().gameTime());
         }
-        if (e.getRemovalReason() == Entity.RemovalReason.DISCARDED && live() && !RtsimAttachments.isTagged(e))
-            death(e, ConflictRecords.BY_NONE, null, bridge.session().gameTime());
+        second.remove(e); // a second body's mark goes when it leaves the level (MZB-611)
     }
 
     private boolean live() {
@@ -605,6 +666,19 @@ public final class Camps {
 
     public int heldLines() {
         return held.size();
+    }
+
+    /**
+     * GameTests only: the camp counts again at the end of this tick, as a body read from disk outside its footprint
+     * asks for (a new epoch; its waiting lines are answered stale). A second body's mark survives it (MZB-611).
+     */
+    public void forceRecount(long faction) {
+        Site c = sites.get(faction);
+        if (c == null)
+            return;
+        c.recount = true;
+        recounts++;
+        attention.add(c);
     }
 
     // ---- the end of a tick ----------------------------------------------------------------------
@@ -772,6 +846,8 @@ public final class Camps {
         staleHeld(c, now);
         c.strayBodies.clear();
         c.epoch = 0;
+        c.throne = null; // the throne and the chief's memory are the epoch's (MZB-404, MZB-421)
+        c.memory = null;
         c.outs++;
         outs++;
     }
@@ -782,9 +858,16 @@ public final class Camps {
             Held h = it.next();
             if (h.site() == c) {
                 it.remove();
-                answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
+                answerStale(h, now);
             }
         }
+    }
+
+    /** A held line answered stale; a pair's both lines. */
+    private void answerStale(Held h, long now) {
+        if (h.mask() != null)
+            answer(h.site(), h.epoch(), h.op(), h.mask(), ConflictRecords.CampBodies.STALE, null, now);
+        answer(h.site(), h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
     }
 
     // ---- the census -----------------------------------------------------------------------------
@@ -861,7 +944,8 @@ public final class Camps {
             int flags = (m == null ? ConflictRecords.CampCensus.BODY_STRAY : 0) | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m == null ? 0 : m.slot(),
                     m == null ? 0 : m.generation(), e.getUUID()));
-            home++;
+            if (c.kind.pooled(e))
+                home++; // FACTION_FOUND's home bodies are the pool's: a grove's chief slot is outside it (MZB-401)
         }
         // What the chief is read from: the footprint's entities, the camp's bodies loaded elsewhere and the strays found wide.
         List<Entity> view = new ArrayList<>(inside);
@@ -878,8 +962,9 @@ public final class Camps {
                 view.add(e);
                 // The camp's size at discovery counts a tagged body loaded away too (MZB-653): after a sim reset a
                 // grove with 4 of its 6 away would else be found at 2 and cap there, and the engine would remove
-                // the 4 as above the cap when they loaded.
-                home++;
+                // the 4 as above the cap when they loaded. The pool's only, as inside (MZB-401).
+                if (c.kind.pooled(e))
+                    home++;
             }
         }
         for (Entity e : wideStrays(level, c, insideSet, strayHome)) {
@@ -889,7 +974,8 @@ public final class Camps {
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, 0, 0, e.getUUID()));
             view.add(e);
             c.strayBodies.put(e.getUUID(), e);
-            home++;
+            if (c.kind.pooled(e))
+                home++;
             strays++;
         }
         c.strayWatch = false;
@@ -905,7 +991,10 @@ public final class Camps {
             if (e.hasData(RtsimAttachments.PENDING))
                 s.ensureReasserted(e);
         int n = bodies.size();
-        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_CENSUS, ConflictRecords.CampCensus.size(n, 0), n, now);
+        // The chief body's trade memory (MZB-420, MZB-434): the players after the bodies, of the body in TRADED_SLOT and GENERATION.
+        List<UUID> traded = chief.traded().size() > CENSUS_CAP ? chief.traded().subList(0, CENSUS_CAP) : chief.traded();
+        int t = traded.size();
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_CENSUS, ConflictRecords.CampCensus.size(n, t), n, now);
         r.putLong(ConflictRecords.CampCensus.FACTION, c.faction);
         r.putLong(ConflictRecords.CampCensus.EPOCH, epoch);
         r.putInt(ConflictRecords.CampCensus.FLAGS, chief.flags());
@@ -914,7 +1003,9 @@ public final class Camps {
         r.putDouble(ConflictRecords.CampCensus.THRONE_Y, chief.y());
         r.putDouble(ConflictRecords.CampCensus.THRONE_Z, chief.z());
         r.putFloat(ConflictRecords.CampCensus.DIRECTION, chief.direction());
-        r.putInt(ConflictRecords.CampCensus.TRADED, 0); // the Umvuthi's trade memory is M9's (MZB-202)
+        r.putInt(ConflictRecords.CampCensus.TRADED, t);
+        r.putInt(ConflictRecords.CampCensus.TRADED_SLOT, chief.tradedSlot());
+        r.putInt(ConflictRecords.CampCensus.TRADED_GENERATION, chief.tradedGeneration());
         for (int i = 0; i < n; i++) {
             CensusBody b = bodies.get(i);
             int o = ConflictRecords.CampCensus.BODIES + i * ConflictRecords.CampCensus.BODY;
@@ -924,6 +1015,11 @@ public final class Camps {
             r.putInt(o + ConflictRecords.CampCensus.B_GENERATION, b.generation());
             r.putLong(o + ConflictRecords.CampCensus.B_UUID_MOST, b.uuid().getMostSignificantBits());
             r.putLong(o + ConflictRecords.CampCensus.B_UUID_LEAST, b.uuid().getLeastSignificantBits());
+        }
+        int t0 = ConflictRecords.CampCensus.BODIES + ConflictRecords.CampCensus.BODY * n;
+        for (int i = 0; i < t; i++) {
+            r.putLong(t0 + i * ConflictRecords.CampCensus.TRADER, traded.get(i).getMostSignificantBits());
+            r.putLong(t0 + i * ConflictRecords.CampCensus.TRADER + 8, traded.get(i).getLeastSignificantBits());
         }
         s.boundary().commit(r);
         c.epoch = epoch;
@@ -986,17 +1082,52 @@ public final class Camps {
         Site c = sites.get(faction);
         ServerLevel level = c == null ? null : bridge.level(c.dimension);
         boolean in = c != null && level != null && c.in() && c.epoch == epoch && !off && playable(level, c);
+        // The throne this reconcile names, for this epoch (MZB-404): none leaves the fire pit and direction 1.
+        if (in) {
+            if ((b.getInt(at + ConflictRecords.CampReconcile.FLAGS) & ConflictRecords.CampReconcile.FLAG_THRONE) != 0) {
+                c.throne = new Vec3(b.getDouble(at + ConflictRecords.CampReconcile.THRONE_X), b.getDouble(at + ConflictRecords.CampReconcile.THRONE_Y),
+                        b.getDouble(at + ConflictRecords.CampReconcile.THRONE_Z));
+                c.throneDirection = b.getFloat(at + ConflictRecords.CampReconcile.DIRECTION);
+            } else {
+                c.throne = null;
+            }
+        }
         List<Line> quiet = new ArrayList<>();
         List<Integer> quietOutcomes = new ArrayList<>();
         Map<Long, ConflictBridge.Party> homecoming = new LinkedHashMap<>();
+        List<Line> ls = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             int o = at + ConflictRecords.CampReconcile.LINES + i * ConflictRecords.CampReconcile.LINE;
-            Line ln = new Line(i, b.getInt(o + ConflictRecords.CampReconcile.L_SLOT), b.getInt(o + ConflictRecords.CampReconcile.L_GENERATION),
+            ls.add(new Line(i, b.getInt(o + ConflictRecords.CampReconcile.L_SLOT), b.getInt(o + ConflictRecords.CampReconcile.L_GENERATION),
                     names.name(Obs.DICT_BODY, b.getInt(o + ConflictRecords.CampReconcile.L_BODY)),
                     b.get(o + ConflictRecords.CampReconcile.L_ACTION) & 0xFF, b.get(o + ConflictRecords.CampReconcile.L_FLAGS) & 0xFF,
-                    b.getLong(o + ConflictRecords.CampReconcile.L_A), b.getLong(o + ConflictRecords.CampReconcile.L_B));
+                    b.getLong(o + ConflictRecords.CampReconcile.L_A), b.getLong(o + ConflictRecords.CampReconcile.L_B)));
+        }
+        // The heir's pair is one unit (MZB-408): a MASK and a SEAT_HEIR together, else both stale.
+        Line mask = null, seat = null;
+        for (Line ln : ls) {
+            if (ln.action() == ConflictRecords.CampReconcile.MASK && mask == null)
+                mask = ln;
+            else if (ln.action() == ConflictRecords.CampReconcile.SEAT_HEIR && seat == null)
+                seat = ln;
+        }
+        boolean pair = mask != null && seat != null;
+        boolean pairPlayed = false;
+        for (Line ln : ls) {
             lines++;
-            int outcome = in ? play(level, c, epoch, op, ln, homecoming, now) : ConflictRecords.CampBodies.STALE;
+            int outcome;
+            if (ln.action() == ConflictRecords.CampReconcile.MASK || ln.action() == ConflictRecords.CampReconcile.SEAT_HEIR) {
+                if (pair && in && (ln == mask || ln == seat)) {
+                    if (!pairPlayed) {
+                        pairPlayed = true;
+                        heirPair(level, c, epoch, op, mask, seat, quiet, quietOutcomes, now);
+                    }
+                    continue;
+                }
+                outcome = ConflictRecords.CampBodies.STALE; // alone, or the camp is not in
+            } else {
+                outcome = in ? play(level, c, epoch, op, ln, homecoming, now) : ConflictRecords.CampBodies.STALE;
+            }
             if (outcome != 0) {
                 quiet.add(ln);
                 quietOutcomes.add(outcome);
@@ -1018,17 +1149,17 @@ public final class Camps {
             return ConflictRecords.CampBodies.STALE;
         boolean chiefLine = (ln.flags() & ConflictRecords.CampReconcile.LINE_CHIEF) != 0;
         if (chiefLine && !c.kind.chiefLines())
-            return ConflictRecords.CampBodies.STALE; // the Umvuthi's lines are M9's (MZB-209)
+            return ConflictRecords.CampBodies.STALE; // a kind with no chief lines answers them stale
         return switch (ln.action()) {
             case ConflictRecords.CampReconcile.SPAWN -> spawnLine(level, c, epoch, op, ln, now, true);
             case ConflictRecords.CampReconcile.ADOPT -> adopt(level, c, epoch, op, ln, now);
-            case ConflictRecords.CampReconcile.TAKE, ConflictRecords.CampReconcile.REMOVE -> takeLine(level, c, epoch, op, ln, now);
+            case ConflictRecords.CampReconcile.TAKE, ConflictRecords.CampReconcile.REMOVE -> takeLine(level, c, epoch, op, ln, now, true);
             case ConflictRecords.CampReconcile.SET_OUT -> {
                 setOuts.add(new SetOut(c, epoch, op, ln));
                 yield 0;
             }
             case ConflictRecords.CampReconcile.HAND_BACK -> handBack(level, c, epoch, op, ln, homecoming, now);
-            default -> ConflictRecords.CampBodies.STALE; // SEAT_HEIR is M9's (MZB-209)
+            default -> ConflictRecords.CampBodies.STALE; // the heir's pair is played whole by heirPair
         };
     }
 
@@ -1044,7 +1175,7 @@ public final class Camps {
         // A recount waiting (a stray joined, or a census held for a hidden chunk, MZB-660) holds every SPAWN: the
         // engine orders one for a slot a stray here is about to fill, and the census that ends the hold stales it.
         if (mayHold && (c.recount || c.kind.holdSpawn(level, c, ln.body(), ln.flags()) || !bridge.session().spendSpawnBudget(1))) {
-            held.add(new Held(c, epoch, op, ln, now));
+            held.add(new Held(c, epoch, op, ln, now, null, HELD_SPAWN));
             heldSpawns++;
             return 0;
         }
@@ -1072,8 +1203,26 @@ public final class Camps {
             return null;
         m.setData(RtsimAttachments.CAMP_MEMBER, new CampMember(c.faction, ln.slot(), ln.generation()));
         m.setPersistenceRequired();
+        if (ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+            c.chiefGeneration = ln.generation(); // the engine's chief now: any other generation standing is a second body (MZB-611)
+        // A chief's SPAWN (not a SEAT_HEIR: an heir's memory is empty) carries the memory CHIEF_BODY sent for this epoch (MZB-421).
+        ChiefMemory memory = c.memory;
+        boolean writes = ln.action() == ConflictRecords.CampReconcile.SPAWN && (ln.flags() & ConflictRecords.CampReconcile.LINE_CHIEF) != 0
+                && memory != null && memory.epoch() == c.epoch;
+        if (writes) {
+            try {
+                c.kind.chiefBody(m, memory.body());
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] writing a chief's memory failed", ex);
+                writes = false;
+            }
+        }
         if (!level.addFreshEntity(m))
             return null; // the join event indexed it and kept it home
+        if (writes) {
+            chiefBodiesWritten++;
+            c.memory = null;
+        }
         return m;
     }
 
@@ -1089,6 +1238,8 @@ public final class Camps {
             untag(e);
         // Its persistence stays the jar's (MZB-210).
         e.setData(RtsimAttachments.CAMP_MEMBER, new CampMember(c.faction, ln.slot(), ln.generation()));
+        if (ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+            c.chiefGeneration = ln.generation();
         indexAdd(e, c.faction);
         c.kind.joined(c, mob);
         adopted++;
@@ -1096,10 +1247,14 @@ public final class Camps {
         return 0;
     }
 
-    /** TAKE and REMOVE: the body (by UUID if the line names one, else by its tag) goes; its record on a marker. */
-    private int takeLine(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
+    /**
+     * The body a TAKE, REMOVE or SET_OUT line names: by UUID when a TAKE or REMOVE names one, else by its tag;
+     * null when it is not there, not alive, or not the camp's.
+     */
+    private Entity lineTarget(ServerLevel level, Site c, Line ln) {
         Entity e;
-        if (ln.a() != 0 || ln.b() != 0) {
+        boolean byUuid = ln.action() != ConflictRecords.CampReconcile.SET_OUT && (ln.a() != 0 || ln.b() != 0);
+        if (byUuid) {
             e = byUuid(level, c, ln.a(), ln.b());
             if (e != null && (!c.kind.isBody(e) || RtsimAttachments.isTagged(e)))
                 e = null;
@@ -1109,13 +1264,30 @@ public final class Camps {
         } else {
             e = tagged(c.faction, ln.slot(), ln.generation());
         }
-        if (e == null || !e.isAlive() || e.isRemoved())
+        return e == null || !e.isAlive() || e.isRemoved() ? null : e;
+    }
+
+    /**
+     * TAKE and REMOVE: the body (by UUID if the line names one, else by its tag) goes; its record on a marker. A
+     * body its kind says a player is near (Rule U, MZB-433) is not taken: the line is held, with no time limit,
+     * until the kind lets it go; an epoch's end answers it stale.
+     */
+    private int takeLine(ServerLevel level, Site c, long epoch, long op, Line ln, long now, boolean mayHold) {
+        Entity e = lineTarget(level, c, ln);
+        if (e == null)
             return ConflictRecords.CampBodies.NOTHING;
+        if (ln.action() == ConflictRecords.CampReconcile.REMOVE)
+            markSecond(e); // the engine has no use for this chief body: held or not, its death is nobody's (MZB-611)
+        if (mayHold && e instanceof Mob mob && c.kind.holdRemoval(level, c, mob)) {
+            held.add(new Held(c, epoch, op, ln, now, null, HELD_REMOVAL));
+            heldRemovals++;
+            return 0;
+        }
         Moved mv = removeWithMarker(level, e);
-        if (ln.action() == ConflictRecords.CampReconcile.TAKE)
-            taken++;
-        else
+        if (ln.action() == ConflictRecords.CampReconcile.REMOVE)
             removed++;
+        else
+            taken++;
         answer(c, epoch, op, ln, ConflictRecords.CampBodies.DONE, mv.marker(), mv.records(), now);
         return 0;
     }
@@ -1126,11 +1298,16 @@ public final class Camps {
      */
     private Moved removeWithMarker(ServerLevel level, Entity e) {
         Marker mk = marker(level, e.position());
+        return new Moved(mk, removeBody(e));
+    }
+
+    /** Takes a body out of the world with no marker and no death: the records it carried (journaled first) for the caller to carry on. */
+    private List<PendingRecords.Entry> removeBody(Entity e) {
         List<PendingRecords.Entry> old = takeRecords(e);
         untag(e);
         e.ejectPassengers();
         e.discard();
-        return new Moved(mk, old);
+        return old;
     }
 
     /**
@@ -1302,38 +1479,296 @@ public final class Camps {
                 answer(so.site, so.epoch, so.op, so.line, ConflictRecords.CampBodies.NOTHING, null, now);
                 continue;
             }
+            // The chief's set-out finds no puppet before M11, so it is a take, and a take waits while a player is near (MZB-414, MZB-433).
+            if (body instanceof Mob mob && so.site.kind.holdRemoval(level, so.site, mob)) {
+                held.add(new Held(so.site, so.epoch, so.op, so.line, now, null, HELD_REMOVAL));
+                heldRemovals++;
+                continue;
+            }
             Moved mv = removeWithMarker(level, body);
             taken++;
             answer(so.site, so.epoch, so.op, so.line, ConflictRecords.CampBodies.DONE, mv.marker(), mv.records(), now);
         }
     }
 
-    /** Held spawns placed once their kind stops waiting, or at {@link #HOLD_MAX}. */
+    /**
+     * Held lines played once their kind stops waiting: a spawn or the heir's pair at {@link #HOLD_MAX} at the
+     * latest, a removal when its kind lets the body go (no limit; an epoch's end answers it stale).
+     */
     private void playHeld(long now) {
-        List<Held> todo = new ArrayList<>(held);
+        draining.addAll(held);
         held.clear();
-        for (Held h : todo) {
+        Held h;
+        while ((h = draining.poll()) != null) {
             Site c = h.site();
             ServerLevel level = bridge.level(c.dimension);
             if (level == null || !c.in() || c.epoch != h.epoch() || !playable(level, c)) {
-                answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
+                answerStale(h, now);
                 continue;
             }
-            if (level.getDifficulty() == Difficulty.PEACEFUL) {
-                // no new body appears on Peaceful (MZB-234); decided before the budget is spent (MZB-599)
-                answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.STALE, null, now);
-                continue;
+            switch (h.type()) {
+                case HELD_REMOVAL -> {
+                    Entity e = lineTarget(level, c, h.line());
+                    if (e == null) {
+                        answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.NOTHING, null, now);
+                    } else if (e instanceof Mob mob && c.kind.holdRemoval(level, c, mob)) {
+                        held.add(h);
+                    } else {
+                        Moved mv = removeWithMarker(level, e);
+                        if (h.line().action() == ConflictRecords.CampReconcile.REMOVE)
+                            removed++;
+                        else
+                            taken++;
+                        answer(c, h.epoch(), h.op(), h.line(), ConflictRecords.CampBodies.DONE, mv.marker(), mv.records(), now);
+                    }
+                }
+                case HELD_PAIR -> {
+                    int r = pairNow(level, c, h.epoch(), h.op(), h.mask(), h.line(), now, h.since(), false);
+                    if (r == PAIR_HELD)
+                        held.add(h);
+                    else if (r == PAIR_STALE)
+                        answerStale(h, now);
+                }
+                default -> {
+                    if (level.getDifficulty() == Difficulty.PEACEFUL) {
+                        // no new body appears on Peaceful (MZB-234); decided before the budget is spent (MZB-599)
+                        answerStale(h, now);
+                        break;
+                    }
+                    // Past HOLD_MAX too while a recount waits: the census that ends the hold stales the line (MZB-660).
+                    boolean wait = c.recount || now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
+                    if (wait || !bridge.session().spendSpawnBudget(1)) {
+                        held.add(h);
+                        break;
+                    }
+                    int outcome = spawnLine(level, c, h.epoch(), h.op(), h.line(), now, false);
+                    if (outcome != 0)
+                        answer(c, h.epoch(), h.op(), h.line(), outcome, null, now);
+                }
             }
-            // Past HOLD_MAX too while a recount waits: the census that ends the hold stales the line (MZB-660).
-            boolean wait = c.recount || now - h.since() < HOLD_MAX && c.kind.holdSpawn(level, c, h.line().body(), h.line().flags());
-            if (wait || !bridge.session().spendSpawnBudget(1)) {
-                held.add(h);
-                continue;
-            }
-            int outcome = spawnLine(level, c, h.epoch(), h.op(), h.line(), now, false);
-            if (outcome != 0)
-                answer(c, h.epoch(), h.op(), h.line(), outcome, null, now);
         }
+    }
+
+    // ---- the heir's pair ------------------------------------------------------------------------
+
+    private static final int PAIR_DONE = 0, PAIR_HELD = 1, PAIR_STALE = 2;
+
+    /**
+     * The heir's pair (MZB-408), played whole or not at all. The first of a reconcile: the pair is done now, or
+     * held (it waits like the chief's SPAWN, MZB-433), or both lines are stale.
+     */
+    private void heirPair(ServerLevel level, Site c, long epoch, long op, Line mask, Line seat, List<Line> quiet, List<Integer> outcomes,
+                           long now) {
+        if (seat.a() != 0) {
+            Mob retired = chiefOfGeneration(c, (int) seat.a(), false);
+            if (retired != null)
+                markSecond(retired); // the pair names it dead away: from now on it is a second body, whether the pair waits or not (MZB-611)
+        }
+        if (pairNow(level, c, epoch, op, mask, seat, now, now, true) == PAIR_STALE) {
+            quiet.add(mask);
+            outcomes.add(ConflictRecords.CampBodies.STALE);
+            quiet.add(seat);
+            outcomes.add(ConflictRecords.CampBodies.STALE);
+        }
+    }
+
+    /**
+     * Whether the pair can be played now and, if so, plays it: the heir is made first, then the warrior goes (its
+     * record on a marker, as a take). It is stale, both lines, when the kind plays no chief lines, the heir stands
+     * already, no warrior is home, a plain seat finds no place or the level is Peaceful (no new body appears
+     * there), or the kind cannot make the heir. It is held while a player is within {@code holdSpawn} of the
+     * throne, at most {@link #HOLD_MAX} ticks after {@code since}, or (seated in place over the old chief's body,
+     * MZB-410) while that body is in a fight a player began, with no time limit: the wait ends with the fight
+     * (MOWZIE.md §4.10; an epoch's end answers it stale). The hold is decided first; the warrior is looked for only
+     * when the pair can go (a held pair is looked at every tick, P3-8).
+     */
+    private int pairNow(ServerLevel level, Site c, long epoch, long op, Line mask, Line seat, long now, long since, boolean first) {
+        if (!c.kind.chiefLines() || seat.slot() != ConflictRecords.CampReconcile.CHIEF_SLOT || mask.body() == null || seat.body() == null)
+            return PAIR_STALE;
+        if (tagged(c.faction, seat.slot(), seat.generation()) != null)
+            return PAIR_STALE; // the heir stands already: its answer was lost, and no second warrior goes for it
+        Mob old = oldChief(c, seat);
+        if (old != null) {
+            if (c.kind.inFight(level, old))
+                return holdPair(c, epoch, op, mask, seat, since, first); // the fight ends it, not the clock (P2-4)
+        } else {
+            if (level.getDifficulty() == Difficulty.PEACEFUL)
+                return PAIR_STALE;
+            if (now - since < HOLD_MAX && c.kind.holdSpawn(level, c, seat.body(), seat.flags()))
+                return holdPair(c, epoch, op, mask, seat, since, first);
+        }
+        Mob warrior = pickWarrior(level, c);
+        if (warrior == null)
+            return PAIR_STALE;
+        Vec3 at;
+        float yaw;
+        if (old != null) {
+            at = old.position();
+            yaw = old.getYRot();
+        } else {
+            at = c.kind.spawnAt(level, c, seat.body(), seat.flags());
+            if (at == null)
+                return PAIR_STALE;
+            yaw = level.random.nextFloat() * 360f - 180f;
+        }
+        Mob heir = makeBody(level, c, seat, at.x, at.y, at.z, yaw);
+        if (heir == null)
+            return PAIR_STALE;
+        List<PendingRecords.Entry> oldRecords = List.of();
+        if (old != null) {
+            staleHeldOf(c, old, now); // its REMOVE (or any other held line) is moot: it goes with no CAMP_DEATH
+            oldRecords = removeBody(old);
+        }
+        CampMember w = RtsimAttachments.campMember(warrior);
+        Moved mv = removeWithMarker(level, warrior);
+        heirs++;
+        masks++;
+        if (old != null)
+            seatedInPlace++;
+        Line taken = new Line(mask.index(), w.slot(), w.generation(), mask.body(), mask.action(), mask.flags(), 0, 0);
+        answer(c, epoch, op, taken, ConflictRecords.CampBodies.DONE, mv.marker(), mv.records(), now);
+        answer(c, epoch, op, seat, ConflictRecords.CampBodies.DONE, heir, oldRecords, now);
+        return PAIR_DONE;
+    }
+
+    /** Seated over the old chief's body (MZB-410), counted for the GameTests. */
+    public long seatedInPlace;
+
+    private int holdPair(Site c, long epoch, long op, Line mask, Line seat, long since, boolean first) {
+        held.add(new Held(c, epoch, op, seat, since, mask, HELD_PAIR));
+        if (first)
+            heldPairs++;
+        return PAIR_HELD;
+    }
+
+    /**
+     * The body of the chief's slot the heir is to sit over (MZB-410): the one of the generation the SEAT_HEIR line
+     * names in L_A (the old chief's, dead away), standing in the footprint. Null for a plain seat at the throne:
+     * no L_A, or no such body here. Any other chief body of the camp is not sat over; it is a second body or the
+     * engine's own chief, and the engine's lines deal with it (P2-3).
+     */
+    private Mob oldChief(Site c, Line seat) {
+        if (seat.a() == 0)
+            return null;
+        return chiefOfGeneration(c, (int) seat.a(), true);
+    }
+
+    /** The camp's live chief-slot body of a generation, in the footprint when {@code inside}; null with none. */
+    private Mob chiefOfGeneration(Site c, int generation, boolean inside) {
+        Set<Entity> s = live(c.faction);
+        if (s == null)
+            return null;
+        for (Entity e : s) {
+            CampMember m = RtsimAttachments.campMember(e);
+            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && m.generation() == generation
+                    && e.isAlive() && !RtsimAttachments.isTagged(e) && e.level().dimension().equals(c.dimension)
+                    && (!inside || c.contains(e.position())))
+                return mob;
+        }
+        return null;
+    }
+
+    /**
+     * The warrior a MASK takes (MZB-408): a body of the camp tagged with a slot and a generation (not the chief's),
+     * standing in the footprint, with no line of its own in flight or held, and the farthest from every non-spectator
+     * player (so one no player is near wins, else the farthest of those that have one near). Ties go to the lower
+     * slot. Null with none at home.
+     */
+    private Mob pickWarrior(ServerLevel level, Site c) {
+        Set<Entity> s = live(c.faction);
+        if (s == null)
+            return null;
+        Mob best = null;
+        double bestD = -1;
+        int bestSlot = 0;
+        for (Entity e : s) {
+            CampMember m = RtsimAttachments.campMember(e);
+            if (!(e instanceof Mob mob) || m == null || m.generation() == 0 || m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT || !e.isAlive()
+                    || RtsimAttachments.isTagged(e) || !c.kind.isBody(e) || c.kind.isChief(e) || !e.level().dimension().equals(c.dimension)
+                    || !c.contains(e.position()) || lineInFlight(c, m, e))
+                continue;
+            double d = Double.MAX_VALUE;
+            for (Player p : level.players())
+                if (!p.isSpectator())
+                    d = Math.min(d, p.distanceToSqr(e));
+            if (best == null || d > bestD || d == bestD && m.slot() < bestSlot) {
+                best = mob;
+                bestD = d;
+                bestSlot = m.slot();
+            }
+        }
+        return best;
+    }
+
+    /** Whether a line of the camp is in flight for a body: a SET_OUT not yet played, or a removal held. */
+    private boolean lineInFlight(Site c, CampMember m, Entity e) {
+        for (SetOut so : setOuts)
+            if (!so.done && so.site == c && names(so.line, m, e))
+                return true;
+        for (Held h : held)
+            if (h.site() == c && h.type() == HELD_REMOVAL && names(h.line(), m, e))
+                return true;
+        for (Held h : draining)
+            if (h.site() == c && h.type() == HELD_REMOVAL && names(h.line(), m, e))
+                return true;
+        return false;
+    }
+
+    /** Whether a TAKE, REMOVE or SET_OUT line names a body (by UUID for a TAKE or REMOVE that has one, else by its tag). */
+    private static boolean names(Line ln, CampMember m, Entity e) {
+        boolean byUuid = ln.action() != ConflictRecords.CampReconcile.SET_OUT && (ln.a() != 0 || ln.b() != 0);
+        if (byUuid)
+            return e.getUUID().equals(new UUID(ln.a(), ln.b()));
+        return ln.slot() == m.slot() && ln.generation() == m.generation();
+    }
+
+    /** The held lines that name a body, answered stale (the body goes in a seat in place). */
+    private void staleHeldOf(Site c, Entity e, long now) {
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m == null)
+            return;
+        for (Iterator<Held> it = held.iterator(); it.hasNext(); ) {
+            Held h = it.next();
+            if (h.site() == c && h.type() == HELD_REMOVAL && names(h.line(), m, e)) {
+                it.remove();
+                answerStale(h, now);
+            }
+        }
+        for (Iterator<Held> it = draining.iterator(); it.hasNext(); ) {
+            Held h = it.next();
+            if (h.site() == c && h.type() == HELD_REMOVAL && names(h.line(), m, e)) {
+                it.remove();
+                answerStale(h, now);
+            }
+        }
+    }
+
+    /**
+     * Whether a chief body is a second one (MZB-431, MZB-611): the engine has booked its slot dead away already, so
+     * nothing it does journals: its death is not a death (no CAMP_DEATH), its drops are cancelled and its
+     * {@code die} takes no warriors with it. It is one when it was marked (a chief REMOVE named it, or a SEAT_HEIR
+     * pair names its generation in L_A: {@link #second}, which no census, CAMP_OUT or session start clears), or when
+     * the camp's chief generation this session is another one than its tag's. A held TAKE is no second body: that
+     * body is still the chief.
+     */
+    public boolean secondBody(Entity e) {
+        if (!second.isEmpty() && second.contains(e))
+            return true;
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m == null || m.slot() != ConflictRecords.CampReconcile.CHIEF_SLOT)
+            return false;
+        Site c = sites.get(m.faction());
+        if (c == null || c.chiefGeneration == 0 || m.generation() == c.chiefGeneration)
+            return false;
+        second.add(e); // the engine's chief is another generation: this one was retired (MZB-611)
+        return true;
+    }
+
+    /** Marks a camp's chief-slot body as second (a tagged chief body only: a stray's death journals nothing anyway). */
+    private void markSecond(Entity e) {
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+            second.add(e);
     }
 
     // ---- answers --------------------------------------------------------------------------------
@@ -1392,12 +1827,47 @@ public final class Camps {
 
     // ---- deaths and takes -----------------------------------------------------------------------
 
-    /** LivingDeathEvent (lowest, not cancelled): a held body's death, journaled once certain. */
+    /**
+     * LivingDeathEvent (lowest, not cancelled): a held body's death, journaled once certain. A second body's is no
+     * death (MZB-431), and the jar posts the event twice for an Umvuthi, so it is keyed on the UUID.
+     */
     void onDeath(LivingEntity dead, DamageSource source) {
         if (RtsimAttachments.campMember(dead) == null || RtsimAttachments.isTagged(dead))
             return;
-        ConflictBridge.Credit credit = ConflictBridge.credit(dead, source); // MZB-261: vanilla's kill credit
+        if (secondBody(dead)) {
+            secondBodies++;
+            return;
+        }
+        ConflictBridge.Credit credit = killer(dead, source);
         dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer()));
+    }
+
+    /**
+     * Who is credited with a camp body's death (MZB-432, M9): the first of a real player the damage names, the
+     * player owner of an {@link OwnableEntity} it names (a tamed wolf), vanilla's kill credit when that is a real
+     * player (a hit of theirs within 100 ticks, even when the death came by a fall), any other source entity as a
+     * mob, else none. A NeoForge {@code FakePlayer} is a machine and never a player's kill (MZB-111); a test's
+     * server player is a real one. Camps only: BAND_CASUALTIES keep {@link ConflictBridge#byKind} (M11 adopts this).
+     */
+    static ConflictBridge.Credit killer(LivingEntity dead, DamageSource source) {
+        Player pl = playerOf(source);
+        if (pl != null)
+            return new ConflictBridge.Credit(ConflictRecords.BY_PLAYER, pl.getUUID());
+        return ConflictBridge.credit(dead, source); // the kill credit, then the source entity's kind, else none
+    }
+
+    /**
+     * The real player a damage source names (MZB-432): the player itself, else the player owner of an
+     * {@link OwnableEntity} (a tamed wolf); null for a machine ({@code FakePlayer}, MZB-111) and any other source.
+     * A plugin's fight watch reads it with the same rule as the kill credit.
+     */
+    public static Player playerOf(DamageSource source) {
+        Entity src = source.getEntity();
+        if (src instanceof Player pl && !(pl instanceof FakePlayer))
+            return pl;
+        if (src instanceof OwnableEntity o && o.getOwner() instanceof Player owner && !(owner instanceof FakePlayer))
+            return owner;
+        return null;
     }
 
     void settleDeaths(long now) {
@@ -1422,6 +1892,10 @@ public final class Camps {
     public boolean take(Entity e, ServerPlayer player) {
         if (RtsimAttachments.campMember(e) == null || RtsimAttachments.isTagged(e) || !live())
             return false;
+        if (secondBody(e)) {
+            untag(e); // a second body is nobody's: put down a stray, and no death is journaled (MZB-431)
+            return true;
+        }
         death(e, ConflictRecords.BY_TAKEN, player == null ? null : player.getUUID(), bridge.session().gameTime());
         return true;
     }
@@ -1431,6 +1905,8 @@ public final class Camps {
         CampMember m = RtsimAttachments.campMember(e);
         if (m == null || !(e.level() instanceof ServerLevel level))
             return;
+        if (secondBody(e))
+            return; // no path journals a second body's death (MZB-431)
         Site c = sites.get(m.faction());
         CampKind kind = c != null ? c.kind : kindOf(e);
         RtsimSession s = bridge.session();
@@ -1455,6 +1931,142 @@ public final class Camps {
         deaths++;
         if (chief) // news only: nothing reaches a player's chat, action bar or title (MZB-275)
             ConflictNews.post(ConflictNews.Event.CHIEF_KILLED, m.faction(), killer);
+    }
+
+    // ---- the chief's trade memory and payments (M9) ---------------------------------------------
+
+    /**
+     * CHIEF_BODY (command, MZB-421): the chief's trade memory at home, kept for the camp's epoch and written to the
+     * chief's body when it is made for a SPAWN, and at once onto a standing chief body (the engine sends it when
+     * a census's traded list was shorter than its own). Another epoch's, a camp that is out and a puppet's (agent
+     * not 0, M11's) are ignored.
+     */
+    void chiefBody(ByteBuffer b, int at, int size, int count) {
+        if (count < 0 || ConflictRecords.ChiefBody.size(count) > size) {
+            bridge.malformed++;
+            return;
+        }
+        if (b.getLong(at + ConflictRecords.ChiefBody.AGENT) != 0)
+            return;
+        Site c = sites.get(b.getLong(at + ConflictRecords.ChiefBody.FACTION));
+        long epoch = b.getLong(at + ConflictRecords.ChiefBody.EPOCH);
+        if (c == null || off || !c.in() || c.epoch != epoch)
+            return;
+        List<UUID> players = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int o = at + ConflictRecords.ChiefBody.TRADED + i * ConflictRecords.ChiefBody.PLAYER;
+            players.add(new UUID(b.getLong(o), b.getLong(o + 8)));
+        }
+        CampKind.ChiefBody memory = new CampKind.ChiefBody(b.getFloat(at + ConflictRecords.ChiefBody.HEALTH),
+                b.getInt(at + ConflictRecords.ChiefBody.FLAGS), List.copyOf(players));
+        chiefBodies++;
+        Mob standing = standingChief(c);
+        if (standing != null) {
+            try {
+                c.kind.chiefBody(standing, memory);
+                chiefBodiesWritten++;
+                c.memory = null;
+                return;
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] writing a chief's memory failed", ex);
+            }
+        }
+        c.memory = new ChiefMemory(epoch, memory);
+    }
+
+    /** The camp's live chief body of its slot that is no second body, or null. */
+    private Mob standingChief(Site c) {
+        Set<Entity> s = live(c.faction);
+        if (s == null)
+            return null;
+        for (Entity e : s) {
+            CampMember m = RtsimAttachments.campMember(e);
+            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && e.isAlive()
+                    && !RtsimAttachments.isTagged(e) && e.level().dimension().equals(c.dimension) && !secondBody(e))
+                return mob;
+        }
+        return null;
+    }
+
+    /** The memory CHIEF_BODY left for a camp's next chief SPAWN, or null (GameTests). */
+    public CampKind.ChiefBody chiefMemory(long faction) {
+        Site c = sites.get(faction);
+        return c == null || c.memory == null || c.memory.epoch() != c.epoch ? null : c.memory.body();
+    }
+
+    /** The camp whose body this is: the one its tag names, else (an untagged stray) the one whose footprint it stands in. */
+    private Site campOf(Entity e) {
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m != null)
+            return RtsimAttachments.isTagged(e) ? null : sites.get(m.faction());
+        if (RtsimAttachments.isTagged(e))
+            return null;
+        for (Site c : sites.values())
+            if (c.dimension.equals(e.level().dimension()) && c.kind.isBody(e) && c.contains(e.position()))
+                return c;
+        return null;
+    }
+
+    /**
+     * A payment to a camp's chief (CHIEF_PAID, a Java op id; MZB-418): {@code items} given by {@code payer}, whose
+     * game profile id is what the jar's trade memory keys on. The chief's slot and generation are its tag's; an
+     * untagged chief standing in a camp's footprint is PAID_STRAY (tribute, no memory entry); anything else writes
+     * nothing. False when none was written (no live session, a machine for a payer, an empty payment, no camp's).
+     */
+    public boolean chiefPaid(LivingEntity chief, Player payer, List<ItemStack> items) {
+        if (!live() || payer == null || payer instanceof FakePlayer || payer.isSpectator())
+            return false;
+        Site c = campOf(chief);
+        if (c == null || !c.reported || !c.kind.isChief(chief))
+            return false;
+        List<ItemStack> real = new ArrayList<>();
+        for (ItemStack it : items)
+            if (!it.isEmpty())
+                real.add(it);
+        if (real.isEmpty())
+            return false;
+        RtsimSession s = bridge.session();
+        CampMember m = RtsimAttachments.campMember(chief);
+        int n = real.size();
+        UUID id = payer.getGameProfile().getId();
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CHIEF_PAID, ConflictRecords.ChiefPaid.size(n), n, s.gameTime());
+        r.putLong(ConflictRecords.ChiefPaid.FACTION, c.faction);
+        r.putInt(ConflictRecords.ChiefPaid.SLOT, m == null ? 0 : m.slot());
+        r.putInt(ConflictRecords.ChiefPaid.GENERATION, m == null ? 0 : m.generation());
+        r.putInt(ConflictRecords.ChiefPaid.FLAGS, m == null ? ConflictRecords.ChiefPaid.PAID_STRAY : 0);
+        r.putLong(ConflictRecords.ChiefPaid.PLAYER_MOST, id.getMostSignificantBits());
+        r.putLong(ConflictRecords.ChiefPaid.PLAYER_LEAST, id.getLeastSignificantBits());
+        for (int i = 0; i < n; i++) {
+            int o = ConflictRecords.ChiefPaid.ITEMS + i * ConflictRecords.ITEM;
+            r.putInt(o + ConflictRecords.I_ITEM, s.itemId(real.get(i).getItem()));
+            r.putInt(o + ConflictRecords.I_COUNT, real.get(i).getCount());
+        }
+        s.boundary().commitWithOpId(r, ConflictRecords.ChiefPaid.OP_ID);
+        chiefPaid++;
+        return true;
+    }
+
+    /**
+     * A masked trade with a camp's minion (TRADED, a Java op id; MZB-417): {@code nuggets} the gold nuggets on either
+     * side of the trade. Written only for a body a camp holds or one standing in a camp's footprint (never a
+     * band's puppet) and for a trade with a gold side. False when none was written.
+     */
+    public boolean traded(LivingEntity body, Player player, int nuggets) {
+        if (!live() || player == null || player instanceof FakePlayer || nuggets <= 0)
+            return false;
+        Site c = campOf(body);
+        if (c == null || !c.reported)
+            return false;
+        RtsimSession s = bridge.session();
+        UUID id = player.getGameProfile().getId();
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.TRADED, ConflictRecords.Traded.SIZE, 0, s.gameTime());
+        r.putLong(ConflictRecords.Traded.FACTION, c.faction);
+        r.putLong(ConflictRecords.Traded.PLAYER_MOST, id.getMostSignificantBits());
+        r.putLong(ConflictRecords.Traded.PLAYER_LEAST, id.getLeastSignificantBits());
+        r.putInt(ConflictRecords.Traded.NUGGETS, nuggets);
+        s.boundary().commitWithOpId(r, ConflictRecords.Traded.OP_ID);
+        traded++;
+        return true;
     }
 
     // ---- a chief's state ------------------------------------------------------------------------

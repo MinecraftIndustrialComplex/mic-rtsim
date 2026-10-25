@@ -88,7 +88,10 @@ pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 pub mod camp;
 pub mod rail;
 
-pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
+pub use camp::{
+    Answered, CHIEF_SLOT, Camp, Chest, Heir, Line, Placing, Retired, STACK_ITEMS, Slot, SlotState,
+    TRADED_CAP, Throne,
+};
 pub use rail::{HeldPass, LineCount, Pin, RailCall, RailMeter, StationEnd, TrackFocus};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
@@ -136,7 +139,33 @@ pub struct Faction {
     /// The ledger of the camp's bodies (MOWZIE.md §4.9), kept for a camp whose bodies a census
     /// counts. Boxed: a camp with none costs a word.
     pub camp: Option<Box<Camp>>,
+    /// The hunts its raids left owed (MZB-424), one for each district a raid fell on: a small
+    /// Vec, never a one-entry map.
+    pub hunts: Vec<Hunt>,
 }
+
+/// An owed hunt (MZB-424, MZB-425): `count` animals near a district's centre die when its chunks
+/// tick, as the raptors' packs would have hunted them had a player watched the raid. In flight
+/// until the plugin answers HUNT_APPLIED with `op`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hunt {
+    pub district: DistrictId,
+    /// The district's centre.
+    pub pos: Pos,
+    pub count: u32,
+    pub op: u64,
+    /// The hunt this one replaced while it was in flight, as its op and `rest`, one deep (MZB-449,
+    /// review P3-8 and the re-check). The plugin may have applied the replaced hunt before it read
+    /// this one, its answer still on the way: it then kills `rest` for this one, the animals the
+    /// replacing raid owes on its own (`min(cap, n)`), not `count`, which holds the replaced
+    /// hunt's animals too. OWED_HUNT carries both.
+    pub replaced: Option<(u64, u32)>,
+}
+
+/// The blocks around a district's centre an owed hunt kills within (PLACEHOLDER, MZB-425).
+pub const HUNT_RADIUS: u32 = 48;
+/// The slot space of the hunts' op ids (`rtsim_world::ribbits::identity_op`).
+const HUNT_SLOT: u64 = 0x4d5a_000a << 32;
 
 /// What an envoy asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -461,6 +490,11 @@ pub(crate) enum Ev {
         faction: u32,
         stamp: u32,
     },
+    /// A camp's chief to come is due (`Camp::heir`, MZB-406). Wheel tag 9.
+    CampHeir {
+        faction: u32,
+        stamp: u32,
+    },
     /// A rail meter's wake: its rate has left the band it was last pushed in, or a day has gone
     /// since the push (`Conflict::rail_wake`, MZB-306). Wheel tag 10.
     Rail {
@@ -540,6 +574,11 @@ pub struct ConflictStats {
     /// bumps its pressure (EQUILIBRIUM.md §2.2, M6).
     pub arrivals: u64,
     pub renewal_losses: u64,
+    /// The grove's tribute stacks put in its chest (MZB-423), the hunts a raid left owed (MZB-424)
+    /// and the animals they killed (HUNT_APPLIED's `killed`).
+    pub tribute_stacks: u64,
+    pub hunts_owed: u64,
+    pub hunts_killed: u64,
     /// The rail meter (MOWZIE.md §4.3, M7): passes counted or held, pushes to the source, wakes
     /// that ran the gate, passes let go (a day unnamed, or pushed out by a cap), passes for a
     /// faction unknown or minding no rail, and calls that named a train's line. Every rail
@@ -866,6 +905,10 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
+    /// The tribute stacks sent to haven chests and not yet answered, by faction (MZB-423): at most
+    /// one for each camp. Saved in the meta page, so the link never walks the factions' rows for
+    /// them.
+    pub placing: Vec<(u32, Placing)>,
     /// Whether the session's replay runs on an engine that came back from its pages (RP-31):
     /// only then is a replayed BAND_MATERIALIZED the last session's answer to this engine's
     /// decision (docs/replay-gate.md §5.2). Set by [`Conflict::begin_replay`]; in memory only.
@@ -946,6 +989,13 @@ pub fn body_names(c: &Cultures) -> Vec<String> {
                 v.push(u.body.clone());
             }
         }
+        // A chief's body kind follows its culture's units, so the units' ids stay as they were
+        // (MZB-401).
+        if let Some(b) = &cu.def.chief_body
+            && !v.contains(b)
+        {
+            v.push(b.clone());
+        }
     }
     v
 }
@@ -955,6 +1005,14 @@ pub fn body_id(c: &Cultures, name: &str) -> u32 {
         .iter()
         .position(|n| n == name)
         .map_or(0, |i| i as u32 + 1)
+}
+
+/// Whether a culture's chief goes into a band as a stack of its own (BAND_CHIEF, MEMBER_CHIEF,
+/// ledger 24). Before M11 gives the grove's chief its aloft puppet, a chief that is a body of its
+/// own has none, so its band carries no chief flag and the Umvuthi stays on its throne until a
+/// held take removes it (MZB-414).
+pub fn chief_stack(c: &crate::culture::Culture) -> bool {
+    c.def.chief_body.is_none()
 }
 
 /// The engine's item dictionary: a world good's id + 1 (named by the catalogue).
@@ -1001,6 +1059,7 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
+            placing: Vec::new(),
             replay_from_pages: false,
             floors: BTreeMap::new(),
             fill_deaths: BTreeMap::new(),
@@ -1101,6 +1160,7 @@ impl Conflict {
                 Ev::Plunder { .. } => "plunder",
                 Ev::Refill { .. } => "refill",
                 Ev::Arrival { .. } => "arrival",
+                Ev::CampHeir { .. } => "camp_heir",
                 Ev::Rail { .. } => "rail",
             };
             *m.entry(k).or_default() += 1;
@@ -1270,6 +1330,7 @@ impl Conflict {
             cap: cu.def.pool_cap,
             away: 0,
             camp: None,
+            hunts: Vec::new(),
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -2694,9 +2755,11 @@ impl Conflict {
             return false;
         };
         let node = self.factions[f as usize].node;
-        for (g, a) in w.stock_from_players(node, goods, at) {
+        let stocked = w.stock_from_players(node, goods, at);
+        for (&g, &a) in &stocked {
             add(&mut self.ledger.tribute, g, a);
         }
+        self.owe_tribute(w, f, &stocked, at);
         let settlers = self.settlers(w);
         // The envoy it was paid to names the demand; at the camp, the payer's own, then the
         // settlers'.
@@ -2745,9 +2808,11 @@ impl Conflict {
             return;
         };
         let node = self.factions[f as usize].node;
-        for (g, a) in w.stock_from_players(node, goods, at) {
+        let stocked = w.stock_from_players(node, goods, at);
+        for (&g, &a) in &stocked {
             add(&mut self.ledger.gifts, g, a);
         }
+        self.owe_tribute(w, f, &stocked, at);
         self.gift_value(w, f, giver, goods, at);
     }
 
@@ -2793,12 +2858,18 @@ impl Conflict {
         at: Tick,
     ) {
         let m = w.market(self.factions[f as usize].node);
+        let tribute = self.tribute_good(w, f);
         let mut coins = 0.0;
         for (&g, &a) in goods {
+            let price = m.price(g);
             let per = if w.goods.is_currency(g) {
                 1.0
+            } else if price == 0 && g == tribute {
+                // The market has no price for the tribute good: the culture's own is worth what
+                // it asks per coin (MZB-416), so 567 gold nuggets are 63 coins.
+                1.0 / self.tribute_per_coin(w, f, g).max(f64::MIN_POSITIVE)
             } else {
-                m.price(g) as f64 / PRICE_ONE as f64
+                price as f64 / PRICE_ONE as f64
             };
             coins += per * a as f64 / MILLI as f64;
         }
@@ -2947,6 +3018,10 @@ impl Conflict {
         if make.is_empty() {
             return None;
         }
+        // A grove's heir that is due goes before any new war party (MZB-616).
+        if kind.is_war() && self.heir_first(f, at) {
+            return None;
+        }
         let want: u32 = make.iter().map(|u| u.1).sum();
         let units = if kind.is_war() {
             // The smaller of the whole warriors and the slots at home with no line in flight
@@ -2994,10 +3069,12 @@ impl Conflict {
             0
         };
         let times = self.times_for(f, &route, at + muster);
-        let chief = matches!(
-            kind,
-            PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege
-        ) && !self.factions[f as usize].chief_out;
+        // The war chief leads the kinds its culture names, once at a time. A culture whose chief
+        // is a body of its own needs it fit to go (MZB-413).
+        let chief_body = self.culture(f).def.chief_body.is_some();
+        let chief = self.culture(f).leads(kind)
+            && !self.factions[f as usize].chief_out
+            && (!chief_body || self.chief_can_lead(f));
         if chief {
             self.factions[f as usize].chief_out = true;
         }
@@ -3034,6 +3111,9 @@ impl Conflict {
         if kind.is_war() {
             self.factions[f as usize].away += start_units;
             self.camp_draw(f, p, start_units, at);
+            if chief && chief_body {
+                self.camp_draw_chief(f, p);
+            }
         }
         let pos = self.factions[f as usize].pos;
         let fid = self.fid(f);
@@ -3398,7 +3478,26 @@ impl Conflict {
             e.2.carry += i64::from(n) * i64::from(ud.carry);
             e.2.blocks += n * ud.breaks;
         }
+        // A chief that leads adds its own strength, in the class of the first unit (MZB-413).
+        let lead = self.chief_strength(p);
+        if lead > 0.0
+            && let Some(&(u, _)) = x.units.iter().find(|e| e.1 > 0)
+            && let Some(e) = m.get_mut(&self.unit_row(x.faction, u).class.threat())
+        {
+            e.1 += lead;
+        }
         m
+    }
+
+    /// What the party's chief adds to its strength while it leads (MZB-413): a culture's
+    /// `chief_strength`, for a party whose chief flag is up.
+    fn chief_strength(&self, p: Handle<Party>) -> f64 {
+        let x = &self.parties[p];
+        if x.chief {
+            f64::from(self.culture(x.faction).def.chief_strength)
+        } else {
+            0.0
+        }
     }
 
     fn strength(&self, p: Handle<Party>) -> f64 {
@@ -3406,7 +3505,8 @@ impl Conflict {
         x.units
             .iter()
             .map(|&(u, n)| f64::from(n) * self.unit_row(x.faction, u).strength)
-            .sum()
+            .sum::<f64>()
+            + self.chief_strength(p)
     }
 
     /// Unit `u` of faction `f` as it fights now: the row its chief's crystal picks (MOWZIE.md
@@ -3740,6 +3840,15 @@ impl Conflict {
                 .collect::<Vec<_>>()
         };
         let parties: Vec<Handle<Party>> = match o {
+            // One the party counted already (a REASSERT, a copy of one: MZB-589) moves nothing, so it
+            // ends no hold: `casualties` drops it after this.
+            Obs::Casualties(cs)
+                if Party::of_agent(cs.agent)
+                    .and_then(|p| self.parties.get(p))
+                    .is_some_and(|x| x.casualty_ops.contains(&cs.op)) =>
+            {
+                return;
+            }
             Obs::Casualties(cs) => by_epoch(cs.agent, cs.epoch),
             Obs::ChiefKilled(ck) if !copy => by_epoch(ck.agent, ck.epoch),
             Obs::Difficulty(d)
@@ -4001,6 +4110,7 @@ impl Conflict {
         let mut stolen_items = 0i64;
         let mut blocks = 0u32;
         let mut words = Vec::new();
+        let mut hunts = 0u32;
         for (class, (count, strength, loads)) in classes {
             let id = fnv1a64(
                 &[
@@ -4034,6 +4144,7 @@ impl Conflict {
             let missing = f64::from(count) * (1.0 - o.survived);
             let lost = ((missing * self.tun.abstract_loss_share).round() as u32).min(count);
             self.lose_units(w, p, |c| c.threat() == class, lost, LossCause::Player);
+            hunts = hunts.saturating_add(self.survivor_hunts(p, class));
             let (got, _) = self.take_industry_loot(w, infra, p, &o.stolen);
             stolen_items += got;
             blocks += o.destroyed_blocks;
@@ -4062,7 +4173,152 @@ impl Conflict {
             "raid",
             format!("raids district {} unwatched: {}", d.0, words.join("; ")),
         );
+        if hunts > 0
+            && let Target::District(_, pos) = self.parties[p].target
+        {
+            self.owe_hunt(f, d, pos, hunts, at);
+        }
         (stolen_items, blocks)
+    }
+
+    /// The hunts the party's survivors of `class` stand for: each unit's `hunts` for each member
+    /// left (MZB-424).
+    fn survivor_hunts(&self, p: Handle<Party>, class: rtsim_industry::threat::ThreatClass) -> u32 {
+        let x = &self.parties[p];
+        x.units
+            .iter()
+            .filter(|e| e.1 > 0)
+            .map(|&(u, n)| {
+                let ud = self.unit_row(x.faction, u);
+                if ud.class.threat() == class {
+                    n.saturating_mul(ud.hunts)
+                } else {
+                    0
+                }
+            })
+            .fold(0u32, u32::saturating_add)
+    }
+
+    /// A raid on an unwatched district leaves `count` hunts owed there (MZB-424, MZB-449): added
+    /// to the one already in flight for the district and capped at the culture's `hunt_cap`, with
+    /// a new op. The hunt it replaces is kept one deep with `rest`, what this raid owes on its own
+    /// (`min(cap, count)`): if the plugin applied the replaced hunt before it read this one, it
+    /// kills `rest` and not the sum (review P3-8 and the re-check, OWED_HUNT's `replaced` and
+    /// `rest`). Nothing is owed on Peaceful, nor by a culture with no cap.
+    /// Public so that a test can stand in for a raid on a district (`with_conflict_mut`).
+    pub fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
+        let cap = self.culture(f).def.hunt_cap;
+        if cap == 0 || self.peaceful {
+            return;
+        }
+        let key = self.factions[f as usize].key;
+        // A replacement takes a new op even within one tick: the op in flight is folded in.
+        let held = self.factions[f as usize]
+            .hunts
+            .iter()
+            .find(|h| h.district == d)
+            .map_or(0, |h| h.op);
+        let slot = fnv1a64(&[d.0.to_le_bytes(), at.0.to_le_bytes(), held.to_le_bytes()].concat());
+        let op = boundary::AGENT_NAMESPACE << 56
+            | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
+        let x = &mut self.factions[f as usize];
+        let (hunt, added) = match x.hunts.iter_mut().find(|h| h.district == d) {
+            Some(h) => {
+                // The hunt in flight is the one replaced; the one it had replaced is forgotten
+                // (a third hunt inside the flight of two applied ones overpays by the oldest,
+                // bounded by the cap).
+                let before = h.count;
+                h.replaced = Some((h.op, count.min(cap)));
+                h.count = before.saturating_add(count).min(cap);
+                h.op = op;
+                h.pos = pos;
+                (*h, h.count - before)
+            }
+            None => {
+                let hunt = Hunt {
+                    district: d,
+                    pos,
+                    count: count.min(cap),
+                    op,
+                    replaced: None,
+                };
+                x.hunts.push(hunt);
+                (hunt, hunt.count)
+            }
+        };
+        // What the raid adds to the books after the cap, not the whole sum again (re-check P3).
+        self.stats.hunts_owed += u64::from(added);
+        // Through the gate (docs/replay-gate.md §4.4): a replay re-derives the raids of the last
+        // session, whose OWED_HUNTs the plugin already had, so the gate drops this push while
+        // replaying; `resend_notices` sends every hunt still held once the replay has caught up
+        // (MZB-449).
+        let cmd = self.hunt_cmd(f, &hunt);
+        self.outbox.push(cmd);
+        self.note(
+            at,
+            Some(f),
+            "hunt",
+            format!("owes {} animals near district {}", hunt.count, d.0),
+        );
+    }
+
+    fn hunt_cmd(&self, f: u32, h: &Hunt) -> Cmd {
+        let (replaced, rest) = h.replaced.unwrap_or((0, 0));
+        Cmd::OwedHunt(boundary::OwedHunt {
+            faction: self.factions[f as usize].key,
+            district: h.district.0,
+            op: h.op,
+            replaced,
+            dimension: u32::from(h.pos.frame),
+            count: h.count,
+            rest,
+            centre: (h.pos.x, h.pos.z),
+            radius: HUNT_RADIUS,
+        })
+    }
+
+    /// The plugin applied a hunt, whatever it killed (MZB-425, MZB-449). It is booked by the
+    /// state of the faction's hunts, never by a set of op ids: an answer clears the hunt it
+    /// names only when its op id is that hunt's own, and a copy finds nothing, the hunt being
+    /// gone.
+    ///
+    /// - The held hunt's op: the hunt is spent, with the replaced one it carried.
+    /// - The replaced op (the plugin applied it before it read the replacement, review P3-8): the
+    ///   animals it killed are not owed again, and the held hunt owes what the replacing raid
+    ///   owed on its own, `rest` (not the sum less the replaced count: the cap clipped that sum,
+    ///   re-check). The held hunt goes to the plugin again with that count and no `replaced`
+    ///   (the plugin keeps the latest command for a district, so the one it holds is replaced; a
+    ///   plugin that applied the held op meanwhile ignores the repeat, M9c). A count of 0 is the
+    ///   hunt cancelled, and is answered with a HUNT_APPLIED that kills none. A held hunt left at
+    ///   0 is cleared.
+    /// - Any other op, an older one or one already booked: nothing, whatever hunt the faction
+    ///   holds.
+    fn hunt_applied(&mut self, h: &boundary::HuntApplied) {
+        let Some(&f) = self.by_key.get(&h.faction) else {
+            return;
+        };
+        let x = &mut self.factions[f as usize];
+        let Some(i) = x.hunts.iter().position(|e| {
+            e.district.0 == h.district && (e.op == h.op || e.replaced.is_some_and(|r| r.0 == h.op))
+        }) else {
+            return;
+        };
+        self.stats.hunts_killed += u64::from(h.killed);
+        let e = &mut x.hunts[i];
+        if e.op == h.op {
+            x.hunts.remove(i);
+            return;
+        }
+        let (_, rest) = e.replaced.take().expect("the replaced hunt matched");
+        e.count = rest;
+        let e = *e;
+        if e.count == 0 {
+            x.hunts.remove(i);
+        }
+        // Through the gate, as in `owe_hunt`: a replayed late answer changes the books and sends
+        // nothing; the hunt that is left goes with `resend_notices`.
+        let cmd = self.hunt_cmd(f, &e);
+        self.outbox.push(cmd);
     }
 
     /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
@@ -4143,9 +4399,19 @@ impl Conflict {
         // over its target only. Below its target a line needs imports or a mint to refill, and a
         // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).
         let m = w.market(i);
+        // A culture with `plunder_goods` takes those goods only and no more than its survivors'
+        // numbers allow, whatever they carry: raptors carry nothing (MZB-427).
+        let livestock: Vec<GoodId> = c
+            .def
+            .plunder_goods
+            .iter()
+            .filter_map(|n| w.goods.find(n))
+            .collect();
+        let only = !c.def.plunder_goods.is_empty();
         let caps: Vec<(GoodId, Amount)> = w
             .goods
             .ids()
+            .filter(|g| !only || livestock.contains(g))
             .map(|g| {
                 let surplus = (m.stock(g) - m.line(g).target).max(0);
                 (g, surplus * c.def.loot_share_milli / 1000)
@@ -4153,7 +4419,14 @@ impl Conflict {
             .filter(|e| e.1 > 0)
             .collect();
         let reach: Amount = caps.iter().map(|e| e.1).sum();
-        if self.carry_milli(p).min(reach) < MILLI {
+        let can_take = |s: &Self| {
+            if only {
+                if s.parties[p].alive() > 0 { reach } else { 0 }
+            } else {
+                s.carry_milli(p).min(reach)
+            }
+        };
+        if can_take(self) < MILLI {
             self.note(
                 at,
                 Some(f),
@@ -4186,16 +4459,18 @@ impl Conflict {
         self.stats.raids_village += 1;
         // The survivors carry off what they can of the caps read before the fight (the fight takes
         // no time, so the market has not moved).
-        let shares = apportion(self.carry_milli(p).min(reach), &caps);
+        let shares = apportion(can_take(self), &caps);
         let want: BTreeMap<GoodId, Amount> = shares.into_iter().filter(|e| e.1 > 0).collect();
-        let got = if c.def.loot_destroyed {
+        // Livestock is eaten where it stands: booked to no one, like loot a culture destroys.
+        let eaten = c.def.loot_destroyed || only;
+        let got = if eaten {
             w.take_stocks(i, &want, at)
         } else {
             w.stock_to_held(i, &want, at)
         };
         let mut items = 0;
         for (g, a) in &got {
-            if c.def.loot_destroyed {
+            if eaten {
                 add(&mut self.ledger.destroyed, *g, *a);
             } else {
                 *self.parties[p].loot.entry(*g).or_default() += a;
@@ -4552,7 +4827,8 @@ impl Conflict {
             .iter()
             .enumerate()
             .map(|(i, &(u, t))| {
-                let chief = x.chief && i == 0 && x.wave == 0;
+                // A chief that is a body of its own has no stack in its band (MZB-414).
+                let chief = x.chief && chief_stack(&c) && i == 0 && x.wave == 0;
                 let bare = c.bare[usize::from(u)] != u && !crystal;
                 boundary::Stack {
                     body: body_id(&self.cultures, &c.unit(u).body),
@@ -4601,7 +4877,11 @@ impl Conflict {
             } else {
                 0
             }) | boundary::BAND_SURFACE
-                | if x.chief { boundary::BAND_CHIEF } else { 0 }
+                | if x.chief && chief_stack(&c) {
+                    boundary::BAND_CHIEF
+                } else {
+                    0
+                }
                 | if arc.is_some() {
                     boundary::BAND_FIGHT
                 } else {
@@ -5264,6 +5544,7 @@ impl Conflict {
             }
             Ev::Refill { faction, stamp } => self.camp_refill(faction, stamp, at),
             Ev::Arrival { faction, stamp } => self.camp_arrival(faction, stamp, at),
+            Ev::CampHeir { faction, stamp } => self.camp_heir_event(faction, stamp, at),
             Ev::Rail {
                 faction,
                 actor,
@@ -5390,11 +5671,14 @@ impl Conflict {
         self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
-            let kept: Vec<Cmd> = self
+            let mut kept: Vec<Cmd> = self
                 .feuds_of(f)
                 .iter()
                 .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
                 .collect();
+            // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
+            let hunts: Vec<Hunt> = self.factions[f as usize].hunts.clone();
+            kept.extend(hunts.iter().map(|h| self.hunt_cmd(f, h)));
             for n in kept {
                 self.outbox.push(n);
             }
@@ -5672,12 +5956,13 @@ impl Conflict {
         m
     }
 
-    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the grove's.
+    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): none now.
     /// The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES, CAMP_DEATH) are built (M4), the
     /// chief's CHIEF_STATE with M6, the rail meter's RAIL_PASS with M7, the lurk's TRAIN_PASSED
-    /// with M8.
-    pub fn later(o: &Obs) -> bool {
-        matches!(o, Obs::HavenChest(_) | Obs::Traded(_) | Obs::ChiefPaid(_))
+    /// with M8 and the grove's (TRADED, CHIEF_PAID, HAVEN_CHEST) with M9. Kept for a later slice's
+    /// new record, which goes here until its engine half is built (MZB-23).
+    pub fn later(_o: &Obs) -> bool {
+        false
     }
 
     /// A record from the plugin, at its game time.
@@ -5703,13 +5988,16 @@ impl Conflict {
             Obs::Materialized(m) => self.materialized(w, m, at),
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
-            Obs::HavenChest(_) | Obs::Traded(_) | Obs::ChiefPaid(_) => {}
             Obs::RailPass(rp) => self.rail_pass(w, rp, at),
             Obs::TrainPassed(tp) => self.train_passed(w, infra, tp, at),
+            Obs::HavenChest(h) => self.haven_chest(w, h, at),
+            Obs::Traded(t) => self.trade_booked(w, t, at),
+            Obs::ChiefPaid(c) => self.chief_paid(w, c, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
+            Obs::HuntApplied(h) => self.hunt_applied(h),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
-            Obs::CampCensus(c) => self.camp_census(c, at),
-            Obs::CampBodies(b) => self.camp_bodies(b, at),
+            Obs::CampCensus(c) => self.camp_census(w, c, at),
+            Obs::CampBodies(b) => self.camp_bodies(w, b, at),
             Obs::CampOut(o) => self.camp_out(o, at),
             Obs::FactionFound(ff) => {
                 let Some(name) = self.java_dict.get(&(4, ff.structure)).cloned() else {
@@ -6115,6 +6403,11 @@ impl Conflict {
             // A RAIL_PASS has no op id and Java never copies one (docs/replay-gate.md §4.4): a
             // copy, were one ever sent, would count its leg twice, so it is dropped (RP-104).
             Obs::RailPass(_) => {}
+            // A HAVEN_CHEST has no op id and no holder carries one (docs/replay-gate.md §4.4): it
+            // is the chest's state, latest wins, so a copy, were one ever sent, could only put an
+            // older chest or free count over a newer one. Dropped, as RP-104 drops RAIL_PASS
+            // (RP-130).
+            Obs::HavenChest(_) => {}
             _ => self.ingest(w, infra, o, at),
         }
     }
@@ -6336,6 +6629,17 @@ impl Conflict {
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
         let cause = self.renewal_cause(f, by);
         self.renewal_bump(f, 1, cause, at);
+        // The Umvuthi that leads a band is the camp's chief slot, away with it: its fall is that
+        // slot's death away (MZB-412), which steps the chief's pressure and sets the heir after
+        // the cowing `chief_falls` just booked. The member renewal's bump above is a boss
+        // culture's (a den has no chief slot), so the two never both run.
+        if self
+            .camp(f)
+            .and_then(|c| c.chief())
+            .is_some_and(|s| s.state.away() && s.party == p)
+        {
+            self.chief_died_away(f, cause, at);
+        }
         // After the pressure, as `lose_units` has it: the wait `party_lost` plans reads it.
         self.chief_unit_lost(p, epoch, at);
         if let Some(a) = self.parties[p].feud.or(killer) {
@@ -6663,6 +6967,10 @@ impl Conflict {
             ("wheel", self.wheel.heap_bytes()),
             ("nodes", self.nodes.heap_bytes()),
             ("applied ops", self.applied_ops.len() * BTREE_U64_BYTES),
+            (
+                "tribute stacks",
+                self.placing.capacity() * std::mem::size_of::<(u32, Placing)>(),
+            ),
             ("players", self.players.len() * BTREE_PLAYER_BYTES),
         ])
     }

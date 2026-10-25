@@ -28,9 +28,10 @@ use std::process::ExitCode;
 use std::collections::BTreeMap;
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
-use rtsim_conflict::culture::{PartyKind, SignalKind};
+use rtsim_conflict::culture::{Cultures, PartyKind, SignalKind};
 use rtsim_conflict::engine::{
-    Conflict, ConflictStats, Demand, LogEntry, Party, Phase, Signal, SlotState, TRIBUTE_PRICE_CAP,
+    CHIEF_SLOT, Conflict, ConflictStats, Demand, LogEntry, Party, Phase, Signal, SlotState,
+    TRIBUTE_PRICE_CAP, Target, item_of,
 };
 use rtsim_conflict::synth::CampRun;
 use rtsim_conflict::{Step, synth};
@@ -76,14 +77,16 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         5,
         "the tribe: envoy, raids, invasion, plunder, the grove in and out",
-        "M2, the ladder and the priced demand, paid and refused",
-        "the rest M9",
+        "M2, the ladder and the priced demand, paid and refused; M9a, the grove: plunder, an \
+         Invasion with its chief, in and out, hunts owed, gifts in nuggets",
+        "",
     ),
     (
         6,
         "renewal of dens and groves",
-        "M6, the den: the wait, the pressure, the farmed rate, the migrant, the steal",
-        "the grove M9",
+        "M6, the den: the wait, the pressure, the farmed rate, the migrant, the steal; M9a, the \
+         grove: the heir's wait, the pressure, the farmed rate",
+        "",
     ),
     (
         7,
@@ -106,11 +109,17 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         10,
         "the camp reconciler",
-        "M4, both cultures' camps against the emulated plugin: the scripted cases and chaos",
-        "the Umvuthi's marches M10, held lines M5 and M9, heirs M9 and M11",
+        "M4, both cultures' camps against the emulated plugin: the scripted cases and chaos; M9a, \
+         a grove's chaos with heirs and Invasions",
+        "the Umvuthi's marches M10, held lines M5 and M9, the chief's casualties on a march M11",
     ),
     (11, "an Invasion with its chief", "", "M10, M11"),
-    (12, "the heir farmed for 60 years", "", "M9"),
+    (
+        12,
+        "the heir farmed for 60 years",
+        "M9a, the Umvuthi killed as its heir stands: the wait and the rate at base 6 and 24",
+        "",
+    ),
     (13, "the march record", "", "M10"),
 ];
 
@@ -221,7 +230,12 @@ fn main(o: Opts) -> i32 {
             4 => rail_run(4, slice, rail::two_dens),
             9 => rail_run(9, slice, rail::trunk),
             5 => grove_ladder(o.seed, slice),
-            6 => den_renewal(slice),
+            6 => {
+                let mut o = den_renewal(slice);
+                grove_renewal(&mut o.checks);
+                o.built = true;
+                o
+            }
             7 => den_kills(slice),
             8 => {
                 let mut out = reconcile_in_flight(slice);
@@ -229,6 +243,7 @@ fn main(o: Opts) -> i32 {
                 out
             }
             10 => camp_reconciler(o.seed, slice),
+            12 => heir_farmed(slice),
             _ => RunOut {
                 run: *n,
                 built: false,
@@ -604,9 +619,10 @@ fn grove_ladder(seed: u64, slice: &'static str) -> RunOut {
     );
     books(&mut out, &c, &w);
     priced_demands(seed, &mut out);
+    grove_rest(&mut out);
     RunOut {
         run: 5,
-        built: false,
+        built: true,
         slice,
         checks: out,
         rungs: tr.rungs,
@@ -1521,6 +1537,8 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
         },
     );
 
+    chief_chaos(seed, &mut out);
+
     RunOut {
         run: 10,
         built: false,
@@ -2054,17 +2072,40 @@ fn den_renewal(slice: &'static str) -> RunOut {
     }
 }
 
-/// Walls that hold no one: every raid on a district is lost to the last unit.
-struct Walls;
+/// Walls that let `survived` of each band through (0: every raid on a district is lost to the last
+/// unit), and a record of the bands they met: (count, strength).
+struct Walls {
+    survived: f64,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, f64)>>>,
+}
+
+type Met = std::sync::Arc<std::sync::Mutex<Vec<(u32, f64)>>>;
+
+impl Walls {
+    fn new(survived: f64) -> (Walls, Met) {
+        let seen = Met::default();
+        (
+            Walls {
+                survived,
+                seen: seen.clone(),
+            },
+            seen,
+        )
+    }
+}
 
 impl Infrastructure for Walls {
     fn districts_near(&mut self, _: u16, _: i64, _: i64, _: i64) -> Vec<DistrictSite> {
         Vec::new()
     }
 
-    fn raid(&mut self, _: &Threat) -> Option<RaidOutcome> {
+    fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
+        self.seen
+            .lock()
+            .expect("the record")
+            .push((t.count, t.strength));
         Some(RaidOutcome {
-            survived: 0.0,
+            survived: self.survived,
             floor: None,
             untested: false,
             stolen: GoodVec::new(),
@@ -2096,7 +2137,7 @@ fn feud_raid(seed: u64, killer: Option<boundary::Uuid>) -> CampRun {
             });
             r.watch = true;
         }
-        None => r.infra = Box::new(Walls),
+        None => r.infra = Box::new(Walls::new(0.0).0),
     }
     come_in(&mut r);
     let raid = theta(&r.c, r.f, Step::Raid);
@@ -2368,6 +2409,800 @@ fn den_kills(slice: &'static str) -> RunOut {
 
     RunOut {
         run: 7,
+        built: true,
+        slice,
+        checks: out,
+        rungs: Vec::new(),
+        stats: None,
+        log: Vec::new(),
+    }
+}
+
+// ---- the grove (slice M9a): the rest of runs 5, 6 and 10, and run 12 ----------------------------
+
+/// The Umvuthi's slot: its state and generation.
+fn chief_of(r: &CampRun) -> Option<(SlotState, u32)> {
+    r.c.camp(r.f)
+        .and_then(|c| c.chief())
+        .map(|s| (s.state, s.generation))
+}
+
+/// The Umvuthi bodies standing in the camp's world.
+fn chief_bodies(r: &CampRun) -> Vec<synth::CampBody> {
+    r.plugin.camps.get(&r.key).map_or_else(Vec::new, |c| {
+        c.bodies
+            .iter()
+            .filter(|b| b.slot == CHIEF_SLOT && b.generation != 0)
+            .copied()
+            .collect()
+    })
+}
+
+/// The warrior bodies standing in the camp's world.
+fn warrior_bodies(r: &CampRun) -> Vec<synth::CampBody> {
+    r.plugin.camps.get(&r.key).map_or_else(Vec::new, |c| {
+        c.bodies
+            .iter()
+            .filter(|b| b.slot != CHIEF_SLOT || b.generation == 0)
+            .copied()
+            .collect()
+    })
+}
+
+/// Where the next heir is due, if one is awaited.
+fn heir_due(r: &CampRun) -> Option<Tick> {
+    r.c.camp(r.f).and_then(|c| c.heir).map(|h| h.due)
+}
+
+/// The shipped cultures with the grove's chief wait changed to `min(cap, base x 2^P)` days, `P`
+/// decaying with `half_life` (all days).
+fn grove_cultures(base: f32, cap: f32, half_life: f32) -> Cultures {
+    let mut cultures = Cultures::builtin();
+    let i = usize::from(cultures.index_of("umvuthana").expect("the grove"));
+    let cu = &mut cultures.list[i];
+    let def = cu.def.chief_renewal.as_mut().expect("a chief renewal def");
+    def.base_days = base;
+    def.cap_days = cap;
+    def.half_life_days = half_life;
+    let rule = def
+        .rule("umvuthana", "chief_renewal")
+        .expect("a resolvable rule");
+    cu.chief_renewal.as_mut().expect("a chief renewal").rule = rule;
+    cultures
+}
+
+/// A grove of nine whose plunder drive is off, so the bands a run orders are the only ones about.
+fn quiet_grove(seed: u64) -> CampRun {
+    let mut cultures = Cultures::builtin();
+    for k in &mut cultures.list {
+        k.def.plunder_mean_days = None;
+    }
+    CampRun::with_cultures(seed, cultures, "umvuthana", 9)
+}
+
+/// The camp comes in and waits out its first heir: the generation of the Umvuthi seated, if one.
+fn seat_first(r: &mut CampRun) -> Option<u32> {
+    come_in(r);
+    let due = heir_due(r)?;
+    r.run(due + 100);
+    chief_of(r).filter(|c| c.0 == SlotState::Body).map(|c| c.1)
+}
+
+/// A band of the grove's order ordered at the refinery now, and the camp's answers delivered.
+fn send(r: &mut CampRun, kind: PartyKind) -> Option<rtsim_kernel::handle::Handle<Party>> {
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, synth::REFINERY_POS);
+    let p = r.c.order_party(&mut r.w, r.key, kind, target, None, at);
+    r.flush(at);
+    p
+}
+
+/// Run 5, the rest (slice M9a): what the grove adds to the ladder. Each is a check.
+fn grove_rest(out: &mut Vec<Check>) {
+    plunder_livestock(out);
+    invasion_with_chief(out);
+    grove_in_and_out(out);
+    hunts_capped(out);
+    gifts_in_nuggets(out);
+}
+
+/// MZB-427: a grove's plunder band takes its `plunder_goods` (leather and wool) and nothing else,
+/// whatever it carries (a raptor carries nothing), and eats what it takes where it stands: the
+/// goods are booked destroyed, none lands at the haven and the band brings nothing home. The
+/// villages put up no defence, so the band lives to take what it can; eight worlds.
+fn plunder_livestock(out: &mut Vec<Check>) {
+    let (mut raided, mut eaten, mut bad) = (0u32, 0i128, Vec::<String>::new());
+    for seed in 1..=8u64 {
+        let (mut w, _) = synth::world(seed);
+        let mut c = synth::conflict(seed, &w);
+        c.tun.village_defence_per_pop = 0.0;
+        for k in &mut c.cultures.list {
+            k.def.plunder_mean_days = None;
+        }
+        c.add_faction(
+            &mut w,
+            synth::CAMP,
+            "umvuthana",
+            synth::CAMP_POS,
+            Tick::ZERO,
+        )
+        .expect("the grove");
+        let culture = c
+            .cultures
+            .get(c.cultures.index_of("umvuthana").expect("the grove"))
+            .clone();
+        let mut prey: Vec<usize> = (0..w.nodes.len())
+            .filter(
+                |&i| matches!(w.nodes[i].kind, NodeKind::Village(cu) if culture.hates(cu.name())),
+            )
+            .collect();
+        prey.sort_by_key(|&i| {
+            let p = w.nodes[i].pos;
+            let dx = i64::from(p.x - synth::CAMP_POS.x);
+            let dz = i64::from(p.z - synth::CAMP_POS.z);
+            (dx * dx + dz * dz, i)
+        });
+        let Some(&i) = prey.first() else { continue };
+        let Some(p) = c.order_party(
+            &mut w,
+            synth::CAMP,
+            PartyKind::Plunder,
+            Target::Node(i),
+            None,
+            Tick::from_days(1),
+        ) else {
+            bad.push(format!("seed {seed}: no band"));
+            continue;
+        };
+        // Run to the band's arrival, and the world with it.
+        let at = loop {
+            let x = &c.parties[p];
+            if x.phase == Phase::Out && x.seg as usize + 2 >= x.route.len() {
+                let at = x.times[x.seg as usize + 1];
+                w.run_until(at);
+                break at;
+            }
+            let Some(next) = c.next_due() else {
+                bad.push(format!("seed {seed}: the band never arrives"));
+                break Tick::ZERO;
+            };
+            c.run_until(&mut w, &mut NoInfrastructure, next);
+        };
+        if at == Tick::ZERO {
+            continue;
+        }
+        // Every good stands 100 items over its target.
+        let goods: Vec<rtsim_trade::GoodId> = w.goods.ids().collect();
+        let m = w.market(i);
+        let rich: BTreeMap<rtsim_trade::GoodId, rtsim_trade::Amount> = goods
+            .iter()
+            .map(|&g| (g, m.line(g).target + 100 * MILLI - m.stock(g)))
+            .filter(|e| e.1 > 0)
+            .collect();
+        w.stock_from_players(i, &rich, at);
+        let (leather, wool) = (
+            w.goods.find("leather").expect("leather"),
+            w.goods.find("wool").expect("wool"),
+        );
+        let m = w.market(i);
+        let reach: i128 = [leather, wool]
+            .iter()
+            .map(|&g| {
+                i128::from(
+                    (m.stock(g) - m.line(g).target).max(0) * culture.def.loot_share_milli / 1000,
+                )
+            })
+            .sum();
+        let taken = |c: &Conflict, g| c.ledger.from_villages.get(&g).copied().unwrap_or(0);
+        let before: Vec<i128> = goods.iter().map(|&g| taken(&c, g)).collect();
+        let landed = c.ledger.landed.clone();
+        let raids = c.stats.raids_village;
+        c.run_until(&mut w, &mut NoInfrastructure, at);
+        if c.stats.raids_village == raids {
+            continue;
+        }
+        raided += 1;
+        let mut items = 0;
+        for (k, &g) in goods.iter().enumerate() {
+            let got = taken(&c, g) - before[k];
+            if g == leather || g == wool {
+                items += got;
+            } else if got != 0 {
+                bad.push(format!("seed {seed}: took {got} of good {k}, no livestock"));
+            }
+        }
+        eaten += items;
+        let strange = c
+            .ledger
+            .destroyed
+            .keys()
+            .filter(|&&g| g != leather && g != wool)
+            .count();
+        if items <= 0 || items > reach {
+            bad.push(format!(
+                "seed {seed}: took {} milli-items, reach {reach}",
+                items
+            ));
+        }
+        if strange != 0 || c.ledger.landed != landed || !c.parties[p].loot.is_empty() {
+            bad.push(format!(
+                "seed {seed}: livestock was not eaten where it stood"
+            ));
+        }
+        while c.parties.get(p).is_some() {
+            let Some(next) = c.next_due() else { break };
+            c.run_until(&mut w, &mut NoInfrastructure, next);
+        }
+        w.run_until(c.now());
+        if let Err(e) = c.check(&w) {
+            bad.push(format!("seed {seed}: books: {e:?}"));
+        }
+    }
+    check(
+        out,
+        "plunder takes leather and wool only, up to the band's reach whatever it carries, and eats \
+         it where it stands",
+        bad.is_empty() && raided >= 4,
+        if bad.is_empty() {
+            format!(
+                "{raided} raids of 8 worlds ate {} items; nothing else taken, none landed",
+                eaten / i128::from(MILLI)
+            )
+        } else {
+            format!(
+                "{} findings, first: {:?}",
+                bad.len(),
+                &bad[..bad.len().min(3)]
+            )
+        },
+    );
+}
+
+/// MZB-413, MOWZIE.md ledger 4: the Umvuthi leads an Invasion and no raid. The Invasion's band
+/// (six warriors, two raptors) with its chief meets the district's walls at 6 x 0.4 + 2 x 2.6 + 5 =
+/// 12.6; a raid of three warriors and a raptor at 3.8, the chief left on its throne. Home again,
+/// the chief stands in its slot as before.
+fn invasion_with_chief(out: &mut Vec<Check>) {
+    let mut r = quiet_grove(8);
+    let (walls, met) = Walls::new(1.0);
+    r.infra = Box::new(walls);
+    let Some(seat) = seat_first(&mut r) else {
+        check(
+            out,
+            "an Invasion draws the Umvuthi and fights at 12.6",
+            false,
+            "no heir".into(),
+        );
+        return;
+    };
+    let raid = send(&mut r, PartyKind::Raid).is_some();
+    let stays = chief_of(&r) == Some((SlotState::Body, seat));
+    r.settle();
+    let invasion = send(&mut r, PartyKind::Invasion);
+    let leaves = chief_of(&r).map(|c| c.0) == Some(SlotState::Left)
+        && invasion.is_some_and(|p| r.c.parties[p].chief);
+    r.settle();
+    let home = chief_of(&r) == Some((SlotState::Body, seat)) && chief_bodies(&r).len() == 1;
+    let fights: Vec<(u32, f64)> = met.lock().expect("the record").clone();
+    let held = holds(&mut r);
+    check(
+        out,
+        "an Invasion draws the Umvuthi and fights at 12.6; a raid leaves it on its throne at 3.8",
+        raid && stays
+            && leaves
+            && home
+            && held
+            && fights.len() == 2
+            && (fights[0].1 - 3.8).abs() < 1e-9
+            && (fights[1].1 - 12.6).abs() < 1e-9,
+        format!(
+            "fights (count, strength) {fights:?}; the chief stayed for the raid: {stays}, left with \
+             the Invasion: {leaves}, home in its generation: {home}; books hold: {held}"
+        ),
+    );
+}
+
+/// The grove in and out with bands abroad (the plugin's census answering, MOWZIE.md §4.9), the
+/// Umvuthi leading the Invasions: the camp goes out while a band is away and comes in again. No
+/// census books a living survivor dead, the pool refills to its cap while a band is out, and
+/// every survivor's slot is kept (I1 to I6 after every round).
+fn grove_in_and_out(out: &mut Vec<Check>) {
+    let mut r = quiet_grove(9);
+    let (walls, _) = Walls::new(0.5);
+    r.infra = Box::new(walls);
+    let Some(seat) = seat_first(&mut r) else {
+        check(out, "the grove in and out", false, "no heir".into());
+        return;
+    };
+    let (mut ok, mut why) = (true, String::new());
+    let mut away_refills = 0;
+    for round in 0..6u32 {
+        let band = send(
+            &mut r,
+            if round % 2 == 0 {
+                PartyKind::Invasion
+            } else {
+                PartyKind::Raid
+            },
+        );
+        ok &= band.is_some();
+        // The camp is unloaded while the band is out, and a day later loaded again.
+        let at = r.c.now() + 50;
+        r.run(at);
+        r.camp_out();
+        let at = r.c.now() + at_day(1.0).0;
+        r.run(at);
+        r.camp_in();
+        let at = r.c.now() + 20;
+        r.run(at);
+        if band.is_some_and(|p| r.c.parties.get(p).is_some()) {
+            // The band is still out: the pool refilled to its cap meanwhile, the survivors' slots
+            // kept (the audit says the books match the world).
+            let away = r.c.camp(r.f).map_or(0, |c| c.away_count());
+            away_refills += u32::from(away > 0);
+        }
+        r.settle();
+        let at = r.c.now() + at_day(6.0).0;
+        r.run(at);
+        let books = holds(&mut r);
+        let counts = slot_counts(&r);
+        let full = counts[SlotState::Body as usize] == 10 && warrior_bodies(&r).len() == 9;
+        if !books || !full || chief_of(&r).map(|c| c.0) != Some(SlotState::Body) {
+            ok = false;
+            why = format!("round {round}: books {books}, slots {counts:?}");
+            break;
+        }
+    }
+    let lost = r.c.stats.camp_written_off;
+    check(
+        out,
+        "the grove in and out: bands leave and come home, the pool refills to its cap, no census \
+         books a living survivor dead",
+        ok && lost == 0 && r.ghosts.is_empty() && chief_of(&r).map(|c| c.1) == Some(seat),
+        format!(
+            "6 rounds of Invasion and Raid with the camp out and in; {} deaths booked, {lost} \
+             written off, {} ghosts, {away_refills} rounds with a band away at the census; {why}",
+            r.c.stats.camp_deaths,
+            r.ghosts.len()
+        ),
+    );
+}
+
+/// MZB-424, MZB-449: hunts are never over the culture's cap. A grove's raids on one district, each
+/// survived whole, leave two animals a raptor; they add up to the cap (8) and no further, under a
+/// new op each time; the plugin's answer, whatever it killed, spends them.
+fn hunts_capped(out: &mut Vec<Check>) {
+    let mut r = quiet_grove(11);
+    let (walls, _) = Walls::new(1.0);
+    r.infra = Box::new(walls);
+    come_in(&mut r);
+    let cap =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .def
+            .hunt_cap;
+    let (mut most, mut counts, mut ops) = (0, Vec::new(), std::collections::BTreeSet::new());
+    for _ in 0..8 {
+        send(&mut r, PartyKind::Raid);
+        r.settle();
+        let owed: Vec<_> = r.c.factions[r.f as usize]
+            .hunts
+            .iter()
+            .map(|h| (h.count, h.op))
+            .collect();
+        for &(n, op) in &owed {
+            most = most.max(n);
+            ops.insert(op);
+        }
+        counts.push(owed.iter().map(|e| e.0).sum::<u32>());
+    }
+    let sent = r
+        .cmds
+        .iter()
+        .filter(|(_, c)| matches!(c, Cmd::OwedHunt(_)))
+        .count();
+    let at = r.c.now() + 1;
+    r.plugin.apply_hunts(3, at);
+    r.run(at + 5);
+    let spent = r.c.factions[r.f as usize].hunts.is_empty() && r.c.stats.hunts_killed == 3;
+    check(
+        out,
+        "hunts are never over the culture's cap, and an answer spends them whatever it killed",
+        most == cap
+            && counts.iter().all(|&n| n <= cap)
+            && ops.len() == sent
+            && spent
+            && holds(&mut r),
+        format!(
+            "owed after each of 8 raids {counts:?} (cap {cap}); {} ops over {sent} commands; the \
+             plugin killed 3 and the hunt is spent: {spent}",
+            ops.len()
+        ),
+    );
+}
+
+/// The relief a player's payment brings (the grievance it takes off a killing's), in a fresh grove.
+fn gift_relief(pay: impl FnOnce(&mut CampRun)) -> f64 {
+    let mut r = grove_run(10, 9);
+    r.kill(40.0);
+    let g0 = r.c.feud_view(r.key, r.player).map_or(0.0, |v| v.grievance);
+    pay(&mut r);
+    g0 - r.c.feud_view(r.key, r.player).map_or(0.0, |v| v.grievance)
+}
+
+/// A payment of `n` of the good `name` to a stray Umvuthi (a gift), as the plugin reports it.
+fn gift(r: &mut CampRun, name: &str, n: i32) {
+    let g = r.w.goods.find(name).expect("a good of the synthetic world");
+    let id = item_of(g);
+    r.c.define(2, id, name);
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::ChiefPaid(boundary::ChiefPaid {
+            faction: r.key,
+            slot: 0,
+            generation: 0,
+            flags: boundary::PAID_STRAY,
+            player: synth::PLAYER,
+            op: 0x31,
+            items: vec![boundary::Item { item: id, count: n }],
+        }),
+        at,
+    );
+}
+
+/// MZB-416, MZB-447, MOWZIE.md ledger 12: no market prices gold, so a gold gift is worth its
+/// nuggets over the grove's 9 a coin: 81 nuggets soften a feud as 9 emeralds do, and a trade's 810
+/// at a tenth of that.
+fn gifts_in_nuggets(out: &mut Vec<Check>) {
+    let nuggets = gift_relief(|r| gift(r, "gold_nugget", 81));
+    let coins = gift_relief(|r| gift(r, "emerald", 9));
+    let traded = gift_relief(|r| {
+        let at = r.c.now();
+        let t = Obs::Traded(boundary::Traded {
+            faction: r.key,
+            player: synth::PLAYER,
+            nuggets: 810,
+            op: 0x33,
+        });
+        r.c.ingest(&mut r.w, &mut *r.infra, &t, at);
+    });
+    check(
+        out,
+        "gold gifts are worth nuggets over 9 a coin, a trade a tenth of that",
+        nuggets > 1.0 && (nuggets - coins).abs() < 1e-9 && (traded - coins).abs() < 1e-9,
+        format!(
+            "relief of 81 nuggets {nuggets:.4}, of 9 emeralds {coins:.4}, of a trade of 810 nuggets {traded:.4}"
+        ),
+    );
+}
+
+/// Run 6, the grove (slice M9a): the warriors refill by their rate with the chief's slot
+/// untouched; a grove found without its Umvuthi seats its heir at the cap's 192 days, or at once
+/// when a stray turns up.
+fn grove_renewal(out: &mut Vec<Check>) {
+    // An emptied grove refills to its cap of 9 at 2 a day.
+    let mut r = grove_run(650, 9);
+    let seat = seat_first(&mut r);
+    let throne = chief_bodies(&r).first().map(|b| b.uuid);
+    let died = r.c.now() + 1;
+    for b in warrior_bodies(&r) {
+        r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, died);
+    }
+    r.run(died + 5);
+    let emptied = warrior_bodies(&r).len();
+    let (mut full, mut day_one, mut over) = (None, 0, false);
+    let mut t = died;
+    while t < died + at_day(10.0).0 {
+        t += HOUR;
+        r.run(t);
+        let n = warrior_bodies(&r).len();
+        if (t.0 - died.0) / HOUR == 24 {
+            day_one = n;
+        }
+        over |= n > 9;
+        if full.is_none() && n == 9 {
+            full = Some((t.0 - died.0) as f64 / TICKS_PER_DAY as f64);
+        }
+    }
+    let same = chief_of(&r) == seat.map(|g| (SlotState::Body, g))
+        && chief_bodies(&r).first().map(|b| b.uuid) == throne;
+    check(
+        out,
+        "an emptied grove refills to its cap of 9 at 2 a day, its chief untouched",
+        seat.is_some()
+            && emptied == 0
+            && !over
+            && same
+            && full.is_some_and(|d| (4.0..5.0).contains(&d))
+            && (1..=3).contains(&day_one)
+            && holds(&mut r),
+        format!(
+            "{emptied} left, {day_one} after one day, full after {full:?} days; the Umvuthi stands in \
+             its own slot and body: {same}"
+        ),
+    );
+
+    // A grove found without its Umvuthi: its heir at the cap's 192 days, nothing before.
+    let mut r = grove_run(651, 9);
+    let wait = heir_due(&r).map(|t| (t.0 - 1) as f64 / TICKS_PER_DAY as f64);
+    come_in(&mut r);
+    r.run(at_day(191.0));
+    let before = r
+        .plugin
+        .applied
+        .iter()
+        .filter(|a| a.line.action == boundary::ACTION_MASK)
+        .count();
+    let seat = seat_first(&mut r);
+    let masked = r
+        .plugin
+        .applied
+        .iter()
+        .filter(|a| a.line.action == boundary::ACTION_MASK && a.outcome == boundary::LINE_DONE)
+        .count();
+    check(
+        out,
+        "a grove found without its Umvuthi seats its heir at 192.00 days, none before",
+        near_days(wait, 192.0) && before == 0 && seat.is_some() && masked == 1 && holds(&mut r),
+        format!(
+            "booked at {wait:?} days; {before} masks by day 191; seated {seat:?} with {masked} mask; \
+             {} warriors and one Umvuthi stand",
+            warrior_bodies(&r).len()
+        ),
+    );
+
+    // Or at once, when its census finds an untagged Umvuthi.
+    let mut r = grove_run(652, 9);
+    let umvuthi =
+        rtsim_conflict::engine::body_id(&r.c.cultures, "mic_rtsim:conflict/umvuthana/umvuthi");
+    if let Some(b) = r.plugin.camp_world(r.key).bodies.first_mut() {
+        b.body = umvuthi;
+        b.chief = true;
+    }
+    come_in(&mut r);
+    check(
+        out,
+        "a grove whose census finds an untagged Umvuthi adopts it at once, its wait over",
+        heir_due(&r).is_none()
+            && matches!(chief_of(&r), Some((SlotState::Body, g)) if g != 0)
+            && chief_bodies(&r).len() == 1
+            && warrior_bodies(&r).len() == 9
+            && r.c.now() < at_day(1.0)
+            && holds(&mut r),
+        format!(
+            "chief {:?} at tick {}, {} warriors",
+            chief_of(&r),
+            r.c.now().0,
+            warrior_bodies(&r).len()
+        ),
+    );
+}
+
+/// Run 10's grove arm (slice M9a): chaos on groves whose chief waits hours, not months, so heirs
+/// are seated again and again between the camp's comings and goings, Invasions that take the chief,
+/// kills, answers lost, late and replayed, and session restarts. After every event: no grove holds
+/// two live chief bodies, the chief is in no pool count, and each MASK that was done has its
+/// SEAT_HEIR done in the same reconcile.
+fn chief_chaos(seed: u64, out: &mut Vec<Check>) {
+    use rtsim_kernel::rng::{StreamKey, SystemId};
+    const SYS: SystemId = SystemId::named("sim.mowzie.chief_chaos");
+    let (mut bad, mut events) = (Vec::<String>::new(), 0u32);
+    let (mut seated, mut led, mut orders) = (0usize, 0u32, 0u32);
+    for k in 0..32u64 {
+        let cultures = grove_cultures(0.2, 0.8, 2.0);
+        let mut r = CampRun::with_cultures(seed + 300 + k, cultures, "umvuthana", 9);
+        r.plugin.fight = Some(synth::Fight {
+            kill_share: 0.4,
+            after: 200,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        r.watch = k % 2 == 0;
+        let cs = seed * 1000 + k;
+        r.plugin.holders_again = !cs.is_multiple_of(3);
+        r.plugin.split_answers = [0, 0, 1][(cs % 3) as usize];
+        let mut rng = StreamKey::new(cs, SYS, r.key).slot(0);
+        // (op: a MASK done, a SEAT_HEIR done) of every reconcile applied so far.
+        let mut pairs: BTreeMap<u64, (u32, u32)> = BTreeMap::new();
+        let mut seen = 0;
+        for e in 0..220u32 {
+            if rng.below(8) == 0 && r.c.camp(r.f).is_some_and(|c| c.is_in()) {
+                orders += 1;
+                if send(&mut r, PartyKind::Invasion).is_some() {
+                    led += u32::from(chief_of(&r).map(|c| c.0) == Some(SlotState::Left));
+                }
+            }
+            r.chaos_step(&mut rng);
+            events += 1;
+            for a in &r.plugin.applied[seen..] {
+                if a.outcome == boundary::LINE_DONE {
+                    let e = pairs.entry(a.op).or_default();
+                    e.0 += u32::from(a.line.action == boundary::ACTION_MASK);
+                    e.1 += u32::from(a.line.action == boundary::ACTION_SEAT_HEIR);
+                }
+            }
+            seen = r.plugin.applied.len();
+            let tag = format!("seed {k} event {e}");
+            if chief_bodies(&r).len() > 1 {
+                bad.push(format!(
+                    "{tag}: {} live chief bodies",
+                    chief_bodies(&r).len()
+                ));
+            }
+            if let Some(c) = r.c.camp(r.f) {
+                let members: Vec<_> = c.slots.iter().filter(|s| s.id != CHIEF_SLOT).collect();
+                let home = members.iter().filter(|s| s.state.home()).count() as u32;
+                let away = members.iter().filter(|s| s.state.away()).count() as u32;
+                // The pool is the members only, at most the cap, a dead or gone slot in none of it.
+                if home != c.home_count() || away != c.away_count() || home + away > 9 {
+                    bad.push(format!(
+                        "{tag}: the pool counts {}+{} of {} member slots",
+                        c.home_count(),
+                        c.away_count(),
+                        members.len()
+                    ));
+                }
+            }
+            for (op, &(mask, seat)) in &pairs {
+                if mask != seat {
+                    bad.push(format!(
+                        "{tag}: reconcile {op:#x}: {mask} MASK done, {seat} SEAT_HEIR done"
+                    ));
+                }
+            }
+            pairs.retain(|_, v| v.0 != v.1);
+        }
+        // The totals were dropped as pairs balanced; count the seatings from the plugin's record.
+        seated += r
+            .plugin
+            .applied
+            .iter()
+            .filter(|a| {
+                a.line.action == boundary::ACTION_SEAT_HEIR && a.outcome == boundary::LINE_DONE
+            })
+            .count();
+        r.settle();
+        for f in std::mem::take(&mut r.failures) {
+            bad.push(format!("seed {k}: {f}"));
+        }
+        for f in r.check() {
+            bad.push(format!("seed {k}, at the end: {f}"));
+        }
+        if !r.ghosts.is_empty()
+            || r.c.stats.camp_written_off != u64::from(r.ghosts_gone)
+            || (r.plugin.holders_again && r.c.stats.camp_written_off != 0)
+        {
+            bad.push(format!(
+                "seed {k}: {} members written off, {} ghosts gone, {} left",
+                r.c.stats.camp_written_off,
+                r.ghosts_gone,
+                r.ghosts.len()
+            ));
+        }
+    }
+    check(
+        out,
+        "grove chaos with heirs: no two live chief bodies, the chief in no pool count, every MASK \
+         done with its SEAT_HEIR done, after every event",
+        bad.is_empty() && seated >= 32 && led > 0,
+        if bad.is_empty() {
+            format!(
+                "32 groves of 220 events ({events} in all); {seated} heirs seated, {led} of {orders} \
+                 Invasions took the Umvuthi"
+            )
+        } else {
+            format!(
+                "{} findings, first: {:?}",
+                bad.len(),
+                &bad[..bad.len().min(3)]
+            )
+        },
+    );
+}
+
+/// Run 12: an Umvuthi killed by a player as soon as its heir's body stands, for 60 game years
+/// (96 days each). Each wait is the kernel's own `min(192, base x 2^P)` on its day, and the
+/// Umvuthi comes back about 1.8 times a game year at base 6 and about 1.0 at base 24, within 10%
+/// (PLACEHOLDER) of EQUILIBRIUM.md's model (MZ-14).
+fn heir_farmed(slice: &'static str) -> RunOut {
+    use rtsim_kernel::renewal::Pressure;
+    let mut out = Vec::new();
+    let years = 60.0;
+    let end = at_day(years * 96.0);
+    let day = |t: Tick| (t.0 / TICKS_PER_DAY) as u32;
+    for (base, doc) in [(6.0f32, 1.8), (24.0, 1.0)] {
+        let mut r = CampRun::with_cultures(
+            700 + u64::from(base as u32),
+            grove_cultures(base, 192.0, 96.0),
+            "umvuthana",
+            9,
+        );
+        let ci = r.c.factions[r.f as usize].culture;
+        let rule =
+            r.c.cultures
+                .get(ci)
+                .chief_renewal
+                .expect("a chief renewal")
+                .rule;
+        // The kill comes a few ticks after the seat: the closed form's check is under a minute.
+        let (_, gap) = rule.farmed(1, 0.0);
+        let want = 96.0 / f64::from(gap);
+        let muster = at_day(r.c.cultures.get(ci).def.muster_days).0;
+        come_in(&mut r);
+        let mut model = Pressure::at_cap(&rule, 0);
+        let (mut exact, mut books, mut ended) = (true, true, false);
+        let (mut seats, mut waits) = (Vec::new(), Vec::new());
+        for _ in 0..4000 {
+            let Some(due) = heir_due(&r) else { break };
+            if due > end {
+                r.run(end);
+                ended = true;
+                break;
+            }
+            r.run(due + 10);
+            // A band of the camp that is mustering holds the pair back to its muster's end (MZB-612):
+            // the seat comes within a muster of its due tick, and the next wait is the kernel's from
+            // the death all the same.
+            let mut waited = 0;
+            while chief_of(&r).map(|c| c.0) != Some(SlotState::Body) && waited < 96 {
+                waited += 1;
+                r.run(r.c.now() + muster / 24);
+            }
+            if chief_of(&r).map(|c| c.0) != Some(SlotState::Body) {
+                exact = false;
+                break;
+            }
+            seats.push(due);
+            books &= holds(&mut r);
+            let died = r.c.now() + 1;
+            let u = chief_bodies(&r)[0].uuid;
+            r.plugin.camp_kill(r.key, u, boundary::BY_PLAYER, died);
+            r.run(died + 5);
+            model.bump(day(died), 1.0, rule.half_life_days);
+            let Some(next) = heir_due(&r) else {
+                exact = false;
+                break;
+            };
+            exact &= next.0 - died.0 == rule.delay_ticks(model, day(died));
+            waits.push((next.0 - died.0) as f64 / TICKS_PER_DAY as f64);
+        }
+        books &= holds(&mut r);
+        let n = seats.len();
+        // The steady rate, from the first seat to the last (the first wait is the cap's).
+        let rate = if n > 1 {
+            (n - 1) as f64 * 96.0 / ((seats[n - 1].0 - seats[0].0) as f64 / TICKS_PER_DAY as f64)
+        } else {
+            0.0
+        };
+        let steady = &waits[waits.len().saturating_sub(10)..];
+        check(
+            &mut out,
+            if base == 6.0 {
+                "killed as fast as it comes back for 60 game years at base 6, the Umvuthi returns about 1.8 times a year"
+            } else {
+                "killed as fast as it comes back for 60 game years at base 24, the Umvuthi returns about 1.0 times a year"
+            },
+            ended
+                && exact
+                && books
+                && (rate - want).abs() <= 0.10 * want
+                && (rate - doc).abs() <= 0.10 * doc,
+            format!(
+                "{n} seats, {rate:.3} a game year against the closed form's {want:.3} (a wait of {:.2} \
+                 days) and the doc's {doc}; every wait the kernel's on its day: {exact}; the last \
+                 waits {:?} days",
+                gap,
+                steady
+                    .iter()
+                    .map(|w| (w * 100.0).round() / 100.0)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    RunOut {
+        run: 12,
         built: true,
         slice,
         checks: out,

@@ -27,11 +27,11 @@ use rtsim_kernel::renewal::{LossCause, Pressure};
 
 use super::*;
 use crate::boundary::{
-    ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
-    BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL,
-    CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut, CampReconcile,
-    CensusBody, ChiefState, DEATH_CHIEF, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE,
-    LINE_NOTHING, ReconcileLine,
+    ACTION_ADOPT, ACTION_HAND_BACK, ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
+    ACTION_SPAWN, ACTION_TAKE, BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF,
+    CENSUS_CRYSTAL, CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut,
+    CampReconcile, CensusBody, ChiefBody, ChiefState, DEATH_CHIEF, DEATH_STRAY, LINE_CHIEF,
+    LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_THRONE, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -39,6 +39,19 @@ use crate::boundary::{
 pub const WRITE_OFF_DAYS: u64 = 2;
 /// Misses before a member is written off: a body found nowhere in three censuses.
 pub const WRITE_OFF_MISSES: u8 = 3;
+/// The chief's slot number (MZB-401): -1 as a Java int. It sorts after every warrior's slot, so
+/// [`Camp::index`]'s search holds, and it is outside the pool: no count, draw, refill or audit sum
+/// of the pool includes it.
+pub const CHIEF_SLOT: u32 = u32::MAX;
+/// The players a chief's trade memory keeps (PLACEHOLDER, MZB-420): the census's own cap.
+pub const TRADED_CAP: usize = boundary::MAX_ENTRIES;
+/// The most items one tribute transfer carries: a stack (MZB-446).
+pub const STACK_ITEMS: i64 = 64;
+/// How long after a pair that seated no one the heir is ordered again while the camp stays in:
+/// one game hour (PLACEHOLDER, MZB-445). The pair's answer would otherwise order the next at once.
+const HEIR_RETRY: u64 = TICKS_PER_DAY / 24;
+/// The slot space of the tribute transfers' op ids (`rtsim_world::ribbits::identity_op`).
+const TRIBUTE_SLOT: u64 = 0x4d5a_0009 << 32;
 
 /// A slot's state (MOWZIE.md §4.9's table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,6 +152,39 @@ pub struct Throne {
     pub direction: f32,
 }
 
+/// A chief to come (MZB-405, MZB-406): the camp has no chief slot, or its slot is dead away, and
+/// its next chief is due at `due`. `found_empty` marks a camp found without its Umvuthi, whose wait
+/// an untagged one seen in the footprint cancels (a chief killed at its camp is not cut short).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heir {
+    pub due: Tick,
+    pub found_empty: bool,
+}
+
+/// A tribute good the engine took out of its books and sent to a haven chest, not yet answered
+/// (MZB-423).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placing {
+    pub op: u64,
+    pub good: u32,
+    /// Milli-units, whole items (at most one stack).
+    pub amount: i64,
+    /// The chest it goes to, as HAVEN_CHEST named it (Java's dimension id): kept here so a transfer
+    /// rewritten after a restart still knows where.
+    pub dimension: u32,
+    pub pos: (i32, i32, i32),
+}
+
+/// The haven chest the plugin chose for a camp (HAVEN_CHEST, MZB-422): journaled (MZB-446), the
+/// latest record wins; unsaved, and forgotten at CAMP_OUT and at a session start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chest {
+    pub dimension: u32,
+    pub pos: (i32, i32, i32),
+    /// Its empty slots.
+    pub free: u32,
+}
+
 /// A camp's ledger.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Camp {
@@ -168,6 +214,24 @@ pub struct Camp {
     /// member, booked whether the camp is in or out.
     pub arrival: u32,
     pub arrival_at: Option<Tick>,
+    /// The chief to come, when the camp has no chief (MZB-405, MZB-406).
+    pub heir: Option<Heir>,
+    /// The stamp of the booked `Ev::CampHeir`.
+    pub heir_stamp: u32,
+    /// The players that have paid the chief, as (high, low) halves of their UUIDs, sorted
+    /// (MZB-420).
+    pub traded: Vec<(u64, u64)>,
+    /// Tribute booked and not yet in a chest: (good, milli-units), by good (MZB-423).
+    pub owed_tribute: Vec<(u32, i64)>,
+    /// Stacks sent to the chest so far: the next one's op id derives from it (MZB-423).
+    pub stacks: u32,
+    /// The chest the plugin chose, while the camp is in (unsaved).
+    pub chest: Option<Chest>,
+    /// The MASK line in flight: its reconcile's op and its index there (MZB-403). It names no
+    /// slot, so no slot's line stands for it.
+    pub mask: Option<(u64, u32)>,
+    /// The SEAT_HEIR line in flight, the same way (the heir's slot is made when it is answered).
+    pub seat: Option<(u64, u32)>,
 }
 
 impl Camp {
@@ -180,27 +244,99 @@ impl Camp {
         (self.slots[i].generation == generation).then_some(i)
     }
 
+    /// The chief's slot, if the camp has one (it sorts last).
+    pub fn chief_index(&self) -> Option<usize> {
+        self.slots
+            .last()
+            .filter(|s| s.id == CHIEF_SLOT)
+            .map(|_| self.slots.len() - 1)
+    }
+
+    /// The chief's slot.
+    pub fn chief(&self) -> Option<&Slot> {
+        self.chief_index().map(|i| &self.slots[i])
+    }
+
+    /// The slots of the pool's members: every slot but the chief's (MZB-401).
+    fn members(&self) -> impl Iterator<Item = &Slot> {
+        self.slots.iter().filter(|s| s.id != CHIEF_SLOT)
+    }
+
     /// Slots in the pool: at home, body or owed.
     pub fn home_count(&self) -> u32 {
-        self.slots.iter().filter(|s| s.state.home()).count() as u32
+        self.members().filter(|s| s.state.home()).count() as u32
     }
 
     /// Slots in war parties.
     pub fn away_count(&self) -> u32 {
-        self.slots.iter().filter(|s| s.state.away()).count() as u32
+        self.members().filter(|s| s.state.away()).count() as u32
     }
 
-    /// Slots a draw may take: at home with no line in flight.
+    /// Slots a draw may take: at home with no line in flight. None while the heir's pair is in
+    /// flight: the warrior it masks must not be mustered (MZB-409).
     pub fn drawable(&self) -> u32 {
-        self.slots
-            .iter()
+        if self.mask.is_some() || self.seat.is_some() {
+            return 0;
+        }
+        self.members()
             .filter(|s| s.state.home() && s.line.is_none())
             .count() as u32
     }
 
-    /// Lines in flight.
+    /// Lines in flight, the heir's pair included.
     pub fn in_flight(&self) -> u32 {
         self.slots.iter().filter(|s| s.line.is_some()).count() as u32
+            + u32::from(self.mask.is_some())
+            + u32::from(self.seat.is_some())
+    }
+
+    /// The generation the heir is seated with: derived from the camp and the tick the heir is due
+    /// (which does not move while it waits), and never the generation the chief slot last held, so
+    /// the census can tell the heir an answer to a lost reconcile made from a body of an old chief
+    /// (MZB-409). None while no heir waits.
+    pub fn heir_generation(&self, key: u64) -> Option<u32> {
+        let h = self.heir?;
+        let avoid = self
+            .chief()
+            .map(|s| s.generation)
+            .or_else(|| self.retired_gen(CHIEF_SLOT));
+        Some(derive_gen(key, CHIEF_SLOT, h.due, avoid))
+    }
+
+    /// The chief's slot, new, in state `state`.
+    fn alloc_chief(
+        &mut self,
+        generation: u32,
+        body: u32,
+        state: SlotState,
+        party: Handle<Party>,
+        chief: ActorId,
+    ) {
+        debug_assert!(self.chief_index().is_none(), "a second chief slot");
+        self.slots.push(Slot {
+            id: CHIEF_SLOT,
+            generation,
+            body,
+            state,
+            party,
+            misses: 0,
+            missed_at: Tick::ZERO,
+            line: None,
+            chief,
+        });
+    }
+
+    /// A player that paid the chief joins its memory (MZB-420): sorted, no one twice, at most
+    /// [`TRADED_CAP`]. False if the memory is full and the player not in it.
+    pub fn remember(&mut self, player: boundary::Uuid) -> bool {
+        match self.traded.binary_search(&player) {
+            Ok(_) => true,
+            Err(_) if self.traded.len() >= TRADED_CAP => false,
+            Err(at) => {
+                self.traded.insert(at, player);
+                true
+            }
+        }
     }
 
     /// Notes a census of `epoch` (replayed or not): a new epoch ends the old one's answers.
@@ -263,13 +399,13 @@ impl Camp {
         }
     }
 
-    /// Voids every line in flight; how many there were.
+    /// Voids every line in flight, the heir's pair included; how many there were.
     fn void(&mut self) -> usize {
         let mut n = 0;
         for s in &mut self.slots {
             n += usize::from(s.line.take().is_some());
         }
-        n
+        n + usize::from(self.mask.take().is_some()) + usize::from(self.seat.take().is_some())
     }
 
     /// Bytes on the heap (the paging budget).
@@ -278,6 +414,8 @@ impl Camp {
             + self.slots.capacity() * std::mem::size_of::<Slot>()
             + self.retired.capacity() * std::mem::size_of::<Retired>()
             + self.answered.capacity() * std::mem::size_of::<Answered>()
+            + self.traded.capacity() * std::mem::size_of::<(u64, u64)>()
+            + self.owed_tribute.capacity() * std::mem::size_of::<(u32, i64)>()
     }
 }
 
@@ -302,6 +440,37 @@ fn derive_gen(key: u64, id: u32, t: Tick, avoid: Option<u32>) -> u32 {
         }
         salt += 1;
     }
+}
+
+/// The chief's memory for a body at home (MZB-421): agent 0, the camp's epoch, health 0 (the body
+/// keeps its own), no flags.
+fn chief_body_record(key: u64, camp: &Camp) -> Cmd {
+    Cmd::ChiefBody(ChiefBody {
+        faction: key,
+        agent: 0,
+        epoch: camp.epoch,
+        health: 0.0,
+        flags: 0,
+        traded: camp.traded.clone(),
+    })
+}
+
+/// The op id of a camp's `n`th tribute transfer: the core's namespace, derived from the camp, the
+/// count, the good and the amount, so a transfer rewritten after a crash is the same op, and a
+/// different decision never is (docs/boundary.md §2.2): a stack decided again with another amount
+/// (a second payment replayed before it) cannot be answered DUPLICATE_OP for the one the plugin
+/// put down (MZB-423, MZB-446).
+fn tribute_op(key: u64, n: u32, good: u32, amount: i64) -> u64 {
+    let slot = fnv1a64(
+        &[
+            TRIBUTE_SLOT.to_le_bytes(),
+            u64::from(n).to_le_bytes(),
+            u64::from(good).to_le_bytes(),
+            amount.to_le_bytes(),
+        ]
+        .concat(),
+    );
+    rtsim_world::ribbits::identity_op(key, slot)
 }
 
 /// A CAMP_RECONCILE's op id: the engine's allocator byte over 56 bits derived from the camp, the
@@ -354,11 +523,21 @@ impl Conflict {
     }
 
     /// A line's flags: the chief's slot (a unit with a row of its own without its crystal is the
-    /// camp's chief, ledger 9) and whether its crystal is held.
-    fn line_flags(&self, f: u32) -> u8 {
-        let chief = self.chief_camp(f);
+    /// camp's chief, ledger 9; a chief body's slot is the chief, MZB-403) and whether its crystal
+    /// is held.
+    fn line_flags(&self, f: u32, slot: u32) -> u8 {
+        let chief = slot == CHIEF_SLOT || self.chief_camp(f);
         let crystal = self.factions[f as usize].crystal;
         (if chief { LINE_CHIEF } else { 0 }) | (if crystal { LINE_CRYSTAL } else { 0 })
+    }
+
+    /// The engine's body id of the camp's chief body kind (MZB-401), if its culture keeps one.
+    fn chief_body_id(&self, f: u32) -> Option<u32> {
+        self.culture(f)
+            .def
+            .chief_body
+            .as_deref()
+            .map(|n| body_id(&self.cultures, n))
     }
 
     /// Whether the camp's pool member is its chief: its home unit has a row of its own without
@@ -368,13 +547,19 @@ impl Conflict {
         self.culture(f).bare[usize::from(u)] != u
     }
 
+    /// The chief's memory as a record, for a camp that is in.
+    fn chief_body_cmd(&self, f: u32) -> Option<Cmd> {
+        let camp = self.camp(f).filter(|c| c.is_in())?;
+        Some(chief_body_record(self.factions[f as usize].key, camp))
+    }
+
     fn line(&self, f: u32, s: &Slot, action: u8, a: u64, b: u64) -> ReconcileLine {
         ReconcileLine {
             slot: s.id,
             generation: s.generation,
             body: s.body,
             action,
-            flags: self.line_flags(f),
+            flags: self.line_flags(f, s.id),
             a,
             b,
         }
@@ -411,7 +596,59 @@ impl Conflict {
             let day = (at.0 / TICKS_PER_DAY) as u32;
             self.camp_mut(f).expect("created").pressure = Pressure::at_cap(&r.rule, day);
         }
+        // A chief body's camp starts with its chief owed, for the first census's untagged Umvuthi
+        // to fill, or waits for an heir at the cap when found without one (MZB-405).
+        if let Some(body) = self.chief_body_id(f)
+            && self
+                .camp(f)
+                .is_some_and(|c| c.chief_index().is_none() && c.heir.is_none())
+        {
+            if u32::from(census) & CENSUS_CHIEF != 0 {
+                self.camp_alloc_chief(f, at, body, SlotState::Owed, Handle::NULL);
+            } else {
+                self.found_empty_heir(f, at);
+            }
+        }
         self.plan_arrival(f, at);
+    }
+
+    /// A camp found without its chief waits for an heir as a camp farmed to the cap does
+    /// (MZB-405; EQUILIBRIUM.md §2.3): the wait is the cap's, from now.
+    fn found_empty_heir(&mut self, f: u32, at: Tick) {
+        let Some(r) = self.culture(f).chief_renewal else {
+            return;
+        };
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let pressure = Pressure::at_cap(&r.rule, day);
+        let due = at + r.rule.delay_ticks(pressure, day).max(1);
+        self.camp_mut(f).expect("a ledger").pressure = pressure;
+        self.set_heir(f, due, true, at);
+    }
+
+    /// Books the chief to come, due at `due`, and the event that looks at it (MZB-406). A heir
+    /// booked before is replaced.
+    fn set_heir(&mut self, f: u32, due: Tick, found_empty: bool, at: Tick) {
+        let camp = self.camp_mut(f).expect("a ledger");
+        camp.heir = Some(Heir { due, found_empty });
+        camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
+        let stamp = camp.heir_stamp;
+        self.schedule(due.max(at), Ev::CampHeir { faction: f, stamp });
+    }
+
+    /// The chief's slot, new, in the camp's ledger: its generation from the tick `t`.
+    fn camp_alloc_chief(
+        &mut self,
+        f: u32,
+        t: Tick,
+        body: u32,
+        state: SlotState,
+        party: Handle<Party>,
+    ) {
+        let key = self.factions[f as usize].key;
+        let chief = self.factions[f as usize].chief;
+        let camp = self.camp_mut(f).expect("a ledger");
+        let generation = derive_gen(key, CHIEF_SLOT, t, camp.retired_gen(CHIEF_SLOT));
+        camp.alloc_chief(generation, body, state, party, chief);
     }
 
     /// The ledger of a camp that has none, from the books as they are: a slot owed for each whole
@@ -435,6 +672,18 @@ impl Conflict {
         for (p, n) in away {
             for _ in 0..n {
                 self.camp_alloc(f, at, body, SlotState::Left, p);
+            }
+        }
+        // A chief body's party away with its chief has the chief's slot left (MZB-401); the first
+        // census says whether its body is still in the camp.
+        if let Some(cb) = self.chief_body_id(f) {
+            let led = self
+                .parties
+                .iter()
+                .find(|(_, x)| x.faction == f && x.kind.is_war() && x.chief)
+                .map(|(h, _)| h);
+            if let Some(p) = led {
+                self.camp_alloc_chief(f, at, cb, SlotState::Left, p);
             }
         }
     }
@@ -532,6 +781,10 @@ impl Conflict {
     /// (`pool_ready`), and while lines in flight hold slots back, not before one is answered or
     /// void ([`BLOCKED`], `unblock`).
     pub(super) fn bodies_ready(&self, f: u32, need: f64, at: Tick) -> Tick {
+        // An heir that is due goes first (MZB-616): the pair's order plans the feud again.
+        if self.heir_first(f, at) {
+            return BLOCKED;
+        }
         let t = self.pool_ready(f, need, at);
         if t > at {
             return t;
@@ -545,6 +798,19 @@ impl Conflict {
     /// A change of a camp's room or lines: every feud waiting on it is planned again, and a camp
     /// that is in books its next refill.
     pub(super) fn unblock(&mut self, f: u32, at: Tick) {
+        // A grove that stays in gets its heir as soon as the wait is over and a warrior is home
+        // (MOWZIE.md 4.10): a due tick with no warrior is looked at again at each change of the
+        // camp's lines. It returns at once unless the heir is due, the camp is in and no pair is
+        // in flight. The heir goes first: an order of the pair ends with `unblock_lines`
+        // itself (the feuds that waited for it), so the lines are looked at here only when none
+        // was ordered.
+        if !self.camp_heir(f, at) {
+            self.unblock_lines(f, at);
+        }
+    }
+
+    /// `unblock` without a look at the heir.
+    fn unblock_lines(&mut self, f: u32, at: Tick) {
         for a in self.feud_actors(f) {
             if self.feud(f, a).is_some_and(|x| x.wait_until >= BLOCKED) {
                 self.feud_mut(f, a).expect("listed").wait_until = Tick::ZERO;
@@ -587,7 +853,8 @@ impl Conflict {
     /// (EQUILIBRIUM.md §2.2: an unclaimed death of a boss kind) and no one's otherwise, and a
     /// mob's kill is a predator's.
     pub(super) fn renewal_cause(&self, f: u32, by: u32) -> LossCause {
-        let boss = self.culture(f).renewal.is_some_and(|r| r.boss);
+        let c = self.culture(f);
+        let boss = c.renewal.or(c.chief_renewal).is_some_and(|r| r.boss);
         match by {
             boundary::BY_PLAYER | boundary::BY_TAKEN => LossCause::Player,
             boundary::BY_MOB => LossCause::Predator,
@@ -704,7 +971,7 @@ impl Conflict {
         };
         c.slots
             .iter()
-            .filter(|s| s.state == SlotState::Owed && s.line.is_none())
+            .filter(|s| s.id != CHIEF_SLOT && s.state == SlotState::Owed && s.line.is_none())
             .filter(|s| !but.iter().any(|l| l.slot == s.id && l.generation != 0))
             .map(|s| self.line(f, s, ACTION_SPAWN, 0, 0))
             .collect()
@@ -723,14 +990,26 @@ impl Conflict {
             return;
         };
         let epoch = camp.epoch;
-        // At most one line in flight per slot (I4): a second for a slot is a bug, and not sent.
+        // Every order to a grove carries its throne once a census gave one (MZB-404).
+        let (flags, throne, direction) = match camp.throne {
+            Some(t) => (RECONCILE_THRONE, t.spot, t.direction),
+            None => (0, (0.0, 0.0, 0.0), 0.0),
+        };
+        // At most one line in flight per slot (I4): a second for a slot is a bug, and not sent. The
+        // heir's pair names no slot that stands for it, so each has a marker of its own.
         let lines: Vec<ReconcileLine> = lines
             .into_iter()
             .filter(|l| {
-                let busy = l.generation != 0
-                    && camp
-                        .index(l.slot, l.generation)
-                        .is_some_and(|i| camp.slots[i].line.is_some());
+                let busy = match l.action {
+                    ACTION_MASK => camp.mask.is_some(),
+                    ACTION_SEAT_HEIR => camp.seat.is_some(),
+                    _ => {
+                        l.generation != 0
+                            && camp
+                                .index(l.slot, l.generation)
+                                .is_some_and(|i| camp.slots[i].line.is_some())
+                    }
+                };
                 debug_assert!(!busy, "a second line for slot {} in flight", l.slot);
                 !busy
             })
@@ -739,28 +1018,45 @@ impl Conflict {
             return;
         }
         let mut out = Vec::new();
+        let mut orders = 0;
         for chunk in lines.chunks(boundary::MAX_ENTRIES) {
             let op = derive_op(key, epoch, camp.seq);
             camp.seq += 1;
-            for l in chunk.iter().filter(|l| l.generation != 0) {
-                if let Some(i) = camp.index(l.slot, l.generation) {
+            for (k, l) in chunk.iter().enumerate() {
+                match l.action {
+                    ACTION_MASK => camp.mask = Some((op, k as u32)),
+                    ACTION_SEAT_HEIR => camp.seat = Some((op, k as u32)),
+                    _ => {}
+                }
+                if l.generation != 0
+                    && let Some(i) = camp.index(l.slot, l.generation)
+                {
                     camp.slots[i].line = Some(Line {
                         action: l.action,
                         op,
                     });
                 }
             }
+            // The chief's memory goes ahead of every chief spawn, so the body is made knowing whom
+            // it has traded with (MZB-421).
+            if chunk
+                .iter()
+                .any(|l| l.slot == CHIEF_SLOT && l.action == ACTION_SPAWN)
+            {
+                out.push(chief_body_record(key, camp));
+            }
             out.push(Cmd::Reconcile(CampReconcile {
                 faction: key,
                 epoch,
                 op,
-                flags: 0,
-                throne: (0.0, 0.0, 0.0),
-                direction: 0.0,
+                flags,
+                throne,
+                direction,
                 lines: chunk.to_vec(),
             }));
+            orders += 1;
         }
-        self.stats.camp_orders += out.len() as u64;
+        self.stats.camp_orders += orders;
         self.stats.camp_lines += lines.len() as u64;
         let n = lines.len();
         // Through the gate (docs/replay-gate.md §4.4): never while replaying, since every camp is
@@ -792,7 +1088,11 @@ impl Conflict {
             _ => 2,
         };
         let mut order: Vec<usize> = (0..camp.slots.len())
-            .filter(|&i| camp.slots[i].state.home() && camp.slots[i].line.is_none())
+            .filter(|&i| {
+                camp.slots[i].id != CHIEF_SLOT
+                    && camp.slots[i].state.home()
+                    && camp.slots[i].line.is_none()
+            })
             .collect();
         order.sort_by_key(|&i| (class(&camp.slots[i]), camp.slots[i].id));
         // `send_party` draws no more than the slots at home with no line in flight; a draw past
@@ -809,6 +1109,36 @@ impl Conflict {
             // A body the last census missed stays unverified while its member is away: `misses`
             // is kept, so a member that comes home is written off on the clock it was on.
         }
+    }
+
+    /// Whether the camp's chief can lead a party now (MZB-413): its slot exists, at home (body or
+    /// owed), with no line in flight, and no heir waits (a chief that has just been seated is the
+    /// heir's, and the pair is still being booked while one waits).
+    pub(super) fn chief_can_lead(&self, f: u32) -> bool {
+        self.camp(f).is_some_and(|c| {
+            c.heir.is_none()
+                && c.chief()
+                    .is_some_and(|s| s.state.home() && s.line.is_none())
+        })
+    }
+
+    /// A party that leads with the chief takes it (MZB-413): at home with its body the slot is
+    /// left, owed it is gone.
+    pub(super) fn camp_draw_chief(&mut self, f: u32, p: Handle<Party>) {
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        let Some(i) = camp.chief_index() else {
+            return;
+        };
+        let s = &mut camp.slots[i];
+        debug_assert!(s.state.home() && s.line.is_none(), "a chief drawn unfit");
+        s.state = if s.state == SlotState::Body {
+            SlotState::Left
+        } else {
+            SlotState::Gone
+        };
+        s.party = p;
     }
 
     /// A war party's muster ends at a camp that is in: a set-out line, with the party's agent and
@@ -831,6 +1161,9 @@ impl Conflict {
             .map(|s| self.line(f, s, ACTION_SET_OUT, agent, epoch))
             .collect();
         self.send_lines(f, lines, at);
+        // The muster is over for this band: its slots have their lines, so the heir that waited for the
+        // muster (`camp_heir`) is looked at again now (MZB-612).
+        self.camp_heir(f, at);
     }
 
     /// A war party's units fell (a casualty, a death by slot): its members' slots follow, those
@@ -851,7 +1184,7 @@ impl Conflict {
                 let mut i = 0;
                 while left > 0 && i < camp.slots.len() {
                     let s = &mut camp.slots[i];
-                    if s.state == want && s.party == p {
+                    if s.state == want && s.party == p && s.id != CHIEF_SLOT {
                         left -= 1;
                         if want == SlotState::Gone {
                             camp.free(i, true);
@@ -909,7 +1242,8 @@ impl Conflict {
             let Some(s) = s else {
                 continue;
             };
-            let l = if puppets > 0 {
+            // A chief body has no puppet before M11: it comes home as a spawn (MZB-415).
+            let l = if s.id != CHIEF_SLOT && puppets > 0 {
                 puppets -= 1;
                 self.line(f, s, ACTION_HAND_BACK, agent, epoch64)
             } else {
@@ -938,6 +1272,21 @@ impl Conflict {
     /// While the outbox replays it waits for the replay end, the latest for each faction (RP-100):
     /// nothing journals it, so it is newer than every record the replay brings back, and one of
     /// those (a FACTION_FOUND's census byte) would undo it or find its faction unknown.
+    /// A CHIEF_STATE held by the host while its own replay runs, before this engine's replay began
+    /// (the host begins the engine's replay once the conflict is in the world, and a faction is
+    /// known only after its FACTION_FOUND is replayed): kept, the latest for each faction, as
+    /// [`Self::chief_state`] keeps one while the outbox replays, and applied at `replay_done` (RP-100).
+    pub fn hold_chief_state(&mut self, c: &ChiefState) {
+        self.chief_states_held.insert(c.faction, *c);
+    }
+
+    /// The host's replay ended with the conflict not in the world (no faction, source or party): the
+    /// chiefs' states held for it describe no camp this engine knows, and a faction found live
+    /// later must not be handed a state from before the session (RP-100).
+    pub fn discard_held_chief_states(&mut self) {
+        self.chief_states_held.clear();
+    }
+
     pub(super) fn chief_state(&mut self, c: &ChiefState, at: Tick) {
         if self.outbox.replaying() {
             self.chief_states_held.insert(c.faction, *c);
@@ -969,7 +1318,7 @@ impl Conflict {
     /// earlier epoch is void, and each slot is compared with the bodies found (MOWZIE.md §4.9's
     /// table). A census replayed from an earlier session only marks its camp out: its bodies are
     /// not the world as it is now.
-    pub(super) fn camp_census(&mut self, c: &CampCensus, at: Tick) {
+    pub(super) fn camp_census(&mut self, w: &mut World, c: &CampCensus, at: Tick) {
         let Some(&f) = self.by_key.get(&c.faction) else {
             return;
         };
@@ -1008,17 +1357,45 @@ impl Conflict {
         let mut written_off = 0;
         let mut lines: Vec<ReconcileLine> = Vec::new();
         // The flags the lines are made with; the crystal in them is mended below, once the bodies
-        // the books keep are known (MZB-269, 299).
-        let flags = self.line_flags(f);
+        // the books keep are known (MZB-269, 299). The chief's slot has flags of its own.
+        let (member_flags, chief_flags) = (self.line_flags(f, 0), self.line_flags(f, CHIEF_SLOT));
         let line = |s: &Slot, action: u8, a: u64, b: u64| ReconcileLine {
             slot: s.id,
             generation: s.generation,
             body: s.body,
             action,
-            flags,
+            flags: if s.id == CHIEF_SLOT {
+                chief_flags
+            } else {
+                member_flags
+            },
             a,
             b,
         };
+        // A camp whose chief is a body of its own (MZB-401).
+        let chief_kind = self.chief_body_id(f);
+        let (fkey, chief_actor) = (
+            self.factions[f as usize].key,
+            self.factions[f as usize].chief,
+        );
+        let mut chief_written_off = false;
+        let mut empty_heir = false;
+        // A camp made by this census (no FACTION_FOUND before it) has to learn whether it has a
+        // chief: an untagged Umvuthi in the footprint is its chief owed, else it waits for an heir.
+        if let Some(cb) = chief_kind
+            && camp.chief_index().is_none()
+            && camp.heir.is_none()
+        {
+            let stray = c.bodies.iter().any(|b| {
+                b.flags & BODY_CHIEF != 0 && (b.flags & BODY_STRAY != 0 || b.generation == 0)
+            });
+            if stray {
+                let g = derive_gen(fkey, CHIEF_SLOT, at, camp.retired_gen(CHIEF_SLOT));
+                camp.alloc_chief(g, cb, SlotState::Owed, Handle::NULL, chief_actor);
+            } else {
+                empty_heir = true;
+            }
+        }
         let by_uuid = |b: &CensusBody, action: u8| ReconcileLine {
             slot: 0,
             generation: 0,
@@ -1081,6 +1458,15 @@ impl Conflict {
                         if s.misses >= WRITE_OFF_MISSES
                             && at.0 >= s.missed_at.0 + WRITE_OFF_DAYS * TICKS_PER_DAY
                         {
+                            if id == CHIEF_SLOT {
+                                // The chief died unseen: a death at the grove by no one, the
+                                // generation retired at a death so a body found later is removed,
+                                // never a second chief (MZB-411). The pool is not its.
+                                camp.free(i, true);
+                                chief_written_off = true;
+                                self.stats.camp_written_off += 1;
+                                continue;
+                            }
                             // The member died unseen: the pool loses it and its generation is
                             // retired (not at a death: a body found later is a stray).
                             camp.free(i, false);
@@ -1143,8 +1529,10 @@ impl Conflict {
         }
         // Tagged bodies no slot holds, and strays: a body whose generation the books retired at
         // a death is removed; the rest fill slots owed, then new slots while the pool and the
-        // members away are under the cap, and are removed above it (ledger 6).
+        // members away are under the cap, and are removed above it (ledger 6). A chief body of a
+        // culture that keeps one is the chief's alone (MZB-402), never a warrior's.
         let mut rest: Vec<&CensusBody> = Vec::new();
+        let mut chief_rest: Vec<&CensusBody> = Vec::new();
         for b in &c.bodies {
             let key = (b.slot, b.generation);
             let is_stray = b.flags & BODY_STRAY != 0 || b.generation == 0;
@@ -1162,12 +1550,103 @@ impl Conflict {
                 lines.push(by_uuid(b, ACTION_REMOVE));
                 continue;
             }
-            rest.push(b);
+            if chief_kind.is_some() && b.flags & BODY_CHIEF != 0 {
+                chief_rest.push(b);
+            } else {
+                rest.push(b);
+            }
+        }
+        // The chief's slot, owed and with no body yet: the one a chief body may be adopted into.
+        let mut chief_owed: Option<(u32, u32)> = camp
+            .chief()
+            .filter(|s| s.state == SlotState::Owed)
+            .map(|s| (s.id, s.generation));
+        let mut dropped_wait = false;
+        for b in chief_rest {
+            let stray = b.flags & BODY_STRAY != 0 || b.generation == 0;
+            // The heir of a pair whose answer was lost or came late: the generation it was ordered
+            // with is the one the books derive, so the body is the chief the books were waiting
+            // for (MZB-409).
+            if !stray
+                && b.slot == CHIEF_SLOT
+                && camp.heir_generation(fkey) == Some(b.generation)
+                && chief_owed.is_none()
+            {
+                if let Some(i) = camp.chief_index() {
+                    if camp.slots[i].state != SlotState::Dead {
+                        lines.push(by_uuid(b, ACTION_REMOVE));
+                        continue;
+                    }
+                    camp.free(i, true);
+                }
+                camp.alloc_chief(
+                    b.generation,
+                    if b.body != 0 {
+                        b.body
+                    } else {
+                        chief_kind.unwrap_or(body)
+                    },
+                    SlotState::Body,
+                    Handle::NULL,
+                    chief_actor,
+                );
+                camp.heir = None;
+                camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
+                camp.traded.clear();
+                matched.insert((CHIEF_SLOT, b.generation));
+                kept_chief |= b.flags & BODY_CHIEF != 0;
+                continue;
+            }
+            // The chief owed a body adopts the first one seen, tagged or not (MZB-402).
+            if let Some((id, generation)) = chief_owed.take() {
+                let i = camp.index(id, generation).expect("owed");
+                if b.body != 0 {
+                    camp.slots[i].body = b.body;
+                }
+                kept_chief |= b.flags & BODY_CHIEF != 0;
+                lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
+                continue;
+            }
+            // A camp found without its Umvuthi adopts an untagged one it sees before its heir
+            // comes, and the wait is cancelled; after a chief's death a stray does not cut the
+            // wait, and any other untagged Umvuthi is the jar's own (MZB-402, MZB-405).
+            if stray
+                && camp.chief_index().is_none()
+                && camp.heir.is_some_and(|h| h.found_empty)
+                && !dropped_wait
+            {
+                dropped_wait = true;
+                camp.heir = None;
+                camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
+                // As if the camp had never been found empty: the cap's pressure was only a stand-in.
+                camp.pressure = Pressure::default();
+                let g = derive_gen(fkey, CHIEF_SLOT, at, camp.retired_gen(CHIEF_SLOT));
+                camp.alloc_chief(
+                    g,
+                    if b.body != 0 {
+                        b.body
+                    } else {
+                        chief_kind.unwrap_or(body)
+                    },
+                    SlotState::Owed,
+                    Handle::NULL,
+                    chief_actor,
+                );
+                let i = camp.chief_index().expect("just made");
+                kept_chief |= b.flags & BODY_CHIEF != 0;
+                lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
+                continue;
+            }
+            // A tagged chief body the books do not keep is a second chief: removed. An untagged
+            // one is left alone.
+            if !stray {
+                lines.push(by_uuid(b, ACTION_REMOVE));
+            }
         }
         let mut owed: std::collections::VecDeque<(u32, u32)> = camp
             .slots
             .iter()
-            .filter(|s| s.state == SlotState::Owed)
+            .filter(|s| s.id != CHIEF_SLOT && s.state == SlotState::Owed)
             .map(|s| (s.id, s.generation))
             .collect();
         for b in rest {
@@ -1198,10 +1677,25 @@ impl Conflict {
                 lines.push(by_uuid(b, ACTION_REMOVE));
             }
         }
-        // Slots still owed: a spawn line each.
-        for (id, generation) in owed {
+        // Slots still owed: a spawn line each. The chief's goes after its memory (MZB-421).
+        for (id, generation) in owed.into_iter().chain(chief_owed) {
             let i = camp.index(id, generation).expect("owed");
             lines.push(line(&camp.slots[i], ACTION_SPAWN, 0, 0));
+        }
+        // The chief's memory: the census's list is the live chief's own when it names its slot and
+        // generation, and the two are unioned, so a payment the engine has and the body has not yet
+        // written stays (MZB-420). A body that lacks some of the engine's is written to (MZB-421).
+        let mut chief_short = false;
+        if chief_kind.is_some()
+            && c.traded_slot == CHIEF_SLOT
+            && camp
+                .chief()
+                .is_some_and(|s| s.state == SlotState::Body && s.generation == c.traded_generation)
+        {
+            for u in &c.traded {
+                camp.remember(*u);
+            }
+            chief_short = camp.traded.iter().any(|t| !c.traded.contains(t));
         }
         self.factions[f as usize].camp = Some(camp);
         // The chief the census found says whether its crystal is on it, when it is a chief the
@@ -1211,19 +1705,234 @@ impl Conflict {
         // body left in the den): that one is to be removed and says nothing. So the crystal is
         // read off the kept chief body's own `BODY_CRYSTAL` bit, never off the camp's byte, which
         // a leftover body nearest the spot could set or clear (amended at review C). The lines
-        // made so far are asked again with the crystal as it now stands.
-        if c.flags & CENSUS_CHIEF != 0 && kept_chief {
+        // made so far are asked again with the crystal as it now stands. A grove's chief holds no
+        // crystal.
+        if c.flags & CENSUS_CHIEF != 0 && kept_chief && self.chief_camp(f) {
             self.factions[f as usize].crystal = kept_crystal;
-            let now = self.line_flags(f);
             for l in lines.iter_mut().filter(|l| l.generation != 0) {
-                l.flags = now;
+                l.flags = self.line_flags(f, l.slot);
             }
         }
         // A body missing from the camp is a player's loss (EQUILIBRIUM item 11; rtsim cannot tell
         // an absence, MZB-260), booked once the camp is put back and before the wait is planned.
         self.renewal_bump(f, written_off, LossCause::Player, at);
+        // The chief nobody saw die, and the camp found without its Umvuthi (MZB-411, MZB-405).
+        if chief_written_off {
+            self.chief_lost(f, LossCause::Player, at);
+        } else if empty_heir {
+            self.found_empty_heir(f, at);
+        }
+        // Through the gate: the camp is in, so never while replaying (`chief_body_cmd`).
+        if chief_short && let Some(cmd) = self.chief_body_cmd(f) {
+            self.outbox.push(cmd);
+        }
         self.send_lines(f, lines, at);
         self.unblock(f, at);
+        // A chief to come is looked at again at each census (MZB-407).
+        self.camp_heir(f, at);
+        // The camp is in: tribute owed to a chest the plugin named while the camp was out (or
+        // before a restart's replay) goes now, not at the next record (MZB-446, review P3-4).
+        self.place_tribute(w, f, at);
+    }
+
+    // ---- tribute, trade and the chest (MZB-416 to MZB-423) -----------------------------------
+
+    /// A masked trade with a grove's minion (TRADED, MZB-417): the gold nuggets on either side are
+    /// worth `nuggets / tribute_per_coin` coins, which soften the trader's feud at a tenth of a
+    /// gift's rate ([`Conflict::traded`]).
+    pub(super) fn trade_booked(&mut self, w: &mut World, t: &boundary::Traded, at: Tick) {
+        let Some(&f) = self.by_key.get(&t.faction) else {
+            return;
+        };
+        let good = self.tribute_good(w, f);
+        let per = self.tribute_per_coin(w, f, good);
+        if per <= 0.0 {
+            return;
+        }
+        let trader = self.actor_of_uuid(w, t.player);
+        self.traded(w, t.faction, trader, f64::from(t.nuggets) / per, at);
+    }
+
+    /// A player's first payment to an Umvuthi body (CHIEF_PAID, MZB-418): booked as tribute through
+    /// [`Conflict::pay_tribute`], and the payer joins the trade memory only when the slot and
+    /// generation are the live chief's (Body). A stray Umvuthi's payment (`PAID_STRAY`) is tribute
+    /// with no memory.
+    pub(super) fn chief_paid(&mut self, w: &mut World, c: &boundary::ChiefPaid, at: Tick) {
+        let Some(&f) = self.by_key.get(&c.faction) else {
+            return;
+        };
+        if c.flags & boundary::PAID_STRAY == 0
+            && c.slot == CHIEF_SLOT
+            && let Some(camp) = self.camp_mut(f)
+            && camp
+                .index(c.slot, c.generation)
+                .is_some_and(|i| camp.slots[i].state == SlotState::Body)
+        {
+            camp.remember(c.player);
+        }
+        let goods = self.goods_of(w, &c.items);
+        if goods.is_empty() {
+            return;
+        }
+        let payer = self.actor_of_uuid(w, c.player);
+        self.pay_tribute(w, c.faction, payer, None, &goods, at);
+    }
+
+    /// Tribute or a gift the grove took in is owed to its chest (MZB-423): only its tribute good,
+    /// since another item's stack may exceed its limit and the transfer fails above it (MZB-446).
+    /// Then the next stack is sent if the chest is known.
+    pub(super) fn owe_tribute(
+        &mut self,
+        w: &mut World,
+        f: u32,
+        stocked: &BTreeMap<GoodId, Amount>,
+        at: Tick,
+    ) {
+        if self.culture(f).def.chief_body.is_none() {
+            return;
+        }
+        let good = self.tribute_good(w, f);
+        let Some(&a) = stocked.get(&good).filter(|a| **a > 0) else {
+            return;
+        };
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        let g = u32::from(good.0);
+        match camp.owed_tribute.binary_search_by_key(&g, |e| e.0) {
+            Ok(i) => camp.owed_tribute[i].1 += a,
+            Err(i) => camp.owed_tribute.insert(i, (g, a)),
+        }
+        self.place_tribute(w, f, at);
+    }
+
+    /// HAVEN_CHEST (MZB-422): the chest the plugin chose for a grove, its position and free slots
+    /// as they were at the record's time: the latest wins, so a record is idempotent by the state
+    /// it names. Journaled (MZB-446), so that a replay after a crash knows the chest the session
+    /// knew; unsaved.
+    pub(super) fn haven_chest(&mut self, w: &mut World, h: &boundary::HavenChest, at: Tick) {
+        let Some(&f) = self.by_key.get(&h.faction) else {
+            return;
+        };
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        camp.chest = Some(Chest {
+            dimension: h.dimension,
+            pos: h.pos,
+            free: h.free,
+        });
+        self.place_tribute(w, f, at);
+    }
+
+    /// Sends the next stack of the tribute a grove owes its chest (MZB-423): while the camp is in,
+    /// its chest is known with room, and nothing is being placed, one good leaves the books, the
+    /// least of what is owed, what the faction's stock holds and one stack. It is a TRANSFER_TO_
+    /// CONTAINER the link writes through its outbox ([`Conflict::placings`]), booked as leaving to
+    /// the players until it is answered.
+    pub(super) fn place_tribute(&mut self, w: &mut World, f: u32, at: Tick) {
+        let node = self.factions[f as usize].node;
+        let key = self.factions[f as usize].key;
+        if self.placing.iter().any(|(g, _)| *g == f) {
+            return;
+        }
+        let Some(camp) = self.camp(f).filter(|c| c.is_in()) else {
+            return;
+        };
+        let Some(chest) = camp.chest.filter(|c| c.free > 0) else {
+            return;
+        };
+        // The stock is read as it stands at `at`: the world is caught up first, as
+        // `stock_to_players` does it, or a market that drains between its clock and `at` would
+        // be taken short of what was read (review P3-2).
+        w.run_until(at);
+        let m = w.market(node);
+        let pick = camp.owed_tribute.iter().find_map(|&(g, owed)| {
+            let good = GoodId(u16::try_from(g).ok()?);
+            let held = m.lines.get(good.index())?.stock;
+            let n = owed.min(held).min(STACK_ITEMS * MILLI) / MILLI * MILLI;
+            (n >= MILLI).then_some((good, n))
+        });
+        let Some((good, n)) = pick else {
+            return;
+        };
+        let taken = w.stock_to_players(node, &BTreeMap::from([(good, n)]), at);
+        // A take short of what was read (the stock moved after all): place the whole items taken
+        // and put the rest back, so the goods are never lost on this path.
+        let got = taken.get(&good).copied().unwrap_or(0);
+        let n = got / MILLI * MILLI;
+        if got > n {
+            w.stock_from_players(node, &BTreeMap::from([(good, got - n)]), at);
+        }
+        if n < MILLI {
+            return;
+        }
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        let op = tribute_op(key, camp.stacks, u32::from(good.0), n);
+        camp.stacks += 1;
+        // A stack may fill a slot: the chest has one less until the plugin says otherwise.
+        camp.chest = Some(Chest {
+            free: chest.free - 1,
+            ..chest
+        });
+        self.placing.push((
+            f,
+            Placing {
+                op,
+                good: u32::from(good.0),
+                amount: n,
+                dimension: chest.dimension,
+                pos: chest.pos,
+            },
+        ));
+    }
+
+    /// The tribute stacks sent to chests and not yet answered, by op id (MZB-423).
+    pub fn placings(&self) -> impl Iterator<Item = (u64, Placing)> + '_ {
+        self.placing.iter().map(|(_, p)| (p.op, *p))
+    }
+
+    /// Takes the stack `op` out of those in flight: its faction and what it was.
+    fn unplace(&mut self, op: u64) -> Option<(u32, Placing)> {
+        let i = self.placing.iter().position(|(_, p)| p.op == op)?;
+        Some(self.placing.remove(i))
+    }
+
+    /// The plugin put a stack in its chest (APPLIED or DUPLICATE_OP): the amount is no longer owed,
+    /// and the next stack goes. False for an op that is not a tribute stack.
+    pub fn tribute_placed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+        let Some((f, p)) = self.unplace(op) else {
+            return false;
+        };
+        if let Some(camp) = self.camp_mut(f)
+            && let Ok(i) = camp.owed_tribute.binary_search_by_key(&p.good, |e| e.0)
+        {
+            camp.owed_tribute[i].1 -= p.amount;
+            if camp.owed_tribute[i].1 <= 0 {
+                camp.owed_tribute.remove(i);
+            }
+        }
+        self.stats.tribute_stacks += 1;
+        self.place_tribute(w, f, at);
+        true
+    }
+
+    /// The plugin could not put a stack in its chest (FAILED): the goods go back to the faction's
+    /// stock, the tribute is still owed, and the chest is forgotten until the plugin names one
+    /// again.
+    pub fn tribute_failed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+        let Some((f, p)) = self.unplace(op) else {
+            return false;
+        };
+        let node = self.factions[f as usize].node;
+        if let Some(camp) = self.camp_mut(f) {
+            camp.chest = None;
+        }
+        let good = GoodId(u16::try_from(p.good).unwrap_or(0));
+        w.stock_from_players(node, &BTreeMap::from([(good, p.amount)]), at);
+        true
     }
 
     // ---- CAMP_OUT --------------------------------------------------------------------------
@@ -1244,6 +1953,7 @@ impl Conflict {
         camp.epoch = 0;
         camp.refill = camp.refill.wrapping_add(1);
         camp.refill_at = None;
+        camp.chest = None;
         camp.void();
         self.unblock(f, at);
     }
@@ -1256,6 +1966,7 @@ impl Conflict {
             camp.epoch = 0;
             camp.refill = camp.refill.wrapping_add(1);
             camp.refill_at = None;
+            camp.chest = None;
             camp.void();
         }
         let now = self.now;
@@ -1279,7 +1990,7 @@ impl Conflict {
     /// several records (a holder's, journaled again, and held lines answered later). Only the
     /// latest census's epoch is answered: an older epoch's answers are superseded by that census,
     /// which read the world after the lines were applied.
-    pub(super) fn camp_bodies(&mut self, b: &CampBodies, at: Tick) {
+    pub(super) fn camp_bodies(&mut self, w: &mut World, b: &CampBodies, at: Tick) {
         let Some(&f) = self.by_key.get(&b.faction) else {
             return;
         };
@@ -1296,8 +2007,36 @@ impl Conflict {
         let mut lines: Vec<ReconcileLine> = Vec::new();
         let mut cleared = 0;
         let is_in = camp.is_in();
-        let flags = self.line_flags(f);
+        let mut heir_changed = false;
+        let mut pair_cleared = false;
+        let mut masked_away = Vec::new();
         for a in &b.lines {
+            // The heir's pair names no slot the engine keeps a line on (MZB-403, MZB-409).
+            if a.action == ACTION_MASK || a.action == ACTION_SEAT_HEIR {
+                if !camp.answer(b.op, a.line, self.obs_seq) {
+                    continue;
+                }
+                let marker = if a.action == ACTION_MASK {
+                    &mut camp.mask
+                } else {
+                    &mut camp.seat
+                };
+                if marker.is_some_and(|m| m == (b.op, a.line)) {
+                    *marker = None;
+                    cleared += 1;
+                    pair_cleared = true;
+                }
+                if a.outcome != LINE_DONE && a.outcome != LINE_NOTHING {
+                    continue;
+                }
+                self.stats.camp_answers += 1;
+                if a.action == ACTION_MASK {
+                    masked_away.extend(self.masked(&mut camp, f, a, at));
+                } else if self.seated(&mut camp, f, a) {
+                    heir_changed = true;
+                }
+                continue;
+            }
             if a.generation == 0 {
                 // A stray, named by its UUID: nothing is booked for any slot.
                 continue;
@@ -1308,6 +2047,7 @@ impl Conflict {
             if !camp.answer(b.op, a.line, self.obs_seq) {
                 continue;
             }
+            let flags = self.line_flags(f, a.slot);
             let s = &mut camp.slots[i];
             if s.line.is_some_and(|l| l.op == b.op) {
                 s.line = None;
@@ -1400,13 +2140,127 @@ impl Conflict {
             }
         }
         self.factions[f as usize].camp = Some(camp);
+        // A warrior masked after its party set out (review P3-5) is that party's loss, booked with
+        // the camp back in the faction, as a member dying at its camp is (`camp_death`).
+        for (party, body) in masked_away {
+            self.pool_shift(f, 0.0, at);
+            self.member_died(w, party, body, at);
+        }
         self.send_lines(f, lines, at);
-        if cleared > 0 {
-            self.unblock(f, at);
+        if cleared > 0 || heir_changed {
+            // A pair that seated no one is ordered again an hour on, not by this very answer.
+            let retry = pair_cleared && !heir_changed;
+            match self.camp(f).map(|c| (c.heir.is_some(), c.heir_stamp)) {
+                Some((true, stamp)) if retry => {
+                    self.unblock_lines(f, at);
+                    self.schedule(at + HEIR_RETRY, Ev::CampHeir { faction: f, stamp });
+                }
+                _ => self.unblock(f, at),
+            }
         }
     }
 
+    /// MASK answered done: the warrior the plugin took is the chief to be, so its member leaves
+    /// the pool (MZB-409). The slot is freed all the same when a line of its own is in flight; that
+    /// line's late answer finds a retired generation. The Java side masks only a warrior at home
+    /// that has not set out (M9b). A slot the books have set out anyway (a party mustered since
+    /// the pair was ordered, its body still in the camp) is that party's loss, as a member of it
+    /// dying at its camp is: the slot is freed, and the party and the faction's count of warriors
+    /// away lose the unit, which the caller books once the camp is back in the faction (review
+    /// P3-5, MZB-445). That party and the body's id are returned.
+    fn masked(
+        &mut self,
+        camp: &mut Camp,
+        f: u32,
+        a: &boundary::LineAnswer,
+        at: Tick,
+    ) -> Option<(Handle<Party>, u32)> {
+        if a.generation == 0 || a.slot == CHIEF_SLOT {
+            return None;
+        }
+        let i = camp.index(a.slot, a.generation)?;
+        match camp.slots[i].state {
+            SlotState::Body | SlotState::Owed => {
+                camp.free(i, false);
+                self.pool_shift(f, -1.0, at);
+                None
+            }
+            SlotState::Left => {
+                let (party, body) = (camp.slots[i].party, camp.slots[i].body);
+                camp.free(i, false);
+                Some((party, body))
+            }
+            // Its body was taken: there is none at the camp to mask.
+            SlotState::Gone | SlotState::Dead => None,
+        }
+    }
+
+    /// SEAT_HEIR answered done or with nothing to do: the heir stands, tagged, so the chief's slot
+    /// is its body, and the wait and the memory of the chief before it are over (MZB-409). A slot
+    /// the books hold live is another chief's: it keeps its place and the census removes the
+    /// extra body. True if the books changed.
+    fn seated(&mut self, camp: &mut Camp, f: u32, a: &boundary::LineAnswer) -> bool {
+        if a.slot != CHIEF_SLOT || a.generation == 0 {
+            return false;
+        }
+        // Only the heir that waits is seated (review P3-1): a copy of an answer for an older chief,
+        // one that died away or one the books replaced, is booked by state and changes nothing,
+        // and neither does a heir whose death the books have (its generation is not the next
+        // heir's, which derives from a later due tick).
+        let key = self.factions[f as usize].key;
+        if camp.heir_generation(key) != Some(a.generation) {
+            return false;
+        }
+        match camp.chief_index() {
+            Some(i) if camp.slots[i].state != SlotState::Dead => {
+                if camp.slots[i].generation == a.generation {
+                    return false;
+                }
+            }
+            Some(i) => camp.free(i, true),
+            None => {}
+        }
+        if camp.chief_index().is_none() {
+            let body = self.chief_body_id(f).unwrap_or(0);
+            let chief = self.factions[f as usize].chief;
+            camp.alloc_chief(a.generation, body, SlotState::Body, Handle::NULL, chief);
+        }
+        camp.heir = None;
+        camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
+        camp.traded.clear();
+        true
+    }
+
     // ---- CAMP_DEATH ------------------------------------------------------------------------
+
+    /// The heir's body died before the answer to its SEAT_HEIR reached the books (the answer lost
+    /// and held for the next camp-in, or a death first): the books seat it now, so its death is
+    /// booked as any chief's, and the answer that comes late finds a generation retired at a death
+    /// (`seated`). Otherwise the death would book nothing and the answer would seat a chief with
+    /// no body, to be written off after three misses with its fall never booked.
+    fn seat_before_death(&mut self, f: u32, generation: u32) {
+        let key = self.factions[f as usize].key;
+        let Some(mut camp) = self.factions[f as usize].camp.take() else {
+            return;
+        };
+        // A body tagged with the waiting heir's generation exists only if the world did its
+        // SEAT_HEIR, whether or not the line is still in flight here: a CAMP_OUT or a session
+        // start voids the markers, and a holder's record is journaled again at the next camp-in.
+        if generation != 0
+            && camp.index(CHIEF_SLOT, generation).is_none()
+            && camp.heir_generation(key) == Some(generation)
+        {
+            let a = boundary::LineAnswer {
+                line: 0,
+                slot: CHIEF_SLOT,
+                generation,
+                action: ACTION_SEAT_HEIR,
+                outcome: LINE_DONE,
+            };
+            self.seated(&mut camp, f, &a);
+        }
+        self.factions[f as usize].camp = Some(camp);
+    }
 
     /// A camp body died or was carried off (MOWZIE.md §4.9): the death of a body whose slot and
     /// generation the books hold kills that member wherever the books have it. At home the pool
@@ -1420,6 +2274,9 @@ impl Conflict {
             return;
         }
         self.camp_sync(f, at);
+        if d.slot == CHIEF_SLOT {
+            self.seat_before_death(f, d.generation);
+        }
         let Some(i) = self.camp(f).and_then(|c| c.index(d.slot, d.generation)) else {
             return;
         };
@@ -1428,6 +2285,13 @@ impl Conflict {
             let s = &self.camp(f).expect("a ledger").slots[i];
             (s.state, s.party, s.chief)
         };
+        // The chief's own slot has its own rules (MZB-406, MZB-412): outside the pool, its loss
+        // steps the chief's pressure and sets the heir.
+        if d.slot == CHIEF_SLOT && self.chief_body_id(f).is_some() {
+            self.chief_death(w, f, i, d, at);
+            self.unblock(f, at);
+            return;
+        }
         // A member that died away was lost then: its body's death at the camp is no second loss.
         // The bump goes first: the `unblock` that follows plans the wait from it.
         let cause = self.renewal_cause(f, d.by);
@@ -1462,6 +2326,179 @@ impl Conflict {
         self.unblock(f, at);
     }
 
+    /// The body of a chief slot died or was carried off (CAMP_DEATH on `CHIEF_SLOT`, MZB-406): at
+    /// home, or left with its take still held, it is the war chief's fall at its camp; its slot is
+    /// freed with its generation retired at a death, the memory is cleared and an heir is due. A
+    /// dead slot's body is no second fall. The chief is no unit of its party, so a party that
+    /// loses it loses no warrior, and one that led with it routs as a chief's band does.
+    fn chief_death(&mut self, w: &mut World, f: u32, i: usize, d: &CampDeath, at: Tick) {
+        let s = &self.camp(f).expect("a ledger").slots[i];
+        let (state, body_of) = (s.state, s.chief);
+        let named = matches!(d.by, boundary::BY_PLAYER | boundary::BY_TAKEN) && d.killer != (0, 0);
+        self.camp_mut(f).expect("a ledger").free(i, true);
+        if state == SlotState::Dead {
+            return;
+        }
+        let killer = named.then(|| self.player(w, d.killer));
+        self.chief_killed_at_camp(w, f, body_of, killer, at);
+        self.chief_lost(f, self.renewal_cause(f, d.by), at);
+    }
+
+    /// The chief's slot is lost to the books, by `cause` (a player's, which steps the camp's
+    /// pressure by one, or no one's or a predator's, which does not): its memory is cleared, and
+    /// the heir is due after the wait the pressure sets, never before the camp has recovered from
+    /// its cowing (MZB-406, MZB-407). The caller has freed the slot.
+    fn chief_lost(&mut self, f: u32, cause: LossCause, at: Tick) {
+        let Some(r) = self.culture(f).chief_renewal else {
+            return;
+        };
+        let cowed = self.factions[f as usize].cowed_until;
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let camp = self.camp_mut(f).expect("a ledger");
+        if cause == LossCause::Player {
+            camp.pressure.bump(day, 1.0, r.rule.half_life_days);
+        }
+        camp.traded = Vec::new();
+        let due = cowed.max(at + r.rule.delay_ticks(camp.pressure, day).max(1));
+        if cause == LossCause::Player {
+            self.stats.renewal_losses += 1;
+        }
+        self.set_heir(f, due, false, at);
+        self.note(
+            at,
+            Some(f),
+            "heir",
+            format!(
+                "the chief is lost; its heir is due in {:.1} days",
+                (due.0 - at.0) as f64 / TICKS_PER_DAY as f64
+            ),
+        );
+    }
+
+    /// The chief of a party died away (MZB-412; the engine half, which only a test reaches before
+    /// M11 sends a chief's casualty): a left slot becomes dead, its body still in the camp, to be
+    /// removed or seated over; a gone slot is freed. Both retire the generation at a death and set
+    /// the heir. False if the camp has no chief slot away.
+    pub fn chief_died_away(&mut self, f: u32, cause: LossCause, at: Tick) -> bool {
+        let Some(i) = self
+            .camp(f)
+            .and_then(Camp::chief_index)
+            .filter(|&i| self.camp(f).is_some_and(|c| c.slots[i].state.away()))
+        else {
+            return false;
+        };
+        self.camp_sync(f, at);
+        let camp = self.camp_mut(f).expect("a ledger");
+        match camp.slots[i].state {
+            SlotState::Left => {
+                let s = &mut camp.slots[i];
+                s.state = SlotState::Dead;
+                s.party = Handle::NULL;
+                s.line = None;
+            }
+            _ => camp.free(i, true),
+        }
+        self.chief_lost(f, cause, at);
+        self.unblock(f, at);
+        true
+    }
+
+    // ---- the heir ---------------------------------------------------------------------------
+
+    /// `Ev::CampHeir`: the chief to come is due (MZB-406). Its stamp is the booking's; a changed
+    /// heir (cancelled, replaced) leaves it stale.
+    pub(super) fn camp_heir_event(&mut self, f: u32, stamp: u32, at: Tick) {
+        match self.camp(f) {
+            Some(c) if c.heir_stamp == stamp && c.heir.is_some() => {}
+            _ => {
+                self.stats.stale += 1;
+                return;
+            }
+        }
+        self.camp_heir(f, at);
+    }
+
+    /// Orders the heir, if it is due: one CAMP_RECONCILE of two lines (MZB-408), MASK of a
+    /// warrior at home and SEAT_HEIR of the new chief, in the generation the books derive from the
+    /// heir's due tick. Nothing is ordered while the camp is out, while no warrior is home (a body
+    /// with no line), while the pair is in flight, or while a band of the camp is still mustering
+    /// (MZB-612: its warriors are left, with no SET_OUT sent yet, and the plugin cannot tell them
+    /// from the ones at home, so a MASK could take one as that band's loss); the camp is looked at
+    /// again at each census, each due tick and the end of each muster (`camp_set_out`, `home`).
+    /// Whether the pair was ordered (the lines were looked at again then, `unblock_lines`).
+    pub(super) fn camp_heir(&mut self, f: u32, at: Tick) -> bool {
+        let Some(camp) = self.camp(f).filter(|c| c.is_in()) else {
+            return false;
+        };
+        if !camp.heir.is_some_and(|h| h.due <= at) || camp.mask.is_some() || camp.seat.is_some() {
+            return false;
+        }
+        let mustering = camp.slots.iter().any(|s| {
+            s.state == SlotState::Left
+                && s.line.is_none()
+                && self
+                    .parties
+                    .get(s.party)
+                    .is_some_and(|x| x.phase == Phase::Mustering)
+        });
+        if mustering {
+            return false;
+        }
+        let warrior_home = camp
+            .members()
+            .any(|s| s.state == SlotState::Body && s.line.is_none());
+        let Some(chief_kind) = self.chief_body_id(f).filter(|_| warrior_home) else {
+            return false;
+        };
+        let key = self.factions[f as usize].key;
+        let generation = camp.heir_generation(key).expect("an heir");
+        // A chief slot dead away: the heir is seated over its body in place (MZB-410).
+        let old = camp
+            .chief()
+            .filter(|s| s.state == SlotState::Dead)
+            .map_or(0, |s| u64::from(s.generation));
+        let mask = ReconcileLine {
+            slot: 0,
+            generation: 0,
+            body: self.home_body(f),
+            action: ACTION_MASK,
+            flags: self.line_flags(f, 0),
+            a: 0,
+            b: 0,
+        };
+        let seat = ReconcileLine {
+            slot: CHIEF_SLOT,
+            generation,
+            body: chief_kind,
+            action: ACTION_SEAT_HEIR,
+            flags: self.line_flags(f, CHIEF_SLOT),
+            a: old,
+            b: 0,
+        };
+        self.send_lines(f, vec![mask, seat], at);
+        // The pair is in flight, so a war party may muster again (MZB-616): the feuds that waited
+        // for the heir are planned again, and the plunder drive tries at its next gap.
+        self.unblock_lines(f, at);
+        true
+    }
+
+    /// Whether the camp's heir goes before any new war party (MZB-616): the heir is due, the camp
+    /// is in and its pair is not yet in flight. Musters could else follow one another with no
+    /// cap, each ending as the next begins, and an heir that waits for a muster to end
+    /// (MZB-612) would never be seated. While it holds, `send_party` fires no war party of the
+    /// camp and a feud that wanted one waits ([`BLOCKED`]); the pair is ordered when the muster
+    /// already under way ends (`camp_heir`), or at once if none is, and a party may muster again
+    /// from then on. The heir so waits at most the muster under way.
+    pub(super) fn heir_first(&self, f: u32, at: Tick) -> bool {
+        self.chief_body_id(f).is_some()
+            && self.camp(f).is_some_and(|c| {
+                c.is_in()
+                    && c.heir.is_some_and(|h| h.due <= at)
+                    && c.mask.is_none()
+                    && c.seat.is_none()
+            })
+    }
+
     /// A member of a party died at its camp, away from it: one unit of the party falls, its slot
     /// already freed. A party with no one left ends through `home`, from its camp's muster, or
     /// walks home as `casualties` sends it.
@@ -1485,6 +2522,12 @@ impl Conflict {
         let left = x.units[k].1;
         if let Some(s) = x.spawned.iter_mut().find(|s| s.0 == u) {
             s.1 = s.1.min(left);
+        }
+        // The bodies a replay keeps for an epoch no more than the unit's count either.
+        for (_, stacks) in &mut x.recalled {
+            if let Some(s) = stacks.iter_mut().find(|s| s.0 == u) {
+                s.1 = s.1.min(left);
+            }
         }
         let x = &mut self.factions[f as usize];
         x.away = x.away.saturating_sub(1);
@@ -1577,6 +2620,46 @@ impl Conflict {
                     s.id
                 ));
             }
+        }
+        // The chief's slot (MZB-401, MZB-406): only a culture with a chief body keeps one, it is
+        // the last slot, and a chief to come is waited for exactly while it has no live slot.
+        let chief_kind = self.culture(f).def.chief_body.is_some();
+        match c.chief() {
+            Some(_) if !chief_kind => {
+                bad.push("MZB-401: a chief slot in a camp with no chief body".into())
+            }
+            Some(s) => {
+                if s.state.away() && !self.parties.get(s.party).is_some_and(|p| p.chief) {
+                    bad.push(format!(
+                        "MZB-413: the chief is {:?} in a party that is not its own",
+                        s.state
+                    ));
+                }
+                if (s.state == SlotState::Dead) != c.heir.is_some() {
+                    bad.push(format!(
+                        "MZB-406: the chief slot is {:?} and the heir is {:?}",
+                        s.state, c.heir
+                    ));
+                }
+            }
+            None if chief_kind && c.heir.is_none() => {
+                bad.push("MZB-406: no chief slot and no heir waits".into());
+            }
+            None => {}
+        }
+        if c.seat.is_some() && c.heir.is_none() {
+            bad.push("MZB-409: the heir is seated in flight with no heir".into());
+        }
+        if c.traded.windows(2).any(|w| w[0] >= w[1]) || c.traded.len() > TRADED_CAP {
+            bad.push(
+                "MZB-420: the trade memory is unsorted, repeats a player or is over its cap".into(),
+            );
+        }
+        if c.chief().is_none_or(|s| s.state != SlotState::Body)
+            && !c.traded.is_empty()
+            && c.heir.is_some()
+        {
+            bad.push("MZB-420: a memory kept for a chief that is gone".into());
         }
         bad
     }
