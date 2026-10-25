@@ -703,6 +703,19 @@ party, reaches `train_passed` and counts stale).
   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
 
+**The M8 fixes and the second-pass merges** (feat/mowzie-m8 from 14c896ee; RP-154 to RP-156).
+The merge check's P2: a replayed TRAIN_PASSED is counted and rolls nothing (RP-154, §4.4), so the
+replay never robs a train the live session may have robbed; RP-151, RP-152 (every pass of the
+second session up to its world save, not one train's roll) and RP-57's 0x080D row say so, and
+`lurk_robberies` counts only robberies told to Java. Then M9's merge-check fixes at 42e8fcc3 (RP-133,
+RP-134, MZB-672 amended, MZB-673; two doc conflicts; the FactionRow pin is M9's 216 again with
+hunts boxed, RP-155) and main at a11311aa (M6 landed with its P3s, its fixtures at RTC7 / META 6,
+slice S's ships; no conflict, RP-156). No format change: RTC10 / META 9. The sims regenerated on the
+merged head equal the committed ones but for wall_ms. The fixture tests that read the conflict's
+pages fail on META 9 against main's META 6 fixtures ("meta page version 6, this build reads 9"), the
+same five as on the earlier merges (listed under Fixtures above); the next fixture regeneration
+(the core and create GameTest saves) brings them to RTC10 / META 9.
+
 ## 3. The flag
 
 ### 3.1 Where it is set and cleared (rtsim-jni)

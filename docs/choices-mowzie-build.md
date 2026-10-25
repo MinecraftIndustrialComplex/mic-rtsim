@@ -8938,7 +8938,7 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
     took them at the decision, so a market draw in that window reads a stock that much higher; the
     booking takes what is left.
 
-### The M8 second-pass merges (RP-155 to RP-157, MZB-693)
+### The M8 second-pass merges (RP-155 to RP-156)
 
 The M8 fixes pass (RP-154, rail.rs's guard, af4c72d1 and its format commit) came first; then each
 merge, its own commit, with feat/mowzie-m8 as the first parent.
@@ -8956,6 +8956,25 @@ merge, its own commit, with feat/mowzie-m8 as the first parent.
   (the 232 side would fail), M8 adding no `Faction` field, so the row is M9's 216 plus nothing
   (re-derived: the test passes at 216 in the merged tree). M9's new tests (`mowzie_records.rs`,
   `grove.rs`, protocol.rs's stack tests) run beside M8's lurk tests and pass.
+- **RP-156** (origin/main at a11311aa: M6 landed with its P3s, its fixtures at RTC7 / META 6, slice S
+  and SEC-1 S6). No conflict, and the merge changes only rtsim-view's `fixtures.rs` and its fixture
+  data (the saves of 1290d0b7, conflict meta page 6): the rest of main had come with the earlier
+  merges of it. `cargo test --workspace`: the five fixture tests fail as on every earlier merge,
+  since this build reads META 9 (rtsim-view `fixtures`:
+  `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+  `the_create_gametest_save_draws_every_layer_and_writes_nothing`; `hashes`:
+  `every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`;
+  rtsim-host `host`: `gametest_worlds_open_in_the_host_with_their_saved_state`). A sixth,
+  rtsim-cli `view`'s `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap`,
+  failed once in the loaded full run (its district card carried the note "Its machines are read
+  from the world as the card is opened: 0 of its 2 chunks so far", a timing note) and passes alone:
+  a load flake, not the merge's. The sims regenerated on the merged head (`sim conflict` and `sim
+  mowzie`, every check of every run ok) are the committed files but for `wall_ms`: they came in
+  unchanged, M6's changes were in M8's sims already, and neither M9's check fixes nor RP-154 moves
+  a run (no sim replays a pass). Against main (a11311aa) the differences are M7's, M8's and M9's
+  and the same as the M8 merge listed: sim-conflict's three stat sets and the conflict state hash;
+  sim-mowzie's runs built by M7, M8 and M9, M8's lurk checks, M9's grove checks and plunder at node
+  4 (0 items spare, not 1), and the state hashes in its save checks.
 
 ### Slice H (herds)
 
