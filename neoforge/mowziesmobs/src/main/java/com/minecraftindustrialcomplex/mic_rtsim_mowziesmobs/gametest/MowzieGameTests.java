@@ -13,6 +13,7 @@ import com.bobmowzie.mowziesmobs.server.world.feature.structure.UmvuthanaGrovePi
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
@@ -1293,7 +1294,7 @@ public final class MowzieGameTests {
         ServerLevel level = far.level;
         Den den = new Den(far, far.k, far.z0);
         ServerPlayer[] player = new ServerPlayer[1];
-        long[] sent = new long[1], placed = new long[1], op = new long[1];
+        long[] sent = new long[1], placed = new long[1], op = new long[1], heldAt = new long[1];
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
@@ -1303,6 +1304,10 @@ public final class MowzieGameTests {
                     player[0] = FakePlayers.add(level, den.spot.add(40, 1, 0), "mowzie-hold");
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
                     MowzieKit.everyTick(helper, () -> {
+                        // The hold starts when the camp holds the line (MZB-663), not when the test sent it: the
+                        // line may wait in the engine's queue or the session's step first.
+                        if (heldAt[0] == 0 && MowzieKit.camps().heldLines() > 0)
+                            heldAt[0] = level.getGameTime();
                         if (placed[0] == 0 && !MowzieKit.held(den.faction, 0, 1).isEmpty())
                             placed[0] = level.getGameTime();
                     });
@@ -1315,8 +1320,10 @@ public final class MowzieGameTests {
                 })
                 .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
                 .thenExecute(() -> {
-                    long waited = placed[0] - sent[0];
-                    record(test, "hold", "sent at " + sent[0] + ", placed at " + placed[0] + " (" + waited + " ticks), HOLD_MAX " + Camps.HOLD_MAX);
+                    check("the camp held the line (" + heldAt[0] + ")", heldAt[0] != 0 && heldAt[0] >= sent[0]);
+                    long waited = placed[0] - heldAt[0];
+                    record(test, "hold", "sent at " + sent[0] + ", held at " + heldAt[0] + ", placed at " + placed[0] + " (" + waited
+                            + " ticks held), HOLD_MAX " + Camps.HOLD_MAX);
                     MowzieKit.allOutcomes("the held SPAWN", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("placed no sooner than HOLD_MAX (" + waited + ")", placed[0] != 0 && waited >= Camps.HOLD_MAX - 2);
                     check("and within 40 ticks after it (" + waited + ")", waited <= Camps.HOLD_MAX + 40);
@@ -2103,9 +2110,12 @@ public final class MowzieGameTests {
                     check("the camp is in", grove.site().in());
                     far.release(outChunk, grove.cz);
                 })
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, outChunk, grove.cz, id[0]))
+                // The object's own removal, not hasChunk and getEntity: under C2ME both flip before setRemoved (MZB-662).
+                // A body hidden and alive past the bound is C2ME's dropped entity unload, named in the failure.
+                .thenWaitUntil(RtsimTests.io(() -> check("the old w0 object is removed (alive " + w[0].isAlive() + ", removal "
+                        + w[0].getRemovalReason() + ", chunk loaded " + level.hasChunk(outChunk, grove.cz)
+                        + "; alive in an unloaded chunk is C2ME's dropped entity unload, a case of its own)", w[0].isRemoved())))
                 .thenExecute(() -> {
-                    check("the old w0 object is removed", w[0].isRemoved());
                     far.force(outChunk, grove.cz);
                 })
                 .thenWaitUntil(far.ready())
@@ -2139,7 +2149,7 @@ public final class MowzieGameTests {
         ServerLevel level = far.level;
         Den den = new Den(far, far.k, far.z0);
         Camps camps = MowzieKit.camps();
-        long[] t = new long[5]; // released, out seen, forced again, chunks ready, in seen
+        long[] t = new long[6]; // released, out seen, forced again, chunks ready, in seen, a holder above FULL seen
         long[] n = new long[3]; // polls and level changes before the release; level changes before the reload
         long[] epoch = new long[1];
 
@@ -2153,6 +2163,18 @@ public final class MowzieGameTests {
                     MowzieKit.everyTick(helper, () -> {
                         long now = level.getGameTime();
                         Camps.Site s = den.site();
+                        if (t[0] != 0 && t[5] == 0) {
+                            // What the camp can see: the first tick a footprint holder's own level reads above FULL
+                            // (MZB-663), not the tick the test released the chunks, which a busy server may sit on.
+                            ChunkMapInvoker map = (ChunkMapInvoker) level.getChunkSource().chunkMap;
+                            for (ChunkPos p : s.footprintChunks()) {
+                                ChunkHolder h = map.mic_rtsim$updating(p.toLong());
+                                if (h == null || h.getTicketLevel() > Camps.FULL) {
+                                    t[5] = now;
+                                    break;
+                                }
+                            }
+                        }
                         if (t[0] != 0 && t[1] == 0 && !s.in())
                             t[1] = now;
                         if (t[2] != 0 && t[3] == 0) {
@@ -2176,12 +2198,12 @@ public final class MowzieGameTests {
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
                 .thenExecute(() -> {
-                    check("out within a poll period of the release (" + (t[1] - t[0]) + " ticks)",
-                            t[1] != 0 && t[1] - t[0] <= Camps.POLL_PERIOD + 3);
+                    check("out within a poll period of a holder reading above FULL (" + (t[1] - t[5]) + " ticks; released at " + t[0]
+                            + ", first seen at " + t[5] + ")", t[5] != 0 && t[1] != 0 && t[1] - t[5] <= Camps.POLL_PERIOD + 3);
                     check("the camp is out", !den.site().in());
                     check("the poll counted camps (" + (camps.polls - n[0]) + ")", camps.polls > n[0]);
                     check("the poll found the levels moved (" + (camps.pollChanges - n[1]) + " chunks), not the event", camps.pollChanges > n[1]);
-                    record(test, "out", (t[1] - t[0]) + " ticks after the release, " + (camps.pollChanges - n[1]) + " chunk levels found by the poll");
+                    record(test, "out", (t[1] - t[5]) + " ticks after a holder read above FULL, " + (camps.pollChanges - n[1]) + " chunk levels found by the poll");
                 })
                 .thenWaitUntil(io(() -> {
                     for (ChunkPos p : den.site().footprintChunks())
@@ -2517,9 +2539,261 @@ public final class MowzieGameTests {
                     else
                         record(test, "event", "no ticket event fired for the den's chunks (C2ME?): the premise does not hold; the poll found "
                                 + (camps.pollChanges - n[0]) + " chunks moved");
-                    for (int l : den.site().levels())
-                        check("every footprint level reads as no holder (" + l + ")", l == Camps.NO_HOLDER);
+                    // Where no ticket event fired (C2ME) the chunks may still hold a holder above FULL when they are
+                    // unloaded to memory, so only that the camp reads them out is asserted (MZB-663).
+                    for (int l : den.site().levels()) {
+                        if (events[0][0] > 0)
+                            check("every footprint level reads as no holder (" + l + ")", l == Camps.NO_HOLDER);
+                        else
+                            check("every footprint level reads above FULL (" + l + ")", l > Camps.FULL);
+                    }
                     record(test, "agree", events[0][0] + " ticket events, " + (camps.pollChanges - n[0]) + " chunk levels found by the poll after the unload");
+                })
+                .thenSucceed();
+    }
+
+    // ---- M5 merge review and C2ME diagnosis, carried into M6 (MZB-653, MZB-654, MZB-660, MZB-661) -----------
+
+    /** A warrior of the jar made tagged before it joins, so its join indexes it wherever it stands (a body from disk). */
+    private static EntityUmvuthanaMinion taggedWarriorAt(Grove g, double dx, double dz, int slot, int generation) {
+        Vec3 p = g.at(dx, dz);
+        ServerLevel level = g.far.level;
+        EntityUmvuthanaMinion m = EntityHandler.UMVUTHANA_MINION.get().create(level);
+        check("a warrior is made", m != null);
+        m.moveTo(p.x, p.y, p.z, 0f, 0f);
+        m.finalizeSpawn(level, level.getCurrentDifficultyAt(m.blockPosition()), net.minecraft.world.entity.MobSpawnType.STRUCTURE, null);
+        m.setNoAi(true);
+        m.setData(RtsimAttachments.CAMP_MEMBER, new CampMember(g.faction, slot, generation));
+        m.setPersistenceRequired();
+        check("the tagged warrior is added", level.addFreshEntity(m));
+        return m;
+    }
+
+    /**
+     * A grove found after a sim reset, with a tagged body of an earlier life standing away (MZB-653): the three
+     * bodies carry slots and generations no ledger of this engine holds, two in the footprint and one 80 blocks
+     * out in a chunk forced alone. FACTION_FOUND counts all three in its home size (the cap the engine sets from
+     * it; a count of 2 would put the grove at a cap of 2 and the engine would remove the third as above it), the
+     * census lists the two as tagged and the away one as ELSEWHERE, and an ADOPT of each, away body included,
+     * retags it into its new slot.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_reset_away", skyAccess = true)
+    public static void aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll(GameTestHelper helper) {
+        String test = "aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove grove = new Grove(far, far.k, far.z0);
+        int outChunk = grove.cx + 5;
+        EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[3];
+        UUID[] id = new UUID[3];
+        long[] op = new long[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    grove.force();
+                    far.force(outChunk, grove.cz);
+                })
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    // In the step that declares it, before the camp is looked at: the census sees them as it would a reset's.
+                    w[0] = taggedWarriorAt(grove, 4, 0, 5, 700);
+                    w[1] = taggedWarriorAt(grove, -4, 0, 6, 701);
+                    w[2] = taggedWarriorAt(grove, 80, 0, 7, 702);
+                    for (int i = 0; i < 3; i++)
+                        id[i] = w[i].getUUID();
+                    ConflictKit.onEnd(helper, () -> {
+                        for (EntityUmvuthanaMinion m : w)
+                            if (m != null)
+                                m.discard();
+                    });
+                    check("the third stands in the chunk forced alone", w[2].chunkPosition().x == outChunk && w[2].chunkPosition().z == grove.cz);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> found = ConflictKit.factionsFound(grove.faction);
+                    check("FACTION_FOUND once (" + found.size() + ")", found.size() == 1);
+                    int home = found.get(0).view().getShort(ConflictRecords.FactionFound.HOME_BODIES) & 0xFFFF;
+                    check("home counts the body away: 3 (found " + home + ")", home == 3);
+                    ScriptedEngine.Received c = MowzieKit.census(grove.faction, 1);
+                    for (int i = 0; i < 3; i++) {
+                        CensusBody b = MowzieKit.bodyOf(c, id[i]);
+                        check("census 1 lists body " + i, b != null);
+                        boolean away = (b.flags() & ConflictRecords.CampCensus.BODY_ELSEWHERE) != 0;
+                        check("body " + i + (i == 2 ? " is ELSEWHERE" : " is not elsewhere") + " (" + b.flags() + ")", away == (i == 2));
+                        check("body " + i + " is no stray, it keeps its old tag (" + b.slot() + ", " + b.generation() + ")",
+                                (b.flags() & ConflictRecords.CampCensus.BODY_STRAY) == 0 && b.slot() == 5 + i && b.generation() == 700 + i);
+                    }
+                    List<CampLine> lines = new ArrayList<>();
+                    for (int i = 0; i < 3; i++)
+                        lines.add(CampLine.of(i, 1, MowzieKit.WARRIOR, ADOPT, 0, id[i]));
+                    op[0] = MowzieKit.reconcile(grove.faction, MowzieKit.epoch(c), lines);
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 3))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT of tagged bodies, one away", ConflictKit.outcomes(grove.faction, op[0]), DONE);
+                    for (int i = 0; i < 3; i++)
+                        check("body " + i + " is retagged into slot " + i + ", generation 1", MowzieKit.tagged(w[i], grove.faction, i, 1));
+                    record(test, "reset away", "FACTION_FOUND home 3 with one body away; all three adopted and retagged");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A camp's chunk HIDDEN with its entities LOADED is not playable (MZB-660): the state C2ME leaves when it drops
+     * an entity unload, forced here by the entity manager's own status change (the chunk keeps its ticket level and
+     * its loaded entities, and a level query no longer finds them). A TAKE by tag arriving then is STALE, the
+     * Frostmaw stays and nothing is counted taken; with the chunk tracked again the same line is DONE.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_chunk", skyAccess = true)
+    public static void aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded(GameTestHelper helper) {
+        String test = "aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[3];
+        long[] taken = new long[1];
+        ChunkPos cp = new ChunkPos(den.cx, den.cz);
+        var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+
+        MowzieKit.seq(helper)
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                    ConflictKit.onEnd(helper, () -> {
+                        if (level.hasChunk(cp.x, cp.z))
+                            manager.updateChunkStatus(cp, FullChunkStatus.ENTITY_TICKING);
+                    });
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    manager.updateChunkStatus(cp, FullChunkStatus.INACCESSIBLE);
+                    check("the chunk's entities are still loaded", level.areEntitiesLoaded(cp.toLong()));
+                    check("but a level query no longer finds the Frostmaw", level.getEntity(f[0].getUUID()) == null && !f[0].isRemoved());
+                    check("the camp is still in", den.site().in());
+                    taken[0] = MowzieKit.camps().taken;
+                    op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("a TAKE while the chunk is hidden", ConflictKit.outcomes(den.faction, op[1]), STALE);
+                    check("the Frostmaw stays and nothing was taken", !f[0].isRemoved() && MowzieKit.camps().taken == taken[0]
+                            && MowzieKit.tagged(f[0], den.faction, 0, 1));
+                    manager.updateChunkStatus(cp, FullChunkStatus.ENTITY_TICKING);
+                    op[2] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[2], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("the same TAKE once the chunk is tracked again", ConflictKit.outcomes(den.faction, op[2]), DONE);
+                    check("the Frostmaw is taken", f[0].isRemoved() && MowzieKit.camps().taken == taken[0] + 1);
+                    MowzieKit.discardRecordMarkers(level, den.area());
+                    record(test, "hidden", "a TAKE was STALE with the chunk hidden and its entities loaded, DONE once tracked again");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A REMOVE by UUID finds a camp's tagged body whose chunk is hidden (MZB-661): {@code ServerLevel.getEntity}
+     * misses it, so the line is answered DONE from the camp's index and the body goes (it answered NOTHING and the
+     * body lived on). The grove's warrior is adopted, moved 80 blocks out into a chunk forced alone, and that chunk
+     * hidden by the entity manager.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_elsewhere", skyAccess = true)
+    public static void aRemoveByUuidFindsAnElsewhereBodyInAHiddenChunk(GameTestHelper helper) {
+        String test = "aRemoveByUuidFindsAnElsewhereBodyInAHiddenChunk";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove grove = new Grove(far, far.k, far.z0);
+        int outChunk = grove.cx + 5;
+        ChunkPos out = new ChunkPos(outChunk, grove.cz);
+        var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+        EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[1];
+        UUID[] id = new UUID[1];
+        long[] op = new long[2];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    grove.force();
+                    far.force(outChunk, grove.cz);
+                })
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    w[0] = warriorAt(grove, 4, 0);
+                    id[0] = w[0].getUUID();
+                    ConflictKit.onEnd(helper, () -> {
+                        if (level.hasChunk(out.x, out.z))
+                            manager.updateChunkStatus(out, FullChunkStatus.ENTITY_TICKING);
+                    });
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(grove.faction, MowzieKit.epoch(MowzieKit.census(grove.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.WARRIOR, ADOPT, 0, id[0]))))
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(grove.faction, op[0]), DONE);
+                    Vec3 away = grove.at(80, 0);
+                    w[0].teleportTo(away.x, away.y, away.z);
+                    check("the warrior stands in the forced chunk", w[0].chunkPosition().equals(out));
+                    manager.updateChunkStatus(out, FullChunkStatus.INACCESSIBLE);
+                    check("a level query no longer finds it, and the camp still indexes it", level.getEntity(id[0]) == null && !w[0].isRemoved()
+                            && MowzieKit.camps().held(grove.faction).contains(w[0]));
+                    op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.WARRIOR, REMOVE, 0, id[0])));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("REMOVE by UUID of a body in a hidden chunk", ConflictKit.outcomes(grove.faction, op[1]), DONE);
+                    check("the warrior is removed", w[0].isRemoved());
+                    manager.updateChunkStatus(out, FullChunkStatus.ENTITY_TICKING);
+                    MowzieKit.discardRecordMarkers(level, new AABB(out.getMinBlockX() - 1, level.getMinBuildHeight(), out.getMinBlockZ() - 1,
+                            out.getMaxBlockX() + 2, level.getMaxBuildHeight(), out.getMaxBlockZ() + 2));
+                    record(test, "hidden elsewhere", "REMOVE by UUID found the hidden body through the camp's index");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The census drops the records of another engine life a footprint body carries (MZB-654): the loop at the
+     * census reaches {@code ensureReasserted} only for a holder the end-of-tick drain has not met, which a body
+     * given its records after it joined is. A Frostmaw is given one record of the next engine life before the
+     * camp's first census; the census drops it and counts it in {@code stalePending}, journaling nothing.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_census_stale_life", skyAccess = true)
+    public static void theCensusDropsTheRecordsOfAnotherEngineLifeAFootprintBodyCarries(GameTestHelper helper) {
+        String test = "theCensusDropsTheRecordsOfAnotherEngineLifeAFootprintBodyCarries";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] stale = new long[1], reasserted = new long[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    RtsimSession s = RtsimSession.current();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                    f[0].setData(RtsimAttachments.PENDING, new PendingRecords(s.engineLife() + 1,
+                            List.of(new PendingRecords.Entry(EARLIER_GEN, new byte[] {1, 2, 3}))));
+                    check("the session has not journaled this holder", !s.reasserted(f[0]));
+                    stale[0] = s.stalePending();
+                    reasserted[0] = s.reasserted();
+                    den.lay().declare();
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> {
+                    RtsimSession s = RtsimSession.current();
+                    check("the record of the other life is gone from the Frostmaw", !f[0].hasData(RtsimAttachments.PENDING));
+                    check("and counted as stale (" + (s.stalePending() - stale[0]) + ")", s.stalePending() == stale[0] + 1);
+                    check("none was journaled again (" + (s.reasserted() - reasserted[0]) + ")", s.reasserted() == reasserted[0]);
+                    record(test, "stale life", "the census dropped one record of the next engine life and counted it");
                 })
                 .thenSucceed();
     }

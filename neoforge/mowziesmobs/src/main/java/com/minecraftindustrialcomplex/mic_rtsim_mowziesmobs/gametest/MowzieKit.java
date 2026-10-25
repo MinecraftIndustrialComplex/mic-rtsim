@@ -283,8 +283,10 @@ public final class MowzieKit {
 
     /**
      * Has the engine save its pages at its next step, so the command header after it acknowledges what it holds and
-     * the holders drop their pending records (a record marker with none is discarded). A GameTest server never
-     * reaches the periodic save, and nothing else makes the engine acknowledge.
+     * the holders drop their pending records (a record marker with none is discarded). A GameTest server saves
+     * everything every 6,000 ticks (MinecraftServer.tickServer; the entity manager's autoSave then unloads every
+     * HIDDEN chunk, so C2ME's dropped unloads clear there too, MZB-664): a run under 6,000 ticks never reaches it, and
+     * nothing else makes the engine acknowledge.
      */
     public static void acknowledge() {
         ScriptedEngine engine = RtsimTests.engine();

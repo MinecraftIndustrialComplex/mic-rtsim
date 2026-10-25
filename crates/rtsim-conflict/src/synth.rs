@@ -1064,11 +1064,14 @@ impl FakeConflict {
                 });
                 LINE_DONE
             }
+            // Java's `Camps.adopt` takes a stray or a body of the camp's own faction, whatever tag it
+            // carries (it unhooks the old tag and sets the slot's): a body tagged with a generation no
+            // slot holds, as a sim reset leaves them, is retagged here too (MZB-654).
             ACTION_ADOPT => {
                 match camp
                     .bodies
                     .iter_mut()
-                    .find(|b| b.generation == 0 && (b.uuid.0, b.uuid.1) == (l.a, l.b))
+                    .find(|b| (b.uuid.0, b.uuid.1) == (l.a, l.b))
                 {
                     Some(b) => {
                         b.slot = l.slot;
