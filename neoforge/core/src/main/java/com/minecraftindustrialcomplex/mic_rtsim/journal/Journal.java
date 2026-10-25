@@ -145,12 +145,21 @@ public final class Journal {
      * {@link Obs#JAVA_OP_BIT} set. Returns the op id.
      */
     public long commitWithOpId(ByteBuffer record, int opIdOffset) {
+        long op = newOpId();
+        record.putLong(opIdOffset, op);
+        commit(record);
+        return op;
+    }
+
+    /**
+     * A fresh Java op id (63 random bits with {@link Obs#JAVA_OP_BIT} set, never the bit alone), for a
+     * record field that is not the record's own op id: a camp's epoch (MOWZIE.md §4.9).
+     */
+    public long newOpId() {
         long op;
         do {
             op = Obs.JAVA_OP_BIT | (opIds.nextLong() >>> 1);
         } while (op == Obs.JAVA_OP_BIT);
-        record.putLong(opIdOffset, op);
-        commit(record);
         return op;
     }
 
