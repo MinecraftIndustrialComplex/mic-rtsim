@@ -6090,6 +6090,9 @@ impl Conflict {
                 self.casualties(w, cs, at, true);
             }
             Obs::Materialized(_) => {}
+            // A RAIL_PASS has no op id and Java never copies one (docs/replay-gate.md §4.4): a
+            // copy, were one ever sent, would count its leg twice, so it is dropped (RP-104).
+            Obs::RailPass(_) => {}
             _ => self.ingest(w, infra, o, at),
         }
     }

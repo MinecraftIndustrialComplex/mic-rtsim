@@ -1829,3 +1829,18 @@ fn a_track_raids_arrival_while_replaying_is_not_held_and_waits_as_live() {
     assert_eq!(deferred, 0, "no watcher asked, nothing deferred");
     assert_eq!((asked, bored), (0, 0), "nothing raided or looked for yet");
 }
+
+#[test]
+fn a_copy_of_a_rail_pass_counts_nothing() {
+    // Java never copies a RAIL_PASS (no op id, journaled once): a copy, were one sent, is dropped,
+    // where the same record live counts its leg (RP-104).
+    let (mut w, mut c, f, player) = dens(50);
+    let mut probe = Probe::default();
+    c.ingest_copy(&mut w, &mut probe, &pass(9, PLAYER, 1_000), Tick(1_000));
+    assert_eq!(c.stats.rail_passes, 0);
+    assert!(!c.holds_train(9) && c.factions.row(f).rail_meter(player).is_none());
+    // The control: the same pass live is counted and held.
+    c.ingest(&mut w, &mut probe, &pass(9, PLAYER, 1_100), Tick(1_100));
+    assert_eq!(c.stats.rail_passes, 1);
+    assert!(c.holds_train(9) && meter_of(&c, f, player).n == 1.0);
+}
