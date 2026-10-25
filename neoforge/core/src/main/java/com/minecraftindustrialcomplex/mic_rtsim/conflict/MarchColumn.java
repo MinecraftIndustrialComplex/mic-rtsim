@@ -75,6 +75,16 @@ final class MarchColumn {
         return new double[] {Math.cos(a), Math.sin(a)};
     }
 
+    /**
+     * The column's heading after a steer (MZB-470): the unit vector from the head to the new point, or the old heading
+     * (a unit vector) when the head is on the point.
+     */
+    static double[] turn(double headX, double headZ, double x, double z, double oldX, double oldZ) {
+        double dx = x - headX, dz = z - headZ;
+        double d = Math.hypot(dx, dz);
+        return d < 1e-6 ? new double[] {oldX, oldZ} : new double[] {dx / d, dz / d};
+    }
+
     /** A stack's offset from the head, {@code -h * back + r * side} with {@code r = (-hz, hx)}: {x, z}. */
     static double[] offset(double hx, double hz, double back, double side) {
         return new double[] {-hx * back - hz * side, -hz * back + hx * side};
