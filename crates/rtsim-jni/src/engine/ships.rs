@@ -309,6 +309,10 @@ pub(super) fn replay_end(st: &mut State) {
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
+    // The ships a record of this session's replay can name are the ones the engine holds now,
+    // whether or not they run, or exist (RP-100): the replay's own begin later and may not be
+    // the live run's.
+    st.ships.engine.begin_session();
     // The first record of the engine's only session: what it holds is its pages as read (the
     // world they live in was read with them), so a switch that is off from the start keeps
     // exactly those (no save writes them), but for a closure the pages still hold (the ships ran
@@ -391,11 +395,15 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
+            let decoded = boundary::decode_obs(b).ok().map(|(_, _, _, o)| o);
+            if let Some(o) = &decoded {
+                fold_epoch(st, o);
+            }
             if !st.ships.enabled {
                 st.ships.ignored += 1;
                 return;
             }
-            if let Ok((_, _, _, o)) = boundary::decode_obs(b) {
+            if let Some(o) = decoded {
                 // At the hand-over's time, held while replaying (docs/replay-gate.md §3.6).
                 let at = shared::hand_over_target(st);
                 ingest(st, &o, at);
@@ -424,13 +432,27 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
+/// The epoch a replayed record or a copy names raises its ship's floor, before anything drops it
+/// (docs/replay-gate.md §5.3, RP-57, RP-102): a module switched off for the session, the ships
+/// not yet in the world and the engine's replay not yet begun all drop records, and the body
+/// the record named is gone all the same. Keyed on the session's replay, not the engine's.
+fn fold_epoch(st: &mut State, o: &Obs) {
+    if st.replaying || st.applying_copy.is_some() {
+        st.ships.engine.fold_epoch(o);
+    }
+}
+
 /// A ship record `Replay` admitted.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    let decoded = boundary::decode_obs(rec.bytes);
+    if let Ok((_, _, _, o)) = &decoded {
+        fold_epoch(st, o);
+    }
     if !st.ships.enabled {
         st.ships.ignored += 1;
         return;
     }
-    let mut o = match boundary::decode_obs(rec.bytes) {
+    let mut o = match decoded {
         Ok((_, _, _, o)) => o,
         Err(e) => {
             log_warn(&format!(

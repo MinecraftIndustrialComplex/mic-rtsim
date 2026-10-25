@@ -804,9 +804,8 @@ fn a_coast_raid_decided_while_replaying_is_deferred() {
     assert!(judged > 0, "a sea raided in the control");
 }
 
-/// Four ports and a haven with one pirate in open water, the network not built: a world whose
-/// save came before its first network (the pages hold the docks, the haven and its pirate).
-fn unbuilt(seed: u64) -> (World, Ships, AllWater) {
+/// Four villages and a haven node (the world they live in), and open water everywhere.
+fn network(seed: u64) -> (World, Vec<NodeData>, AllWater) {
     let (goods, ids) = rtsim_world::synth::goods();
     let book = rtsim_world::synth::recipes(&ids);
     let mut data = Vec::new();
@@ -831,8 +830,37 @@ fn unbuilt(seed: u64) -> (World, Ships, AllWater) {
         pop: 4,
         resources: Default::default(),
     });
-    let mut w = World::build(synth::world_config(seed), goods, book, data.clone());
-    let mask = AllWater(32);
+    let w = World::build(synth::world_config(seed), goods, book, data.clone());
+    (w, data, AllWater(32))
+}
+
+/// The plugin's report of village `i`'s dock (the host's PORT_FOUND).
+fn port_found(data: &[NodeData], i: usize) -> Obs {
+    Obs::PortFound(boundary::PortFound {
+        village: data[i].key,
+        medium: Medium::Sea,
+        dimension: 0,
+        structure: 0,
+        dock: (data[i].pos.x, 63, data[i].pos.z),
+        berths: 4,
+    })
+}
+
+/// The plugin's report of the haven (HAVEN_FOUND), one pirate.
+fn haven_found(data: &[NodeData]) -> Obs {
+    Obs::HavenFound(boundary::HavenFound {
+        haven: data[4].key,
+        media: 1,
+        dimension: 0,
+        structure: 0,
+        dock: (600, 63, 600),
+    })
+}
+
+/// Four ports and a haven with one pirate in open water, the network not built: a world whose
+/// save came before its first network (the pages hold the docks, the haven and its pirate).
+fn unbuilt(seed: u64) -> (World, Ships, AllWater) {
+    let (mut w, data, mask) = network(seed);
     let mut s = Ships::new(seed, ShipTunables::default(), Tick::ZERO);
     for (i, d) in data.iter().enumerate().take(4) {
         s.add_port(
@@ -972,4 +1000,398 @@ fn a_player_leaving_the_arm_ends_no_ship_body() {
     assert_eq!(set(&s), before, "the arm's leave ends no body");
     s.c.ships.player_left(&mut s.c.world, p);
     assert_eq!(set(&s), before, "nor does the ships' own");
+}
+
+// ---- the handle shift (RP-100, RP-101) --------------------------------------------------------
+//
+// Ships are allocated in order and never reused, and the replay allocates them in its own order:
+// a network built inside the replayed window, a port or a haven that joins there. The session
+// that went on had the merchants first (the network was built at a simulate point, the haven came
+// later) and a record names a ship by its handle. The replay of the same records, on pages that
+// predate the network, puts the haven's pirate at handle 0 and the merchants after it.
+
+/// The session that went on: four ports, the network built at the step's simulate point (the
+/// merchants take handles from 0), then, with `haven`, the haven joined (its pirate after them).
+struct Live {
+    w: World,
+    s: Ships,
+    mask: AllWater,
+    data: Vec<NodeData>,
+    /// The first merchant (handle 0) and the haven's pirate.
+    merchant: ShipId,
+    pirate: Option<ShipId>,
+}
+
+fn live(seed: u64, haven: bool) -> Live {
+    let (mut w, data, mask) = network(seed);
+    let mut s = Ships::new(seed, ShipTunables::default(), Tick::ZERO);
+    for (i, d) in data.iter().enumerate().take(4) {
+        s.add_port(
+            &mut w,
+            i,
+            Medium::Sea,
+            (d.pos.x, 63, d.pos.z),
+            4,
+            &mask,
+            Tick::ZERO,
+        );
+    }
+    s.build(&mut w, &mask, Tick::ZERO);
+    let merchant = s.service_ships(0).next().expect("a merchant");
+    assert_eq!(merchant.index(), 0, "the merchants come first");
+    let pirate = haven.then(|| {
+        s.add_haven(&mut w, 4, 1, (600, 63, 600), 1, Tick::ZERO);
+        s.havens[0].ships[0]
+    });
+    Live {
+        w,
+        s,
+        mask,
+        data,
+        merchant,
+        pirate,
+    }
+}
+
+/// The replay of that session on pages that predate its network: the pages hold nothing (or are
+/// dropped, `from_pages` false). One hand-over replays the four PORT_FOUND and the HAVEN_FOUND,
+/// and the step's simulate point builds the network: the pirate is at handle 0 and the merchants
+/// follow it. Returns the engine and the replay's pirate.
+fn shifted(seed: u64, from_pages: bool) -> (World, Ships, AllWater, ShipId) {
+    let (mut w, data, mask) = network(seed);
+    let mut s = Ships::new(seed, ShipTunables::default(), Tick::ZERO);
+    if from_pages {
+        s = Ships::load(ShipTunables::default(), &s.save()).expect("loads");
+    }
+    s.begin_session();
+    s.begin_replay(from_pages);
+    for i in 0..4 {
+        s.ingest(&mut w, &port_found(&data, i), &mask, Tick::ZERO);
+    }
+    s.ingest(&mut w, &haven_found(&data), &mask, Tick::ZERO);
+    s.build(&mut w, &mask, Tick::ZERO);
+    let pirate = s.havens[0].ships[0];
+    (w, s, mask, pirate)
+}
+
+/// The replay on pages that hold the session's ships (the control): `haven` as in [`live`]. The
+/// world is the pages' too.
+fn held(seed: u64, haven: bool) -> (Live, Ships) {
+    let l = live(seed, haven);
+    let mut s = Ships::load(ShipTunables::default(), &l.s.save()).expect("loads");
+    s.begin_session();
+    s.begin_replay(true);
+    (l, s)
+}
+
+fn sunk(agent: u64) -> Obs {
+    Obs::Sunk(boundary::Sunk {
+        agent,
+        epoch: 1,
+        by: By::Player,
+        dimension: 0,
+        player: PLAYER,
+        ship: 0,
+        op: 1 << 63 | 1,
+        pos: (0.0, 64.0, 0.0),
+    })
+}
+
+fn captured(agent: u64, by: By, ship: u64) -> Obs {
+    Obs::Captured(boundary::Captured {
+        agent,
+        epoch: 1,
+        by,
+        crew_taken: 1,
+        player: PLAYER,
+        ship,
+        op: 1 << 63 | 2,
+    })
+}
+
+fn materialized(id: ShipId, epoch: u32) -> Obs {
+    Obs::Materialized(boundary::Materialized {
+        agent: Ship::agent(id),
+        epoch,
+        dimension: 0,
+        entity: (1, 2),
+    })
+}
+
+/// A replayed sinking or capture of the live run's merchant 0 lands on the ship the replay put at
+/// that handle (RP-100): the pirate. Ignored unless the pages held the ship: lost rather than
+/// booked to the wrong body. Control: pages that hold the merchant take the record.
+#[test]
+fn a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_handle() {
+    let seed = 5;
+    let merchant = Ship::agent(live(seed, false).merchant);
+    let counts = |s: &Ships| (s.stats.sinkings, s.stats.captures);
+    for (name, o, want) in [
+        ("sunk", sunk(merchant), (1, 0)),
+        ("captured by a player", captured(merchant, By::Player, 0), (0, 1)),
+    ] {
+        // The control: the pages hold the merchant.
+        let (mut l, mut s) = held(seed, true);
+        assert_eq!(Ship::agent(l.merchant), merchant);
+        s.ingest(&mut l.w, &o, &l.mask, Tick::ZERO);
+        assert!(!s.ship(l.merchant).unwrap().is_active(), "{name}: control");
+        assert_eq!(counts(&s), want, "{name}: control");
+
+        for from_pages in [true, false] {
+            let (mut w, mut s, mask, pirate) = shifted(seed, from_pages);
+            assert_eq!(Ship::agent(pirate), merchant, "the replay's handle 0");
+            s.ingest(&mut w, &o, &mask, Tick::ZERO);
+            assert!(
+                s.ship(pirate).unwrap().is_active(),
+                "{name}, pages {from_pages}: the pirate is not the merchant"
+            );
+            assert_eq!(counts(&s), (0, 0), "{name}, pages {from_pages}");
+            // The epoch the record named still raises the floor.
+            assert_eq!(s.next_epoch(pirate), 2, "{name}, pages {from_pages}");
+            s.replay_done(&mut w);
+            s.check(&w).expect("conserved");
+        }
+    }
+}
+
+/// A capture or a loot credited to a pirate the replay allocated (the haven joined inside the
+/// replayed window, so its pirate is past the pages' ships) is lost, not booked to it (RP-100):
+/// the merchant keeps its hold. Control: a pirate the pages held takes the capture and the loot.
+#[test]
+fn a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost() {
+    let seed = 5;
+    let good = rtsim_trade::GoodId(0);
+    let item = rtsim_ships::engine::item_of(good);
+    let loot = |agent: u64, ship: u64| {
+        Obs::CargoLooted(boundary::CargoLooted {
+            agent,
+            epoch: 1,
+            by: By::Ship,
+            player: (0, 0),
+            ship,
+            op: 1 << 63 | 3,
+            items: vec![boundary::Item { item, count: 1 }],
+        })
+    };
+    // The merchant's hold, and the pirate that takes it.
+    let hold = 3 * MILLI;
+    for capture in [true, false] {
+        let name = if capture { "captured" } else { "looted" };
+        // The control: the pirate is in the pages.
+        let (mut l, mut s) = held(seed, true);
+        let (m, p) = (l.merchant, l.pirate.unwrap());
+        s.ships[m].cargo.insert(good, hold);
+        let o = if capture {
+            captured(Ship::agent(m), By::Ship, Ship::agent(p))
+        } else {
+            loot(Ship::agent(m), Ship::agent(p))
+        };
+        s.ingest(&mut l.w, &o, &l.mask, Tick::ZERO);
+        if capture {
+            assert!(!s.ship(m).unwrap().is_active(), "{name}: control");
+        }
+        assert!(
+            s.ship(p).unwrap().cargo.get(&good).copied().unwrap_or(0) > 0,
+            "{name}: the pirate the pages held takes the hold"
+        );
+
+        // The pages hold the network; the haven joins inside the replayed window.
+        let (mut l, _) = held(seed, false);
+        let mut s = Ships::load(ShipTunables::default(), &l.s.save()).expect("loads");
+        s.begin_session();
+        s.begin_replay(true);
+        let pages = s.ships.meta().1;
+        let data = l.data.clone();
+        s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
+        let (m, p) = (l.merchant, s.havens[0].ships[0]);
+        assert!(p.index() >= pages, "{name}: the replay's pirate is past the pages' ships");
+        s.ships[m].cargo.insert(good, hold);
+        let o = if capture {
+            captured(Ship::agent(m), By::Ship, Ship::agent(p))
+        } else {
+            loot(Ship::agent(m), Ship::agent(p))
+        };
+        s.ingest(&mut l.w, &o, &l.mask, Tick::ZERO);
+        assert!(s.ship(m).unwrap().is_active(), "{name}: the merchant stays");
+        assert_eq!(
+            s.ship(m).unwrap().cargo.get(&good).copied(),
+            Some(hold),
+            "{name}: and keeps its hold"
+        );
+        assert!(
+            s.ship(p).unwrap().cargo.is_empty(),
+            "{name}: the pirate the replay allocated took nothing"
+        );
+        assert_eq!(s.stats.captures, 0, "{name}");
+        assert!(s.ledger.looted_by_pirates.is_empty(), "{name}");
+    }
+}
+
+/// A replayed fight names its two ships by bare handle (RP-100). Handles the replay allocated may
+/// be other ships than the live run's: a fight between the live run's pirate and merchant 0 would
+/// be booked to the replay's last merchant and its pirate. Lost instead. Control: pages that hold
+/// both ships take it.
+#[test]
+fn a_replayed_fight_between_handles_the_replay_allocated_is_lost() {
+    let seed = 5;
+    let l = live(seed, true);
+    let (m, p) = (Ship::agent(l.merchant), Ship::agent(l.pirate.unwrap()));
+    let fight = Obs::Fight(boundary::Fight {
+        attacker: p,
+        defender: m,
+        outcome: 1,
+        attacker_crew: (5, 2),
+        defender_crew: (4, 3),
+        attacker_hull_milli: 700,
+        defender_hull_milli: 600,
+    });
+    // The control.
+    let (mut l, mut s) = held(seed, true);
+    s.ingest(&mut l.w, &fight, &l.mask, Tick::ZERO);
+    assert_eq!(s.stats.fights_observed, 1, "control");
+    assert_eq!(s.ship(l.pirate.unwrap()).unwrap().crew, 2, "control");
+
+    for from_pages in [true, false] {
+        let (mut w, mut s, mask, pirate) = shifted(seed, from_pages);
+        let the_last = Ship::id_of_agent(p).unwrap();
+        assert!(s.ship(the_last).is_some(), "a merchant at the live pirate's handle");
+        let rows = |s: &Ships| {
+            let r = |id| s.ship(id).map(|x| (x.crew, x.hull_milli));
+            (r(pirate), r(the_last))
+        };
+        let before = rows(&s);
+        s.ingest(&mut w, &fight, &mask, Tick::ZERO);
+        assert_eq!(s.stats.fights_observed, 0, "pages {from_pages}");
+        assert_eq!(rows(&s), before, "pages {from_pages}: nobody's crew moved");
+    }
+}
+
+/// The bound is the session's, taken once (RP-100): a second `begin_replay` inside the replay (the
+/// ships switched off and on) must not cover the ships the replay allocated since, and must not
+/// turn a replay from the pages into one without. The honour (RP-93) lands on the pirate the pages
+/// held, whichever call came last; on the replay's own pirate it is a floor only. Control: the
+/// same without the second call.
+#[test]
+fn a_second_begin_replay_keeps_the_sessions_bound_and_flag() {
+    let seed = 5;
+    for second in [None, Some(true), Some(false)] {
+        // The replay's pirate, on pages that predate the haven.
+        let (mut w, mut s, mask, pirate) = shifted(seed, true);
+        if let Some(from_pages) = second {
+            s.begin_replay(from_pages);
+        }
+        s.ingest(&mut w, &materialized(pirate, 3), &mask, Tick::ZERO);
+        let x = s.ship(pirate).unwrap();
+        assert!(
+            !x.embodied && x.epoch == 0,
+            "{second:?}: the replay's own ship is not honoured: {x:?}"
+        );
+        assert_eq!(s.next_epoch(pirate), 4, "{second:?}: the floor holds it");
+
+        // The pages hold the pirate.
+        let (mut l, mut s) = held(seed, true);
+        if let Some(from_pages) = second {
+            s.begin_replay(from_pages);
+        }
+        let p = l.pirate.unwrap();
+        s.ingest(&mut l.w, &materialized(p, 3), &l.mask, Tick::ZERO);
+        let x = s.ship(p).unwrap();
+        assert!(x.embodied && x.epoch == 3, "{second:?}: honoured: {x:?}");
+    }
+}
+
+/// The session's bound is taken before the replay begins (RP-100): with empty pages the first
+/// record that activates the engine (a HAVEN_FOUND, here) is ingested before `begin_replay`, and
+/// its pirate is the replay's own. The honour of a later SHIP_MATERIALIZED for handle 0 is a
+/// floor only. Control: pages that hold the pirate.
+#[test]
+fn the_pirates_of_the_first_activating_haven_are_inside_no_bound() {
+    let seed = 5;
+    let (mut w, data, mask) = network(seed);
+    let mut s = Ships::new(seed, ShipTunables::default(), Tick::ZERO);
+    s.begin_session();
+    s.ingest(&mut w, &haven_found(&data), &mask, Tick::ZERO);
+    s.begin_replay(true);
+    let pirate = s.havens[0].ships[0];
+    s.ingest(&mut w, &materialized(pirate, 3), &mask, Tick::ZERO);
+    let x = s.ship(pirate).unwrap();
+    assert!(!x.embodied && x.epoch == 0, "not honoured: {x:?}");
+    assert_eq!(s.next_epoch(pirate), 4);
+    // The control: the pirate is in the pages.
+    let (mut l, mut s) = held(seed, true);
+    let p = l.pirate.unwrap();
+    s.ingest(&mut l.w, &materialized(p, 3), &l.mask, Tick::ZERO);
+    assert!(s.ship(p).unwrap().embodied, "honoured");
+}
+
+/// A copy after the replay end only raises the floor, whatever its kind (RP-98): the handle it
+/// names may be another ship than the earlier session's, and a copy of a sinking or of damage is
+/// lost rather than booked. Control: the same records live land.
+#[test]
+fn a_copy_after_the_replay_end_only_moves_the_floor() {
+    let seed = 5;
+    let damaged = |agent: u64| {
+        Obs::Damaged(boundary::Damaged {
+            agent,
+            epoch: 0,
+            by: By::Player,
+            hull_milli: 900,
+            crew_lost: 0,
+            player: PLAYER,
+            ship: 0,
+        })
+    };
+    let m = Ship::agent(live(seed, false).merchant);
+    for (name, o, next) in [
+        ("sunk", sunk(m), 2),
+        ("damaged", damaged(m), 1),
+        ("captured", captured(m, By::Player, 0), 2),
+    ] {
+        // Live: lands.
+        let (mut l, mut s) = held(seed, false);
+        s.replay_done(&mut l.w);
+        s.ingest(&mut l.w, &o, &l.mask, Tick::ZERO);
+        let x = s.ship(l.merchant).unwrap();
+        assert!(
+            x.hull_milli < 1000 || !x.is_active(),
+            "{name}: control, the live record lands"
+        );
+        // A copy: the floor and no more.
+        let (mut l, mut s) = held(seed, false);
+        s.replay_done(&mut l.w);
+        assert!(!s.replaying());
+        s.ingest_copy(&mut l.w, &o, &l.mask, Tick::ZERO);
+        let x = s.ship(l.merchant).unwrap();
+        assert!(x.is_active() && x.hull_milli == 1000, "{name}: {x:?}");
+        assert_eq!((s.stats.sinkings, s.stats.captures), (0, 0), "{name}");
+        assert_eq!(s.next_epoch(l.merchant), next, "{name}: the floor");
+    }
+}
+
+/// A floor above the epoch a replayed record honours stays (RP-101): a copy folded the epoch 9 of
+/// the earlier session's later body; the replayed SHIP_MATERIALIZED at 3 sets the epoch but must
+/// not spend the 9. Control: a floor at or below the honoured epoch is spent.
+#[test]
+fn the_honour_spends_only_a_floor_it_reaches() {
+    let seed = 5;
+    for (floor, next) in [(9, 10), (2, 4)] {
+        let (mut l, mut s) = held(seed, false);
+        let m = l.merchant;
+        let named = Obs::Dematerialized(boundary::Dematerialized {
+            agent: Ship::agent(m),
+            epoch: floor,
+            reason: 3,
+            dimension: 0,
+            hull_milli: 1000,
+            crew: 3,
+            pos: (0.0, 64.0, 0.0),
+        });
+        s.ingest_copy(&mut l.w, &named, &l.mask, Tick::ZERO);
+        s.ingest(&mut l.w, &materialized(m, 3), &l.mask, Tick::ZERO);
+        let x = s.ship(m).unwrap();
+        assert!(x.embodied && x.epoch == 3, "floor {floor}: honoured: {x:?}");
+        assert_eq!(s.next_epoch(m), next, "floor {floor}");
+        s.replay_done(&mut l.w);
+        assert_eq!(s.next_epoch(m), next, "floor {floor}: after the end");
+    }
 }

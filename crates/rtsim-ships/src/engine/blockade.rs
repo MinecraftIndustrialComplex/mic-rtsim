@@ -572,13 +572,16 @@ impl Ships {
             (_, None) => [(at, LAID_UP), NO_SPELL],
         };
         self.idle.insert(s, spells);
+        // Above the epochs a replayed record named too (RP-101): a body that ended on the next
+        // epoch of a ship laid up here must not be taken for this one's.
+        let next = self.next_epoch(s);
         let x = &mut self.ships[s];
         x.status = Status::Lost {
             since: at,
             back: LAID_UP,
         };
         x.quotes.clear();
-        x.epoch = x.epoch.wrapping_add(1).max(1);
+        self.set_epoch(s, next);
         let booked: Vec<u64> = self
             .booked
             .range((s, 0)..=(s, u64::MAX))
@@ -607,11 +610,12 @@ impl Ships {
             return;
         }
         let back = self.relaunch_time(s, at);
+        let next = self.next_epoch(s);
         let x = &mut self.ships[s];
         if let Status::Lost { back: b, .. } = &mut x.status {
             *b = back;
         }
-        x.epoch = x.epoch.wrapping_add(1).max(1);
+        self.set_epoch(s, next);
         self.wait_to_relaunch(s, back);
     }
 
