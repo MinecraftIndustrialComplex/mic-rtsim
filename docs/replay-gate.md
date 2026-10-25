@@ -617,9 +617,11 @@ live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mo
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
 
 **The M8 merge** (feat/mowzie-m8 at 959ada91, M8 on M7's pre-merge 2a80b4f0, merging M7 at 39c819f1,
-then M9 at 7153b7fe, each its own merge commit, a64599d6 and 74dd20ae; RP-150 to RP-153, MZB-690 to
-MZB-692). Main at e75265e7 came in with M7 and M9, which had both merged it, so the third merge had
-nothing to bring. M8 adds no `Cmd` kind: slice C's outbox, new to M8, had AMBUSH_SPOT's and
+then M9 at 7153b7fe, then main at 5a45b9e6, each its own merge commit, a64599d6, 74dd20ae and
+1885aa7d; RP-150 to RP-153, MZB-690 to MZB-692). Main at e75265e7 came in with M7 and M9, which had
+both merged it; main moved on while the merge ran, and the third merge brings SEC-1 S6 (station
+joins, IndustryData format 4, Java only: no Rust, sim or conflict file), with no conflict. M8 adds no
+`Cmd` kind: slice C's outbox, new to M8, had AMBUSH_SPOT's and
 TRAIN_ROBBED's rows already, and §4.4's M8 paragraph has the push sites.
 
 The first merge brings slice C, M6 at 6d6c6658 and main (M7's merge, RP-102 to RP-104). Five files
@@ -685,7 +687,8 @@ party, reaches `train_passed` and counts stale).
   10), all ok. Against M8 its one changed line is M9's plunder at node 4 (0 items spare, not 1);
   against M9 nothing but M8's checks, stats at 0, slice labels and hashes; against M7 both; against
   main M6's changes too (blocked on 9 of 16 days, the camp chaos counts), as on every parent. No
-  check of any parent changed its outcome.
+  check of any parent changed its outcome. Main at 5a45b9e6 has e75265e7's sims (S6 changes no
+  scenario file) and no Rust of S6's, so the sims were not run again after the third merge.
 - **Fixtures:** main's, conflict meta page 5, so the five tests that read the conflict's pages fail
   on META 9 as on the M7 and M9 merges: rtsim-view's
   `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
