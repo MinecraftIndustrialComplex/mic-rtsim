@@ -243,8 +243,9 @@ public final class HouseBuilder {
                 continue;
             }
             if (carriesOp(level, box, b.op)) {
-                // This op's house already stands here: its chunk was saved after the house was built
-                // and before the world save that would have recorded it (the registry rolled back).
+                // This op's house already stands here: a chunk of its box was saved after the house was
+                // built and before the world save that would have recorded it (the registry rolled back).
+                // Every chunk of the box carries the result (finish, RP-211).
                 searchIndex.remove(b.op);
                 return Search.BUILT;
             }
