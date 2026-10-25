@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.ilexiconn.llibrary.server.animation.IAnimatedEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.TakeReason;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
@@ -16,6 +17,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.Hearer;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.FrostmawLurker;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Den;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Far;
@@ -29,8 +31,10 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.entity.player.Player;
@@ -708,6 +712,66 @@ public final class FrostmawGameTests {
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
                 .thenSucceed();
     }
+
+    // ---- a strike's bearing (MZB-361) --------------------------------------------------------------
+
+    /**
+     * A strike's bearing ends with its swing (MZB-361, review C item 3). A held puppet strikes at a point east of it
+     * (it faces yaw -90), the swing ends, and a player stands 4 blocks west: the Frostmaw's own swipe at the player
+     * (the jar's {@code AnimationAreaAttackAI} turns it to its target by up to 30 degrees a tick until the hit frame
+     * at tick 9) turns the body away from the strike's bearing, to within 90 degrees of the player. On the code
+     * before the fix {@code FrostmawLurker.bearings} kept the strike's yaw until the puppet was released, and
+     * {@code hold} pinned the body to it through every plain swipe: the body stays at -90 (180 degrees from the
+     * player) and the test fails with "the swipe at the player turned away from the strike's bearing -90.0 ...
+     * (yBodyRot -90.0)". A swipe-twice is not pinned (the plugin pins only the swipe), so the test waits for a plain
+     * swipe; the player has 1000 health so a swing cannot end it. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_bearing", skyAccess = true)
+    public static void aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes(GameTestHelper helper) {
+        String test = "aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes";
+        Held h = new Held(helper, test);
+        ServerPlayer[] player = new ServerPlayer[1];
+        float[] stale = new float[1], yaw = new float[1];
+        boolean[] swiped = new boolean[1];
+        h.up(helper)
+                .thenExecute(() -> {
+                    check("the strike starts", RtsimApi.strike(h.agent, h.spot[0].add(6, 0, 0), Vec3.ZERO));
+                    stale[0] = h.f[0].yBodyRot;
+                    check("it turned east, to yaw -90 (" + stale[0] + ")", Mth.degreesDifferenceAbs(stale[0], -90f) < 1f);
+                    check("and swipes", h.f[0].getAnimation() == EntityFrostmaw.SWIPE_ANIMATION);
+                })
+                .thenWaitUntil(() -> check("the strike's swing is over (tick " + h.f[0].getAnimationTick() + ")",
+                        h.f[0].getAnimation() == IAnimatedEntity.NO_ANIMATION))
+                .thenExecute(() -> {
+                    player[0] = FakePlayers.add(h.level, h.spot[0].add(-4, 0, 0), "mowzie-bearing");
+                    player[0].getAttribute(Attributes.MAX_HEALTH).setBaseValue(1000.0);
+                    player[0].setHealth(1000f);
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                })
+                .thenWaitUntil(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    f.setTarget(player[0]); // the restriction gates its own targeting (MZB-362)
+                    if (!swiped[0] && f.getAnimation() == EntityFrostmaw.SWIPE_ANIMATION && f.getAnimationTick() >= SWIPE_LATE
+                            && f.getAnimationTick() <= FrostmawLurker.SWIPE_HIT_TICK) {
+                        swiped[0] = true;
+                        yaw[0] = f.yBodyRot;
+                    }
+                    check("the Frostmaw swiped at the player (a swipe: " + (f.getAnimation() == EntityFrostmaw.SWIPE_ANIMATION) + ", tick "
+                            + f.getAnimationTick() + ")", swiped[0]);
+                })
+                .thenExecute(() -> {
+                    float off = Mth.degreesDifferenceAbs(yaw[0], stale[0]);
+                    check("the swipe at the player turned away from the strike's bearing " + stale[0] + " (yBodyRot " + yaw[0] + ", "
+                            + off + " degrees off it)", off > 90f);
+                    record(test, "bearing", "the swipe at a player 4 blocks west faced yaw " + yaw[0] + ", " + off + " degrees from the strike's " + stale[0]);
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    /** The swipe's tick from which its yaw is read: the jar has turned the body by up to 30 degrees on each of the ticks before. */
+    private static final int SWIPE_LATE = 8;
 
     /**
      * A chief's CAMP_DEATH: who it is by, the killer's UUID (null for none), flagged chief, a Frostmaw, slot 0,
