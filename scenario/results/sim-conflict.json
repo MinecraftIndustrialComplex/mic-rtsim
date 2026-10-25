@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 319.65588499999996,
+      "wall_ms": 293.220443,
       "checks": [
         {
           "name": "conservation",
@@ -317,6 +317,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 1,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -759,7 +761,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 343.77875600000004,
+      "wall_ms": 271.111927,
       "checks": [
         {
           "name": "conservation",
@@ -968,6 +970,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -1318,7 +1322,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 298.93724,
+      "wall_ms": 272.37922,
       "checks": [
         {
           "name": "conservation",
@@ -1505,6 +1509,8 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
+        "fight_record_gap_max": 0,
+        "fights_unheld": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,

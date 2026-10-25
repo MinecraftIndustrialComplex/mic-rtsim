@@ -108,6 +108,9 @@ public final class IndRecords {
     // 0x8406 is IND_PROBE_SET and 0x8408 IND_COUNT_SET (GlassRecords); 0x8407 is free.
     /** Packages replays sent along a package store's chain, written into its loaded frogport (SECTIONS.md §2.5, S4b). */
     public static final int IND_WRITE_CHAIN = 0x8409;
+    // 0x840A is left free.
+    /** The frontier's held packages a far replay draws, removes or gives back (SECTIONS.md §2.5, S4c2). */
+    public static final int IND_HELD_DRAW = 0x840B;
     // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 
     // ---- latest-wins layouts ----------------------------------------------------------------------
@@ -431,7 +434,8 @@ public final class IndRecords {
      * IND_CHAIN_PACKAGE, aux = n entries (choice SC97): packages leaving a package store's frogport onto its
      * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents, or a package the
      * frontier holds on a boundary conveyor ({@code CHAIN_HELD}, SECTIONS.md §2.5) or no longer holds
-     * ({@code CHAIN_RELEASED}: no frogport, no destination, no packages, only the key). The frogport is an
+     * ({@code CHAIN_RELEASED}: no frogport, no destination, no packages, only the key), or a held package
+     * Java marked drawn ({@code CHAIN_DRAWN}, slice S4c2: only the key, as a release). The frogport is an
      * index into the store's last IND_PACKAGE_STORE, and its position too; the destination is an index
      * ({@code CHAIN_OUT}, and {@code CHAIN_HELD}, whose frogport is its destination and whose position is
      * the boundary conveyor's). A held package's key (the frontier's epoch and a serial, choice SC136) is in
@@ -442,7 +446,7 @@ public final class IndRecords {
         public static final int STORE = 24;       // u64
         public static final int DISTRICT = 32;    // u64, 0 none
         public static final int INVENTORY = 40;   // u32, NO_INVENTORY none
-        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN, CHAIN_HELD, CHAIN_RELEASED
+        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN, CHAIN_HELD, CHAIN_RELEASED, CHAIN_DRAWN
         public static final int FROGPORT = 48;    // u32
         public static final int DESTINATION = 52; // u32, NO_INVENTORY none (no route)
         public static final int PACKAGES = 56;    // u32
@@ -466,16 +470,19 @@ public final class IndRecords {
         public static final int CHAIN_HELD = 5;
         /** The key left the world or Java no longer holds it: struck wherever the engine holds it (choice SC137). */
         public static final int CHAIN_RELEASED = 6;
+        /** Java marked the held package drawn at the engine's IND_HELD_DRAW: a far replay has its goods (choice SC141). */
+        public static final int CHAIN_DRAWN = 7;
     }
 
     /**
      * IND_HELD_LIST, aux = n serials (choice SC140): the frontier's held keys of one epoch, sent once a session
      * before its other records of that session reach the engine. The engine strikes every key of the epoch it
-     * does not list. At most {@link #MAX_SERIALS}: a longer list is not sent.
+     * does not list. The last {@code DRAWN} of them, each part ascending, are marked drawn (slice S4c2, choice
+     * SC143). At most {@link #MAX_SERIALS}: a longer list is not sent.
      */
     public static final class HeldList {
         public static final int EPOCH = 24;   // u32
-        // 28: u32 zero
+        public static final int DRAWN = 28;   // u32 m <= n: the last m serials are drawn
         public static final int SERIALS = 32; // n x u64
 
         public static int size(int n) {
@@ -638,6 +645,28 @@ public final class IndRecords {
         public static int size(int n) {
             return ENTRIES + n * ENTRY16;
         }
+    }
+
+    /**
+     * IND_HELD_DRAW, aux = n serials (slice S4c2; no op, no COMMAND_RESULT): the held keys of store {@code STORE}
+     * in frontier epoch {@code EPOCH} to mark drawn ({@code DRAW}: a far replay takes their goods; Java answers
+     * {@code CHAIN_DRAWN}), to take out of the world ({@code REMOVE}: the replay reached the world; Java answers
+     * {@code CHAIN_RELEASED}) or to hold again ({@code RETURN}). A key Java does not hold is answered
+     * {@code CHAIN_RELEASED}.
+     */
+    public static final class HeldDraw {
+        public static final int STORE = 16;   // u64
+        public static final int EPOCH = 24;   // u32
+        public static final int ACTION = 28;  // u32: DRAW, REMOVE, RETURN
+        public static final int SERIALS = 32; // n x u64
+
+        public static int size(int n) {
+            return SERIALS + 8 * n;
+        }
+
+        public static final int DRAW = 0;
+        public static final int REMOVE = 1;
+        public static final int RETURN = 2;
     }
 
     // ---- plugin and threat layouts (overnight agent 14, docs/overnight-choices-indplugins.md) ------

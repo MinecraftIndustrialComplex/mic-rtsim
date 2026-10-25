@@ -31,8 +31,8 @@ use serde::Serialize;
 
 use crate::cluster::{Cluster, ClusterEvent, ClusterView, PoolKey, Run, Stop};
 use crate::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, IndustryOps,
-    InvDelta, WriteChain, WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, DrawAction,
+    HELD_DRAW_MAX_SERIALS, HeldDraw, IndustryOps, InvDelta, WriteChain, WritePackage,
 };
 use crate::deposit::{self, Writeback};
 use crate::district::{
@@ -232,6 +232,13 @@ pub struct Stats {
     /// Chain pools returned when no store has their frogport any more: what replays sent there is
     /// lost (UR-1 allows it: production owed to an unloaded chunk). Not saved, as SG58.
     pub chain_pools_lost: u64,
+    /// Held keys the engine asked Java to draw (IND_HELD_DRAW, slice S4c2, choice SC141). Not
+    /// saved, as SG58.
+    pub held_draws_asked: u64,
+    /// Drawn keys the engine asked Java to remove (choice SC142). Not saved, as SG58.
+    pub held_removes_asked: u64,
+    /// Keys the engine asked Java to hold again, not drawn (choice SC143). Not saved, as SG58.
+    pub held_returns_asked: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -389,6 +396,11 @@ pub struct Engine {
     /// Stores whose chain links a replay dropped past `cluster_districts_max`, logged once each
     /// (slice S4b). Not saved: a restore logs again.
     chain_limit_logged: BTreeSet<StoreId>,
+    /// Held keys the engine asked Java to draw, and drawn keys it asked Java to remove (slice
+    /// S4c2), each once a session: Java answers every key it is asked about, and keeps its marks
+    /// in its saved state. Not saved: a restore asks again.
+    draws_asked: BTreeSet<crate::obs::HeldKey>,
+    removes_asked: BTreeSet<crate::obs::HeldKey>,
 }
 
 /// One save's industry pages ([`Engine::save_changed`], ID2): the globals page and every page
@@ -511,6 +523,8 @@ impl Engine {
             districts_rev: next_districts_rev(),
             page_check: page_check_on().then(Box::default),
             chain_limit_logged: BTreeSet::new(),
+            draws_asked: BTreeSet::new(),
+            removes_asked: BTreeSet::new(),
         }
     }
 
@@ -726,6 +740,9 @@ impl Engine {
     pub fn session_start(&mut self, at: Tick) {
         self.advance_to(at);
         self.sent_this_session.clear();
+        // Asks of the session before may be lost with it: asked again as they come due.
+        self.draws_asked.clear();
+        self.removes_asked.clear();
         let ids: Vec<DistrictId> = self.districts.keys().copied().collect();
         for d in ids {
             let dist = self.districts.get_mut(&d).expect("listed");
@@ -968,6 +985,8 @@ impl Engine {
                     self.stop_sim(*district, at);
                     self.districts.remove(district);
                     self.districts_rev = next_districts_rev();
+                    // Its drawn packages go back to the world (choice SC143).
+                    self.schedule_drawn_stores(*district, at);
                 }
                 self.glass.remove(*district);
             }
@@ -1115,20 +1134,7 @@ impl Engine {
             Obs::ChainPackage(p) => self.chain_package(at, t.at, p),
             // Java's held keys at the start of its session (choice SC140): any other key of the
             // epoch is no package's (a crash lost the record that struck it).
-            Obs::HeldList(l) => {
-                let listed: std::collections::BTreeSet<u64> = l.serials.iter().copied().collect();
-                let unlisted: Vec<StoreId> = self
-                    .stores
-                    .iter()
-                    .filter(|(_, s)| s.holds_unlisted(l.epoch, &listed))
-                    .map(|(id, _)| *id)
-                    .collect();
-                for id in unlisted {
-                    if let Some(s) = self.stores.get_mut(&id) {
-                        s.keep_listed(l.epoch, &listed);
-                    }
-                }
-            }
+            Obs::HeldList(l) => self.held_list(at, l),
             Obs::StoreCensus(c) => {
                 if let Some(s) = self.stores.get_mut(&c.store) {
                     s.census(t.at, c);
@@ -1824,6 +1830,7 @@ impl Engine {
         let span = dist.sim.take()?;
         dist.made_total.merge(&minted);
         dist.made_total.subtract(&burned);
+        self.schedule_drawn_by(d, at);
         Some((span, out.pools))
     }
 
@@ -1954,11 +1961,193 @@ impl Engine {
             .insert((at + 1, self.wake_seq), Wake::StoreWrite(st));
     }
 
+    /// Whether district `d`'s replay covers its inventory `inv` (a frogport whose chunk is loaded
+    /// in a district replayed in part is no part of the replay).
+    fn replay_covers(&self, d: DistrictId, inv: u32) -> bool {
+        self.districts
+            .get(&d)
+            .and_then(|x| x.sim.as_ref())
+            .is_some_and(|sim| sim.invs.contains(&inv))
+    }
+
+    /// Sends IND_HELD_DRAW for `serials` of store `st`, in records of at most
+    /// [`HELD_DRAW_MAX_SERIALS`] (slice S4c2).
+    fn ask_held_draw(
+        &mut self,
+        st: StoreId,
+        epoch: u32,
+        action: DrawAction,
+        mut serials: Vec<u64>,
+    ) {
+        if serials.is_empty() {
+            return;
+        }
+        serials.sort_unstable();
+        serials.dedup();
+        let n = serials.len() as u64;
+        match action {
+            DrawAction::Draw => self.stats.held_draws_asked += n,
+            DrawAction::Remove => self.stats.held_removes_asked += n,
+            DrawAction::Return => self.stats.held_returns_asked += n,
+        }
+        for part in serials.chunks(HELD_DRAW_MAX_SERIALS) {
+            self.out.push(Cmd::HeldDraw(HeldDraw {
+                store: st,
+                epoch,
+                action,
+                serials: part.to_vec(),
+            }));
+        }
+    }
+
+    /// The far district's replay draws the packages held toward its frogport at `pos` (choice
+    /// SC141): each held package with a good some cluster's pool toward that frogport has, asked
+    /// once a session. The engine books the draw at Java's `CHAIN_DRAWN`.
+    fn draw_held(&mut self, st: StoreId, pos: BlockPos) {
+        let Some(s) = self.stores.get(&st) else {
+            return;
+        };
+        if s.held_toward(pos).is_empty() {
+            return;
+        }
+        let goods: BTreeSet<Good> = self
+            .chain_pools_toward(st, pos)
+            .into_iter()
+            .map(|p| p.0)
+            .collect();
+        if goods.is_empty() {
+            return;
+        }
+        let epoch = s.epoch;
+        let keys: Vec<crate::obs::HeldKey> = s
+            .held_toward(pos)
+            .iter()
+            .filter(|h| h.key.epoch == epoch && !self.draws_asked.contains(&h.key))
+            .filter(|h| h.goods.iter().any(|(g, n)| n > 0 && goods.contains(&g)))
+            .map(|h| h.key)
+            .collect();
+        self.draws_asked.extend(keys.iter().copied());
+        self.ask_held_draw(
+            st,
+            epoch,
+            DrawAction::Draw,
+            keys.iter().map(|k| k.serial).collect(),
+        );
+    }
+
+    /// Has the store's drawn packages removed once the replay that drew each has reached the
+    /// world (choice SC142): its district replays no more and has no reconcile pending, and the
+    /// store owes the frogport nothing, waits for no write there, and no cluster holds a pool
+    /// toward it (what the replay did not use is written in first). A drawn package whose
+    /// district is gone is given back: nothing will reach the world for it (choice SC143).
+    fn remove_drawn(&mut self, st: StoreId) {
+        let Some(s) = self.stores.get(&st) else {
+            return;
+        };
+        if s.drawn.is_empty() {
+            return;
+        }
+        let epoch = s.epoch;
+        let mut remove = Vec::new();
+        let mut give_back = Vec::new();
+        for (pos, list) in &s.drawn {
+            let settled = s.owed_to(*pos).iter().all(|(_, n)| n <= 0)
+                && s.writing.get(pos).is_none_or(|w| w.is_empty())
+                && self.chain_pools_toward(st, *pos).is_empty();
+            for h in list {
+                if h.key.epoch != epoch || self.removes_asked.contains(&h.key) {
+                    continue;
+                }
+                match h.by.and_then(|d| self.districts.get(&d)) {
+                    None => give_back.push(h.key),
+                    Some(dist) if settled && dist.sim.is_none() && dist.pending.is_empty() => {
+                        remove.push(h.key)
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        if let Some(s) = self.stores.get_mut(&st) {
+            for &key in &give_back {
+                s.undraw(key);
+            }
+        }
+        self.ask_held_draw(
+            st,
+            epoch,
+            DrawAction::Return,
+            give_back.iter().map(|k| k.serial).collect(),
+        );
+        self.removes_asked.extend(remove.iter().copied());
+        self.ask_held_draw(
+            st,
+            epoch,
+            DrawAction::Remove,
+            remove.iter().map(|k| k.serial).collect(),
+        );
+    }
+
+    /// Java marked a held key drawn (`CHAIN_DRAWN`, choice SC141): the package moves to the
+    /// store's drawn ones, and its goods into the far replay: the pool a cluster holds toward its
+    /// frogport, else what the store owes that frogport. A key drawn already changes nothing. One
+    /// the engine does not hold, or whose frogport no replay covers now (it loaded meanwhile), is
+    /// given back: Java's mark is all there is of the draw.
+    fn chain_drawn(&mut self, at: Tick, st: StoreId, key: crate::obs::HeldKey) {
+        self.draws_asked.remove(&key);
+        if self.store_drawing(key, Some(st)).is_some() {
+            return;
+        }
+        let by = self.store_holding(key, Some(st)).and_then(|id| {
+            let s = &self.stores[&id];
+            let pos = s
+                .on_hold
+                .iter()
+                .find(|(_, l)| l.iter().any(|h| h.key == key))?
+                .0;
+            let f = &s.frogports[s.index_of(*pos)?];
+            let (d, inv) = (f.district?, f.inventory?);
+            (self.replay_covers(d, inv) && !self.chain_pools_toward(id, *pos).is_empty())
+                .then_some((id, d))
+        });
+        let Some((id, d)) = by else {
+            self.ask_held_draw(st, key.epoch, DrawAction::Return, vec![key.serial]);
+            return;
+        };
+        let Some((pos, h)) = self.stores.get_mut(&id).and_then(|s| s.draw(key, d)) else {
+            return;
+        };
+        let mut owed = false;
+        for (g, n) in h.goods.iter() {
+            if n <= 0 {
+                continue;
+            }
+            let k = PoolKey::Chain(id, pos, g);
+            match self.cluster_with_pool(k) {
+                Some(c) => {
+                    self.clusters
+                        .apply(c, at, |c, at| c.add_to_pool(k, n, false, at));
+                    self.after_cluster(c, at);
+                }
+                None => {
+                    if let Some(s) = self.stores.get_mut(&id) {
+                        s.add_owed(pos, g, n);
+                    }
+                    owed = true;
+                }
+            }
+        }
+        if owed {
+            self.schedule_store_write(id, at);
+        }
+    }
+
     /// Writes into a store's loaded frogports what replays sent them (SECTIONS.md §2.5; choice
     /// SC113): per frogport and good, the store's owed and the pool a cluster holds, in whole
     /// packages of the destination's batch, at most an offline buffer's worth a write; a part
-    /// package once no cluster still feeds it. Wakes again while a loaded frogport is owed.
+    /// package once no cluster still feeds it. Wakes again while a loaded frogport is owed. The
+    /// frontier's draws and removals go out here too (slice S4c2).
     fn store_write_wake(&mut self, at: Tick, st: StoreId) {
+        self.remove_drawn(st);
         let Some(s) = self.stores.get(&st) else {
             return;
         };
@@ -1971,13 +2160,10 @@ impl Engine {
         let period = self.tun.replay.chain_write_ticks.max(1);
         let mut again = false;
         for (index, pos, d, inv) in ports {
-            // A replay that covers the frogport draws the pool by its own import link.
-            if self
-                .districts
-                .get(&d)
-                .and_then(|x| x.sim.as_ref())
-                .is_some_and(|sim| sim.invs.contains(&inv))
-            {
+            // A replay that covers the frogport draws the pool by its own import link, and the
+            // packages held toward it (choice SC141).
+            if self.replay_covers(d, inv) {
+                self.draw_held(st, pos);
                 continue;
             }
             let loaded = self.districts.get(&d).is_some_and(|x| {
@@ -2939,7 +3125,39 @@ impl Engine {
         }
     }
 
+    /// A reconcile's result; once the district has none pending and replays no more, its drawn
+    /// packages may be removed (choice SC142).
     fn reconcile_result(&mut self, at: Tick, r: &ReconcileResult) {
+        self.reconcile_result_applied(at, r);
+        self.schedule_drawn_by(r.district, at);
+    }
+
+    /// A store write for each store holding packages drawn by district `d`, once `d` replays no
+    /// more and has no reconcile pending: their removal may be due (choice SC142).
+    fn schedule_drawn_by(&mut self, d: DistrictId, at: Tick) {
+        if self
+            .districts
+            .get(&d)
+            .is_some_and(|x| x.sim.is_none() && x.pending.is_empty())
+        {
+            self.schedule_drawn_stores(d, at);
+        }
+    }
+
+    /// A store write for each store holding packages drawn by district `d`.
+    fn schedule_drawn_stores(&mut self, d: DistrictId, at: Tick) {
+        let stores: Vec<StoreId> = self
+            .stores
+            .iter()
+            .filter(|(_, s)| s.drawn.values().flatten().any(|h| h.by == Some(d)))
+            .map(|(id, _)| *id)
+            .collect();
+        for st in stores {
+            self.schedule_store_write(st, at);
+        }
+    }
+
+    fn reconcile_result_applied(&mut self, at: Tick, r: &ReconcileResult) {
         let season = self.season_at(at);
         let Some(dist) = self.districts.get_mut(&r.district) else {
             return;
@@ -3748,6 +3966,76 @@ impl Engine {
             .map(|(id, _)| *id)
     }
 
+    /// Java's held keys at the start of its session (choice SC140): any other key of the epoch is
+    /// no package's (a crash lost the record that struck it). A key one side holds drawn and the
+    /// other only held is put right (choice SC143): one the engine drew is drawn again, and one
+    /// Java marked drawn that the engine only holds (the `CHAIN_DRAWN` was lost) is taken as that
+    /// record: booked when a replay draws its frogport still, else given back.
+    fn held_list(&mut self, at: Tick, l: &crate::obs::HeldList) {
+        let listed: BTreeSet<u64> = l.serials.iter().chain(&l.drawn).copied().collect();
+        let drawn: BTreeSet<u64> = l.drawn.iter().copied().collect();
+        let unlisted: Vec<StoreId> = self
+            .stores
+            .iter()
+            .filter(|(_, s)| s.holds_unlisted(l.epoch, &listed))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in unlisted {
+            if let Some(s) = self.stores.get_mut(&id) {
+                s.keep_listed(l.epoch, &listed);
+            }
+        }
+        let mut redraw: Vec<(StoreId, Vec<u64>)> = Vec::new();
+        let mut marked: Vec<(StoreId, crate::obs::HeldKey)> = Vec::new();
+        for (id, s) in self.stores.iter().filter(|(_, s)| s.epoch == l.epoch) {
+            let again: Vec<u64> = s
+                .drawn
+                .values()
+                .flatten()
+                .filter(|h| h.key.epoch == l.epoch && !drawn.contains(&h.key.serial))
+                .map(|h| h.key.serial)
+                .collect();
+            redraw.push((*id, again));
+            marked.extend(
+                s.on_hold
+                    .values()
+                    .flatten()
+                    .filter(|h| h.key.epoch == l.epoch && drawn.contains(&h.key.serial))
+                    .map(|h| (*id, h.key)),
+            );
+        }
+        for (id, serials) in redraw {
+            self.ask_held_draw(id, l.epoch, DrawAction::Draw, serials);
+        }
+        for (id, key) in marked {
+            self.chain_drawn(at, id, key);
+        }
+        // A session starts: the removals and returns its drawn packages wait on are looked at
+        // again (the engine's asks of the session before are forgotten).
+        let drawing: Vec<StoreId> = self
+            .stores
+            .iter()
+            .filter(|(_, s)| s.epoch == l.epoch && !s.drawn.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in drawing {
+            self.schedule_store_write(id, at);
+        }
+    }
+
+    /// The store that holds the frontier's `key` drawn, as [`Engine::store_holding`].
+    fn store_drawing(&self, key: crate::obs::HeldKey, first: Option<StoreId>) -> Option<StoreId> {
+        if let Some(id) = first
+            && self.stores.get(&id).is_some_and(|s| s.holds_drawn(key))
+        {
+            return Some(id);
+        }
+        self.stores
+            .iter()
+            .find(|(_, s)| s.holds_drawn(key))
+            .map(|(id, _)| *id)
+    }
+
     /// Packages across a package store's frogport (IND_CHAIN_PACKAGE, SECTIONS.md §2.5): booked
     /// into the store, and a port of the frogport's district when it has one. While that district
     /// is loaded, the chain's own packages are learned as its links (choice SC108): out toward the
@@ -3773,6 +4061,18 @@ impl Engine {
         // was the exporter's port. A key another store holds moves here (choice SC137), once
         // this store takes it.
         if p.direction == ChainDirection::Held {
+            // A key the engine drew stays drawn: Java lost its mark, so it is told again (choice
+            // SC143).
+            if let Some(key) = p.key
+                && let Some(id) = self.store_drawing(key, Some(p.store))
+            {
+                self.ask_held_draw(id, key.epoch, DrawAction::Draw, vec![key.serial]);
+                return;
+            }
+            // Held again: a Draw Java declined (its frogport ticked then) may be asked again.
+            if let Some(key) = p.key {
+                self.draws_asked.remove(&key);
+            }
             let Some(takes) = self.stores.get(&p.store).map(|s| s.takes_hold(p)) else {
                 self.stats.store_records_unknown += 1;
                 return;
@@ -3783,31 +4083,81 @@ impl Engine {
                 .and_then(|key| Some((key, self.store_holding(key, Some(p.store))?)))
                 .filter(|&(_, other)| other != p.store)
                 .and_then(|(key, other)| self.stores.get_mut(&other)?.strike(key));
-            if let Some(s) = self.stores.get_mut(&p.store) {
-                s.hold(p, recorded, moved);
+            let held = self
+                .stores
+                .get_mut(&p.store)
+                .is_some_and(|s| s.hold(p, recorded, moved));
+            // The far district's replay may draw it at once (choice SC141).
+            if held
+                && let Some(to) = self.stores[&p.store].held_toward_pos(p)
+                && !self.chain_pools_toward(p.store, to).is_empty()
+            {
+                self.schedule_store_write(p.store, at);
             }
             return;
         }
-        // A key Java no longer holds: struck wherever it is (choice SC137). No port, no pool.
+        // A key Java no longer holds: struck wherever it is (choice SC137), drawn or not (the
+        // engine's removal, choice SC142). No port, no pool.
         if p.direction == ChainDirection::Released {
-            if let Some(key) = p.key
-                && let Some(id) = self.store_holding(key, Some(p.store))
-                && let Some(s) = self.stores.get_mut(&id)
-                && let Some(h) = s.strike(key)
-            {
-                s.counts.held_released += h.packages;
+            if let Some(key) = p.key {
+                self.draws_asked.remove(&key);
+                self.removes_asked.remove(&key);
+                if let Some(id) = self.store_holding(key, Some(p.store))
+                    && let Some(s) = self.stores.get_mut(&id)
+                    && let Some(h) = s.strike(key)
+                {
+                    s.counts.held_released += h.packages;
+                } else if let Some(id) = self.store_drawing(key, Some(p.store))
+                    && let Some(s) = self.stores.get_mut(&id)
+                    && let Some((_, h)) = s.strike_drawn(key)
+                {
+                    s.counts.drawn_removed += h.packages;
+                }
+            }
+            return;
+        }
+        if p.direction == ChainDirection::Drawn {
+            if let Some(key) = p.key {
+                self.chain_drawn(at, p.store, key);
             }
             return;
         }
         // A package the frontier held landed: struck from the held ones, wherever a declaration
-        // moved its key (choice SC137).
+        // moved its key (choice SC137). A drawn one the far replay drew already: back into the
+        // pool of the frogport it landed at first, so the landing takes it there (a duplicate at
+        // worst, choice SC143); a landing a census counted already takes nothing, and the census
+        // (which counts no drawn package) has it right, so it goes into no pool.
         if p.direction == ChainDirection::In
             && let Some(key) = p.key
-            && let Some(id) = self.store_holding(key, Some(p.store))
-            && let Some(s) = self.stores.get_mut(&id)
         {
-            s.strike(key);
-            s.counts.held_landed += u64::from(p.packages);
+            if let Some(id) = self.store_holding(key, Some(p.store))
+                && let Some(s) = self.stores.get_mut(&id)
+            {
+                s.strike(key);
+                s.counts.held_landed += u64::from(p.packages);
+            } else if let Some(id) = self.store_drawing(key, Some(p.store))
+                && let Some((pos, h)) = self.stores.get_mut(&id).and_then(|s| s.strike_drawn(key))
+            {
+                let landing = self.stores.get(&p.store).and_then(|s| {
+                    let counted = s.census_at.is_some_and(|c| recorded <= c);
+                    s.frogports
+                        .get(p.frogport as usize)
+                        .map(|f| (f.pos, counted))
+                });
+                let (into, pos, counted) = match landing {
+                    Some((l, counted)) => (p.store, l, counted),
+                    None => (id, pos, false),
+                };
+                if let Some(s) = self.stores.get_mut(&into) {
+                    if counted {
+                        s.counts.drawn_back += h.packages;
+                    } else {
+                        s.drawn_back(pos, &h);
+                    }
+                    s.counts.held_landed += u64::from(p.packages);
+                }
+                self.removes_asked.remove(&key);
+            }
         }
         let mut to = None;
         match self.stores.get_mut(&p.store) {
@@ -3816,7 +4166,7 @@ impl Engine {
                 let at_port = match p.direction {
                     ChainDirection::Out => p.destination,
                     ChainDirection::In => Some(p.frogport),
-                    ChainDirection::Held | ChainDirection::Released => None,
+                    ChainDirection::Held | ChainDirection::Released | ChainDirection::Drawn => None,
                 };
                 to = at_port
                     .and_then(|j| s.frogports.get(j as usize))
@@ -3858,9 +4208,10 @@ impl Engine {
             inventory,
             direction: match p.direction {
                 ChainDirection::Out => Direction::Out,
-                ChainDirection::In | ChainDirection::Held | ChainDirection::Released => {
-                    Direction::In
-                }
+                ChainDirection::In
+                | ChainDirection::Held
+                | ChainDirection::Released
+                | ChainDirection::Drawn => Direction::In,
             },
             address: p.address,
             packages: p.packages,
@@ -5109,6 +5460,9 @@ mod persist_impls {
                 chain_writes_unanswered: 0,
                 chain_owed_lost: 0,
                 chain_pools_lost: 0,
+                held_draws_asked: 0,
+                held_removes_asked: 0,
+                held_returns_asked: 0,
             })
         }
     }

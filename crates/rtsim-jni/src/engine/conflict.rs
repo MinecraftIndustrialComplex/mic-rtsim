@@ -58,7 +58,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use rtsim_conflict::boundary::{self, Cmd, Item, Obs};
-use rtsim_conflict::engine::{body_id, body_names, item_of};
+use rtsim_conflict::engine::{REPLAY_HOLD_SLACK_TICKS, body_id, body_names, item_of};
 use rtsim_conflict::presence::ChunkKey;
 use rtsim_conflict::{
     Conflict, ConflictStats, ConflictTickets, ConflictTunables, Cultures, SignalKind,
@@ -154,11 +154,27 @@ pub(super) struct Link {
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
     pub(super) deferred: u64,
-    /// The kept notices go again once the session's replay has caught up (MZB-31): set by the
-    /// session reset, done at the first record of this session or the simulate point. Not saved.
-    notices_due: bool,
+    /// The engine came back from its pages ([`Link::load`]), not fresh: only such an engine
+    /// honours a replayed BAND_MATERIALIZED (docs/replay-gate.md §5.2, RP-31). Not saved.
+    from_pages: bool,
+    /// The conflict's replay end (`replay_done`, then the kept notices) is due: set by its reset
+    /// (`begin_replay`), run by [`replay_end`] at the session's replay end, or at once when no
+    /// replay runs (docs/replay-gate.md §3.2). Not saved.
+    replay_end_due: bool,
+    /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
+    /// §4.3). Not saved.
+    never_logged: u64,
+    /// Copies of a BAND_CASUALTIES of generation 0 refused (docs/replay-gate.md §2.3, RP-21):
+    /// nothing tells one from its repeat, and it has no op id. Not saved.
+    pub(super) copies_refused: u64,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
+    /// The largest gap from a watched fight's decision to its first BAND_MATERIALIZED last
+    /// logged (`ConflictStats::fight_record_gap_max`, RP-51). Not saved.
+    gap_logged: u64,
+    /// The replayed fight records that found no hold last logged (`ConflictStats::fights_unheld`,
+    /// RP-56). Not saved.
+    unheld_logged: u64,
 }
 
 /// The conflict's own dictionary (C2-4): the catalogue's goods as items (`item_of`), the culture
@@ -261,8 +277,13 @@ impl Link {
             band_states: 0,
             chief_states: 0,
             deferred: 0,
-            notices_due: false,
+            from_pages: false,
+            replay_end_due: false,
+            never_logged: 0,
+            copies_refused: 0,
             fed: 0,
+            gap_logged: 0,
+            unheld_logged: 0,
         }
     }
 
@@ -325,6 +346,7 @@ impl Link {
         let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
         let mut l = Link::with_engine(engine, structures, pollution);
         l.restore_diverged = diverged;
+        l.from_pages = true;
         Ok(l)
     }
 
@@ -377,34 +399,52 @@ fn set_enabled(st: &mut State, on: bool) {
     }
 }
 
-/// Bodies of an earlier session (or of before a switch-off) are gone: every party is abstract
-/// again, and TERRITORY goes out again for every faction. The kept notices follow once the
-/// replay has caught up ([`resend_notices_if_due`]).
+/// The session's reset, once the conflict runs (docs/replay-gate.md §3.2): its engine's replay
+/// begins (`begin_replay`, told whether it came back from its pages, RP-31), TERRITORY goes out
+/// again for every faction, and its replay end is due. With no replay running (a switch-on, or a
+/// first camp in the middle of a session) that end runs at once.
 fn reset_if_due(st: &mut State) {
     if st.conflict.reset_due && running(st) {
         st.conflict.reset_due = false;
-        st.conflict.engine.session_start();
-        st.conflict.notices_due = true;
+        let from_pages = st.conflict.from_pages;
+        st.conflict.engine.begin_replay(from_pages);
+        st.conflict.replay_end_due = true;
         st.phase1.taint();
         take_commands(st);
+        if !st.replaying {
+            replay_end(st);
+        }
     }
 }
 
-/// The kept notices to the plugin, once the session's replay has caught up (MZB-31): a
-/// NOTICE_SHOWN journaled last session after the pages' save has cleared its notice by now. A
-/// notice a replayed record made again is dropped from the queue first: what is kept is what
-/// goes.
-fn resend_notices_if_due(st: &mut State) {
-    if !st.conflict.notices_due || !running(st) {
+/// The conflict's replay end (docs/replay-gate.md §3.2), when due and the conflict runs: the
+/// engine's `replay_done` (the bodies of the last session are gone), then the kept notices go
+/// to the plugin (MZB-31): a NOTICE_SHOWN journaled last session after the pages' save has
+/// cleared its notice by now. A notice a replayed record made again is dropped from the queue
+/// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
+pub(super) fn replay_end(st: &mut State) {
+    if !st.conflict.replay_end_due || !running(st) {
         return;
     }
-    st.conflict.notices_due = false;
+    st.conflict.replay_end_due = false;
+    st.conflict.engine.replay_done();
     take_commands(st);
-    st.conflict
-        .queue
-        .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_)));
+    // The gate dropped every notice a replayed record made again (docs/replay-gate.md §4.4), and
+    // the session start cleared the queue: what is kept is what goes.
+    debug_assert!(
+        !st.conflict
+            .queue
+            .iter()
+            .any(|q| q.names.is_none() && matches!(q.cmd, Cmd::Notice(_))),
+        "a conflict notice queued at the replay end"
+    );
     st.conflict.engine.resend_notices();
     take_commands(st);
+}
+
+/// The replay gate's counts for the replay end's log line (docs/replay-gate.md §4.3).
+pub(super) fn gate_counts(st: &State) -> rtsim_conflict::GateCounts {
+    st.conflict.engine.replay_gate_counts()
 }
 
 /// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
@@ -543,10 +583,6 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         st.conflict.ignored += 1;
         return;
     }
-    if wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first {
-        // The replay is over: the first record of this session.
-        resend_notices_if_due(st);
-    }
     let mut o = match boundary::decode_obs(rec.bytes) {
         Ok((_, o, _)) => o,
         Err(e) => {
@@ -558,14 +594,34 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
+    // The records of an earlier session are the ones before the session's `replay_done`: the
+    // engine's replay window (its outbox's, from `begin_replay`) covers them (a camp's census among
+    // them only marks its camp out, MOWZIE.md §4.9). Their sequences are below `session_first`, a
+    // replayed copy's too (its OBS_SEQ is the REASSERT's own); a live record's are at or past it.
+    // Set first, so that every path below, `later`'s included, ingests with its own (RP-67).
+    st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
+    if st.applying_copy == Some(0) && matches!(o, Obs::Casualties(_)) {
+        // A copy of generation 0 is new each time it comes (S4p's `copy_is_new`), and a
+        // casualty has no op id to stop a repeat: refused, so that no member dies twice; one may
+        // live on (docs/replay-gate.md §2.3, RP-21). Its epoch still reaches the floor (RP-57).
+        st.conflict.copies_refused += 1;
+        st.conflict.engine.fold_epoch(&o);
+        return;
+    }
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
         // conflict at its present (the clock not run for it), which spends its op id and drops
-        // it, as `Replay` spent it (MZB-23).
+        // it, as `Replay` spent it (MZB-23); a copy as a copy, so that its epoch reaches the
+        // floor live too (RP-57).
         st.conflict.deferred += 1;
+        let copy = st.applying_copy.is_some();
         with_infra(st, |c, w, infra| {
             let now = c.now();
-            c.ingest(w, infra, &o, now);
+            if copy {
+                c.ingest_copy(w, infra, &o, now);
+            } else {
+                c.ingest(w, infra, &o, now);
+            }
         });
         return;
     }
@@ -579,10 +635,6 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
-    // The records of an earlier session are the ones before the session's `replay_done`: the
-    // engine's own `replaying` window covers them (a camp's census among them only marks its camp
-    // out, MOWZIE.md §4.9).
-    st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
     ingest(st, &o, at);
 }
 
@@ -593,13 +645,61 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.conflict.records += 1;
     let was_running = running(st);
     let at = at.max(st.conflict.engine.now()).max(st.phase1.world.now());
-    with_infra(st, |c, w, infra| c.ingest(w, infra, o, at));
+    // A copy (REASSERT) of an ended session's record is applied by identity, never against a
+    // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
+    let copy = st.applying_copy.is_some();
+    with_infra(st, |c, w, infra| {
+        if copy {
+            c.ingest_copy(w, infra, o, at)
+        } else {
+            c.ingest(w, infra, o, at)
+        }
+    });
     st.phase1.taint();
+    log_fight_record_gap(st);
+    log_fights_unheld(st);
     reset_if_due(st);
     take_commands(st);
     if !was_running && running(st) {
         shared::introduce_conflict(st);
     }
+}
+
+/// Logs a new largest gap from a watched fight's decision to its first BAND_MATERIALIZED
+/// (RP-51): the data the replay hold's slack is set from, and a warning past the slack, where a
+/// replay would resolve that fight unwatched before its record (docs/replay-gate.md §6.1).
+fn log_fight_record_gap(st: &mut State) {
+    let gap = st.conflict.engine.stats.fight_record_gap_max;
+    if gap <= st.conflict.gap_logged {
+        return;
+    }
+    st.conflict.gap_logged = gap;
+    let line = format!(
+        "conflict: a watched fight's BAND_MATERIALIZED came {gap} ticks after its decision, the \
+         most this process has seen (the replay hold's slack is {REPLAY_HOLD_SLACK_TICKS})"
+    );
+    if gap >= REPLAY_HOLD_SLACK_TICKS {
+        log_warn(&line);
+    } else {
+        log_info(&line);
+    }
+}
+
+/// Warns of each replayed fight that found no hold (RP-56): its BAND_MATERIALIZED came at or past
+/// the replay hold's slack, so the replay resolved it unwatched there and its records count
+/// against nothing (docs/replay-gate.md §6.1). Past the slack a fight's records are not doubled,
+/// but the fight is booked as the abstract raid, not as watched.
+fn log_fights_unheld(st: &mut State) {
+    let n = st.conflict.engine.stats.fights_unheld;
+    if n <= st.conflict.unheld_logged {
+        return;
+    }
+    st.conflict.unheld_logged = n;
+    log_warn(&format!(
+        "conflict: a replayed watched fight's BAND_MATERIALIZED found no hold, {n} this process: \
+         recorded at or past the replay hold's slack ({REPLAY_HOLD_SLACK_TICKS} ticks), it was \
+         resolved unwatched there and its bodies and loot count against nothing"
+    ));
 }
 
 /// Runs `f` on the conflict with the phase 1 world and the industry engine's threat interface.
@@ -653,15 +753,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    // The notices (and with them the end of the replay, `replay_done`) wait for the replay to
-    // catch up: Java drains its journal while it fits, so a long one spreads over several
-    // hand-overs, and the bodies the session start kept for the replay are still needed by the
-    // records of the later ones (MZB-141). The first live record is the other trigger
-    // (`journaled`).
-    if st.replay.applied_through().0 + 1 >= st.session_first {
-        resend_notices_if_due(st);
-    }
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
     feed_districts(st, at);
 }
@@ -778,8 +870,20 @@ fn feed_districts(st: &mut State, at: Tick) {
     take_commands(st);
 }
 
-/// Takes what the conflict decided into the link's queue.
+/// Takes what the conflict decided into the link's queue. A rise in the gate's "never" count is
+/// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 pub(super) fn take_commands(st: &mut State) {
+    let counts = st.conflict.engine.replay_gate_counts();
+    let never = counts.never;
+    if never > st.conflict.never_logged {
+        let (code, name) = counts.last_never.unwrap_or((0, "?"));
+        log_error(&format!(
+            "conflict decided a {name} ({code:#06x}) while replaying ({} since the last take): \
+             skipped, a bug (docs/replay-gate.md §4)",
+            never - st.conflict.never_logged
+        ));
+        st.conflict.never_logged = never;
+    }
     let cmds = st.conflict.engine.take_commands();
     st.conflict
         .queue
@@ -939,7 +1043,7 @@ fn reject(st: &mut State, cmd: &Cmd, reason: u32) {
         reason,
         cmd_seq: 0,
     });
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     ingest(st, &o, at);
 }
 
@@ -1098,6 +1202,14 @@ pub struct ConflictLinkStats {
     pub deferred: u64,
     /// Sources the industry engine's districts set or changed.
     pub fed: u64,
+    /// The replay gate's counts (docs/replay-gate.md §4.3, not saved): commands dropped while
+    /// replaying, commands of a "never" kind decided while replaying (a bug), and decisions that
+    /// embody deferred while replaying (§6).
+    pub replay_dropped: u64,
+    pub replay_never: u64,
+    pub replay_deferred: u64,
+    /// Copies of a BAND_CASUALTIES of generation 0 refused (RP-21).
+    pub copies_refused: u64,
 }
 
 impl super::Engine {
@@ -1143,6 +1255,7 @@ impl super::Engine {
     pub fn conflict_stats(&self) -> (ConflictStats, ConflictLinkStats) {
         let st = super::lock(&self.state);
         let l = &st.conflict;
+        let g = l.engine.replay_gate_counts();
         (
             l.engine.stats,
             ConflictLinkStats {
@@ -1153,6 +1266,10 @@ impl super::Engine {
                 chief_states: l.chief_states,
                 deferred: l.deferred,
                 fed: l.fed,
+                replay_dropped: g.dropped,
+                replay_never: g.never,
+                replay_deferred: g.deferred,
+                copies_refused: l.copies_refused,
             },
         )
     }

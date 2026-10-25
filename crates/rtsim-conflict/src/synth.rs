@@ -522,6 +522,7 @@ impl FakeConflict {
                         dimension: e.dimension,
                         wave: 0,
                         spawned: e.members.iter().map(|m| m.1).sum(),
+                        flags: 0,
                     }),
                 );
                 match self.answer {
@@ -598,6 +599,7 @@ impl FakeConflict {
                         dimension: m.dimension,
                         wave: u32::from(m.wave),
                         spawned,
+                        flags: u32::from(m.flags),
                     }),
                 );
                 if let Some(f) = self.fight.filter(|f| {
@@ -1530,7 +1532,7 @@ impl CampRun {
 
     /// A session restart that leaves the replay open: the plugin's observations not yet journaled
     /// are lost (the holders' records are journaled again if [`FakeConflict::holders_again`]),
-    /// every camp is out, and the engine starts a session, whose replay window (`replaying`) the
+    /// every camp is out, and the engine starts a session, whose replay window (`begin_replay`) the
     /// caller closes with `replay_done` once it has ingested the records of the last session.
     pub fn restart_to_replay(&mut self) {
         let at = self.c.now();
@@ -1539,7 +1541,9 @@ impl CampRun {
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }
-        self.c.session_start();
+        // The host's session start: the engine came back from its pages, and its replay begins
+        // (docs/replay-gate.md §5.1, RP-2, RP-31).
+        self.c.begin_replay(true);
         self.flush(at);
         if self.plugin.holders_again {
             self.plugin.journal_holders(at);
@@ -1557,9 +1561,11 @@ impl CampRun {
                 self.c.now().0
             ));
         }
-        let (replaying, log) = (self.c.replaying, self.c.log_enabled);
+        // Outside the replay window only: the host takes no page while replaying (RP-42), and the
+        // window's state is in memory.
+        assert!(!self.c.replaying(), "a round trip while replaying");
+        let log = self.c.log_enabled;
         self.c = back;
-        self.c.replaying = replaying;
         self.c.log_enabled = log;
     }
 

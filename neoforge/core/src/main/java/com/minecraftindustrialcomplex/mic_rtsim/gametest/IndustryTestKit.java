@@ -345,4 +345,19 @@ public final class IndustryTestKit {
             }
         });
     }
+
+    /** Scripts one IND_HELD_DRAW (slice S4c2): {@code action} ({@code IndRecords.HeldDraw.DRAW} and so on) of these keys. */
+    public static void heldDraw(long store, int epoch, int action, long... serials) {
+        script(out -> {
+            int at = out.reserve(IndRecords.IND_HELD_DRAW, IndRecords.HeldDraw.size(serials.length), serials.length);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + IndRecords.HeldDraw.STORE, store);
+            b.putInt(at + IndRecords.HeldDraw.EPOCH, epoch);
+            b.putInt(at + IndRecords.HeldDraw.ACTION, action);
+            for (int i = 0; i < serials.length; i++)
+                b.putLong(at + IndRecords.HeldDraw.SERIALS + 8 * i, serials[i]);
+        });
+    }
 }

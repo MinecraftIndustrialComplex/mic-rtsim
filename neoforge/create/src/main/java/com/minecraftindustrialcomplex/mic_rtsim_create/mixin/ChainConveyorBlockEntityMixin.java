@@ -41,6 +41,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * the packages last held on it are looked for ({@link Frontier#beforeRoutes}); a refused
  * hand-off holds its package ({@link Frontier#hold}); a destroyed conveyor's kept routes go, and a package
  * Create drops (its conveyor destroyed, its connection removed) loses its key ({@link Frontier#leaves}).
+ * Slice S4c2 refuses every hand-off of a package the far replay drew (PATCHES.md row 51), and the first tick
+ * also takes off the drawn packages whose removal waited for the conveyor to load.
  */
 @Mixin(value = ChainConveyorBlockEntity.class, remap = false)
 public abstract class ChainConveyorBlockEntityMixin {
@@ -60,7 +62,8 @@ public abstract class ChainConveyorBlockEntityMixin {
      * without asking it for room. The exit is answered as none ({@code BlockPos.ZERO}, what
      * {@code getExitFor} gives with no route, which no connection equals): the package keeps circling here,
      * as when the far conveyor is full. A package whose route there is a far frogport's is held
-     * ({@link Frontier#hold}: keyed and recorded once).
+     * ({@link Frontier#hold}: keyed and recorded once). A package the far replay drew circles here whatever
+     * ticks ahead (slice S4c2, {@link Frontier#refusesDrawn}).
      */
     @WrapOperation(method = "tick", at = @At(value = "INVOKE",
             target = "Lcom/simibubi/create/content/kinetics/chainConveyor/ChainConveyorRoutingTable;getExitFor(Lnet/minecraft/world/item/ItemStack;)Lnet/minecraft/core/BlockPos;"))
@@ -69,6 +72,8 @@ public abstract class ChainConveyorBlockEntityMixin {
         if (exit == null || exit.equals(BlockPos.ZERO))
             return exit;
         ChainConveyorBlockEntity self = (ChainConveyorBlockEntity) (Object) this;
+        if (Frontier.refusesDrawn(self, box))
+            return BlockPos.ZERO;
         Level level = self.getLevel();
         if (level != null && !Loaded.ticksFrom(level, self.getBlockPos(), self.getBlockPos().offset(exit))) {
             Frontier.hold(self, table, box);

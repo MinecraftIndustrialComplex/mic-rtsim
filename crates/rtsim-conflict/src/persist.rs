@@ -1177,7 +1177,7 @@ impl Conflict {
         put_usize(w, st.len());
         st.iter().for_each(|v| w.var_u64(*v));
         put_usize(w, self.outbox.len());
-        for c in &self.outbox {
+        for c in self.outbox.iter() {
             let mut b = Vec::new();
             boundary::encode_cmd(0, c, &mut b);
             w.bytes(&b);
@@ -1233,7 +1233,7 @@ impl Conflict {
             let b = r.bytes()?;
             let (_, cmd, _) = boundary::decode_cmd(b)
                 .map_err(|e| CodecError::Invalid(format!("a queued command: {e:?}")))?;
-            c.outbox.push(cmd);
+            c.outbox.restore(cmd);
         }
         get_presence(r, &mut c.presence)?;
         c.peaceful = r.u8()? != 0;
