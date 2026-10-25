@@ -6,10 +6,12 @@ import com.minecraftindustrialcomplex.mic_rtsim.body.vanilla.WanderingTraderAdap
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.animal.horse.TraderLlama;
@@ -57,6 +59,17 @@ public final class CaravanGameTests {
         return new ChunkPos((o.getX() >> 4) + 200 + 8 * salt, (o.getZ() >> 4) + 200);
     }
 
+    /** What the far chunk's entity ticking waits on, for the wait's message: its ticket and its 5 x 5 square. */
+    private static String farState(ServerLevel level, ChunkPos c) {
+        int full = 0;
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                if (level.getChunkSource().getChunkNow(c.x + dx, c.z + dz) != null)
+                    full++;
+        ChunkHolder h = ((ChunkMapInvoker) level.getChunkSource().chunkMap).mic_rtsim$updating(c.toLong());
+        return "ticket level " + (h == null ? "none" : h.getTicketLevel()) + ", " + full + " of the 25 chunks within 2 full";
+    }
+
     private static int leads(ServerLevel level, AABB box) {
         int n = 0;
         for (ItemEntity item : level.getEntitiesOfClass(ItemEntity.class, box))
@@ -65,18 +78,34 @@ public final class CaravanGameTests {
         return n;
     }
 
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT)
     public static void traderAndLlamasCaptureAsOneGroupAndNoLlamaDespawns(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         ServerLevel level = helper.getLevel();
-        spawnCaravan(helper, agent, 1);
+        ChunkWait waits = ChunkWait.of(helper, 600);
         ChunkPos forced = farChunk(helper, 0);
         BlockPos frozenAt = new BlockPos(forced.getMinBlockX() + 16 + 8, (int) RtsimTests.centre(helper).y, forced.getMinBlockZ() + 8);
         Entity[] bodies = new Entity[3];
         long[] trapTick = new long[1];
 
+        // The far chunk first, and the caravan only once it is entity-ticking: the GameTest server ticks
+        // unthrottled, so a chunk wait of seconds is tens of thousands of ticks, and the engine's received
+        // log keeps the last 10,000 records (one TICK a tick). Spawned before such a wait, the caravan's
+        // MATERIALIZED was gone from it by the check (the kinds read [259, 259, 259, 258]).
+        level.setChunkForced(forced.x, forced.z, true);
+        waits.onEnd(() -> level.setChunkForced(forced.x, forced.z, false));
+        // Load it now: an asynchronous load can take longer than the logic waits allow.
+        level.getChunk(forced.x, forced.z);
+        level.getChunk(forced.x + 1, forced.z);
+
         helper.startSequence()
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenWaitUntil(waits.chunks(() -> {
+                    check("the far chunk is entity-ticking (" + farState(level, forced) + ")",
+                            level.isPositionEntityTicking(forced.getMiddleBlockPosition(64)));
+                    check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z));
+                }))
+                .thenExecute(() -> spawnCaravan(helper, agent, 1))
+                .thenWaitUntil(waits.engine(() -> RtsimTests.embodied(agent)))
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
                     for (int i = 0; i < 3; i++)
@@ -94,11 +123,6 @@ public final class CaravanGameTests {
                     // discard themselves on their next tick. The bridge refreshes the delay this tick.
                     ((WanderingTrader) bodies[0]).setDespawnDelay(0);
                     trapTick[0] = level.getGameTime();
-                    level.setChunkForced(forced.x, forced.z, true);
-                    // Load it now: the GameTest server ticks faster than real time, so 600 ticks can pass
-                    // before an asynchronous load finishes on a busy machine (the test was flaky).
-                    level.getChunk(forced.x, forced.z);
-                    level.getChunk(forced.x + 1, forced.z);
                 })
                 .thenIdle(40)
                 .thenExecute(() -> {
@@ -110,9 +134,8 @@ public final class CaravanGameTests {
                     check("no member left the group (a despawn would show as removed by another)",
                             RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 3);
                 })
-                .thenWaitUntil(RtsimTests.io(() -> check("the far chunk is entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64)))))
-                .thenWaitUntil(RtsimTests.io(() -> check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z))))
                 .thenExecute(() -> {
+                    check("the far chunk is still entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64)));
                     check("the neighbour is loaded but not entity-ticking", !level.isPositionEntityTicking(frozenAt));
                     // One llama wanders into a chunk that is loaded but frozen: the whole caravan goes.
                     bodies[2].teleportTo(frozenAt.getX() + 0.5, frozenAt.getY(), frozenAt.getZ() + 0.5);
@@ -129,8 +152,8 @@ public final class CaravanGameTests {
                     check("no lead dropped at the frozen llama", leads(level, new AABB(frozenAt).inflate(16)) == 0);
                     level.setChunkForced(forced.x, forced.z, false);
                 })
-                .thenWaitUntil(() -> check("the engine received the capture",
-                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(waits.engine(() -> check("the engine received the capture",
+                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty())))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> recs = RtsimTests.allFor(RtsimTests.engine(), agent);
                     List<Integer> kinds = new ArrayList<>();

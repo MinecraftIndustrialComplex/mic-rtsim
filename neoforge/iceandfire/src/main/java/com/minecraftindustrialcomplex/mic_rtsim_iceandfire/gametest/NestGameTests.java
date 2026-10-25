@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest;
 
 import com.iafenvoy.iceandfire.entity.DeathWormEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
@@ -194,22 +195,23 @@ public final class NestGameTests {
      * answers NEST_FOUND placed with the heart. A repeat answers again with the same heart and carves
      * nothing; the saved state reads back.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_place")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_place")
     public static void placeNestCarvesAChamberOnce(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "placeNestCarvesAChamberOnce";
         Site s = new Site(helper, 1);
         ServerLevel level = s.level;
         long id = s.nest();
         long repeats0 = nests().repeats;
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("the nest placed (" + nests().placedCount + " placed, " + nests().failedCount + " failed, "
-                        + nests().refused + " refused)", nests().nest(id) != null))
-                .thenWaitUntil(() -> check("NEST_FOUND", found(id).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("the nest placed (" + nests().placedCount + " placed, " + nests().failedCount + " failed, "
+                        + nests().refused + " refused)", nests().nest(id) != null)))
+                .thenWaitUntil(waits.logic(() -> check("NEST_FOUND", found(id).size() == 1)))
                 .thenExecute(() -> {
                     BlockPos h = nests().nest(id).heart;
                     check("the heart in the asked chunk: " + h, new ChunkPos(h).equals(s.chunk));
@@ -242,7 +244,7 @@ public final class NestGameTests {
                             + " over ground " + s.ground + "; 80 sand, 324 air, a Death Worm spawner with RequiredPlayerRange 0; NEST_FOUND placed");
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30); // an engine re-sending it after an OIL_CONFIG
                 })
-                .thenWaitUntil(() -> check("NEST_FOUND again", found(id).size() == 2))
+                .thenWaitUntil(waits.logic(() -> check("NEST_FOUND again", found(id).size() == 2)))
                 .thenExecute(() -> {
                     BlockPos h = nests().nest(id).heart;
                     ScriptedEngine.Received again = found(id).get(1);
@@ -269,8 +271,9 @@ public final class NestGameTests {
      * spot moves the nest to a later one (the water is left), chests at every spot fail it, and so does
      * open air (the flat world over its ground). NEST_FOUND says failed, with no heart, and nothing is kept.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_avoid")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_avoid")
     public static void placeNestAvoidsFluidsAndBlockEntities(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "placeNestAvoidsFluidsAndBlockEntities";
         Site s = new Site(helper, 2);
         ServerLevel level = s.level;
@@ -281,7 +284,7 @@ public final class NestGameTests {
         BlockPos[] expected = {null};
         List<BlockPos> chestsAt = new ArrayList<>();
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     s.stone(chestChunk);
@@ -323,7 +326,7 @@ public final class NestGameTests {
                     DragonKit.placeNest(chests, s.dim, chestChunk.x, chestChunk.z, 30);
                     DragonKit.placeNest(open, s.dim, openChunk.x, openChunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("three NEST_FOUNDs", found(wet[0]).size() == 1 && found(chests).size() == 1 && found(open).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("three NEST_FOUNDs", found(wet[0]).size() == 1 && found(chests).size() == 1 && found(open).size() == 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received w = found(wet[0]).get(0);
                     check("the wet nest placed (" + w.aux() + ")", w.aux() == DragonRecords.NestFound.PLACED);
@@ -352,21 +355,22 @@ public final class NestGameTests {
      * scale 2), the nest's variant, homed on the heart, marked with the nest id and carrying no agent tag.
      * The census then says 2.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_renew")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_renew")
     public static void nestRenewPlacesTaggedWorms(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "nestRenewPlacesTaggedWorms";
         Site s = new Site(helper, 1);
         long id = s.nest();
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenWaitUntil(waits.logic(() -> check("the nest placed", nests().nest(id) != null)))
                 .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 2, 2))
-                .thenWaitUntil(() -> check("two worms (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)", s.worms(id).size() == 2))
-                .thenWaitUntil(() -> check("a census", !censuses(id).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("two worms (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)", s.worms(id).size() == 2)))
+                .thenWaitUntil(waits.logic(() -> check("a census", !censuses(id).isEmpty())))
                 .thenExecute(() -> {
                     Nests.Nest n = nests().nest(id);
                     StringBuilder seen = new StringBuilder();
@@ -394,12 +398,59 @@ public final class NestGameTests {
     }
 
     /**
+     * NEST_RENEW is applied once per serial (docs/replay-gate.md §7.1, RP-14): Java's half of the replay gate's direction
+     * B, where the Nests were saved with a renewal applied and the engine decides it again. Serial 1 owes two worms and
+     * they are placed. The same serial again (the renewal decided again) owes nothing and is counted as a repeat; so
+     * does a lower one (serial 0). A higher serial owes its count. The engine's restore from older pages is not
+     * modelled: this scripts the command the restored engine sends, with the serial it would carry.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_renew_serial")
+    public static void aRenewalDecidedAgainIsNotOwedTwice(GameTestHelper helper) {
+        String test = "aRenewalDecidedAgainIsNotOwedTwice";
+        Site s = new Site(helper, 1);
+        long id = s.nest();
+        long[] repeated = new long[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenExecute(() -> {
+                    s.build();
+                    DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 2, 1))
+                .thenWaitUntil(() -> check("two worms (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)", s.worms(id).size() == 2))
+                .thenExecute(() -> {
+                    repeated[0] = nests().renewsRepeated;
+                    check("the serial is 1 (" + nests().nest(id).serial + ")", nests().nest(id).serial == 1);
+                    DragonKit.nestRenew(id, s.dim, 1, 2, 1);
+                    DragonKit.nestRenew(id, s.dim, 1, 2, 0);
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id);
+                    check("still two worms (" + s.worms(id).size() + ")", s.worms(id).size() == 2);
+                    check("nothing owed (" + n.owed + ")", n.owed == 0);
+                    check("both counted as repeats (" + (nests().renewsRepeated - repeated[0]) + ")", nests().renewsRepeated - repeated[0] == 2);
+                    check("the serial stays 1 (" + n.serial + ")", n.serial == 1);
+                    DragonKit.nestRenew(id, s.dim, 1, 1, 2);
+                })
+                .thenWaitUntil(() -> check("a third worm for serial 2 (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)",
+                        s.worms(id).size() == 3))
+                .thenExecute(() -> {
+                    check("the serial is 2 (" + nests().nest(id).serial + ")", nests().nest(id).serial == 2);
+                    record(test, "serials", "1 (two worms placed), 1 and 0 again (two repeats, none owed), 2 (a third worm)");
+                })
+                .thenSucceed();
+    }
+
+    /**
      * The boss rule on a nest worm's death: a player's kill is NEST_LOSS Player with the player; a wild
      * mob's is Predator; a death with no killer (a /kill) counts as a player's, with no player. A natural
      * worm's death sends nothing.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_losses")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_losses")
     public static void nestWormDeathsFollowTheBossRule(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "nestWormDeathsFollowTheBossRule";
         Site s = new Site(helper, 1);
         ServerLevel level = s.level;
@@ -408,14 +459,14 @@ public final class NestGameTests {
         ServerPlayer editor = FakePlayers.editor(level);
         UUID[] naturalKiller = {null};
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenWaitUntil(waits.logic(() -> check("the nest placed", nests().nest(id) != null)))
                 .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 3))
-                .thenWaitUntil(() -> check("three worms", s.worms(id).size() == 3))
+                .thenWaitUntil(waits.logic(() -> check("three worms", s.worms(id).size() == 3)))
                 .thenExecute(() -> {
                     losses0[0] = nests().losses;
                     List<DeathWormEntity> w = s.worms(id);
@@ -435,7 +486,7 @@ public final class NestGameTests {
                     natural.hurt(level.damageSources().playerAttack(killer), 1000f);
                     check("the natural worm died", !natural.isAlive());
                 })
-                .thenWaitUntil(() -> check("three NEST_LOSS (" + losses(id).size() + ")", losses(id).size() == 3))
+                .thenWaitUntil(waits.logic(() -> check("three NEST_LOSS (" + losses(id).size() + ")", losses(id).size() == 3)))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> l = losses(id);
                     ScriptedEngine.Received byPlayer = l.get(0), byMob = l.get(1), byNothing = l.get(2);
@@ -463,8 +514,9 @@ public final class NestGameTests {
      * engine's reform, a PLACE_NEST for the same nest (OGC79), sets the heart back where it was, inert,
      * and answers NEST_FOUND placed with it; a NEST_RENEW after it places its worm.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_heart")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_heart")
     public static void breakingTheHeartStopsTheNest(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "breakingTheHeartStopsTheNest";
         Site s = new Site(helper, 1);
         ServerLevel level = s.level;
@@ -473,26 +525,26 @@ public final class NestGameTests {
         ServerPlayer[] watcher = {null};
         int[] censuses0 = {0}, found0 = {0};
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     DragonConfig.Test.nestRetryTicks = 20;
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenWaitUntil(waits.logic(() -> check("the nest placed", nests().nest(id) != null)))
                 .thenExecute(() -> {
                     BlockPos h = nests().nest(id).heart;
                     watcher[0] = s.player(Vec3.atCenterOf(h.offset(2, 1, 0)), "nest_watcher");
                     DragonKit.nestRenew(id, s.dim, 1, 2);
                 })
-                .thenWaitUntil(() -> check("two worms owed", nests().nest(id).owed == 2))
+                .thenWaitUntil(waits.logic(() -> check("two worms owed", nests().nest(id).owed == 2)))
                 .thenIdle(60)
                 .thenExecute(() -> {
                     Nests.Nest n = nests().nest(id);
                     check("none placed with a player by the heart", n.worms.isEmpty() && n.owed == 2);
                     check("the heart breaks", editor.gameMode.destroyBlock(n.heart));
                 })
-                .thenWaitUntil(() -> check("NEST_HEART", !DragonKit.received(DragonRecords.NEST_HEART, DragonRecords.NestHeart.NEST, id).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("NEST_HEART", !DragonKit.received(DragonRecords.NEST_HEART, DragonRecords.NestHeart.NEST, id).isEmpty())))
                 .thenExecute(() -> {
                     Nests.Nest n = nests().nest(id);
                     ScriptedEngine.Received r = DragonKit.received(DragonRecords.NEST_HEART, DragonRecords.NestHeart.NEST, id).get(0);
@@ -509,7 +561,7 @@ public final class NestGameTests {
                     censuses0[0] = censuses(id).size();
                     nests().loaded(level.getChunkAt(n.heart)); // a fresh load of the heart's chunk
                 })
-                .thenWaitUntil(() -> check("a census", censuses(id).size() > censuses0[0]))
+                .thenWaitUntil(waits.logic(() -> check("a census", censuses(id).size() > censuses0[0])))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = censuses(id).get(censuses(id).size() - 1);
                     check("HEART_MISSING (" + c.aux() + ")", (c.aux() & DragonRecords.NestCensus.FLAG_HEART_MISSING) != 0);
@@ -519,7 +571,7 @@ public final class NestGameTests {
                     found0[0] = found(id).size();
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30); // the engine's reform
                 })
-                .thenWaitUntil(() -> check("NEST_FOUND for the reform", found(id).size() > found0[0]))
+                .thenWaitUntil(waits.logic(() -> check("NEST_FOUND for the reform", found(id).size() > found0[0])))
                 .thenExecute(() -> {
                     Nests.Nest n = nests().nest(id);
                     ScriptedEngine.Received f = found(id).get(found(id).size() - 1);
@@ -531,13 +583,13 @@ public final class NestGameTests {
                     censuses0[0] = censuses(id).size();
                     nests().loaded(level.getChunkAt(n.heart));
                 })
-                .thenWaitUntil(() -> check("a census after the reform", censuses(id).size() > censuses0[0]))
+                .thenWaitUntil(waits.logic(() -> check("a census after the reform", censuses(id).size() > censuses0[0])))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = censuses(id).get(censuses(id).size() - 1);
                     check("its heart there (" + c.aux() + ")", c.aux() == 0);
                     DragonKit.nestRenew(id, s.dim, 1, 1);
                 })
-                .thenWaitUntil(() -> check("a worm after the renew", s.worms(id).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("a worm after the renew", s.worms(id).size() == 1)))
                 .thenExecute(() -> {
                     Nests.Nest n = nests().nest(id);
                     record(test, "reformed", "a PLACE_NEST for the broken nest set the heart back at " + n.heart.toShortString()
@@ -554,8 +606,9 @@ public final class NestGameTests {
      * with its AI and physics back, then glides home at the timeout. Home, each has its AI and physics
      * and no sortie mark.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "nest_sortie")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_sortie")
     public static void sortiesStopUnderArmourOrSurface(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         String test = "sortiesStopUnderArmourOrSurface";
         Site s = new Site(helper, 2);
         ServerLevel level = s.level;
@@ -565,14 +618,14 @@ public final class NestGameTests {
         UUID[] toArmour = {null}, toOpen = {null};
         long[] sent = {0};
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenWaitUntil(waits.logic(() -> check("the nest placed", nests().nest(id) != null)))
                 .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 2))
-                .thenWaitUntil(() -> check("two worms", s.worms(id).size() == 2))
+                .thenWaitUntil(waits.logic(() -> check("two worms", s.worms(id).size() == 2)))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     BlockPos h = nests().nest(id).heart;
@@ -588,14 +641,14 @@ public final class NestGameTests {
                     DragonKit.nestSortie(id, s.dim, armoured[0].getX(), armoured[0].getZ(), timeout, 1);
                     DragonKit.nestSortie(id, s.dim, open[0].getX(), open[0].getZ(), timeout, 1);
                 })
-                .thenWaitUntil(() -> check("both sent (" + (nests().wormsSent - sent[0]) + ")", nests().wormsSent == sent[0] + 2))
+                .thenWaitUntil(waits.logic(() -> check("both sent (" + (nests().wormsSent - sent[0]) + ")", nests().wormsSent == sent[0] + 2)))
                 .thenExecute(() -> {
                     check("the first worm out", nests().onSortie(toArmour[0]));
                     DeathWormEntity w = (DeathWormEntity) level.getEntity(toArmour[0]);
                     check("gliding: no AI, no physics", w.isNoAi() && w.noPhysics && w.getPersistentData().getBoolean(Nests.SORTIE_TAG));
                 })
-                .thenWaitUntil(() -> check("the first stopped under the obsidian", has(nests().outcomes(toArmour[0]), Nests.OUT_STOPPED)))
-                .thenWaitUntil(() -> check("the second surfaced", has(nests().outcomes(toOpen[0]), Nests.OUT_SURFACED)))
+                .thenWaitUntil(waits.logic(() -> check("the first stopped under the obsidian", has(nests().outcomes(toArmour[0]), Nests.OUT_STOPPED))))
+                .thenWaitUntil(waits.logic(() -> check("the second surfaced", has(nests().outcomes(toOpen[0]), Nests.OUT_SURFACED))))
                 .thenExecute(() -> {
                     Nests.Outcome stop = first(nests().outcomes(toArmour[0]), Nests.OUT_STOPPED);
                     check("in the armoured column", stop.x() == armoured[0].getX() && stop.z() == armoured[0].getZ());
@@ -613,7 +666,7 @@ public final class NestGameTests {
                             + " under the obsidian at tick +" + stop.tick() + "; open column " + open[0].toShortString() + ": surfaced at "
                             + up.at().toShortString());
                 })
-                .thenWaitUntil(() -> check("both home", has(nests().outcomes(toArmour[0]), Nests.OUT_HOME) && has(nests().outcomes(toOpen[0]), Nests.OUT_HOME)))
+                .thenWaitUntil(waits.logic(() -> check("both home", has(nests().outcomes(toArmour[0]), Nests.OUT_HOME) && has(nests().outcomes(toOpen[0]), Nests.OUT_HOME))))
                 .thenExecute(() -> {
                     BlockPos h = nests().nest(id).heart;
                     for (UUID u : new UUID[] {toArmour[0], toOpen[0]}) {
@@ -651,20 +704,21 @@ public final class NestGameTests {
      * cancelled at FinalizeSpawn (recorded; Ice and Fire's placement rules may refuse first), and still no
      * worm appears.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_inert")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_inert")
     public static void theHeartNeverSpawns(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "theHeartNeverSpawns";
         Site s = new Site(helper, 1);
         ServerLevel level = s.level;
         long id = s.nest();
         long[] cancelled0 = {0};
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     s.build();
                     DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
                 })
-                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenWaitUntil(waits.logic(() -> check("the nest placed", nests().nest(id) != null)))
                 .thenExecute(() -> s.player(Vec3.atCenterOf(nests().nest(id).heart.offset(2, 1, 1)), "nest_neighbour"))
                 .thenIdle(200)
                 .thenExecute(() -> {
@@ -692,8 +746,9 @@ public final class NestGameTests {
      * both: the engine counts them lost to players and a regrowth wait runs; the well stops and the wait
      * stays put; the well drills again and a worm regrows.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 16_000, batch = "nest_native")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "nest_native")
     public static void theEngineWakesItsNestByAWell(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 16_000);
         String test = "theEngineWakesItsNestByAWell";
         if (!DragonKit.nativeEngine()) {
             record(test, "skipped", "on the stub: the engine founds and wakes nests (native only)");
@@ -722,7 +777,7 @@ public final class NestGameTests {
         });
         BlockPos machine = new BlockPos(well.getMinBlockX() + 8, 0, well.getMinBlockZ() + 8);
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", s.ready())))
                 .thenExecute(() -> {
                     engine.nestDay(20);
                     IndustryTestKit.fastConfig();
@@ -735,17 +790,17 @@ public final class NestGameTests {
                     DragonKit.oilConfig(DragonRecords.OilConfig.FLAG_PLACE_NESTS);
                     DragonKit.oilChunks(level, List.of(new int[] {s.chunk.x, s.chunk.z, 40_000}));
                 })
-                .thenWaitUntil(() -> check("the well's district", IndustryTestKit.ind().districts().at(level.dimension(), well.toLong()) != null))
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> check("the well's district", IndustryTestKit.ind().districts().at(level.dimension(), well.toLong()) != null)))
+                .thenWaitUntil(waits.logic(() -> {
                     Nests.Nest n = nests().placedIn(s.dim, s.chunk);
                     check("the engine's nest placed in the oil chunk (asked: " + nests().asked + "; " + nests().failedCount + " failed)", n != null);
                     nest[0] = n.id;
                     s.nests.add(n.id);
-                })
-                .thenWaitUntil(() -> {
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     long[] i = engine.nestInfo(nest[0]);
                     check("the engine has it placed", i != null && i[NativeEngine.NEST_STATE] == 1);
-                })
+                }))
                 .thenIdle(240)
                 .thenExecute(() -> {
                     long[] i = engine.nestInfo(nest[0]);
@@ -756,9 +811,9 @@ public final class NestGameTests {
                             + "worms 0, K " + i[NativeEngine.NEST_K] + ", nests " + i[NativeEngine.NEST_COUNT]);
                     TestWells.drill(level.dimension(), well.x, well.z);
                 })
-                .thenWaitUntil(() -> check("(b) awake", engine.nestInfo(nest[0])[NativeEngine.NEST_AWAKE] == 1))
-                .thenWaitUntil(() -> check("(b) two worms (" + s.worms(nest[0]).size() + ")", s.worms(nest[0]).size() == 2))
-                .thenWaitUntil(() -> check("(b) the engine counts them", engine.nestInfo(nest[0])[NativeEngine.NEST_WORMS] == 2))
+                .thenWaitUntil(waits.logic(() -> check("(b) awake", engine.nestInfo(nest[0])[NativeEngine.NEST_AWAKE] == 1)))
+                .thenWaitUntil(waits.logic(() -> check("(b) two worms (" + s.worms(nest[0]).size() + ")", s.worms(nest[0]).size() == 2)))
+                .thenWaitUntil(waits.logic(() -> check("(b) the engine counts them", engine.nestInfo(nest[0])[NativeEngine.NEST_WORMS] == 2)))
                 .thenExecute(() -> {
                     long[] i = engine.nestInfo(nest[0]);
                     check("(b) one NEST_RENEW (" + (nests().renews - renews0[0]) + ")", nests().renews - renews0[0] >= 1);
@@ -769,19 +824,19 @@ public final class NestGameTests {
                     for (DeathWormEntity w : s.worms(nest[0]))
                         w.hurt(level.damageSources().playerAttack(editor), 1000f);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     long[] i = engine.nestInfo(nest[0]);
                     check("(c) the engine lost both to players (worms " + i[NativeEngine.NEST_WORMS] + ", lost " + i[NativeEngine.NEST_LOST_PLAYER]
                             + ", wait " + i[NativeEngine.NEST_WAIT_TICKS] + ")", i[NativeEngine.NEST_WORMS] == 0 && i[NativeEngine.NEST_LOST_PLAYER] == 2
                             && i[NativeEngine.NEST_WAIT_TICKS] >= 0);
-                })
+                }))
                 .thenExecute(() -> {
                     long[] i = engine.nestInfo(nest[0]);
                     record(test, "c", "both killed by a player: worms 0, lost to players 2, pressure " + i[NativeEngine.NEST_PRESSURE_MILLI]
                             + "/1000, regrowth wait " + i[NativeEngine.NEST_WAIT_TICKS] + " ticks");
                     TestWells.stop(level.dimension(), well.x, well.z);
                 })
-                .thenWaitUntil(() -> check("(c) asleep once the well stops", engine.nestInfo(nest[0])[NativeEngine.NEST_AWAKE] == 0))
+                .thenWaitUntil(waits.logic(() -> check("(c) asleep once the well stops", engine.nestInfo(nest[0])[NativeEngine.NEST_AWAKE] == 0)))
                 .thenExecute(() -> wait[0] = engine.nestInfo(nest[0])[NativeEngine.NEST_WAIT_TICKS])
                 .thenIdle(240)
                 .thenExecute(() -> {
@@ -792,7 +847,7 @@ public final class NestGameTests {
                     TestWells.drill(level.dimension(), well.x, well.z);
                     t0[0] = level.getGameTime();
                 })
-                .thenWaitUntil(() -> check("(c) a worm regrows", !s.worms(nest[0]).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("(c) a worm regrows", !s.worms(nest[0]).isEmpty())))
                 .thenExecute(() -> {
                     long[] i = engine.nestInfo(nest[0]);
                     record(test, "c", "asleep for 240 ticks the wait stayed at " + wait[0] + " ticks; drilling again, a worm regrew after "

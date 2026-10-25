@@ -4,39 +4,48 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 1290d0b7
-//!   (Mowzie's Mobs M6, the Frostmaw, merged with main e75265e7, which carries slices C, H and S of
-//!   the replay gate on SEC-1's S5-2; M6's formats: the conflict's pages are RTC7 with meta version
-//!   6, a camp's ledger ending with its renewal pressure and its booked arrival, the wheel's events
-//!   may be an arrival (MZB-271), and a party ends with the op ids of the casualties it counted
-//!   (MZB-589); before that, c67da61, SEC-1's slice S5-2 merged with main 095be6e; S5-2's formats:
-//!   the glass pages IGL7, the regimes' and replays' network inputs and published rows, choice
-//!   SC153; before that, b643465, SEC-1's slices S4c2 and S5-1 merged with main 10d2330, which
-//!   carries the Mowzie's Mobs camp reconciler M4 and M5; M5's formats: the conflict's pages are
-//!   RTC6 with meta version 5, each faction row carrying its cap, its members away and its camp
-//!   ledger, and the wheel's events may be a camp refill, MOWZIE.md section 4.9; S4c2's and S5-1's
-//!   formats: the package stores' pages IST4, the drawn packages toward each frogport, the district
-//!   each was drawn by and the drawn counters, choices SC141 to SC143, and the glass pages IGL6,
-//!   each kinetic domain's sources and each unit's capacity per speed; before that, 8188cc0, S4c2
-//!   and S5-1 on main 428a331, and 37a34e40, M4 and M5 merged with main 428a331; S4c1's formats:
-//!   the package stores' pages IST3, each store's frontier epoch, the packages it holds toward each
-//!   frogport with their keys, and the held counters, choice SC137; before that, 02d7ea4, SEC-1's
-//!   slice S4c1 merged with main f361a6f; before that, edbb390, SEC-1's slice S4p merged with main
-//!   a95bd2a; S4p's formats: the engine's meta page RTJM version 2, with the journal's newest
-//!   acknowledged generation, and its closed generations as pages of table 2, docs/boundary.md
-//!   §3.2, and the journal's `pinnedGen`, SC130; before that, 5d648ce, SEC-1's slice S4 merged with
-//!   main 5489045; S4's formats: `IndustryData` format 3, the package stores' pages IST2 in table
-//!   0x4906, and RG14's `rtsim/bridge-life.txt`, the engine life; before that, 21e57d2, SEC-1's
-//!   slice S3 on main 3391a5d; the formats of 0a5a4c2, Mowzie M3 merged with main 89fb716 and
-//!   CL-D61, but for the glass page: the phase 1 world's catalogue has 10 goods, `gold_nugget`
-//!   last; the booked train legs are pages of their own, table 0x4904, ILEG, and the industry
-//!   globals page starts with IGB1 (docs/stress-worlds-results.md 10.10); the conflict's pages were
-//!   RTC5 with meta version 4, each party's recalled stacks kept per epoch, each feud's kept notice
-//!   with its serial and its Envoy hold, the Peaceful flag and start and the last notice serial,
-//!   each faction's crystal, the destroyed loot and the repeats; a node may be a lair, tag 3; the
-//!   ships' pages are RTS4, each port's blockade state and each laid-up slot's idle spells in a
-//!   trailing section written only with closures on, and the world's pages are RTW4, each edge's
-//!   closed flag; S8b-3's ships stats and ledger; the dragons' pages are RTD7 and RTN7, each lair's
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c934042f
+//!   (replay-gate slice N, the nest renewal serial, on slice D and merged with main bc669502; N's
+//!   formats: the dragons' pages are RTD8, each nest row ending with its renewal serial, and their
+//!   meta page RTN8, RP-230 to RP-239); before that, 4f152abc
+//!   (Mowzie's Mobs M7, the rail: 32726818, M7 merged with main a11311aa, which carries M6 and
+//!   SEC-1's S6, then merged with main 588b229c, which carries SEC-1's S7 and the GameTest flake
+//!   fixes and changes no format; M7's formats: the conflict's pages are RTC8 with meta version 7,
+//!   a focus may keep its track, a source its pin, a party's target may be a track, a faction
+//!   carries its rail meters, the wheel's events may be a rail wake and the resident state ends
+//!   with the passes held for a line (MZB-302, MZB-344); before that, 1290d0b7 (Mowzie's Mobs M6,
+//!   the Frostmaw, merged with main e75265e7, which carries slices C, H and S of the replay gate on
+//!   SEC-1's S5-2; M6's formats: the conflict's pages are RTC7 with meta version 6, a camp's ledger
+//!   ending with its renewal pressure and its booked arrival, the wheel's events may be an arrival
+//!   (MZB-271), and a party ends with the op ids of the casualties it counted (MZB-589); before
+//!   that, c67da61, SEC-1's slice S5-2 merged with main 095be6e; S5-2's formats: the glass pages
+//!   IGL7, the regimes' and replays' network inputs and published rows, choice SC153; before that,
+//!   b643465, SEC-1's slices S4c2 and S5-1 merged with main 10d2330, which carries the Mowzie's
+//!   Mobs camp reconciler M4 and M5; M5's formats: the conflict's pages are RTC6 with meta version
+//!   5, each faction row carrying its cap, its members away and its camp ledger, and the wheel's
+//!   events may be a camp refill, MOWZIE.md section 4.9; S4c2's and S5-1's formats: the package
+//!   stores' pages IST4, the drawn packages toward each frogport, the district each was drawn by
+//!   and the drawn counters, choices SC141 to SC143, and the glass pages IGL6, each kinetic
+//!   domain's sources and each unit's capacity per speed; before that, 8188cc0, S4c2 and S5-1 on
+//!   main 428a331, and 37a34e40, M4 and M5 merged with main 428a331; S4c1's formats: the package
+//!   stores' pages IST3, each store's frontier epoch, the packages it holds toward each frogport
+//!   with their keys, and the held counters, choice SC137; before that, 02d7ea4, SEC-1's slice S4c1
+//!   merged with main f361a6f; before that, edbb390, SEC-1's slice S4p merged with main a95bd2a;
+//!   S4p's formats: the engine's meta page RTJM version 2, with the journal's newest acknowledged
+//!   generation, and its closed generations as pages of table 2, docs/boundary.md §3.2, and the
+//!   journal's `pinnedGen`, SC130; before that, 5d648ce, SEC-1's slice S4 merged with main 5489045;
+//!   S4's formats: `IndustryData` format 3, the package stores' pages IST2 in table 0x4906, and
+//!   RG14's `rtsim/bridge-life.txt`, the engine life; before that, 21e57d2, SEC-1's slice S3 on
+//!   main 3391a5d; the formats of 0a5a4c2, Mowzie M3 merged with main 89fb716 and CL-D61, but for
+//!   the glass page: the phase 1 world's catalogue has 10 goods, `gold_nugget` last; the booked
+//!   train legs are pages of their own, table 0x4904, ILEG, and the industry globals page starts
+//!   with IGB1 (docs/stress-worlds-results.md 10.10); the conflict's pages were RTC5 with meta
+//!   version 4, each party's recalled stacks kept per epoch, each feud's kept notice with its
+//!   serial and its Envoy hold, the Peaceful flag and start and the last notice serial, each
+//!   faction's crystal, the destroyed loot and the repeats; a node may be a lair, tag 3; the ships'
+//!   pages are RTS4, each port's blockade state and each laid-up slot's idle spells in a trailing
+//!   section written only with closures on, and the world's pages are RTW4, each edge's closed
+//!   flag; S8b-3's ships stats and ledger; the dragons' pages are RTD7 and RTN7, each lair's
 //!   pressure, wait and fed share, and the nest table; the herds' pages are VERSION 4, each herd
 //!   row its range's K, range, home and vacancy; an industry district's glass state is a page of
 //!   table 0x4903 (IGL1 before S2), and the industry globals end with the glass counters and
@@ -49,13 +58,15 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 1290d0b7 (the core save's
-//!   commit and formats; before that, fe87a92, S5-2 merged with main f66cb73, b643465, 37a34e40 as
-//!   part of the plain `./gametest.sh core create mowziesmobs` round, 8188cc0, cee946f, S4c1,
-//!   edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm funnel-point fix) with the section fixtures
-//!   (`-Psec1fx`), its `run-gametest/world` deleted first (delete `run-gametest/world` before a
-//!   create run that follows a stress-generator run, whose clock is ahead of the game). Every
-//!   module's pages, mostly empty: herds, districts with their glass pages and stations draw.
+//! - `tests/data/create`: neoforge/create's GameTest world, run from c934042f (the core save's
+//!   formats); before that, 32726818 (the core save's
+//!   formats before slice N and before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2
+//!   merged with main f66cb73, b643465, 37a34e40 as part of the plain `./gametest.sh core create
+//!   mowziesmobs` round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm
+//!   funnel-point fix) with the section fixtures (`-Psec1fx`), its `run-gametest/world` deleted
+//!   first (delete `run-gametest/world` before a create run that follows a stress-generator run,
+//!   whose clock is ahead of the game). Every module's pages, mostly empty: herds, districts with
+//!   their glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
 //! and these folders are replaced by a fresh GameTest run.
@@ -150,4 +161,107 @@ fn the_create_gametest_save_draws_every_layer_and_writes_nothing() {
         "create",
         &["ecology.herds", "industry.districts", "industry.stations"],
     );
+}
+
+/// Slice S7's layers on the create GameTest save: it holds package stores (frogports with no
+/// district, from the S4 GameTests) that draw as edges and have cards; its glass pages are in an
+/// older format, so the sections layer is empty and says so, and the viewer names the pages it
+/// left out.
+#[test]
+fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
+    let dir = data("create");
+    let before = snapshot(&dir);
+    let view = View::open(&dir, Limits::default()).expect("the save opens");
+    let drawing = every_layer_draws_or_says_why(&view);
+    assert!(
+        drawing.iter().any(|d| d == "industry.stores"),
+        "the stores draw: {drawing:?}"
+    );
+    let n = view
+        .saved()
+        .industry
+        .as_ref()
+        .expect("industry")
+        .stores
+        .len();
+    assert_eq!(n, 6, "the save holds six package stores");
+    for l in ["industry.sections", "industry.networks"] {
+        if !drawing.iter().any(|d| d == l) {
+            assert!(view.reasons().contains_key(l), "{l} says why it is empty");
+        }
+    }
+    let unread = view.saved().industry.as_ref().unwrap().glass_unread.pages();
+    if unread > 0 {
+        let why = &view.reasons()["industry.sections"];
+        assert!(
+            why.contains("glass page") && why.contains("did not read"),
+            "{why}"
+        );
+    }
+    // The layer draws a chain, not every pair of a store's frogports, and every frogport of a
+    // store whose hops Java measured is on it.
+    for st in &view.saved().industry.as_ref().unwrap().stores {
+        let n = st.frogports.len();
+        let links = rtsim_layers::industry::chain_links(st, n, usize::MAX);
+        eprintln!("store {}: {n} frogports, links {links:?}", st.id.0);
+        assert!(
+            links.len() <= n.saturating_sub(1),
+            "store {}: {links:?} for {n}",
+            st.id.0
+        );
+        if !st.hops.contains(&rtsim_layers::industry::UNKNOWN_HOPS) {
+            let mut on = vec![false; n];
+            on[0] = true;
+            for _ in 0..n {
+                for &(i, j) in &links {
+                    let (i, j) = (usize::from(i), usize::from(j));
+                    let joined = on[i] || on[j];
+                    on[i] = joined;
+                    on[j] = joined;
+                }
+            }
+            assert!(
+                on.iter().all(|&x| x),
+                "store {}: links {links:?} leave a frogport off the chain (hops {:?})",
+                st.id.0,
+                st.hops
+            );
+        }
+    }
+    let (id, edge) = {
+        let saved = view.saved();
+        let first = &saved.industry.as_ref().unwrap().stores[0];
+        (
+            first.id.0,
+            rtsim_layers::industry::store_mark(first).links[0],
+        )
+    };
+    let view = Arc::new(view);
+    let app = mic_viewer::viewer::App::new(Arc::clone(&view));
+    let card: mic_viewer::api::Card =
+        get_json(&app, &format!("/api/thing/industry.stores/{id}"), "");
+    assert_eq!(card.layer, "industry.stores");
+    assert!(card.sections.iter().any(|s| s.title == "Frogports"));
+    // A drawn edge's id ("store:i-j") opens its store's card.
+    let by_edge: mic_viewer::api::Card = get_json(
+        &app,
+        &format!("/api/thing/industry.stores/{id}:{}-{}", edge.0, edge.1),
+        "",
+    );
+    assert_eq!(by_edge.layer, "industry.stores");
+    assert_eq!(by_edge.title, card.title, "the edge's card is its store's");
+    let (status, _) = get(&app, "/api/thing/industry.stores/999999", "");
+    assert_eq!(status, 404, "a store the save lacks has no card");
+    let layers: mic_viewer::api::Layers = get_json(&app, "/api/layers", "");
+    let sections = layers
+        .layers
+        .iter()
+        .find(|l| l.id == "industry.sections")
+        .expect("the sections layer");
+    assert!(
+        sections.max_bpp <= 1.0,
+        "sections draw at a block a pixel and closer"
+    );
+    drop(view);
+    assert_same(&before, &snapshot(&dir));
 }

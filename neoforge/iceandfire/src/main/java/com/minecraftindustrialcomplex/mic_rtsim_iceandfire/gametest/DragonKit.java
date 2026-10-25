@@ -12,6 +12,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccess
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonBridge;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
+import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.Nests;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -334,8 +335,17 @@ public final class DragonKit {
         });
     }
 
-    /** A scripted NEST_RENEW: {@code count} worms of size {@code stage} (1 to 3) for nest {@code nest}. */
+    /**
+     * A scripted NEST_RENEW: {@code count} worms of size {@code stage} (1 to 3) for nest {@code nest}, numbered as
+     * the engine would number the nest's next renewal (one above the last this session applied, RP-14).
+     */
     public static void nestRenew(long nest, String dimension, int stage, int count) {
+        Nests.Nest n = bridge().nests.nest(nest);
+        nestRenew(nest, dimension, stage, count, n == null ? 1 : n.nextSerial(session().engineLife()));
+    }
+
+    /** A scripted NEST_RENEW with its own renewal serial (RP-14): one at or below the last applied is a repeat. */
+    public static void nestRenew(long nest, String dimension, int stage, int count, long serial) {
         script(out -> {
             out.dict(Obs.DICT_BODY, FIRE);
             int dim = out.dict(Obs.DICT_DIMENSION, dimension);
@@ -346,6 +356,7 @@ public final class DragonKit {
             b.putLong(at + DragonRecords.NestRenew.NEST, nest);
             b.putInt(at + DragonRecords.NestRenew.DIM, dim);
             b.putInt(at + DragonRecords.NestRenew.STAGE, stage);
+            b.putInt(at + DragonRecords.NestRenew.SERIAL, (int) serial);
             b.putInt(at + DragonRecords.NestRenew.RESERVED, 0);
         });
     }
@@ -552,7 +563,10 @@ public final class DragonKit {
 
     // ---- vanilla's own entity-chunk save --------------------------------------------------------
 
-    /** Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage. */
+    /**
+     * Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage; the
+     * future completes on the world's IO worker, so a test waits for it in real time ({@code ChunkWait.chunks}).
+     */
     @SuppressWarnings("unchecked")
     public static CompletableFuture<List<Entity>> saveAndReadBack(ServerLevel level, ChunkPos... chunks) {
         var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();

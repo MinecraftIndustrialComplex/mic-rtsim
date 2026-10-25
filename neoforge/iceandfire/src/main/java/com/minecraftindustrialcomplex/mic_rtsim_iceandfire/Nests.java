@@ -128,8 +128,18 @@ public final class Nests {
     /** One PLACE_NEST waiting for its chunk. */
     public record Pending(long nest, String dim, int cx, int cz, int depth) {}
 
+    /** The last NEST_RENEW serial applied under one earlier engine life (RP-14, RP-232). */
+    public record LifeSerial(long life, long serial) {}
+
     /** One placed nest. */
     public static final class Nest {
+        /**
+         * How many engine lives a nest remembers the last renewal serial of: the current one and the seven before it.
+         * A life past that is forgotten oldest first, and a return to a forgotten life counts from 0 again, which is
+         * the one way left to owe a renewal twice (RP-232: more than eight lives, and a hand-mixed restore).
+         */
+        public static final int LIVES = 8;
+
         public final long id;
         public final String dim;
         public final BlockPos heart;
@@ -142,6 +152,19 @@ public final class Nests {
         public boolean broken, reform;
         /** The game time the owed worms are tried again. */
         public long dueAt;
+        /**
+         * NEST_RENEW's dedup (docs/replay-gate.md §7.1, RP-14): the serial of the last renewal applied (the engine's
+         * count of this nest's renewals, an unsigned 32 bits), and the engine life it came under
+         * ({@code RtsimSession.engineLife}, RP-19): the nest's current life. Both 0 for a nest with none, and for one
+         * loaded from a file from before them. Saved with {@link #owed}, in the same file: the two reach disk together.
+         */
+        public long serial, life;
+        /**
+         * The last serial of each earlier life, oldest first: never the current life, never a serial 0 (that is the same
+         * as no entry), at most {@link #LIVES} - 1 of them. A life the engine comes back to (world/rtsim restored from a
+         * backup while the Nests stayed) takes its serial from here, so what it applied is still a repeat (RP-232).
+         */
+        public final ArrayList<LifeSerial> earlier = new ArrayList<>();
         /** Its worms alive, loaded or not. */
         public final LinkedHashSet<UUID> worms = new LinkedHashSet<>();
 
@@ -153,6 +176,82 @@ public final class Nests {
 
         public ChunkPos chunk() {
             return new ChunkPos(heart);
+        }
+
+        /**
+         * Whether a NEST_RENEW of {@code renewal} under engine life {@code engineLife} is new, and if so counted:
+         * only a serial above the last one applied under the same life is (RP-14). Under a life the nest has not
+         * seen its serial starts afresh, since the new engine counts its renewals from 1; what is owed stays (RP-19).
+         * Under a life it has seen, within the last {@link #LIVES}, the serial is the one that life reached (RP-232).
+         * A repeat changes nothing but the life it is judged under.
+         */
+        public boolean acceptRenewal(long engineLife, long renewal) {
+            if (engineLife != life)
+                switchTo(engineLife);
+            if (renewal <= serial)
+                return false;
+            serial = renewal;
+            return true;
+        }
+
+        /** Makes {@code engineLife} the current life: the current one goes to {@link #earlier}, the asked one comes back from it. */
+        private void switchTo(long engineLife) {
+            if (serial != 0)
+                earlier.add(new LifeSerial(life, serial));
+            long back = 0;
+            for (Iterator<LifeSerial> it = earlier.iterator(); it.hasNext();) {
+                LifeSerial e = it.next();
+                if (e.life() == engineLife) {
+                    back = e.serial();
+                    it.remove();
+                    break;
+                }
+            }
+            while (earlier.size() > LIVES - 1)
+                earlier.remove(0);
+            life = engineLife;
+            serial = back;
+        }
+
+        /** The last serial applied under {@code engineLife}: 0 for a life the nest does not remember. */
+        public long lastUnder(long engineLife) {
+            if (engineLife == life)
+                return serial;
+            for (LifeSerial e : earlier)
+                if (e.life() == engineLife)
+                    return e.serial();
+            return 0;
+        }
+
+        /** Loading: an earlier life's serial from a file, leaving out what could not be one (the current life, a 0, a repeat) and the surplus. */
+        void remember(long earlierLife, long earlierSerial) {
+            if (earlierLife == life || earlierSerial == 0)
+                return;
+            earlier.removeIf(e -> e.life() == earlierLife);
+            earlier.add(new LifeSerial(earlierLife, earlierSerial));
+            while (earlier.size() > LIVES - 1)
+                earlier.remove(0);
+        }
+
+        /**
+         * NEST_RENEW applied to the nest: when the serial is new (see {@link #acceptRenewal}), {@code count} more worms
+         * are owed at size {@code stage}, tried from {@code now}, and a broken heart is asked to re-form. False for a
+         * repeat, which changes none of that.
+         */
+        public boolean renewed(long engineLife, long renewal, int count, int stage, long now) {
+            if (!acceptRenewal(engineLife, renewal))
+                return false;
+            if (broken)
+                reform = true;
+            owed += count;
+            this.stage = Mth.clamp(stage, 1, 3);
+            dueAt = now;
+            return true;
+        }
+
+        /** The serial a renewal sent next under engine life {@code engineLife} must carry to be applied (GameTests). */
+        public long nextSerial(long engineLife) {
+            return lastUnder(engineLife) + 1;
         }
     }
 
@@ -216,7 +315,7 @@ public final class Nests {
     private long nextSpawnCheck = Long.MIN_VALUE;
 
     // Counters for logs and the GameTests (this session).
-    public long requests, repeats, refused, badRequests, placedCount, failedCount, renews, renewsUnknown, reformed, wormsPlaced,
+    public long requests, repeats, refused, badRequests, placedCount, failedCount, renews, renewsUnknown, renewsRepeated, reformed, wormsPlaced,
             censuses, losses, heartsBroken, sorties, wormsSent, stoppedUnderArmour, surfaced, homeComings, spawnerCancelled,
             griefCancelled, mended;
 
@@ -235,7 +334,7 @@ public final class Nests {
         outcomes.clear();
         asked.clear();
         nextSpawnCheck = Long.MIN_VALUE;
-        requests = repeats = refused = badRequests = placedCount = failedCount = renews = renewsUnknown = reformed = wormsPlaced = 0;
+        requests = repeats = refused = badRequests = placedCount = failedCount = renews = renewsUnknown = renewsRepeated = reformed = wormsPlaced = 0;
         censuses = losses = heartsBroken = sorties = wormsSent = stoppedUnderArmour = surfaced = homeComings = spawnerCancelled = 0;
         griefCancelled = mended = 0;
     }
@@ -412,8 +511,15 @@ public final class Nests {
     /**
      * NEST_RENEW: {@code count} more worms of size {@code stage} for the nest. A broken heart re-forms
      * here too, as a fallback: the engine's own reform is a PLACE_NEST ({@link #place}).
+     *
+     * <p>Applied once per serial (docs/replay-gate.md §7.1, RP-14): {@code serial} is the engine's count of this
+     * nest's renewals with this one in it, and the nest remembers the last it applied and the engine life it came
+     * under. A renewal the engine decides again (after a restore from older pages) carries the serial it had
+     * and adds nothing. A renewal below the nest's last serial is dropped too:
+     * the rule is to lose, never to double. A life the nest has not seen starts its serial afresh (RP-19); one it has seen
+     * takes up the serial it had reached (RP-232).
      */
-    public void renew(long nest, int stage, int count, long now) {
+    public void renew(long nest, int stage, int count, long serial, long now) {
         renews++;
         Data d = index(bridge.session().server());
         Nest n = d.placed.get(nest);
@@ -423,12 +529,13 @@ public final class Nests {
                     n == null ? "no such nest placed" : "nothing to renew");
             return;
         }
-        if (n.broken)
-            n.reform = true;
-        n.owed += count;
-        n.stage = Mth.clamp(stage, 1, 3);
-        n.dueAt = now;
+        boolean fresh = n.renewed(bridge.session().engineLife(), serial, count, stage, now);
         d.setDirty();
+        if (!fresh) {
+            renewsRepeated++;
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] NEST_RENEW {} for nest {}: serial {} is not above {} (engine life {}),"
+                    + " owed once already", count, nest, serial, n.serial, Long.toHexString(n.life));
+        }
     }
 
     /** NEST_SORTIE: up to {@code count} of the nest's loaded worms raid column (x, z) for {@code timeout} ticks. */
@@ -1149,6 +1256,16 @@ public final class Nests {
                 t.putBoolean("broken", n.broken);
                 t.putBoolean("reform", n.reform);
                 t.putLong("dueAt", n.dueAt);
+                t.putLong("serial", n.serial);
+                t.putLong("life", n.life);
+                ListTag lives = new ListTag();
+                for (LifeSerial e : n.earlier) {
+                    CompoundTag c = new CompoundTag();
+                    c.putLong("life", e.life());
+                    c.putLong("serial", e.serial());
+                    lives.add(c);
+                }
+                t.put("lives", lives);
                 ListTag worms = new ListTag();
                 for (UUID u : n.worms)
                     worms.add(NbtUtils.createUUID(u));
@@ -1169,7 +1286,18 @@ public final class Nests {
             for (Tag e : tag.getList("placed", Tag.TAG_COMPOUND)) {
                 CompoundTag t = (CompoundTag) e;
                 Nest n = new Nest(t.getLong("nest"), t.getString("dimension"), BlockPos.of(t.getLong("heart")));
-                n.owed = t.getInt("owed");
+                // A file from before the renewal serial (RP-14) has neither serial nor life: its nests load owed 0 and
+                // serial 0. Whatever was owed is dropped, never doubled: the engine may decide it again, and with no
+                // serial to compare there is no telling whether it was applied.
+                boolean serialled = t.contains("serial", Tag.TAG_ANY_NUMERIC) && t.contains("life", Tag.TAG_ANY_NUMERIC);
+                n.owed = serialled ? t.getInt("owed") : 0;
+                n.serial = serialled ? t.getLong("serial") : 0;
+                n.life = serialled ? t.getLong("life") : 0;
+                // The earlier lives' serials (RP-232): a file without the list, an old file or one written before it,
+                // loads none.
+                if (serialled)
+                    for (Tag x : t.getList("lives", Tag.TAG_COMPOUND))
+                        n.remember(((CompoundTag) x).getLong("life"), ((CompoundTag) x).getLong("serial"));
                 n.stage = Math.max(1, t.getInt("stage"));
                 n.broken = t.getBoolean("broken");
                 n.reform = t.getBoolean("reform");
