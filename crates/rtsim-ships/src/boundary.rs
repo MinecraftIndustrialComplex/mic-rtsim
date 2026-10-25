@@ -293,6 +293,24 @@ impl Obs {
     pub fn is_journaled(&self) -> bool {
         self.kind() >= 0x0100
     }
+
+    /// The ship and the epoch a record names (docs/replay-gate.md §5.3, RP-57): every kind that
+    /// carries an epoch, and none that does not (the fight, the port and the haven are about no
+    /// body). The replay's floor reads it, so a kind added here without an arm does not compile.
+    pub fn ship_epoch(&self) -> Option<(u64, u32)> {
+        match self {
+            Obs::State(r) => Some((r.agent, r.epoch)),
+            Obs::Materialized(r) => Some((r.agent, r.epoch)),
+            Obs::SpawnRejected(r) => Some((r.agent, r.epoch)),
+            Obs::Dematerialized(r) => Some((r.agent, r.epoch)),
+            Obs::Damaged(r) => Some((r.agent, r.epoch)),
+            Obs::Sunk(r) => Some((r.agent, r.epoch)),
+            Obs::Boarded(r) => Some((r.agent, r.epoch)),
+            Obs::Captured(r) => Some((r.agent, r.epoch)),
+            Obs::CargoLooted(r) => Some((r.agent, r.epoch)),
+            Obs::Fight(_) | Obs::PortFound(_) | Obs::HavenFound(_) => None,
+        }
+    }
 }
 
 // ---- Commands ----
@@ -404,6 +422,18 @@ impl Cmd {
             Cmd::Depart(_) => SHIP_DEPART,
             Cmd::SetCargo(_) => SHIP_CARGO,
             Cmd::Despawn(_) => SHIP_DESPAWN,
+        }
+    }
+
+    /// The kind's name, for the replay gate's log (docs/replay-gate.md §4.3).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Cmd::Materialize(_) => "SHIP_MATERIALIZE",
+            Cmd::Timetable(_) => "SHIP_TIMETABLE",
+            Cmd::Steer(_) => "SHIP_STEER",
+            Cmd::Depart(_) => "SHIP_DEPART",
+            Cmd::SetCargo(_) => "SHIP_CARGO",
+            Cmd::Despawn(_) => "SHIP_DESPAWN",
         }
     }
 
@@ -1012,8 +1042,18 @@ pub fn decode_cmd(b: &[u8]) -> Result<(usize, u64, Cmd), CodecError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// One value of every command kind (the replay gate's test reads it).
+    pub(crate) fn cmds() -> Vec<Cmd> {
+        all_cmds(1)
+    }
+
+    /// One value of every observation kind.
+    pub(crate) fn obs() -> Vec<Obs> {
+        all_obs(1)
+    }
 
     fn all_obs(n: usize) -> Vec<Obs> {
         let items: Vec<Item> = (0..n as u32)

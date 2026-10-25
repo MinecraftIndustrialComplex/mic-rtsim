@@ -81,7 +81,8 @@ public final class DistrictSeedGameTests {
 
     /**
      * A ticking modded block entity with a capability is a machine and starts a district; a block in the seed
-     * tag does with neither. A chest in the machine's chunk is a member, and its inventory is boundary stock.
+     * tag does with neither, in a chunk diagonal to the machine's that nothing joins to it: a district of its own. A
+     * chest in the machine's chunk is a member, and its inventory is boundary stock.
      */
     @GameTest(template = YARD, batch = "district_seed_2", timeoutTicks = 400)
     public static void aMachineMakesADistrictAndAChestBesideItIsBoundaryStock(GameTestHelper helper) {
@@ -109,12 +110,14 @@ public final class DistrictSeedGameTests {
                     District d = districtAt(helper, machine);
                     check("the machine's chunk is a district", d != null);
                     check("the chest's chunk is the same district", d == districtAt(helper, chest));
-                    // The marker's chunk is diagonal to the machine's: next-door seeded chunks are one district.
-                    check("two chunks: " + d.chunks.size(), d.chunks.size() == 2);
-                    check("the district counts two seeds: " + d.seedCounts, d.seeds() == 2);
+                    // The marker's chunk is diagonal to the machine's and nothing joins them (SECTIONS.md §2.1: bare
+                    // adjacency joins nothing): two districts of a chunk each.
+                    check("one chunk: " + d.chunks.size(), d.chunks.size() == 1);
+                    check("the district counts one seed: " + d.seedCounts, d.seeds() == 1);
                     check("the chest is boundary stock: " + d.inventories, d.inventories.size() == 1 && d.inventories.get(0).pos().equals(chest));
-                    check("a block in the seed tag seeds: the marker's chunk is in the district", districtAt(helper, marker) == d);
-                    check("the marker's chunk holds its own seed", seedsAt(helper, marker) == 1);
+                    District m = districtAt(helper, marker);
+                    check("a block in the seed tag seeds: the marker's chunk is a district of its own", m != null && m != d && m.chunks.size() == 1);
+                    check("the marker's chunk holds its own seed", seedsAt(helper, marker) == 1 && m.seeds() == 1);
                     id[0] = d.id;
                     record("aMachineMakesADistrictAndAChestBesideItIsBoundaryStock", "district (" + engineName() + ")", d);
                 })

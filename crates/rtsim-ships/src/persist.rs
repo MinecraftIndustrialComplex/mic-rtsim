@@ -1541,7 +1541,10 @@ impl Ships {
         s.ports = ports;
         s.laid_up = laid_up;
         s.idle = idle;
-        s.outbox = outbox;
+        for c in outbox {
+            // Not gated: what the pages held is the queued verdict's (`begin_replay`).
+            s.outbox.restore(c);
+        }
         s.built = built;
         Ok(s)
     }

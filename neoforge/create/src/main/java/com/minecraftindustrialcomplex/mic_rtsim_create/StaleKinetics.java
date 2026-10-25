@@ -185,6 +185,11 @@ public final class StaleKinetics {
         }
     };
 
+    /** Whether {@code k}'s class adds propagation of its own beyond one block ({@link #OWN_PROPAGATION}); J4's walk asks it too. */
+    static boolean ownPropagation(KineticBlockEntity k) {
+        return OWN_PROPAGATION.get(k.getClass());
+    }
+
     /**
      * Where {@code k} propagates into another chunk: a face across its chunk's border, and its own additions
      * ({@code addPropagationLocations}: a chain conveyor's connections, a large cog's diagonals) outside its
