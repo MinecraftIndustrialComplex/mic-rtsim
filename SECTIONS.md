@@ -1018,8 +1018,8 @@ no package store says so and exits 0; a bad argument exits 64, a world that does
 ### 8.3 Viewer
 
 - The district card (rtsim-view) gains its sections (state, nodes, stores, a link to each), the
-  stores they share, the package stores with a frogport in the district and the districts they reach,
-  and the shared networks it is a part of. A section, a package store and a shared network each
+  stores they share, the package stores with a frogport in the district and the districts they
+  reach, and the shared networks it is a part of. A section, a package store and a shared network each
   have a card of their own.
 - The map gains three layers (VIEWER.md §7): `industry.sections` below 1 block per pixel (a box a
   section, coloured by state, SC172), `industry.stores` (an edge between each pair of a store's
