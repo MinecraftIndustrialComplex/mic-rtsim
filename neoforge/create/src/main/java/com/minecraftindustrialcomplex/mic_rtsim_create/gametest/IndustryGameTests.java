@@ -1223,6 +1223,92 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * {@code /rtsim district sections} and the {@code info} line for sections (SECTIONS.md §8.1, S7). The command
+     * needs permission 2. On the scripted (stub) engine, which has no glass box, it says so in one line and the
+     * info output carries no glass lines; on the native engine it prints a header, one line per section of the
+     * district's last complete compile and the shared stores, and the info output gains the "glass sections" line
+     * with the same counts. Nothing is sent to the engine for the text (the report is built on request).
+     */
+    @GameTest(template = YARD, batch = "industry_10", timeoutTicks = 600)
+    public static void theSectionsCommandPrintsOneLinePerSection(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos vaultPos = new BlockPos(bx + 2, y, z);
+        set(helper, vaultPos, block("create:item_vault").defaultBlockState());
+        playerPlaced(helper, vaultPos);
+        long[] id = {0};
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, vaultPos);
+                    check("district", d != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    District d = ind().district(id[0]);
+                    var fetch = ind().diagnostics().glassReportOf(d);
+                    var dispatcher = helper.getLevel().getServer().getCommands().getDispatcher();
+                    List<String> said = new ArrayList<>();
+                    net.minecraft.commands.CommandSource sink = new net.minecraft.commands.CommandSource() {
+                        @Override
+                        public void sendSystemMessage(net.minecraft.network.chat.Component c) {
+                            said.add(c.getString());
+                        }
+
+                        @Override
+                        public boolean acceptsSuccess() {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean acceptsFailure() {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean shouldInformAdmins() {
+                            return false;
+                        }
+                    };
+                    CommandSourceStack src = helper.getLevel().getServer().createCommandSourceStack().withSource(sink).withPermission(2)
+                            .withLevel(helper.getLevel()).withPosition(Vec3.atCenterOf(vaultPos));
+                    int ran = -1;
+                    try {
+                        ran = dispatcher.execute("rtsim district sections", src);
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                        check("/rtsim district sections runs at permission 2: " + e.getMessage(), false);
+                    }
+                    record("theSectionsCommandPrintsOneLinePerSection", "sections", said.toString());
+                    check("the command printed something", !said.isEmpty());
+                    check("its first line names the district", said.get(0).startsWith("district " + id[0] + " '"));
+                    if (fetch.report() == null) {
+                        check("with no report it is one line (" + fetch.note() + ")", said.size() == 1 && said.get(0).endsWith(fetch.note()));
+                        check("and it returns 0", ran == 0);
+                        if (fetch.stub())
+                            check("the stub engine is named", said.get(0).contains("stub engine"));
+                    } else {
+                        int sections = fetch.report().sections().size();
+                        check("the command returns the section count " + sections, ran == sections);
+                        long sectionLines = said.stream().filter(l -> l.startsWith("  s")).count();
+                        check("one line per section, " + sections + " (got " + sectionLines + ")", sectionLines >= sections);
+                        StringBuilder info = new StringBuilder();
+                        for (var c : ind().diagnostics().debugLines(d))
+                            info.append(c.getString()).append(" / ");
+                        check("the info output gains the sections line with the same count",
+                                info.toString().contains("glass sections: " + sections + ","));
+                    }
+                    boolean refused = false;
+                    try {
+                        dispatcher.execute("rtsim district sections", source(helper, vaultPos).withPermission(1));
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                        refused = true;
+                    }
+                    check("below permission 2 the command is refused", refused);
+                })
+                .thenSucceed();
+    }
+
     /** True once the engine's received log holds a record at or past {@code seq} (it arrives in sequence order). */
     private static boolean receivedThrough(long seq) {
         var all = engine().received();
