@@ -8212,12 +8212,101 @@ MZB-499) is full.
     that carries them): the REASSERT copies. `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_once`
     pins the cut-before-the-echo order with copies: the arrival resolved unwatched, then the copies count the
     fight's 3 deaths once by op id (`casualty_ops`; a second copy is dropped): 12, then 9 alive.
-  - **The double that remains, not fixed:** in that order, an abstract resolve that costs units (a district or a
-    village that defends itself) would cost them on top of the copied deaths, since `casualties(copy)` takes by
-    identity and does not ask whether the arrival was resolved unwatched. By the code, not exercised: the harness
-    camp's base has nothing to raid. It depends on the holders' store, so it is not fixed here: it belongs to the
-    SEC-1 lead's slice U (an unwatched resolve of an arrival would book an op that a copy of the same deaths
-    checks, one identity for both).
+  - **The double that remained after MZB-705, closed by MZB-706:** in that order, an abstract resolve that costs
+    units (a district or a village that defends itself) cost them on top of the copied deaths, since
+    `casualties(copy)` takes by identity and did not ask whether the arrival was resolved unwatched. By the code,
+    not exercised in the harness (the camp's base has nothing to raid); MZB-706 exercises it at engine level and
+    fixes it. The jni test above now pins the closed order: the copies count nothing.
+
+- **MZB-706** (a holder's copy of the deaths of a fight the replay resolved unwatched counts nothing; the build
+  lead's decision after MZB-705: "lose, never double"). When an arrival (a war party's, or a siege's round) is
+  resolved unwatched because no record answered it, the party books it: `Party::unwatched`, a list of inclusive
+  epoch ranges, saved with the party. `casualties(copy)` and `release_before`'s Casualties guard drop a
+  BAND_CASUALTIES copy whose party and epoch fall in a range, with a log note ("unwatched"); the abstract resolve took
+  that fight's losses, so the copy adds nothing. The test of the double, at engine level
+  (`a_holders_copies_of_an_unanswered_walk_in_add_nothing_to_the_abstract_resolve`, mowzie_records.rs): the
+  walk-in of `a_raid_met_on_its_road_after_the_save` against a district that routs the raid (`Walls` with `rout`:
+  every raider held at the walls, half of them fallen, `abstract_loss_share`), the journal cut before the
+  walk-in's echo, the live session's 3 BAND_CASUALTIES records as a holder's copies. Band of 12: the abstract
+  resolve leaves 6; **before the fix the copies took 3 more (3 alive, the same fight counted twice: the
+  failing assertion reads `left: (3, 3) right: (6, 6)`)**, seen with the copy drop switched off for a hold let
+  go by the replay end and for one ended inside the replay, and with MZB-707's booking switched off for the
+  third shape; after the fix 6, and the second set of copies adds nothing. The control (`a_holders_copies_of_an_answered_walk_in_still_count_once`):
+  the journal ends at the echo, nothing is resolved abstractly, the copies count the 3 deaths, once.
+  - **Which copies reach `casualties`:** only `Obs::Casualties`. `ingest_copy` sends it to `release_before` and
+    `casualties(copy = true)`; `Materialized`, `RailPass`, `HavenChest` and `TrainPassed` do nothing beyond the
+    epoch fold, and every other kind goes to `ingest` (the arm that was there; a CHIEF_KILLED copy among them is
+    not a casualty and is not dropped, see MZB-708). No match was added, so there is no new arm to keep
+    exhaustive: the drop is a guard inside `casualties`, which the one arm reaches, and a second inside
+    `release_before`'s existing Casualties guard. A holder's REASSERT of a BAND_CASUALTIES is the one copy of a
+    fight's deaths.
+  - **The fields.** `Party::unwatched: Vec<(u32, u32)>` (bounded at `UNWATCHED_KEPT` = 8, the oldest first
+    out), the one new persisted field: a party row ends with its length and the pairs (var u64 each), inside
+    RTC11 (`RTCB`) and META 10 as they stand; **no version bump** (the brief). The booking cannot sit in `Held`:
+    `held` is in memory and a copy can come sessions later (the entity's chunk is loaded after another restart);
+    `the_unwatched_epoch_ranges_of_a_party_survive_a_save_whole_and_paged` pins whole and paged, and the engine
+    test applies the copies to a reloaded engine. The state hash moves with the field (sim-mowzie.json's seed
+    hashes). No new stat (a stat is a format change); the log note counts the drops for tests.
+  - **Which epochs.** The fight the last session may have run carried the party's own epoch when it walked in in
+    its bodies (`embodied`: MZB-461, `start_fight`'s `walked_in`), else the one its next body takes
+    (`next_epoch`: max of the epoch and the floor, plus 1). The party books `(epoch, fresh)` when it was in its
+    bodies at the arrival and `(fresh, fresh)` when it was not, so a copy of a death on the march at the party's
+    own epoch still counts when the band was not in view at the arrival. `next_epoch` cuts the ranges short at
+    the epoch it hands out (`r.1 = min(r.1, epoch - 1)`, dropped when empty): the engine's next body owns that
+    epoch and every later one, and a copy naming it is that body's own.
+  - **A live record for such an epoch counts nothing, and did not before.** After the replay end no party is in
+    its bodies (`replay_done` clears `embodied`, `spawned` and `recalled`), so a live BAND_CASUALTIES is a
+    straggler (`in_view` and `walk_off` both false), whatever the epoch: nothing changes and nothing is
+    booked for it. While replaying, a live record is the original of a death the session that went on
+    counted, and RP-59 ends the hold before it.
+    `a_live_record_of_an_unanswered_walk_in_counts_nothing_after_the_replay_end` pins it for the walk-in's
+    epoch, the next one and the party's own.
+
+- **MZB-707** (the lost window: an arrival the replay clock never reached). The jni test of MZB-705 does not
+  hold the arrival: the journal ends before it, the replay clock stops at the last record (before the arrival),
+  and the engine runs on from there to the hand-over's game time, where the arrival fires live at its own tick
+  with no player routed and resolves unwatched. That is the common crash, and booking only held arrivals missed it
+  (the jni test still saw the double). The engine now books **any** unwatched resolve of a war arrival or siege
+  round that happens after the replay end at a tick on or before the session's present, and the host tells it
+  the present: `Conflict::replay_present(Tick)`, called by rtsim-jni's `conflict::replay_end` right after
+  `replay_done` with the hand-over's game time (an in-memory field, `lost_until`; not a wire or page change).
+  An arrival after the present is this session's own and books nothing
+  (`an_arrival_after_the_sessions_present_books_nothing`). The three replay shapes the engine test covers are
+  the clock stopping before the arrival (this window), a hold let go by the replay end (`held_over`: the poll
+  may come after the present, so the hold keeps its own record of the plan and of whether the bodies were in
+  Minecraft), and a hold ended inside the replay at its slack (RP-48; `hold_ending`). `left_embodied` records
+  which parties were in their bodies at the end, because the end clears the flag before the arrival decides.
+  Fork taken: the engine learns the present through a new public method, not a changed `replay_done`
+  signature, so that the engine-level callers and the other modules are untouched; a caller that never tells
+  it keeps the held-arrival booking alone.
+  - **jni:** `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_nothing_more` (the MZB-705
+    test, expectations changed: the books stay at n, 12, after the copies, which the host still finds new and
+    applies, once, `copies == (k, 0)` then `(k, k)`) and the control
+    `a_holders_copy_of_the_deaths_of_an_answered_walk_in_still_counts_once` (the journal cut at the echo:
+    `raids_watched` +1, no unwatched resolve, the copies take the books from 12 to 9, once).
+
+- **MZB-708** (what MZB-706 accepts as lost; the residual the build lead asked to record).
+  - **A unit that really died in Minecraft but survived the abstract resolve stays alive in the books.** The
+    resolve of an unwatched arrival and the fight Java ran are two different draws; the copy that would have
+    taken the real deaths is dropped, so a unit the fight killed and the resolve spared lives on in the
+    engine. A loss of realism, not a double (the band is never below what one account of the fight says; it
+    can be above what Minecraft saw). Added to replay-gate.md §6.1's "Losses accepted" (RP-171).
+  - **A copy of a death on the march, at the party's own epoch, is dropped** when the band was in its bodies at
+    the arrival: the range includes the walk-in's epoch, which is also the march's. The death was real and
+    is not booked. Lose, never double.
+  - **An epoch-reuse hole** if the engine's next body takes the lost fight's epoch before a copy arrives:
+    `next_epoch` cuts the ranges there, so a copy naming the fight's epoch counts as that body's. Needs a
+    holder to outlive an entire later fight of the same party; not guarded.
+  - **A CHIEF_KILLED copy is not dropped.** It reaches `chief_killed_by` through `ingest` (a boss band's chief
+    is reported as CHIEF_KILLED alone, never as BAND_CASUALTIES), guarded by the party's `chief` flag and the
+    op id. Whether an unwatched resolve that already took that unit leaves the flag set, so that a copy would
+    take the unit twice, is not examined here (the brief names the casualties copies); told to the lead.
+  - **Booked also when nothing was fought** (the unwatched arrival the last session also resolved unwatched):
+    no copy of that epoch exists then, so the booking costs nothing, except a march death of a band that was in
+    view (the item above).
+  - **Sims:** sim-mowzie.json moves in its hash details alone (the party row gained a field: the first seed
+    state of runs, the audit's lines "state ... against ...", 7 lines); sim-conflict.json moves in `wall_ms`
+    alone (its state hash, the restore check's two agree) and is left as committed.
 
 ## M11 Aloft
 
