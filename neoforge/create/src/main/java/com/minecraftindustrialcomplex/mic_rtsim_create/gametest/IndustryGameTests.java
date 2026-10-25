@@ -1233,7 +1233,9 @@ public final class IndustryGameTests {
      * ({@code VaultBetweenMixersFactory.sectionsCommand}, namespace {@code mic_rtsim_create_sec1fx}); this test
      * checks nothing about a native district's lines, since a lone vault compiles to no sections.
      */
-    @GameTest(template = YARD, batch = "industry_10", timeoutTicks = 600)
+    // Its own batch: forget() forgets every district in the level, so a test sharing a batch would lose its
+    // district mid-run (it shared industry_10 once, and theDebugOutputShowsWhatJavaKnows's district went).
+    @GameTest(template = YARD, batch = "industry_26", timeoutTicks = 600)
     public static void theSectionsCommandSaysSoWithoutAReport(GameTestHelper helper) {
         fastConfig();
         forget(helper);
