@@ -1543,3 +1543,964 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// Slice U: the real engine never sends an op again after acknowledging Java's live answer for it
+/// (docs/choices-journal-barrier.md RP-209; docs/choices-mowzie-build.md RP-250, RP-251, RP-257).
+///
+/// Java's op rings prune on that promise. Java answers op X with a COMMAND_RESULT at journal seq S,
+/// live in session G (above G's replay end), and stamps its ring entry with S. When Java reads an
+/// engine acknowledgement A >= S in G, it removes X; the journal is trimmed through A at the same
+/// time, so nothing in Java knows X after that. A ring from G read by a later session G' loses X at
+/// G''s start only when G''s pages are at or past S and provably G's (the loaded journal's newest
+/// JOURNAL_GEN below G''s first seq is G's, and the pages are at or below the journal file's end);
+/// every other entry stays, its answer unknown, until a resend's refusal stamps it live. A command
+/// carrying X after either would be applied twice.
+///
+/// Every case runs the iron line through the native engine with Java's autosave (a world save and
+/// a page save asked through the journal's end) and [`AckCheck`] watching every op-carrying
+/// industry command the engine sends.
+mod ack_never_resends {
+    use super::*;
+    use std::collections::{BTreeMap, HashMap};
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    use rtsim_industry::cmd::CarriageReason;
+    use rtsim_industry::fake::{Outgoing, SavedWorld};
+    use rtsim_industry::ids::TrainId;
+    use rtsim_industry::wire as iw;
+    use rtsim_jni::wire::{Records, cmd, obs};
+
+    const APPLIED: u32 = obs::command_result::APPLIED;
+    const DUPLICATE: u32 = obs::command_result::DUPLICATE_OP;
+    const FAILED: u32 = obs::command_result::FAILED;
+
+    /// Java's rings as the checker models them: every op Java answered APPLIED or DUPLICATE and
+    /// has not pruned, with the live answer it was stamped with in this session (the session's
+    /// index and the answer's journal seq), or None when its answer is unknown (carried from an
+    /// earlier session and not settled). A superset of the real rings, which keep only their own
+    /// kinds: the checker holds every op-carrying command to the rule.
+    type Ring = HashMap<u64, Option<(usize, u64)>>;
+
+    struct Session {
+        nonce: u64,
+        /// The session's first record (its JOURNAL_GEN): its replay end plus one.
+        first: u64,
+        /// The pages at its start.
+        pages: u64,
+    }
+
+    /// One of Java's live COMMAND_RESULTs for an industry op.
+    #[derive(Clone, Copy, Debug)]
+    struct Live {
+        op: u64,
+        seq: u64,
+        session: usize,
+        status: u32,
+    }
+
+    /// One op-carrying industry command in a command buffer the engine published.
+    #[derive(Clone, Copy, Debug)]
+    struct Arrival {
+        session: usize,
+        buffer: u64,
+        cmd_seq: u64,
+        op: u64,
+        kind: &'static str,
+        /// At or below Java's lastAppliedCmdSeq: Java skips it unapplied.
+        stale: bool,
+    }
+
+    /// A world save: Java's journal file, the world (the fake world's goods, trains and its own
+    /// never-pruned op set), and the checker's model of Java's rings saved with it.
+    #[derive(Clone)]
+    struct Saved {
+        jsave: WorldSave,
+        msave: SavedWorld,
+        ring: Ring,
+        gone: HashMap<u64, String>,
+        /// The journal file's end (its last seq).
+        end: u64,
+    }
+
+    /// What a restart's settle did with the ring it loaded.
+    struct Start {
+        settled: Vec<u64>,
+        unknown: usize,
+        writer: Option<usize>,
+        provable: bool,
+    }
+
+    /// The checker every case uses. For every op-carrying industry command Java applied it records
+    /// the seq S of Java's live COMMAND_RESULT and the session it was given in, and fails when
+    /// - (a) a command carrying X arrives after the engine sent an ack >= S in that same session
+    ///   (sent, whether Java read it or not; a command in the buffer that carries the ack is
+    ///   applied before the ack, as BoundarySession does, so only later buffers count);
+    /// - (b) a command carrying X arrives when nothing in Java knows X: in a later session whose
+    ///   start settled X (pages >= S, provably G's), or after a restart from a world save whose
+    ///   ring Java had already pruned of X on reading an ack.
+    /// At every restart the pages must be at or past every ack the engine sent before the crash,
+    /// read or not.
+    #[derive(Default)]
+    struct AckCheck {
+        sessions: Vec<Session>,
+        lives: Vec<Live>,
+        arrivals: Vec<Arrival>,
+        /// This session's live answers, by op.
+        live_now: HashMap<u64, Vec<u64>>,
+        ring: Ring,
+        /// Ops nothing in Java knows any more, and why.
+        gone: HashMap<u64, String>,
+        /// The highest ack the engine sent in this session, before the buffer being read.
+        max_ack: u64,
+        /// Every ack the engine sent: (session, command buffer, ack).
+        acks: Vec<(usize, u64, u64)>,
+        /// Every ack Java read: (session, ack after Java's clamp).
+        read: Vec<(usize, u64)>,
+        /// Per session: ops pruned on an ack Java read, ops settled at its start.
+        pruned: Vec<usize>,
+        settled: Vec<usize>,
+        violations: Vec<String>,
+    }
+
+    fn kind_of(c: &Cmd) -> &'static str {
+        match c {
+            Cmd::ChunkReconcile(_) => "reconcile",
+            Cmd::CarriageDelta(d) if d.reason == CarriageReason::Loot => "loot",
+            Cmd::CarriageDelta(_) => "exchange",
+            Cmd::DepositDelta(_) => "deposit delta",
+            Cmd::WritePackage(_) => "package",
+            Cmd::WriteChain(_) => "chain package",
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) | Cmd::HeldDraw(_) => "latest-wins",
+        }
+    }
+
+    impl AckCheck {
+        fn new(j: &Java) -> Self {
+            AckCheck {
+                sessions: vec![Session {
+                    nonce: j.nonce,
+                    first: j.replay_up_to + 1,
+                    pages: j.pages_obs,
+                }],
+                pruned: vec![0],
+                settled: vec![0],
+                ..Default::default()
+            }
+        }
+
+        fn cur(&self) -> usize {
+            self.sessions.len() - 1
+        }
+
+        /// Java journaled its answer for `op` at `seq`, live in this session.
+        fn answered(&mut self, op: u64, seq: u64, status: u32) {
+            let s = self.cur();
+            self.lives.push(Live {
+                op,
+                seq,
+                session: s,
+                status,
+            });
+            if status == FAILED {
+                return;
+            }
+            self.ring.insert(op, Some((s, seq)));
+            self.live_now.entry(op).or_default().push(seq);
+        }
+
+        /// Reads the command buffer of the step Java just submitted, before Java applies it (the
+        /// step published it and leaves it alone until Java consumes it): every op-carrying
+        /// industry command in it against both rules, then the buffer's ack. Returns the ack.
+        fn arrived(&mut self, j: &Java) -> u64 {
+            let k = j.submitted;
+            let b = j.cmd_buf(k);
+            assert_eq!(b.published().load(Ordering::Acquire), k, "step {k} published");
+            let used = b.get_u32(wire::H_USED) as usize;
+            let ack = b.get_u64(wire::H_WORD_A);
+            // SAFETY: as Java::apply_commands: the step published k and does not touch this
+            // buffer until Java stores consumed = k and submits k + 2.
+            let area = unsafe { b.area(used) }.to_vec();
+            let mut last = j.last_applied_cmd;
+            let mut recs = Records::new(&area);
+            for rec in &mut recs {
+                if rec.kind == cmd::DICT {
+                    continue;
+                }
+                // Java's own skip: at or below the last cmdSeq it applied (of any kind).
+                let seq = wire::u64_at(rec.bytes, cmd::CMD_SEQ);
+                let stale = seq <= last;
+                if !stale {
+                    last = seq;
+                }
+                if !(0x8400..=0x84FF).contains(&rec.kind) {
+                    continue;
+                }
+                let Ok(Some((_, c))) = iw::decode_cmd(rec.bytes) else {
+                    continue;
+                };
+                if let Some(op) = c.op() {
+                    self.arrival(k, seq, op.0, kind_of(&c), stale);
+                }
+            }
+            assert!(recs.error().is_none(), "{:?}", recs.error());
+            self.acks.push((self.cur(), k, ack));
+            self.max_ack = self.max_ack.max(ack);
+            ack
+        }
+
+        fn arrival(&mut self, buffer: u64, cmd_seq: u64, op: u64, kind: &'static str, stale: bool) {
+            let s = self.cur();
+            let note = if stale { ", stale" } else { "" };
+            if let Some(answers) = self.live_now.get(&op) {
+                for &a in answers.iter().filter(|a| **a <= self.max_ack) {
+                    self.violations.push(format!(
+                        "(a) session {s}: {kind} op {op:#x} arrived in command buffer {buffer} \
+                         (cmdSeq {cmd_seq}{note}) after the engine sent ack {} in this session, at \
+                         or past the op's live answer at journal seq {a}",
+                        self.max_ack
+                    ));
+                }
+            }
+            if let Some(why) = self.gone.get(&op) {
+                self.violations.push(format!(
+                    "(b) session {s}: {kind} op {op:#x} arrived in command buffer {buffer} \
+                     (cmdSeq {cmd_seq}{note}), though nothing in Java knows it: {why}"
+                ));
+            }
+            self.arrivals.push(Arrival {
+                session: s,
+                buffer,
+                cmd_seq,
+                op,
+                kind,
+                stale,
+            });
+        }
+
+        /// Java read ack `a` (after its clamp): its rings prune every op whose live answer in this
+        /// session is at or below it. Entries with an unknown answer stay.
+        fn read_ack(&mut self, a: u64) {
+            let s = self.cur();
+            self.read.push((s, a));
+            let pruned: Vec<(u64, u64)> = self
+                .ring
+                .iter()
+                .filter_map(|(op, st)| match st {
+                    Some((g, seq)) if *g == s && *seq <= a => Some((*op, *seq)),
+                    _ => None,
+                })
+                .collect();
+            for (op, seq) in pruned {
+                self.ring.remove(&op);
+                self.gone.insert(
+                    op,
+                    format!(
+                        "Java pruned it in session {s} on reading ack {a}, at or past its live \
+                         answer at {seq}"
+                    ),
+                );
+                self.pruned[s] += 1;
+            }
+        }
+
+        fn save(&self, j: &Java) -> Saved {
+            Saved {
+                jsave: j.world_save(),
+                msave: j.mc().saved(),
+                ring: self.ring.clone(),
+                gone: self.gone.clone(),
+                end: j.next_obs - 1,
+            }
+        }
+
+        /// Every ack the engine sent before the crash, read or not: the highest.
+        fn crash(&self, j: &Java) -> u64 {
+            let sent = self.acks.iter().map(|a| a.2).max().unwrap_or(0);
+            sent.max(j.e.stats.acked_sent.load(Ordering::Acquire))
+        }
+
+        /// The restart opened `j` on the world save `loaded`: the restart assertion, then Java's
+        /// settle on the ring it loaded.
+        fn restart(&mut self, j: &Java, loaded: &Saved, acked: u64) -> Start {
+            let pages = j.pages_obs;
+            assert!(
+                pages >= acked,
+                "the restart's pages ({pages}) are behind an ack the engine sent before the crash \
+                 ({acked})"
+            );
+            let first = j.replay_up_to + 1;
+            let end = loaded.jsave.next_obs - 1;
+            assert_eq!(end, loaded.end);
+            // The newest JOURNAL_GEN the loaded journal holds below this session's first record
+            // (a trimmed one is pinned).
+            let writer = loaded
+                .jsave
+                .pinned_gen
+                .iter()
+                .chain(&loaded.jsave.journal)
+                .filter(|(s, r)| *s < first && wire::u16_at(r, wire::R_KIND) == obs::JOURNAL_GEN)
+                .max_by_key(|(s, _)| *s)
+                .map(|(_, r)| wire::u64_at(r, obs::journal_gen::GEN))
+                .and_then(|n| self.sessions.iter().position(|x| x.nonce == n));
+            let provable = pages <= end;
+            let next = self.sessions.len();
+            let mut ring = Ring::new();
+            let mut gone = loaded.gone.clone();
+            let mut settled = Vec::new();
+            for (&op, &stamp) in &loaded.ring {
+                match stamp {
+                    Some((g, seq)) if provable && Some(g) == writer && pages >= seq => {
+                        gone.insert(
+                            op,
+                            format!(
+                                "settled at session {next}'s start: its pages {pages} are at or \
+                                 past its live answer at {seq}, and are session {g}'s"
+                            ),
+                        );
+                        settled.push(op);
+                    }
+                    _ => {
+                        ring.insert(op, None);
+                    }
+                }
+            }
+            let unknown = ring.len();
+            self.ring = ring;
+            self.gone = gone;
+            self.live_now.clear();
+            self.max_ack = 0;
+            self.sessions.push(Session {
+                nonce: j.nonce,
+                first,
+                pages,
+            });
+            self.pruned.push(0);
+            self.settled.push(settled.len());
+            eprintln!(
+                "session {next} starts: pages {pages}, first seq {first}, journal file's end {end}, \
+                 writer {writer:?}, provable {provable}; {} settled, {unknown} unknown, {} gone",
+                settled.len(),
+                self.gone.len()
+            );
+            Start {
+                settled,
+                unknown,
+                writer,
+                provable,
+            }
+        }
+
+        fn lives_in(&self, s: usize) -> impl Iterator<Item = &Live> {
+            self.lives
+                .iter()
+                .filter(move |l| l.session == s && l.status != FAILED)
+        }
+
+        fn arrivals_of(&self, op: u64, s: usize) -> Vec<Arrival> {
+            self.arrivals
+                .iter()
+                .filter(|a| a.op == op && a.session == s)
+                .copied()
+                .collect()
+        }
+
+        /// The first command buffer of session `s` whose ack is at or past `seq`.
+        fn first_ack_at_least(&self, s: usize, seq: u64) -> Option<u64> {
+            self.acks
+                .iter()
+                .find(|a| a.0 == s && a.2 >= seq)
+                .map(|a| a.1)
+        }
+
+        /// The run's summary, then no violation.
+        fn finish(&self) {
+            let mut kinds: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+            let mut seen: HashMap<u64, usize> = HashMap::new();
+            for a in &self.arrivals {
+                let e = kinds.entry(a.kind).or_default();
+                e.0 += 1;
+                let n = seen.entry(a.op).or_default();
+                if *n > 0 {
+                    e.1 += 1;
+                }
+                *n += 1;
+            }
+            eprintln!("ops: {} distinct; by kind (arrivals, again): {kinds:?}", seen.len());
+            for (i, s) in self.sessions.iter().enumerate() {
+                let arrivals: Vec<&Arrival> =
+                    self.arrivals.iter().filter(|a| a.session == i).collect();
+                let stale = arrivals.iter().filter(|a| a.stale).count();
+                let earlier = arrivals
+                    .iter()
+                    .filter(|a| {
+                        self.arrivals.iter().any(|b| {
+                            b.op == a.op && (b.session < i || (b.session == i && b.buffer < a.buffer))
+                        })
+                    })
+                    .count();
+                let status = |st| {
+                    self.lives
+                        .iter()
+                        .filter(|l| l.session == i && l.status == st)
+                        .count()
+                };
+                let sent = self.acks.iter().filter(|a| a.0 == i).map(|a| a.2).max();
+                let read = self.read.iter().filter(|a| a.0 == i).map(|a| a.1).max();
+                eprintln!(
+                    "session {i} (nonce {:#x}, first {}, pages {}): {} op commands ({stale} \
+                     stale, {earlier} carrying an op sent before), live answers {} applied {} \
+                     duplicate {} failed, acks sent up to {sent:?}, read up to {read:?}, {} \
+                     pruned on a read ack, {} settled at its start",
+                    s.nonce,
+                    s.first,
+                    s.pages,
+                    arrivals.len(),
+                    status(APPLIED),
+                    status(DUPLICATE),
+                    status(FAILED),
+                    self.pruned[i],
+                    self.settled[i],
+                );
+            }
+            assert!(
+                self.violations.is_empty(),
+                "the engine sent an op again after acknowledging its live answer:\n{}",
+                self.violations.join("\n")
+            );
+        }
+    }
+
+    /// The iron line, Java and the checker, with Java's autosave every `every` world ticks
+    /// (0: none).
+    struct Rig {
+        dir: PathBuf,
+        cfg: IronLine,
+        j: Java,
+        c: AckCheck,
+        every: u64,
+        last: Option<Saved>,
+        repaired: bool,
+    }
+
+    impl Rig {
+        fn new(tag: &str, threats: bool) -> Rig {
+            let cfg = IronLine {
+                seed: 11,
+                days: 10,
+                threats,
+                control: false,
+                tick_first: true,
+                approach: true,
+            };
+            let dir = tmpdir(tag);
+            let j = iron_java(&dir, cfg);
+            let c = AckCheck::new(&j);
+            Rig {
+                dir,
+                cfg,
+                j,
+                c,
+                every: 3_000,
+                last: None,
+                repaired: false,
+            }
+        }
+
+        /// One server tick in lockstep, as `Java::mc_tick`, with the checker watching: Java's
+        /// answers are journaled here, so the checker has each one's seq; `before` runs after them
+        /// and before the hand-over; the step's command buffer is read by the checker before Java
+        /// applies it, and `apply` given its ack says whether Java does (false: Java dies first).
+        /// Returns the buffer's ack and whether Java applied it.
+        fn step(
+            &mut self,
+            apply: impl FnOnce(u64) -> bool,
+            before: impl FnOnce(&mut Java, &[(u64, u64, u32)]),
+        ) -> (u64, bool) {
+            let (j, c) = (&mut self.j, &mut self.c);
+            let mc = j.mc.as_mut().expect("an industry world");
+            mc.tick();
+            let t = mc.t;
+            let out = std::mem::take(&mut mc.outgoing);
+            let threats = std::mem::take(&mut mc.threats_out);
+            j.game_time = t.0 as i64;
+            for th in threats {
+                j.e.order(vec![Order::IndustryThreat(th)])
+                    .expect("a threat order");
+            }
+            let mut answers = Vec::new();
+            for o in out {
+                match o {
+                    Outgoing::Obs(t) => j.industry_obs(&t),
+                    Outgoing::CommandResult { op, status } => {
+                        let op = op.0;
+                        let cmd_seq = j.ind_cmd_seq.get(&op).copied().unwrap_or(0);
+                        let s = j.journal(
+                            obs::COMMAND_RESULT,
+                            obs::command_result::SIZE,
+                            status,
+                            |r| {
+                                wire::put_u64(r, obs::command_result::CMD_SEQ, cmd_seq);
+                                wire::put_u64(r, obs::command_result::OP_ID, op);
+                            },
+                        );
+                        c.answered(op, s, status);
+                        answers.push((op, s, status));
+                    }
+                }
+            }
+            before(j, &answers);
+            let gt = j.game_time;
+            assert!(j.tick(), "a lockstep tick always submits");
+            j.game_time = gt;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while j.e.stats_array()[1] < j.submitted {
+                assert!(
+                    Instant::now() < deadline,
+                    "step {} never finished",
+                    j.submitted
+                );
+                std::hint::spin_loop();
+                std::thread::yield_now();
+            }
+            let ack = c.arrived(j);
+            if !apply(ack) {
+                return (ack, false);
+            }
+            let read = j.acks.len();
+            j.apply_commands();
+            assert_eq!(j.next_cmd, j.submitted + 1);
+            if j.acks.len() > read {
+                c.read_ack(*j.acks.last().unwrap());
+            }
+            (ack, true)
+        }
+
+        fn tick(&mut self) {
+            self.step(|_| true, |_, _| {});
+            self.after_tick();
+        }
+
+        /// The player repairs the coast as `run_iron_line` does; Java autosaves on its period.
+        fn after_tick(&mut self) {
+            let t = self.j.mc().t;
+            let end = Tick(self.cfg.days * TICKS_PER_DAY);
+            if !self.repaired
+                && t >= day(8.6)
+                && t < end
+                && self.j.mc().districts[ORE_COAST].loaded
+            {
+                self.j.mc_mut().repair_all(ORE_COAST);
+                self.repaired = true;
+            }
+            if self.every > 0 && t.0.is_multiple_of(self.every) {
+                self.autosave();
+            }
+        }
+
+        /// Ticks until `done`; fails past world time `limit` or 60 s of wall clock.
+        fn run(&mut self, what: &str, limit: Tick, mut done: impl FnMut(&Rig) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !done(self) {
+                assert!(Instant::now() < deadline, "{what}: 60 s of wall clock");
+                assert!(self.j.mc().t < limit, "{what}: not by {limit:?}");
+                self.tick();
+            }
+        }
+
+        fn run_to(&mut self, t: Tick) {
+            self.run("the world's clock", t + 1, |r| r.j.mc().t >= t);
+        }
+
+        /// Java's autosave: the world saves, and asks the engine for its pages through the
+        /// journal's end.
+        fn autosave(&mut self) -> Saved {
+            let s = self.c.save(&self.j);
+            self.j.e.request_save(s.end);
+            self.last = Some(s.clone());
+            s
+        }
+
+        /// Runs until Java has read an ack at or past `seq`.
+        fn until_read(&mut self, seq: u64) {
+            let limit = self.j.mc().t + 24_000;
+            self.run("Java reads the ack", limit, |r| {
+                r.j.acks.last().is_some_and(|a| *a >= seq)
+            });
+        }
+
+        /// A crash (`close(false)`: queued saves dropped) and a restart on the same pages from
+        /// the world save `saved`.
+        fn restart(&mut self, saved: &Saved) -> Start {
+            let acked = self.c.crash(&self.j);
+            let mut mc = self.j.mc.take().expect("an industry world");
+            self.j.e.close(false, Duration::from_secs(5)).unwrap();
+            mc.restore(&saved.msave);
+            let seed = self.cfg.seed;
+            let e = engine_with(&self.dir, 256 * 1024, |c| c.industry_seed = Some(seed));
+            let mut j = Java::open(e, saved.jsave.clone());
+            j.mc = Some(mc);
+            j.module_mask = MODULE_INDUSTRY;
+            self.j = j;
+            self.last = None;
+            self.repaired = false;
+            self.c.restart(&self.j, saved, acked)
+        }
+
+        /// A crash after Java read the ack of an autosave, restarting from that autosave.
+        fn crash_after_a_read_ack(&mut self) -> Start {
+            let w = self.autosave();
+            self.until_read(w.end);
+            self.restart(&w)
+        }
+
+        /// To the iron line's end and until every command is applied, then the checker and the
+        /// books.
+        fn finish(self) {
+            self.finish_with(|_| {});
+        }
+
+        /// [`Rig::finish`], with the case's own checks on the checker's record before it closes.
+        fn finish_with(mut self, extra: impl FnOnce(&AckCheck)) {
+            let end = Tick(self.cfg.days * TICKS_PER_DAY);
+            self.run("the iron line's end", end + 2_001, |r| r.j.mc().t >= end + 2_000);
+            self.run("every command applied", end + 4_000, |r| {
+                r.j.mc().commands_in_flight() == 0
+            });
+            self.c.finish();
+            extra(&self.c);
+            let link = self.j.e.with_industry(|_, l| *l);
+            eprintln!("link: {link:?}");
+            assert_eq!(link.outbox, 0, "every kept command answered");
+            assert!(
+                self.j.e.protocol_error().is_none(),
+                "{:?}",
+                self.j.e.protocol_error()
+            );
+            conserves(&self.j);
+            self.j.e.close(true, Duration::from_secs(5)).unwrap();
+        }
+    }
+
+    /// Case 1, the crash before the page save that covers S: Java's autosaves stop at day 3, the
+    /// last one's pages land, and the line runs on until ten answers are past them; the world saves
+    /// (its journal holds the answers) and the engine crashes before any page save covers them.
+    /// The engine sent no ack at or past any of them, the restart's pages are behind them, and the
+    /// settle keeps each one's answer unknown: a resend or a re-decision of those ops is allowed.
+    /// The second session then runs with autosaves, crashes after a read ack, and the third runs
+    /// to the end, the checker on every op throughout.
+    #[test]
+    fn a_crash_before_the_page_save_that_covers_an_answer_may_send_its_op_again() {
+        let mut r = Rig::new("ack-c1", true);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let w0 = r.last.clone().expect("an autosave by day 3");
+        r.run("the last autosave's pages", day(4.0), |r| {
+            r.j.e.durable_obs_seq() >= w0.end
+        });
+        let pages = r.j.e.durable_obs_seq();
+        let past = |r: &Rig| r.c.lives_in(0).filter(|l| l.seq > pages).count();
+        r.run("ten answers past the pages", day(6.0), |r| past(r) >= 10);
+        let w = r.c.save(&r.j);
+        assert_eq!(r.j.e.durable_obs_seq(), pages, "no page save since");
+        let answers: Vec<Live> = r.c.lives_in(0).filter(|l| l.seq > pages).copied().collect();
+        let sent = r.c.crash(&r.j);
+        for l in &answers {
+            assert!(
+                sent < l.seq,
+                "the engine sent ack {sent} before the page save covering op {:#x}'s answer at {}",
+                l.op,
+                l.seq
+            );
+        }
+        let start = r.restart(&w);
+        assert_eq!(start.writer, Some(0));
+        assert!(start.provable);
+        for l in &answers {
+            assert!(
+                l.seq > r.j.pages_obs,
+                "the restart's pages are behind op {:#x}'s answer",
+                l.op
+            );
+            assert!(!start.settled.contains(&l.op), "op {:#x} stays unknown", l.op);
+        }
+        r.every = 3_000;
+        r.run_to(day(6.0));
+        let again = answers
+            .iter()
+            .filter(|l| !r.c.arrivals_of(l.op, 1).is_empty())
+            .count();
+        eprintln!(
+            "case 1: {} answers past the pages at the crash; {again} of their ops sent again in \
+             session 1",
+            answers.len()
+        );
+        let start = r.crash_after_a_read_ack();
+        assert!(!start.settled.is_empty(), "the second restart settled what it read");
+        r.finish();
+    }
+
+    /// Case 2, the crash between the save and the ack, with Java holding the acks (`hold_acks`):
+    /// from day 3 Java reads no acknowledgement; ten answers come past the last ack it read; an
+    /// autosave asks for pages through its journal's end and the engine sends an ack at or past
+    /// it, which Java never reads. The line runs on a quarter of a day in that session (rule (a)
+    /// watches every later buffer). The restart from that world save has pages at or past every
+    /// such answer and provably the first session's, so the settle takes each op: none is ever
+    /// sent again, through two more sessions.
+    #[test]
+    fn an_answer_acknowledged_while_java_held_the_acks_is_never_sent_again() {
+        let mut r = Rig::new("ack-c2-held", true);
+        r.run_to(day(3.0));
+        r.every = 0;
+        r.j.hold_acks = true;
+        let a0 = r.j.acks.last().copied().unwrap_or(0);
+        let read = r.j.acks.len();
+        let past = |r: &Rig| r.c.lives_in(0).filter(|l| l.seq > a0).count();
+        r.run("ten answers past the last ack Java read", day(6.0), |r| past(r) >= 10);
+        let w = r.autosave();
+        r.run("the engine sends the save's ack", day(6.0), |r| r.c.max_ack >= w.end);
+        let unread: Vec<Live> = r
+            .c
+            .lives_in(0)
+            .filter(|l| l.seq > a0 && l.seq <= w.end)
+            .copied()
+            .collect();
+        assert!(unread.len() >= 10);
+        let t = r.j.mc().t;
+        r.run_to(t + 6_000);
+        assert_eq!(r.j.acks.len(), read, "Java read no ack since it held them");
+        let start = r.restart(&w);
+        assert_eq!(start.writer, Some(0));
+        assert!(start.provable);
+        for l in &unread {
+            assert!(r.j.pages_obs >= l.seq);
+            assert!(
+                start.settled.contains(&l.op),
+                "op {:#x} (answered at {}) settled at the restart",
+                l.op,
+                l.seq
+            );
+        }
+        eprintln!(
+            "case 2 (held): {} answers acknowledged and never read; {} settled, {} unknown",
+            unread.len(),
+            start.settled.len(),
+            start.unknown
+        );
+        r.every = 3_000;
+        r.run_to(day(6.0));
+        r.crash_after_a_read_ack();
+        r.finish();
+    }
+
+    /// Case 2, the crash between the save and the ack, with Java dying before it applies the
+    /// command buffer that carries the ack: ten answers past the pages, an autosave, and the line
+    /// runs (Java reading every earlier buffer) until the first buffer whose ack is at or past the
+    /// save; the crash comes before Java applies it. The answers above the last ack Java read are
+    /// settled at the restart, and none of their ops is ever sent again.
+    #[test]
+    fn an_answer_acknowledged_in_a_buffer_java_never_read_is_never_sent_again() {
+        let mut r = Rig::new("ack-c2-unread", true);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let pages = r.j.e.durable_obs_seq();
+        let past = |r: &Rig| r.c.lives_in(0).filter(|l| l.seq > pages).count();
+        r.run("ten answers past the pages", day(6.0), |r| past(r) >= 10);
+        let w = r.autosave();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let unread_ack = loop {
+            let (ack, applied) = r.step(|ack| ack < w.end, |_, _| {});
+            if !applied {
+                break ack;
+            }
+            r.after_tick();
+            assert!(Instant::now() < deadline, "the save's ack never came");
+            assert!(r.j.mc().t < day(6.0));
+        };
+        let a0 = r.j.acks.last().copied().unwrap_or(0);
+        assert!(a0 < w.end, "Java never read an ack covering the save");
+        let unread: Vec<Live> = r
+            .c
+            .lives_in(0)
+            .filter(|l| l.seq > a0 && l.seq <= w.end)
+            .copied()
+            .collect();
+        assert!(!unread.is_empty());
+        let start = r.restart(&w);
+        assert!(r.j.pages_obs >= unread_ack);
+        assert_eq!(start.writer, Some(0));
+        assert!(start.provable);
+        for l in &unread {
+            assert!(
+                start.settled.contains(&l.op),
+                "op {:#x} (answered at {}) settled at the restart",
+                l.op,
+                l.seq
+            );
+        }
+        eprintln!(
+            "case 2 (unread buffer): ack {unread_ack} never read; {} answers above the last read \
+             ack {a0}; {} settled, {} unknown",
+            unread.len(),
+            start.settled.len(),
+            start.unknown
+        );
+        r.every = 3_000;
+        r.run_to(day(6.0));
+        r.crash_after_a_read_ack();
+        r.finish();
+    }
+
+    /// Case 3, the crash after Java read the ack: the line runs four and a half days with
+    /// autosaves (Java prunes on each ack it reads, and every later buffer of the session is
+    /// checked against rule (a)), then crashes right after Java read the ack of an autosave and
+    /// restarts from that world save (taken before the read: the settle takes its answers). The
+    /// second session runs two more days with autosaves, Java reads the ack of one, saves its world
+    /// again after that read (its rings pruned), runs on with no page save, and crashes; the third
+    /// session restarts from that later world save with pages behind it, so every op Java pruned
+    /// before it is unknown to Java for good. No pruned or settled op is ever sent again.
+    #[test]
+    fn an_answer_whose_acknowledgement_java_read_is_never_sent_again() {
+        let mut r = Rig::new("ack-c3", true);
+        r.run_to(day(4.5));
+        assert!(r.c.pruned[0] > 0, "Java pruned on the acks it read");
+        let start = r.crash_after_a_read_ack();
+        assert!(!start.settled.is_empty(), "the restart settled the answers it read");
+        r.run_to(day(6.5));
+        r.every = 0;
+        let wa = r.autosave();
+        r.until_read(wa.end);
+        let pruned = r.c.gone.len();
+        let wb = r.c.save(&r.j);
+        let t = r.j.mc().t;
+        r.run_to(t + 3_000);
+        assert_eq!(r.j.e.durable_obs_seq(), wa.end, "no page save after the autosave's");
+        let start = r.restart(&wb);
+        assert_eq!(r.j.pages_obs, wa.end, "the pages are behind the later world save");
+        assert!(start.provable);
+        for (op, why) in &wb.gone {
+            assert!(
+                !r.c.ring.contains_key(op),
+                "op {op:#x} ({why}) is not in the rings the restart loaded"
+            );
+        }
+        eprintln!(
+            "case 3: {} ops pruned or settled in the first two sessions, carried in the later \
+             world save",
+            pruned
+        );
+        r.every = 3_000;
+        r.finish();
+    }
+
+    /// Case 4, the replayed answer, as a control (slice T's j1-late shape). The train raid's loot X
+    /// is answered APPLIED live at S in session 1; the pages stop before the raid; the world saves
+    /// after it and the engine crashes. Session 2 opens with pages behind S, replays S, and its
+    /// first durable save sends an ack past S, which Java reads; the raider, back from its older
+    /// pages, then decides the raid again, and the engine sends X again, after that ack. That is
+    /// allowed: S was not given live in session 2, so Java's rings never prune on it (the settle
+    /// kept X with its answer unknown). This is exactly why Java registers acknowledgements only
+    /// for its own live answers: had session 2's ack past S pruned X, the raid decided again would
+    /// be applied twice. Java refuses the re-decided X with DUPLICATE live at S2 in session 2;
+    /// after the ack past S2, and across a crash after it, X is never sent again.
+    #[test]
+    fn a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after() {
+        let mut r = Rig::new("ack-c4", false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let train = TrainId(1);
+        let laden = |j: &Java| {
+            industry(&j.e, |ie| {
+                ie.legs()
+                    .leg_of(train, ie.now())
+                    .and_then(|id| ie.legs().get(id))
+                    .is_some_and(|l| l.cargo.iter().any(|c| !c.1.is_empty()))
+            })
+        };
+        let loot = |r: &Rig, s: usize| -> Vec<Arrival> {
+            r.c.arrivals
+                .iter()
+                .filter(|a| a.session == s && a.kind == "loot")
+                .copied()
+                .collect()
+        };
+        // The pages stop while the train is under way with cargo, before the raid.
+        loop {
+            r.run("train 1 under way with cargo", day(8.0), |r| laden(&r.j));
+            let through = r.j.next_obs - 1;
+            r.j.e.request_save(through);
+            r.run("the pages", day(8.0), |r| r.j.e.durable_obs_seq() >= through);
+            if laden(&r.j) {
+                break;
+            }
+        }
+        let through = r.j.e.durable_obs_seq();
+        let raid = Threat {
+            id: 0xA11,
+            source: ThreatSource::Bandit,
+            class: ThreatClass::Siege,
+            count: 3,
+            strength: 3.0,
+            target: ThreatTarget::Train(train),
+            loads: None,
+            at: r.j.mc().t,
+        };
+        r.j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+        r.run("the raid's loot is written", raid.at + 100, |r| !loot(r, 0).is_empty());
+        let x = loot(&r, 0)[0].op;
+        r.run("the world answers the loot", raid.at + 100, |r| {
+            r.c.lives_in(0).any(|l| l.op == x)
+        });
+        let s1 = *r.c.lives_in(0).find(|l| l.op == x).unwrap();
+        assert_eq!(s1.status, APPLIED);
+        // The world saves after the raid; the pages never save again before the crash.
+        let w = r.c.save(&r.j);
+        assert_eq!(r.j.e.durable_obs_seq(), through, "no later page save");
+        assert!(r.c.crash(&r.j) < s1.seq, "no ack at or past S in session 1");
+        let start = r.restart(&w);
+        assert!(r.j.pages_obs < s1.seq, "the pages are behind S");
+        assert!(!start.settled.contains(&x));
+        assert_eq!(r.c.ring.get(&x), Some(&None), "X stays, its answer unknown");
+        r.tick();
+        // The first durable save past the replay end acknowledges the raid's old answer.
+        let through = r.j.next_obs - 1;
+        assert!(through >= s1.seq);
+        r.j.e.request_save(through);
+        r.run("the engine acks past S and Java reads it", day(9.0), |r| {
+            r.j.acks.last().is_some_and(|a| *a >= s1.seq)
+        });
+        let acked_at = r.c.first_ack_at_least(1, s1.seq).expect("an ack past S");
+        assert!(loot(&r, 1).is_empty(), "nothing decided the raid again yet");
+        assert_eq!(r.c.ring.get(&x), Some(&None), "Java's rings kept X");
+        // The raider decides the raid again.
+        r.j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+        r.run("the raid is decided again", raid.at + 400, |r| !loot(r, 1).is_empty());
+        let again = r.c.arrivals_of(x, 1);
+        assert_eq!(again.len(), 1, "X sent once in session 2: {again:?}");
+        assert!(
+            again[0].buffer > acked_at,
+            "the engine sends X after an ack past S (buffer {} after {acked_at})",
+            again[0].buffer
+        );
+        eprintln!(
+            "case 4: X {x:#x} answered at S {} in session 1; session 2's ack past S in buffer \
+             {acked_at}; X sent again in buffer {} as cmdSeq {}",
+            s1.seq, again[0].buffer, again[0].cmd_seq
+        );
+        r.run("Java refuses X", raid.at + 400, |r| r.c.lives_in(1).any(|l| l.op == x));
+        let s2 = *r.c.lives_in(1).find(|l| l.op == x).unwrap();
+        assert_eq!(s2.status, DUPLICATE, "the ring refused the re-decided X, live in session 2");
+        // Java's autosave again: the ack past S2 prunes X, and the line runs on two days.
+        r.every = 3_000;
+        r.until_read(s2.seq);
+        assert!(r.c.gone.contains_key(&x), "pruned on the ack past S2");
+        r.run_to(day(6.0));
+        r.crash_after_a_read_ack();
+        r.finish_with(|c| {
+            assert_eq!(c.arrivals_of(x, 0).len(), 1);
+            assert_eq!(c.arrivals_of(x, 1).len(), 1);
+            assert!(c.arrivals_of(x, 2).is_empty(), "never sent after the ack past S2");
+        });
+    }
+}
