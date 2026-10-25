@@ -10598,6 +10598,291 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The held-arrival test's first session, up to its crash (MZB-705): a raid in view at a
+    /// save, its arrival a walk-in (the whole band is placed), a quarter of the band fallen in
+    /// the fight. `kept` is what holders keep of the casualties.
+    struct WalkedIn {
+        dir: std::path::PathBuf,
+        p: Handle<Party>,
+        n: u32,
+        durable: u64,
+        watched: u64,
+        live: u32,
+        kept: Kept,
+        saved: WorldSave,
+        gt: i64,
+    }
+
+    fn a_walk_in_then_a_crash(name: &str) -> WalkedIn {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 20, DAY, "the raid on its way, in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let durable = e.durable_obs_seq();
+        let n = books(&e, p).0;
+        let watched = e.conflict_stats().0.raids_watched;
+        advance_until(&mut j, 20, DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        advance_until(&mut j, 100, DAY, "its casualties journaled", |j| {
+            books(&j.e, p).0 < n
+        });
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        let live = books(&e, p).0;
+        let kept = casualties_kept(&j, durable + 1, p);
+        assert!(!kept.records.is_empty(), "casualties to keep");
+        let gt = j.game_time;
+        let saved = j.crash();
+        WalkedIn {
+            dir,
+            p,
+            n,
+            durable,
+            watched,
+            live,
+            kept,
+            saved,
+            gt,
+        }
+    }
+
+    /// `dir`'s files in a new directory, so that a session can run on the pages of a crash more
+    /// than once.
+    fn copy_pages(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for f in std::fs::read_dir(from).unwrap() {
+                let f = f.unwrap();
+                let at = to.join(f.file_name());
+                if f.file_type().unwrap().is_dir() {
+                    copy(&f.path(), &at);
+                } else {
+                    std::fs::copy(f.path(), at).unwrap();
+                }
+            }
+        }
+        let to = tmpdir(name);
+        copy(dir, &to);
+        to
+    }
+
+    /// `w`'s world save cut after journal sequence `upto`: the crash lost the journal's tail
+    /// from there, as one that came between two records does.
+    fn journal_cut_at(w: &WalkedIn, upto: u64) -> WorldSave {
+        let mut s = w.saved.clone();
+        s.journal.retain(|(q, _)| *q <= upto);
+        s.next_obs = upto + 1;
+        s
+    }
+
+    /// [`reopen`] with the log on from the start, so that the replay's own unwatched
+    /// resolutions are logged.
+    fn reopen_logging(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+    ) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let _ = e.conflict_log(true);
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        hand_over_all(&mut j);
+        (e, j)
+    }
+
+    /// The raids the log says were resolved unwatched since it was last taken (the camp's base
+    /// has nothing to raid).
+    fn unwatched_resolutions(e: &Engine) -> usize {
+        e.conflict_log(true)
+            .iter()
+            .filter(|l| l.what == "finds nothing to raid")
+            .count()
+    }
+
+    /// The P1 fix across a crash, whatever record the journal ends at (MZB-705; the build lead's
+    /// request after the M10a review). S0 is the held-arrival test's: the pages are older than
+    /// the arrival, the arrival is a walk-in (an empty BAND_FIGHT record, which Java echoes) and
+    /// the fight's casualties follow. The crash can come between any two journal records: after
+    /// Java applied the walk-in but before the journal holds its echo (the echo comes a tick
+    /// after the command), after the echo, among the casualties, or after all of them. In every
+    /// order the fight is settled once: honoured as watched when the echo is in the journal
+    /// (MZB-491), resolved unwatched, once, at the replay end when it is not (RP-48), never both.
+    /// A body counts once: the casualties the journal holds are counted from it, and with the
+    /// echo missing the fight's deaths are lost with the tail (a loss, not a double). No
+    /// BAND_MATERIALIZE with members goes to Java in the replay's session, so the placed members
+    /// are not spawned again.
+    #[test]
+    fn a_walked_in_fight_is_settled_once_whichever_record_the_journal_ends_at() {
+        let w = a_walk_in_then_a_crash("conflict-walk-in-cut");
+        let tail: Vec<(u64, u16, Option<u32>)> = w
+            .saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s > w.durable)
+            .map(|(s, r)| {
+                let count = match cb::decode_obs(r) {
+                    Ok((_, O::Casualties(c), _)) if c.agent == Party::agent(w.p) => Some(c.count),
+                    _ => None,
+                };
+                (*s, wire::u16_at(r, wire::R_KIND), count)
+            })
+            .collect();
+        let seqs =
+            |kind: u16| -> Vec<u64> { tail.iter().filter(|t| t.1 == kind).map(|t| t.0).collect() };
+        let (echoes, casualties) = (seqs(cb::BAND_MATERIALIZED), seqs(cb::BAND_CASUALTIES));
+        assert_eq!(
+            echoes.len(),
+            2,
+            "the sighting's echo and the walk-in's: {echoes:?}"
+        );
+        assert!(
+            echoes[1] < casualties[0],
+            "the echo comes before the deaths"
+        );
+        let last = w.saved.journal.back().unwrap().0;
+        // (what the journal ends at, its last sequence, whether the walk-in's echo is in it)
+        let cuts = [
+            ("before the walk-in's echo", echoes[1] - 1, false),
+            ("at the walk-in's echo", echoes[1], true),
+            ("after the first casualty", casualties[0], true),
+            (
+                "among the casualties",
+                casualties[casualties.len() / 2],
+                true,
+            ),
+            ("after every record", last, true),
+        ];
+        for (what, upto, echoed) in cuts {
+            let counted: u32 = tail
+                .iter()
+                .filter(|t| t.0 <= upto)
+                .filter_map(|t| t.2)
+                .sum();
+            let pages = copy_pages(&w.dir, "conflict-walk-in-cut-run");
+            let (e, mut j) = reopen_logging(&pages, journal_cut_at(&w, upto), w.gt);
+            assert_eq!(
+                e.durable_obs_seq(),
+                w.durable,
+                "{what}: the pages from before the arrival"
+            );
+            let mut unwatched = unwatched_resolutions(&e);
+            let watched = |e: &Engine| e.conflict_stats().0.raids_watched - w.watched;
+            let alive = books(&e, w.p).0;
+            assert_eq!(
+                alive,
+                w.n - counted,
+                "{what}: the journal's casualties count once"
+            );
+            assert!(
+                alive >= w.live,
+                "{what}: never below the session that went on"
+            );
+            let members = |j: &Java| {
+                j.conflict
+                    .iter()
+                    .filter(|(_, c)| {
+                        matches!(c, C::Materialize(m)
+                        if m.agent == Party::agent(w.p) && !m.members.is_empty())
+                    })
+                    .count()
+            };
+            assert_eq!(
+                members(&j),
+                0,
+                "{what}: no member is spawned again by the replay"
+            );
+            // The band goes home, and no later step settles the fight again.
+            advance_until(&mut j, 20, DAY, "the band home", |j| {
+                party(&j.e, w.p).is_some_and(|x| x.0 == Phase::Home)
+            });
+            unwatched += unwatched_resolutions(&e);
+            assert_eq!(
+                (watched(&e), unwatched),
+                (u64::from(echoed), usize::from(!echoed)),
+                "{what}: the fight settled once, as the journal says"
+            );
+            assert_eq!(
+                books(&e, w.p).0,
+                alive,
+                "{what}: no loss or gain on the way home"
+            );
+            assert_eq!(members(&j), 0, "{what}: no member spawned on the way home");
+            assert!(
+                e.protocol_error().is_none(),
+                "{what}: {:?}",
+                e.protocol_error()
+            );
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+    }
+
+    /// The order the journal alone cannot make exact (MZB-705): the crash cut the journal before
+    /// the walk-in's echo, so the replay resolved the arrival unwatched (RP-48), and the fight's
+    /// deaths are in the journal's lost tail. A holder that carried them (the entity's pending
+    /// records, saved with the chunk and so apart from the journal) reasserts them in the next
+    /// session. The copies count against the band by identity, once (a second copy is dropped):
+    /// the band ends with the deaths of the fight Minecraft ran, and the fight is settled once,
+    /// as an unwatched raid. The abstract raid here costs the band nothing (the camp's base has
+    /// nothing to raid); one that did (a district or a village that defends itself) would cost
+    /// units on top of the copied deaths, which no record in the journal can tell apart: that
+    /// double depends on the holders' store, not on the journal, and is SEC-1's slice U to close
+    /// (an op the abstract raid took and a copy of the same deaths need one identity).
+    #[test]
+    fn a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_once() {
+        let w = a_walk_in_then_a_crash("conflict-walk-in-copy");
+        let echoes = w
+            .saved
+            .journal
+            .iter()
+            .filter(|(s, r)| {
+                *s > w.durable && wire::u16_at(r, wire::R_KIND) == cb::BAND_MATERIALIZED
+            })
+            .map(|(s, _)| *s)
+            .collect::<Vec<u64>>();
+        assert_eq!(echoes.len(), 2, "the sighting's echo and the walk-in's");
+        let (e, mut j) = reopen_logging(&w.dir, journal_cut_at(&w, echoes[1] - 1), w.gt);
+        assert_eq!(
+            unwatched_resolutions(&e),
+            1,
+            "the arrival resolved unwatched"
+        );
+        assert_eq!(e.conflict_stats().0.raids_watched, w.watched, "not watched");
+        assert_eq!(
+            books(&e, w.p).0,
+            w.n,
+            "the fight's deaths were lost with the tail"
+        );
+        let k = w.kept.records.len() as u64;
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(
+            books(&e, w.p).0,
+            w.live,
+            "the copies count the fight's deaths"
+        );
+        assert_eq!(copies(&e), (k, 0));
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(books(&e, w.p).0, w.live, "a second copy counts nothing");
+        assert_eq!(copies(&e), (k, k));
+        assert_eq!(unwatched_resolutions(&e), 0, "the fight was settled once");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     // ---- The fix round: a held arrival across two crashes (§6.1) ------------------------------
 
     /// The fix round's item 8 (§6.1): a session's held arrival stays held across a second
