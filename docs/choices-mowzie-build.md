@@ -4218,6 +4218,9 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
         plank's edge, and an armor stand stands on the floor with the player: `ridersOf` returns neither.
       - The second re-check's P3 tests of placement are listed in MZB-360's amendment (a cutting, a curve's middle,
         `trackNear`); the spot contract is checked for a diagonal as well as an axis rail (MZB-365's amendment).
+      - The chase test (`aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`) fails when the puppet is back later than
+        `BACK_TICKS` (200): the wait ended whenever it was back, within the test's own longer timeout, so the budget
+        was named in the message and never enforced.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).
