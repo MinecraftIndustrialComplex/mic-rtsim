@@ -841,6 +841,8 @@ public final class FrostmawGameTests {
                     from[1] = h.level.getGameTime();
                     last[0] = h.f[0].getNavigation().getPath();
                     stray[0] = Math.hypot(h.f[0].getX() - h.spot[0].x, h.f[0].getZ() - h.spot[0].z);
+                    // The wait above ends when the puppet is back, however late (the test's own timeout is longer than the budget)
+                    check("it was back in " + (from[1] - from[0]) + " ticks, within the " + BACK_TICKS + " the hold is given", from[1] - from[0] <= BACK_TICKS);
                     record(test, "back", "pushed 2 blocks off its spot, the puppet was back within " + FrostmawLurker.STAND + " in " + (from[1] - from[0])
                             + " ticks, never nearer the player than " + nearest[0]);
                 })
