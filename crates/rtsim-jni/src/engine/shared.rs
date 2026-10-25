@@ -36,7 +36,7 @@ use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 
-use super::{State, conflict, dragons, herds, log_info, log_warn, phase1, ships};
+use super::{State, conflict, dragons, herds, log_info, phase1, ships};
 use crate::wire::{self, Rec, obs};
 
 /// A player not reported for this many game ticks has left (phase 1's own rule, V8's
@@ -414,9 +414,10 @@ fn replay_end(st: &mut State) {
     let h = herds::gate_counts(st);
     log_info(&format!(
         "the session's replay is over after {} hand-overs: {} records applied while replaying; \
-         conflict: {} commands dropped while replaying, {} of a kind that embodies (a bug), {} \
-         decisions that embody deferred; herds: {} commands dropped, {} of a kind that embodies \
-         (a bug), {} decisions that embody deferred, {} groups honoured",
+         totals since each engine started: conflict: {} commands dropped while replaying, {} of \
+         a kind that embodies (a bug), {} decisions that embody deferred; herds: {} commands \
+         dropped, {} of a kind that embodies (a bug), {} decisions that embody deferred, {} \
+         groups honoured",
         st.replay_handovers,
         st.replay_records,
         g.dropped,
@@ -427,11 +428,6 @@ fn replay_end(st: &mut State) {
         h.deferred,
         herds::honoured(st)
     ));
-    if let Some((kind, name)) = h.last_never {
-        log_warn(&format!(
-            "the herds decided {name} ({kind:#06x}) while replaying: a bug, not sent"
-        ));
-    }
     dragons::replay_end(st);
     ships::replay_end(st);
     herds::replay_end(st);
