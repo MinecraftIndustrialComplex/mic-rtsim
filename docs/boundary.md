@@ -1999,12 +1999,12 @@ walk leaves the view. Java's walk-in places the stacks as the arrival of a band 
 
 **A walked-in fight sends an empty record (MZB-700; M10b's Java owes it).** A band that walked in in
 its bodies (MZB-461) fights in them: the engine steers it (BAND_STEER with the attack flag, `arrive`
-0) and sends a BAND_MATERIALIZE flagged BAND_FIGHT (8) for the members not in Minecraft yet. When
-every member is placed already (a band met on its road with the quota's room full, or under the
-quota, has them all out) that record has **no members** (m = 0), and it is still sent: it is the
-fight's one record, the one a restart's replay finds to release the held arrival (docs/replay-gate.md
-§6.1, RP-23; MZB-491), and without it the replay resolves the walked-in fight a second time as an
-abstract raid. **Java must echo an empty flagged record and spawn nothing**: place no stack, take its
+0) and then sends, in the same step, a BAND_MATERIALIZE flagged BAND_FIGHT (8) for the members not in
+Minecraft yet. When every member is placed already (a band met on its road with the quota's room full,
+or under the quota, has them all out) that record has **no members** (m = 0), and it is still sent: it
+is the fight's one record, the one a restart's replay finds to release the held arrival
+(docs/replay-gate.md §6.1, RP-23; MZB-491), and without it the replay resolves the walked-in fight a
+second time as an abstract raid. **Java must echo an empty flagged record and spawn nothing**: place no stack, take its
 `wave` number as one had (the next wave's `wave` is higher, so no ALREADY_EMBODIED), and answer
 BAND_MATERIALIZED at once with the command's flags (8) and `spawned` 0. It must not answer it with
 BAND_SPAWN_REJECTED BAD_RECORD, as a record with m <= 0 is answered today: a refusal of this record

@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 217.206569,
+      "wall_ms": 276.265112,
       "checks": [
         {
           "name": "conservation",
@@ -266,7 +266,7 @@
         }
       ],
       "stats": {
-        "events": 516,
+        "events": 213,
         "feud_wakes": 6,
         "stale": 12,
         "signals": 8,
@@ -304,10 +304,10 @@
         "bored": 0,
         "chiefs_killed": 2,
         "successions": 2,
-        "seen": 7,
-        "materialized": 7,
+        "seen": 6,
+        "materialized": 6,
         "waves": 5,
-        "recalls": 7,
+        "recalls": 6,
         "items_from_districts": 18,
         "items_from_villages": 2,
         "blocks_destroyed": 2,
@@ -414,13 +414,6 @@
           "faction": "goblin camp 3232825345",
           "kind": "scouts",
           "what": "grievance against player b0b at 104.7 (smog first): scouts go out"
-        },
-        {
-          "tick": 105251,
-          "day": 4.385458333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
         },
         {
           "tick": 111343,
@@ -682,24 +675,12 @@
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 3"
         ],
         [
-          4.385458333333333,
-          "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          4.385458333333333,
-          "BAND_STEER: steer 4300000100000000 to (900, 1000)"
-        ],
-        [
           4.639291666666667,
           "BAND_MATERIALIZE: band 4300000100000001 wave 0 purpose 2: 2 members, arc 0 blocks at -132 degrees"
         ],
         [
           4.639291666666667,
           "BAND_STEER: steer 4300000100000001 to (700, 780)"
-        ],
-        [
-          4.788125,
-          "BAND_RECALL: recall 4300000100000000, reason 4"
         ],
         [
           5.0049166666666665,
@@ -778,6 +759,10 @@
           "BAND_STEER: steer 4300000300000001 to (700, 780), attack"
         ],
         [
+          13.743833333333333,
+          "BAND_MATERIALIZE: band 4300000300000001 wave 1 purpose 4: 0 members, arc 112 blocks at 48 degrees"
+        ],
+        [
           13.752166666666668,
           "BAND_MARCH: march 4300000300000001 kind 4 phase 4: 1 waypoints"
         ],
@@ -838,6 +823,10 @@
           "BAND_STEER: steer 4300000200000000 to (700, 780), attack"
         ],
         [
+          20.959041666666668,
+          "BAND_MATERIALIZE: band 4300000200000000 wave 1 purpose 3: 0 members, arc 112 blocks at 48 degrees"
+        ],
+        [
           20.967375,
           "BAND_MARCH: march 4300000200000000 kind 3 phase 4: 1 waypoints"
         ],
@@ -876,7 +865,7 @@
       ],
       "wire_bytes": 6624,
       "state_hashes": [
-        "ca482f9e9cbdff67",
+        "a3ca695d530b6e2e",
         "d450929438383fb2"
       ],
       "archive": {
@@ -924,7 +913,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 270.739958,
+      "wall_ms": 268.223428,
       "checks": [
         {
           "name": "conservation",
@@ -1082,7 +1071,7 @@
         }
       ],
       "stats": {
-        "events": 320,
+        "events": 74,
         "feud_wakes": 5,
         "stale": 17,
         "signals": 5,
@@ -1120,10 +1109,10 @@
         "bored": 0,
         "chiefs_killed": 0,
         "successions": 0,
-        "seen": 9,
-        "materialized": 9,
+        "seen": 5,
+        "materialized": 5,
         "waves": 1,
-        "recalls": 9,
+        "recalls": 5,
         "items_from_districts": 0,
         "items_from_villages": 3,
         "blocks_destroyed": 0,
@@ -1211,13 +1200,6 @@
           "what": "player b0b meets the demand (tribute paid): back to notice, grievance 11.2"
         },
         {
-          "tick": 39543,
-          "day": 1.647625,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
-        },
-        {
           "tick": 45880,
           "day": 1.9116666666666666,
           "faction": "goblin camp 3232825345",
@@ -1260,13 +1242,6 @@
           "what": "player b0b meets the demand (tribute paid): back to notice, grievance 43.8"
         },
         {
-          "tick": 189849,
-          "day": 7.910375,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
-        },
-        {
           "tick": 196186,
           "day": 8.174416666666668,
           "faction": "goblin camp 3232825345",
@@ -1307,13 +1282,6 @@
           "faction": "goblin camp 3232825345",
           "kind": "settled",
           "what": "player b0b meets the demand (tribute paid): back to notice, grievance 41.1"
-        },
-        {
-          "tick": 340135,
-          "day": 14.172291666666666,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
         },
         {
           "tick": 346472,
@@ -1372,13 +1340,6 @@
           "what": "player b0b meets the demand (tribute paid): back to notice, grievance 40.8"
         },
         {
-          "tick": 490446,
-          "day": 20.43525,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
-        },
-        {
           "tick": 496783,
           "day": 20.699291666666667,
           "faction": "goblin camp 3232825345",
@@ -1434,18 +1395,6 @@
           "BAND_RECALL: recall 4300000100000000, reason 6"
         ],
         [
-          1.647625,
-          "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          1.647625,
-          "BAND_STEER: steer 4300000100000000 to (900, 1000)"
-        ],
-        [
-          1.69425,
-          "BAND_RECALL: recall 4300000100000000, reason 4"
-        ],
-        [
           1.9116666666666666,
           "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 1 waypoints"
         ],
@@ -1474,18 +1423,6 @@
           "BAND_RECALL: recall 4300000200000000, reason 6"
         ],
         [
-          7.910375,
-          "ENVOY_MATERIALIZE: envoy 4300000200000000: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          7.910375,
-          "BAND_STEER: steer 4300000200000000 to (900, 1000)"
-        ],
-        [
-          7.957,
-          "BAND_RECALL: recall 4300000200000000, reason 4"
-        ],
-        [
           8.174416666666668,
           "BAND_MARCH: march 4300000200000000 kind 1 phase 5: 1 waypoints"
         ],
@@ -1512,18 +1449,6 @@
         [
           14.172291666666666,
           "BAND_RECALL: recall 4300000300000000, reason 6"
-        ],
-        [
-          14.172291666666666,
-          "ENVOY_MATERIALIZE: envoy 4300000300000000: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          14.172291666666666,
-          "BAND_STEER: steer 4300000300000000 to (900, 1000)"
-        ],
-        [
-          14.218916666666667,
-          "BAND_RECALL: recall 4300000300000000, reason 4"
         ],
         [
           14.436333333333334,
@@ -1570,18 +1495,6 @@
           "BAND_RECALL: recall 4300000100000001, reason 6"
         ],
         [
-          20.43525,
-          "ENVOY_MATERIALIZE: envoy 4300000100000001: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          20.43525,
-          "BAND_STEER: steer 4300000100000001 to (900, 1000)"
-        ],
-        [
-          20.481875,
-          "BAND_RECALL: recall 4300000100000001, reason 4"
-        ],
-        [
           20.699291666666667,
           "BAND_MARCH: march 4300000100000001 kind 1 phase 5: 1 waypoints"
         ],
@@ -1602,9 +1515,9 @@
           "BAND_MARCH: march 4300000400000000 kind 6 phase 5: 1 waypoints"
         ]
       ],
-      "wire_bytes": 5728,
+      "wire_bytes": 4384,
       "state_hashes": [
-        "6f9db43c9ff5ab96",
+        "440876fbdd2713aa",
         "a7cefff0accd3c46"
       ],
       "archive": {
@@ -1645,7 +1558,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 289.46921,
+      "wall_ms": 270.250665,
       "checks": [
         {
           "name": "conservation",
@@ -1781,7 +1694,7 @@
         }
       ],
       "stats": {
-        "events": 295,
+        "events": 183,
         "feud_wakes": 6,
         "stale": 9,
         "signals": 5,
@@ -1819,10 +1732,10 @@
         "bored": 0,
         "chiefs_killed": 0,
         "successions": 0,
-        "seen": 5,
-        "materialized": 5,
+        "seen": 3,
+        "materialized": 3,
         "waves": 1,
-        "recalls": 5,
+        "recalls": 3,
         "items_from_districts": 0,
         "items_from_villages": 2,
         "blocks_destroyed": 0,
@@ -1917,13 +1830,6 @@
           "what": "player b0b meets the demand (the signal stopped): back to notice, grievance 24.1"
         },
         {
-          "tick": 105251,
-          "day": 4.385458333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
-        },
-        {
           "tick": 117251,
           "day": 4.885458333333333,
           "faction": "goblin camp 3232825345",
@@ -1971,13 +1877,6 @@
           "faction": "goblin camp 3232825345",
           "kind": "refused",
           "what": "the demand on player b0b goes unmet (grievance 29.9)"
-        },
-        {
-          "tick": 189251,
-          "day": 7.885458333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
         },
         {
           "tick": 204118,
@@ -2060,18 +1959,6 @@
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 2"
         ],
         [
-          4.385458333333333,
-          "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          4.385458333333333,
-          "BAND_STEER: steer 4300000100000000 to (900, 1000)"
-        ],
-        [
-          4.788125,
-          "BAND_RECALL: recall 4300000100000000, reason 4"
-        ],
-        [
           4.885458333333333,
           "BAND_MARCH: march 4300000100000001 kind 1 phase 2: 2 waypoints"
         ],
@@ -2102,18 +1989,6 @@
         [
           7.885458333333333,
           "BAND_RECALL: recall 4300000100000001, reason 6"
-        ],
-        [
-          7.885458333333333,
-          "ENVOY_MATERIALIZE: envoy 4300000100000001: demand 0 of item 0 or stop signal 0"
-        ],
-        [
-          7.885458333333333,
-          "BAND_STEER: steer 4300000100000001 to (900, 1000)"
-        ],
-        [
-          8.0,
-          "BAND_RECALL: recall 4300000100000001, reason 5"
         ],
         [
           8.504916666666666,
@@ -2152,9 +2027,9 @@
           "BAND_MARCH: march 4300000200000001 kind 6 phase 5: 1 waypoints"
         ]
       ],
-      "wire_bytes": 3440,
+      "wire_bytes": 2768,
       "state_hashes": [
-        "9b9d5856ec242dca",
+        "f8c87821aa7d962f",
         "2c2221234256e7c3"
       ],
       "archive": {
@@ -2199,7 +2074,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict ca482f9e9cbdff67, world d450929438383fb2 (uninterrupted ca482f9e9cbdff67, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict a3ca695d530b6e2e, world d450929438383fb2 (uninterrupted a3ca695d530b6e2e, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,

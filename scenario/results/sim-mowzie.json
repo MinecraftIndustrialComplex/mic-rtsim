@@ -1486,7 +1486,7 @@
         {
           "name": "every party unchanged across a step has its record's position equal the engine's at every tick of the step, and a changed one at the step's end, in runs 1, 5, 10 and 11 stepped 20 ticks at a time",
           "ok": true,
-          "detail": "run 1: 3681559 steps, 1482499 unchanged party-steps (28737968 ticks), 1185 changed, 966 records (209 ending), 0 shell-steps; run 5: 769407 steps, 80934 unchanged party-steps (1617416 ticks), 79 changed, 84 records (21 ending), 0 shell-steps; run 10: 3536041 steps, 3381543 unchanged party-steps (65838991 ticks), 5626 changed, 6148 records (914 ending), 11882 shell-steps; run 11: 3097181 steps, 31902 unchanged party-steps (636849 ticks), 29 changed, 41 records (5 ending), 0 shell-steps; failures []"
+          "detail": "run 1: 3681559 steps, 1482499 unchanged party-steps (28737968 ticks), 1185 changed, 966 records (209 ending), 0 shell-steps; run 5: 769407 steps, 80934 unchanged party-steps (1617416 ticks), 79 changed, 84 records (21 ending), 0 shell-steps; run 10: 3524449 steps, 3350484 unchanged party-steps (65839122 ticks), 5626 changed, 6148 records (914 ending), 11797 shell-steps; run 11: 3097182 steps, 31903 unchanged party-steps (636849 ticks), 29 changed, 41 records (5 ending), 0 shell-steps; failures []"
         },
         {
           "name": "a record follows each change of route, phase or count",
