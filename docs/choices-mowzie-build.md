@@ -5348,6 +5348,12 @@ RP-150 to RP-153 the replay records.
   no extras, so no test of either branch reaches it; compiled, not run. The comment over the refusal
   says, beside M8's "the camp body is still removed", that a grove's take waits while a player is near
   (Rule U, MZB-433) and a den's goes at once.
+- **MZB-693** (the third-pass merge: M9's GameTest round fixes and slice N): M8 merged feat/mowzie-m9 at
+  c1bd6472, which carries M9's round fixes (MZB-675 to MZB-678) and main at 4e694452 (slice N, the nest
+  renewal serial, RTD8 and RTN8). The merge was clean. `tools/chunk_waits.py` then put the site-load
+  waits of M8's own GameTests on ChunkWait's two clocks: six tests in FrostmawGameTests and
+  `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` in MowzieGameTests. M8's rail
+  GameTests (RailDirectionsGameTests, RailFrostmawGameTests) needed no change.
 
 ## M9 Umvuthana
 
