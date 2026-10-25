@@ -8413,6 +8413,14 @@ MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; t
     each loss (casualty, chief, take) of a member of a band whose march the engine has ended while the bridge
     still holds it and has not begun its homecoming. It books nothing more (the engine drops it).
   - Needs a server to show; M10c's test list below covers it.
+  - **Amended by M10c (P3-1 of the M10b review):** a HAND_BACK whose `addFreshEntity` fails (another mod cancelled the
+    body's join) answers STALE and leaves the puppet standing, but the pre-pass still walked the band home, and the walk
+    despawned the puppet the line had kept. `Camps` now takes such a band out of the homecoming (`handBack` adds its
+    agent to a `staying` set that `reconcile` removes from the map before the `homeAt` loop). **Choice, the narrow form:**
+    only the failed add stays. Every other STALE with the camp in (no free place, Peaceful, a kind that made no body) is
+    a line with no puppet behind it, so nothing is stranded and the band still walks home; skipping the homecoming for
+    those would leave a band the engine has ended standing for good. The band that stays is the band of the next census's
+    orders (the existing `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale`, unchanged, asserts `!recalling()`).
 - **MZB-727** (`ConflictKit` for M10c; step 8): `march(MarchSpec)` scripts a BAND_MARCH (agent, revision, dimension,
   faction, kind, phase, flags, muster end, units by body name, waypoints as `{x, z, tick}`); `trimmed()`,
   `walkIns()`, `clamps()` and `unbookedHomeDeaths()` read the counters. It works on the stub and on the native engine.
