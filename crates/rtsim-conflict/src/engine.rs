@@ -5166,7 +5166,7 @@ impl Conflict {
                 self.tun.spawn_edge_blocks,
                 self.tun.arc_half_width_deg,
             ),
-            None => (here, 0.0, 0, 0.0),
+            None => (here, self.march_bearing(p, here), 0, 0.0),
         };
         let x = &self.parties[p];
         let tpos = self.target_pos(w, x.target);
@@ -5206,6 +5206,45 @@ impl Conflict {
         self.parties[p].wave += 1;
         self.stats.waves += 1;
         self.stats.materialized += 1;
+    }
+
+    /// The way a band met on the march faces, in degrees from +x toward +z as `start_fight` takes
+    /// them (MZB-457). `centre` is the image of the band's place that `spawn_wave` puts it at.
+    /// Out and Home: toward the segment's end, or, standing on it, along the segment's own way;
+    /// Waiting: the way it came, from the last waypoint before its target; any other phase, or no
+    /// direction at all: 0.
+    fn march_bearing(&self, p: Handle<Party>, centre: (i32, i32)) -> f32 {
+        let x = &self.parties[p];
+        let n = x.route.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let topo = self.topo(x.frame);
+        let image = |q: (i32, i32)| {
+            let i = topo.toward(
+                (i64::from(centre.0), i64::from(centre.1)),
+                (i64::from(q.0), i64::from(q.1)),
+            );
+            (i.0 as i32, i.1 as i32)
+        };
+        let (from, to) = match x.phase {
+            Phase::Out | Phase::Home => {
+                let s = (x.seg as usize).min(n - 2);
+                let ahead = image(x.route[s + 1]);
+                if ahead == centre {
+                    (image(x.route[s]), centre)
+                } else {
+                    (centre, ahead)
+                }
+            }
+            Phase::Waiting => (image(x.route[n - 2]), centre),
+            _ => return 0.0,
+        };
+        let (dx, dz) = (to.0 - from.0, to.1 - from.1);
+        if dx == 0 && dz == 0 {
+            return 0.0;
+        }
+        (dz as f64).atan2(dx as f64).to_degrees() as f32
     }
 
     /// A wave's members (`spawn_wave`'s, and the honour's, docs/replay-gate.md §5.2): the units
@@ -5626,9 +5665,12 @@ impl Conflict {
             self.stats.stale += 1;
             return;
         }
+        // A band on its way home is met as one on its way out is (MZB-457), unless nobody of it
+        // is left alive to show: a routed band walks home with its dead (MZB-490).
         let x = &self.parties[p];
         if x.embodied
-            || matches!(x.phase, Phase::Home | Phase::Mustering | Phase::Fighting)
+            || x.alive() == 0
+            || matches!(x.phase, Phase::Mustering | Phase::Fighting)
             || (self.peaceful && (x.kind.is_war() || x.kind == PartyKind::Envoy))
         {
             return;
@@ -5650,7 +5692,7 @@ impl Conflict {
             self.spawn_wave(w, p, player, None, at);
         }
         let x = &self.parties[p];
-        if x.phase == Phase::Out {
+        if matches!(x.phase, Phase::Out | Phase::Home) {
             let s = x.seg as usize;
             let next = x.route[s + 1];
             let arrive = x.times[s + 1];
