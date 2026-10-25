@@ -5646,8 +5646,7 @@ impl Conflict {
     /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
         self.replay_done();
-        self.outbox
-            .retain(|c| !matches!(c, Cmd::Notice(_) | Cmd::OwedHunt(_)));
+        self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
             let mut kept: Vec<Cmd> = self

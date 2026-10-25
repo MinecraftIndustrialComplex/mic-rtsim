@@ -1704,13 +1704,17 @@ mod synthetic {
 /// A world with no rail pays base's resident bytes, but for the pointers (MZB-313, MZB-314 as
 /// amended by the lead for MZB-331's gate): a focus, a feud (its grievance's tail and its
 /// focus's track) and a faction row one pointer more than at f6321fa5, which measured 40, 296
-/// and 200.
+/// and 200. Since the M9 merge the base faction row is 224: M9's `Faction.hunts`, an empty Vec
+/// with no rail as with it, is 24 bytes of the base, not the rail's (MZB-672).
 #[test]
 fn a_world_with_no_rail_keeps_base_layout_but_for_pointers() {
     use std::mem::size_of;
     assert_eq!(size_of::<rtsim_conflict::engine::Focus>(), 40 + 8);
     assert_eq!(size_of::<rtsim_conflict::engine::Feud>(), 296 + 16);
-    assert_eq!(size_of::<rtsim_conflict::tables::FactionRow>(), 200 + 8);
+    assert_eq!(
+        size_of::<rtsim_conflict::tables::FactionRow>(),
+        200 + 24 + 8
+    );
 }
 
 // ---- the session's replay (docs/replay-gate.md §4.4, §6.1; RP-102) ------------------------------
