@@ -10,6 +10,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
@@ -22,6 +24,7 @@ import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Den;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Far;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Markers;
+import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.GameTestSequence;
@@ -43,6 +46,7 @@ import net.minecraft.world.entity.projectile.Snowball;
 import net.minecraft.world.entity.projectile.ThrownTrident;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
@@ -502,6 +506,12 @@ public final class FrostmawGameTests {
         /** The saved NBT of the body (or of the copy), kept to compare. */
         final CompoundTag[] saved = {null};
         final Entity[] copy = {null};
+        /** The floor's blocks beyond the fixtures' own (bx + 2 to bx + 14, likewise z): the placement tests' bodies stand 5 off the middle, 4 across (1: the chunk but for its edge columns). */
+        int pad = 0;
+        /** Where the track point and the engine's spot lie, as offsets from the floor's middle (x + 0.5, z + 0.5): the fixtures' own by default. */
+        double[] trackAt = {0.0, -4.0}, spotAt = {0.0, 0.0};
+        /** Run after the floor is laid and before the lurk is sent (the placement tests dig holes in it). */
+        Runnable afterFloor;
 
         Held(GameTestHelper helper, String test) {
             this.test = test;
@@ -513,27 +523,7 @@ public final class FrostmawGameTests {
 
         /** The sequence up to a held puppet: the lurk is in the table, the puppet stands, tagged, awake for good, restricted. */
         GameTestSequence up(GameTestHelper helper) {
-            return helper.startSequence()
-                    .thenExecute(() -> far.force(far.k, far.z0))
-                    .thenWaitUntil(far.ready())
-                    .thenExecute(() -> {
-                        int y = MowzieKit.platform(level, far.bx + 2, far.bx + 14, far.bz + 2, far.bz + 14) + 1;
-                        spot[0] = new Vec3(x + 0.5, y, z + 0.5);
-                        track[0] = new Vec3(x + 0.5, y, z - 3.5);
-                        ConflictKit.ambushSpot(agent, 1, faction, far.dim, new double[] {track[0].x, track[0].y, track[0].z},
-                                new double[] {spot[0].x, spot[0].y, spot[0].z}, 8.0f);
-                    })
-                    .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent))))
-                    .thenExecute(() -> {
-                        ConflictKit.Band b = ConflictKit.band(agent, faction, far.dim);
-                        b.arcX = spot[0].x;
-                        b.arcZ = spot[0].z;
-                        b.targetX = track[0].x;
-                        b.targetY = track[0].y;
-                        b.targetZ = track[0].z;
-                        b.speed = 0f;
-                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
-                    })
+            return lurking(helper)
                     .thenWaitUntil(io(() -> {
                         check("the puppet stands", RtsimApi.lurkBody(agent) instanceof EntityFrostmaw);
                         EntityFrostmaw p = (EntityFrostmaw) RtsimApi.lurkBody(agent);
@@ -552,6 +542,38 @@ public final class FrostmawGameTests {
                         check("the puppet is tagged", RtsimApi.isPuppet(f[0]));
                         check("its NBT says alwaysActive (the premise: " + nbt.getBoolean("alwaysActive") + ")", nbt.getBoolean("alwaysActive"));
                         check("its restriction is two blocks about the spot (" + f[0].getRestrictRadius() + ")", f[0].getRestrictRadius() == 2.0f);
+                    });
+        }
+
+        /** A point beside the floor's middle at the track's height: {@code at} is its (x, z) offset from (x + 0.5, z + 0.5). */
+        Vec3 hold(double[] at) {
+            return new Vec3(x + 0.5 + at[0], track[0].y, z + 0.5 + at[1]);
+        }
+
+        /** The sequence up to the band's materialization: the floor, the lurk in the table, BAND_MATERIALIZE of one Frostmaw sent. */
+        GameTestSequence lurking(GameTestHelper helper) {
+            return helper.startSequence()
+                    .thenExecute(() -> far.force(far.k, far.z0))
+                    .thenWaitUntil(far.ready())
+                    .thenExecute(() -> {
+                        int y = MowzieKit.platform(level, far.bx + 2 - pad, far.bx + 14 + pad, far.bz + 2 - pad, far.bz + 14 + pad) + 1;
+                        spot[0] = new Vec3(x + 0.5 + spotAt[0], y, z + 0.5 + spotAt[1]);
+                        track[0] = new Vec3(x + 0.5 + trackAt[0], y, z + 0.5 + trackAt[1]);
+                        if (afterFloor != null)
+                            afterFloor.run();
+                        ConflictKit.ambushSpot(agent, 1, faction, far.dim, new double[] {track[0].x, track[0].y, track[0].z},
+                                new double[] {spot[0].x, spot[0].y, spot[0].z}, 8.0f);
+                    })
+                    .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent))))
+                    .thenExecute(() -> {
+                        ConflictKit.Band b = ConflictKit.band(agent, faction, far.dim);
+                        b.arcX = spot[0].x;
+                        b.arcZ = spot[0].z;
+                        b.targetX = track[0].x;
+                        b.targetY = track[0].y;
+                        b.targetZ = track[0].z;
+                        b.speed = 0f;
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
                     });
         }
 
@@ -807,6 +829,145 @@ public final class FrostmawGameTests {
                 })
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
                 .thenSucceed();
+    }
+
+    // ---- where a lurk puppet is held (MZB-360, the re-check's P2) ---------------------------------------
+
+    /**
+     * The lurk placed by the rail's direction, not the engine's rounded spot (MZB-360, MZB-374): a stub provider says
+     * the rail runs east-west through the track point at the floor's middle, and the engine's spot is wherever the
+     * den lies from it. {@code spotAt} is that spot as an offset from the middle (x, z), {@code expectAt} where the
+     * body must be held, likewise (null: refused); {@code digNorth} and {@code digSouth} take the floor out of the
+     * three candidate columns on that side of the rail (the whole search depth of {@code standAt}).
+     */
+    private static void placedAt(GameTestHelper helper, String test, double[] spotAt, boolean digNorth, boolean digSouth, double[] expectAt) {
+        Held h = new Held(helper, test);
+        h.pad = 1;
+        h.trackAt = new double[] {0.0, 0.0};
+        h.spotAt = spotAt;
+        RailAxes before = LurkSpots.axes();
+        LurkSpots.register((level, point) -> new Vec3(1.0, 0.0, 0.0));
+        ConflictKit.onEnd(helper, () -> LurkSpots.register(before));
+        h.afterFloor = () -> {
+            int top = (int) h.track[0].y - 1;
+            for (int side : new int[] {-1, 1})
+                if (side < 0 ? digNorth : digSouth)
+                    dig(h.level, h.x, h.z + 5 * side, top);
+        };
+        long[] refused = {ConflictKit.bridge().lurksRefused};
+        if (expectAt == null) {
+            refused(helper, h, test, refused);
+            return;
+        }
+        h.up(helper)
+                .thenExecute(() -> holds(h, test, expectAt))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    Vec3 want = h.hold(expectAt);
+                    EntityFrostmaw f = h.f[0];
+                    double rest = Math.hypot(f.getX() - want.x, f.getZ() - want.z);
+                    check("after 40 ticks it rests within " + FrostmawLurker.STAND + " of its hold point (" + rest + " off)", rest <= FrostmawLurker.STAND + 1e-6);
+                    check("and the engine's spot (" + h.spot[0].x + ", " + h.spot[0].z + ") was not where it went", h.spot[0].distanceTo(want) > 1.0);
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    /** Takes the floor out of the three columns beside a rail point (x - 1 to x + 1 at {@code z}), from {@code top} down 8. */
+    private static void dig(ServerLevel level, int x, int z, int top) {
+        for (int dx = -1; dx <= 1; dx++)
+            for (int y = top - 8; y <= top; y++)
+                level.setBlock(new BlockPos(x + dx, y, z), Blocks.AIR.defaultBlockState(), 2);
+    }
+
+    /** Inside a step: the bridge's hold point, the body at it, and its distance from the rail. */
+    private static void holds(Held h, String test, double[] expectAt) {
+        Vec3 want = h.hold(expectAt);
+        Vec3 hold = RtsimApi.lurkHold(h.agent);
+        check("the bridge holds the puppet at a point", hold != null);
+        check("the hold point is (" + want.x + ", " + want.y + ", " + want.z + "), a block centre " + Math.abs(expectAt[1]) + " off the rail (" + hold + ")",
+                Math.abs(hold.x - want.x) < 1e-6 && Math.abs(hold.y - want.y) < 1e-6 && Math.abs(hold.z - want.z) < 1e-6);
+        EntityFrostmaw f = h.f[0];
+        check("the puppet was made there (" + f.position() + ")", Math.hypot(f.getX() - want.x, f.getZ() - want.z) <= FrostmawLurker.STAND + 1e-6);
+        record(test, "placed", "the engine's spot " + h.spot[0] + ", the rail along x through " + h.track[0] + ": held at " + hold
+                + ", " + Math.abs(hold.z - h.track[0].z) + " off the rail");
+    }
+
+    /** The refused arms: neither side standable, then the floor of the south laid again and the retry stands it. */
+    private static void refused(GameTestHelper helper, Held h, String test, long[] refused) {
+        double[] south = {0.0, 5.0};
+        int[] firstRefusals = {0};
+        h.lurking(helper)
+                .thenWaitUntil(io(() -> check("the lurk was refused (" + (ConflictKit.bridge().lurksRefused - refused[0]) + " times)",
+                        ConflictKit.bridge().lurksRefused > refused[0])))
+                .thenExecute(() -> {
+                    check("no Frostmaw stands in the place", h.level.getEntitiesOfClass(EntityFrostmaw.class,
+                            new AABB(h.x - 14, h.track[0].y - 12, h.z - 14, h.x + 14, h.track[0].y + 12, h.z + 14)).isEmpty());
+                    check("the table has no body for it", RtsimApi.lurkBody(h.agent) == null);
+                    check("and no hold point", RtsimApi.lurkHold(h.agent) == null);
+                    firstRefusals[0] = (int) (ConflictKit.bridge().lurksRefused - refused[0]);
+                    record(test, "refused", "neither side of the rail had a floor within the search: refused " + firstRefusals[0] + " times so far, nothing stands");
+                    // The south floor comes back; the next retry stands the body there
+                    int top = (int) h.track[0].y - 1;
+                    for (int dx = -1; dx <= 1; dx++)
+                        h.level.setBlock(new BlockPos(h.x + dx, top, h.z + 5), Blocks.STONE.defaultBlockState(), 2);
+                    ConflictKit.onEnd(helper, () -> {
+                        Entity b = RtsimApi.lurkBody(h.agent);
+                        if (b != null)
+                            b.discard();
+                    });
+                })
+                .thenWaitUntil(io(() -> check("the retry stands the puppet", RtsimApi.lurkBody(h.agent) instanceof EntityFrostmaw)))
+                .thenExecute(() -> {
+                    h.f[0] = (EntityFrostmaw) RtsimApi.lurkBody(h.agent);
+                    holds(h, test, south);
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    /**
+     * An oblique den (MZB-360, the re-check's P2): the rail runs east-west and the den lies north-east of the track
+     * point, so the engine's spot, rounded along the line to the den, is 4 east and 4 north of the point (5.7 off, 4
+     * from the rail's line). The puppet is held 5 north of the track point, on the rail's normal. On the code before
+     * the fix it stands at the engine's spot: "the hold point is (...), a block centre 5.0 off the rail". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_oblique", skyAccess = true)
+    public static void aLurkPuppetForAnObliqueDenStandsOnTheRailsNormal(GameTestHelper helper) {
+        placedAt(helper, "aLurkPuppetForAnObliqueDenStandsOnTheRailsNormal", new double[] {4.0, -4.0}, false, false, new double[] {0.0, -5.0});
+    }
+
+    /**
+     * A den on the line (MZB-360): the engine puts its spot 5 blocks along +x from the track point, which on an
+     * east-west rail is on the rail itself. The puppet is held 5 blocks to the rail's left-hand side (looking along
+     * the rail, +x: the south). On the code before the fix the puppet stands on the rail: "the hold point is (...)".
+     * Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_online", skyAccess = true)
+    public static void aLurkPuppetForADenOnTheRailTakesTheLeftHandSide(GameTestHelper helper) {
+        placedAt(helper, "aLurkPuppetForADenOnTheRailTakesTheLeftHandSide", new double[] {5.0, 0.0}, false, false, new double[] {0.0, 5.0});
+    }
+
+    /**
+     * The den's side has no floor (MZB-360): the den lies due north, the three block centres 5 north of the track
+     * point (and beside it) have the floor dug out to below the search, and the puppet is held on the other side of
+     * the rail instead, 5 south. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_other", skyAccess = true)
+    public static void aLurkPuppetWhoseDensSideHasNoFloorStandsOnTheOtherSide(GameTestHelper helper) {
+        placedAt(helper, "aLurkPuppetWhoseDensSideHasNoFloorStandsOnTheOtherSide", new double[] {0.0, -5.0}, true, false, new double[] {0.0, 5.0});
+    }
+
+    /**
+     * Neither side has a floor (MZB-360): the lurk is refused. No Frostmaw is made (the bridge counts the refusal,
+     * and tries the stack again after its retry delay, not each tick); the south floor comes back and the retry
+     * stands the puppet there. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_refused", skyAccess = true)
+    public static void aLurkWithNoFloorOnEitherSideOfTheRailIsRefusedAndTriedAgain(GameTestHelper helper) {
+        placedAt(helper, "aLurkWithNoFloorOnEitherSideOfTheRailIsRefusedAndTriedAgain", new double[] {0.0, -5.0}, true, true, null);
     }
 
     // ---- a strike's bearing (MZB-361) --------------------------------------------------------------

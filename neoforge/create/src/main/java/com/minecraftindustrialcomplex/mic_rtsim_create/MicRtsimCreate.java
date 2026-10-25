@@ -37,6 +37,8 @@ public final class MicRtsimCreate {
         StaleKinetics.register();
         // M7's train sampler (MZB-320): the rail meter is the conflict's, so it runs whether or not the industry is on
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(TrainSampler::tick);
+        // M8's lurking bodies stand on the rail's normal at the spot distance (MZB-360, the re-check's P2)
+        com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerRailAxes(new RailDirections());
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(TrainSampler::stopped);
         // The far feed's trains (docs/boundary.md §12.3): read on the server, sent to subscribers only
         com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerFarSource(new TrainFeedSource());

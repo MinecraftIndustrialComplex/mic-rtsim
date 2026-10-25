@@ -1654,28 +1654,42 @@ epoch (a watch bumps the party's epoch past the spot's, and the removal goes out
 spot's y is the track's, not the floor's, and Java finds the floor** (a scan from the track's y + 4 down
 to its y - 8 for a block with a sturdy top face and the body's box free above it, else the surface). A
 lurking agent's BAND_MATERIALIZE puts its stacks at the spot (its arc ignored) and its BAND_STEER is
-ignored while the lurk stands; the body is held there awake, restricted to the spot, and may swipe a
-passing carriage's riders (the plugin's `Lurker`). `reach` is the distance from the track point at which
+ignored while the lurk stands; the body is held there awake, restricted to its hold point, and may swipe a
+passing carriage's riders (the plugin's `Lurker`). **The hold point is Java's, not the spot's, where a plugin
+knows the rail's direction** (the create plugin does, for straight, diagonal and sloped track; MZB-360): the
+engine's spot is the point `SPOT_BLOCKS` toward the den along the line from the track point, which is on the rail's
+normal only for a rail along an axis and a den square to it (a diagonal rail puts it 3.5 off, a den off the line
+puts it oblique, a den within a block of the line puts it 5 along +x, which for an east-west rail is the track
+itself). So the body is held at the block centre `SPOT_BLOCKS` from the rail's centre line on the normal through
+`track` (within 0.4, and within 1.5 along the rail), on the side of the rail the spot lies on, else the other
+side; a spot within half a block of the line takes the rail's left-hand side, looking along its axis. If neither
+side has a standable floor in a chunk that ticks entities the lurk is refused: no body is made, the stack is
+tried again after 100 ticks. With no rail direction known (no plugin, a curve's middle, a crossing) the body stands
+at the spot, as before. `reach` is the distance from the track point at which
 the sampler sends TRAIN_PASSED (8.0 blocks). A lurk is not saved: the engine derives it from the party's
 phase, kind and target, so the pages stay at M7's format (MZB-357).
 
 **The spot's distance is a contract between four numbers** (MZB-374; review C and the build lead's choice). The
 engine puts the spot `SPOT_BLOCKS` (rail.rs, 5.0) from the track point toward the den, in whole blocks (the block
-plus 0.5 as a double). `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it
+plus 0.5 as a double); Java stands the body `SPOT_BLOCKS` from the rail's centre line (the hold point above), and
+the contract is about that distance. `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it
 is not how far the body can strike. A strike is the plugin's call, gated on a smaller number: the create plugin's
 sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider (else its bogey point) will be
 within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks on, at the train's
 present speed. The Frostmaw's swipe hits a target whose horizontal centre distance less its half-width is at most
 6.5 and whose 3D feet-to-feet distance is at most 6.5 plus its half-width (about 6.8 for a player), so the gate
 leaves about 0.8 for the prediction's error. The fourth number is the Lurker's `stand()` (the Frostmaw's `STAND`,
-0.5): how far from the spot its hold lets the body rest. The rule, in two inequalities, is checked by
+0.5): how far from the hold point its hold lets the body rest. The rule, in two inequalities, is checked by
 `TrainSampler.spotContract` against the Lurker's stand and the live body's half-width (create's GameTest 9, every
 variant):
 
 ```
-SPOT_BLOCKS + stand                <= STRIKE_REACH     5.0 + 0.5       <= 6.0   the far side of the stand is in reach
-SPOT_BLOCKS - stand - halfWidth    >= RAIL_CLEARANCE   5.0 - 0.5 - 2.0 >= 1.5   the near edge of the box is off the rail
+SPOT_BLOCKS + slack + stand                <= STRIKE_REACH     5.0 + 0.4 + 0.5       <= 6.0   the far side of the stand is in reach
+SPOT_BLOCKS - slack - stand - halfWidth    >= RAIL_CLEARANCE   5.0 - 0.4 - 0.5 - 2.0 >= 1.5   the near edge of the box is off the rail
 ```
+
+`slack` is `LurkSpots.LATERAL_SLACK` (0.4), how far a block centre the body can rest on may be from `SPOT_BLOCKS`
+(Create's rails give exactly 5.0 along an axis and 4.95 on a diagonal, so the real far side is 5.5).
 
 `SPOT_BLOCKS` is mirrored in `TrainSampler` and pinned on the Rust side (`tests/lurk.rs`): a change to it, the
 strike reach or a stand is a change to all of them, made together. A body kind with another swing registers its own
