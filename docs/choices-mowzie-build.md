@@ -2531,6 +2531,9 @@ The tests:
     goes through `ingest_copy`, as the host delivers a REASSERT. rtsim-jni's
     `a_casualty_committed_again_after_a_world_save_counts_once` also sends the first record as a REASSERT (a
     generation the engine never heard) and checks `copies_applied` moved and nothing counted twice.
+  - **Declined: `MowzieKit.removed()` does not assert `UNLOADED_TO_CHUNK`** (the same check's optional item).
+    The `gone(...)` wrappers' contract is "saved with its chunk or gone otherwise", and a call site may see
+    another removal reason; the stricter check could not be tried without GameTests, so it is left out.
 
 ### M6 design for the implementer
 
