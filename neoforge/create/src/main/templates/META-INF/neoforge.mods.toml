@@ -7,6 +7,12 @@ license       = "${mod_license}"
 [[mixins]]
 config = "mic_rtsim_create.mixins.json"
 
+# The train op ring (Train.write and Train.read, choices RP-190, RP-193): its own config, not required and
+# require 0, so a Create that moved either method still loads; TrainRing.available() finds out at run time,
+# logs once and falls back to the journal's op index.
+[[mixins]]
+config = "mic_rtsim_create_ring.mixins.json"
+
 [[mods]]
 modId       = "${mod_id}"
 version     = "${mod_version}"

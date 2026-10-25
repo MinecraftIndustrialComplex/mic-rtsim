@@ -172,9 +172,18 @@ public interface ScriptedEngine extends Engine {
      * the op id caught. From the received log (the last 10,000 records).
      */
     default int eventOpCount(long opId) {
+        return eventOpCount(opId, 0);
+    }
+
+    /**
+     * As {@link #eventOpCount(long)}, among the records journaled from {@code fromObsSeq} on (a copy by its own
+     * sequence): with the count before a journal mark, read then, a test counts arrivals across a wait long
+     * enough for the earlier ones to leave the capped log.
+     */
+    default int eventOpCount(long opId, long fromObsSeq) {
         int n = 0;
         for (Received r : received()) {
-            if (r.skipped())
+            if (r.skipped() || r.obsSeq() < fromObsSeq)
                 continue;
             if (r.inner() != null)
                 r = r.inner(); // a copy that applied: an arrival of its record

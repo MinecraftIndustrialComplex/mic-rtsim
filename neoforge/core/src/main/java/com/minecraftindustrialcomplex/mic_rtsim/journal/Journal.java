@@ -96,11 +96,12 @@ public final class Journal {
     }
 
     /**
-     * GameTests: a restart read a journal file that holds this op id as applied, though the live journal may have
-     * trimmed it since (the engine acknowledged it).
+     * GameTests: a crash restored a journal saved while this op id's COMMAND_RESULT was still unacknowledged,
+     * so the op index rebuilt from it knows the op (slice U's crash tests: a restart read a journal file that holds
+     * the op as applied, though the live journal may have trimmed it since). {@link #forgetAppliedForTest} undoes it.
      */
     public void rememberAppliedForTest(long opId) {
-        appliedCmdOps.putIfAbsent(opId, 1);
+        appliedCmdOps.merge(opId, 1, Integer::sum);
     }
 
     // ---- observation side -----------------------------------------------------------------------

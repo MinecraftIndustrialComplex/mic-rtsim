@@ -471,8 +471,9 @@ What the merge checked:
    and materializes through `ConflictKit` in the middle of a session, after no restart. One ordered
    while a server's start replays waits for the replay end.
 6. **Formats:** M6's RTC7 and META 6 are kept, with no migration (nothing is released). The
-   rtsim-view fixtures hold conflict meta page 5, and the five tests that read them fail until they
-   are regenerated: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
+   rtsim-view fixtures held conflict meta page 5, and the five tests that read them failed until
+   they were regenerated from 1290d0b7 when M6 landed: rtsim-view's
+   `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
    `the_create_gametest_save_draws_every_layer_and_writes_nothing`,
    `every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`,
    and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` (the conflict's pages
@@ -480,6 +481,75 @@ What the merge checked:
 7. **Residual (RP-101):** M6's `chief_unit_lost` picks its stack by M6's own rule, not RP-27's,
    and takes from a stack for a copy too. It cannot matter today, because a boss band is its one
    unit.
+
+**The M7 merge** (feat/mowzie-m7 at 2a80b4f0 merging M6 at 6d6c6658, then main; each its own merge
+commit; RP-102, RP-103). M7 branched from M6 at 58a5551a, before M6 merged main, so the first merge
+brings slice C, RP's gate and SEC-1's sections with M6's tail. Seven files conflicted in it:
+
+1. **engine.rs:** slice C's held arrivals and M7's held passes took the same names (`held`,
+   `Held`, `hold`). M7's are renamed `rail_held`, `rail_held_oldest`, `rail_held_n`, `HeldPass`
+   and `hold_pass`, in engine/rail.rs too, which merged clean. Both sides' fields, stats and
+   imports are kept. In `arrive`, M7's track arm (the band waits at the spot until its patience
+   runs out, noted "track") comes after the envoy, scout and peaceful arms and before the arm that
+   holds (§6.1).
+2. **persist.rs:** M7's RTC8 and META 7 (MZB-344) are kept, and M6's casualty ops (MZB-589) end
+   the party record, as the RTC7 line of the format history now says. The outbox's `iter` and
+   `restore` replace the commands vector; the held passes go under their new names.
+3. **rtsim-jni engine/conflict.rs:** `rail_call` without M7's `resend_notices_if_due` (MZB-375),
+   one of the MZB-141 triggers RP-2 removed. The replay ends at the top of engine.rs `journaled()`,
+   before industry's journaled entry and so before the call (RP-102).
+4. **rtsim-jni tests/protocol.rs:** both sides' imports; M7's rail tests read the outbox's
+   `replaying()`, not M5's field.
+5. **docs/boundary.md:** M6's CHIEF_STATE text and M7's RAIL_PASS bullet, both.
+6. **scenario/results** sim-conflict.json and sim-mowzie.json: regenerated on the merged head.
+
+What the merge checked:
+
+1. **The gate:** M7 adds no `Cmd` kind and no push site; engine/rail.rs pushes nothing. Its routes
+   (`rail_pass`, `rail_call`, `let_go_due` and the meter's `Ev::Rail` wake) reach main's pushes
+   only through `rail_gate`, `set_emission_for`, `refresh_rates` and `plan_feud`: a climb's
+   FACTION_NOTICE drops while replaying and goes again from the feud at the replay end, and a war
+   party's embody returns early (§6). §4.4 lists it.
+2. **The floors** (RP-57): RAIL_PASS names a faction, a train and an owner, no epoch, and
+   `party_epoch` is None for it. The industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the
+   conflict through `rail_call` with a train only. RP-57's table says so.
+3. **Decisions while replaying** (RP-102): all of M7's are re-derived from the same records as
+   live, so the meter, its source and the feud's climb come out as they did. A band bound for a
+   track asks no watcher at its arrival and is never held. The one residual is the owner of an
+   ownerless pass, read from presence, which holds no positions from the window (RP-103).
+4. **RP-66:** M7 adds no `Order::ConflictCommand` test in Rust. Its GameTests
+   (RailFrostmawGameTests, TrainSamplerGameTests, SamplerBenchGameTests and TerritoriesGameTests)
+   drive the engine through `ConflictKit` in the middle of a session, after no restart.
+5. **Formats:** RTC8 and META 7 are kept, with no migration (nothing is released). M9 took the same
+   numbers, so whichever of the two lands second bumps them again (M9, which lands after M7, takes
+   RTC9 and META 8). The rtsim-view fixtures on main (core and create from 1290d0b7, M6's) hold
+   conflict meta page 6 (RTC7), so the five tests that read the conflict's pages fail until they are
+   regenerated: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+   `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 6, this
+   build reads 7"), `every_gametest_save_carries_and_matches_each_modules_hash` and
+   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
+   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped"). Both were
+   regenerated before M7 landed: create from 32726818 (M7 merged with main a11311aa), a `-Psec1fx`
+   run with its world deleted first, and core from 4f152abc (that merged with main 588b229c, which
+   changes no format), a fresh `gametest.sh core` world.
+6. **C2ME** (MZB-662): none of M7's four GameTest classes waits on `getEntity == null` or
+   `!hasChunk` as "saved and unloaded". RailFrostmawGameTests forces its chunks and loads them with
+   `getChunk`, SamplerBenchGameTests waits on the bench's own state, and the other two wait on
+   nothing of the kind. Nothing to convert.
+
+The second merge, main at 8bfd5742: SEC-1 S5-2 (shared kinetic networks, passive heat, the glass
+solve's network inputs, fixtures regenerated from c67da61 and fe87a92) and slice H (the herds'
+replay gate, RP-80 to RP-89). One file conflicted, docs/choices-mowzie-build.md, where both sides
+added RP records after RP-69: the M6 and M7 merges' RP-100 to RP-103 stay in slice C's list, and
+slice H's section follows. Main changed no file of rtsim-conflict, rtsim-kernel or rtsim-host. Its
+rtsim-industry engine.rs (the network registry and `drain_networks`) and M7's one function there
+(`last_departure_of`, MZB-312) are apart. Slice H's rtsim-jni changes are the herds' (the arm
+leaves the herds out of `player_left`, RP-87; a herd command waits for the replay end, RP-85; the
+herds' gate counts in the replay end's log line) and leave the conflict's replay end where §2.2 and
+RP-102 put it, at the top of `journaled()`. Its filler records are the herds' own (56 bytes), not
+BAND_CASUALTIES, so MZB-589's 72 bytes change none of its hand-over counts. Nothing in this merge
+reaches a conflict gate, epoch or replayed decision, and the two sims are the same as after the
+first merge under the filter.
 
 ## 3. The flag
 
@@ -622,11 +692,27 @@ ahead:
   `train_scan` (rtsim-ecology engine.rs about L1596) and ships' `coast_raid` (rtsim-ships engine.rs
   about L3493). While held, a module asks about a window that industry has already passed, and a leg
   industry closed since may be missing, so a replayed ambush or scan can miss a train the live one
-  found (lose, never double). And raids, which industry applies at its own present
+  found (a loss). And raids, which industry applies at its own present
   (`threat_with` takes `t.at.max(self.now)`), so a held module's raid books on industry's later
   state. Conflict's district raids come from `resolve`, which §6.1 holds; its train ambushes
   (`Ev::Ambush`, `raid_train`) still run in the replayed window, as today, and are abstract (no
-  body). Dragons' and pirates' raids are slices D's and S's check. **Decided by the coordinator,
+  body), as do dragons' train raids and, with M8, a lurking band's TRAIN_PASSED; the pirates'
+  coast raid is deferred while replaying (RP-95). **A train raid found again was not "lose, never
+  double"**, as this bullet said until slice T: industry derived its CarriageDelta's op from its
+  own present, so the re-decided raid was a new op, Java applied it, and the goods left the real
+  train twice. Slice T (docs/choices-mowzie-build.md RP-180 to RP-189) derives the op from the
+  attack's identity (the threat's id, source and class, and the train), so Java answers
+  DUPLICATE and the goods leave once, wherever the raid is re-decided (in the replay, or live after
+  its end when the replay clock stopped short of it, RP-188). That holds while Java's two saves
+  agree (RP-184): the train's goods (`create_tracks.dat`) and the journal's op index
+  (`mic_rtsim_journal.dat`) are separate files and can part. On the journal's index, goods on
+  disk without the journal is still a double, and the journal without the goods a dupe (Java
+  remembers the op, so the restored train keeps its goods while the raider is credited again; the
+  review's P1-1). Slice T2 (RP-190 to RP-196) closes both: Java dedups a train's carriage deltas by
+  a ring of the ops applied to it, saved in the train's own NBT in `create_tracks.dat`, so the
+  goods and the ops that moved them are kept or lost together and the raid is taken once in all
+  four cases; only if the ring's mixin did not apply does Java fall back to the journal's index
+  (§6.1). **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
   industry's own replay); the long-replay tests run with industry on and off.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
@@ -725,6 +811,7 @@ Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
 table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
 March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
+M7 (the M7 merge, §2.7) brings none of them and no other push site (below).
 M6 (the M6 merge, §2.7) adds no `Cmd` kind and no push site either. Its routes reach main's:
 - `camp_arrival`, `camp_refill` and the census's crystal mend order lines through `send_lines`,
   which orders only a camp that is in;
@@ -739,28 +826,35 @@ queue. Its verdict is "wait": a unit holding one, and every unit after it, is he
 with RP-33's orders that run the clock (`waits_for_the_replay_end`, RP-66), so no test's command
 goes while the replay runs, a "never" kind included.
 
-**M7's rail caller (feat/mowzie-m7, not on main): a note for whichever of M7 and fix/replay-push
-lands second.**
+**M7's rail (the M7 merge, §2.7; RP-102, RP-103).** M7 adds no `Cmd` kind and no push site: rail.rs
+pushes nothing itself, and its routes reach main's pushes through `plan_feud`. As the note written
+before the merge asked:
 
-- **The caller.** M7's rtsim-jni engine/industry.rs (about L570 to L577) calls `conflict::rail_call`
-  (M7's engine/conflict.rs about L600) on TRAIN_ARRIVED and TRAIN_UNWATCHED. Without RP that path
-  never reaches conflict's MZB-141 triggers, so `replaying` can stay true across it; M7's own fix
-  runs conflict's replay-end trigger before `rail_call`.
-- **The rule:** the replay end runs at the top of every module's journaled entry that can reach
-  another engine, industry's included. RP-2's trigger at the top of engine.rs `journaled()` sits
-  above every module's entry (`industry::journaled` is dispatched from there), so it already covers
-  this caller. The merge deletes M7's conflict-only trigger with the other MZB-141 triggers (RP-2).
-- **What it reaches.** Through `plan_feud`, `rail_call` pushes a NOTICE and a raid's or invasion's
-  set-out and embody commands. They join §6's list: the embody returns early while replaying, and
-  the gate drops the NOTICE (the embody is a "never").
-- **RAIL_PASS** is ingested with no op id; the replay applies each once (pages plus a contiguous
-  replay), and no copy carries one.
-- **`Ev::Rail` wakes**, rebuilt from saved state, fire in the replayed window under the replay clock
-  (§3.6) and embody nothing.
-- **Track targets.** A track-target party sends its set-out and embody commands with a spot 5 blocks
-  toward the den. One held at its target while replaying (§6.1) decides at the replay end against the
-  engine's track, which Java may have removed since. The merger checks what Java answers for a
-  removed track and that the answer leaves the party abstract and consistent.
+- **The caller.** M7's rtsim-jni engine/industry.rs `journaled` calls `conflict::rail_call` on
+  TRAIN_ARRIVED and TRAIN_UNWATCHED for a train the conflict holds passes of. M7's own replay-end
+  trigger in `rail_call` (MZB-375) is deleted with the other MZB-141 triggers (RP-2): the end at the
+  top of engine.rs `journaled()` runs before `industry::journaled` is dispatched, so before the
+  call. M7's two MZB-375 protocol tests pass with nothing in `rail_call`.
+- **What it reaches.** A RAIL_PASS (`rail_pass`), a train's call (`rail_call`), a held pass let go
+  after a day (`let_go_due`) and a meter's wake (`Ev::Rail`, rebuilt from saved state, fired in the
+  replayed window under the replay clock, §3.6) count legs and run the push gate (`rail_gate`), whose
+  push (`set_emission_for`) recomputes the feud's rate and replans it. While replaying all of it is
+  state re-derived from the same records as live: the climb's FACTION_NOTICE drops at the gate and
+  goes again from the feud at the replay end, a war party sets out abstract, and a sighting of it
+  waits (§6). No "never" kind is decided.
+- **RAIL_PASS** has no op id and no copy: Java journals each once, at once
+  (`ConflictBridge.railPass`, no holder reasserts it), and the pages and a contiguous replay apply
+  each record once. It names no epoch (RP-57's table). A copy, were one ever sent, is dropped by
+  `ingest_copy` (RP-104).
+- **Track targets.** A raid or invasion bound for a track (`Target::Track`) asks no watcher at its
+  arrival: `arrive`'s track arm comes before the arm that holds (§6.1) and only waits out the band's
+  patience at the spot, and `resolve` raids nothing there. So it is never held, and decides while
+  replaying exactly as live. Java is never asked about a track: BAND_MATERIALIZE and BAND_STEER carry
+  the spot as a plain position (y 64, BAND_SURFACE), so a track Java has removed since changes
+  nothing.
+- **Presence** (RP-103, a residual): an ownerless pass counts against the player with the most time
+  near it (`presence.top_of`), which while replaying holds no position of the window; P14's
+  `owner_of` reads it the same way.
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
@@ -1216,7 +1310,33 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
-- An M7 track-target party held at a track Java has removed since (§4.4's note).
+- None from M7's track-target parties, which §4.4's note listed before the M7 merge: a band bound
+  for a track asks no watcher at its arrival and is never held (RP-102).
+- A pirate coast raid the live session made inside what becomes the replayed window: `coast_raid`
+  is deferred while replaying and never retried (RP-95, RP-188). The goods left the train once,
+  live; the pirates' ledger misses the raid.
+- A train raid a raider's replay meets that an industry engine newer than its pages already holds
+  (RP-183): booked once, and the raider is credited nothing. Unreachable with the host's one save
+  batch; the op window's guard is for the tests' hand-built case and any later change to it.
+
+**What slices T and T2 leave** (RP-184, RP-196): with T2's ring the four durability cases are exact,
+since the train's goods and the ops applied to them are one file. Left: an op pushed out of a
+train's ring by 256 later carriage deltas to it inside the replay window, then sent again (applied
+twice; RP-192), and, only when the ring's mixin did not apply (logged once, RP-193), what slice T
+alone leaves on the journal's index: J3, a double: the train's goods on disk after the raid, the
+journal on disk from before it (the tracks file written first and the server dead before the
+journal's, or the journal held by the chunk barrier: since slice U for as long as the hold lasts,
+RP-205); the re-decided raid's op is one Java forgot, and it is applied again. J4, a dupe: the
+journal on disk after the raid, the train's goods from before it; Java remembers the op and answers
+DUPLICATE, so the restored train keeps its goods while the re-decided raid credits the raider
+again. Since slice U the journal's file is the last SavedData a world save writes (RP-200), so J4
+needs a tracks write that failed while the journal's succeeded.
+
+**Slice U and the ring's bound** (RP-192, RP-205): the 256 ops cover the ops a train takes while the
+journal's file is behind, which RP-192 put at four autosaves at most. Since RP-205 a hold a later save
+can clear has no round limit, so a hold that lasts hours (a disk failing every write) can push an op
+out of a busy train's ring before the journal's file holds it; a crash then applies its resend again.
+The journal logs once when its file falls 10,000 applied ops behind (`BEHIND_WARN`).
 
 **More than one crash** (the fix round's item 8). A held arrival stays held until its slack or the
 replay end of the first session that reaches one, whichever comes first. A session that crashes or

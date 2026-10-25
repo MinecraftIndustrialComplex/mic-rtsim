@@ -656,13 +656,20 @@ public final class TrainWatch {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
-        // Train cargo and the journal reach disk at the same save (RailwaySavedData and the journal are
-        // both SavedData), so the journal's op index is the dedup (choice H17).
-        if (ind.opApplied(opId)) {
+        // The dedup (docs/choices-mowzie-build.md RP-191). For a train that exists it is the train's own ring
+        // (TrainRing), and only the ring: the ring and the goods are written by the same Train.write into
+        // create_tracks.dat, so a crash keeps both or neither. The journal's op index (mic_rtsim_journal.dat,
+        // choice H17) is a second SavedData file, written apart from Create's and held back by the chunk
+        // barrier, so it can survive without the goods (J4: asked, it answers DUPLICATE on restored goods while
+        // the raider is credited again, a dupe) or the goods without it (J3: a double; RP-184). It stays the
+        // dedup for a train Create no longer has (nothing is applied to one) and when the ring's mixin did not
+        // apply (RP-193: slice T's dedup, with J3 and J4 as RP-184 lists them).
+        Train train = train(trainId);
+        AppliedOpRing ring = train != null && TrainRing.available(ind.server()) ? TrainRing.of(train) : null;
+        if (ring != null ? ring.contains(opId) : ind.opApplied(opId)) {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
             return true;
         }
-        Train train = train(trainId);
         long[][] results = new long[n][4];
         if (train == null) {
             // Nothing applied: IND_CARRIAGE_RESULT says so (the engine corrects stock from it, §4.3).
@@ -706,6 +713,9 @@ public final class TrainWatch {
             }
             results[j] = new long[] {carriage & 0xFFFF_FFFFL, goodId & 0xFFFF_FFFFL, delta, applied};
         }
+        // In the tick the carriage storage changed, so whichever create_tracks.dat holds the goods holds the op.
+        if (ring != null)
+            ring.add(opId);
         writeCarriageResult(ind, opId, trainId, results);
         ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
         return true;
@@ -737,6 +747,14 @@ public final class TrainWatch {
         DOCKS.remove(train.id);
         UNWATCHED.remove(train.id);
         SEEN.remove(CreateIds.of(train.id));
+    }
+
+    /**
+     * Test helper: IND_CARRIAGE_DELTA finds this train under its wire id, as if a hook had seen it. A train
+     * read back from saved NBT has the same id and takes the place of the one it was saved from.
+     */
+    public static void seenForTest(Train train) {
+        SEEN.put(CreateIds.of(train.id), new WeakReference<>(train));
     }
 
     /**
