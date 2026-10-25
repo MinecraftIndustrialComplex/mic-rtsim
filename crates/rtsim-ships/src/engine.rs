@@ -713,6 +713,12 @@ pub struct Ships {
     /// Whether this engine came back from its pages (docs/replay-gate.md §5.2, RP-31): set by
     /// [`Ships::begin_replay`]; only then is a replayed SHIP_MATERIALIZED honoured. In memory only.
     pub(crate) replay_from_pages: bool,
+    /// The ship arena's next index when [`Ships::begin_replay`] ran (RP-93): a replayed
+    /// SHIP_MATERIALIZED is honoured only on a ship that existed then. Ships are allocated in
+    /// order and never reused (`PagedArena`), so a ship the replay allocated (a network built or
+    /// a port or haven that joined inside the replayed window) may not be the one the live run
+    /// gave that index; its epoch only raises the floor. In memory only.
+    pub(crate) replay_next: u32,
     /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30, RP-57): agent to the highest epoch
     /// a replayed or copied record named that the ship does not hold. The ship's next body takes
     /// `max(epoch, floor) + 1` ([`Ships::next_epoch`]); [`Ships::replay_done`] folds each into its
@@ -864,6 +870,7 @@ impl Ships {
             over_berths: Vec::new(),
             outbox: Outbox::default(),
             replay_from_pages: false,
+            replay_next: 0,
             floors: BTreeMap::new(),
             log_enabled: false,
             log: Vec::new(),
@@ -1045,6 +1052,11 @@ impl Ships {
 
     pub fn take_commands(&mut self) -> Vec<Cmd> {
         self.outbox.take()
+    }
+
+    /// How many commands wait for the host (the pages hold them).
+    pub fn commands_queued(&self) -> usize {
+        self.outbox.len()
     }
 
     /// Between [`Ships::begin_replay`] and [`Ships::replay_done`]: the session's replay runs
@@ -2377,6 +2389,7 @@ impl Ships {
     /// have no sessions.
     pub fn begin_replay(&mut self, from_pages: bool) {
         self.replay_from_pages = from_pages;
+        self.replay_next = self.ships.meta().1;
         self.outbox.begin_replay();
     }
 
@@ -2427,9 +2440,10 @@ impl Ships {
     /// The epoch of a ship's next body (docs/replay-gate.md §5.3, RP-7, RP-30): above its own and
     /// above its floor. The decision spends the floor with [`Ships::set_epoch`] once it embodies
     /// (a body that stays abstract after all, across a seam, keeps it).
-    fn next_epoch(&self, id: ShipId) -> u32 {
+    pub fn next_epoch(&self, id: ShipId) -> u32 {
         let floor = self.floors.get(&Ship::agent(id)).copied().unwrap_or(0);
-        self.ships[id].epoch.max(floor).wrapping_add(1)
+        // A corrupt record at u32::MAX must not wrap to epoch 0 (the plugin's "no body").
+        self.ships[id].epoch.max(floor).wrapping_add(1).max(1)
     }
 
     /// A ship's epoch becomes `epoch`, which its floor is at or below: the floor is spent.
@@ -5506,6 +5520,10 @@ impl Ships {
         let Some(s) = Ship::id_of_agent(m.agent) else {
             return;
         };
+        // A ship the replay allocated is not necessarily the live run's (RP-93): the floor only.
+        if s.index() >= self.replay_next {
+            return;
+        }
         let Some(x) = self.ships.get(s) else {
             return;
         };

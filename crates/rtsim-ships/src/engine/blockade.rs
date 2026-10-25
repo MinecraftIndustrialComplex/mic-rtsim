@@ -578,7 +578,7 @@ impl Ships {
             back: LAID_UP,
         };
         x.quotes.clear();
-        x.epoch = x.epoch.wrapping_add(1);
+        x.epoch = x.epoch.wrapping_add(1).max(1);
         let booked: Vec<u64> = self
             .booked
             .range((s, 0)..=(s, u64::MAX))
@@ -611,7 +611,7 @@ impl Ships {
         if let Status::Lost { back: b, .. } = &mut x.status {
             *b = back;
         }
-        x.epoch = x.epoch.wrapping_add(1);
+        x.epoch = x.epoch.wrapping_add(1).max(1);
         self.wait_to_relaunch(s, back);
     }
 
