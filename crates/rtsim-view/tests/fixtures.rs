@@ -180,6 +180,17 @@ fn the_create_save_draws_its_package_stores_and_says_why_sections_are_empty() {
             "{why}"
         );
     }
+    // The layer draws a chain, not every pair of a store's frogports.
+    for st in &view.saved().industry.as_ref().unwrap().stores {
+        let n = st.frogports.len();
+        let links = rtsim_layers::industry::store_mark(st).links.len();
+        eprintln!("store {}: {n} frogports, {links} links", st.id.0);
+        assert!(
+            links <= n.saturating_sub(1).max(0),
+            "store {}: {links} links of {n}",
+            st.id.0
+        );
+    }
     let id = view.saved().industry.as_ref().unwrap().stores[0].id.0;
     let view = Arc::new(view);
     let app = mic_viewer::viewer::App::new(Arc::clone(&view));

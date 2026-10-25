@@ -287,6 +287,35 @@ pub struct NetMark {
     pub parts: Vec<NetPart>,
 }
 
+/// Java's hop count for a pair it could not measure (`PackageStores.UNKNOWN_HOPS`).
+pub const UNKNOWN_HOPS: u16 = 0xFFFF;
+
+/// The pairs of frogports (indices) that follow one another along the chain: a pair with a known
+/// hop count and no third frogport between them (`hops(i, k) + hops(k, j) == hops(i, j)`), about
+/// `n - 1` for a chain of `n`. A pair Java could not measure is no link.
+pub fn chain_links(s: &PackageStore, n: usize) -> Vec<(u16, u16)> {
+    let known = |i: usize, j: usize| {
+        s.hops_between(i, j)
+            .filter(|&h| h != UNKNOWN_HOPS)
+            .map(u32::from)
+    };
+    let mut links = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            let Some(h) = known(i, j) else { continue };
+            let between = (0..n).any(|k| {
+                k != i
+                    && k != j
+                    && matches!((known(i, k), known(k, j)), (Some(a), Some(b)) if a + b == h)
+            });
+            if !between {
+                links.push((i as u16, j as u16));
+            }
+        }
+    }
+    links
+}
+
 /// A package store's mark: its frogports and the pairs the chain connects.
 pub fn store_mark(s: &PackageStore) -> StoreMark {
     let ports: Vec<StorePort> = s
@@ -301,14 +330,7 @@ pub fn store_mark(s: &PackageStore) -> StoreMark {
             packages: p.packages,
         })
         .collect();
-    let mut links = Vec::new();
-    for i in 0..ports.len() {
-        for j in i + 1..ports.len() {
-            if s.hops_between(i, j).is_some() {
-                links.push((i as u16, j as u16));
-            }
-        }
-    }
+    let links = chain_links(s, ports.len());
     StoreMark {
         id: s.id.0,
         dim: s.dim,
@@ -474,5 +496,41 @@ mod tests {
         assert_eq!(two.len(), 2);
         assert_eq!(area(&two), 2);
         assert!(chunk_outline(&[]).is_empty());
+    }
+
+    fn store_of(n: i32, hops: Vec<u16>) -> PackageStore {
+        use rtsim_industry::ids::BlockPos;
+        use rtsim_industry::stores::{Frogport, Pool};
+        let at = |x| BlockPos { x, y: 64, z: 0 };
+        PackageStore {
+            frogports: (0..n)
+                .map(|i| Frogport {
+                    district: None,
+                    inventory: None,
+                    star: false,
+                    pos: at(i * 10),
+                    conveyor: at(i * 10),
+                })
+                .collect(),
+            pools: vec![Pool::default(); n as usize],
+            hops,
+            ..PackageStore::default()
+        }
+    }
+
+    /// A chain of four frogports links neighbours only, not every pair; a pair Java could not
+    /// measure links nothing.
+    #[test]
+    fn a_store_links_the_chain_and_skips_unknown_hops() {
+        let chain = store_of(4, vec![10, 20, 30, 10, 20, 10]);
+        assert_eq!(chain_links(&chain, 4), [(0, 1), (1, 2), (2, 3)]);
+        let u = UNKNOWN_HOPS;
+        let unknown = store_of(3, vec![u, 5, 7]);
+        assert_eq!(chain_links(&unknown, 3), [(0, 2), (1, 2)]);
+        let all_unknown = store_of(3, vec![u, u, u]);
+        assert!(store_mark(&all_unknown).links.is_empty());
+        // No hop table: no link, and a lone frogport has none either.
+        assert!(chain_links(&store_of(3, Vec::new()), 3).is_empty());
+        assert!(chain_links(&store_of(1, Vec::new()), 1).is_empty());
     }
 }
