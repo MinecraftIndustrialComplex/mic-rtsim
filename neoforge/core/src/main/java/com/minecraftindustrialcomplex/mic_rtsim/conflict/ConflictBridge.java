@@ -483,7 +483,7 @@ public final class ConflictBridge implements SessionPlugin {
     public long materialized, rejected, placed, requeued, pendingTests, watchFlips, placeMoves, casualties, chiefsKilled,
             taken, recalled, dematerialized, steered, tributes, answers, signalsCounted, signalsJournaled, noticesPlayed,
             territoryCommands, settledCommands, campsReported, looted, malformed, unknownCommands, blockedHits, blockedTargets,
-            strays, refills, demandsShown, paymentsRefused, noticeHearers;
+            strays, refills, demandsShown, paymentsRefused, noticeHearers, railPasses;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -518,7 +518,7 @@ public final class ConflictBridge implements SessionPlugin {
         materialized = rejected = placed = requeued = pendingTests = watchFlips = placeMoves = casualties = chiefsKilled = 0;
         taken = recalled = dematerialized = steered = tributes = answers = signalsCounted = signalsJournaled = 0;
         noticesPlayed = territoryCommands = settledCommands = campsReported = looted = malformed = unknownCommands = 0;
-        blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = 0;
+        blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
         lastSettled = 0;
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
@@ -2078,6 +2078,45 @@ public final class ConflictBridge implements SessionPlugin {
         SignalKey k = new SignalKey(faction, signal, player, dim, t.faction());
         signals.computeIfAbsent(k, x -> new SignalBatch(pos.immutable(), now)).count++;
         signalsCounted++;
+    }
+
+    /**
+     * Whether the engine side is up for M7's train sampler: a live session whose conflict module is on and
+     * which takes M1's records (RAIL_PASS is one). Without it the sampler has nothing to say (MZB-320).
+     */
+    public boolean up() {
+        RtsimSession s = session;
+        return m1Records && s != null && !s.failed() && RtsimSession.current() == s && RtsimConfig.on(Module.CONFLICT);
+    }
+
+    /**
+     * RAIL_PASS (M7, MZB-325): a train's pass through {@code faction}'s territory, journaled at once as
+     * {@link #flushSignals} journals a batch. {@code owner} is the train's owner (null: none, written (0, 0));
+     * the point is a sample on the track, nearest the circle's centre; {@code entry} and {@code exit} are game
+     * time. False when the engine side is not up ({@link #up}).
+     */
+    public boolean railPass(long faction, long train, UUID owner, ResourceKey<Level> dimension, double x, double y, double z,
+                            long entry, long exit) {
+        if (!up())
+            return false;
+        RtsimSession s = session;
+        int dim = s.dimId(dimension); // before beginJournaled: a define may journal
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.RAIL_PASS, ConflictRecords.RailPass.SIZE, 0, s.gameTime());
+        r.putLong(ConflictRecords.RailPass.FACTION, faction);
+        r.putLong(ConflictRecords.RailPass.TRAIN, train);
+        if (owner != null) {
+            r.putLong(ConflictRecords.RailPass.OWNER_MOST, owner.getMostSignificantBits());
+            r.putLong(ConflictRecords.RailPass.OWNER_LEAST, owner.getLeastSignificantBits());
+        }
+        r.putInt(ConflictRecords.RailPass.DIM, dim);
+        r.putDouble(ConflictRecords.RailPass.X, x);
+        r.putDouble(ConflictRecords.RailPass.Y, y);
+        r.putDouble(ConflictRecords.RailPass.Z, z);
+        r.putLong(ConflictRecords.RailPass.ENTRY, entry);
+        r.putLong(ConflictRecords.RailPass.EXIT, exit);
+        s.boundary().commit(r);
+        railPasses++;
+        return true;
     }
 
     /** Journals each batch {@value #SIGNAL_FLUSH} ticks after its first event (all of them when {@code all}). */
