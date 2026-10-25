@@ -56,4 +56,5 @@ pub use engine::{Conflict, ConflictStats, FeudView, Purpose};
 pub use grievance::Grievance;
 pub use outbox::GateCounts;
 pub use persist::ConflictTickets;
+pub use persist::TABLES as PAGE_TABLES;
 pub use tunables::ConflictTunables;

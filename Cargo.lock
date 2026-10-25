@@ -805,6 +805,7 @@ dependencies = [
  "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
+ "rtsim-view",
  "rtsim-world",
 ]
 

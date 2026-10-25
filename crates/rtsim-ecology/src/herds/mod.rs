@@ -49,5 +49,6 @@ pub use engine::{HerdOffer, HerdStats, Herds, NewHerd, Predation};
 pub use herd::{Herd, HerdId, HerdLedger};
 pub use outbox::GateCounts;
 pub use persist::HerdsTicket;
+pub use persist::TABLES as PAGE_TABLES;
 pub use species::{Cohort, HerdSpecies, HerdSpeciesData};
 pub use tunables::HerdTunables;
