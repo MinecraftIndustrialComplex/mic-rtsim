@@ -11,13 +11,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use rtsim_industry::ids::{Good, GoodVec};
-use rtsim_industry::persist::STORE_TABLE;
-use rtsim_industry::stores::{Held, PackageStore, Pool, read_store_page};
-use rtsim_kernel::page::PageKey;
-use rtsim_kernel::rows::PageSource;
+use rtsim_industry::stores::{Held, PackageStore, Pool};
 use rtsim_view::industry::IndustryView;
 use rtsim_view::journal::Names;
 use rtsim_view::keys::{DICT_DIMENSION, DICT_NAME};
+use rtsim_view::load::Status;
 use rtsim_view::{Limits, load_world};
 use serde_json::{Value, json};
 
@@ -60,12 +58,12 @@ pub fn cli(args: &[&str]) -> ExitCode {
     }
 }
 
-/// The most unreadable store pages the listing names; the rest are counted.
-const UNREAD_NAMED: usize = 32;
-
 fn report(world: &Path) -> Result<Value, String> {
     let saved = load_world(world, Limits::default())?;
     let name = saved.scrub(&world.display().to_string());
+    if let Some(Status::Unreadable(why)) = saved.module("industry").map(|m| &m.status) {
+        return Err(format!("the industry pages did not read: {why}"));
+    }
     let Some(iv) = saved.industry.as_ref() else {
         // A world that never ran the industry engine has no package stores: not an error.
         return Ok(json!({
@@ -75,42 +73,28 @@ fn report(world: &Path) -> Result<Value, String> {
             "stores": [],
             "unread": [],
             "unread_more": 0,
+            "past_limit": 0,
         }));
     };
-    let ids = saved
-        .source
-        .table_ids(STORE_TABLE)
-        .map_err(|e| format!("cannot list the store pages: {e}"))?;
     let names = SavedNames {
         iv,
         names: &saved.names,
     };
-    let mut stores = Vec::new();
-    let mut unread = Vec::new();
-    let mut more = 0u64;
-    for id in ids {
-        // One bad page does not hide the others: it is named, up to a count.
-        let page = saved
-            .source
-            .read(PageKey::new(STORE_TABLE, id))
-            .map_err(|e| e.to_string())
-            .and_then(|b| b.ok_or_else(|| "listed and missing".to_string()))
-            .and_then(|b| read_store_page(id, &b).map_err(|e| e.to_string()));
-        match page {
-            Ok(s) => stores.push(store(&names, &s)),
-            Err(e) if unread.len() < UNREAD_NAMED => {
-                unread.push(json!({"page": id, "why": e}));
-            }
-            Err(_) => more += 1,
-        }
-    }
+    // The view read the store pages once (a page that panics its decoder is named, not fatal).
+    let stores: Vec<Value> = iv.stores.iter().map(|s| store(&names, s)).collect();
+    let u = &iv.stores_unread;
     Ok(json!({
         "world": name,
         "industry": true,
         "now": iv.now,
         "stores": stores,
-        "unread": unread,
-        "unread_more": more,
+        "unread": u
+            .named
+            .iter()
+            .map(|(id, why)| json!({"page": id, "why": saved.scrub(why)}))
+            .collect::<Vec<_>>(),
+        "unread_more": u.more,
+        "past_limit": u.cut,
     }))
 }
 
@@ -431,6 +415,12 @@ fn text(v: &Value) -> String {
     if v["unread_more"].as_u64().unwrap_or(0) > 0 {
         println!("  and {} more unreadable store pages", v["unread_more"]);
     }
+    if v["past_limit"].as_u64().unwrap_or(0) > 0 {
+        println!(
+            "  and {} store pages past the viewer's limit, not read",
+            v["past_limit"]
+        );
+    }
     o
 }
 
@@ -544,7 +534,7 @@ mod tests {
     fn a_store_page_round_trips_into_the_listing() {
         let s = sample();
         let b = rtsim_industry::stores::store_page(&s);
-        let back = read_store_page(3, &b).unwrap();
+        let back = rtsim_industry::stores::read_store_page(3, &b).unwrap();
         assert_eq!(store(&Plain, &back), store(&Plain, &s));
     }
 

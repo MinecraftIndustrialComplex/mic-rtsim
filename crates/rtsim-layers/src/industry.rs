@@ -287,26 +287,36 @@ pub struct NetMark {
     pub parts: Vec<NetPart>,
 }
 
-/// Java's hop count for a pair it could not measure (`PackageStores.UNKNOWN_HOPS`).
-pub const UNKNOWN_HOPS: u16 = 0xFFFF;
+pub use rtsim_industry::stores::UNKNOWN_HOPS;
 
 /// The pairs of frogports (indices) that follow one another along the chain: a pair with a known
-/// hop count and no third frogport between them (`hops(i, k) + hops(k, j) == hops(i, j)`), about
-/// `n - 1` for a chain of `n`. A pair Java could not measure is no link.
+/// hop count and no third frogport between them (`hops(i, k) + hops(k, j) == hops(i, j)`, both
+/// legs more than 0 hops), about `n - 1` for a chain of `n`. Frogports 0 hops apart (on one
+/// conveyor) are one stop: each links to the lowest of them, and only that one links on. A pair
+/// Java could not measure is no link.
 pub fn chain_links(s: &PackageStore, n: usize) -> Vec<(u16, u16)> {
-    let known = |i: usize, j: usize| {
-        s.hops_between(i, j)
-            .filter(|&h| h != UNKNOWN_HOPS)
-            .map(u32::from)
-    };
+    let known = |i: usize, j: usize| s.known_hops(i, j).map(u32::from);
+    // Each frogport's stop: the lowest frogport 0 hops from it.
+    let stop: Vec<usize> = (0..n)
+        .map(|i| (0..i).find(|&k| known(k, i) == Some(0)).unwrap_or(i))
+        .collect();
     let mut links = Vec::new();
     for i in 0..n {
         for j in i + 1..n {
+            if stop[j] == i {
+                links.push((i as u16, j as u16));
+                continue;
+            }
+            if stop[i] != i || stop[j] != j {
+                continue;
+            }
             let Some(h) = known(i, j) else { continue };
             let between = (0..n).any(|k| {
                 k != i
                     && k != j
-                    && matches!((known(i, k), known(k, j)), (Some(a), Some(b)) if a + b == h)
+                    && stop[k] == k
+                    && matches!((known(i, k), known(k, j)),
+                        (Some(a), Some(b)) if a > 0 && b > 0 && a + b == h)
             });
             if !between {
                 links.push((i as u16, j as u16));
@@ -531,6 +541,17 @@ mod tests {
         let u = UNKNOWN_HOPS;
         let unknown = store_of(3, vec![u, 5, 7]);
         assert_eq!(chain_links(&unknown, 3), [(0, 2), (1, 2)]);
+        // Two frogports on one conveyor (0 hops) are one stop: the third links to the lower.
+        assert_eq!(
+            chain_links(&store_of(3, vec![0, 1, 1]), 3),
+            [(0, 1), (0, 2)]
+        );
+        assert_eq!(
+            chain_links(&store_of(3, vec![1, 1, 0]), 3),
+            [(0, 1), (1, 2)]
+        );
+        let line = store_of(4, vec![10, 10, 20, 0, 10, 10]);
+        assert_eq!(chain_links(&line, 4), [(0, 1), (1, 2), (1, 3)]);
         let all_unknown = store_of(3, vec![u, u, u]);
         assert!(store_mark(&all_unknown).links.is_empty());
         // No hop table: no link, and a lone frogport has none either.

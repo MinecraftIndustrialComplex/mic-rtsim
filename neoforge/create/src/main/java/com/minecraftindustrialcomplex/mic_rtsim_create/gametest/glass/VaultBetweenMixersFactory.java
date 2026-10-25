@@ -162,7 +162,7 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
      * fetched in the same tick as the command, on the server thread, so the two see one state. Checks the header,
      * one {@code  sN} line per section (counted on its own, apart from the shared store lines, which start
      * {@code  shared}), each line's state word and unit, the vault's shared-store line (counted at its movers, with
-     * the report's pair count) and the return value.
+     * the report's pair count), the return value, and {@code /rtsim district info}'s glass sections line.
      */
     static void sectionsCommand(GlassReplayGameTests.Run run, BlockPos vault) {
         District d = IndustryKit.ind().district(run.fd);
@@ -225,6 +225,12 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
         SectionsFx.check(run, "the vault's line says it is counted at its movers, with the report's pair count",
                 vaultRec != null && vaultRec.pairs() >= 2 && lines.stream().anyMatch(l -> l.startsWith("  shared store ") && l.contains(want)),
                 vaultRec == null ? "no counted shared store" : want);
+        // /rtsim district info's one line (§8.1), in the same tick: the report's counts.
+        String infoLine = "  glass sections: " + sections + ", " + r.sectionsMayReplay() + " may replay, " + r.sectionsReplaying()
+                + " replaying, " + shared + " shared stores";
+        List<String> info = IndustryKit.ind().diagnostics().debugLines(d).stream().map(c -> c.getString()).toList();
+        SectionsFx.check(run, "/rtsim district info's glass sections line carries the report's counts",
+                info.stream().anyMatch(l -> l.startsWith(infoLine)), infoLine + " in " + String.join(" | ", info));
     }
 
     // ---- the checks ----------------------------------------------------------------------------------

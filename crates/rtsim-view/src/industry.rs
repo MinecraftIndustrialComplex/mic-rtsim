@@ -92,10 +92,12 @@ pub struct IndustryView {
     pub stores: Vec<PackageStore>,
     /// The shared kinetic networks the compiles make, in the registry's order (slice S7).
     pub nets: Vec<NetMark>,
-    /// Glass pages that did not read, as "district N: why" (the layers draw without them).
-    pub glass_unread: Vec<String>,
-    /// Store pages that did not read, as "store N: why" (the layers draw without them).
-    pub stores_unread: Vec<String>,
+    /// Glass pages that did not read, by district (the layers draw without them).
+    pub glass_unread: Unread,
+    /// Store pages that did not read, by store (the layers draw without them).
+    pub stores_unread: Unread,
+    /// Each store's mark, in `stores`' order: its chain links are found once, not per draw.
+    store_marks: Vec<StoreMark>,
     globals: Vec<u8>,
 }
 
@@ -197,6 +199,7 @@ impl IndustryView {
             cluster_of,
             pages_hash: hash.0,
             sections,
+            store_marks: stores.iter().map(store_mark).collect(),
             stores,
             nets,
             glass_unread,
@@ -256,10 +259,11 @@ impl IndustryView {
             cluster_of: BTreeMap::new(),
             pages_hash: 0,
             sections,
+            store_marks: stores.iter().map(store_mark).collect(),
             stores,
             nets,
-            glass_unread: Vec::new(),
-            stores_unread: Vec::new(),
+            glass_unread: Unread::default(),
+            stores_unread: Unread::default(),
             globals: Vec::new(),
         }
     }
@@ -317,7 +321,7 @@ fn read_glass(
     districts: &[DistrictSummary],
     tun: &Tunables,
     limits: &Limits,
-) -> Result<(Vec<(u64, DistrictSections)>, Vec<NetMark>, Vec<String>), String> {
+) -> Result<(Vec<(u64, DistrictSections)>, Vec<NetMark>, Unread), String> {
     let ids = source
         .table_ids(GLASS_TABLE)
         .map_err(|e| format!("cannot list the glass pages: {e}"))?;
@@ -337,15 +341,18 @@ fn read_glass(
             unread.cut();
             continue;
         }
+        read += 1;
         let b = match source.read(PageKey::new(GLASS_TABLE, id)) {
             Ok(Some(b)) => b,
-            Ok(None) => continue,
+            Ok(None) => {
+                unread.note(id, "listed, not found".into());
+                continue;
+            }
             Err(e) => {
-                unread.note(format!("district {id}: {e}"));
+                unread.note(id, e.to_string());
                 continue;
             }
         };
-        read += 1;
         // A page that panics the decoder is left out like one that does not decode.
         let page = catch_unwind(AssertUnwindSafe(|| {
             read_district_page(&b, tun.glass.sections_max, tun.glass.counted_stores_max)
@@ -353,18 +360,18 @@ fn read_glass(
         let dg = match page {
             Ok(Ok(PageRead::Kept(dg))) => dg,
             Ok(Ok(PageRead::Dropped(why))) => {
-                unread.note(format!("district {id}: {why}"));
+                unread.note(id, why.to_string());
                 continue;
             }
             Ok(Err(e)) => {
-                unread.note(format!("district {id}: {e}"));
+                unread.note(id, e.to_string());
                 continue;
             }
             Err(p) => {
-                unread.note(format!(
-                    "district {id}: decoding failed ({})",
-                    crate::load::panic_text(p)
-                ));
+                unread.note(
+                    id,
+                    format!("decoding failed ({})", crate::load::panic_text(p)),
+                );
                 continue;
             }
         };
@@ -429,7 +436,7 @@ fn read_glass(
             }
         })
         .collect();
-    Ok((sections, marks, unread.finish("glass")))
+    Ok((sections, marks, unread))
 }
 
 /// `BlockPos.asLong`'s x: the top 26 bits, signed.
@@ -443,56 +450,65 @@ fn block_z(pos: i64) -> i32 {
 }
 
 /// The package stores, by id, and the pages left out. A page that does not decode, or that panics
-/// the decoder, is named and skipped; the stores past `limits.store_pages` are named as one line.
+/// the decoder, is named and skipped; the pages past `limits.store_pages` fetched are counted, as
+/// `read_glass` counts its pages.
 fn read_stores(
     source: &dyn PageSource,
     limits: &Limits,
-) -> Result<(Vec<PackageStore>, Vec<String>), String> {
+) -> Result<(Vec<PackageStore>, Unread), String> {
     let ids = source
         .table_ids(STORE_TABLE)
         .map_err(|e| format!("cannot list the store pages: {e}"))?;
     let mut out = Vec::new();
     let mut unread = Unread::default();
+    let mut read = 0usize;
     for id in ids {
-        if out.len() >= limits.store_pages {
+        if read >= limits.store_pages {
             unread.cut();
             continue;
         }
+        read += 1;
         let b = match source.read(PageKey::new(STORE_TABLE, id)) {
             Ok(Some(b)) => b,
-            Ok(None) => continue,
+            Ok(None) => {
+                unread.note(id, "listed, not found".into());
+                continue;
+            }
             Err(e) => {
-                unread.note(format!("store {id}: {e}"));
+                unread.note(id, e.to_string());
                 continue;
             }
         };
         match catch_unwind(AssertUnwindSafe(|| read_store_page(id, &b))) {
             Ok(Ok(s)) => out.push(s),
-            Ok(Err(e)) => unread.note(format!("store {id}: {e}")),
-            Err(p) => unread.note(format!(
-                "store {id}: decoding failed ({})",
-                crate::load::panic_text(p)
-            )),
+            Ok(Err(e)) => unread.note(id, e.to_string()),
+            Err(p) => unread.note(
+                id,
+                format!("decoding failed ({})", crate::load::panic_text(p)),
+            ),
         }
     }
-    Ok((out, unread.finish("store")))
+    Ok((out, unread))
 }
 
-/// Pages a reader left out: the first few named, the rest counted.
-#[derive(Default)]
-struct Unread {
-    named: Vec<String>,
-    more: usize,
-    cut: usize,
+/// Pages a reader left out: the first few named with why, the rest counted (slice S7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Unread {
+    /// The first [`Unread::NAMED`] pages that did not read: the page's id, and why.
+    pub named: Vec<(u64, String)>,
+    /// The others that did not read.
+    pub more: usize,
+    /// The pages past the viewer's limit, not read.
+    pub cut: usize,
 }
 
 impl Unread {
-    /// Names listed before the rest are only counted.
-    const NAMED: usize = 8;
+    /// Pages named before the rest are only counted.
+    pub const NAMED: usize = 8;
 
-    fn note(&mut self, why: String) {
+    fn note(&mut self, id: u64, why: String) {
         if self.named.len() < Self::NAMED {
-            self.named.push(why);
+            self.named.push((id, why));
         } else {
             self.more += 1;
         }
@@ -503,18 +519,45 @@ impl Unread {
         self.cut += 1;
     }
 
-    fn finish(mut self, what: &str) -> Vec<String> {
+    /// Every page left out, named, counted or past the limit.
+    pub fn pages(&self) -> usize {
+        self.named.len() + self.more + self.cut
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages() == 0
+    }
+
+    /// One line a named page (`"{unit} {id}: why"`), then the counts, for pages of `what`.
+    pub fn lines(&self, unit: &str, what: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .named
+            .iter()
+            .map(|(id, why)| format!("{unit} {id}: {why}"))
+            .collect();
         if self.more > 0 {
-            self.named
-                .push(format!("{} more {what} pages did not read", self.more));
+            out.push(format!("{} more {what} pages did not read", self.more));
         }
         if self.cut > 0 {
-            self.named.push(format!(
+            out.push(format!(
                 "{} {what} pages past the viewer's limit were not read",
                 self.cut
             ));
         }
-        self.named
+        out
+    }
+
+    /// The first page left out and how many more pages, for a layer's why.
+    fn first_and_more(&self, unit: &str, what: &str) -> Option<String> {
+        let Some((id, why)) = self.named.first() else {
+            return self.lines(unit, what).into_iter().next();
+        };
+        let more = self.pages() - 1;
+        Some(if more > 0 {
+            format!("{unit} {id}: {why}; and {more} more pages")
+        } else {
+            format!("{unit} {id}: {why}")
+        })
     }
 }
 
@@ -629,35 +672,23 @@ impl IndustrySource for IndustryView {
     }
 
     fn glass_why(&self) -> Option<String> {
-        let first = self.glass_unread.first()?;
-        let more = self.glass_unread.len() - 1;
+        let first = self.glass_unread.first_and_more("district", "glass")?;
         Some(format!(
-            "glass pages did not read, so their sections and networks are left out ({first}{})",
-            if more > 0 {
-                format!("; and {more} more")
-            } else {
-                String::new()
-            }
+            "glass pages did not read, so their sections and networks are left out ({first})"
         ))
     }
 
     fn stores_why(&self) -> Option<String> {
-        let first = self.stores_unread.first()?;
-        let more = self.stores_unread.len() - 1;
+        let first = self.stores_unread.first_and_more("store", "store")?;
         Some(format!(
-            "store pages did not read, so their stores are left out ({first}{})",
-            if more > 0 {
-                format!("; and {more} more")
-            } else {
-                String::new()
-            }
+            "store pages did not read, so their stores are left out ({first})"
         ))
     }
 
     fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
-        let lo = self.stores.partition_point(|s| s.id.0 < ids.start);
-        for s in self.stores[lo..].iter().take_while(|s| s.id.0 < ids.end) {
-            f(&store_mark(s));
+        let lo = self.store_marks.partition_point(|s| s.id < ids.start);
+        for s in self.store_marks[lo..].iter().take_while(|s| s.id < ids.end) {
+            f(s);
         }
     }
 
@@ -765,18 +796,58 @@ mod tests {
         let src = Pages(pages);
         let (stores, unread) = read_stores(&src, &Limits::default()).expect("the listing reads");
         assert_eq!(stores.iter().map(|s| s.id.0).collect::<Vec<_>>(), [1, 3]);
-        assert_eq!(unread.len(), 1, "{unread:?}");
-        assert!(unread[0].starts_with("store 2:"), "{unread:?}");
+        assert_eq!(unread.pages(), 1, "{unread:?}");
+        assert_eq!(unread.named[0].0, 2, "{unread:?}");
+        assert!(unread.lines("store", "store")[0].starts_with("store 2: "));
         let few = Limits {
             store_pages: 1,
             ..Limits::default()
         };
         let (stores, unread) = read_stores(&src, &few).expect("the listing reads");
         assert_eq!(stores.len(), 1);
+        assert_eq!((unread.named.len(), unread.cut), (0, 2), "{unread:?}");
         assert!(
-            unread.iter().any(|u| u.contains("past the viewer's limit")),
+            unread
+                .lines("store", "store")
+                .iter()
+                .any(|u| u == "2 store pages past the viewer's limit were not read"),
             "{unread:?}"
         );
+        // The limit counts the pages fetched, read or not: a bad first page uses it up.
+        let few = Limits {
+            store_pages: 2,
+            ..Limits::default()
+        };
+        let (stores, unread) = read_stores(&src, &few).expect("the listing reads");
+        assert_eq!(stores.iter().map(|s| s.id.0).collect::<Vec<_>>(), [1]);
+        assert_eq!((unread.named.len(), unread.cut), (1, 1), "{unread:?}");
+    }
+
+    /// A layer's why names the first page left out and counts every other page, not list lines.
+    #[test]
+    fn the_why_counts_pages_not_lines() {
+        let mut u = Unread::default();
+        for id in 0..10 {
+            u.note(id, "bad".into());
+        }
+        u.cut();
+        assert_eq!((u.pages(), u.named.len(), u.more, u.cut), (11, 8, 2, 1));
+        assert_eq!(
+            u.lines("store", "store").len(),
+            10,
+            "8 named, then two counts"
+        );
+        assert_eq!(
+            u.first_and_more("store", "store").as_deref(),
+            Some("store 0: bad; and 10 more pages")
+        );
+        let mut cut = Unread::default();
+        cut.cut();
+        assert_eq!(
+            cut.first_and_more("store", "store").as_deref(),
+            Some("1 store pages past the viewer's limit were not read")
+        );
+        assert_eq!(Unread::default().first_and_more("store", "store"), None);
     }
 
     /// Glass pages that do not decode are named and left out; the view still loads.
@@ -807,14 +878,16 @@ mod tests {
         let (sections, nets, unread) =
             read_glass(&src, &districts, &tun, &Limits::default()).expect("the listing reads");
         assert!(sections.is_empty() && nets.is_empty());
-        assert_eq!(unread.len(), 3, "{unread:?}");
+        assert_eq!(unread.named.len(), 3, "{unread:?}");
         let few = Limits {
             glass_pages: 1,
             ..Limits::default()
         };
         let (_, _, unread) = read_glass(&src, &districts, &tun, &few).expect("the listing reads");
+        assert_eq!((unread.named.len(), unread.cut), (1, 2), "{unread:?}");
         assert!(
             unread
+                .lines("district", "glass")
                 .iter()
                 .any(|u| u.starts_with("2 glass pages past the viewer's limit")),
             "{unread:?}"
