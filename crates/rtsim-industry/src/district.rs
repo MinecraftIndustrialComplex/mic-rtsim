@@ -322,6 +322,11 @@ pub struct District {
     /// raises no floor, since a round decided again after a crash must meet the epoch the chunk
     /// holds to be refused, and one past it would be applied twice.
     pub chunk_epochs: BTreeMap<ChunkPos, u32>,
+    /// The packages written into each postbox's offline buffer so far, per address and good: the
+    /// number each IND_WRITE_PACKAGE is named by ([`District::next_package`], RP-259). Saved with
+    /// the pages, so a replay after a crash numbers its packages from the save as the live run
+    /// did, whatever ticks it decides them at.
+    pub packages_decided: BTreeMap<(u32, u32), GoodVec>,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
     pub pending_ops: BTreeMap<OpId, ChunkPos>,
     /// What the replay made in the span each epoch reconciled, which trims are capped by.
@@ -371,8 +376,8 @@ pub const EDITORS_KEPT: usize = 8;
 /// A district page starts with this (OGC54: "IDS2" is the first format with one; before it a
 /// district page had no magic and no editors; "IDS3" adds the stations' ports and per-call
 /// amounts, choices SG32 and SG34; "IDS4", OG-9e: the latest sweep merged, and a fifth threat
-/// class in the defence record; "IDS5", slice R's review: reconcile epochs per chunk and each
-/// pending reconcile's round, RP-259). No older page opens.
+/// class in the defence record; "IDS5", slice R's review: reconcile epochs per chunk, each
+/// pending reconcile's round, and the packages written per postbox, RP-259). No older page opens.
 pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS5");
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
@@ -408,6 +413,7 @@ impl District {
             sim: None,
             epoch: 0,
             chunk_epochs: BTreeMap::new(),
+            packages_decided: BTreeMap::new(),
             pending: BTreeMap::new(),
             pending_ops: BTreeMap::new(),
             round_added: BTreeMap::new(),
@@ -475,6 +481,17 @@ impl District {
         let e = self.chunk_epochs.entry(chunk).or_insert(0);
         *e += 1;
         *e
+    }
+
+    /// The number of the next package of `good` for `address` written into postbox `inventory`:
+    /// one past the last (RP-259).
+    pub fn next_package(&mut self, inventory: u32, address: u32, good: Good) -> u64 {
+        let v = self
+            .packages_decided
+            .entry((inventory, address))
+            .or_default();
+        v.add(good, 1);
+        v.get(good) as u64
     }
 
     pub fn push_report(&mut self, r: ReconcileReport) {
@@ -1013,6 +1030,7 @@ mod persist_impls {
             self.sim.put(w);
             self.epoch.put(w);
             self.chunk_epochs.put(w);
+            self.packages_decided.put(w);
             self.pending.put(w);
             self.pending_ops.put(w);
             self.round_added.put(w);
@@ -1066,6 +1084,7 @@ mod persist_impls {
                 sim: Persist::get(r)?,
                 epoch: Persist::get(r)?,
                 chunk_epochs: Persist::get(r)?,
+                packages_decided: Persist::get(r)?,
                 pending: Persist::get(r)?,
                 pending_ops: Persist::get(r)?,
                 round_added: Persist::get(r)?,

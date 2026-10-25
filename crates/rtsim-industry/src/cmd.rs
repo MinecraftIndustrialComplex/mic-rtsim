@@ -199,9 +199,23 @@ impl IndustryOps {
     /// a deposit delta's district (two districts on one oil chunk write back at one tick, RP-275).
     /// Empty, it is `derive`'s id.
     pub fn derive_with(&mut self, seed: u64, at: Tick, cmd: &Cmd, extra: &[u8]) -> OpId {
+        self.derive_from(seed, at.0, at, cmd, extra)
+    }
+
+    /// The op id of the `n`th change of `cmd`'s kind and target, counted by the engine and saved
+    /// with its pages, whatever tick decided it (`at` only places it in the window): a package
+    /// written into a postbox's offline buffer (docs/choices-mowzie-build.md RP-259, P1-4 of the
+    /// review). Decided again after a crash, the `n`th package meets the op the world applied
+    /// whenever the replay decides it, and carries the same content.
+    pub fn derive_numbered(&mut self, seed: u64, at: Tick, cmd: &Cmd, n: u64) -> OpId {
+        self.derive_from(seed, NUMBERED, at, cmd, &n.to_le_bytes())
+    }
+
+    /// The id of `cmd` with `word` hashed where a derived id has its tick.
+    fn derive_from(&mut self, seed: u64, word: u64, at: Tick, cmd: &Cmd, extra: &[u8]) -> OpId {
         let mut bytes = Vec::with_capacity(64 + extra.len());
         bytes.extend_from_slice(&seed.to_le_bytes());
-        bytes.extend_from_slice(&at.0.to_le_bytes());
+        bytes.extend_from_slice(&word.to_le_bytes());
         bytes.extend_from_slice(&0u64.to_le_bytes());
         let mut w = rtsim_kernel::codec::Writer::new();
         crate::persist::Persist::put(&cmd.without_op(), &mut w);
@@ -251,6 +265,10 @@ impl IndustryOps {
         op.is_engine() && op.0 >> 56 == 0x49
     }
 }
+
+/// Where a derived id's hash has its tick, a numbered one's ([`IndustryOps::derive_numbered`]) has
+/// this, which no game time reaches (slice T's keyed ids use `u64::MAX`, RP-180).
+const NUMBERED: u64 = u64::MAX - 1;
 
 /// SplitMix64's finalizer: spreads FNV's bits over the 56 kept.
 fn mix(mut z: u64) -> u64 {

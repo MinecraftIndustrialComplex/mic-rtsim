@@ -310,7 +310,10 @@ fn place_of(topo: &rtsim_space::Topologies, d: &District, at: Tick) -> Option<At
 /// train, the deposit, the postbox's good, the frogport's good) and the tick name it: decided
 /// again, it meets the op Java applied and is answered DUPLICATE, so the live change stands,
 /// applied once (lose, never double). A deposit delta names its district too, outside the
-/// command ([`IndustryOps::derive_with`], RP-275). A chunk reconcile keeps its whole content:
+/// command ([`IndustryOps::derive_with`], RP-275). A package is named by its number at its
+/// postbox in place of the tick, one package a command ([`IndustryOps::derive_numbered`], RP-259):
+/// the engine books what it decides, so the same op must always carry the same package. A chunk
+/// reconcile keeps its whole content:
 /// Java's chunk epoch guards it whatever its op, and its epoch and deltas tell two rounds apart.
 fn op_key(c: &Cmd) -> Cmd {
     let marks = |g: &GoodVec| GoodVec::from_pairs(g.goods().map(|g| (g, 1)));
@@ -3098,18 +3101,33 @@ impl Engine {
             i.known_at = i.known_at.max(at);
         }
         self.stats.packages_written += count as u64;
-        let mut c = Cmd::WritePackage(WritePackage {
-            op: OpId(0),
-            district: d,
-            inventory: inv,
-            pos,
-            address,
-            count: count as u32,
-            goods: GoodVec::from_pairs([(g, batch)]),
-        });
-        // The packages' own tick in the replay, keyed by the postbox and good (RP-272).
-        c.set_op(self.ops.derive(self.world_seed, at, &op_key(&c)));
-        self.out.push(c);
+        // One command per package, named by its number at this postbox, address and good, not by
+        // the tick (RP-259, P1-4 of the review). Java journals no count for a written package
+        // (WritePackages.java answers APPLIED with no record), so the engine books the packages it
+        // decides: a replay that decided the live run's op with fewer packages, or one live
+        // package at another tick (its room came from a latest-wins postbox sample the replay
+        // never sees), left goods in the mail pool that Java had written, and wrote them again.
+        // Numbered, the replay's `n`th package is the live run's `n`th, the same content under the
+        // same op, which Java answers DUPLICATE whenever the replay decides it.
+        let numbers: Vec<u64> = (0..count)
+            .map(|_| dist.next_package(inv, address, g))
+            .collect();
+        for n in numbers {
+            let mut c = Cmd::WritePackage(WritePackage {
+                op: OpId(0),
+                district: d,
+                inventory: inv,
+                pos,
+                address,
+                count: 1,
+                goods: GoodVec::from_pairs([(g, batch)]),
+            });
+            c.set_op(
+                self.ops
+                    .derive_numbered(self.world_seed, at, &op_key(&c), n),
+            );
+            self.out.push(c);
+        }
     }
 
     /// At a season boundary, members whose season model is missing freeze; the others swap models
