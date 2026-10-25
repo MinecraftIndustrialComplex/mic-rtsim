@@ -22,7 +22,8 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
 use rtsim_world::{World, WorldConfig};
 use train_raid::{
-    IRON, LOAD, Landed, Order, Raider, across_a_crash, industry, industry_newer, pages, restore,
+    Dedup, IRON, LOAD, Landed, Order, Raider, across_a_crash, across_a_crash_on, industry,
+    industry_newer, pages, restore,
 };
 
 const SEED: u64 = 19;
@@ -177,28 +178,41 @@ fn a_dragons_train_raid_held_by_industry_is_booked_once() {
     assert_eq!(e.books.stolen.total(), live.taken() as i128);
 }
 
-/// What A guarantees by which of Java's saves landed after the raid's application (RP-184): both
-/// (J1) or neither (J2), the goods leave once; the train's goods without the journal (J3), twice,
-/// as on main (the double RP-185's Java change would turn into a loss); the journal without the
-/// goods (J4), never: Java remembers the op and the goods it restored stay on the train while
-/// the books hold them stolen (a loss).
+/// What each of Java's saves landing after the raid's application gives (RP-184, RP-196), by
+/// T2's ring and by the journal's index alone (slice T, and T2's fallback). Both saves (J1) or
+/// neither (J2): once, by either. By the ring, the train's goods and the op it remembers are one
+/// save, so J3 (the goods without the journal) and J4 (the journal without the goods) give once
+/// too. By the journal's index: J3 twice, as on main (Java forgot the op the goods remember); J4
+/// never, a dupe (Java remembers the op the restored goods forgot, the train keeps its goods
+/// while the dragon is credited again).
 #[test]
-fn which_of_javas_saves_landed_decides_once_twice_or_never() {
+fn which_of_javas_saves_landed_by_the_ring_and_by_the_journal() {
     let (r, e) = dragon();
     let live = across_a_crash(r, e, TRAIN, S, C, Landed::J1, Order::ResultFirst)
         .java
         .taken();
-    for (landed, taken) in [
-        (Landed::J1, live),
-        (Landed::J2, live),
-        (Landed::J3, 2 * live),
-        (Landed::J4, 0),
+    assert!(live > 0);
+    for (dedup, landed, taken) in [
+        (Dedup::Ring, Landed::J1, live),
+        (Dedup::Ring, Landed::J2, live),
+        (Dedup::Ring, Landed::J3, live),
+        (Dedup::Ring, Landed::J4, live),
+        (Dedup::Journal, Landed::J1, live),
+        (Dedup::Journal, Landed::J2, live),
+        (Dedup::Journal, Landed::J3, 2 * live),
+        (Dedup::Journal, Landed::J4, 0),
     ] {
         let (r, e) = dragon();
-        let x = across_a_crash(r, e, TRAIN, S, C, landed, Order::ResultFirst);
-        assert_eq!(x.java_again.taken(), taken, "{landed:?}");
+        let x = across_a_crash_on(dedup, r, e, TRAIN, S, C, landed, Order::ResultFirst);
+        assert_eq!(x.java_again.taken(), taken, "{dedup:?} {landed:?}");
+        // The dragon raided again in its replay, and is credited whatever Java did.
+        assert_eq!(x.again.d.stats.train_raids, 1, "{dedup:?} {landed:?}");
         // The engine's books hold the re-decided raid's loot whatever Java did.
-        assert_eq!(x.restarted.books.stolen.total(), live as i128, "{landed:?}");
+        assert_eq!(
+            x.restarted.books.stolen.total(),
+            live as i128,
+            "{dedup:?} {landed:?}"
+        );
     }
 }
 

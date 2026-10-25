@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! A raider's train raid across a crash, for the raiders' tests (dragons here; conflict and ships
-//! include this file by path). docs/choices-mowzie-build.md RP-180 to RP-186.
+//! include this file by path). docs/choices-mowzie-build.md RP-180 to RP-186, RP-190, RP-191.
 //!
 //! An industry engine with one booked leg, an infrastructure that sends a raider's train raids
 //! to it, and the real train as Java keeps it ([`JavaTrain`]). The crash is modelled as the host
@@ -9,10 +9,12 @@
 //! while industry is not held: it comes back from the same pages and moves on to Java's present
 //! (`c`) before the raider re-decides, so the re-decided raid books at industry's `now`.
 //!
-//! Java's side as it is (RP-184): the train's goods are saved in `create_tracks.dat`
-//! (RailwaySavedData), the op index TrainWatch dedups by (`Industry.opApplied`) in the journal
-//! (`mic_rtsim_journal.dat`), with the IND_CARRIAGE_RESULTs the journal replays. A crash restores
-//! each from its own last save: [`JavaTrain::crash`] takes each part from the save the case names.
+//! Java's side (RP-184, RP-190): the train's goods are saved in `create_tracks.dat`
+//! (RailwaySavedData), the IND_CARRIAGE_RESULTs the journal replays in `mic_rtsim_journal.dat`.
+//! TrainWatch dedups by the train's own ring of applied ops, saved in the train's NBT with its
+//! goods ([`Dedup::Ring`], slice T2), or, when the ring's mixin did not apply, by the journal's
+//! op index (`Industry.opApplied`, [`Dedup::Journal`], all slice T had). A crash restores each
+//! file from its own last save: [`JavaTrain::crash`] takes each part from the save the case names.
 
 #![allow(dead_code)]
 
@@ -87,13 +89,26 @@ pub fn restore(p: &[(PageKey, Vec<u8>)]) -> Engine {
     Engine::restore(p.iter().cloned(), tunables()).expect("industry restores")
 }
 
-/// The real train as Java keeps it: the carriage's goods (`create_tracks.dat`) and the op index
-/// with the journaled results (`mic_rtsim_journal.dat`).
+/// What TrainWatch.carriageDelta dedups by (RP-191).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dedup {
+    /// The train's ring, saved with its goods (slice T2, the ring's mixin applied).
+    Ring,
+    /// The journal's op index alone: slice T, and T2's fallback when the mixin did not apply.
+    Journal,
+}
+
+/// The real train as Java keeps it: the carriage's goods and the ring of applied ops
+/// (`create_tracks.dat`), and the op index with the journaled results (`mic_rtsim_journal.dat`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct JavaTrain {
     pub train: TrainId,
+    pub dedup: Dedup,
     /// Carriage 0's goods.
     pub goods: GoodVec,
+    /// The train's ring (`mic_rtsim:applied_ops`): every carriage delta applied to it, saved with
+    /// its goods. Unbounded here: the real ring keeps the last 64 (RP-192).
+    pub ring: BTreeSet<rtsim_kernel::journal::OpId>,
     /// The journal's op index (`appliedCmdOps`): every carriage delta applied.
     pub ops: BTreeSet<rtsim_kernel::journal::OpId>,
     /// The journal's IND_CARRIAGE_RESULTs, in order.
@@ -116,10 +131,12 @@ pub enum Landed {
 }
 
 impl JavaTrain {
-    pub fn new(train: TrainId) -> JavaTrain {
+    pub fn new(train: TrainId, dedup: Dedup) -> JavaTrain {
         JavaTrain {
             train,
+            dedup,
             goods: GoodVec::from_pairs([(IRON, LOAD)]),
+            ring: BTreeSet::new(),
             ops: BTreeSet::new(),
             results: Vec::new(),
             applied: 0,
@@ -129,9 +146,10 @@ impl JavaTrain {
     }
 
     /// Java takes the engine's commands, as TrainWatch.carriageDelta does: a carriage delta whose
-    /// op the index holds is answered DUPLICATE (the engine is told, as rtsim-jni's
-    /// `command_result` tells it); any other is applied as far as the carriage goes, its op
-    /// indexed, and its IND_CARRIAGE_RESULT journaled and handed to the engine.
+    /// op the ring (or, by [`Dedup::Journal`], the index) holds is answered DUPLICATE (the engine
+    /// is told, as rtsim-jni's `answered_again` tells it); any other is applied as far as the
+    /// carriage goes, its op put in the ring and the index, and its IND_CARRIAGE_RESULT journaled
+    /// and handed to the engine.
     pub fn take(&mut self, e: &mut Engine) {
         for c in e.drain_commands() {
             let Cmd::CarriageDelta(d) = c else {
@@ -139,7 +157,11 @@ impl JavaTrain {
             };
             assert_eq!(d.train, self.train);
             assert_eq!(d.reason, CarriageReason::Loot);
-            if self.ops.contains(&d.op) {
+            let seen = match self.dedup {
+                Dedup::Ring => &self.ring,
+                Dedup::Journal => &self.ops,
+            };
+            if seen.contains(&d.op) {
                 self.duplicates += 1;
                 if e.command_duplicate(d.op) {
                     self.dropped += 1;
@@ -147,6 +169,7 @@ impl JavaTrain {
                 continue;
             }
             self.applied += 1;
+            self.ring.insert(d.op);
             self.ops.insert(d.op);
             let mut entries = Vec::new();
             for &(carriage, good, delta) in &d.entries {
@@ -184,6 +207,7 @@ impl JavaTrain {
         };
         JavaTrain {
             goods: tracks.goods.clone(),
+            ring: tracks.ring.clone(),
             ops: journal.ops.clone(),
             results: journal.results.clone(),
             ..self.clone()
@@ -274,12 +298,28 @@ pub struct Crashed<R> {
     pub java_again: JavaTrain,
 }
 
-/// The raider and industry run live to `s` and are saved there (one host batch), then on to `c`,
-/// Java taking industry's commands; the server dies at `c`, Java's saves as `landed` says. The
-/// restart: the raider and industry from `s`'s pages, industry moved on to `c` (not held), the
-/// journal's carriage results from `s` on in `order`, and the raider's replay to `c`, Java taking
-/// what industry decides.
+/// [`across_a_crash_on`] with T2's ring, as Java dedups when the ring's mixin applied. J1 and J2
+/// give the same under either dedup.
 pub fn across_a_crash<R: Raider>(
+    r: R,
+    e: Engine,
+    train: TrainId,
+    s: Tick,
+    c: Tick,
+    landed: Landed,
+    order: Order,
+) -> Crashed<R> {
+    across_a_crash_on(Dedup::Ring, r, e, train, s, c, landed, order)
+}
+
+/// The raider and industry run live to `s` and are saved there (one host batch), then on to `c`,
+/// Java taking industry's commands and deduping by `dedup`; the server dies at `c`, Java's saves
+/// as `landed` says. The restart: the raider and industry from `s`'s pages, industry moved on to
+/// `c` (not held), the journal's carriage results from `s` on in `order`, and the raider's replay
+/// to `c`, Java taking what industry decides.
+#[allow(clippy::too_many_arguments)]
+pub fn across_a_crash_on<R: Raider>(
+    dedup: Dedup,
     mut r: R,
     mut e: Engine,
     train: TrainId,
@@ -288,7 +328,7 @@ pub fn across_a_crash<R: Raider>(
     landed: Landed,
     order: Order,
 ) -> Crashed<R> {
-    let mut java = JavaTrain::new(train);
+    let mut java = JavaTrain::new(train, dedup);
     r.run(&mut e, s);
     java.take(&mut e);
     let saved = r.save();
@@ -340,7 +380,7 @@ pub fn industry_newer<R: Raider>(
     c: Tick,
     c2: Tick,
 ) -> (JavaTrain, JavaTrain, Engine) {
-    let mut java = JavaTrain::new(train);
+    let mut java = JavaTrain::new(train, Dedup::Ring);
     r.run(&mut e, s);
     java.take(&mut e);
     let saved = r.save();
