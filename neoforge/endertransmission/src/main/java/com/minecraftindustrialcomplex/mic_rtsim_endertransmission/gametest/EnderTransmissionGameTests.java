@@ -31,8 +31,8 @@ public final class EnderTransmissionGameTests {
 
     /**
      * I13 as corrected: a channel's endpoints are one district. Four transmitters at the corners of a 3 by
-     * 3 chunk square, so no two are in neighbouring chunks (a district is a group of 8-neighbour industrial
-     * chunks) and nothing else joins them: two item transmitters on channel 3 with a password of their
+     * 3 chunk square, so no two are in neighbouring chunks and nothing but a channel joins them (SECTIONS.md
+     * §2.1): two item transmitters on channel 3 with a password of their
      * own, and two rotation transmitters on channel 4 with another. Each pair is one district holding both
      * chunks and not the chunk between; the two pairs are two districts. Ten iron
      * through the item channel (in at one end, out at the other) is no port. An item transmitter on the

@@ -238,6 +238,16 @@ public final class RtsimApi {
     }
 
     /**
+     * A plugin saw a chief at home change its crystal (the Frostmaw's steal, MZB-274): CHIEF_STATE with
+     * {@code flags} (1: it holds its crystal) and the body's health, for a camp's own chief body or a chief
+     * puppet of a conflict party; any other entity is ignored. Latest wins per faction, written at the
+     * start of the next tick.
+     */
+    public static void chiefState(net.minecraft.world.entity.LivingEntity body, int flags) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().chiefState(body, flags);
+    }
+
+    /**
      * A conflict party member carried items off from a container (BAND_LOOTED). False when the entity
      * is no live member.
      */

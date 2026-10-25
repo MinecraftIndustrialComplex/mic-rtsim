@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.body;
 
 import com.minecraftindustrialcomplex.mic_rtsim.body.vanilla.TraderLlamaAdapter;
 import com.minecraftindustrialcomplex.mic_rtsim.body.vanilla.WanderingTraderAdapter;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Collection;
@@ -9,6 +10,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Every body adapter and group kind the bridge knows, by name. Vanilla's are built in; plugins add
@@ -87,6 +89,29 @@ public final class BodyKinds {
             return STAND_INS.getOrDefault(unit, STAND_IN_FALLBACK);
         }
         return body;
+    }
+
+    // ---- bare bodies (review C) ---------------------------------------------------------------------
+
+    private static final Map<String, Consumer<Mob>> BARES = new LinkedHashMap<>();
+
+    /**
+     * Gives a conflict body kind its bare form: what a body made for a unit that fights as its
+     * {@code without_crystal} row has done to it after it is made (a Frostmaw robbed of its crystal comes
+     * back on a raid without one; a fresh Frostmaw is made with its own). Keyed like
+     * {@link #registerStandIn}, by full body name or by unit name. Call during mod construction.
+     */
+    public static synchronized void registerBare(String body, Consumer<Mob> strip) {
+        BARES.put(body, strip);
+    }
+
+    /** Makes {@code m}, a body of conflict kind {@code body}, bare when its kind has a bare form; nothing otherwise. */
+    public static synchronized void makeBare(String body, Mob m) {
+        Consumer<Mob> strip = BARES.get(body);
+        if (strip == null && body != null)
+            strip = BARES.get(body.substring(body.lastIndexOf('/') + 1));
+        if (strip != null)
+            strip.accept(m);
     }
 
     public static synchronized void registerBody(BodyAdapter adapter) {

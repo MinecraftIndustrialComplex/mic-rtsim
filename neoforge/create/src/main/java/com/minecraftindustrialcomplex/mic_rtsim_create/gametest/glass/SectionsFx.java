@@ -19,7 +19,8 @@ import java.util.Locale;
  *
  * <p>Units are read from {@link GlassReport#units()}, which is empty for fewer than two (choice SC74), so a
  * fixture whose own lines make one unit has a bystander: {@link SawShaftsFactory} moved clear of it
- * ({@link #bystander}), in the same district (within one chunk of it) and sharing nothing with it.
+ * ({@link #bystander}), in the same district (within one chunk of it, the chunks joined by
+ * {@link GlassCorpus#join}) and sharing nothing with it.
  *
  * <p>Every check logs one {@code [gametest] sec1fx <test>: check <what>: ok|FAIL|GAP} line. A GAP is a check
  * the engine or the bridge does not meet yet (the line names it): it never fails the test, and it is marked

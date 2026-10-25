@@ -19,6 +19,14 @@ use rtsim_knowledge::{ActorId, Report, ReportId, ReportKind};
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 
+/// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death, so none
+/// repeats another's op.
+fn next_op() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    (1 << 63) | (N.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 fn day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
 }
@@ -322,6 +330,7 @@ fn a_band_wiped_out_on_its_way_is_a_beaten_raid_and_at_its_muster_none() {
                 body,
                 count,
                 killer: synth::PLAYER,
+                op: next_op(),
             });
             r.ingest(o, at);
         }
