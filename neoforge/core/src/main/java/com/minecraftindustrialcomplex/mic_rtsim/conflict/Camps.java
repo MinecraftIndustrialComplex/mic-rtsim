@@ -747,10 +747,19 @@ public final class Camps {
             return false;
         int x0 = Mth.floor(c.spot.x - r) >> 4, x1 = Mth.floor(c.spot.x + r) >> 4;
         int z0 = Mth.floor(c.spot.z - r) >> 4, z1 = Mth.floor(c.spot.z + r) >> 4;
-        for (int x = x0; x <= x1; x++)
-            for (int z = z0; z <= z1; z++)
-                if (!entitiesIn(level, ChunkPos.asLong(x, z)) && level.areEntitiesLoaded(ChunkPos.asLong(x, z)))
+        double r2 = r * r;
+        for (int x = x0; x <= x1; x++) {
+            // the chunk's nearest point to the spot: the radius is a circle, the scan a square
+            double dx = Math.max(Math.max(x * 16 - c.spot.x, c.spot.x - (x * 16 + 16)), 0);
+            for (int z = z0; z <= z1; z++) {
+                double dz = Math.max(Math.max(z * 16 - c.spot.z, c.spot.z - (z * 16 + 16)), 0);
+                if (dx * dx + dz * dz > r2)
+                    continue;
+                long ch = ChunkPos.asLong(x, z);
+                if (!entitiesIn(level, ch) && level.areEntitiesLoaded(ch))
                     return true;
+            }
+        }
         return false;
     }
 
