@@ -42,7 +42,9 @@ use rtsim_kernel::clock::Tick;
 
 use super::graph::Graph;
 use super::q::Q;
-use super::records::{CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, NodeKind, ProbeSet, model};
+use super::records::{
+    CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, GraphDomain, NodeKind, ProbeSet, model,
+};
 use super::report::{self, GoodReport, Report};
 use super::sections::Sections;
 use super::solve::{self, Regime, Solution, burn};
@@ -140,14 +142,52 @@ struct UnitWin {
     stt: f64,
 }
 
-/// The least capacity at which a unit's window saw one of its kinetic domains run (SECTIONS.md
-/// §3.3): the solve's running level there, by its selector, and that level's capacity. The domain
-/// is its compile's index; a recompile that carries the unit maps it by the unit's own nodes on it.
+/// The least capacity at which a unit's window saw one of its kinetic domains run at one speed
+/// (SECTIONS.md §3.3): the solve's capacity there and that speed, as [`speed_key`] keeps it. One
+/// per speed the domain ran at (a faster row may have more capacity and fail first), in
+/// [`cap_order`]. The domain is its compile's index; a recompile that carries the unit maps it by
+/// the unit's own nodes on it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DomCap {
     pub domain: u32,
-    pub selector: u32,
+    /// The source whose own speed `speed` is, by position; None: `speed` is the reference's.
+    pub source: Option<i64>,
+    pub speed: f64,
     pub capacity: f64,
+}
+
+/// The order a unit's [`DomCap`]s are kept in: by domain, then speed.
+fn cap_order(a: &DomCap, b: &DomCap) -> std::cmp::Ordering {
+    (a.domain, a.source)
+        .cmp(&(b.domain, b.source))
+        .then(a.speed.total_cmp(&b.speed))
+}
+
+/// Domain `dom`'s reference speed `v` in a frame a recompile keeps (its reference may move with
+/// Create's root, choice SC44): the own speed of its lowest source with a known ratio, by
+/// position, else the reference's.
+fn speed_key(dom: &GraphDomain, v: f64) -> (Option<i64>, f64) {
+    match dom
+        .sources
+        .iter()
+        .find_map(|s| s.ratio().filter(|&r| r != 0.0).map(|r| (s.pos, r)))
+    {
+        Some((pos, r)) => (Some(pos), v * r),
+        None => (None, v),
+    }
+}
+
+/// The reference speed of `dom` that [`speed_key`] kept as (`source`, `speed`), if it still holds
+/// that source with a known ratio.
+fn speed_from_key(dom: &GraphDomain, source: Option<i64>, speed: f64) -> Option<f64> {
+    match source {
+        None => Some(speed),
+        Some(pos) => {
+            let i = dom.sources.binary_search_by_key(&pos, |s| s.pos).ok()?;
+            let r = dom.sources[i].ratio().filter(|&r| r != 0.0)?;
+            Some(speed / r)
+        }
+    }
 }
 
 /// One judging unit's learning state (SECTIONS.md §3.3, §3.4): the district's window fields, per
@@ -716,9 +756,10 @@ fn domain_anchors(
     best
 }
 
-/// Would domain `c.domain` of `g` stop at the level its unit's passed window ran at least
-/// capacity on (§3.6's domain check): Create's stress at that level's speed above that capacity.
-/// A domain with stress disabled never does; one without that level does (it cannot be checked).
+/// Would domain `c.domain` of `g` stop at the speed its unit's passed window ran at least
+/// capacity on (§3.6's domain check): Create's stress at that speed above that capacity. A domain
+/// with stress disabled never does; one that no longer holds the source the speed was kept by
+/// does (it cannot be checked).
 fn over_capacity(g: &Graph, c: &DomCap) -> bool {
     let Some(dom) = g.domains.get(c.domain as usize) else {
         return true;
@@ -726,16 +767,10 @@ fn over_capacity(g: &Graph, c: &DomCap) -> bool {
     if dom.flags & super::records::domain_flags::STRESS_DISABLED != 0 {
         return false;
     }
-    let Some(lv) = dom.levels.iter().find(|l| l.selector == c.selector) else {
+    let Some(speed) = speed_from_key(dom, c.source, c.speed) else {
         return true;
     };
-    let speed = f64::from(lv.speed_num) / f64::from(lv.speed_den.max(1));
-    let mut stress = 0.0f64;
-    for m in &dom.members {
-        let ratio = f64::from(m.ratio_num) / f64::from(m.ratio_den.max(1));
-        stress += f64::from(m.count) * (ratio * speed).abs() * m.impact;
-    }
-    c.capacity < stress
+    c.capacity < super::solve::domain_stress(dom, speed)
 }
 
 /// The span of `unit`'s rows.
@@ -1082,14 +1117,14 @@ impl Compiled {
             let mut stale = false;
             match open {
                 Some(mut c) => {
-                    c.sort_by_key(|x| x.domain);
+                    c.sort_by(cap_order);
                     st.caps = c;
                 }
                 None => stale = true,
             }
             match passed {
                 Some(mut c) => {
-                    c.sort_by_key(|x| x.domain);
+                    c.sort_by(cap_order);
                     stale |= st.passed.is_some() && c.iter().any(|x| over_capacity(&self.graph, x));
                     st.passed_caps = c;
                 }
@@ -1712,7 +1747,7 @@ impl Compiled {
             w.last = at;
             times[u] = t;
         }
-        // The least capacity each unit's domains ran at in this sample's regime (§3.3).
+        // The least capacity each unit's domains ran at, per speed, in this sample's regime (§3.3).
         for (u, &took) in take.iter().enumerate() {
             if !took || self.unit_state[u].win.is_none() {
                 continue;
@@ -1721,24 +1756,23 @@ impl Compiled {
                 let Some(Some(l)) = self.sol.dom_level.get(d as usize) else {
                     continue;
                 };
-                let Some(lv) = self.graph.domains[d as usize].levels.get(*l as usize) else {
+                let dom = &self.graph.domains[d as usize];
+                let Some(lv) = dom.levels.get(*l as usize) else {
                     continue;
                 };
+                let capacity = self.sol.dom_cap.get(d as usize).copied().unwrap_or(0.0);
+                let (source, speed) = speed_key(dom, lv.speed());
+                let cap = DomCap {
+                    domain: d,
+                    source,
+                    speed,
+                    capacity,
+                };
                 let caps = &mut self.unit_state[u].caps;
-                match caps.binary_search_by_key(&d, |c| c.domain) {
-                    Ok(i) if caps[i].capacity <= lv.capacity => {}
-                    Ok(i) => {
-                        caps[i].selector = lv.selector;
-                        caps[i].capacity = lv.capacity;
-                    }
-                    Err(i) => caps.insert(
-                        i,
-                        DomCap {
-                            domain: d,
-                            selector: lv.selector,
-                            capacity: lv.capacity,
-                        },
-                    ),
+                match caps.binary_search_by(|c| cap_order(c, &cap)) {
+                    Ok(i) if caps[i].capacity <= capacity => {}
+                    Ok(i) => caps[i] = cap,
+                    Err(i) => caps.insert(i, cap),
                 }
             }
         }
@@ -2598,7 +2632,7 @@ impl Compiled {
             .all(|p| (p[0].unit, p[0].good) < (p[1].unit, p[1].good));
         let nd = self.graph.domains.len() as u32;
         let caps_fit = |c: &[DomCap]| {
-            c.iter().all(|x| x.domain < nd) && c.windows(2).all(|p| p[0].domain < p[1].domain)
+            c.iter().all(|x| x.domain < nd) && c.windows(2).all(|p| cap_order(&p[0], &p[1]).is_lt())
         };
         sorted
             && self.rows.iter().all(|r| {
@@ -2800,7 +2834,8 @@ mod persist_impls {
     });
     persist_struct!(DomCap {
         domain,
-        selector,
+        source,
+        speed,
         capacity
     });
     persist_struct!(UnitState {

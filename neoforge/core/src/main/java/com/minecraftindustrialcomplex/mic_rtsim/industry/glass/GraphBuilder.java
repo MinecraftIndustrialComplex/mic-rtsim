@@ -627,25 +627,55 @@ public final class GraphBuilder {
 
     // ---- kinetic domains ------------------------------------------------------------------------
 
-    /** Level24: the root source's speed (RPM, signed) and the domain's capacity in SU at that level. */
+    /**
+     * Level24. A domain's speed row: the reference's speed (RPM, signed), selector 0, capacity 0. A source's row:
+     * the boiler level (0 for a fixed source), the source's own signed speed and its capacity at that speed in SU.
+     */
     public record Level(int selector, Rat speed, double capacity) {}
 
-    /** Member24: {@code count} blocks at {@code ratio × root speed}, {@code impact} SU per RPM each. */
+    /** Member24: {@code count} blocks at {@code ratio × reference speed}, {@code impact} SU per RPM each. */
     public record Member(int node, int count, Rat ratio, double impact) {}
+
+    /**
+     * Source32: one Create source of a domain. A driven source (an engine's shaft) has a row per boiler level and
+     * the boiler node as its driver; a fixed one has one row. {@code ratio} is its speed over the reference's
+     * (null: unknown), {@code current} the row now (NONE: unknown).
+     */
+    public static final class Source {
+        public int driver = NONE;
+        public final List<Level> levels = new ArrayList<>();
+        public int current;
+        public Rat ratio;
+        public final long pos;
+
+        public Source(long pos) {
+            this.pos = pos;
+        }
+    }
 
     public static final class Domain {
         public final int index;
         public final long network;
+        /** The speed row the reference turns at now, NONE when none is. */
         public int current;
-        public int driver = NONE;
         public int flags;
         public double liveStress, liveCapacity;
+        /** The speed rows. */
         public final List<Level> levels = new ArrayList<>();
+        public final List<Source> sources = new ArrayList<>();
         public final List<Member> members = new ArrayList<>();
 
         Domain(int index, long network) {
             this.index = index;
             this.network = network;
+        }
+
+        /** The sources' rows in all. */
+        public int sourceLevels() {
+            int n = 0;
+            for (Source s : sources)
+                n += s.levels.size();
+            return n;
         }
 
         /** Adds a member, merging it into an equal one without a node (same ratio and impact). */
@@ -722,15 +752,22 @@ public final class GraphBuilder {
             if (GlassRecords.Recipe.size(x.inputs.size() + x.outputs.size()) > MAX_RECORD)
                 return "a recipe has " + (x.inputs.size() + x.outputs.size()) + " terms";
         for (Domain d : domains) {
-            if (d.driver != NONE && (d.driver < 0 || d.driver >= n))
-                return "domain " + d.index + " driver " + d.driver;
-            if (!d.levels.isEmpty() && (d.current < 0 || d.current >= d.levels.size()))
-                return "domain " + d.index + " current level " + d.current + " of " + d.levels.size();
+            if (!d.levels.isEmpty() && d.current != NONE && (d.current < 0 || d.current >= d.levels.size()))
+                return "domain " + d.index + " current speed row " + d.current + " of " + d.levels.size();
+            if (d.levels.size() > GlassRecords.Domain.MAX_SPEED_ROWS)
+                return "domain " + d.index + " has " + d.levels.size() + " speed rows";
+            for (Source s : d.sources) {
+                if (s.driver != NONE && (s.driver < 0 || s.driver >= n))
+                    return "domain " + d.index + " source driver " + s.driver;
+                if (s.current != NONE && (s.current < 0 || s.current >= s.levels.size()))
+                    return "domain " + d.index + " source current row " + s.current + " of " + s.levels.size();
+            }
             for (Member m : d.members)
                 if (m.node() != NONE && (m.node() < 0 || m.node() >= n))
                     return "domain " + d.index + " member node " + m.node();
-            if (GlassRecords.Domain.size(d.levels.size(), d.members.size()) > MAX_RECORD)
-                return "domain " + d.index + " has " + d.levels.size() + " levels and " + d.members.size() + " members";
+            if (GlassRecords.Domain.size(d.levels.size(), d.sources.size(), d.sourceLevels(), d.members.size()) > MAX_RECORD)
+                return "domain " + d.index + " has " + d.levels.size() + " speed rows, " + d.sources.size() + " sources with "
+                        + d.sourceLevels() + " rows and " + d.members.size() + " members";
         }
         return null;
     }
@@ -810,25 +847,38 @@ public final class GraphBuilder {
             out.add(new Encoded(GlassRecords.IND_GRAPH_RECIPE, terms, b.array()));
         }
         for (Domain d : domains) {
-            ByteBuffer b = buf(GlassRecords.Domain.size(d.levels.size(), d.members.size()));
+            int nsl = d.sourceLevels();
+            ByteBuffer b = buf(GlassRecords.Domain.size(d.levels.size(), d.sources.size(), nsl, d.members.size()));
             head(b, districtId, compile, d.index);
             b.putLong(GlassRecords.Domain.NETWORK, d.network);
             b.putInt(GlassRecords.Domain.N_LEVELS, d.levels.size());
             b.putInt(GlassRecords.Domain.CURRENT, d.current);
-            b.putInt(GlassRecords.Domain.DRIVER, d.driver);
             b.putInt(GlassRecords.Domain.FLAGS, d.flags);
             b.putDouble(GlassRecords.Domain.LIVE_STRESS, d.liveStress);
             b.putDouble(GlassRecords.Domain.LIVE_CAPACITY, d.liveCapacity);
-            for (int i = 0; i < d.levels.size(); i++) {
-                Level l = d.levels.get(i);
-                Rat s = l.speed().fitSigned();
-                int at = GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL;
-                b.putInt(at + GlassRecords.Domain.L_SELECTOR, l.selector());
-                b.putInt(at + GlassRecords.Domain.L_SPEED_NUM, (int) s.num());
-                b.putInt(at + GlassRecords.Domain.L_SPEED_DEN, (int) s.den());
-                b.putDouble(at + GlassRecords.Domain.L_CAPACITY, l.capacity());
+            b.putInt(GlassRecords.Domain.N_SOURCES, d.sources.size());
+            b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
+            b.putInt(GlassRecords.Domain.N_FOREIGN, 0);
+            for (int i = 0; i < d.levels.size(); i++)
+                putLevel(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, d.levels.get(i));
+            int s0 = GlassRecords.Domain.sources(d.levels.size());
+            int r0 = GlassRecords.Domain.sourceLevels(d.levels.size(), d.sources.size());
+            int first = 0;
+            for (int i = 0; i < d.sources.size(); i++) {
+                Source src = d.sources.get(i);
+                int at = s0 + i * GlassRecords.Domain.SOURCE;
+                Rat q = src.ratio == null ? null : src.ratio.fitSigned();
+                b.putInt(at + GlassRecords.Domain.S_DRIVER, src.driver);
+                b.putInt(at + GlassRecords.Domain.S_FIRST, first);
+                b.putInt(at + GlassRecords.Domain.S_ROWS, src.levels.size());
+                b.putInt(at + GlassRecords.Domain.S_CURRENT, src.current);
+                b.putInt(at + GlassRecords.Domain.S_RATIO_NUM, q == null ? 0 : (int) q.num());
+                b.putInt(at + GlassRecords.Domain.S_RATIO_DEN, q == null ? 0 : (int) q.den());
+                b.putLong(at + GlassRecords.Domain.S_POS, src.pos);
+                for (Level l : src.levels)
+                    putLevel(b, r0 + (first++) * GlassRecords.Domain.LEVEL, l);
             }
-            int m0 = GlassRecords.Domain.members(d.levels.size());
+            int m0 = GlassRecords.Domain.members(d.levels.size(), d.sources.size(), nsl);
             for (int i = 0; i < d.members.size(); i++) {
                 Member m = d.members.get(i);
                 Rat q = m.ratio().fitSigned();
@@ -842,6 +892,14 @@ public final class GraphBuilder {
             out.add(new Encoded(GlassRecords.IND_GRAPH_DOMAIN, d.members.size(), b.array()));
         }
         return out;
+    }
+
+    private static void putLevel(ByteBuffer b, int at, Level l) {
+        Rat s = l.speed().fitSigned();
+        b.putInt(at + GlassRecords.Domain.L_SELECTOR, l.selector());
+        b.putInt(at + GlassRecords.Domain.L_SPEED_NUM, (int) s.num());
+        b.putInt(at + GlassRecords.Domain.L_SPEED_DEN, (int) s.den());
+        b.putDouble(at + GlassRecords.Domain.L_CAPACITY, l.capacity());
     }
 
     private static ByteBuffer buf(int size) {

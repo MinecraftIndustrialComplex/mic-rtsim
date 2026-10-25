@@ -847,11 +847,19 @@ public final class PackageStores {
      * {@code epoch}/{@code serial}, last at {@code pos}; no frogport, destination, packages or goods.
      */
     static void journalRelease(Industry ind, long store, BlockPos pos, int epoch, long serial) {
+        journalKey(ind, store, pos, IndRecords.ChainPackage.CHAIN_RELEASED, epoch, serial);
+    }
+
+    /**
+     * Journals and commits one record of a key only, {@code CHAIN_RELEASED} or {@code CHAIN_DRAWN} (slice S4c2: the
+     * frontier marked the package keyed {@code epoch}/{@code serial} drawn), at {@code pos}.
+     */
+    static void journalKey(Industry ind, long store, BlockPos pos, int direction, int epoch, long serial) {
         ByteBuffer r = ind.journal(IndRecords.IND_CHAIN_PACKAGE, IndRecords.ChainPackage.size(0), 0);
         r.putLong(IndRecords.ChainPackage.STORE, store);
         r.putLong(IndRecords.ChainPackage.DISTRICT, 0);
         r.putInt(IndRecords.ChainPackage.INVENTORY, IndRecords.NO_INVENTORY);
-        r.putInt(IndRecords.ChainPackage.DIRECTION, IndRecords.ChainPackage.CHAIN_RELEASED);
+        r.putInt(IndRecords.ChainPackage.DIRECTION, direction);
         r.putInt(IndRecords.ChainPackage.FROGPORT, IndRecords.NO_INVENTORY);
         r.putInt(IndRecords.ChainPackage.DESTINATION, IndRecords.NO_INVENTORY);
         r.putInt(IndRecords.ChainPackage.PACKAGES, 0);
@@ -918,13 +926,15 @@ public final class PackageStores {
             boolean changed = false;
             for (ChainConveyorPackage p : cc.getLoopingPackages()) {
                 changed |= frontier.atCensus(p.item, cc.getBlockPos(), seen);
-                count(s, dist, c, p.item, packages, goods);
+                if (!frontier.drawn(p.item))
+                    count(s, dist, c, p.item, packages, goods);
             }
             for (Map.Entry<BlockPos, List<ChainConveyorPackage>> e : cc.getTravellingPackages().entrySet()) {
                 int next = w.of(cc.getBlockPos().offset(e.getKey()));
                 for (ChainConveyorPackage p : e.getValue()) {
                     changed |= frontier.atCensus(p.item, cc.getBlockPos(), seen);
-                    count(s, dist, next >= 0 ? next : c, p.item, packages, goods);
+                    if (!frontier.drawn(p.item))
+                        count(s, dist, next >= 0 ? next : c, p.item, packages, goods);
                 }
             }
             if (changed)
@@ -934,10 +944,12 @@ public final class PackageStores {
             if (Loaded.blockEntity(level, s.ports.get(i).pos) instanceof FrogportBlockEntity f && f.isAnimationInProgress()
                     && !f.currentlyDepositing && f.animatedPackage != null && !f.animatedPackage.isEmpty()) {
                 frontier.seenLanding(Frontier.key(f.animatedPackage), seen);
-                add(i, f.animatedPackage, packages, goods);
+                if (!frontier.drawn(f.animatedPackage))
+                    add(i, f.animatedPackage, packages, goods);
             }
         }
-        // The held packages stay held (they are on the chain, and counted here); the keys the walk did not find go.
+        // The held packages stay held (they are on the chain, and counted here, but for the drawn ones: their goods are
+        // the far replay's, choice SC141); the keys the walk did not find go.
         frontier.census(s, w, seen);
         int m = 0, entries = 0;
         List<int[]> ids = new ArrayList<>();

@@ -867,6 +867,7 @@ fn held_list(epoch: u32, serials: &[u64]) -> Obs {
     Obs::HeldList(HeldList {
         epoch,
         serials: serials.to_vec(),
+        drawn: Vec::new(),
     })
 }
 

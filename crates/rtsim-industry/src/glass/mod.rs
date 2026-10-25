@@ -128,7 +128,8 @@ fn empty_view<'a>(
 /// END (fingerprint, the test Java itself uses for "the compile still holds", G-B3; revision,
 /// frame, window and counts) but for its number, a resend flag and the ticks it spanned, and the
 /// same records but for the compile number and what is the factory's state at the compile rather
-/// than its build ([`state_slots`]; a domain's level, live stress and live capacity).
+/// than its build ([`state_slots`]; a domain's and its sources' rows, live stress and live
+/// capacity).
 /// A node's `params` that are its state at the compile, not its build: a heater's burn left and
 /// heat level, a boiler's active heat and water supply (the solve takes its level from its heat
 /// edges and its water inflow, SC52), a controller's output and the level it read. The rest
@@ -181,13 +182,21 @@ fn same_factory(held: &graph::Graph, c: &store::Complete) -> bool {
                 ..x.clone()
             } == *y
     };
+    // A source's row is its boiler's level at the compile: state, as the boiler's own slots are.
+    let source = |x: &records::DomainSource, y: &records::DomainSource| {
+        records::DomainSource {
+            current: y.current,
+            ..x.clone()
+        } == *y
+    };
     let domain = |x: &records::GraphDomain, y: &records::GraphDomain| {
         head(x.head, y.head)
             && x.network == y.network
-            && x.driver == y.driver
             && x.flags == y.flags
             && x.levels == y.levels
+            && x.foreign == y.foreign
             && x.members == y.members
+            && all(&x.sources, &y.sources, source)
     };
     fn all<T>(x: &[T], y: &[T], f: impl Fn(&T, &T) -> bool) -> bool {
         x.len() == y.len() && x.iter().zip(y).all(|(x, y)| f(x, y))

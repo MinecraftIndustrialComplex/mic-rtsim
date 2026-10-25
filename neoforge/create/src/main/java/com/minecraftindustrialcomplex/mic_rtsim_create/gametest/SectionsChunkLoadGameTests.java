@@ -478,7 +478,9 @@ public final class SectionsChunkLoadGameTests {
      * apart reach from A over 13 chunks to B, where a creative motor turns them; both ends have a cog and a
      * millstone. With only A's radius-1 ticket left, B (13 chunks away) unloads and the conveyors between
      * are held below FULL. The recount (Create's {@code calculateCapacity}) keeps the motor as it last was,
-     * without loading B: the capacity is unchanged and the motor still listed. A millstone added in A
+     * without loading B: the capacity is unchanged and the motor still listed, and the loaded half keeps
+     * turning at the motor's speed, not overstressed, for 600 ticks and after the recount below (slice
+     * S5-1, SECTIONS.md §2.6). A millstone added in A
      * makes the network recount its stress, with the same answer for the capacity. B then loads FULL and
      * does not tick: its fresh motor exists and has not joined, and a recount still keeps the kept motor.
      * When B is forced, the fresh motor takes the kept one's place as it joins: one source, with no recount
@@ -493,7 +495,7 @@ public final class SectionsChunkLoadGameTests {
      * joined positions, the recount after the update forgot the position and Create took the motor's share
      * out a second time).
      */
-    @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 16000)
+    @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 17000)
     public static void aNetworkRecountKeepsAnUnloadedSource(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
@@ -574,6 +576,19 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "B away: capacity, sources, members, size", cap[1] + ", " + n.sources.size() + ", " + n.members.size() + ", " + n.getSize());
                     check("the recount keeps the away motor's capacity: " + cap[1] + " vs " + cap[0], cap[1] == cap[0]);
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
+                    loadedHalfTurns(level, millA, "with B away");
+                })
+                // the loaded half keeps its speed and the away motor's capacity for as long as B stays away (slice S5-1,
+                // SECTIONS.md §2.6)
+                .thenIdle(600)
+                .thenExecute(() -> {
+                    KineticNetwork n = net.get();
+                    float c = n.calculateCapacity();
+                    record(t, "B away 600 ticks: millstone A's speed, capacity, stress, overstressed",
+                            speedOf(level, millA) + ", " + c + ", " + n.calculateStress() + ", " + kinetic(level, millA).isOverStressed());
+                    loadedHalfTurns(level, millA, "600 ticks after B went away");
+                    check("the same capacity 600 ticks on: " + c + " vs " + cap[0], c == cap[0]);
+                    check("the away motor is still listed 600 ticks on", n.sources.containsKey(oldMotor[0]));
                     GlassCorpusKit.set(helper, added, AllBlocks.MILLSTONE.getDefaultState());
                 })
                 .thenWaitUntil(() -> check("the added millstone turns: " + speedOf(level, added), Math.abs(speedOf(level, added)) == 64))
@@ -586,6 +601,7 @@ public final class SectionsChunkLoadGameTests {
                     check("the capacity is unchanged: " + cap[2], cap[2] == cap[0]);
                     check("the stress grew by the added millstone: " + stress[0] + " to " + stress[1], stress[1] > stress[0]);
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
+                    loadedHalfTurns(level, millA, "after the recount");
                     watch.check("no chunk two or more from A loaded");
                     watch.on = false;
                     // B's chunk loads FULL and does not tick: its block entities exist and have not joined
@@ -713,6 +729,13 @@ public final class SectionsChunkLoadGameTests {
                 .thenSucceed();
     }
 
+    /** A member of the loaded half turns at the away motor's 64 RPM and is not overstressed. */
+    private static void loadedHalfTurns(ServerLevel level, BlockPos member, String when) {
+        KineticBlockEntity k = kinetic(level, member);
+        check("the loaded half turns " + when + ": " + speedOf(level, member), k != null && Math.abs(speedOf(level, member)) == 64);
+        check("the loaded half is not overstressed " + when, !k.isOverStressed());
+    }
+
     /**
      * A network's unloaded capacity, stress and member count (private in Create), set to {@code set}; the
      * values before.
@@ -766,7 +789,7 @@ public final class SectionsChunkLoadGameTests {
      * choice SC10; PATCHES.md row 53's kept members). The motor is in B; with B away, A's compile reads CA's
      * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
      * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
-     * driver, and its members are bounded. {@code /rtsim district graph} writes the compile without loading
+     * driver (every source fixed), and its members are bounded. {@code /rtsim district graph} writes the compile without loading
      * anything either. Then B's block entities are taken out of the network, as a restart with B away leaves
      * it (the network lists only what loaded this session): the next compile still finds the network
      * crossing (choice SC44: CA's chain reaches B, which is not loaded), with the same domain.
@@ -802,7 +825,7 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "millstone A's domain", d);
                     check("one level: " + d.levels(), d.levels().size() == 1);
                     check("at the network's last speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
-                    check("no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    check("no driver: " + d.sources(), d.driven().isEmpty());
                     checkBounded(g, d);
                     try {
                         Path p = GlassGraphCommand.write(ind(), level.getServer(), ind().district(f.da()));
@@ -844,7 +867,7 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "millstone A's domain, B unlisted", d);
                     check("still one level: " + d.levels(), d.levels().size() == 1);
                     check("at the speed of A's members: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
-                    check("still no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    check("still no driver: " + d.sources(), d.driven().isEmpty());
                     checkBounded(GlassKit.latest(f.da()), d);
                 });
         restore(s, level, f).thenSucceed();
@@ -983,8 +1006,8 @@ public final class SectionsChunkLoadGameTests {
      * boiler's district included. In A, a 2 x 2 x 1 fluid tank over one kindled blaze burner, filled with
      * 20 mB of water a tick, and a steam engine on it turn a shaft, a chain conveyor over it, a cog and a
      * millstone; the chain reaches CB in B, two chunks away, with a cog and a millstone. Both chunks are
-     * forced. In both districts' compiles the millstone's domain has one level, no driver (not the
-     * boiler's ladder of levels) and bounded members.
+     * forced. In both districts' compiles the millstone's domain has one speed row, no driver (every
+     * source fixed, not the boiler's ladder of rows) and bounded members.
      */
     @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 12000)
     public static void aBoilerOnAChainDrivesTheNextDistrict(GameTestHelper helper) {
@@ -1063,7 +1086,7 @@ public final class SectionsChunkLoadGameTests {
                         GlassKit.Domain d = millDomain(g);
                         record(t, "district " + which + ": graph, domain", g.describe() + "; " + d);
                         check(which + ": one level: " + d.levels(), d.levels().size() == 1);
-                        check(which + ": no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                        check(which + ": no driver: " + d.sources(), d.driven().isEmpty());
                         checkBounded(g, d);
                     }
                     water[0] = false;

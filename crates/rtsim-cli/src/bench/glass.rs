@@ -245,17 +245,13 @@ pub fn factory(cells: u32, slack: bool) -> Vec<GlassObs> {
         domains.push(GraphDomain {
             head: head(d),
             network: u64::from(d) + 1,
-            current: 0,
-            driver: None,
+            current: Some(0),
             flags: 0,
             live_stress: 0.0,
             live_capacity: 0.0,
-            levels: vec![DomainLevel {
-                selector: 0,
-                speed_num: 32,
-                speed_den: 1,
-                capacity: 4096.0,
-            }],
+            levels: vec![DomainLevel::speed_row(32)],
+            sources: vec![DomainSource::fixed(i64::from(d), 32, 4096.0)],
+            foreign: 0,
             members: vec![
                 member(mixer, 4.0),
                 member(presses[0], 8.0),
