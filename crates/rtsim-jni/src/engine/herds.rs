@@ -396,13 +396,21 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A herd record `Replay` admitted. Switched off, the herds ignore it (U10).
+/// A herd record `Replay` admitted. Switched off, the herds ignore it (U10), but not the epoch it
+/// names: every record that decodes raises the engine's epoch floor first (docs/replay-gate.md
+/// §5.3, RP-81), so that a switch-on later in the session, or after a crash, never decides an
+/// epoch a record already used. A record that does not decode names nothing the engine can read:
+/// it raises no floor, and is skipped with a warning as before.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    let decoded = boundary::decode_obs(rec.bytes);
     if !st.herds.enabled {
         st.herds.ignored += 1;
+        if let Ok((_, _, _, o)) = &decoded {
+            st.herds.engine.fold_epoch(o);
+        }
         return;
     }
-    let o = match boundary::decode_obs(rec.bytes) {
+    let o = match decoded {
         Ok((_, _, _, o)) => o,
         Err(e) => {
             log_warn(&format!(
