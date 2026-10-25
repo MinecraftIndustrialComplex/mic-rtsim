@@ -3515,7 +3515,7 @@ impl Conflict {
                 pos: (f64::from(b.0), 64.0, f64::from(b.1)),
                 arrive: t1.0 as i64,
             }));
-            self.book_unseen(w, p, at);
+            self.book_unseen(w, p, at, at);
         }
     }
 
@@ -3583,9 +3583,27 @@ impl Conflict {
         }
     }
 
+    /// The squared distance from the party's place at `at` (chart coordinates) to the image of
+    /// `c` nearest it, when that is within `radius` (MZB-458). [`Conflict::exit_time`] and
+    /// [`Conflict::rebind_to`] share it, so that the two never disagree on who is inside.
+    fn inside_now(&self, p: Handle<Party>, c: (i32, i32), radius: u32, at: Tick) -> Option<f64> {
+        let now = self.party_chart_pos(p, at);
+        let i = self.topo(self.parties[p].frame).toward(
+            (i64::from(now.0), i64::from(now.1)),
+            (i64::from(c.0), i64::from(c.1)),
+        );
+        let (dx, dz) = (f64::from(now.0) - i.0 as f64, f64::from(now.1) - i.1 as f64);
+        let d2 = dx * dx + dz * dz;
+        let r = f64::from(radius);
+        (d2 <= r * r).then_some(d2)
+    }
+
     /// When a party walking its current segment leaves a circle of `radius` around `c`: `None`
     /// when it is still inside at the segment's end; `at` when it is not inside now.
     fn exit_time(&self, p: Handle<Party>, c: (i32, i32), radius: u32, at: Tick) -> Option<Tick> {
+        if self.inside_now(p, c, radius, at).is_none() {
+            return Some(at);
+        }
         let x = &self.parties[p];
         let s = (x.seg as usize).min(x.route.len().saturating_sub(2));
         let (a, b) = (x.route[s], x.route[s + 1]);
@@ -3604,9 +3622,6 @@ impl Conflict {
             let (dx, dz) = (f64::from(q.0 - c.0), f64::from(q.1 - c.1));
             dx * dx + dz * dz <= r * r
         };
-        if !inside(now) {
-            return Some(at);
-        }
         if inside(b) || t1 <= t0 {
             return None;
         }
@@ -3621,10 +3636,12 @@ impl Conflict {
         Some(Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).floor() as u64).max(at))
     }
 
-    /// Books the time an embodied party walks out of its watcher's view.
-    fn book_unseen(&mut self, w: &World, p: Handle<Party>, at: Tick) {
+    /// Books the time an embodied party on the road, out or home, walks out of its watcher's view
+    /// (MZB-458). It books at `not_before` or the exit, whichever is later, and keeps that tick in
+    /// `unseen_due`: only the latest booking acts, an earlier one finds `unseen_due` moved.
+    fn book_unseen(&mut self, w: &World, p: Handle<Party>, at: Tick, not_before: Tick) {
         let x = &self.parties[p];
-        if !x.embodied || x.phase != Phase::Out {
+        if !x.embodied || !matches!(x.phase, Phase::Out | Phase::Home) {
             return;
         }
         let Some(player) = x.seen_by else {
@@ -3641,8 +3658,32 @@ impl Conflict {
             None => Some(at),
         };
         if let Some(t) = leave {
+            let t = t.max(not_before);
+            self.parties[p].unseen_due = t;
             self.schedule(t, Ev::Unseen { party: p, epoch });
         }
+    }
+
+    /// The player a band that walks out of its watcher's view could be re-bound to (MZB-458): of
+    /// the players reported in its frame within `player_stale_ticks`, the nearest to the band's
+    /// place at `at` that is inside `book_unseen`'s circle (`view_radius + party_radius + 16`),
+    /// ties by actor.
+    fn rebind_to(&self, w: &World, p: Handle<Party>, at: Tick) -> Option<ActorId> {
+        let frame = self.parties[p].frame;
+        let radius = self.tun.view_radius + self.tun.party_radius + 16;
+        let stale = self.tun.player_stale_ticks;
+        w.players
+            .iter()
+            .filter_map(|(a, s)| {
+                let (pp, t) = s.pos?;
+                if pp.frame != frame || at.0.saturating_sub(t.0) > stale {
+                    return None;
+                }
+                self.inside_now(p, (pp.x, pp.z), radius, at)
+                    .map(|d2| (d2, *a))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|e| e.1)
     }
 
     /// The party's alive units by threat class: (count, strength, loads). The loads are its
@@ -3911,8 +3952,20 @@ impl Conflict {
                     self.start_fight(w, p, player, at);
                 } else {
                     if self.parties[p].embodied {
-                        let epoch = self.parties[p].epoch;
-                        self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
+                        // A band that walked here in its bodies with a player still near it is
+                        // that player's to watch: it resolves abstractly, its losses falling
+                        // through `lose_units`, and walks home. A siege is recalled (MZB-460).
+                        let rebound = if kind == PartyKind::Siege || self.outbox.replaying() {
+                            None
+                        } else {
+                            self.rebind_to(w, p, at)
+                        };
+                        if let Some(player) = rebound {
+                            self.parties[p].seen_by = Some(player);
+                        } else {
+                            let epoch = self.parties[p].epoch;
+                            self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
+                        }
                     }
                     self.resolve(w, infra, p, at);
                     // A siege's next round runs from its arrival, as in the session that went on
@@ -5069,20 +5122,46 @@ impl Conflict {
         let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
         let ends = (at + self.tun.watched_fight_ticks).min(x.bored_at.max(at + 1));
         let strength = self.strength(p);
-        let epoch = self.next_epoch(p);
+        // A band that walked here in its bodies fights in them (MZB-461): its epoch, its
+        // placed members and its wave count stay, and the arc below sends only the members not
+        // in Minecraft yet.
+        let walked_in = x.embodied;
+        let epoch = if walked_in {
+            x.epoch
+        } else {
+            self.next_epoch(p)
+        };
         {
             let x = &mut self.parties[p];
             x.phase = Phase::Fighting;
             x.until = ends;
             x.fight_strength = strength;
-            x.epoch = epoch;
-            x.embodied = true;
             x.seen_by = Some(player);
-            x.wave = 0;
-            x.spawned.clear();
+            if !walked_in {
+                x.epoch = epoch;
+                x.embodied = true;
+                x.wave = 0;
+                x.spawned.clear();
+            }
         }
         self.march_changed(p);
-        self.fights_unanswered.insert(p, (epoch, at));
+        if walked_in {
+            let target = *self.parties[p].route.last().expect("route");
+            let speed = self.culture(f).def.march_blocks_per_tick as f32;
+            self.outbox.push(Cmd::Steer(boundary::BandSteer {
+                agent: Party::agent(p),
+                epoch,
+                flags: boundary::STEER_ATTACK,
+                speed,
+                pos: (f64::from(target.0), 64.0, f64::from(target.1)),
+                arrive: 0,
+            }));
+        }
+        // The fight's first record is its first wave's. A walked-in band has no such wave: its
+        // members are placed, and a later wave answers nothing of this decision (MZB-492).
+        if !walked_in {
+            self.fights_unanswered.insert(p, (epoch, at));
+        }
         let here = *self.parties[p].route.last().expect("route");
         self.book_leg(w, p, here, here, at, ends);
         let plan = self.bump(p);
@@ -5708,7 +5787,7 @@ impl Conflict {
             }));
         }
         // Passing through: it leaves view where its walk leaves the area, unless it stops here.
-        self.book_unseen(w, p, at);
+        self.book_unseen(w, p, at, at);
         let kind = self.parties[p].kind;
         self.note(
             at,
@@ -5795,16 +5874,32 @@ impl Conflict {
         }
     }
 
-    fn unseen(&mut self, p: Handle<Party>, epoch: u32, at: Tick) {
+    /// An embodied band on the road, out or home, walks out of its watcher's view (MZB-458). Only
+    /// the latest booking acts (`at` is `unseen_due`). A player near it takes it over, the same one
+    /// when it followed, and the next exit is booked a tick on; with none, the band is recalled
+    /// toward its segment's end, as it has been.
+    fn unseen(&mut self, w: &World, p: Handle<Party>, epoch: u32, at: Tick) {
         let Some(x) = self.parties.get(p) else {
             return;
         };
-        if !x.embodied || x.epoch != epoch || x.phase != Phase::Out {
+        if !x.embodied
+            || x.epoch != epoch
+            || !matches!(x.phase, Phase::Out | Phase::Home)
+            || at != x.unseen_due
+        {
             return;
         }
+        // No player is routed while the replay runs: the pages' bodies are the last session's.
+        if !self.outbox.replaying()
+            && let Some(player) = self.rebind_to(w, p, at)
+        {
+            self.parties[p].seen_by = Some(player);
+            self.book_unseen(w, p, at, at + 1);
+            return;
+        }
+        let x = &self.parties[p];
         let next = x.route[(x.seg as usize + 1).min(x.route.len() - 1)];
         self.recall(p, epoch, boundary::RECALL_PASSING, next);
-        let _ = at;
     }
 
     // ---- the run loop -----------------------------------------------------------------------
@@ -5869,7 +5964,7 @@ impl Conflict {
                 player,
                 meeting,
             } => self.seen(w, party, player, meeting, at),
-            Ev::Unseen { party, epoch } => self.unseen(party, epoch, at),
+            Ev::Unseen { party, epoch } => self.unseen(w, party, epoch, at),
             Ev::Wave { party, plan } => {
                 if self.parties.get(party).is_none_or(|x| x.plan != plan) {
                     return;
@@ -6689,11 +6784,19 @@ impl Conflict {
         if again {
             self.parties[p].embodied = true;
         }
-        // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command,
-        // and `start_fight` always takes a new epoch, so a record of the same one, or a
-        // sighting's, is no fight. A sighting only embodies and keeps the hold.
-        let fight = newer && m.flags & u32::from(boundary::BAND_FIGHT) != 0;
-        let held = if fight { self.held_since(p, at) } else { None };
+        // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command.
+        // `start_fight` takes a new epoch for a band that is not embodied, so a record of a new
+        // epoch is the fight; a sighting's carries no flag and only embodies, keeping the hold.
+        // A band that walked in embodied fights at the epoch it was met at (MZB-461): its fight
+        // record is of its own epoch, and only a held arrival makes it the fight (a later wave of
+        // a fight in progress has no hold).
+        let flagged = m.flags & u32::from(boundary::BAND_FIGHT) != 0;
+        let held = if flagged && (newer || same) {
+            self.held_since(p, at)
+        } else {
+            None
+        };
+        let fight = flagged && (newer || held.is_some());
         if fight && held.is_none() {
             // Recorded at or past its hold's slack, whose poll resolves the round unwatched as
             // of the hold: the epoch floor only (raised in `ingest`, RP-57), so that its bodies
@@ -7461,7 +7564,6 @@ impl Viewer for Conflict {
     }
 
     fn player_left(&mut self, w: &mut World, player: ActorId) {
-        let _ = w;
         // P14's counter: the gap until the player's next report is not time spent anywhere.
         self.presence.left(player);
         let ids: Vec<Handle<Party>> = self
@@ -7471,15 +7573,25 @@ impl Viewer for Conflict {
             .map(|(h, _)| h)
             .collect();
         for p in ids {
-            let camp = self.factions[self.parties[p].faction as usize].pos;
-            let epoch = self.parties[p].epoch;
-            self.recall(p, epoch, boundary::RECALL_PLAYER_LEFT, (camp.x, camp.z));
+            let siege = self.parties[p].kind == PartyKind::Siege;
+            // A siege with nobody watching is recalled and its fight goes on abstractly at its
+            // next event. Any other band passes to a player near it if there is one (MZB-459).
             let x = &mut self.parties[p];
-            // A watched fight with nobody watching goes on abstractly at its next event.
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
                 self.march_changed(p);
             }
+            if !siege
+                && !self.outbox.replaying()
+                && let Some(next) = self.rebind_to(w, p, self.now)
+            {
+                self.parties[p].seen_by = Some(next);
+                self.book_unseen(w, p, self.now, self.now + 1);
+                continue;
+            }
+            let camp = self.factions[self.parties[p].faction as usize].pos;
+            let epoch = self.parties[p].epoch;
+            self.recall(p, epoch, boundary::RECALL_PLAYER_LEFT, (camp.x, camp.z));
         }
     }
 }

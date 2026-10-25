@@ -844,3 +844,305 @@ fn a_band_that_walks_home_with_none_alive_is_not_met() {
         assert!(t < Tick(20 * 24_000));
     }
 }
+
+// ---- re-binding, and a band that walks into its fight (MZB-458 to MZB-461) ---------------------
+
+/// A second player, who is never the scripted one.
+const OTHER: (u64, u64) = (0x0B0B, 0xCAFE);
+
+fn at_pos(p: (i32, i32)) -> Pos {
+    Pos::new(0, p.0, p.1)
+}
+
+/// A raid on the road, met by the player at its camp the tick it sets out: embodied, seen by
+/// `r.p`, its exit from the player's view booked. Returns the band and that exit.
+fn met_leaving_its_camp(r: &mut Run) -> (Handle<Party>, Tick) {
+    let band = out_on_the_road(r);
+    let mut t = r.c.now();
+    while r.c.stats.seen == 0 {
+        r.c.observe_player(&mut r.w, synth::PLAYER, synth::CAMP_POS, t);
+        t = t + 100;
+        r.run(t);
+        assert!(t < Tick(20 * 24_000), "the band was never met");
+    }
+    let x = &r.c.parties[band];
+    assert!(x.embodied && x.seen_by == Some(r.p), "met by the player");
+    let exit = x.unseen_due;
+    assert!(
+        exit > r.c.now() + 600,
+        "it walks out of view later: {exit:?}"
+    );
+    (band, exit)
+}
+
+/// MZB-458: where the watcher's circle (192 blocks) lets the band go, a player near it takes it
+/// over: another player 180 blocks off, or the same one who followed at that distance. With
+/// nobody there it is recalled where it leaves. Either way the next exit is booked a tick on at
+/// the soonest, and the booking at hand is the only one that acts.
+#[test]
+fn a_band_walking_out_of_its_watchers_view_passes_to_a_player_near_it() {
+    for case in ["another", "the same", "nobody"] {
+        let mut r = Run::new(48);
+        let (band, exit) = met_leaving_its_camp(&mut r);
+        let agent = Party::agent(band);
+        let epoch = r.c.parties[band].epoch;
+        let here = r.c.party_pos(band, exit);
+        let near = at_pos((here.0 + 180, here.1));
+        r.run(Tick(exit.0 - 60));
+        let other = match case {
+            "another" => Some(r.c.observe_player(&mut r.w, OTHER, near, Tick(exit.0 - 60))),
+            "the same" => {
+                Some(r.c.observe_player(&mut r.w, synth::PLAYER, near, Tick(exit.0 - 60)))
+            }
+            _ => None,
+        };
+        let mark = r.cmds.len();
+        r.run(exit + 3);
+        let x = &r.c.parties[band];
+        let (_, recalls) = orders_since(&r, agent, mark);
+        match other {
+            Some(player) => {
+                assert!(
+                    x.embodied && recalls.is_empty(),
+                    "{case}: kept: {recalls:?}"
+                );
+                assert_eq!(x.seen_by, Some(player), "{case}");
+                assert!(x.unseen_due >= exit + 1, "{case}: booked a tick on");
+            }
+            None => {
+                assert!(!x.embodied, "{case}: recalled");
+                assert_eq!(recalls.len(), 1, "{case}: {recalls:?}");
+                assert_eq!(
+                    (recalls[0].1, recalls[0].2),
+                    (epoch, boundary::RECALL_PASSING)
+                );
+            }
+        }
+    }
+}
+
+/// MZB-458: only the latest booking acts. A booking the band's `unseen_due` has moved past does
+/// nothing when its tick comes.
+#[test]
+fn an_unseen_superseded_by_a_later_booking_does_nothing() {
+    let mut r = Run::new(48);
+    let (band, exit) = met_leaving_its_camp(&mut r);
+    r.c.parties[band].unseen_due = exit + 100_000;
+    let mark = r.cmds.len();
+    r.run(exit + 600);
+    let (_, recalls) = orders_since(&r, Party::agent(band), mark);
+    assert!(
+        r.c.parties[band].embodied && recalls.is_empty(),
+        "the old booking found the band moved on"
+    );
+}
+
+/// `r.c`'s party as a watched fight leaves it: embodied, every member placed, `seen_by` set to the
+/// scripted player (never reported to the world).
+fn watched_in_bodies(r: &mut Run, band: Handle<Party>) -> u32 {
+    let epoch = embody(r, band);
+    r.c.parties[band].seen_by = Some(r.p);
+    epoch
+}
+
+/// MZB-459: the watcher logs out of a fight. With a second player 100 blocks off the band keeps
+/// its bodies and turns to waiting for that player; with nobody it is recalled; a siege is
+/// recalled either way.
+#[test]
+fn a_watcher_logging_out_leaves_a_fight_to_a_player_near_it() {
+    for (kind, near) in [
+        (PartyKind::Raid, true),
+        (PartyKind::Raid, false),
+        (PartyKind::Siege, true),
+    ] {
+        let mut r = Run::new(50);
+        let band =
+            r.c.order_party(
+                &mut r.w,
+                synth::CAMP,
+                kind,
+                Target::District(synth::REFINERY, synth::REFINERY_POS),
+                Some(r.p),
+                Tick(20),
+            )
+            .unwrap();
+        r.flush(Tick(21));
+        let mut t = r.c.now();
+        while r.c.parties[band].phase != Phase::Waiting && r.c.parties[band].phase != Phase::Out {
+            t = t + 600;
+            r.run(t);
+        }
+        let agent = Party::agent(band);
+        let epoch = watched_in_bodies(&mut r, band);
+        r.c.parties[band].phase = Phase::Fighting;
+        let other = near.then(|| {
+            let here = r.c.party_pos(band, t);
+            r.c.observe_player(&mut r.w, OTHER, at_pos((here.0 + 100, here.1)), t)
+        });
+        let mark = r.cmds.len();
+        r.c.player_left(&mut r.w, r.p);
+        r.flush(t);
+        let x = &r.c.parties[band];
+        let (_, recalls) = orders_since(&r, agent, mark);
+        let label = format!("{kind:?}, a second player near: {near}");
+        assert_eq!(x.phase, Phase::Waiting, "{label}: a fight turns to waiting");
+        if kind == PartyKind::Raid && near {
+            assert!(x.embodied && recalls.is_empty(), "{label}: bodies kept");
+            assert_eq!(x.seen_by, other, "{label}");
+        } else {
+            assert!(!x.embodied, "{label}: recalled");
+            assert_eq!(recalls.len(), 1, "{label}: {recalls:?}");
+            assert_eq!(
+                (recalls[0].1, recalls[0].2),
+                (epoch, boundary::RECALL_PLAYER_LEFT)
+            );
+        }
+    }
+}
+
+/// A raid in bodies that arrives at the refinery a tick from now, with the only player `off`
+/// blocks east of it (reported fresh). Returns the band, its epoch and the player's actor.
+fn arriving_with_a_player(r: &mut Run, off: i32) -> (Handle<Party>, u32, ActorId) {
+    let band = out_on_the_road(r);
+    // Nobody is booked as its watcher: it walks to its target in bodies no one is tracking.
+    let epoch = embody(r, band);
+    let arrive = *r.c.parties[band].times.last().unwrap();
+    r.run(Tick(arrive.0 - 200));
+    let player = r.c.observe_player(
+        &mut r.w,
+        OTHER,
+        at_pos((synth::REFINERY_POS.x + off, synth::REFINERY_POS.z)),
+        Tick(arrive.0 - 200),
+    );
+    (band, epoch, player)
+}
+
+/// MZB-460: a band that walked to its target in bodies and finds no one within the view radius
+/// (160) but a player within the circle (192), at 170 blocks, passes to that player: resolved
+/// abstractly, its losses taken off the placed members, and walked home in the bodies. At 150
+/// blocks it is a fight.
+#[test]
+fn an_arrival_with_a_player_170_blocks_off_is_abstract_and_150_is_a_fight() {
+    // 170: re-bound, abstract.
+    let mut r = Run::new(51);
+    let (band, epoch, player) = arriving_with_a_player(&mut r, 170);
+    let agent = Party::agent(band);
+    let mark = r.cmds.len();
+    let arrive = *r.c.parties[band].times.last().unwrap();
+    r.run(arrive + 10);
+    let x = &r.c.parties[band];
+    let (steers, recalls) = orders_since(&r, agent, mark);
+    assert_eq!(r.c.stats.raids_watched, 0, "no fight");
+    assert!(recalls.is_empty(), "not recalled: {recalls:?}");
+    assert!(x.embodied && x.epoch == epoch && x.seen_by == Some(player));
+    assert_eq!(x.phase, Phase::Home, "walking home");
+    assert!(!steers.is_empty(), "steered home in its bodies");
+    for s in &x.spawned {
+        let alive = x.units.iter().find(|e| e.0 == s.0).map_or(0, |e| e.1);
+        assert!(s.1 <= alive, "placed {} of {alive}", s.1);
+    }
+    // 150: a fight, in the same bodies.
+    let mut r = Run::new(51);
+    let (band, epoch, player) = arriving_with_a_player(&mut r, 150);
+    let agent = Party::agent(band);
+    let mark = r.cmds.len();
+    let arrive = *r.c.parties[band].times.last().unwrap();
+    r.run(arrive + 10);
+    let x = &r.c.parties[band];
+    assert_eq!(r.c.stats.raids_watched, 1, "a fight");
+    assert_eq!(x.phase, Phase::Fighting);
+    assert!(x.embodied && x.epoch == epoch && x.seen_by == Some(player));
+    let (steers, recalls) = orders_since(&r, agent, mark);
+    assert!(recalls.is_empty(), "{recalls:?}");
+    assert!(
+        steers
+            .iter()
+            .any(|s| s.1 == epoch && s.3 == boundary::STEER_ATTACK),
+        "told to attack where it stands: {steers:?}"
+    );
+}
+
+/// MZB-461: the walked-in fight's arc sends only the members not placed yet, at the band's own
+/// epoch, flagged as a fight's wave; a band with every member placed (up to the quota) sends none
+/// (MZB-492).
+#[test]
+fn a_band_walking_into_its_fight_sends_only_the_members_not_placed() {
+    for placed in [false, true] {
+        let mut r = Run::new(51);
+        let (band, epoch, _) = arriving_with_a_player(&mut r, 100);
+        if !placed {
+            // Three members of the first unit are in Minecraft: 13 more fit under the quota.
+            let first = r.c.parties[band].units[0].0;
+            r.c.parties[band].spawned = vec![(first, 3)];
+        }
+        let agent = Party::agent(band);
+        let alive = r.c.parties[band].alive();
+        let mark = r.cmds.len();
+        let arrive = *r.c.parties[band].times.last().unwrap();
+        r.run(arrive + 10);
+        let waves: Vec<boundary::BandMaterialize> = r.cmds[mark..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                Cmd::Materialize(m) if m.agent == agent => Some(m.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            r.c.parties[band].epoch, epoch,
+            "placed {placed}: same epoch"
+        );
+        if placed {
+            assert!(waves.is_empty(), "everything is there already: {waves:?}");
+        } else {
+            assert_eq!(waves.len(), 1, "{waves:?}");
+            let w = &waves[0];
+            assert_eq!(w.epoch, epoch);
+            assert!(w.arc_radius > 0 && w.flags & boundary::BAND_FIGHT != 0);
+            assert_eq!(
+                w.members.iter().map(|s| s.count).sum::<u32>(),
+                alive.min(r.c.tun.spawn_quota) - 3,
+                "the members left, within the room under the quota"
+            );
+        }
+    }
+}
+
+/// MZB-476: the fake plugin keeps each party's latest march record and trims its held body to the
+/// record's counts. A death it never saw is gone from the survivors it names when the band is
+/// recalled.
+#[test]
+fn the_fake_plugin_keeps_the_latest_march_and_trims_its_held_body() {
+    let mut r = Run::new(52);
+    let (band, exit) = met_leaving_its_camp(&mut r);
+    let agent = Party::agent(band);
+    assert_eq!(
+        r.plugin.marches[&agent].revision,
+        r.sent_for(band).last().unwrap().revision,
+        "the latest of each"
+    );
+    let epoch = r.c.parties[band].epoch;
+    let o = casualty(&r, band, epoch);
+    let now = r.c.now();
+    r.ingest(o, now + 1);
+    r.run(now + 100);
+    let alive = r.c.parties[band].alive();
+    let held: u32 = r.plugin.marches[&agent].units.iter().map(|u| u.1).sum();
+    assert_eq!(
+        held, alive,
+        "the record the plugin holds says what is alive"
+    );
+    r.run(Tick(exit.0 + 3));
+    assert!(!r.c.parties[band].embodied, "recalled at its exit");
+    let survivors: u32 = r
+        .plugin
+        .due(Tick(exit.0 + 2_000))
+        .into_iter()
+        .find_map(|(_, o)| match o {
+            Obs::Dematerialized(d) if d.agent == agent => {
+                Some(d.survivors.iter().map(|s| s.1).sum())
+            }
+            _ => None,
+        })
+        .expect("the recall's answer");
+    assert_eq!(survivors, alive, "the body was trimmed by the record");
+}

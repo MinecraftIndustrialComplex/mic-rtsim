@@ -85,7 +85,18 @@ fn ignored_the_band_marches_and_raids_while_the_player_is_offline() {
         .map(|c| &c.1)
         .filter(|c| c.starts_with("BAND_MATERIALIZE") && c.contains("arc 112 blocks"))
         .collect();
-    assert!(!arcs.is_empty(), "waves on the arc");
+    // A band met on its march walks into its fight in the bodies it was met in (MZB-461): its
+    // waves on the arc send only the members not placed yet, often none (MZB-492). So the
+    // fight is the arc's waves or the order to attack where it stands.
+    let attacked = o
+        .plugin
+        .commands
+        .iter()
+        .any(|c| c.1.starts_with("BAND_STEER") && c.1.contains("attack"));
+    assert!(
+        !arcs.is_empty() || attacked,
+        "waves on the arc, or a walked-in attack"
+    );
     for a in arcs {
         let n: u32 = a
             .split(": ")
