@@ -12,13 +12,13 @@
 //!   codec; a scripted player answers envoys (ignore, pay, refuse, attack) and fights bands that
 //!   materialize near it (a share killed per wave, the war chief or not).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind};
 use rtsim_industry::tunables::Tunables;
-use rtsim_kernel::clock::Tick;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_settle::Pos;
 use rtsim_trade::tunables::Ratio;
@@ -233,6 +233,51 @@ struct Body {
     chief: bool,
 }
 
+/// A body in a camp's world: the jar's own entity, tagged with its slot and generation, or a stray
+/// (generation 0: untagged, or tagged with a generation the books do not hold).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampBody {
+    pub uuid: Uuid,
+    /// The engine's body id.
+    pub body: u32,
+    pub slot: u32,
+    pub generation: u32,
+    /// Loaded outside the footprint (the census's `BODY_ELSEWHERE`).
+    pub elsewhere: bool,
+}
+
+/// A camp as the plugin sees it (MOWZIE.md §4.9, emulated): its epoch while it is in (0 while it
+/// is out) and the bodies of it the world holds. The bodies stay when the camp goes out: vanilla
+/// saves them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CampWorld {
+    pub epoch: u64,
+    pub bodies: Vec<CampBody>,
+}
+
+/// One line the plugin applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppliedLine {
+    pub at: Tick,
+    pub faction: u64,
+    pub op: u64,
+    /// The line's index in its reconcile: with `op`, what I4 counts.
+    pub index: u32,
+    pub line: boundary::ReconcileLine,
+    /// `LINE_DONE`, `LINE_NOTHING` or `LINE_STALE`.
+    pub outcome: u8,
+}
+
+/// A record a body or a marker carries until the engine has it: one line's answer, with the
+/// reconcile it answers (MOWZIE.md §4.9, *Orders and answers*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Holder {
+    pub faction: u64,
+    pub epoch: u64,
+    pub op: u64,
+    pub line: boundary::LineAnswer,
+}
+
 /// The plugin's side, headless: commands through the codec in, observations through the codec
 /// out, each some ticks late (docs/boundary.md §1.2).
 pub struct FakeConflict {
@@ -255,6 +300,33 @@ pub struct FakeConflict {
     pub play_notices: bool,
     /// The world's difficulty, sent as DIFFICULTY at each [`FakeConflict::session_start`].
     pub difficulty: u32,
+    /// The camps' worlds, by faction key (MOWZIE.md §4.9).
+    pub camps: BTreeMap<u64, CampWorld>,
+    /// Every camp line applied, in order.
+    pub applied: Vec<AppliedLine>,
+    /// Answers to CAMP_RECONCILEs that are applied but never reach the engine: a crash between the
+    /// world's save and the journal's (§4.9's crash table). Counted down, one per answer.
+    pub lose_answers: u32,
+    /// What the entities carry (MOWZIE.md §4.9): a line applied and done leaves its record on a
+    /// body or a marker until the engine has it, so that a record lost on its way to the engine
+    /// (`lose_answers`, a restart's dropped queue) is still on its holder.
+    pub holders: Vec<Holder>,
+    /// The deaths a marker carries where the body was, until the engine has them.
+    pub death_holders: Vec<boundary::CampDeath>,
+    /// Journals the holders' records again as the real plugin does (MOWZIE.md §4.9): at a session
+    /// start ([`FakeConflict::journal_holders`], which [`CampRun::restart`] calls) and at each
+    /// camp-in, before the census, which waits for the footprint's holders (MZB-174). Off, a
+    /// record lost is lost, and a party that comes home before a census meanwhile leaves a ghost
+    /// body (three censuses write it off): the case the crash table says the holders prevent.
+    pub holders_again: bool,
+    /// The most lines a CAMP_BODIES record carries (0: all of a reconcile's): one reconcile has
+    /// several records, as holders in several chunks answer it (docs/boundary.md §9.6).
+    pub split_answers: usize,
+    /// Sends every answer twice: a replay.
+    pub replay_answers: bool,
+    /// Ticks an answer takes to reach the engine.
+    pub answer_ticks: u64,
+    uuids: u64,
     /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
     /// counts, at the recall, first stacks first (0: none; MZB-131).
     pub walk_off_deaths: u32,
@@ -279,6 +351,16 @@ impl FakeConflict {
             leave_ticks: 300,
             play_notices: true,
             difficulty: boundary::DIFFICULTY_NORMAL,
+            camps: BTreeMap::new(),
+            applied: Vec::new(),
+            lose_answers: 0,
+            holders: Vec::new(),
+            death_holders: Vec::new(),
+            holders_again: false,
+            split_answers: 0,
+            replay_answers: false,
+            answer_ticks: 1,
+            uuids: 0,
             walk_off_deaths: 0,
         }
     }
@@ -326,6 +408,18 @@ impl FakeConflict {
                 boundary::encode_obs(self.obs_seq, at.0 as i64, &o, &mut buf);
                 self.wire_bytes += buf.len() as u64;
                 let (_, back, _) = boundary::decode_obs(&buf).expect("own encoding");
+                if let Obs::CampDeath(d) = &back {
+                    self.death_holders
+                        .retain(|h| !(h.faction == d.faction && h.op == d.op));
+                }
+                if let Obs::CampBodies(b) = &back {
+                    // The engine has the record: its holders drop it (the acknowledgement).
+                    self.holders.retain(|h| {
+                        !(h.faction == b.faction
+                            && h.op == b.op
+                            && b.lines.iter().any(|l| l.line == h.line.line))
+                    });
+                }
                 (at, back)
             })
             .collect()
@@ -535,6 +629,7 @@ impl FakeConflict {
                     );
                 }
             }
+            Cmd::Reconcile(r) => self.reconcile(&r, at),
             Cmd::Notice(n) if self.play_notices => {
                 self.push(
                     at + 1,
@@ -550,7 +645,6 @@ impl FakeConflict {
             | Cmd::Steer(_)
             | Cmd::Settled(_)
             | Cmd::AmbushSpot(_)
-            | Cmd::Reconcile(_)
             | Cmd::TrainRobbed(_)
             | Cmd::ChiefBody(_)
             | Cmd::March(_) => {}
@@ -559,6 +653,358 @@ impl FakeConflict {
 
     pub fn embodied(&self) -> usize {
         self.bodies.len()
+    }
+
+    // ---- camps (MOWZIE.md §4.9, emulated) -------------------------------------------------
+
+    fn camp_uuid(&mut self) -> Uuid {
+        self.uuids += 1;
+        (
+            0xCA3F_0000_0000_0000 | (self.player.1 & 0xFFFF_FFFF),
+            self.uuids,
+        )
+    }
+
+    /// The camp's world, made when first named.
+    pub fn camp_world(&mut self, faction: u64) -> &mut CampWorld {
+        self.camps.entry(faction).or_default()
+    }
+
+    /// A body the jar placed in a camp, untagged (or a body a player put down, or one tagged with
+    /// a generation nobody holds: `tagged`): a stray. Its UUID.
+    pub fn camp_stray(&mut self, faction: u64, body: u32) -> Uuid {
+        self.camp_tagged_body(faction, body, 0, 0)
+    }
+
+    /// A body tagged `slot` and `generation` placed in a camp's world, as saved by vanilla.
+    pub fn camp_tagged_body(
+        &mut self,
+        faction: u64,
+        body: u32,
+        slot: u32,
+        generation: u32,
+    ) -> Uuid {
+        let uuid = self.camp_uuid();
+        self.camp_world(faction).bodies.push(CampBody {
+            uuid,
+            body,
+            slot,
+            generation,
+            elsewhere: false,
+        });
+        uuid
+    }
+
+    /// The camp's entities have all come in: a new epoch (a fresh Java op id) and the census of
+    /// its bodies, at `at`. Its epoch.
+    pub fn camp_in(&mut self, faction: u64, at: Tick) -> u64 {
+        self.camp_in_with(faction, 0, at)
+    }
+
+    /// [`FakeConflict::camp_in`] with the census's flags (`CENSUS_*`).
+    pub fn camp_in_with(&mut self, faction: u64, flags: u32, at: Tick) -> u64 {
+        // The census waits until every holder in the footprint has journaled its record again: the
+        // records reach the engine first, carrying the epoch that is still the latest (MZB-174).
+        if self.holders_again {
+            self.journal_holders_of(Some(faction), at);
+        }
+        let epoch = self.op();
+        let camp = self.camp_world(faction);
+        camp.epoch = epoch;
+        let bodies: Vec<boundary::CensusBody> = camp
+            .bodies
+            .iter()
+            .map(|b| boundary::CensusBody {
+                uuid: b.uuid,
+                body: b.body,
+                slot: b.slot,
+                generation: b.generation,
+                flags: (if b.generation == 0 {
+                    boundary::BODY_STRAY
+                } else {
+                    0
+                }) | (if b.elsewhere {
+                    boundary::BODY_ELSEWHERE
+                } else {
+                    0
+                }),
+            })
+            .collect();
+        self.push(
+            at,
+            Obs::CampCensus(boundary::CampCensus {
+                faction,
+                epoch,
+                flags,
+                health: 0.0,
+                throne: (0.0, 0.0, 0.0),
+                direction: 0.0,
+                traded_slot: 0,
+                traded_generation: 0,
+                bodies,
+                traded: Vec::new(),
+            }),
+        );
+        epoch
+    }
+
+    /// A footprint chunk dropped below FULL: the camp is out, at `at`. A camp that is out stays so.
+    pub fn camp_out(&mut self, faction: u64, at: Tick) {
+        let camp = self.camp_world(faction);
+        if camp.epoch == 0 {
+            return;
+        }
+        let epoch = std::mem::take(&mut camp.epoch);
+        self.push(at, Obs::CampOut(boundary::CampOut { faction, epoch }));
+    }
+
+    /// Whether the camp is in.
+    pub fn camp_is_in(&self, faction: u64) -> bool {
+        self.camps.get(&faction).is_some_and(|c| c.epoch != 0)
+    }
+
+    /// A body of the camp died, or was carried off (`by`): gone from the world, and a CAMP_DEATH
+    /// at `at`. `false` when the camp holds no such body.
+    pub fn camp_kill(&mut self, faction: u64, uuid: Uuid, by: u32, at: Tick) -> bool {
+        let camp = self.camp_world(faction);
+        let Some(i) = camp.bodies.iter().position(|b| b.uuid == uuid) else {
+            return false;
+        };
+        let b = camp.bodies.remove(i);
+        let op = self.op();
+        let death = boundary::CampDeath {
+            faction,
+            by,
+            body: b.body,
+            flags: if b.generation == 0 {
+                boundary::DEATH_STRAY
+            } else {
+                0
+            },
+            slot: b.slot,
+            generation: b.generation,
+            killer: if by == boundary::BY_PLAYER {
+                self.player
+            } else {
+                (0, 0)
+            },
+            op,
+        };
+        if b.generation != 0 {
+            // A member's body leaves a marker with its death (a stray's leaves none: nothing is
+            // booked for it).
+            self.death_holders.push(death);
+        }
+        self.push(at, Obs::CampDeath(death));
+        true
+    }
+
+    /// Whether an observation about the camp is on its way to the engine (a census, an answer, a
+    /// death, an out): the engine's books are behind the world's until it lands.
+    pub fn camp_pending(&self, faction: u64) -> bool {
+        self.queue.iter().any(|(_, _, o)| match o {
+            Obs::CampCensus(x) => x.faction == faction,
+            Obs::CampBodies(x) => x.faction == faction,
+            Obs::CampDeath(x) => x.faction == faction,
+            Obs::CampOut(x) => x.faction == faction,
+            _ => false,
+        })
+    }
+
+    /// A copy of the observations not yet delivered, in the order they are queued.
+    pub fn queued(&self) -> Vec<Obs> {
+        self.queue.iter().map(|e| e.2.clone()).collect()
+    }
+
+    /// A shutdown before the journal's write: every observation not yet delivered is lost. The
+    /// world keeps what it did (a body killed, a line applied), the engine never hears of it.
+    pub fn drop_queued(&mut self) -> Vec<Obs> {
+        self.queue.drain(..).map(|e| e.2).collect()
+    }
+
+    /// The camp's bodies carrying `slot` and `generation`.
+    pub fn camp_held(&self, faction: u64, slot: u32, generation: u32) -> Vec<CampBody> {
+        self.camps.get(&faction).map_or_else(Vec::new, |c| {
+            c.bodies
+                .iter()
+                .filter(|b| b.generation != 0 && b.slot == slot && b.generation == generation)
+                .copied()
+                .collect()
+        })
+    }
+
+    /// One CAMP_RECONCILE: applied while the camp is in at its epoch, every line in the tick it
+    /// arrives, else every line answered stale and nothing applied; answered with CAMP_BODIES
+    /// (§4.9, *Orders and answers*).
+    fn reconcile(&mut self, r: &boundary::CampReconcile, at: Tick) {
+        let live = self
+            .camps
+            .get(&r.faction)
+            .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
+        let mut lines = Vec::new();
+        for (i, l) in r.lines.iter().enumerate() {
+            let outcome = if live {
+                self.apply_line(r.faction, l)
+            } else {
+                boundary::LINE_STALE
+            };
+            self.applied.push(AppliedLine {
+                at,
+                faction: r.faction,
+                op: r.op,
+                index: i as u32,
+                line: *l,
+                outcome,
+            });
+            let answer = boundary::LineAnswer {
+                line: i as u32,
+                slot: l.slot,
+                generation: l.generation,
+                action: l.action,
+                outcome,
+            };
+            if outcome == boundary::LINE_DONE {
+                // A change leaves its record where it was made; one that changed nothing does not.
+                self.holders.push(Holder {
+                    faction: r.faction,
+                    epoch: r.epoch,
+                    op: r.op,
+                    line: answer,
+                });
+            }
+            lines.push(answer);
+        }
+        if self.lose_answers > 0 {
+            self.lose_answers -= 1;
+            return;
+        }
+        for answer in self.records(r.faction, r.epoch, r.op, lines) {
+            if self.replay_answers {
+                self.push(at + self.answer_ticks, answer.clone());
+            }
+            self.push(at + self.answer_ticks, answer);
+        }
+    }
+
+    /// The lines as CAMP_BODIES records of at most `split_answers` lines each.
+    fn records(
+        &self,
+        faction: u64,
+        epoch: u64,
+        op: u64,
+        lines: Vec<boundary::LineAnswer>,
+    ) -> Vec<Obs> {
+        let n = if self.split_answers == 0 {
+            lines.len().max(1)
+        } else {
+            self.split_answers
+        };
+        lines
+            .chunks(n)
+            .map(|c| {
+                Obs::CampBodies(boundary::CampBodies {
+                    faction,
+                    epoch,
+                    op,
+                    lines: c.to_vec(),
+                })
+            })
+            .collect()
+    }
+
+    /// A session's start, as the holders' records load: each record a holder still has, journaled
+    /// again at `at` with its reconcile's op id, grouped by op and split as answers are
+    /// (MOWZIE.md §4.9: the engine skips what it has, and books the rest by the action it carries).
+    pub fn journal_holders(&mut self, at: Tick) {
+        self.journal_holders_of(None, at + self.answer_ticks);
+    }
+
+    /// The holders of one camp (every camp's with `None`) journal their records again at `at`: the
+    /// records first, grouped by op, then the deaths.
+    fn journal_holders_of(&mut self, only: Option<u64>, at: Tick) {
+        let mut groups: Vec<((u64, u64, u64), Vec<boundary::LineAnswer>)> = Vec::new();
+        for h in self
+            .holders
+            .iter()
+            .filter(|h| only.is_none_or(|f| f == h.faction))
+        {
+            let k = (h.faction, h.epoch, h.op);
+            match groups.iter_mut().find(|g| g.0 == k) {
+                Some(g) => g.1.push(h.line),
+                None => groups.push((k, vec![h.line])),
+            }
+        }
+        for ((faction, epoch, op), lines) in groups {
+            for o in self.records(faction, epoch, op, lines) {
+                self.push(at, o);
+            }
+        }
+        for d in self.death_holders.clone() {
+            if only.is_none_or(|f| f == d.faction) {
+                self.push(at, Obs::CampDeath(d));
+            }
+        }
+    }
+
+    /// One line, applied to the camp's world: its target state, so that applying it twice changes
+    /// nothing.
+    fn apply_line(&mut self, faction: u64, l: &boundary::ReconcileLine) -> u8 {
+        use boundary::{
+            ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN,
+            ACTION_TAKE, LINE_DONE, LINE_NOTHING,
+        };
+        let uuid = self.camp_uuid();
+        let camp = self.camp_world(faction);
+        let held = camp
+            .bodies
+            .iter()
+            .position(|b| l.generation != 0 && b.slot == l.slot && b.generation == l.generation);
+        match l.action {
+            ACTION_SPAWN | ACTION_HAND_BACK => {
+                if held.is_some() {
+                    return LINE_NOTHING;
+                }
+                camp.bodies.push(CampBody {
+                    uuid,
+                    body: l.body,
+                    slot: l.slot,
+                    generation: l.generation,
+                    elsewhere: false,
+                });
+                LINE_DONE
+            }
+            ACTION_ADOPT => {
+                match camp
+                    .bodies
+                    .iter_mut()
+                    .find(|b| b.generation == 0 && (b.uuid.0, b.uuid.1) == (l.a, l.b))
+                {
+                    Some(b) => {
+                        b.slot = l.slot;
+                        b.generation = l.generation;
+                        LINE_DONE
+                    }
+                    None => LINE_NOTHING,
+                }
+            }
+            ACTION_TAKE | ACTION_SET_OUT | ACTION_REMOVE => {
+                let at = if l.action == ACTION_REMOVE && l.generation == 0 {
+                    camp.bodies
+                        .iter()
+                        .position(|b| (b.uuid.0, b.uuid.1) == (l.a, l.b))
+                } else {
+                    held
+                };
+                match at {
+                    Some(i) => {
+                        camp.bodies.remove(i);
+                        LINE_DONE
+                    }
+                    None => LINE_NOTHING,
+                }
+            }
+            _ => LINE_NOTHING,
+        }
     }
 }
 
@@ -620,4 +1066,573 @@ pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
         c.signal(&mut w, sig, Tick(1));
     }
     (w, c)
+}
+
+// ---- a camp against the emulated plugin (MOWZIE.md §4.9) --------------------------------------
+
+/// Dictionary kind 4's id the camp runs name their structure by.
+pub const CAMP_STRUCTURE: u32 = 10;
+
+const SYS_CHAOS: SystemId = SystemId::named("conflict.camp_chaos");
+
+/// One camp of a culture whose bodies a census counts, played against the emulated plugin
+/// ([`FakeConflict`]'s camp worlds): found by FACTION_FOUND with the jar's own bodies standing in
+/// it, as a plugin would. For the camp tests and `rtsim-cli sim mowzie` run 10.
+pub struct CampRun {
+    pub w: World,
+    pub c: Conflict,
+    pub plugin: FakeConflict,
+    pub player: rtsim_knowledge::ActorId,
+    pub key: u64,
+    pub f: u32,
+    /// Every command the engine sent, with when.
+    pub cmds: Vec<(Tick, Cmd)>,
+    /// The engine's body id of the camp's pool members.
+    pub body: u32,
+    /// The ghosts now: members the books hold as bodies at home that the world has no body for,
+    /// with nothing on its way to tell the books (a record queued or on a holder). Three censuses
+    /// write one off; one drawn first is rescued (its set-out finds nothing to do and books the
+    /// body gone). See [`CampRun::track`].
+    pub ghosts: BTreeSet<(u32, u32)>,
+    /// Ghosts that left the books: each was written off, and a body-less member leaves the books
+    /// no other way. The engine's write-offs must be exactly these.
+    pub ghosts_gone: u32,
+    applied_keys: BTreeSet<(u64, u32)>,
+    applied_checked: usize,
+    /// Everything a check found wrong, with when.
+    pub failures: Vec<String>,
+    /// The player stands at the refinery (observed every 1,200 ticks) while this is set: a band
+    /// that comes near is materialized and fought as the plugin's scripted player does.
+    pub watch: bool,
+    /// Whether the chaos run's saves are made (off, they are skipped: the run to compare with).
+    pub round_trips: bool,
+    /// Whether the chaos run checks the books after each event (off, it checks nothing until
+    /// asked: the run to compare with, for an audit that must change nothing).
+    pub audits: bool,
+    /// What the chaos run did, with when: for a failure's report.
+    pub events: Vec<(Tick, String)>,
+    next_obs: Tick,
+}
+
+impl CampRun {
+    /// A camp of `culture` (`frostmaw` or `umvuthana`) found with `found` of its own bodies
+    /// standing in it, at the first tick. The camp is out: nothing has loaded its chunks yet.
+    pub fn new(seed: u64, culture: &str, found: u16) -> CampRun {
+        let (mut w, _) = world(seed);
+        let mut c = conflict(seed, &w);
+        let ci = c.cultures.index_of(culture).expect("a built-in culture");
+        let structure = c.cultures.get(ci).def.structures[0].clone();
+        c.define(4, CAMP_STRUCTURE, &structure);
+        let player = c.player(&mut w, PLAYER);
+        let mut plugin = FakeConflict::new(PLAYER);
+        let key = CAMP;
+        let body = {
+            let cu = c.cultures.get(ci);
+            let unit = [
+                crate::culture::PartyKind::Raid,
+                crate::culture::PartyKind::Invasion,
+            ]
+            .into_iter()
+            .find_map(|k| cu.parties[k.index()].first().map(|u| u.0))
+            .expect("a war party");
+            crate::engine::body_id(&c.cultures, &cu.unit(unit).body)
+        };
+        for _ in 0..found {
+            plugin.camp_stray(key, body);
+        }
+        c.ingest(
+            &mut w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            &Obs::FactionFound(boundary::FactionFound {
+                faction: key,
+                flags: 0,
+                dimension: u32::from(CAMP_POS.frame),
+                structure: CAMP_STRUCTURE,
+                pos: (CAMP_POS.x, 64, CAMP_POS.z),
+                home_bodies: found,
+                census: 0,
+            }),
+            Tick(1),
+        );
+        let f = c.faction_of_key(key).expect("found");
+        let mut r = CampRun {
+            w,
+            c,
+            plugin,
+            player,
+            key,
+            f,
+            cmds: Vec::new(),
+            body,
+            ghosts: BTreeSet::new(),
+            ghosts_gone: 0,
+            applied_keys: BTreeSet::new(),
+            applied_checked: 0,
+            failures: Vec::new(),
+            watch: false,
+            round_trips: true,
+            audits: true,
+            events: Vec::new(),
+            next_obs: Tick::ZERO,
+        };
+        r.flush(Tick(1));
+        r
+    }
+
+    /// Looks at the books against the world for the ghosts (`ghosts`, `ghosts_gone`): a member
+    /// whose slot is a body at home with no body in the world, and no record queued for the camp
+    /// that could tell the books. A record only a holder has is cover when the plugin journals
+    /// holders again (`holders_again`): it reaches the engine at the next camp-in, before the
+    /// census, or at the next session start, and books by the action it carries (MZB-174). Without
+    /// it the member is a ghost until three censuses write it off, or a record or a draw changes
+    /// the slot first. The set is looked at after every step of [`CampRun::run`] while `audits` is
+    /// on, so a ghost, which lives two days at least, is seen.
+    pub fn track(&mut self) {
+        let Some(camp) = self.c.camp(self.f) else {
+            return;
+        };
+        let held: BTreeSet<(u32, u32)> = self
+            .plugin
+            .camps
+            .get(&self.key)
+            .map(|c| {
+                c.bodies
+                    .iter()
+                    .filter(|b| b.generation != 0)
+                    .map(|b| (b.slot, b.generation))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let quiet = !self.plugin.camp_pending(self.key);
+        // A record on a holder tells the books at the next camp-in, if holders journal again.
+        let covered = |slot: u32, generation: u32| {
+            self.plugin.holders_again
+                && (self.plugin.holders.iter().any(|h| {
+                    h.faction == self.key && h.line.slot == slot && h.line.generation == generation
+                }) || self
+                    .plugin
+                    .death_holders
+                    .iter()
+                    .any(|d| d.faction == self.key && d.slot == slot && d.generation == generation))
+        };
+        let mut now = BTreeSet::new();
+        for &(id, generation) in &self.ghosts {
+            match camp.index(id, generation) {
+                None => self.ghosts_gone += 1,
+                Some(i)
+                    if camp.slots[i].state == crate::engine::SlotState::Body
+                        && !held.contains(&(id, generation))
+                        && !covered(id, generation) =>
+                {
+                    now.insert((id, generation));
+                }
+                // Drawn, its body is back, or a holder's record is on its way.
+                Some(_) => {}
+            }
+        }
+        if quiet {
+            for s in &camp.slots {
+                let pair = (s.id, s.generation);
+                if s.state == crate::engine::SlotState::Body
+                    && !held.contains(&pair)
+                    && !covered(s.id, s.generation)
+                {
+                    now.insert(pair);
+                }
+            }
+        }
+        self.ghosts = now;
+    }
+
+    /// Ends a chaos run: answers stop being lost or replayed, the watching player leaves, every
+    /// war party gets home, and the camp is censused six times, 0.8 days apart, so that every
+    /// ghost has had its three misses over more than two days: afterwards `ghosts` is empty and
+    /// the engine's write-offs are `ghosts_gone` exactly.
+    pub fn settle(&mut self) {
+        self.plugin.lose_answers = 0;
+        self.plugin.replay_answers = false;
+        self.watch = false;
+        for _ in 0..60 {
+            if !self.c.parties.iter().any(|(_, p)| p.kind.is_war()) {
+                break;
+            }
+            let to = self.c.now() + TICKS_PER_DAY;
+            self.run(to);
+        }
+        for _ in 0..6 {
+            self.camp_out();
+            let to = self.c.now() + 3;
+            self.run(to);
+            self.camp_in();
+            let to = self.c.now() + TICKS_PER_DAY * 4 / 5;
+            self.run(to);
+            self.audit();
+        }
+    }
+
+    /// The engine, the plugin and the player to `to`.
+    pub fn run(&mut self, to: Tick) {
+        let mut t = self.c.now();
+        while t < to {
+            let next = [
+                self.c.next_due(),
+                self.plugin.next_due(),
+                self.watch.then_some(self.next_obs),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(to)
+            .clamp(t + 1, to);
+            for (at, o) in self.plugin.due(next) {
+                self.c.ingest(
+                    &mut self.w,
+                    &mut rtsim_ecology::infra::NoInfrastructure,
+                    &o,
+                    at,
+                );
+            }
+            self.c.run_until(
+                &mut self.w,
+                &mut rtsim_ecology::infra::NoInfrastructure,
+                next,
+            );
+            if self.watch && next >= self.next_obs {
+                self.c
+                    .observe_player(&mut self.w, PLAYER, REFINERY_POS, next);
+                self.next_obs = next + 1_200;
+            }
+            self.flush(next);
+            if self.audits {
+                self.track();
+            }
+            t = next;
+        }
+    }
+
+    /// What the engine decided, to the plugin.
+    pub fn flush(&mut self, at: Tick) {
+        let cmds = self.c.take_commands();
+        self.cmds.extend(cmds.iter().cloned().map(|c| (at, c)));
+        self.plugin.apply(cmds, at);
+    }
+
+    /// The camp comes in now: the plugin's census at the next tick.
+    pub fn camp_in(&mut self) -> u64 {
+        let at = self.c.now() + 1;
+        self.plugin.camp_in(self.key, at)
+    }
+
+    /// The camp goes out now.
+    pub fn camp_out(&mut self) {
+        let at = self.c.now() + 1;
+        self.plugin.camp_out(self.key, at);
+    }
+
+    /// A raid, as an order: `None` when the camp cannot field it.
+    pub fn raid(&mut self) -> Option<rtsim_kernel::handle::Handle<crate::engine::Party>> {
+        let at = self.c.now();
+        let kind = if self
+            .c
+            .cultures
+            .get(self.c.factions[self.f as usize].culture)
+            .parties[crate::culture::PartyKind::Raid.index()]
+        .is_empty()
+        {
+            crate::culture::PartyKind::Invasion
+        } else {
+            crate::culture::PartyKind::Raid
+        };
+        let p = self.c.order_party(
+            &mut self.w,
+            self.key,
+            kind,
+            crate::engine::Target::District(REFINERY, REFINERY_POS),
+            None,
+            at,
+        );
+        self.flush(at);
+        p
+    }
+
+    /// The engine to `to` with its commands held back: what it decided, for a crash test to apply
+    /// (or lose) as it likes. The plugin's own queue is not delivered.
+    pub fn decide(&mut self, to: Tick) -> Vec<Cmd> {
+        self.c
+            .run_until(&mut self.w, &mut rtsim_ecology::infra::NoInfrastructure, to);
+        self.c.take_commands()
+    }
+
+    /// The camp comes in and the census reaches the engine, whose commands are held back (as
+    /// [`CampRun::decide`]).
+    pub fn census_held(&mut self) -> Vec<Cmd> {
+        let at = self.c.now() + 1;
+        self.plugin.camp_in(self.key, at);
+        for (t, o) in self.plugin.due(at) {
+            self.c.ingest(
+                &mut self.w,
+                &mut rtsim_ecology::infra::NoInfrastructure,
+                &o,
+                t,
+            );
+        }
+        self.decide(at)
+    }
+
+    /// The player kills `n` of the camp's members at the refinery, a signal against the camp: the
+    /// feud's grievance (and with it a war party, in time).
+    pub fn kill(&mut self, n: f64) {
+        let at = self.c.now();
+        let sig = crate::engine::Signal {
+            faction: Some(self.key),
+            kind: crate::culture::SignalKind::Killing,
+            amount: n,
+            actor: self.player,
+            pos: REFINERY_POS,
+            district: Some(REFINERY),
+        };
+        self.c.signal(&mut self.w, sig, at);
+        self.flush(at);
+    }
+
+    /// A session restart with nothing to replay: [`CampRun::restart_to_replay`], and the replay
+    /// over at once, as the host ends it when the journal has caught up (`replay_done`).
+    pub fn restart(&mut self) {
+        self.restart_to_replay();
+        self.c.replay_done();
+    }
+
+    /// A session restart that leaves the replay open: the plugin's observations not yet journaled
+    /// are lost (the holders' records are journaled again if [`FakeConflict::holders_again`]),
+    /// every camp is out, and the engine starts a session, whose replay window (`replaying`) the
+    /// caller closes with `replay_done` once it has ingested the records of the last session.
+    pub fn restart_to_replay(&mut self) {
+        let at = self.c.now();
+        // The journal's tail is lost; what the holders carry is not.
+        self.plugin.drop_queued();
+        for camp in self.plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        self.c.session_start();
+        self.flush(at);
+        if self.plugin.holders_again {
+            self.plugin.journal_holders(at);
+        }
+    }
+
+    /// Saves the engine and loads it again in its place; the books must be what they were.
+    pub fn round_trip(&mut self) {
+        let h = self.c.state_hash();
+        let back = Conflict::load(self.c.tun.clone(), self.c.cultures.clone(), &self.c.save())
+            .expect("loads");
+        if back.state_hash() != h {
+            self.failures.push(format!(
+                "tick {}: a save and load changed the books",
+                self.c.now().0
+            ));
+        }
+        let (replaying, log) = (self.c.replaying, self.c.log_enabled);
+        self.c = back;
+        self.c.replaying = replaying;
+        self.c.log_enabled = log;
+    }
+
+    /// Every way the books and the camp's world break §4.9's invariants now (empty when they
+    /// hold): the engine's own audit (I1, I2, the cap), I4 (no line of an order is applied
+    /// twice), and against the world: I5 always (no two bodies with one slot and generation),
+    /// and, with the camp in and nothing in flight, I3 (the tagged bodies are exactly the slots
+    /// with a body) and that a body is left behind only while its party musters. I6 (the engine
+    /// books only what Java reports) is by construction: the engine never sees the world.
+    pub fn check(&mut self) -> Vec<String> {
+        let now = self.c.now();
+        let mut bad = self.c.camp_audit(self.f, now);
+        // I4: no order is applied twice, counted by each line of each reconcile (the op and the
+        // line's index) the plugin applied.
+        for a in &self.plugin.applied[self.applied_checked..] {
+            if !self.applied_keys.insert((a.op, a.index)) {
+                bad.push(format!(
+                    "I4: line {} of order {:#x} applied twice",
+                    a.index, a.op
+                ));
+            }
+        }
+        self.applied_checked = self.plugin.applied.len();
+        let Some(camp) = self.c.camp(self.f) else {
+            return bad;
+        };
+        let world = self
+            .plugin
+            .camps
+            .get(&self.key)
+            .cloned()
+            .unwrap_or_default();
+        let mut seen = std::collections::BTreeSet::new();
+        for b in world.bodies.iter().filter(|b| b.generation != 0) {
+            if !seen.insert((b.slot, b.generation)) {
+                bad.push(format!(
+                    "I5: two bodies carry slot {} generation {:#x}",
+                    b.slot, b.generation
+                ));
+            }
+        }
+        let settled = camp.is_in()
+            && camp.epoch == world.epoch
+            && camp.in_flight() == 0
+            && !self.plugin.camp_pending(self.key);
+        if settled {
+            // A home body a census missed (`misses` above 0) may or may not be in the world: it
+            // is the crash table's lost body, written off at the third miss.
+            let mut want: std::collections::BTreeSet<(u32, u32)> =
+                std::collections::BTreeSet::new();
+            let mut maybe: std::collections::BTreeSet<(u32, u32)> =
+                std::collections::BTreeSet::new();
+            for s in &camp.slots {
+                use crate::engine::SlotState::{Body, Dead, Left};
+                if matches!(s.state, Body | Left | Dead) && s.misses > 0 {
+                    maybe.insert((s.id, s.generation));
+                } else if matches!(s.state, Body | Left | Dead) {
+                    want.insert((s.id, s.generation));
+                }
+            }
+            let held: std::collections::BTreeSet<(u32, u32)> =
+                seen.difference(&maybe).copied().collect();
+            if want != held {
+                bad.push(format!(
+                    "I3: slots with a body {want:?}, tagged bodies in the world {seen:?}"
+                ));
+            }
+            for s in &camp.slots {
+                if s.state == crate::engine::SlotState::Left
+                    && self
+                        .c
+                        .parties
+                        .get(s.party)
+                        .is_some_and(|p| p.phase != crate::engine::Phase::Mustering)
+                {
+                    bad.push(format!(
+                        "slot {} is left behind by a party that has set out",
+                        s.id
+                    ));
+                }
+            }
+        }
+        bad
+    }
+
+    /// [`CampRun::check`], its findings kept with the tick.
+    pub fn audit(&mut self) {
+        let t = self.c.now().0;
+        for b in self.check() {
+            self.failures.push(format!("tick {t}: {b}"));
+        }
+    }
+
+    /// Random events at random times, `events` of them, each followed by a check: the camp
+    /// coming in and out, raids sent, bodies killed, strays put down, answers lost, late, replayed
+    /// and stale, session restarts and saves. The books are checked after each (§7 run 10).
+    pub fn chaos(&mut self, seed: u64, events: u32) {
+        // The plugin's variants follow the seed: a record lost is lost (the ghosts of the crash
+        // table's gaps), or holders journal it again, whole or one line to a record.
+        self.plugin.holders_again = !seed.is_multiple_of(3);
+        self.plugin.split_answers = [0, 0, 1][(seed % 3) as usize];
+        let mut rng = StreamKey::new(seed, SYS_CHAOS, self.key).slot(0);
+        for _ in 0..events {
+            self.chaos_step(&mut rng);
+        }
+    }
+
+    /// One random event of [`CampRun::chaos`], then the check.
+    pub fn chaos_step(&mut self, rng: &mut rtsim_kernel::rng::SlotRng) {
+        let now = self.c.now();
+        let what: String = match rng.below(16) {
+            0..=3 => {
+                let span = 1 + rng.below(14 * (TICKS_PER_DAY / 24));
+                self.run(now + span);
+                format!("run {span}")
+            }
+            4 | 5 => {
+                if self.plugin.camp_is_in(self.key) {
+                    "in (already)".into()
+                } else {
+                    format!("camp in, epoch {:#x}", self.camp_in())
+                }
+            }
+            6 => {
+                if self.plugin.camp_is_in(self.key) {
+                    self.camp_out();
+                    "camp out".into()
+                } else {
+                    "out (already)".into()
+                }
+            }
+            7 | 8 => {
+                // The draw's bound (ledger 6): no more than the smaller of the pool's whole
+                // members and the slots it may take, as they stand when the order is given.
+                let whole = self.c.pool_at(self.f, now).floor() as u32;
+                // Slots the pool gained and the books have not added yet are drawable too.
+                let room = self
+                    .c
+                    .camp(self.f)
+                    .map_or(0, |c| c.drawable() + whole.saturating_sub(c.home_count()));
+                let p = self.raid();
+                if let (Some(p), Some(c)) = (p, self.c.camp(self.f)) {
+                    let drawn = c.slots.iter().filter(|s| s.party == p).count() as u32;
+                    if drawn > whole.min(room) {
+                        self.failures.push(format!(
+                            "tick {}: a draw of {drawn} from a pool of {whole} with {room} slots to take",
+                            now.0
+                        ));
+                    }
+                }
+                format!("raid {}", p.is_some())
+            }
+            9 | 10 => {
+                let bodies: Vec<_> = self
+                    .plugin
+                    .camps
+                    .get(&self.key)
+                    .map(|c| c.bodies.clone())
+                    .unwrap_or_default();
+                if bodies.is_empty() {
+                    "kill (none)".into()
+                } else {
+                    let b = bodies[rng.below(bodies.len() as u64) as usize];
+                    self.plugin
+                        .camp_kill(self.key, b.uuid, boundary::BY_PLAYER, now + 1);
+                    format!("kill slot {} gen {:#x}", b.slot, b.generation)
+                }
+            }
+            11 => {
+                let body = self.body;
+                self.plugin.camp_stray(self.key, body);
+                "stray".into()
+            }
+            12 => {
+                self.plugin.lose_answers += 1;
+                "lose the next answer".into()
+            }
+            13 => {
+                self.plugin.replay_answers = !self.plugin.replay_answers;
+                format!("replay answers {}", self.plugin.replay_answers)
+            }
+            14 => {
+                self.restart();
+                "restart".into()
+            }
+            _ if self.round_trips => {
+                self.round_trip();
+                "save and load".into()
+            }
+            _ => "save (skipped)".into(),
+        };
+        self.events.push((now, what));
+        // Half the time the answers come before the check, half not.
+        if rng.below(2) == 0 {
+            let to = self.c.now() + 3;
+            self.run(to);
+        }
+        if self.audits {
+            self.audit();
+        }
+    }
 }
