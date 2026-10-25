@@ -5887,6 +5887,123 @@ mod conflict {
         );
     }
 
+    /// U-c's order property (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in
+    /// at its own tick, never at the frozen clock"): the conflict's events due between the
+    /// switch-off and a record it kept come due before the record's effect. The camp's envoy is on
+    /// its road to the player, its demand's deadline d0 days ahead, and the killing goes on. The
+    /// conflict is switched off, and at game time `wipe_at` a mob wipes the band out: a record the
+    /// conflict keeps. Then it is switched on at once. Returns (demands expired, demands withdrawn,
+    /// casualties booked, the conflict's log from the switch-off on, the wipe's game time).
+    fn a_kept_wipe_after_the_switch_off(
+        tag: &str,
+        wipe_at: impl Fn(i64) -> i64,
+    ) -> (u64, u64, u64, Vec<rtsim_conflict::engine::LogEntry>, i64) {
+        let (_dir, e, mut j) = camp(tag);
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        let demand = |e: &Engine| feud(e, PLAYER).and_then(|f| f.demand).map(|d| d.3 as i64);
+        assert_eq!(demand(&e), Some(d0));
+        // The killing goes on: a demand cut at its deadline would not be an expired one.
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        let _ = e.conflict_log(true);
+
+        j.modules(0b1111);
+        j.idle();
+        let at = wipe_at(d0);
+        assert!(j.game_time < at, "switched off before the wipe");
+        let limit = at - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "the wipe's time", |j| {
+            j.game_time >= at
+        });
+        let at = j.game_time;
+        assert_eq!(demand(&e), Some(d0), "off: nothing comes due");
+        let from = j.conflict.len();
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "kept, not applied while off"
+        );
+
+        j.modules(MODULES);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let log = e.conflict_log(false);
+        for l in &log {
+            eprintln!("  {:9} {:7.2} {:9} {}", l.tick, l.day, l.kind, l.what);
+        }
+        for (s, c) in &j.conflict[from..] {
+            eprintln!("  cmd {s}: {}", c.name());
+        }
+        let (st, _) = e.conflict_stats();
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        assert_eq!(demand(&e), None, "settled one way or the other");
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (st.expired, st.withdrawn, booked, log, at)
+    }
+
+    /// The order property, the wipe before the deadline. In the window the envoy reached its
+    /// spot and waited there (an event due after the switch-off and before the wipe): it fires
+    /// first, and the wipe then meets the waiting band. Its casualties are booked and the demand
+    /// is withdrawn (no player's hand), at the wipe's tick or later, never at the frozen clock
+    /// (the switch-off's), so the deadline after it finds no demand. Before RP-292 the wipe was
+    /// never heard: nothing withdrawn, the demand expired at d0.
+    #[test]
+    fn a_kept_wipe_comes_after_the_envoys_arrival_in_the_switch_off_window() {
+        let (expired, withdrawn, booked, log, at) =
+            a_kept_wipe_after_the_switch_off("conflict-off-order-arrival", |d0| d0 - DAY);
+        assert_eq!(
+            (expired, withdrawn, booked > 0),
+            (0, 1, true),
+            "(expired, withdrawn, casualties booked)"
+        );
+        let waits = log.iter().position(|l| l.kind == "envoy");
+        let gone = log.iter().position(|l| l.kind == "withdrawn");
+        assert!(
+            matches!((waits, gone), (Some(a), Some(b)) if a < b),
+            "the envoy waits at its spot, then the wipe withdraws its demand: {waits:?} {gone:?}"
+        );
+        assert!(
+            !log[..gone.unwrap()].iter().any(|l| l.kind == "home"),
+            "the band was still out at the wipe"
+        );
+        let gone = &log[gone.unwrap()];
+        assert!(
+            gone.tick >= at as u64,
+            "the wipe at its own tick {at} or later, not the frozen clock: {}",
+            gone.tick
+        );
+    }
+
+    /// The order property, the wipe after the deadline. In the window the envoy, bored, went
+    /// home, and the deadline passed: both fire first, so the demand expires at d0 and the wipe
+    /// then finds the band home, a straggler and no death. Taken at the frozen clock, the wipe
+    /// would have killed the waiting band and withdrawn the demand before its deadline.
+    #[test]
+    fn a_deadline_in_the_switch_off_window_comes_due_before_a_kept_wipe() {
+        let (expired, withdrawn, booked, log, at) =
+            a_kept_wipe_after_the_switch_off("conflict-off-order-deadline", |d0| d0 + 1_000);
+        assert_eq!(
+            (expired, withdrawn, booked),
+            (1, 0, 0),
+            "(expired, withdrawn, casualties booked)"
+        );
+        let unmet: Vec<u64> = log
+            .iter()
+            .filter(|l| l.what.contains("goes unmet"))
+            .map(|l| l.tick)
+            .collect();
+        assert_eq!(unmet.len(), 1, "one demand unmet");
+        assert!(unmet[0] < at as u64, "at its deadline, before the wipe");
+        assert!(
+            !log.iter().any(|l| l.kind == "withdrawn"),
+            "nothing withdrawn"
+        );
+    }
+
     /// CONFLICT_COMMAND (order 29, TEST mode, C2-15): a command in Java's ids and game time goes
     /// out as the conflict's own, its body names in the engine's dictionary first; the conflict
     /// knows nothing of its agent, so Java's answer is ignored.
