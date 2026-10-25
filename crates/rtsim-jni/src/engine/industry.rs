@@ -594,11 +594,16 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 
 /// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
 /// command written under that op id again (a test's order, or the same decision resent) is
-/// answered all the same, so it leaves the outbox.
+/// answered all the same, so it leaves the outbox. A train's loot re-decided after a crash is
+/// such a command: the replay heard the live application's APPLIED, so Java's DUPLICATE comes
+/// here, not to `command_result`, and the loot exchange is dropped here (RP-182).
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
         st.industry.complete(op);
+        if rec.aux == obs::command_result::DUPLICATE_OP && st.industry.enabled {
+            st.industry.engine.command_duplicate(op);
+        }
     }
 }
 
