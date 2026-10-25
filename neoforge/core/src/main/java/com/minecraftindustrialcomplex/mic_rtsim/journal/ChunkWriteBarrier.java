@@ -84,6 +84,12 @@ public final class ChunkWriteBarrier {
      */
     public static final long WAIT_MILLIS = 10_000;
 
+    /**
+     * How long a {@link #writeNow} waits for its chunks before it counts as failed (PLACEHOLDER, RP-213): what waits
+     * on it is then lost, never released early. Six journal waits.
+     */
+    public static final long WRITE_NOW_MILLIS = 6 * WAIT_MILLIS;
+
     /** World saves in a row whose journal write is held before one goes ahead without its chunks (PLACEHOLDER, JB4). */
     public static final int GIVE_UP_ROUNDS = 3;
 
@@ -371,8 +377,8 @@ public final class ChunkWriteBarrier {
      * RP-213: what waits for it must not reach disk before them). Each loaded unsaved chunk goes through
      * vanilla's own {@code ChunkMap.save}, the level's chunk storage writes them ahead of its queue, as a round
      * does, and their region files are forced to disk on the IO pool. Completes true once they are all on disk,
-     * false when one could not be saved or written (logged; a failed write is saved again at the next round, as
-     * a round's own is). True at once for a level that is not saving or whose writes cannot be ordered, as a
+     * false when one could not be saved or written, or not within {@link #WRITE_NOW_MILLIS} (logged; a failed write
+     * is saved again at the next round, as a round's own is). True at once for a level that is not saving or whose writes cannot be ordered, as a
      * round treats them. A noted chunk stays noted. Server thread; it never waits.
      */
     public CompletableFuture<Boolean> writeNow(ServerLevel level, java.util.Collection<LevelChunk> chunks) {
@@ -401,7 +407,8 @@ public final class ChunkWriteBarrier {
         }
         CompletableFuture<List<ChunkPos>> f;
         try {
-            f = w.landed(positions);
+            // the bound completes the strategy's own future, which stops a C2ME poll
+            f = w.landed(positions).orTimeout(WRITE_NOW_MILLIS, TimeUnit.MILLISECONDS);
         } catch (RuntimeException ex) {
             MicRtsim.LOGGER.error("[mic_rtsim] asking {} to write chunks now", level.dimension().location(), ex);
             return CompletableFuture.completedFuture(false);
