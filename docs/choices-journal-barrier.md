@@ -168,6 +168,21 @@ amendments come with U-a, as does docs/replay-gate.md 9.7).
   the package stores' table (0x4906), so every restart dropped every store with its debts, pools and
   write marks, and a fresh start left old store pages behind. Fixed in its own commit (4fb70332); found
   by the chain case.
+  - What main's restart did with the store gone, now documented by four rtsim-industry
+    `tests/chain_replay.rs` cases on an engine restored without its store pages (`without_stores`). A
+    write in flight was written again under a new op once Java declared the store again, its cluster's
+    pool restored from its own pages: a pool of one package is written twice. A debt held only in the
+    store's `owed` was forgotten. A drawn package (SC141) whose store the engine forgot is neither
+    removed nor given back: Java keeps it circling, its goods already the far district's, and a later
+    landing is not taken back from the replay, so it becomes a second copy.
+  - Guard: rtsim-jni `tests/tables.rs` checks every page table the industry, ecology, herds and conflict
+    crates define or key inline against the list that loads it (one allowlisted meta table, conflict's
+    0x4300, read by key), rtsim-view's `INDUSTRY_TABLES` against the link's, and every page an industry
+    snapshot writes (all six tables reached). Failing first with STORE_TABLE left out.
+  - Residual: the same two behaviours whenever the engine meets a store it does not know, which after
+    this fix means an industry engine that starts afresh (its pages failed to decode, W23) or an industry
+    reset. A fix slice after U-e decides what the engine does with unknown drawn serials and with writes
+    in flight to a store declared anew.
 - *Tests.* rtsim-jni `tests/industry.rs`, module `ack_never_resends`, with the checker of the engine's
   promise that it never sends an op again past the acknowledgement of its live answer (the module's doc
   says how it models main's journal op index).
@@ -230,4 +245,4 @@ amendments come with U-a, as does docs/replay-gate.md 9.7).
   - A chain write the link still holds in its queue when the module goes off was marked handed on at
     that drain (`handed_on`), so a catch-up past its ten periods writes the same goods again under a new
     op while the queued one goes too at the switch on. It is an unanswered write, not an unheard answer,
-    and predates this record; found here and left to its owner.
+    and predates this record; found here, and fixed in slice U-c (its part 3).
