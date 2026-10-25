@@ -1436,3 +1436,19 @@ conservative option at its fork.
   `until` 79270 and 24020 against 103270 and 79270 (the next round's tick, booked by the decision's
   `wait` before the band went home). Now as live, and each raid sent 34 members as live did. The
   sims are unchanged.
+- **RP-60** (a held decision resolves with the members it had at its tick; §6.1; RP-48; RP-59;
+  fixes6 item 2): the slack's poll resolved the held decision with the members left at the poll,
+  fewer than the session that went on had at the decision when a record replayed inside the hold
+  took some. RP-59's release covers a death: a BAND_CASUALTIES ends the hold before it applies, so
+  the decision resolves first, with every member. It does not cover a BAND_DEMATERIALIZED, which
+  ends no hold (RP-59 says why) and whose survivors can be fewer than were placed (deaths Java
+  never reported). The fix: `Held` keeps the party's members at the hold, and `end_hold` (at the
+  slack's poll and at RP-59's release) swaps them in for `party_event`, then takes what the
+  decision cost (each unit's members before less after, the raid's dead) off the members left.
+  Only the map's holds: a restart from pages saved mid-replay (`held_since`'s inference, a
+  defence since RP-42) and a hold the replay end clears decide with the members left, as before.
+  Failing first, mowzie_records' `a_held_decision_raids_with_the_members_it_had_at_its_tick` (as
+  RP-59's case, the band's bodies despawned 50 ticks after the sighting with 2 of the first placed
+  stack's members gone, and, as the control RP-59 already passed, 1 member killed instead): the
+  despawn's raid sent 32 members against live's 34, for a siege's round and its arrival; the death
+  already sent 34 with RP-59 alone. Now 34 in all four. The sims are unchanged.

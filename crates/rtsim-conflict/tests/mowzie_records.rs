@@ -3845,15 +3845,18 @@ fn a_sighting_inside_a_held_decisions_slack_is_no_fight() {
 
 /// What comes to a held siege decision's band inside the hold's slack, after a sighting there,
 /// in [`a_held_decision_then`]: every member killed at the sighting's epoch, its chief killed,
-/// or the world made Peaceful.
+/// the world made Peaceful, one member killed, or its bodies despawned with two of the first
+/// placed stack's members gone (deaths Java never reported).
 #[derive(Clone, Copy, Debug)]
 enum Inside {
     WipedOut,
     ChiefKilled,
     Peaceful,
+    Wounded,
+    Despawned,
 }
 
-/// fixes6 item 1 (RP-59; the checker's case): a siege's held decision (its round with
+/// fixes6 items 1 and 2 (RP-59, RP-60; the checker's case): a siege's held decision (its round with
 /// `round`, else its arrival), unwatched, the band with its chief; a sighting 300 ticks after the
 /// decision embodies it inside the hold's slack (RP-56, the hold kept); then `inside`, 50 ticks
 /// later, still inside the slack. Returns the siege as [`SiegeAt`] reads it, the decision, and
@@ -3907,23 +3910,44 @@ fn a_held_decision_then(round: bool, inside: Inside, crash: bool) -> (SiegeAt, T
     assert!(x.embodied && x.chief, "seen, with its chief");
     let at = r.c.now();
     let c = r.c.cultures.get(0).clone();
-    let records = match inside {
-        Inside::WipedOut => x
-            .units
+    let wounds = |n: Option<u32>| -> Vec<Obs> {
+        x.units
             .iter()
-            .map(|&(u, n)| {
+            .take(if n.is_some() { 1 } else { x.units.len() })
+            .map(|&(u, all)| {
                 Obs::Casualties(boundary::BandCasualties {
                     agent: Party::agent(band),
                     epoch: x.epoch,
                     by: boundary::BY_MOB,
                     body: body_id(&r.c.cultures, &c.unit(u).body),
-                    count: n,
+                    count: n.unwrap_or(all),
                     killer: (0, 0),
                 })
             })
-            .collect(),
+            .collect()
+    };
+    let records = match inside {
+        Inside::WipedOut => wounds(None),
+        Inside::Wounded => wounds(Some(1)),
         Inside::ChiefKilled => vec![chief_killed_by_mob(band, x.epoch, 7_001)],
         Inside::Peaceful => vec![difficulty(boundary::DIFFICULTY_PEACEFUL)],
+        Inside::Despawned => {
+            let survivors = x
+                .spawned
+                .iter()
+                .enumerate()
+                .map(|(i, &(u, n))| {
+                    let n = if i == 0 { n.saturating_sub(2) } else { n };
+                    (body_id(&r.c.cultures, &c.unit(u).body), n)
+                })
+                .collect();
+            vec![Obs::Dematerialized(boundary::BandDematerialized {
+                agent: Party::agent(band),
+                epoch: x.epoch,
+                reason: boundary::RECALL_PASSING,
+                survivors,
+            })]
+        }
     };
     for o in records {
         r.c.ingest(&mut r.w, &mut walls, &o, at);
@@ -3979,6 +4003,30 @@ fn a_held_decision_whose_band_is_sent_home_inside_the_slack_keeps_its_raid() {
             back.assert_as(&live);
             assert_eq!(
                 back_sent, sent,
+                "{inside:?} round {round}: the raid's members"
+            );
+        }
+    }
+}
+
+/// fixes6 item 2 (RP-59): a held siege decision, seen inside the hold's slack, then one of its
+/// members killed, or its bodies despawned with two members gone, still inside the slack. The
+/// session that went on raided at the decision with every member; the replay resolves the
+/// decision with the members it had then, not the fewer left at the slack's poll.
+#[test]
+fn a_held_decision_raids_with_the_members_it_had_at_its_tick() {
+    for inside in [Inside::Wounded, Inside::Despawned] {
+        for round in [true, false] {
+            let (live, decision, sent) = a_held_decision_then(round, inside, false);
+            assert_eq!(
+                live.raids,
+                vec![decision],
+                "{inside:?} round {round}: {live:?}"
+            );
+            let (back, _, back_sent) = a_held_decision_then(round, inside, true);
+            assert_eq!(
+                (back.raids.len(), back_sent),
+                (1, sent),
                 "{inside:?} round {round}: the raid's members"
             );
         }

@@ -656,6 +656,9 @@ pub(crate) struct Held {
     pub(crate) since: Tick,
     /// The plan of its poll: a party that moved since is no longer held.
     pub(crate) plan: u32,
+    /// The party's members then, which the decision resolves with (RP-60): records replayed
+    /// inside the hold (a despawn's survivors, a death) may take some before it resolves.
+    pub(crate) units: Vec<(u8, u32)>,
 }
 
 pub struct Conflict {
@@ -3379,7 +3382,8 @@ impl Conflict {
             x.seg = x.seg.saturating_sub(1);
         }
         let plan = x.plan;
-        self.held.insert(p, Held { since, plan });
+        let units = x.units.clone();
+        self.held.insert(p, Held { since, plan, units });
         self.schedule(Self::held_poll(since, at), Ev::Party { party: p, plan });
     }
 
@@ -3389,19 +3393,31 @@ impl Conflict {
         (at + REPLAY_HOLD_TICKS).min(since + REPLAY_HOLD_SLACK_TICKS)
     }
 
-    /// Ends party `p`'s hold (taken off the map) at `at`, before a record that would move the
-    /// party (RP-59): `party_event` decides it unwatched, as the session that went on did at the
-    /// hold's tick, inside the hold's slack too.
+    /// Ends party `p`'s hold `h` (taken off the map) at `at`, at its slack's poll or before a
+    /// record that would move the party (RP-59): `party_event` decides it unwatched, as the
+    /// session that went on did at `h.since`, with the members the party had then (RP-60). Records
+    /// replayed inside the hold may have taken some since (a despawn's survivors, a death), which
+    /// that session counted after its decision; what the decision itself cost (its raid's dead)
+    /// comes off the members left.
     fn end_hold(
         &mut self,
         w: &mut World,
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
+        h: Held,
         at: Tick,
     ) {
+        let left = std::mem::replace(&mut self.parties[p].units, h.units.clone());
         self.hold_ending = true;
         self.party_event(w, infra, p, at);
         self.hold_ending = false;
+        let x = &mut self.parties[p];
+        let after = std::mem::replace(&mut x.units, left);
+        let count = |v: &[(u8, u32)], u: u8| v.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
+        for e in &mut x.units {
+            let cost = count(&h.units, e.0).saturating_sub(count(&after, e.0));
+            e.1 = e.1.saturating_sub(cost);
+        }
     }
 
     /// Ends the holds a replayed record would move (RP-59), before it is applied: a
@@ -3414,7 +3430,8 @@ impl Conflict {
     /// fight, which its paths answer (a BAND_MATERIALIZED, a BAND_SPAWN_REJECTED). A
     /// BAND_DEMATERIALIZED moves no party, and ends nothing: Java ends a band's older epoch with
     /// one just before its fight's BAND_MATERIALIZED (`ConflictBridge.materialize`), which would
-    /// end the hold of a fight about to be honoured.
+    /// end the hold of a fight about to be honoured. The members a hold's end decides with are
+    /// the hold's, whatever such a record took since (`Held`, RP-60).
     fn release_before(
         &mut self,
         w: &mut World,
@@ -3451,7 +3468,7 @@ impl Conflict {
                 continue;
             };
             if self.parties[p].plan == h.plan && at < h.since + REPLAY_HOLD_SLACK_TICKS {
-                self.end_hold(w, infra, p, at);
+                self.end_hold(w, infra, p, h, at);
             }
         }
     }
@@ -4871,16 +4888,20 @@ impl Conflict {
                     return;
                 }
                 // A held arrival's poll, while the replay runs (§6.1, RP-23). At the hold's slack
-                // it ends: `party_event` resolves it unwatched (RP-48).
-                if let Some(h) = self.held.get(&party) {
-                    if h.plan == plan && at < h.since + REPLAY_HOLD_SLACK_TICKS {
-                        let next = Self::held_poll(h.since, at);
-                        self.schedule(next, Ev::Party { party, plan });
-                        return;
-                    }
-                    self.held.remove(&party);
+                // it ends: `party_event` resolves it unwatched (RP-48), with the members it had
+                // (RP-60).
+                if let Some(h) = self.held.get(&party)
+                    && h.plan == plan
+                    && at < h.since + REPLAY_HOLD_SLACK_TICKS
+                {
+                    let next = Self::held_poll(h.since, at);
+                    self.schedule(next, Ev::Party { party, plan });
+                    return;
                 }
-                self.party_event(w, infra, party, at);
+                match self.held.remove(&party) {
+                    Some(h) if h.plan == plan => self.end_hold(w, infra, party, h, at),
+                    _ => self.party_event(w, infra, party, at),
+                }
             }
             Ev::Seen {
                 party,

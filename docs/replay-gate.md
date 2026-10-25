@@ -875,8 +875,9 @@ branch.
 `watcher()` (a war party when the world is not Peaceful; a siege's next round) neither fight nor
 resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged.
 
-- **The hold.** The party goes into an in-memory map `held`, party to its arrival tick. The first
-  hold sets `bored_at` as `arrive()` does today; a later one keeps it.
+- **The hold.** The party goes into an in-memory map `held`, party to its arrival tick, its poll's
+  plan and its members then (`Held`, RP-60). The first hold sets `bored_at` as `arrive()` does
+  today; a later one keeps it.
 - **The poll.** Its Ev::Party is scheduled again with the same plan, `REPLAY_HOLD_TICKS` later
   (PLACEHOLDER 20 world ticks), so that pages saved in the middle of the replay hold an event for
   the party and a restart from them arrives again, and once more at the hold's slack (below), where
@@ -923,7 +924,11 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   the slack: RP-51), so the value can be set from data. A hold that no record answered by then is
   read as not fought: the poll at the slack ends the hold and runs `arrive()` or `wait_over()`,
   which, still replaying and past the slack, take the unwatched branch at once (recall, `resolve`,
-  then wait or go home), as the session that went on did. The replay clock follows the records
+  then wait or go home), as the session that went on did. The decision runs with the members the
+  hold kept (RP-60): a record replayed inside the hold that took some (a despawn's survivors fewer
+  than were placed; a death, though that one ends the hold first, below) came after the decision
+  in the session that went on. What the decision cost (its raid's dead) then comes off the members
+  left. The replay clock follows the records
   (§3.6), and the events up to a record's time run before it, so that poll runs before any record
   at or past the slack and after every record before it. A later sighting of the party finds no
   hold and embodies the band as `seen()` did live. A later fight record (BAND_FIGHT, a newer
