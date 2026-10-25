@@ -395,7 +395,8 @@ fn a_watched_hour_loads_only_the_pages_it_needs() {
     store.save(&mut g.ships);
     assert_eq!(g.ships.rows_resident_bytes(), 0);
     g.ships.reset_row_stats();
-    g.ships.session_start();
+    g.ships.begin_replay(true);
+    g.ships.replay_done(&mut g.world);
     let st = g.ships.row_stats();
     assert!(st.loads <= embodied, "{st:?} for {embodied} embodied ships");
     assert!(g.ships.ships.iter().all(|(_, x)| !x.embodied));

@@ -22,6 +22,7 @@
 //! - [`engine`]: [`Herds`], every herd's life as events on one timing wheel; the players'
 //!   interest, materialization, records, and the prey interface dragons use.
 //! - [`boundary`]: the records a herd plugin speaks (docs/boundary.md §8) and their codec.
+//! - [`outbox`]: the commands to the plugin, behind the replay gate (docs/replay-gate.md §4.6).
 //! - [`persist`]: save and restore.
 //! - [`synth`]: a synthetic climate and world, and a fake plugin. Scaffolding.
 //!
@@ -37,6 +38,7 @@ pub mod forage;
 pub mod habitat;
 pub mod herd;
 pub mod members;
+mod outbox;
 mod persist;
 pub mod route;
 pub mod species;
@@ -45,6 +47,7 @@ pub mod tunables;
 
 pub use engine::{HerdOffer, HerdStats, Herds, NewHerd, Predation};
 pub use herd::{Herd, HerdId, HerdLedger};
+pub use outbox::GateCounts;
 pub use persist::HerdsTicket;
 pub use species::{Cohort, HerdSpecies, HerdSpeciesData};
 pub use tunables::HerdTunables;
