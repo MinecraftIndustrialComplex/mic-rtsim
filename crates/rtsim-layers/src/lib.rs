@@ -35,6 +35,19 @@ pub use industry::{DistrictMark, IndustrySource, NetMark, SectionMark, StoreMark
 /// Java's dictionary kind for names (rtsim-jni's `DICT_NAME`).
 pub const DICT_NAME: u32 = 0x11;
 
+/// The most sections a district draws (the glass box's `sections_max`, 64 by default; choice SC178).
+pub const SECTION_ROWS: u64 = 64;
+/// The most chain links a package store draws (choice SC178): a chain of `n` frogports links `n - 1`,
+/// and a store with more is drawn by its first links.
+pub const STORE_LINKS: u64 = 16;
+/// The most edges a shared network draws (choice SC178): the glass box couples at most
+/// `cluster_districts_max` (16) parts, one edge from the first to each of the others.
+pub const NET_EDGES: u64 = 16;
+/// Keys a unit holds so that a full unit stays under [`rtsim_parts::MAX_ROWS`] rows.
+const fn keys_per_unit(rows_per_key: u64) -> u64 {
+    rtsim_parts::MAX_ROWS as u64 / rows_per_key
+}
+
 /// Layer groups, in panel order.
 pub const GROUPS: [(&str, &str); 7] = [
     ("settlements", "Settlements"),
@@ -674,7 +687,7 @@ pub fn specs() -> Vec<Spec> {
             ])
             .fields(&["State", "Nodes", "Stores"]),
             "industry",
-            256,
+            keys_per_unit(SECTION_ROWS),
             true,
             sections,
             |s, per| industry_units(s, Table::Sections, per),
@@ -696,7 +709,7 @@ pub fn specs() -> Vec<Spec> {
             .line("chain")
             .fields(&["Packages", "Frogports"]),
             "industry",
-            256,
+            keys_per_unit(STORE_LINKS),
             true,
             stores,
             |s, per| industry_units(s, Table::Stores, per),
@@ -724,7 +737,7 @@ pub fn specs() -> Vec<Spec> {
             ])
             .fields(&["Status", "Parts"]),
             "industry",
-            256,
+            keys_per_unit(NET_EDGES),
             true,
             networks,
             |s, per| industry_units(s, Table::Networks, per),
@@ -1446,6 +1459,9 @@ fn lines(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
 fn sections(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
     let v = cx.industry?;
     v.sections(sel.range(), &mut |m| {
+        if u64::from(m.index) >= SECTION_ROWS {
+            return;
+        }
         let mark = Mark::rect(Some(format!("{}.{}", m.district, m.index)), m.block_box)
             .with_ci(m.state as u16)
             .with_st(industry::section_st(m.state))
@@ -1477,7 +1493,7 @@ fn stores(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
     v.stores(sel.range(), &mut |s| {
         // Wider with the packages held: 2 for an empty store, up to 7.
         let w = (2.0 + 2.0 * (1.0 + s.packages as f64).log10()).min(7.0);
-        for &(i, j) in &s.links {
+        for &(i, j) in s.links.iter().take(STORE_LINKS as usize) {
             let (Some(a), Some(b)) = (s.ports.get(usize::from(i)), s.ports.get(usize::from(j)))
             else {
                 continue;
@@ -1536,7 +1552,7 @@ fn networks(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
             );
             return;
         }
-        for (k, p) in n.parts.iter().enumerate().skip(1) {
+        for (k, p) in n.parts.iter().enumerate().skip(1).take(NET_EDGES as usize) {
             out.push_with(
                 n.id,
                 n.dim,
@@ -1764,6 +1780,79 @@ mod tests {
                 .filter(|&k| units.iter().any(|&u| s.keys(u).contains(&k)))
                 .collect();
             assert_eq!(covered, keys, "{id}: its units cover its keys");
+        }
+    }
+
+    /// A full unit of each reach layer stays under `MAX_ROWS` rows, not only under that many keys:
+    /// the caps on a district's sections, a store's links and a network's edges hold it.
+    #[test]
+    fn a_full_unit_of_the_reach_layers_stays_under_max_rows() {
+        let names: BTreeMap<(u32, u32), String> = BTreeMap::new();
+        let specs = specs();
+        let per = |id: &str| layer(&specs, id).1.per_unit;
+        // Past the caps on every key: 80 sections a district, 40 frogports all linked in pairs,
+        // 30 parts a network.
+        let n_sec = per("industry.sections");
+        let n_sto = per("industry.stores");
+        let n_net = per("industry.networks");
+        let reach = Reach {
+            sections: (0..n_sec)
+                .flat_map(|d| (0..80).map(move |i| section(d, i, 1)))
+                .collect(),
+            stores: (0..n_sto)
+                .map(|id| StoreMark {
+                    id,
+                    dim: 0,
+                    ports: (0..40).map(|i| port(f64::from(i) * 10.0, 1)).collect(),
+                    links: (0..40u16)
+                        .flat_map(|i| (i + 1..40).map(move |j| (i, j)))
+                        .collect(),
+                    packages: 1,
+                    residue_packages: 0,
+                })
+                .collect(),
+            nets: (0..n_net)
+                .map(|id| NetMark {
+                    id,
+                    dim: 0,
+                    status: "coupled",
+                    coupled: true,
+                    parts: (0..30)
+                        .map(|d| industry::NetPart {
+                            district: d,
+                            x: d as f64,
+                            z: 0.0,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+        let src = Src {
+            world: None,
+            dragons: None,
+            herds: None,
+            ships: None,
+            conflict: None,
+            industry: Some(&reach),
+            names: &names,
+            wnow: Tick(0),
+            offset: 0,
+        };
+        for (id, per_key) in [
+            ("industry.sections", SECTION_ROWS),
+            ("industry.stores", STORE_LINKS),
+            ("industry.networks", NET_EDGES),
+        ] {
+            let (i, s) = layer(&specs, id);
+            let mut out = s.writer(i as u16);
+            s.build(&src, &Sel::All, &mut out);
+            let max = u64::from(rtsim_parts::MAX_ROWS);
+            assert_eq!(
+                out.rows() as u64,
+                s.per_unit * per_key,
+                "{id}: the caps bind"
+            );
+            assert!(out.rows() as u64 <= max, "{id}: {} rows a unit", out.rows());
         }
     }
 }
