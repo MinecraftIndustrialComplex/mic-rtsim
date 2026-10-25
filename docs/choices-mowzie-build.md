@@ -8158,6 +8158,34 @@ MZB-499) is full.
     guard keeps a replay from building a record for a row that goes, and from bumping `march_rev` on it.
   - **The sims' explanation is corrected in MZB-704** (the re-met envoy and the `unseen` loop).
 
+- **MZB-704** (the sims regenerated on the review's fixes, and their differences explained; corrects the
+  explanation of aa37308a): `scenario/results/sim-conflict.json` and `sim-mowzie.json` regenerated at the head of
+  the fixes and compared with the files at 16f853cc, `wall_ms` filtered out. aa37308a's subject put the changes
+  down to "homebound bands materialized and steered" and the BAND_MARCH records; the review found two more causes
+  in what it committed, and the events count was one of them.
+  - **sim-conflict.json, events:** ignore 516 to 213, tribute 320 to 74, converter 295 to 183. These were the
+    `unseen` loop (MZB-701): bands left the player's view along the sims' near-axis roads, and each was re-booked
+    a tick on until its truncated position left. Before M10a the runs had 209, 73 and 182 (91b4887c); the few
+    left over (4, 1, 1) are M10a's own events (march records due, the stepped bookings).
+  - **seen, materialized, recalls, wire bytes:** ignore 7 to 6 of each, tribute 9 to 5, converter 5 to 3; wire
+    bytes tribute 5728 to 4384 (4 times 336) and converter 3440 to 2768 (2 times 336). These were envoys met
+    again on their way home (MZB-702): ENVOY_MATERIALIZE "demand 0 of item 0 or stop signal 0", a BAND_STEER and a
+    BAND_RECALL (reason 4, once 5), 1, 4 and 2 of them, none a homebound band in bodies. The log's "envoy seen
+    by a player" lines for them are gone with them.
+  - **The walk-in's empty record (MZB-700):** the ignore run gains two BAND_MATERIALIZE lines with 0 members, after
+    the attack steers, at 13.74 (the invasion, wave 1) and 20.96 (the raid, wave 1). Its wire bytes do not
+    move (one envoy fewer, 336, against two records of 168), and `waves` (5) and `materialized` do not count
+    them.
+  - **State hashes:** each run's first hash moves (ignore ca482f9e... to a3ca695d..., tribute 6f9db43c... to
+    440876fb..., converter 9b9d5856... to f8c87821...), and the restore check's two hashes agree with each other
+    (a3ca695d530b6e2e); the world hashes, the rungs, the casualties, the raids and every check are as they were.
+  - **sim-mowzie.json moves only in run 13's audit line.** Run 10: 3,536,041 steps to 3,524,449 and 11,882
+    shell-steps to 11,797; the stepped run takes a step for each wheel event off the 20-tick grid, so the loop's
+    events were most of it (with the stepping off, 3,535,821 steps; with the empty record off, 3,524,164; with
+    the envoy rule off, 3,524,472: the effects overlap). Run 11: 3,097,181 steps to 3,097,182, the walk-in's
+    echo (with the empty record off it is 3,097,181). Both audits pass; records, changes and ENDED counts are
+    the same.
+
 ## M11 Aloft
 
 (none yet)
