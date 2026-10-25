@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.journal.RingView;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
@@ -11,7 +12,6 @@ import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import com.minecraftindustrialcomplex.mic_rtsim_create.AppliedOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
-import com.minecraftindustrialcomplex.mic_rtsim_create.RingView;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.BreakForTest;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;

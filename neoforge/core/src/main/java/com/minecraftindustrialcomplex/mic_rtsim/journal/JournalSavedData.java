@@ -49,8 +49,6 @@ public final class JournalSavedData extends SavedData {
     /** The last write was held or failed (set on the IO chain). */
     private volatile boolean retry;
     private volatile long writtenThrough;
-    /** The last sequence the file held when this start read it (0 for a new journal): {@link DurableOpRing#trim}. */
-    private long durableAtLoad;
     private final AtomicLong writes = new AtomicLong();
     private final AtomicLong skipped = new AtomicLong();
     /** The last write was held by its chunks (not an IO error), set on the IO chain: a flush save's retry looks. */
@@ -223,7 +221,7 @@ public final class JournalSavedData extends SavedData {
         return "journal file: written " + writes() + ", through observation " + writtenThrough + ", " + appliedBehind() + " applied ops behind"
                 + "; held " + b.held() + " (" + b.heldInARow() + " in a row" + (b.lastHeld().isEmpty() ? "" : ", last: " + b.lastHeld()) + ")"
                 + ", late " + b.late() + ", wait max " + b.maxWaitMillis() + " ms, kept at a flush save " + flushKept()
-                + ", outside a world save " + skipped() + "; applied-op rings: overflowed " + DurableOpRing.overflowedTotal()
+                + ", outside a world save " + skipped() + "; " + DurableOpRings.perfLine()
                 + "; directory syncs " + DirectorySync.synced() + " (" + DirectorySync.failed() + " failed, " + DirectorySync.nanos() / 1_000_000 + " ms)";
     }
 
@@ -250,11 +248,6 @@ public final class JournalSavedData extends SavedData {
      */
     public long writtenThrough() {
         return writtenThrough;
-    }
-
-    /** The last observation sequence the file held when this start read it; 0 for a journal this start made. */
-    public long durableAtLoad() {
-        return durableAtLoad;
     }
 
     /** Files written since the server started (the GameTests read it). */
@@ -304,7 +297,6 @@ public final class JournalSavedData extends SavedData {
                 tag.getLong("lastAppliedCmdSeq"), tag.getLong("nextObsSeq"), seqs, records, kinds, names,
                 tag.contains("pinnedGen", Tag.TAG_BYTE_ARRAY) ? tag.getByteArray("pinnedGen") : null)));
         d.writtenThrough = Math.max(0, tag.getLong("nextObsSeq") - 1);
-        d.durableAtLoad = d.writtenThrough;
         return d;
     }
 

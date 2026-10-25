@@ -105,13 +105,18 @@ public final class WritePackages {
         if (postbox == null && rings && port != null && chunk == null && !PortRing.wroteToBuffer(port, opId)
                 && !PortRing.wroteToPostbox(port, opId) && !PortRing.refreshed(port, level, pos, ind))
             return false;
+        // A ring another session answered is settled first (T2's rule: an op the engine's pages provably hold leaves).
+        if (rings && port != null)
+            PortRing.settle(port);
         boolean duplicate;
         if (postbox != null)
             duplicate = (chunk != null && ind.chunkCarriesOp(chunk, opId)) || (rings && (ind.opApplied(opId) || PortRing.wroteToBuffer(port, opId)));
         else
             duplicate = rings && (PortRing.wroteToBuffer(port, opId) || PortRing.wroteToPostbox(port, opId));
         if (duplicate) {
-            ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            if (rings && port != null)
+                PortRing.refused(port, opId, seq);
             return true;
         }
         if (level == null || stacks.isEmpty() || count <= 0) {
@@ -154,19 +159,21 @@ public final class WritePackages {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
+        // In the tick the packages went in, so whichever save holds them holds the op; the op leaves its ring once the
+        // engine acknowledges the answer (T2's rule).
         if (postbox != null) {
             postbox.setChanged(); // Create mirrors the inventory into the port's buffer, unprimed
+            long seq = ind.commandResultInChunk(chunk, cmdSeq, opId, Obs.CommandResult.APPLIED);
             if (rings && port != null) {
-                PortRing.record(port, opId, true);
+                PortRing.record(port, opId, true, seq, pos);
                 Create.RAILWAYS.markTracksDirty();
             }
-            ind.commandResultInChunk(chunk, cmdSeq, opId, Obs.CommandResult.APPLIED);
         } else {
             port.primed = true; // the postbox takes the buffer back when it loads (restoreOfflineBuffer)
+            long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
             if (rings)
-                PortRing.record(port, opId, false);
+                PortRing.record(port, opId, false, seq, pos);
             Create.RAILWAYS.markTracksDirty();
-            ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
         }
         return true;
     }

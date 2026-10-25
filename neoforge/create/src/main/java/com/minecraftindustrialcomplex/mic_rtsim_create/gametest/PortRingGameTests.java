@@ -9,8 +9,11 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim_create.AppliedOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.PortRing;
+import com.minecraftindustrialcomplex.mic_rtsim_create.PortRingHolder;
+import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing;
 import com.simibubi.create.content.logistics.box.PackageItem;
 import com.simibubi.create.content.logistics.packagePort.postbox.PostboxBlockEntity;
 import com.simibubi.create.content.trains.graph.DimensionPalette;
@@ -122,6 +125,9 @@ public final class PortRingGameTests {
      */
     private static void crash(GameTestHelper helper, String test, boolean rings, boolean tracksSaved, boolean journalSaved) {
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        TrainRing.holdPrunesForTest(true);
         forgetAll(helper);
         IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
@@ -194,6 +200,7 @@ public final class PortRingGameTests {
                     journal().forgetAppliedForTest(op);
                     st[0].connectedPorts.remove(postbox);
                     PortRing.fallbackForTest(false);
+                    TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
@@ -211,6 +218,9 @@ public final class PortRingGameTests {
     public static void aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce(GameTestHelper helper) {
         String test = "aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce";
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        TrainRing.holdPrunesForTest(true);
         forgetAll(helper);
         IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
@@ -307,6 +317,7 @@ public final class PortRingGameTests {
                     check("an orphan port takes no write: FAILED, answered " + status(answer), answer == Obs.CommandResult.FAILED);
                     check("nothing written into the buffer: " + got + " vs " + mirrored[0], got == mirrored[0] && !port.primed);
                     st[0].connectedPorts.remove(postbox);
+                    TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
@@ -348,6 +359,9 @@ public final class PortRingGameTests {
 
     private static void restored(GameTestHelper helper, String test, boolean checks) {
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        TrainRing.holdPrunesForTest(true);
         forgetAll(helper);
         IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
@@ -423,12 +437,16 @@ public final class PortRingGameTests {
                     journal().forgetAppliedForTest(op);
                     st[0].connectedPorts.remove(postbox);
                     PortRing.chunkChecksForTest(false);
+                    TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
 
     private static void unloaded(GameTestHelper helper, String test, boolean checks) {
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        TrainRing.holdPrunesForTest(true);
         forgetAll(helper);
         IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
@@ -507,6 +525,7 @@ public final class PortRingGameTests {
                     level.getChunkSource().chunkMap.write(far, null).join();
                     st[0].connectedPorts.remove(postbox);
                     PortRing.chunkChecksForTest(false);
+                    TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
     }
@@ -573,6 +592,9 @@ public final class PortRingGameTests {
     public static void aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused(GameTestHelper helper) {
         String test = "aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused";
         fastConfig();
+        // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
+        // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
+        TrainRing.holdPrunesForTest(true);
         forgetAll(helper);
         IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
@@ -631,6 +653,81 @@ public final class PortRingGameTests {
                     check("refused: DUPLICATE, answered " + status(second), second == Obs.CommandResult.DUPLICATE_OP);
                     check("one package for one op: " + got, got == 1);
                     journal().forgetAppliedForTest(op);
+                    st[0].connectedPorts.remove(postbox);
+                    TrainRing.holdPrunesForTest(false);
+                })
+                .thenSucceed();
+    }
+
+    // ---- T2's rule: the engine's acknowledgement --------------------------------------------------
+
+    /**
+     * T2's rule on a port's ring (docs/choices-journal-barrier.md RP-209): a package written offline puts its op in
+     * the buffer's ring with its answer's sequence, which the tracks save keeps with the session's generation. Read
+     * back during the session (Create loading the station again), the ring waits for the same acknowledgement; once
+     * the engine's durable save holds the answer, the op leaves and the next save of the port's entry holds none of
+     * the ring's keys. The package stays.
+     */
+    @GameTest(template = IndustryKit.YARD, batch = "port_ring_12", timeoutTicks = 2400)
+    public static void aPortOpLeavesItsRingAtTheEnginesAcknowledgement(GameTestHelper helper) {
+        String test = "aPortOpLeavesItsRingAtTheEnginesAcknowledgement";
+        fastConfig();
+        TrainRing.holdPrunesForTest(true); // until the ring has been saved and read back
+        forgetAll(helper);
+        IndustryKit.forget(helper);
+        ServerLevel level = helper.getLevel();
+        PortRing.fallbackForTest(false);
+        BlockPos stationPos = stationPos(helper, 10);
+        long farChunk = ChunkPos.asLong((stationPos.getX() >> 4) + 7600, (stationPos.getZ() >> 4) + 7600);
+        BlockPos postbox = new BlockPos(ChunkPos.getX(farChunk) * 16 + 5, 70, ChunkPos.getZ(farChunk) * 16 + 5);
+        GlobalStation[] st = {null};
+        long[] pruned0 = {0};
+        long op = engineOp();
+        helper.startSequence()
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    placeStation(helper, 10);
+                    check("the rings are on", PortRing.available(level.getServer()));
+                })
+                .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
+                .thenExecute(() -> {
+                    GlobalPackagePort port = new GlobalPackagePort();
+                    port.address = ADDRESS;
+                    st[0].connectedPorts.put(postbox, port);
+                    District d = ind().districts().createForTest(level, farChunk);
+                    writePackage(op, d.id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
+                })
+                .thenWaitUntil(() -> check("applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
+                .thenExecute(() -> {
+                    long at = ((PortRingHolder) st[0].connectedPorts.get(postbox)).mic_rtsim$bufferOps().answerOf(op);
+                    check("the buffer's ring holds the op with its answer's sequence: " + at, at > 0);
+                    CompoundTag saved = saveStation(level, st[0]);
+                    CompoundTag entry = portEntry(saved);
+                    long gen = RtsimSession.current().boundary().gen();
+                    check("the tracks save holds the op, its answer and the session's generation: " + entry,
+                            Arrays.equals(entry.getLongArray(PortRing.KEY), new long[] {op})
+                                    && Arrays.equals(entry.getLongArray(AppliedOpRing.answersKey(PortRing.KEY)), new long[] {at})
+                                    && entry.getLong(AppliedOpRing.genKey(PortRing.KEY)) == gen);
+                    loadStation(level, st[0], saved);
+                    GlobalPackagePort back = st[0].connectedPorts.get(postbox);
+                    check("read back: the op with the same answer",
+                            back != null && ((PortRingHolder) back).mic_rtsim$bufferOps().answerOf(op) == at);
+                    pruned0[0] = TrainRing.pruned();
+                    TrainRing.holdPrunesForTest(false);
+                })
+                .thenWaitUntil(IndustryKit.paced(() -> {
+                    engine().requestSaveAtNextStep();
+                    check("the engine acknowledged the answer and the op left the ring read back",
+                            !PortRing.wroteToBuffer(st[0].connectedPorts.get(postbox), op));
+                }))
+                .thenExecute(() -> {
+                    check("counted: " + (TrainRing.pruned() - pruned0[0]), TrainRing.pruned() > pruned0[0]);
+                    CompoundTag entry = portEntry(saveStation(level, st[0]));
+                    for (String k : new String[] {PortRing.KEY, AppliedOpRing.answersKey(PortRing.KEY), AppliedOpRing.genKey(PortRing.KEY),
+                            PortRing.POSTBOX_KEY})
+                        check("the save holds no " + k, !entry.contains(k));
+                    check("the package stays", packages(st[0].connectedPorts.get(postbox).offlineBuffer) == 1);
+                    record(test, "ops pruned", TrainRing.pruned() - pruned0[0]);
                     st[0].connectedPorts.remove(postbox);
                 })
                 .thenSucceed();

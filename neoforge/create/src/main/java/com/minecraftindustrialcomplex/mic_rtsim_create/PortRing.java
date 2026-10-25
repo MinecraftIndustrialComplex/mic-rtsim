@@ -33,6 +33,15 @@ import java.util.UUID;
  * ring or the postbox chunk's carried result (not the postbox's ring: the tracks file can be newer than the
  * chunk, and the package is then missing from the postbox the engine's resend finds loaded).
  *
+ * <p>An op stays in a port's ring until the engine can no longer send it, T2's rule (docs/choices-mowzie-build.md
+ * RP-250, RP-251; docs/choices-journal-barrier.md RP-209), as on a train's ring and through {@link TrainRing}'s
+ * hooks: each answer (APPLIED, or DUPLICATE_OP on a hit) is recorded with its sequence, and the engine's
+ * acknowledgement of that sequence removes the op at the session hook's end of tick; a ring another session answered
+ * is settled at this session's start ({@link #sessionStarted}) or at its load ({@link #read}) against the engine's
+ * pages; the industry's announce makes every answer unknown ({@link #announce}). An op the postbox's chunk was found
+ * to carry ({@link #refreshed}) joins the postbox's ring with its answer unknown, and leaves only at its resend's
+ * answer or by the valve. {@link #CAPACITY} is a valve, counted and logged.
+ *
  * <p>The mixin config is optional ({@code mic_rtsim_create_ring.mixins.json}: not required, require 0), so a
  * Create that moved {@code GlobalStation.write} or {@code read} loads without the rings. {@link #available} then
  * finds the round trip broken, logs that once, and WritePackages falls back to the journal's applied set.
@@ -45,12 +54,14 @@ public final class PortRing {
     /** The ops whose packages went into the loaded postbox. */
     public static final String POSTBOX_KEY = "mic_rtsim:applied_ops_postbox";
     /**
-     * A port ring's bound, TUNABLE: as the train ring's (RP-192), it must cover the ops one port takes between the
-     * write and the engine's acknowledgement (one autosave, more while the chunk barrier holds the journal back).
-     * One IND_WRITE_PACKAGE fills at least one of the buffer's 18 slots, so a port takes far fewer than 256 in
-     * that window unless trains empty it as fast; at most 2 KiB of NBT a ring.
+     * The valve, as the train ring's (RP-250): an op leaves its ring when the engine acknowledges its answer, so a
+     * ring holds only the ops whose answers the engine has not saved yet. A ring that reaches this many drops its
+     * oldest op, counted ({@link #evictions}) and logged for the first few ports: that op is written twice only if
+     * the engine sends it again. One IND_WRITE_PACKAGE fills at least one of the buffer's 18 slots, so a port
+     * reaches this only if trains empty it as fast for thousands of unacknowledged writes. At most 64 KiB of op ids
+     * (and as many answer sequences) a ring.
      */
-    public static final int CAPACITY = 256;
+    public static final int CAPACITY = 4096;
     /** The op the probe writes and reads back: an engine op id no engine hands out (top bit set, F4). */
     private static final long PROBE_OP = 0xFFFF_FFFF_FFFF_FFF2L;
 
@@ -58,6 +69,9 @@ public final class PortRing {
     private static Boolean available;
     private static boolean fallbackForTest;
     private static int fallbackLogs;
+    private static boolean probing;
+    private static long evictions;
+    private static int evictionLogs;
 
     /**
      * True when the ring mixins applied: {@code GlobalPackagePort} implements {@link PortRingHolder} and a probe
@@ -92,10 +106,51 @@ public final class PortRing {
         return r != null && r.contains(op);
     }
 
-    /** Records an op whose packages went into the offline buffer ({@code postbox} false) or the loaded postbox. */
-    public static void record(GlobalPackagePort port, long op, boolean postbox) {
-        if (port instanceof PortRingHolder h)
-            (postbox ? h.mic_rtsim$postboxOps() : h.mic_rtsim$bufferOps()).add(op);
+    /**
+     * Records an op whose packages went into the offline buffer ({@code postbox} false) or the loaded postbox,
+     * answered APPLIED at {@code seq}: it leaves the ring once the engine acknowledges {@code seq}. A full ring
+     * drops its oldest op ({@link #CAPACITY}).
+     */
+    public static void record(GlobalPackagePort port, long op, boolean postbox, long seq, BlockPos pos) {
+        if (!(port instanceof PortRingHolder h))
+            return;
+        AppliedOpRing ring = postbox ? h.mic_rtsim$postboxOps() : h.mic_rtsim$bufferOps();
+        TrainRing.settle(ring);
+        long before = ring.evictions();
+        ring.add(op);
+        if (ring.evictions() != before) {
+            evictions++;
+            if (evictionLogs++ < 8)
+                MicRtsim.LOGGER.warn("[mic_rtsim_create] the station port at {} has a full op ring ({}): {} ops whose answers the engine "
+                        + "has not acknowledged, so op {} leaves it, and if the engine sends that op again it writes its packages twice "
+                        + "(docs/choices-journal-barrier.md RP-209). {} evicted on all ports so far (/rtsim district perf)",
+                        pos, postbox ? POSTBOX_KEY : KEY, ring.capacity(), Long.toHexString(ring.lastEvicted()), evictions);
+        }
+        TrainRing.answered(ring, op, seq);
+    }
+
+    /**
+     * A resend refused (DUPLICATE_OP at {@code seq}): each of the port's rings that holds the op takes that answer,
+     * and the op leaves once the engine acknowledges it.
+     */
+    public static void refused(GlobalPackagePort port, long op, long seq) {
+        if (!(port instanceof PortRingHolder h))
+            return;
+        for (AppliedOpRing ring : new AppliedOpRing[] {h.mic_rtsim$bufferOpsIfAny(), h.mic_rtsim$postboxOpsIfAny()})
+            if (ring != null && ring.contains(op)) {
+                TrainRing.settle(ring);
+                TrainRing.answered(ring, op, seq);
+            }
+    }
+
+    /** Settles the port's rings for this session, if another answered them ({@link TrainRing#settle}). */
+    public static void settle(GlobalPackagePort port) {
+        if (!(port instanceof PortRingHolder h))
+            return;
+        if (h.mic_rtsim$bufferOpsIfAny() != null)
+            TrainRing.settle(h.mic_rtsim$bufferOpsIfAny());
+        if (h.mic_rtsim$postboxOpsIfAny() != null)
+            TrainRing.settle(h.mic_rtsim$postboxOpsIfAny());
     }
 
     /**
@@ -124,7 +179,10 @@ public final class PortRing {
         }
     }
 
-    /** {@code GlobalStation.read}'s hook: the saved rings onto the ports Create made, matched by Pos. */
+    /**
+     * {@code GlobalStation.read}'s hook: the saved rings onto the ports Create made, matched by Pos. Read during a
+     * session, each ring is settled or waits for its answers' acknowledgements again ({@link TrainRing#loaded}).
+     */
     public static void read(GlobalStation station, CompoundTag nbt) {
         if (station == null || nbt == null || station.connectedPorts.isEmpty())
             return;
@@ -136,11 +194,83 @@ public final class PortRing {
                 continue;
             if (!(station.connectedPorts.get(NBTHelper.readBlockPos(entry, "Pos")) instanceof PortRingHolder h))
                 continue;
-            if (buffer)
+            if (buffer) {
                 h.mic_rtsim$bufferOps().readFrom(entry, KEY);
-            if (postbox)
+                if (!probing)
+                    TrainRing.loaded(h.mic_rtsim$bufferOps());
+            }
+            if (postbox) {
                 h.mic_rtsim$postboxOps().readFrom(entry, POSTBOX_KEY);
+                if (!probing)
+                    TrainRing.loaded(h.mic_rtsim$postboxOps());
+            }
         }
+    }
+
+    // ---- the session: settle, announce, counters (T2's rule) --------------------------------------
+
+    /** Calls {@code each} with every ring of every station port Create knows now. */
+    private static void eachRing(java.util.function.Consumer<AppliedOpRing> each) {
+        for (com.simibubi.create.content.trains.graph.TrackGraph graph : com.simibubi.create.Create.RAILWAYS.trackNetworks.values())
+            for (GlobalStation st : graph.getPoints(com.simibubi.create.content.trains.graph.EdgePointType.STATION))
+                for (GlobalPackagePort port : st.connectedPorts.values())
+                    if (port instanceof PortRingHolder h) {
+                        if (h.mic_rtsim$bufferOpsIfAny() != null)
+                            each.accept(h.mic_rtsim$bufferOpsIfAny());
+                        if (h.mic_rtsim$postboxOpsIfAny() != null)
+                            each.accept(h.mic_rtsim$postboxOpsIfAny());
+                    }
+    }
+
+    /** The session started ({@link TrainRing#sessionStarted}): settles every port ring loaded with the world. True when any held an op. */
+    static boolean sessionStarted() {
+        boolean[] any = {false};
+        eachRing(ring -> {
+            if (!ring.isEmpty()) {
+                TrainRing.settle(ring);
+                any[0] = true;
+            }
+        });
+        return any[0];
+    }
+
+    /**
+     * The industry comes back on (or the engine lost observations), {@code CreatePlugin.announce}: every answer this
+     * session gave a port's op becomes unknown, as on the trains' rings ({@link TrainRing#announce}).
+     */
+    static void announce() {
+        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession s = com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current();
+        long gen = s == null ? 0 : s.boundary().gen();
+        eachRing(ring -> {
+            if (ring.gen() == gen)
+                ring.forgetAnswers();
+        });
+    }
+
+    /** Ops pushed out of full port rings this server run (each a possible double write). */
+    public static long evictions() {
+        return evictions;
+    }
+
+    /** For {@code /rtsim district perf}. */
+    static String perfLine() {
+        long[] held = {0, 0, 0};
+        eachRing(ring -> {
+            if (!ring.isEmpty()) {
+                held[0]++;
+                held[1] += ring.size();
+                held[2] += ring.unknownCount();
+            }
+        });
+        return "port rings: " + held[1] + " ops in " + held[0] + " rings (" + held[2] + " answers unknown), " + evictions + " evicted (valve "
+                + CAPACITY + ")";
+    }
+
+    /** Ops held now in every port ring whose answers are unknown (GameTests). */
+    public static long unknownCountForTest() {
+        long[] n = {0};
+        eachRing(ring -> n[0] += ring.unknownCount());
+        return n[0];
     }
 
     // ---- the postbox's chunk (P1 of the slice U review) -------------------------------------------
@@ -248,10 +378,13 @@ public final class PortRing {
 
     private static void refreshFrom(GlobalPackagePort port, PortRingHolder h, CompoundTag chunk, BlockPos pos,
             HolderLookup.Provider registries, com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind) {
+        long found = carriedFound;
         for (long op : ind.opsCarriedInChunkTag(chunk)) {
             if (h.mic_rtsim$postboxOps().add(op))
                 carriedFound++;
         }
+        if (carriedFound != found)
+            com.simibubi.create.Create.RAILWAYS.markTracksDirty();
         // A chunk of another data version is read by vanilla through its fixers; the inventory is left alone then.
         if (port.primed || net.minecraft.world.level.chunk.storage.ChunkStorage.getVersion(chunk)
                 != net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())
@@ -332,7 +465,12 @@ public final class PortRing {
             if (!Arrays.equals(entry.getLongArray(KEY), probe) || !Arrays.equals(entry.getLongArray(POSTBOX_KEY), probe))
                 return "GlobalStation.write wrote no " + KEY + ": its injection did not apply";
             GlobalStation back = new GlobalStation();
-            back.read(tag, registries, false, dimensions);
+            probing = true;
+            try {
+                back.read(tag, registries, false, dimensions);
+            } finally {
+                probing = false;
+            }
             GlobalPackagePort read = back.connectedPorts.get(at);
             if (read == null || !wroteToBuffer(read, PROBE_OP) || !wroteToPostbox(read, PROBE_OP))
                 return "GlobalStation.read did not read " + KEY + ": its injection did not apply";

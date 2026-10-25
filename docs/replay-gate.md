@@ -1388,7 +1388,10 @@ needs a tracks write that failed while the journal's succeeded.
 journal's file is behind, which RP-192 put at four autosaves at most. Since RP-205 a hold a later save
 can clear has no round limit, so a hold that lasts hours (a disk failing every write) can push an op
 out of a busy train's ring before the journal's file holds it; a crash then applies its resend again.
-The journal logs once when its file falls 10,000 applied ops behind (`BEHIND_WARN`).
+The journal logs once when its file falls 10,000 applied ops behind (`BEHIND_WARN`). Since T2 (RP-250)
+and RP-209 every ring (train, port, oil, pollution, ledger) keeps an op until the engine acknowledges
+its answer, which no hold keeps back, and holds 4,096: only 4,096 ops into one ring the engine has not
+acknowledged push one out, counted.
 
 **More than one crash** (the fix round's item 8). A held arrival stays held until its slack or the
 replay end of the first session that reaches one, whichever comes first. A session that crashes or
@@ -1864,8 +1867,8 @@ its files on disk, the rest from the save before. Two directions:
 | I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
 | I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
 | I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
-| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen | exact: T2's train ring (RP-190 on), within its 256-op window and with its mixin applied | n/a | slice T2's limits |
-| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen | the tracks newer than the chunk: exact, the port's buffer ring (RP-206), within its 256-op window and with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
+| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen | exact: T2's train ring (RP-190 on, pruned at the engine's acknowledgement, RP-250), with its mixin applied | n/a | slice T2's limits (residual 6) |
+| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen | the tracks newer than the chunk: exact, the port's buffer ring (RP-206, pruned at the engine's acknowledgement, RP-209), with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
 | K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact: the chunk's carried result when loaded at the resend, the port's postbox ring when not (RP-206). The tracks newer than the chunk (either file can be the newer: chunks save between world saves, the tracks only at one): written again when loaded, exact; refused when unloaded, the package only in Create's unprimed mirror, a loss. Goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
 | K4 | IND_WRITE_CHAIN, frogport | exact (noted) | exact when loaded; unloaded: FAILED then REASSERT, a possible double booking (inferred); goods pushed out before the save: dupe | loss | the coordinator (Create slice) |
 | K5 | reconcile through PostboxAccess, the tracks mirror | exact | the mirror taken by a train while the postbox is unloaded, then reapplied: dupe, independent of the journal | loss or dupe by sign | the coordinator (Create slice) |
@@ -1896,18 +1899,17 @@ its files on disk, the rest from the save before. Two directions:
 4. **The pollution ledger's under-count** (RP-207): a crash that keeps the level's pollution and loses
    the ledger leaves the district's total short by the delta. Attribution only: the engine learns a
    slightly lower rate; no pollution is created or removed.
-5. **Ring entries pending a resend that never comes** (RP-204): an op the store on disk holds but the
-   journal's file did not, whose resend the engine dropped. Harmless (it can only refuse that op), and the
-   cap pushes it out. An entry the cap pushes out before the journal's file holds it is counted as an
-   overflow; its resend would be applied again.
-6. **The rings' limits** (RP-192, RP-193, RP-204, RP-206): an op pushed out of a train's or a port's
-   256-op ring, or a store's 4,096-entry `DurableOpRing`, before the journal's file holds it, which a
-   hold lasting hours makes possible (§6.1, "Slice U and the ring's bound"; the store's ring trims by
-   the journal's file, which the hold keeps back, and counts what it pushes out as overflows), and the
-   journal's index as the train's fallback when the ring's mixin did not apply. Whether residual 7's ring
-   rule (pruned by the engine's acknowledgement) lifts this is checked when the rings move to it.
-7. **A re-decided op after its answer was consumed** (hole (a), found by slice T's implementer for train
-   ops; RP-204). Industry ids are derived from the command (W3), so a rolled-back engine re-deciding a
+5. **Ring entries whose answer is unknown, waiting for a resend that never comes** (RP-204, RP-209): an
+   op a ring holds with no answer an acknowledgement can remove (a session-start settle that proved
+   nothing, the industry's announce, a corrupt ring, an op a postbox's chunk was found to carry), whose
+   resend the engine dropped. Harmless (it can only refuse that op), and the valve pushes it out.
+6. **The rings' valves** (RP-192, RP-193, RP-209): 4,096 ops into one ring (train, port or store) that
+   the engine has not acknowledged push the oldest out, counted as an overflow; its resend would be
+   applied again. A hold no longer matters (§6.1, "Slice U and the ring's bound"): the rings prune at the
+   engine's acknowledgement, not by the journal's file. Also the journal's index as the train's fallback
+   when the ring's mixin did not apply.
+7. **A re-decided op after its answer was consumed. Closed by RP-209** (hole (a), found by slice T's
+   implementer for train ops; RP-204). Industry ids are derived from the command (W3), so a rolled-back engine re-deciding a
    deposit delta or a package write gives the op id it gave before. `industry::journaled` consumes a
    COMMAND_RESULT without firing the wakes and breakpoints due before it, so the answer can be consumed
    (nothing in the outbox) and the op re-decided after it, in that step's `simulate`. Java refuses it then:
@@ -1915,9 +1917,11 @@ its files on disk, the rest from the save before. Two directions:
    ring holds it until the store's first save. The hole is a re-decision after both: the industry module
    off at the restart and switched on after a world save (the link ignores the journaled records, the
    engine acknowledges them, the ring trims by the journal's file mark): a dupe. The port's rings have no
-   trim (only residual 6). Follow-on, at the merge with T2's settled ring: one ring class pruned by the
-   engine's durable page ack against each entry's latest answer, settled at the session start by the
-   journal's newest gen (T2's rule).
+   trim (only residual 6). Closed at the merge with T2 (RP-209): every ring keeps an op until the engine
+   acknowledges the op's latest answer, after which the engine cannot re-decide it, and a ring another
+   session answered is settled at the session's start against the engine's pages and the journal the
+   session loaded, keeping, with its answer unknown, every op the pages do not provably hold (T2's rule,
+   RP-250, RP-251).
 8. **A postbox's chunk newer than the tracks file, where RP-206's hooks do not reach** (K2; the U-a
    review's P1). The chunk is saved between world saves and the tracks file only at one, so the chunk is
    often the newer. The hooks: a restore of a primed buffer makes the chunk carry the ops it brought in,
@@ -1939,13 +1943,12 @@ its files on disk, the rest from the save before. Two directions:
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
 pollution ledger's, and any later ring. The switch gates only whether new ops are applied. A save writes
 the ring's key whenever the ring is not empty, with the module on or off; a load keeps whatever is there;
-the pruning (by the journal's file now, by the engine's acknowledgement once the rings take T2's rule)
-goes on while the module is off. Why: a save that left a ring out after a switch off at runtime (a config
+the pruning (at the engine's acknowledgement, RP-209) goes on while the module is off. Why: a save that left a ring out after a switch off at runtime (a config
 reload) could die before the journal's write, and an op applied before the switch would be applied again
 at its resend once the module is on. Tests: create `aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused`
 (applied, the module off, saved, a crash before the journal's write, the restart with it on: refused, one
 package). The port's rings follow it since slice U-a (RP-206) and the store rings always did (RP-204); T2's
-train ring takes it before T2 lands (the coordinator, 2026-10-25), in place of RP-194's gate.
+train ring takes it since RP-257 (docs/choices-mowzie-build.md), in place of RP-194's gate.
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 
@@ -1961,10 +1964,13 @@ saves acknowledge every answer from before it, so nothing from before the gap is
 crash right before the gap, whose resends meet no plugin while the store holds the effect: a residual of
 removing a plugin, not of the rings.
 
-**Tests.** dieselgenerators `DepositCrashGameTests` (3), destroy `PollutionCrashGameTests` (4), create
-`PortRingGameTests` (11: K2's crash cases, the loaded postbox, the chunk newer than the tracks file, the
-fallbacks and the module switch), core `JournalBarrierGameTests` (the hold, give-up and flush tests),
-`DurableOpRingTest`, `DirectorySyncTest`.
+**Tests.** dieselgenerators `DepositCrashGameTests` (4: three crashes and the acknowledgement), destroy
+`PollutionCrashGameTests` (4), create `PortRingGameTests` (12: K2's crash cases, the loaded postbox, the
+chunk newer than the tracks file, the fallbacks, the module switch and the acknowledgement), core
+`JournalBarrierGameTests` (the hold, give-up and flush tests), `DurableOpRingTest`, `DirectorySyncTest`.
+The crash GameTests hold the prunes (`holdPrunesForTest`): the scripted engine acknowledges an answer
+once its own save holds it and the emulated crash then sends the op again, which a real engine does not
+(RP-209).
 The crash GameTests read the region and `.dat` files at one instant of the journal's write on the IO
 chain and restart from them, the journal's knowledge of the op included; an fsync call is not taken
 as proof of anything.
