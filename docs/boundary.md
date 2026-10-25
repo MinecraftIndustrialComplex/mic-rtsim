@@ -419,6 +419,11 @@ past s was offered s before it; a crash that lost the pages lost the generation'
 the record, and the copy applies. A record too large to wrap (32 bytes plus the record above
 MAX_RECORD) is journaled again plainly, as before generations, and counted (`/rtsim status`).
 
+A copy the host finds new is not always counted by the module. The conflict engine drops a
+BAND_CASUALTIES copy whose party and epoch name a fight the party's arrival resolved unwatched
+(replay-gate.md §6.1, RP-171): the abstract resolve took that fight's losses, so the copy adds
+nothing. The host counts it as applied all the same, and a second copy of it is dropped as above.
+
 **Where the engine keeps them.** The kernel's `Replay`: the open generation (nonce, last sequence, the
 copies applied in it) in the meta page (version 2). A closed generation never changes again, so the
 closed ones are written once, in blocks of 256 at page table 2 (magic `RTJG`): a save writes the blocks

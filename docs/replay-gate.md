@@ -1322,7 +1322,9 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   6 all placed, a copied death (units 5, `spawned` still 6), then Java's 6 survivors give
   `5.saturating_sub(6) + min(6, 6)` = 6. With it, `5 - 5 + min(6, 5)` = 5. CHIEF_KILLED: as `ingest`
   (by party). BAND_MATERIALIZED: the floor only. Every other kind: as `ingest`. Every copy that
-  names an epoch raises the floor to it first, live or replayed (RP-57).
+  names an epoch raises the floor to it first, live or replayed (RP-57). A BAND_CASUALTIES copy
+  whose party and epoch fall in a range the party booked when it resolved an arrival unwatched
+  counts nothing (RP-171, §6.1): the abstract resolve took that fight's losses.
 - **Herds** (RP-84): `Herds::ingest_copy`, called by rtsim-jni when `st.applying_copy` is `Some`.
   Every copy raises the floor first. HERD_KILLED, HERD_SHEARED and HERD_TAKEN go by member key and op
   id already, so they apply as `ingest`; every other kind (HERD_GROUP_STATE, HERD_MATERIALIZED,
@@ -1513,8 +1515,31 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   had it. Live the hold's tick
   is the event's own, and nothing changes.
 
+- **Resolved unwatched, a copy of its deaths counts nothing (RP-171).** An arrival (or a siege's round)
+  that the engine resolves unwatched because no record answered it may have been fought watched all the
+  same, with its BAND_MATERIALIZED and BAND_CASUALTIES records in a journal's lost tail; the casualties
+  survive on the entities that carried them (`RtsimAttachments.PENDING`, apart from the journal) and a
+  holder reasserts them as copies (§5.7). The abstract resolve took that fight's losses already, so a copy
+  of them must count nothing: when the unwatched resolve happens, the party books the epochs the fight could
+  have carried (`Party::unwatched`: its own epoch if the band was in its bodies, which a walk-in keeps, and
+  the one its next body takes), and `casualties(copy = true)` drops a BAND_CASUALTIES copy naming one of
+  them, with a log note. The resolve is booked in three places: the hold ended inside the replay at its slack
+  (RP-48), the hold the replay end let go (the poll that follows, whenever it comes), and an arrival the
+  replay clock never reached, which the first runs after the end decide live at their own tick between the
+  replay clock and the session's present (`Conflict::replay_present`, told by rtsim-jni at the end with the
+  hand-over's game time). An arrival after the present books nothing. The ranges are saved with the party
+  (RTC11, META 10 as they stand, §8), so a copy that comes sessions later is dropped too, and the
+  engine's next body cuts them short at the epoch it takes. A live record for such an epoch is a straggler
+  after the replay end and counts nothing, as before. The answered arm is unchanged: the fight is honoured
+  as the watched fight it was and the copies count its deaths once, by op id.
+
 **Losses accepted** (lose, never double):
 
+- A unit that died in Minecraft in a fight the replay resolved unwatched, but survived the abstract resolve,
+  stays alive in the books (RP-171): the copy that would have taken it is dropped. A loss of realism, not a
+  double: the band is never below what one account of the fight says. The same holds for a copy of a death
+  on the march at the party's own epoch when the band was in its bodies at the arrival (the walk-in keeps
+  the epoch). A CHIEF_KILLED copy is not a casualties copy and is not dropped.
 - A crash right after a watched arrival, before Java journaled its BAND_MATERIALIZED: the fight Java
   may have shown is resolved abstractly at the replay end.
 - A fight recorded at or past the slack (RP-48, RP-51, RP-56). The replay resolves the decision
@@ -1619,12 +1644,13 @@ again under a new op at the replay end, killing twice. Live ops are M9's.
 | What | Change | Slice |
 |---|---|---|
 | Conflict, herds, ships pages | none (a held party's poll is an ordinary Ev::Party) | C, H, S |
+| Conflict: a party's row | `unwatched`, the epoch ranges of the fights its unwatched arrivals resolved (RTC11 and META 10 as M10 has them; no bump) (RP-171) | M10a |
 | Dragons pages: nest rows | `renewals: u32` | N |
 | Dragons pages: the outbox | NestRenew carries its serial | N |
 | Wire: NEST_RENEW | a u32 serial (docs/boundary.md §6.4, DragonRecords) | N |
 | SavedData: Nests | per nest the last serial and its engine life | N |
 | META | none (META_VERSION 2 is S4p's) | |
-| Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map and the fill's death counts; each engine's epoch floors | C to S |
+| Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map, `held_over`, `left_embodied`, `lost_until` and the fill's death counts; each engine's epoch floors | C to S |
 
 Nothing is released, so no compat work. After slice N: delete every `neoforge/*/run-gametest/world`
 in the worktree before the next GameTest run, and rerun crates/rtsim-view/tests/fixtures.rs; if it
