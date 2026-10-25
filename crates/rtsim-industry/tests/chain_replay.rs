@@ -1340,3 +1340,54 @@ fn a_drawn_package_is_removed_after_the_rest_of_it_is_written() {
     assert_eq!(asks(&mut e).0, vec![(DrawAction::Remove, vec![7])]);
     e.check_books().expect("books");
 }
+
+/// The engine's side of a write answered while industry is off (docs/choices-journal-barrier.md
+/// RP-285, P1-1). The mine replays toward the mill; the engine hands a write X on at 20,100, and
+/// Java writes it at 20,101, journaling its `CHAIN_IN` with X's op, as industry goes off. The
+/// switch on comes thirty periods later, past the ten after which an unanswered write is taken as
+/// lost (`WRITE_ANSWER_PERIODS`, choice SC113), and runs the engine's session start, which catches
+/// up the thirty periods. The link keeps the `CHAIN_IN` heard while off and books it at its own
+/// tick, before that session start: the store counts X's packages, and from then on Java is handed
+/// the iron the mine sent, once. The control is the link at 9bbf1569, which ignored the record
+/// while off: the catch-up takes X as lost, and the writes after it hand Java X's iron a second
+/// time under new ops. Then Java writes every write as it comes, both ends load, and the rest
+/// is written. This stands in for a native fixture: the iron line learns no chain link, so no
+/// native rig makes an engine write past ten periods (RP-285's Tests).
+#[test]
+fn a_write_answered_while_industry_is_off_is_taken_at_its_tick_before_the_catch_up() {
+    let period = Tunables::default().replay.chain_write_ticks;
+    let on = 20_100 + 30 * period;
+    // (X's iron, packages counted written after the switch, X's included, iron handed to Java).
+    let run = |kept: bool| {
+        let mut e = pair(Tunables::default());
+        away(&mut e, MINE, 100);
+        e.advance_to(Tick(20_100));
+        let x = writes(&mut e);
+        assert_eq!(x.len(), 1, "one write a step: {x:?}");
+        assert_eq!(e.stores()[&S].counts.written, 0);
+        if kept {
+            written(&mut e, 20_101, &x[0]);
+        }
+        e.session_start(Tick(on));
+        let counted = e.stores()[&S].counts.written;
+        let caught_up = writes(&mut e);
+        for w in &caught_up {
+            written(&mut e, on, w);
+        }
+        live(&mut e, MILL, on);
+        live(&mut e, MINE, on);
+        let rest = run_writing(&mut e, on, on + 40 * period, period);
+        assert_eq!(owed(&e), 0, "everything owed is written");
+        e.check_books().expect("books");
+        (iron(&x), counted, iron(&x) + iron(&caught_up) + iron(&rest))
+    };
+    let (x, counted, handed) = run(true);
+    let (_, lost_counted, lost_handed) = run(false);
+    assert_eq!(counted, 1, "X's package is counted once, at the switch");
+    assert_eq!(lost_counted, 0, "the control never hears X");
+    assert_eq!(
+        lost_handed - handed,
+        x,
+        "the control hands Java X's iron again: {lost_handed} against {handed}"
+    );
+}
