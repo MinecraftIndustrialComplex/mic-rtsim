@@ -5935,7 +5935,8 @@ mod persist_impls {
 
     /// The globals page starts with this, so a page of another format fails by name, not by whatever
     /// field its bytes happen to decode as (ID10).
-    /// IGB2 since slice R's review: the page holds `decided` after `now` (RP-259).
+    /// IGB2 since slice R's review: the page holds `decided` after `now` (RP-259; `now` again when no
+    /// coverage mark is pending).
     pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB2");
 
     fn globals(e: &Engine, w: &mut Writer) {
@@ -5962,7 +5963,14 @@ mod persist_impls {
         e.ops.put(w);
         e.out.put(w);
         e.now.put(w);
-        e.decided.put(w);
+        // `decided` is read before the next decision sets it only for the coverage marks still
+        // pending (`dirty`): their round derives with it, and the next record settles them first
+        // when its tick is past it (RP-259, RP-271). With none pending the page holds `now`, as
+        // `restore` set it before, so the page and its state hash do not move with the tick of a
+        // record that decided nothing (the host's season feed stamps IND_CONDITIONS at the
+        // hand-over's time, a stride late at the fast stride).
+        let decided = if e.dirty.is_empty() { e.now } else { e.decided };
+        decided.put(w);
         e.stats.put(w);
         e.books.put(w);
         e.log_enabled.put(w);
