@@ -3379,4 +3379,244 @@ mod ack_never_resends {
             move |c| matches!(c, Cmd::WriteChain(w) if w.pos == pos),
         );
     }
+
+    /// A copy of the page directory `from` (the engine closed) in a new one.
+    fn copy_pages(from: &std::path::Path, tag: &str) -> PathBuf {
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap() {
+                let e = e.unwrap();
+                let dest = to.join(e.file_name());
+                if e.file_type().unwrap().is_dir() {
+                    copy(&e.path(), &dest);
+                } else {
+                    std::fs::copy(e.path(), dest).unwrap();
+                }
+            }
+        }
+        let to = tmpdir(tag);
+        copy(from, &to);
+        to
+    }
+
+    /// A restart from a copy of the crash snapshot (`pages`, `saved`), on a fresh copy of the iron
+    /// line's world restored from it, with `modules`, at the world's present.
+    fn from_snapshot(
+        pages: &std::path::Path,
+        saved: &Saved,
+        cfg: IronLine,
+        modules: u32,
+        tag: &str,
+    ) -> Rig {
+        let dir = copy_pages(pages, tag);
+        let mut mc = iron_line_world(cfg, Tunables::default()).into_remote();
+        mc.restore(&saved.msave);
+        let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+        let mut j = Java::open(e, saved.jsave.clone());
+        j.game_time = mc.t.0 as i64;
+        j.mc = Some(mc);
+        j.module_mask = modules;
+        let c = AckCheck::new(&j);
+        Rig {
+            dir,
+            cfg,
+            j,
+            c,
+            every: 0,
+            last: None,
+            repaired: false,
+            capacity: 256 * 1024,
+            modules,
+        }
+    }
+
+    /// One hand-over and Java's reading of its commands, with no world tick and no game time
+    /// passing: [`Rig::step`]'s part after the world's.
+    fn hand_over_only(r: &mut Rig) {
+        let (j, c) = (&mut r.j, &mut r.c);
+        let gt = j.game_time;
+        assert!(j.tick(), "a lockstep tick always submits");
+        j.game_time = gt;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while j.e.stats_array()[1] < j.submitted {
+            assert!(
+                Instant::now() < deadline,
+                "step {} never finished",
+                j.submitted
+            );
+            std::thread::yield_now();
+        }
+        c.arrived(j);
+        let read = j.acks.len();
+        j.apply_commands();
+        if j.acks.len() > read {
+            c.read_ack(*j.acks.last().unwrap());
+        }
+    }
+
+    /// What two restarts are compared by: the industry engine's pages, its clock, and every op id
+    /// of the commands this session's Java received.
+    type Outcome = (Vec<(u64, Vec<u8>)>, Tick, std::collections::BTreeSet<u64>);
+
+    fn outcome(r: &Rig) -> Outcome {
+        let pages = industry(&r.j.e, |ie| {
+            let mut v: Vec<(u64, Vec<u8>)> =
+                ie.snapshot().into_iter().map(|(k, b)| (k.0, b)).collect();
+            v.sort();
+            v
+        });
+        let ops =
+            r.j.ind_commands
+                .iter()
+                .filter_map(|c| c.2.op())
+                .map(|o| o.0)
+                .collect();
+        (pages, clock(r), ops)
+    }
+
+    /// The pages of two outcomes that differ, by key.
+    fn differing(a: &Outcome, b: &Outcome) -> Vec<u64> {
+        let (ma, mb): (BTreeMap<u64, &Vec<u8>>, BTreeMap<u64, &Vec<u8>>) = (
+            a.0.iter().map(|(k, v)| (*k, v)).collect(),
+            b.0.iter().map(|(k, v)| (*k, v)).collect(),
+        );
+        let mut keys: Vec<u64> = ma.keys().chain(mb.keys()).copied().collect();
+        keys.sort();
+        keys.dedup();
+        keys.into_iter()
+            .filter(|k| ma.get(k) != mb.get(k))
+            .collect()
+    }
+
+    /// RP-285: a restart with industry off, switched on, books the answers its replay brings as a
+    /// restart with industry on books them. One crash snapshot: a station exchange X is cut short
+    /// (half of what it would unload leaves the carriage first), and in a tick whose journaled
+    /// records are all Java's answers (X's IND_CARRIAGE_RESULT and APPLIED among them), industry
+    /// goes off and a page save lands right before them; the engine crashes after that tick, the
+    /// journal holding the window. From copies of the snapshot: B restarts with the module on (the
+    /// replay books the answers at their ticks); A restarts with it off (the replay's answers are
+    /// kept) and switches on in its second hand-over, at B's session start's game time (no world
+    /// tick between the two). Both run 24,000 ticks; the engines' pages and clocks, and the op ids
+    /// of every command Java received, must be equal. Two B restarts from the snapshot are the
+    /// control and come first. This tests the replay-while-off path; the live path (answers heard
+    /// off in the session that switched) is the failing-first cases above.
+    #[test]
+    fn a_restart_with_industry_off_books_its_replayed_answers_as_a_restart_with_it_on() {
+        let mut r = Rig::new("ack-off-same", false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let (x, first) = loop {
+            assert!(Instant::now() < deadline, "60 s of wall clock");
+            let (x, train, ci, g, m) = delivered_unload(&mut r);
+            {
+                let mc = r.j.mc_mut();
+                let car = mc
+                    .trains
+                    .iter_mut()
+                    .find(|t| t.id == train)
+                    .and_then(|t| t.carriages.iter_mut().find(|c| c.index == ci))
+                    .expect("the carriage");
+                let k = car.cargo.get(g) - m / 2;
+                car.cargo.add(g, -k);
+                mc.books.burned.add(g, k);
+            }
+            let first = r.j.next_obs;
+            let mut hit = false;
+            r.step(
+                |_, _, _| true,
+                |j, answers| {
+                    let answers_only = (first..j.next_obs).all(|q| {
+                        j.journaled(q).is_some_and(|b| {
+                            [obs::COMMAND_RESULT, iw::IND_CARRIAGE_RESULT]
+                                .contains(&wire::u16_at(&b, wire::R_KIND))
+                        })
+                    });
+                    if answers_only && answers.iter().any(|a| a.0 == x && a.2 == APPLIED) {
+                        j.modules(0);
+                        j.e.request_save(first - 1);
+                        hit = true;
+                    }
+                },
+            );
+            r.after_tick();
+            if hit {
+                break (x, first);
+            }
+        };
+        let window = r.j.next_obs - first;
+        let until = Instant::now() + Duration::from_secs(20);
+        while r.j.e.durable_obs_seq() < first - 1 {
+            assert!(
+                Instant::now() < until,
+                "the page save before the window never landed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            r.j.e.durable_obs_seq(),
+            first - 1,
+            "the pages stop before the window"
+        );
+        let saved = r.c.save(&r.j);
+        r.j.e.close(false, Duration::from_secs(5)).unwrap();
+        eprintln!(
+            "same: X {x:#x} cut short; the window is seqs {first} to {} ({window} answers), world {:?}",
+            saved.end, r.j.mc().t
+        );
+        let run = |modules: u32, tag: &str| {
+            let mut a = from_snapshot(&r.dir, &saved, r.cfg, modules, tag);
+            hand_over_only(&mut a);
+            if modules == 0 {
+                assert!(
+                    industry(&a.j.e, |ie| ie.exchange_pending(OpId(x))),
+                    "off, the replayed IND_CARRIAGE_RESULT is kept"
+                );
+                a.modules = MODULE_INDUSTRY;
+                a.j.modules(MODULE_INDUSTRY);
+            }
+            hand_over_only(&mut a);
+            assert!(
+                !industry(&a.j.e, |ie| ie.exchange_pending(OpId(x))),
+                "X is booked"
+            );
+            let start = outcome(&a);
+            let t = a.j.mc().t;
+            a.run_to(t + 24_000);
+            let end = outcome(&a);
+            a.j.e.close(true, Duration::from_secs(5)).unwrap();
+            (start, end)
+        };
+        let b1 = run(MODULE_INDUSTRY, "ack-off-same-b1");
+        let b2 = run(MODULE_INDUSTRY, "ack-off-same-b2");
+        assert!(
+            b1.0 == b2.0,
+            "control, at the session start: {:?}",
+            differing(&b1.0, &b2.0)
+        );
+        assert!(
+            b1.1 == b2.1,
+            "control, at the end: {:?}",
+            differing(&b1.1, &b2.1)
+        );
+        let a = run(0, "ack-off-same-a");
+        assert!(
+            a.0 == b1.0,
+            "at the session start: {:?}",
+            differing(&a.0, &b1.0)
+        );
+        assert_eq!(a.1.1, b1.1.1, "the clocks at the end");
+        assert_eq!(
+            a.1.2.symmetric_difference(&b1.1.2).collect::<Vec<_>>(),
+            Vec::<&u64>::new(),
+            "the op ids Java received"
+        );
+        assert!(a.1 == b1.1, "at the end: {:?}", differing(&a.1, &b1.1));
+        eprintln!(
+            "same: {} pages, {} ops, the clock {:?}",
+            a.1.0.len(),
+            a.1.2.len(),
+            a.1.1
+        );
+    }
 }
