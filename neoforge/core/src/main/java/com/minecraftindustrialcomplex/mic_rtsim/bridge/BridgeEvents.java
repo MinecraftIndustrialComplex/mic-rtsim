@@ -166,11 +166,13 @@ public final class BridgeEvents {
     /**
      * The overworld saved: ask the engine to save its pages, and report when this world save is on
      * disk. The journal was serialized in {@code saveLevelData}, before this event, and NeoForge
-     * chains every SavedData write on one future ({@code IOUtilities.withIOWorker}); a marker chained
-     * now runs after the journal's write task has finished. That task may have held the file back
-     * (its chunks not on disk, docs/choices-journal-barrier.md JB1) or failed to write it, and records
-     * journaled during the chunk save (an unload's IND_CHUNK_UNLOADED at a flush save) are not in it:
-     * the marker reports what the file on disk holds, read on the chain.
+     * chains every SavedData write on one future ({@code IOUtilities.withIOWorker}). In a world save
+     * the journal's write task is held until the save returns, behind every level's SavedData
+     * (WorldSaveOrder, docs/choices-journal-barrier.md RP-200); the marker is held the same way,
+     * after it, so it runs after the journal's write task has finished. That task may have held the
+     * file back (its chunks not on disk, JB1) or failed to write it, and records journaled during the
+     * chunk save (an unload's IND_CHUNK_UNLOADED at a flush save) are not in it: the marker reports
+     * what the file on disk holds, read on the chain.
      */
     private static void onLevelSave(LevelEvent.Save event) {
         if (!(event.getLevel() instanceof ServerLevel saved) || saved.dimension() != Level.OVERWORLD)
@@ -183,7 +185,7 @@ public final class BridgeEvents {
         long through = s.boundary().journal().nextObsSeq() - 1;
         s.engine().requestSave(through);
         com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData file = s.journal();
-        net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(Math.min(through, file.writtenThrough())));
+        com.minecraftindustrialcomplex.mic_rtsim.journal.WorldSaveOrder.queue(() -> s.boundary().worldSaveDurable(Math.min(through, file.writtenThrough())));
     }
 
     /** A chunk's last write is on its way: the journal's barrier stops waiting for its unload (JB5). */

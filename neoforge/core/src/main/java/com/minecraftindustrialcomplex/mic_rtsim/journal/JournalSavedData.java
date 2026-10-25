@@ -15,6 +15,7 @@ import net.neoforged.neoforge.common.IOUtilities;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -26,7 +27,9 @@ import java.util.function.Consumer;
  * <p>Vanilla writes it at its own save, from a copy, on NeoForge's SavedData IO chain; the server thread
  * never waits for it. Appending only sets the dirty flag. Its write waits for the chunks its records speak
  * for ({@link ChunkWriteBarrier}) and is skipped, to the next world save, when they are not on disk: the file
- * on disk never claims what a chunk on disk lacks.
+ * on disk never claims what a chunk on disk lacks. In a world save it is the last SavedData written, behind every
+ * level's ({@link WorldSaveOrder}), with the levels' {@code data/} directories synced first: the file on disk never
+ * claims what another SavedData file of the same save lacks either (docs/choices-journal-barrier.md RP-200, RP-201).
  */
 public final class JournalSavedData extends SavedData {
     public static final String FILE = "mic_rtsim_journal";
@@ -74,8 +77,9 @@ public final class JournalSavedData extends SavedData {
      * Vanilla's write of this file ({@code DimensionDataStorage.save}, in {@code saveLevelData}, on the server
      * thread), replacing {@code SavedData.save}'s (docs/choices-journal-barrier.md JB1). The snapshot is taken and
      * encoded here, and the chunks it speaks for are sent on their way to disk ({@link ChunkWriteBarrier#arm}); the
-     * task queued on NeoForge's SavedData IO chain waits for them and writes the file only if they are all on
-     * disk. Otherwise the file stays as it was and the next world save writes a newer snapshot ({@link #isDirty}).
+     * task, queued on NeoForge's SavedData IO chain when the world save returns ({@link WorldSaveOrder}), waits for
+     * them and writes the file only if they are all on disk. Otherwise the file stays as it was and the next world
+     * save writes a newer snapshot ({@link #isDirty}).
      */
     @Override
     public void save(File file, HolderLookup.Provider registries) {
@@ -89,19 +93,26 @@ public final class JournalSavedData extends SavedData {
         NbtUtils.addCurrentDataVersion(tag);
         CompoundTag copied = tag.copy(); // as SavedData.save: nothing shared with the live journal
         long through = s.nextObsSeq() - 1;
+        List<Path> dirs = WorldSaveOrder.dataDirs(file.toPath().getParent());
         setDirty(false);
-        IOUtilities.withIOWorker(() -> writeWhenLanded(round, copied, file, through));
+        WorldSaveOrder.queue(() -> writeWhenLanded(round, copied, file, through, dirs));
     }
 
-    /** On the IO chain. Never throws: an exception would skip every SavedData write queued after it. */
-    private void writeWhenLanded(ChunkWriteBarrier.Round round, CompoundTag tag, File file, long through) {
+    /**
+     * On the IO chain, behind every SavedData of the save. Never throws: an exception would skip every SavedData
+     * write queued after it.
+     */
+    private void writeWhenLanded(ChunkWriteBarrier.Round round, CompoundTag tag, File file, long through, List<Path> dirs) {
         try {
             if (!chunks.await(round)) {
                 retry = true;
                 return;
             }
+            for (Path d : dirs) // their renames are durable before the journal's can be (RP-201)
+                DirectorySync.sync(d);
             forTest(BEFORE_WRITE_FOR_TEST, file);
             IOUtilities.writeNbtCompressed(tag, file.toPath());
+            DirectorySync.sync(file.toPath().getParent()); // the marker (WORLD_SAVED) never claims a rename a power loss undoes
             if (through > writtenThrough)
                 writtenThrough = through;
             writes.incrementAndGet();
