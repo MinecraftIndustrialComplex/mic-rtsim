@@ -632,6 +632,109 @@ fn a_live_wound_of_the_live_body_counts() {
     assert_eq!(r.d.dragon(u).unwrap().health, 100.0);
 }
 
+/// A copy of a record from an ended session names a body that is gone, during the replay too: the
+/// body the pages hold, embodied by the replayed MATERIALIZED, is not the copy's (docs/replay-gate.md
+/// §5.7, RP-8). Before: a copy of an index below the bound went through `ingest` and wounded it.
+#[test]
+fn a_copy_during_the_replay_wounds_no_body_the_pages_hold() {
+    let mut r = restarted(rig());
+    let agent = agent_of(r.x);
+    begin(&mut r.d, &mut r.w, Tick(400), true);
+    ingest(&mut r, &materialized(agent, 1), Tick(500));
+    assert!(matches!(
+        r.d.dragon(r.x).unwrap().state,
+        State::Embodied { epoch: 1, .. }
+    ));
+    let health = r.d.dragon(r.x).unwrap().health;
+    r.d.ingest_copy(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &hurt(agent, 1, 100.0),
+        Tick(600),
+    );
+    r.d.ingest_copy(&mut r.w, &mut NoInfrastructure, &died(agent, 1), Tick(700));
+    end(&mut r.d, &mut r.w, Tick(900));
+    let x = r.d.dragon(r.x).expect("the copy of a death kills nobody");
+    assert_eq!(x.health, health, "the copy wounds nobody");
+}
+
+/// The dragons are switched off and on again inside the replay (rtsim-jni's `reset`): while off
+/// the last session's MATERIALIZED of V is folded and dropped, so the engine never sees it. V's
+/// HURT and DIED that follow name the agent and the epoch of the dragon the replay adopted, and
+/// find no body of the replay's, whose own answer they are not. Before (a deny-list of the
+/// MATERIALIZEDs the engine saw): nothing was recorded, and V's records killed the dragon.
+#[test]
+fn a_switch_off_and_on_inside_the_replay_leaves_the_last_sessions_records_nobody() {
+    let (mut r, u) = replay_that_adopted();
+    let agent = agent_of(u);
+    let health = r.d.dragon(u).unwrap().health;
+    r.d.fold_epoch(&materialized(agent, 1));
+    begin(&mut r.d, &mut r.w, Tick(550), true);
+    ingest(&mut r, &hurt(agent, 1, 100.0), Tick(600));
+    ingest(&mut r, &died(agent, 1), Tick(700));
+    end(&mut r.d, &mut r.w, Tick(900));
+    let u =
+        r.d.dragon(u)
+            .expect("V's death is not the adopted dragon's");
+    assert_eq!(u.health, health);
+}
+
+/// The pages were dropped (a fresh engine): the bound is 0, every index is the replay's, and X, a
+/// body of the dropped pages' dragon at index 0 and epoch 1, has no MATERIALIZED in the journal
+/// (it was embodied before the save). The replay adopts U at the same index and epoch; X's DIED,
+/// after the save, is not U's. Before: it killed U.
+#[test]
+fn a_dragon_of_the_dropped_pages_does_not_die_with_the_replays_adoption() {
+    let (mut w, _) = synth::world(SEED);
+    let mut d = Dragons::new(SEED, DragonTunables::default(), Tick::ZERO);
+    begin(&mut d, &mut w, Tick(50), false);
+    d.ingest(&mut w, &mut NoInfrastructure, &untagged(), Tick(100));
+    let u = DragonId::from_parts(0, 1);
+    assert!(matches!(
+        d.dragon(u).unwrap().state,
+        State::Embodied { epoch: 1, .. }
+    ));
+    d.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &died(agent_of(u), 1),
+        Tick(200),
+    );
+    end(&mut d, &mut w, Tick(300));
+    assert!(
+        d.dragon(u).is_some(),
+        "X's death is not the adopted dragon's"
+    );
+}
+
+/// V's refused spawn (SPAWN_REJECTED) or its DEMATERIALIZED with reason NOT_EMBODIED, after the
+/// replay adopted a dragon at V's agent and epoch, are not the adoption's: the dragon stays
+/// embodied for the replay's length rather than resuming its abstract life. Before: it resumed.
+#[test]
+fn a_refused_spawn_of_the_last_sessions_body_does_not_resume_the_replays_adoption() {
+    let (mut r, u) = replay_that_adopted();
+    let agent = agent_of(u);
+    let o = Obs::SpawnRejected(boundary::SpawnRejected {
+        agent,
+        epoch: 1,
+        reason: 2,
+        cmd_seq: 0,
+    });
+    ingest(&mut r, &o, Tick(500));
+    assert!(
+        matches!(r.d.dragon(u).unwrap().state, State::Embodied { .. }),
+        "V's refused spawn did not make the adoption abstract: {:?}",
+        r.d.dragon(u).unwrap().state
+    );
+    let o = dematerialized(agent, 1, boundary::DEMAT_NOT_EMBODIED, 0.0, (0.0, 0.0, 0.0));
+    ingest(&mut r, &o, Tick(600));
+    assert!(
+        matches!(r.d.dragon(u).unwrap().state, State::Embodied { .. }),
+        "nor did V's NOT_EMBODIED: {:?}",
+        r.d.dragon(u).unwrap().state
+    );
+}
+
 /// A copy of a record from an ended session (S4p's REASSERT) embodies nothing, and its epoch is
 /// taken all the same, live or not.
 #[test]
