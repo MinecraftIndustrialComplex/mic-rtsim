@@ -1395,3 +1395,20 @@ fn the_honour_spends_only_a_floor_it_reaches() {
         assert_eq!(s.next_epoch(m), next, "floor {floor}: after the end");
     }
 }
+
+/// A replay after a replay takes its own bound (RP-100): the reset at the replay end lets a later
+/// `begin_replay` of the same engine (a switch-on after a switch-off, in a live session) cover the
+/// ships it holds then, not the session's first bound. Control: without the reset a ship that
+/// joined since is not honoured.
+#[test]
+fn a_later_replay_takes_its_own_bound() {
+    let seed = 5;
+    let (mut l, mut s) = held(seed, false);
+    s.replay_done(&mut l.w);
+    let data = l.data.clone();
+    s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
+    let p = s.havens[0].ships[0];
+    s.begin_replay(true);
+    s.ingest(&mut l.w, &materialized(p, 3), &l.mask, Tick::ZERO);
+    assert!(s.ship(p).unwrap().embodied, "the ship that joined is in this replay's bound");
+}
