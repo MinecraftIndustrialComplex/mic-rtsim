@@ -146,6 +146,152 @@ public final class PortRing {
         }
     }
 
+    // ---- the postbox's chunk (P1 of the slice U review) -------------------------------------------
+
+    /** Ops a postbox's chunk was made to carry at a restore ({@link #beforeRestore}). */
+    static long carriedAtRestore;
+    /** Offline writes held for a read of the postbox's chunk; reads that refreshed the buffer; carried ops found. */
+    static long refreshHolds, refreshes, refreshedFromChunk, carriedFound;
+    private static int refreshFailLogs;
+    /** How long an offline write waits for its postbox's chunk to be read before it goes on without it. */
+    static final long REFRESH_WAIT_NANOS = 10_000_000_000L;
+    private static final java.util.Map<GlobalPackagePort, PendingRead> READS = new java.util.WeakHashMap<>();
+    /** GameTests: the restore's carry and the chunk read switched off, as before them. */
+    private static boolean chunkChecksOff;
+
+    private record PendingRead(java.util.concurrent.CompletableFuture<java.util.Optional<CompoundTag>> read, long since) {}
+
+    /**
+     * Create's restore of a primed offline buffer into the postbox ({@code ringmixin.StationPortRestoreMixin}): the
+     * postbox's chunk is made to carry each op of the buffer's ring whose packages the restore brings in and whose
+     * result the engine has not acknowledged ({@code Industry.carryAppliedInChunk}). The chunk is saved on its own
+     * clock (an unload, a world save), so it can reach disk before create_tracks.dat and the journal: a crash then
+     * keeps the packages in the postbox and loses the op from the buffer's ring and the journal, and the resend must
+     * find the op in the chunk, loaded ({@code chunkCarriesOp}) or not ({@link #refreshed}).
+     */
+    public static void beforeRestore(com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity ppbe, GlobalPackagePort port) {
+        if (chunkChecksOff || port == null || !port.primed || ppbe == null || !(ppbe.getLevel() instanceof net.minecraft.server.level.ServerLevel level))
+            return;
+        AppliedOpRing ring = port instanceof PortRingHolder h ? h.mic_rtsim$bufferOpsIfAny() : null;
+        if (ring == null || ring.isEmpty())
+            return;
+        com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
+        if (ind == null || !available(level.getServer()))
+            return;
+        net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkSource().getChunkNow(ppbe.getBlockPos().getX() >> 4, ppbe.getBlockPos().getZ() >> 4);
+        if (chunk == null)
+            return;
+        for (long op : ring.toArray()) {
+            if (ind.opApplied(op) && !ind.chunkCarriesOp(chunk, op)) {
+                ind.carryAppliedInChunk(chunk, op);
+                carriedAtRestore++;
+            }
+        }
+    }
+
+    /**
+     * Before an offline write into a port this server life does not know to match its postbox
+     * ({@link PortRingHolder#mic_rtsim$mirrorFresh}), whose postbox's chunk is not loaded: the chunk as saved is read
+     * ({@code ChunkStorage.read}, off the server thread) and the write held, false, until it is in (at most
+     * {@link #REFRESH_WAIT_NANOS}). Then the ops the chunk carries results for go in the port's postbox ring (their
+     * packages are in that chunk), and an unprimed buffer takes the postbox's inventory from it. Create keeps an
+     * unprimed buffer only as a copy of the postbox, and a crash can leave the copy in create_tracks.dat older than
+     * the chunk: priming it would put back, at the postbox's next load, what was taken out since. A primed buffer
+     * holds what Create or a write put there for the postbox and is left as it is. True when the write can go on.
+     */
+    public static boolean refreshed(GlobalPackagePort port, net.minecraft.server.level.ServerLevel level, BlockPos pos,
+            com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind) {
+        if (chunkChecksOff || !(port instanceof PortRingHolder h) || h.mic_rtsim$mirrorFresh())
+            return true;
+        PendingRead r = READS.get(port);
+        if (r == null) {
+            java.util.concurrent.CompletableFuture<java.util.Optional<CompoundTag>> read;
+            try {
+                read = level.getChunkSource().chunkMap.read(new net.minecraft.world.level.ChunkPos(pos));
+            } catch (RuntimeException e) {
+                refreshFailed(h, pos, "the read threw " + e);
+                return true;
+            }
+            READS.put(port, new PendingRead(read, System.nanoTime()));
+            refreshHolds++;
+            return false;
+        }
+        if (!r.read.isDone()) {
+            if (System.nanoTime() - r.since < REFRESH_WAIT_NANOS) {
+                refreshHolds++;
+                return false;
+            }
+            READS.remove(port);
+            refreshFailed(h, pos, "the read took longer than " + REFRESH_WAIT_NANOS / 1_000_000_000L + " s");
+            return true;
+        }
+        READS.remove(port);
+        java.util.Optional<CompoundTag> tag;
+        try {
+            tag = r.read.join();
+        } catch (RuntimeException e) {
+            refreshFailed(h, pos, "the read failed: " + e);
+            return true;
+        }
+        refreshes++;
+        if (tag.isPresent())
+            refreshFrom(port, h, tag.get(), pos, level.registryAccess(), ind);
+        h.mic_rtsim$markMirrorFresh();
+        return true;
+    }
+
+    private static void refreshFrom(GlobalPackagePort port, PortRingHolder h, CompoundTag chunk, BlockPos pos,
+            HolderLookup.Provider registries, com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind) {
+        for (long op : ind.opsCarriedInChunkTag(chunk)) {
+            if (h.mic_rtsim$postboxOps().add(op))
+                carriedFound++;
+        }
+        // A chunk of another data version is read by vanilla through its fixers; the inventory is left alone then.
+        if (port.primed || net.minecraft.world.level.chunk.storage.ChunkStorage.getVersion(chunk)
+                != net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())
+            return;
+        ListTag bes = chunk.getList("block_entities", Tag.TAG_COMPOUND);
+        for (int i = 0; i < bes.size(); i++) {
+            CompoundTag be = bes.getCompound(i);
+            if (be.getInt("x") != pos.getX() || be.getInt("y") != pos.getY() || be.getInt("z") != pos.getZ())
+                continue;
+            if (!be.getString("id").equals("create:package_postbox") || !be.contains("Inventory", Tag.TAG_COMPOUND))
+                return;
+            net.neoforged.neoforge.items.ItemStackHandler saved = new net.neoforged.neoforge.items.ItemStackHandler(port.offlineBuffer.getSlots());
+            saved.deserializeNBT(registries, be.getCompound("Inventory"));
+            boolean changed = false;
+            for (int s = 0; s < port.offlineBuffer.getSlots(); s++) {
+                net.minecraft.world.item.ItemStack want = s < saved.getSlots() ? saved.getStackInSlot(s) : net.minecraft.world.item.ItemStack.EMPTY;
+                if (!net.minecraft.world.item.ItemStack.matches(want, port.offlineBuffer.getStackInSlot(s))) {
+                    port.offlineBuffer.setStackInSlot(s, want.copy());
+                    changed = true;
+                }
+            }
+            if (changed) {
+                refreshedFromChunk++;
+                com.simibubi.create.Create.RAILWAYS.markTracksDirty();
+            }
+            return;
+        }
+    }
+
+    private static void refreshFailed(PortRingHolder h, BlockPos pos, String why) {
+        h.mic_rtsim$markMirrorFresh();
+        if (refreshFailLogs++ < 8)
+            MicRtsim.LOGGER.warn("[mic_rtsim_create] IND_WRITE_PACKAGE: the postbox's chunk at {} was not read ({}): the offline buffer "
+                    + "is written as create_tracks.dat left it (docs/choices-journal-barrier.md RP-206)", pos, why);
+    }
+
+    /** Switches the restore's carry and the chunk read off (true), as before them, or back on. */
+    public static void chunkChecksForTest(boolean off) {
+        chunkChecksOff = off;
+    }
+
+    /** Ops carried at restores; writes held for chunk reads; reads done; buffers refreshed; carried ops found. */
+    public static long[] chunkCountsForTest() {
+        return new long[] {carriedAtRestore, refreshHolds, refreshes, refreshedFromChunk, carriedFound};
+    }
+
     /** Null when the round trip works, else what broke. */
     private static String probe(HolderLookup.Provider registries) {
         try {
@@ -161,7 +307,9 @@ public final class PortRing {
                     new TrackNodeLocation(1, 0, 0).in(Level.OVERWORLD)), 0);
             station.blockEntityPos = BlockPos.ZERO;
             station.blockEntityDimension = Level.OVERWORLD;
-            station.connectedPorts.put(BlockPos.ZERO, port);
+            // A port off the origin: the read must key it by its own "Pos", which a zero would not tell apart.
+            BlockPos at = new BlockPos(1, 2, 3);
+            station.connectedPorts.put(at, port);
             DimensionPalette dimensions = new DimensionPalette();
             CompoundTag tag = new CompoundTag();
             probing = true;
@@ -176,8 +324,8 @@ public final class PortRing {
                 return "GlobalStation.write wrote no " + KEY + ": its injection did not apply";
             GlobalStation back = new GlobalStation();
             back.read(tag, registries, false, dimensions);
-            GlobalPackagePort read = back.connectedPorts.get(BlockPos.ZERO);
-            if (!wroteToBuffer(read, PROBE_OP) || !wroteToPostbox(read, PROBE_OP))
+            GlobalPackagePort read = back.connectedPorts.get(at);
+            if (read == null || !wroteToBuffer(read, PROBE_OP) || !wroteToPostbox(read, PROBE_OP))
                 return "GlobalStation.read did not read " + KEY + ": its injection did not apply";
             return null;
         } catch (RuntimeException | LinkageError e) {

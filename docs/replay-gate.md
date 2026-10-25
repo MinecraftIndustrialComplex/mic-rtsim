@@ -1782,8 +1782,8 @@ its files on disk, the rest from the save before. Two directions:
 | I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
 | I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
 | K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen | exact: T2's train ring (RP-190 on), within its 256-op window and with its mixin applied | n/a | slice T2's limits |
-| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen | exact: the port's buffer ring (RP-206), within its 256-op window and with its mixins applied | n/a | none |
-| K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact: the chunk's carried result when loaded at the resend, the port's postbox ring when not (RP-206). The tracks newer than the chunk (a world save writes them first): written again when loaded, exact; refused when unloaded, the package only in Create's unprimed mirror, a loss. Goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
+| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen | the tracks newer than the chunk: exact, the port's buffer ring (RP-206), within its 256-op window and with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
+| K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact: the chunk's carried result when loaded at the resend, the port's postbox ring when not (RP-206). The tracks newer than the chunk (either file can be the newer: chunks save between world saves, the tracks only at one): written again when loaded, exact; refused when unloaded, the package only in Create's unprimed mirror, a loss. Goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
 | K4 | IND_WRITE_CHAIN, frogport | exact (noted) | exact when loaded; unloaded: FAILED then REASSERT, a possible double booking (inferred); goods pushed out before the save: dupe | loss | the coordinator (Create slice) |
 | K5 | reconcile through PostboxAccess, the tracks mirror | exact | the mirror taken by a train while the postbox is unloaded, then reapplied: dupe, independent of the journal | loss or dupe by sign | the coordinator (Create slice) |
 | K6, K7 | IND_HELD_DRAW REMOVE; CHAIN_HELD keying | exact (inferred) | `mic_rtsim_industry` and the conveyor's chunk can part: a re-keyed package, dupe, independent of the journal | dupe | the coordinator (Create slice) |
@@ -1817,10 +1817,12 @@ its files on disk, the rest from the save before. Two directions:
    journal's file did not, whose resend the engine dropped. Harmless (it can only refuse that op), and the
    cap pushes it out. An entry the cap pushes out before the journal's file holds it is counted as an
    overflow; its resend would be applied again.
-6. **The fixed rings' limits** (RP-192, RP-193, RP-206): an op pushed out of a train's or a port's
-   256-op ring before the journal's file holds it, which a hold lasting hours makes possible (§6.1,
-   "Slice U and the ring's bound"), and the journal's index as the train's fallback when the ring's
-   mixin did not apply.
+6. **The rings' limits** (RP-192, RP-193, RP-204, RP-206): an op pushed out of a train's or a port's
+   256-op ring, or a store's 4,096-entry `DurableOpRing`, before the journal's file holds it, which a
+   hold lasting hours makes possible (§6.1, "Slice U and the ring's bound"; the store's ring trims by
+   the journal's file, which the hold keeps back, and counts what it pushes out as overflows), and the
+   journal's index as the train's fallback when the ring's mixin did not apply. Whether residual 7's ring
+   rule (pruned by the engine's acknowledgement) lifts this is checked when the rings move to it.
 7. **A re-decided op after its answer was consumed** (hole (a), found by slice T's implementer for train
    ops; RP-204). Industry ids are derived from the command (W3), so a rolled-back engine re-deciding a
    deposit delta or a package write gives the op id it gave before. `industry::journaled` consumes a
@@ -1833,6 +1835,24 @@ its files on disk, the rest from the save before. Two directions:
    trim (only residual 6). Follow-on, at the merge with T2's settled ring: one ring class pruned by the
    engine's durable page ack against each entry's latest answer, settled at the session start by the
    journal's newest gen (T2's rule).
+8. **A postbox's chunk newer than the tracks file, where RP-206's hooks do not reach** (K2; the U-a
+   review's P1). The chunk is saved between world saves and the tracks file only at one, so the chunk is
+   often the newer. The hooks: a restore of a primed buffer makes the chunk carry the ops it brought in,
+   and the first offline write into a port in a server life reads the chunk as saved (its carried ops,
+   and the postbox's inventory for an unprimed buffer). Left:
+   - a primed buffer whose postbox's chunk is newer: Create's restore overwrites the postbox with the
+     buffer (Create's own behaviour, not journal-ordered: a take by automation since then undone);
+   - the restore with the industry module off or the rings unavailable: nothing carried, so a loaded
+     resend after a crash writes the packages again;
+   - a chunk read that fails or takes over 10 s (logged): the write goes on with the mirror as it is;
+   - a postbox changed in this life while its station did not attach it, after the port's mirror was
+     marked fresh, and a chunk saved between the postbox's unload and Create's next save of it into the
+     buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since;
+   - the module switch: the port's and the train's rings are left out of a save with the module off
+     (RP-194), so a crash inside the first world save after a switch off, before the journal's write,
+     loses them, and an op written before the switch is applied again if the module is on at the restart.
+     `DurableOpRing` is written whatever the switch (RP-204). One rule for all rings at the move to T2's
+     ring rule.
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 
@@ -1841,8 +1861,10 @@ its files on disk, the rest from the save before. Two directions:
 unknown `mic_rtsim:applied_ops` level attachment in `neoforge_data_attachments` with an ERROR log line
 and loads the rest.
 
-**Tests.** dieselgenerators `DepositCrashGameTests` (3), destroy `PollutionCrashGameTests` (4), core
-`JournalBarrierGameTests` (the hold, give-up and flush tests), `DurableOpRingTest`, `DirectorySyncTest`.
+**Tests.** dieselgenerators `DepositCrashGameTests` (3), destroy `PollutionCrashGameTests` (4), create
+`PortRingGameTests` (11: K2's crash cases, the loaded postbox, the chunk newer than the tracks file, the
+fallbacks and the module switch), core `JournalBarrierGameTests` (the hold, give-up and flush tests),
+`DurableOpRingTest`, `DirectorySyncTest`.
 The crash GameTests read the region and `.dat` files at one instant of the journal's write on the IO
 chain and restart from them, the journal's knowledge of the op included; an fsync call is not taken
 as proof of anything.

@@ -4,7 +4,9 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim_create.ringmixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "PortMirrorMixin",
     "PortRingMixin",
+    "StationPortRestoreMixin",
     "StationPortsRingMixin",
     "TrainRingMixin"
   ],

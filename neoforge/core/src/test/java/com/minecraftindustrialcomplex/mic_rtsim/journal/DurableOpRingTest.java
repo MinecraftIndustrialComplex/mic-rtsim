@@ -81,6 +81,23 @@ class DurableOpRingTest {
     }
 
     @Test
+    void aCorruptRingKeepsEveryOpUntilItsResendIsAnswered() {
+        // DurableOpRings.fromTag's recovery when the file's two arrays differ in length: the sequences are lost.
+        DurableOpRing r = DurableOpRing.allPending(new long[] {7, 8}, DurableOpRing.DEFAULT_CAP);
+        assertTrue(r.contains(7) && r.contains(8));
+        assertEquals(0, r.trim(250, 250), "no mark of the journal drops an op whose answer is unknown");
+        assertEquals(2, r.pending());
+        // The resend of 7 is refused, answered DUPLICATE_OP at 300: stamped with it, dropped once the file holds it.
+        r.add(7, 300);
+        assertEquals(1, r.pending());
+        assertEquals(0, r.trim(299, 250));
+        assertEquals(1, r.trim(300, 250));
+        assertFalse(r.contains(7));
+        assertEquals(0, r.trim(Long.MAX_VALUE - 1, 250), "8, never resent, outlives any mark");
+        assertTrue(r.contains(8));
+    }
+
+    @Test
     void aMalformedRingIsRefused() {
         try {
             DurableOpRing.fromDisk(new long[] {1}, new long[0], 8);

@@ -18,4 +18,14 @@ public interface PortRingHolder {
 
     /** The postbox's ring, or null when the port never had one. */
     AppliedOpRing mic_rtsim$postboxOpsIfAny();
+
+    /**
+     * True once this server life knows the offline buffer to match the postbox's inventory: Create mirrored the
+     * postbox into it or restored it into the postbox ({@code ringmixin.PortMirrorMixin}), or {@link PortRing#refreshed}
+     * read the postbox's chunk. Not saved: a crash can leave create_tracks.dat older than the postbox's chunk.
+     */
+    boolean mic_rtsim$mirrorFresh();
+
+    /** Marks the buffer as matching the postbox for the rest of this server life. */
+    void mic_rtsim$markMirrorFresh();
 }

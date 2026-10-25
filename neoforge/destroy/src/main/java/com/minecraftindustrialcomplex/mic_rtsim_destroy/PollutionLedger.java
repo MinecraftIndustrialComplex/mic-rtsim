@@ -153,6 +153,26 @@ public final class PollutionLedger extends SavedData {
         return applied;
     }
 
+    /**
+     * A resend of {@code op} that the deposit's ring refused: when this file booked it for {@code good}, the entry is
+     * kept again with the refusal's answer, as the deposit's ring keeps its own (RP-207).
+     */
+    void refused(String good, IndustryPlugin.DepositOp op) {
+        long key = DurableOpRing.keyOf(op.id(), good);
+        if (ring.contains(key)) {
+            restampedOnRefusal++;
+            op.keepIn(ring, key);
+        }
+    }
+
+    /** {@link #refused} entries stamped again. */
+    static long restampedOnRefusal;
+
+    /** {@link #restampedOnRefusal}, for the GameTests. */
+    public static long restampedOnRefusal() {
+        return restampedOnRefusal;
+    }
+
     /** Bookings of an op this file already held (a crash kept it and lost the pollution): not booked again. */
     static long rebooksRefused;
 
