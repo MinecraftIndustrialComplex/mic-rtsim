@@ -414,7 +414,9 @@ pub struct Engine {
     /// (a record the live run took late, at the step's time, is replayed at its own). A coverage
     /// flush derives with the tick of the decision that marked it, which is this one: a
     /// breakpoint's and a wake's marks are flushed at their own ticks, a record's at the next
-    /// record's or the step's (RP-271). Not saved: a restore starts at `now`.
+    /// record's or the step's (RP-271). Saved in the globals page: pages can be taken in the
+    /// middle of a hand-over, after a stale record whose marks wait for the next record, which
+    /// settles them only when its own tick is past this one (RP-259).
     decided: Tick,
     pub stats: Stats,
     pub books: Books,
@@ -5896,7 +5898,8 @@ mod persist_impls {
 
     /// The globals page starts with this, so a page of another format fails by name, not by whatever
     /// field its bytes happen to decode as (ID10).
-    pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB1");
+    /// IGB2 since slice R's review: the page holds `decided` after `now` (RP-259).
+    pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB2");
 
     fn globals(e: &Engine, w: &mut Writer) {
         w.u32(GLOBAL_MAGIC);
@@ -5922,6 +5925,7 @@ mod persist_impls {
         e.ops.put(w);
         e.out.put(w);
         e.now.put(w);
+        e.decided.put(w);
         e.stats.put(w);
         e.books.put(w);
         e.log_enabled.put(w);
@@ -6265,7 +6269,7 @@ mod persist_impls {
             e.ops = Persist::get(&mut r)?;
             e.out = Persist::get(&mut r)?;
             e.now = Persist::get(&mut r)?;
-            e.decided = e.now;
+            e.decided = Persist::get(&mut r)?;
             e.stats = Persist::get(&mut r)?;
             e.books = Persist::get(&mut r)?;
             e.log_enabled = Persist::get(&mut r)?;

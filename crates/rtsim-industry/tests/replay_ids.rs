@@ -925,7 +925,6 @@ fn oil_mill() -> Engine {
 /// another tick: live 0x4962c4fe7b7be699, replayed 0x49274e3eaf93756b, both -4,450 (the well
 /// drawn twice), and the frogport's chunk at epoch 1 where the world applied 2.
 #[test]
-#[ignore = "slice R review P1-1: decided is not saved"]
 fn pages_taken_after_a_stale_record_rederive_its_rounds() {
     let steps = oil_steps();
     let mut e = oil_mill();

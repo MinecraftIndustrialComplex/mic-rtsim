@@ -1922,7 +1922,10 @@ impl Engine {
             st.replay_records += 1;
         }
         match verdict {
-            Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
+            Verdict::Apply if industry::claims(rec) => {
+                industry::heard(st, rec);
+                industry::journaled(st, rec)
+            }
             Verdict::Apply if dragons::claims(rec) => dragons::journaled(st, rec),
             Verdict::Apply if ships::claims(rec) => ships::journaled(st, rec),
             Verdict::Apply if herds::claims(rec) => herds::journaled(st, rec),
@@ -1967,6 +1970,7 @@ impl Engine {
     /// A record already in the engine's state: an answer for an op it heard is still an answer.
     fn answered_again(st: &mut State, rec: &Rec<'_>) {
         if industry::claims(rec) {
+            industry::heard(st, rec);
             industry::answered_again(st, rec);
         }
         dragons::answered_again(st, rec);

@@ -25,7 +25,7 @@
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
 //! (F27).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use rtsim_conflict::engine::StationEnd;
@@ -115,6 +115,10 @@ pub struct IndustryStats {
     pub save_pages: u64,
     pub save_bytes: u64,
     pub save_deleted: u64,
+    /// Commands not written because Java answered their op while the session's replay ran
+    /// (docs/choices-mowzie-build.md RP-259): the replay decided them again, or the link page
+    /// held them unwritten.
+    pub answered_unsent: u64,
 }
 
 /// The industry side of one session.
@@ -145,6 +149,12 @@ pub(super) struct Link {
     threats: Vec<Threat>,
     /// Steps the front command has waited for a Java dictionary name (W21).
     name_waits: u32,
+    /// Java's answers to industry commands heard while the session's replay ran: (op, status).
+    /// A command not written yet under one of these ops is never written ([`unsent_answered`],
+    /// RP-259): Java keeps only the ops it applied, and only until the engine acknowledges the
+    /// answer, so a copy of a command it answered FAILED, or APPLIED and then forgot, would be
+    /// applied again. In memory only: emptied at the first drain after the replay end.
+    heard: BTreeMap<OpId, u32>,
     /// The engine was made new at this start (no pages): its seed is committed at once (W20).
     pub(super) fresh: bool,
     pub(super) stats: IndustryStats,
@@ -201,6 +211,7 @@ impl Link {
             session_start_at: None,
             threats: Vec::new(),
             name_waits: 0,
+            heard: BTreeMap::new(),
             fresh: false,
             stats: IndustryStats::default(),
         }
@@ -637,6 +648,16 @@ fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationE
     }
 }
 
+/// An industry record of the session's replay, admitted or refused by op id: Java's answer to an
+/// industry command is kept for the replay end ([`Link::heard`], RP-259). The core calls this
+/// before [`journaled`] and [`answered_again`], whatever the module switch.
+pub(super) fn heard(st: &mut State, rec: &Rec<'_>) {
+    if st.replaying && rec.kind == obs::COMMAND_RESULT && rec.size() >= obs::command_result::SIZE {
+        let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
+        st.industry.heard.insert(op, rec.aux);
+    }
+}
+
 /// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
 /// command written under that op id again (a test's order, or the same decision resent) is
 /// answered all the same, so it leaves the outbox.
@@ -816,7 +837,43 @@ pub(super) fn simulate(st: &mut State) {
     }
     l.engine.advance_to(tick(game_time));
     l.queue.extend(l.engine.drain_commands());
+    unsent_answered(l);
     l.gauges();
+}
+
+/// The first drain after the replay end: every command not written yet whose op Java answered
+/// while the replay ran ([`Link::heard`]) leaves the queue unsent (RP-259). These are the commands
+/// the replayed records and the held step decided again under a live op (RP-272), and the ones
+/// the link page held unwritten that the crashed session wrote after its save. Java keeps only
+/// the ops it applied, until the engine acknowledges the answer: a copy of one it answered FAILED
+/// would be applied (the world never had it), and one of an APPLIED it forgot would be applied a
+/// second time. An answer FAILED takes the command back now, as Java's answer does
+/// ([`command_result`]; the engine's books are idempotent there, so a command the answer already
+/// took back is not taken twice). An APPLIED or DUPLICATE leaves the books as the decision made
+/// them: the application's own records (a carriage result, a written chain package) settle them.
+///
+/// Nothing later needs the answers: every op one of them names was decided at or before the
+/// answer's game time, which is at or before the world save's, so at or before this session's
+/// present; the held step runs the clock to the present before this drain (RP-274), so every
+/// decision the replay or the held step could make again is in the queue now. A decision of this
+/// session has a later tick, so another op.
+fn unsent_answered(l: &mut Link) {
+    if l.heard.is_empty() {
+        return;
+    }
+    let heard = std::mem::take(&mut l.heard);
+    let now = l.engine.now();
+    let queued = std::mem::take(&mut l.queue);
+    for c in queued {
+        let Some((op, status)) = c.op().and_then(|op| Some((op, *heard.get(&op)?))) else {
+            l.queue.push_back(c);
+            continue;
+        };
+        l.stats.answered_unsent += 1;
+        if status == obs::command_result::FAILED {
+            l.engine.command_failed(now, op);
+        }
+    }
 }
 
 // ---- commands -------------------------------------------------------------------------------
@@ -1015,7 +1072,10 @@ pub(super) fn write_resends(
 /// Writes queued commands while they fit; kept ones join the outbox under the sequence they got.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
     let mut highest = 0;
-    if !st.industry.enabled {
+    // Held while replaying, with `simulate` (RP-274): the queue the link page held may carry a
+    // command the crashed session wrote after its save, whose answer the replay has not reached
+    // yet. It goes after the end, past the answers heard ([`unsent_answered`], RP-259).
+    if !st.industry.enabled || st.replaying {
         return (0, false);
     }
     while let Some(c) = st.industry.queue.front().cloned() {
