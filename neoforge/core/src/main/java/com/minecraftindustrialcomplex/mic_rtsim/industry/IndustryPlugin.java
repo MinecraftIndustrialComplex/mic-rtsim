@@ -64,8 +64,9 @@ public interface IndustryPlugin {
     default void links(BlockEntity be, Consumer<BlockPos> out) {}
 
     /**
-     * False while this block entity's {@link #links} cannot be read yet (a mechanical arm before its first
-     * tick): its chunk keeps the join pairs its district saved (SECTIONS.md §2.3, choice SC4). The default: true.
+     * False while this block entity's {@link #links} cannot be read yet (a mechanical arm with saved points it
+     * has not read): its chunk keeps the join pairs its district saved (SECTIONS.md §2.3, choice SC157). The
+     * default: true.
      */
     default boolean linksKnown(BlockEntity be) {
         return true;

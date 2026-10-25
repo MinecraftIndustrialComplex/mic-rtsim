@@ -110,11 +110,11 @@ public final class CreateGlassAccess {
 
     /**
      * Whether the arm has saved points it has not read yet: {@code ArmBlockEntity.updateInteractionPoints}
-     * (package-private, true from the constructor and after a load) with {@code interactionPointTag} set (only
-     * {@code read} sets it), until {@code initInteractionPoints} has read the points into {@link #armInputs} and
+     * (package-private, true from the constructor, so after a chunk load; on a client also from a packet that
+     * changes the count) with {@code interactionPointTag} set (only {@code read} sets it), until {@code initInteractionPoints} has read the points into {@link #armInputs} and
      * {@link #armOutputs} at a tick whose area is loaded. Create's own guard: {@code initInteractionPoints} returns
-     * at once while the tag is null, so an arm made without block entity data (a {@code /setblock}, a contraption's
-     * placement without points) has no saved points and its empty lists are its points. True, too, when a member is
+     * at once while the tag is null, so an arm made without block entity data (a {@code /setblock}, a deployer's
+     * placement) has no saved points and its empty lists are its points. True, too, when a member is
      * gone. Row 84.
      */
     public static boolean armPointsPending(ArmBlockEntity be) {
