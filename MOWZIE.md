@@ -644,7 +644,9 @@ routs. What this plan adds:
   den, but a stranger's kill does not clear another player's grudge.
 - **A third player kills it on its raid.** The party's feud steps down, as the engine does today: a
   Frostmaw raiding Iva's line and killed by Bram drops Iva's feud to Notice. Bram gets the Killing
-  report, so the heir holds a small grudge against him (about 2.5, under Notice) that decays.
+  report (-125, at half a point of grievance each), so the heir holds a grudge against him of about
+  62.5, over Notice's rung. The faction is cowed, so nothing comes of it until the window ends: then
+  Bram gets one Notice (a roar, not a raid), and the grudge decays away (MZB-299).
 - **The body** (EQ-4 (b), Ben, 2026-10-21). The pool is empty while the den waits for a migrant
   (§4.10), and one booked arrival ends the wait after `min(192, 6 × 2^P)` days, P being the den's
   pressure: it halves every 96 days, a game year, and gains 1 for each Frostmaw lost to players (for a
@@ -2119,9 +2121,10 @@ read, not edited):
    - **Kill it.** Her bow and her trident do nothing; she brings a TaCZ rifle and fire. It falls after
      250 damage; she gets an ice crystal (it still had its crystal and a player killed it). Her feud
      drops to Notice, the faction is cowed for about 6 days, and the heir takes over at once, holding
-     the old grievance plus about 2.5. The den's pressure goes from 0 to 1, so the new Frostmaw arrives
-     6 × 2 = 12 days later, on day 21.5, holding its crystal (MZ-4 (a), EQ-4 (b)), and is placed asleep
-     in the den when the den next comes in (walkthrough D). If her 24 legs a day still run, the
+     the old grievance plus about 62.5 (the Killing report's -125 at half a point each, MZB-299). The
+     den's pressure goes from 0 to 1, so the new Frostmaw arrives 6 × 2 = 12 days later, on day 21.5,
+     holding its crystal (MZ-4 (a), EQ-4 (b)), and is placed asleep in the den when the den next
+     comes in (walkthrough D). If her 24 legs a day still run, the
      grievance is still over 70 when it arrives, long after the cowed time, so it musters at once and
      is by the line about 1.3 days later. If the den has not come in since, it sets out still owed a
      body and carries the debt: nothing is taken, no one is booked dead, no second Frostmaw appears,

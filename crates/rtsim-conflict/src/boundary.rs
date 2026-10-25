@@ -84,6 +84,8 @@ pub const BAND_SURFACE: u8 = 4;
 pub const BAND_FIGHT: u8 = 8;
 /// BAND_MATERIALIZE member flags.
 pub const MEMBER_CHIEF: u32 = 1;
+/// The stack's units have no crystal on them (the unit fights as its `without_crystal` row).
+pub const MEMBER_BARE: u32 = 2;
 /// BAND_STEER flags.
 pub const STEER_ATTACK: u32 = 1;
 
@@ -129,6 +131,8 @@ pub const CENSUS_THRONE: u32 = 4;
 pub const BODY_STRAY: u32 = 1;
 pub const BODY_ELSEWHERE: u32 = 2;
 pub const BODY_CHIEF: u32 = 4;
+/// The crystal is on this body (a chief body only; MZB-269, amended at review C).
+pub const BODY_CRYSTAL: u32 = 8;
 /// CAMP_BODIES outcomes, per line.
 pub const LINE_DONE: u8 = 1;
 pub const LINE_NOTHING: u8 = 2;
@@ -274,6 +278,10 @@ pub struct BandCasualties {
     pub body: u32,
     pub count: u32,
     pub killer: Uuid,
+    /// The plugin's op id (MZB-589). A record journaled on an entity can be committed again (the
+    /// reassert: the same bytes under a new sequence), so the engine counts one op once per party
+    /// (`Party::casualty_ops`), not in the world's `applied_ops`.
+    pub op: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -393,7 +401,7 @@ pub struct CampDeath {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CensusBody {
     pub body: u32,
-    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`.
+    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`, `BODY_CRYSTAL`.
     pub flags: u32,
     pub slot: u32,
     pub generation: u32,
@@ -547,9 +555,12 @@ impl Obs {
         self.kind() >= 0x0100
     }
 
-    /// The plugin's op id, for the records that move items or trade (applied once). The camp's
-    /// records have none to skip by: CAMP_DEATH is idempotent by its slot and generation, and
-    /// CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
+    /// The plugin's op id, for the records that move items or trade (applied once, in the world's
+    /// set). The camp's records have none to skip by: CAMP_DEATH is idempotent by its slot and
+    /// generation, and CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
+    /// BAND_CASUALTIES carries an op id too and is not here: there is one for every member death in
+    /// the world's life, and the world's set never shrinks (D1), so the engine skips a copy by the
+    /// party's own list (`Party::casualty_ops`, which goes with the party; MZB-589).
     pub fn op(&self) -> Option<u64> {
         match self {
             Obs::ChiefKilled(c) => Some(c.op),
@@ -1100,7 +1111,8 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(36, c.body);
             w.u32(40, c.count);
             w.uuid(48, c.killer);
-            w.finish(BAND_CASUALTIES, c.by, 64);
+            w.u64(64, c.op);
+            w.finish(BAND_CASUALTIES, c.by, 72);
         }
         Obs::ChiefKilled(c) => {
             w.u64(24, c.agent);
@@ -1341,6 +1353,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             body: r.u32(36)?,
             count: r.u32(40)?,
             killer: r.uuid(48)?,
+            op: r.u64(64)?,
         }),
         CHIEF_KILLED => Obs::ChiefKilled(ChiefKilled {
             agent: r.u64(24)?,
@@ -1914,6 +1927,7 @@ pub(crate) mod tests {
                 body: 1,
                 count: 3,
                 killer: (11, 22),
+                op: 1 << 63 | 3,
             }),
             Obs::ChiefKilled(ChiefKilled {
                 agent: 5,
@@ -2126,7 +2140,7 @@ pub(crate) mod tests {
                     Stack {
                         body: 1,
                         count: 8,
-                        flags: MEMBER_CHIEF,
+                        flags: MEMBER_CHIEF | MEMBER_BARE,
                     },
                     Stack {
                         body: 2,
@@ -2247,7 +2261,8 @@ pub(crate) mod tests {
             POLLUTION => 64,
             BAND_MATERIALIZED | BAND_SPAWN_REJECTED => 48,
             BAND_DEMATERIALIZED => 40 + 8 * u32_at(36),
-            BAND_CASUALTIES | CHIEF_KILLED => 64,
+            BAND_CASUALTIES => 72,
+            CHIEF_KILLED => 64,
             ENVOY_ANSWER => 56,
             TRIBUTE_PAID => 72 + 16 * n,
             GIFT_GIVEN => 56 + 16 * n,

@@ -22,6 +22,14 @@ use rtsim_settle::{NodeKind, Pos};
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::{Command, World};
 
+/// A fresh op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death, so none
+/// repeats another's op.
+fn next_op() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    (1 << 63) | (N.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 fn day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
 }
@@ -388,6 +396,7 @@ fn wipe(r: &mut Run, e: &boundary::EnvoyMaterialize, by: u32) {
                 } else {
                     (0, 0)
                 },
+                op: next_op(),
             }),
             at,
         );
@@ -1924,6 +1933,7 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
         body,
         count: 1,
         killer: (0, 0),
+        op: next_op(),
     });
     let mut same = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     let mut back = restarted(&r);
@@ -2149,12 +2159,24 @@ enum Reached {
 /// as a copy. After the replay end the band holds epoch 4 at least, so its next body takes 5 or
 /// more (`next_epoch`): none of them can be used again. The camp records (CAMP_CENSUS,
 /// CAMP_BODIES, CAMP_OUT) carry a camp's epoch, Java's op id, which the engine never allocates.
+/// A BAND_CASUALTIES whose op the party counted already (MZB-589's dedupe, the M6 merge) raises
+/// it too: the fold comes before the dedupe.
 #[test]
 fn every_record_naming_an_epoch_raises_its_floor() {
     let player = (1, 2);
+    let counted = next_op();
     let records = |band: Handle<Party>| {
         let agent = Party::agent(band);
         vec![
+            Obs::Casualties(boundary::BandCasualties {
+                agent,
+                epoch: 4,
+                by: boundary::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+                op: counted,
+            }),
             Obs::State(boundary::BandState {
                 agent,
                 epoch: 4,
@@ -2180,6 +2202,7 @@ fn every_record_naming_an_epoch_raises_its_floor() {
                 body: 0,
                 count: 1,
                 killer: (0, 0),
+                op: next_op(),
             }),
             Obs::ChiefKilled(boundary::ChiefKilled {
                 agent,
@@ -2222,6 +2245,7 @@ fn every_record_naming_an_epoch_raises_its_floor() {
         let mut r = Run::new(36, quiet_goblins());
         let band = raid_band(&mut r);
         r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        r.c.parties[band].casualty_ops.push(counted);
         for o in records(band) {
             assert_eq!(o.party_epoch(), Some((Party::agent(band), 4)), "{o:?}");
             let mut c = match reached {
@@ -2362,6 +2386,7 @@ fn a_same_epoch_wave_is_filled_never_above_what_java_was_commanded() {
                     body,
                     count: deaths,
                     killer: (0, 0),
+                    op: next_op(),
                 }),
                 at,
             );
@@ -2409,6 +2434,7 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
         body,
         count: 2,
         killer: synth::PLAYER,
+        op: next_op(),
     });
     // The restart that replays it: the bodies the pages held stay embodied (RP-5).
     let mut replayed = restarted(&r);
@@ -2451,6 +2477,409 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
     }
 }
 
+/// A band in a fight, in Minecraft at a new epoch, with the epoch, its first unit's body and its
+/// size: the setting of the MZB-589 tests (a goblin raid of 8 and 4, routed at 6 losses).
+fn embodied_in_a_fight(r_band: (Run, Handle<Party>)) -> (Run, Handle<Party>, u32, u32) {
+    let (mut r, band) = r_band;
+    let epoch = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        // The fight goes on for days: the band the helper made Fighting has the muster's end as
+        // its `until`, in the past, so the first loss would bring the fight's end due.
+        x.until = fight_at() + 3 * TICKS_PER_DAY;
+        x.epoch
+    };
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[0].0).body)
+    };
+    (r, band, epoch, body)
+}
+
+/// BAND_CASUALTIES of `count` members of `body`, killed by the player, as the entity's death
+/// listener journals it, carrying its Java op id.
+fn killed(
+    band: Handle<Party>,
+    epoch: u32,
+    body: u32,
+    count: u32,
+    op: u64,
+) -> boundary::BandCasualties {
+    boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_PLAYER,
+        body,
+        count,
+        killer: synth::PLAYER,
+        op,
+    }
+}
+
+/// MZB-589: the engine's reading of a band, to compare a copy's effect with a control's.
+#[derive(Debug, PartialEq)]
+struct Count {
+    units: Vec<(u8, u32)>,
+    spawned: Vec<(u8, u32)>,
+    recalled: Vec<(u32, Vec<(u8, u32)>)>,
+    casualties: u64,
+    grievance: i64,
+    breaker: Option<ActorId>,
+    routs: u64,
+    phase: Phase,
+    ops: usize,
+}
+
+fn counted(r: &Run, c: &Conflict, band: Handle<Party>) -> Count {
+    let x = &c.parties[band];
+    Count {
+        units: x.units.clone(),
+        spawned: x.spawned.clone(),
+        recalled: x.recalled.clone(),
+        casualties: c.stats.casualties,
+        grievance: (c.feud_view(synth::CAMP, r.p).unwrap().grievance * 1e6).round() as i64,
+        breaker: x.breaker,
+        routs: c.stats.routs,
+        phase: x.phase,
+        ops: x.casualty_ops.len(),
+    }
+}
+
+/// MZB-589: the engine of `r` after the pages are saved and loaded again, in the same session.
+fn reopened(r: &Run, c: &Conflict) -> Conflict {
+    Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &c.save()).unwrap()
+}
+
+/// MZB-589: the death listener's record is committed again under a new sequence when the engine's
+/// replay forgot its op (the reassert of an entity-journaled record, after a world save). The same
+/// record twice in one epoch is one death: one unit, one count, one Killing signal and one move
+/// of the grudge, the same as the engine that saw it once.
+#[test]
+fn a_casualty_copy_in_one_epoch_counts_once() {
+    let (mut r, band, epoch, body) = embodied_in_a_fight(chief_in_a_fight(36));
+    let alive = r.c.parties[band].alive();
+    let op = next_op();
+    let cs = Obs::Casualties(killed(band, epoch, body, 1, op));
+    let mut once = reopened(&r, &r.c);
+    let grievance = counted(&r, &r.c, band).grievance;
+    let at = r.c.now() + 1;
+    r.ingest(cs.clone(), at);
+    once.ingest(&mut r.w, &mut NoInfrastructure, &cs, at);
+    let first = counted(&r, &r.c, band);
+    assert_eq!(first.units[0].1, 8 - 1, "one member is dead");
+    assert_eq!(r.c.parties[band].alive(), alive - 1);
+    assert_eq!(first.casualties, 1);
+    assert_eq!(first.ops, 1, "and the party knows the record");
+    assert_eq!(first.breaker, Some(r.p), "the killer is known");
+    assert!(
+        first.grievance > grievance,
+        "and the killing is held against them"
+    );
+    assert_eq!(first.spawned[0].1, 7, "the stack of bodies too");
+    r.ingest(cs.clone(), at);
+    // The copy moves nothing: not the units, the count, the grudge (one Killing signal, the
+    // first's) nor the breaker, and the engine is the one that saw the record once.
+    assert_eq!(counted(&r, &r.c, band), first, "the copy changes nothing");
+    assert_eq!(
+        counted(&r, &once, band),
+        first,
+        "the same as seeing it once"
+    );
+}
+
+/// MZB-589: with the copy counted twice the band would rout early (the loss is a third, twice it
+/// is two thirds and the goblins rout at a half).
+#[test]
+fn a_casualty_copy_does_not_rout_the_band_early() {
+    let (mut r, band, epoch, body) = embodied_in_a_fight(chief_in_a_fight(36));
+    let alive = r.c.parties[band].alive();
+    let routs = r.c.stats.routs;
+    let cs = Obs::Casualties(killed(band, epoch, body, 4, next_op()));
+    let at = r.c.now() + 1;
+    for k in 0..3 {
+        r.ingest(cs.clone(), at);
+        assert_eq!(r.c.parties[band].alive(), alive - 4, "after copy {k}");
+        assert_eq!(r.c.parties[band].phase, Phase::Fighting, "still fighting");
+        assert_eq!(r.c.stats.routs, routs, "no rout");
+        assert_eq!(r.c.stats.casualties, 4);
+    }
+}
+
+/// MZB-589: two deaths of the same body in one epoch are two records with two ops, and both
+/// count (the engine skips a copy, not a death).
+#[test]
+fn two_casualties_of_one_body_with_two_ops_both_count() {
+    let (mut r, band, epoch, body) = embodied_in_a_fight(chief_in_a_fight(36));
+    let alive = r.c.parties[band].alive();
+    let at = r.c.now() + 1;
+    let parties = r.c.memory()["parties"];
+    let (a, b) = (next_op(), next_op());
+    r.ingest(Obs::Casualties(killed(band, epoch, body, 1, a)), at);
+    r.ingest(Obs::Casualties(killed(band, epoch, body, 1, b)), at);
+    assert_eq!(r.c.parties[band].alive(), alive - 2);
+    assert_eq!(r.c.stats.casualties, 2);
+    assert_eq!(r.c.parties[band].casualty_ops, vec![a, b]);
+    assert_eq!(
+        r.c.memory()["parties"],
+        parties + 16,
+        "the memory estimate counts the list"
+    );
+    // And a copy of either is still one death each.
+    r.ingest(Obs::Casualties(killed(band, epoch, body, 1, a)), at);
+    r.ingest(Obs::Casualties(killed(band, epoch, body, 1, b)), at);
+    assert_eq!(r.c.parties[band].alive(), alive - 2);
+    assert_eq!(r.c.stats.casualties, 2);
+}
+
+/// MZB-589: the list holds the records that took a unit, so it cannot outgrow the band. A record
+/// for a stack that was gone already takes nothing and is not kept.
+#[test]
+fn the_list_keeps_only_the_casualties_that_took_a_unit() {
+    let (mut r, band, epoch, body) = embodied_in_a_fight(chief_in_a_fight(36));
+    let at = r.c.now() + 1;
+    // The second stack has four, and four of twelve is below the rout at a half.
+    let c = r.c.cultures.get(0).clone();
+    let other = body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[1].0).body);
+    assert_ne!(other, body);
+    let (a, b) = (next_op(), next_op());
+    r.ingest(Obs::Casualties(killed(band, epoch, other, 2, a)), at);
+    r.ingest(Obs::Casualties(killed(band, epoch, other, 2, b)), at);
+    let held = r.c.parties[band].units[1].1;
+    assert_eq!(held, 0, "the second stack is gone");
+    // A third record for the same stack takes nothing.
+    let extra = next_op();
+    r.ingest(Obs::Casualties(killed(band, epoch, other, 2, extra)), at);
+    assert!(
+        !r.c.parties[band].casualty_ops.contains(&extra),
+        "a record that took no unit is not kept"
+    );
+    assert!(r.c.parties[band].casualty_ops.len() as u32 <= r.c.parties[band].start_units);
+    assert_eq!(r.c.stats.casualties, 4);
+}
+
+/// MZB-589: the list is saved with the party, so a copy that comes after the pages were saved and
+/// loaded again (in the session that went on, or in a restart's replay, where the bodies the pages
+/// held stay embodied at their epoch, docs/replay-gate.md §5.1, RP-5) still counts once.
+#[test]
+fn a_casualty_copy_after_a_save_and_reopen_counts_once() {
+    let (mut r, band, epoch, body) = embodied_in_a_fight(chief_in_a_fight(36));
+    let at = r.c.now() + 1;
+    let cs = Obs::Casualties(killed(band, epoch, body, 1, next_op()));
+    r.ingest(cs.clone(), at);
+    let first = counted(&r, &r.c, band);
+    assert_eq!(first.ops, 1);
+    // The same session, the pages loaded again.
+    let mut same = reopened(&r, &r.c);
+    assert_eq!(counted(&r, &same, band), first, "the list is saved");
+    same.ingest(&mut r.w, &mut NoInfrastructure, &cs, at);
+    assert_eq!(counted(&r, &same, band), first, "a copy counts nothing");
+    // The restart: the bodies of the pages stay embodied for the replay, which re-delivers the
+    // record. The pages hold the dead already, and so the copy must not take them again.
+    let mut back = restarted(&r);
+    assert!(back.parties[band].embodied, "kept for the replay (RP-5)");
+    assert_eq!(back.parties[band].epoch, epoch);
+    assert_eq!(back.parties[band].spawned, r.c.parties[band].spawned);
+    let before = counted(&r, &back, band);
+    // As the host delivers a copy: through `ingest_copy`, which takes the record at any epoch
+    // (`ingest` is a live commit, a different path).
+    back.ingest_copy(&mut r.w, &mut NoInfrastructure, &cs, at);
+    assert_eq!(counted(&r, &back, band), before, "the replay's copy too");
+    assert_eq!(back.parties[band].alive(), r.c.parties[band].alive());
+}
+
+/// MZB-589: a raid on the refinery, the pages saved while it marches there unseen, a restart
+/// that replays: the band's first copy of a casualty counts, the replay holds the arrival
+/// (RP-23), and the record `second` arrives while the arrival is held, through `ingest_copy`
+/// (`copy`) or as a plain recommit. Returns the raids decided while replaying right after it
+/// (the hold ended: the arrival was decided unwatched), and the casualties counted.
+fn a_casualty_while_an_arrival_is_held(second_is_new: bool, copy: bool) -> (usize, u64) {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    assert!(r.c.parties[band].phase == Phase::Out && !r.c.parties[band].embodied);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    let c = back.cultures.get(0).clone();
+    let body = body_id(&back.cultures, &c.unit(back.parties[band].units[0].0).body);
+    let epoch = back.parties[band].epoch;
+    let (a, b) = (next_op(), next_op());
+    let first = Obs::Casualties(killed(band, epoch, body, 1, a));
+    let at = back.now() + 1;
+    back.ingest_copy(&mut w, &mut walls, &first, at);
+    assert_eq!(
+        back.parties[band].casualty_ops,
+        vec![a],
+        "the party counted it"
+    );
+    let counted = back.stats.casualties;
+    // The arrival comes inside the replay and is held.
+    back.run_until(&mut w, &mut walls, arrival + 10);
+    let _ = back.take_commands();
+    assert!(back.replaying());
+    assert_eq!(back.parties[band].phase, Phase::Out, "held");
+    assert!(walls.raids.is_empty(), "not decided yet");
+    let second = Obs::Casualties(killed(
+        band,
+        epoch,
+        body,
+        1,
+        if second_is_new { b } else { a },
+    ));
+    if copy {
+        back.ingest_copy(&mut w, &mut walls, &second, arrival + 10);
+    } else {
+        back.ingest(&mut w, &mut walls, &second, arrival + 10);
+    }
+    (walls.raids.len(), back.stats.casualties - counted)
+}
+
+/// MZB-589 (the merge check's P3): a casualty the party counted already moves nothing, so it does
+/// not end a held arrival either. `release_before` ran ahead of the dedupe in `casualties`, and
+/// BAND_CASUALTIES has no op for `first_time`: the hold was removed, the arrival decided
+/// unwatched, the count unchanged, and the hold's own fight record found no hold.
+#[test]
+fn a_casualty_the_party_counted_already_does_not_end_a_held_arrival() {
+    for copy in [true, false] {
+        assert_eq!(
+            a_casualty_while_an_arrival_is_held(false, copy),
+            (0, 0),
+            "a known op, copy {copy}: the hold stays, nothing counts"
+        );
+    }
+}
+
+/// The control: a new op still releases the hold (a wipe-out or a rout sends the band home) and
+/// counts.
+#[test]
+fn a_new_casualty_still_ends_a_held_arrival() {
+    let (raids, counted) = a_casualty_while_an_arrival_is_held(true, true);
+    assert_eq!(
+        (raids, counted),
+        (1, 1),
+        "the hold ended, the death counted"
+    );
+}
+
+/// MZB-589: a casualty of bodies kept as a recalled stack (the walk-off's dead) counts once as
+/// well: a copy finds the op.
+#[test]
+fn a_casualty_copy_on_a_recalled_stack_counts_once() {
+    let (mut r, band, epoch, body) = embodied_in_a_fight(chief_in_a_fight(36));
+    {
+        let x = &mut r.c.parties[band];
+        x.recalled = vec![(epoch, std::mem::take(&mut x.spawned))];
+        x.embodied = false;
+    }
+    let alive = r.c.parties[band].alive();
+    let at = r.c.now() + 1;
+    let cs = Obs::Casualties(killed(band, epoch, body, 1, next_op()));
+    r.ingest(cs.clone(), at);
+    let first = counted(&r, &r.c, band);
+    assert_eq!(r.c.parties[band].alive(), alive - 1);
+    assert_eq!(first.recalled[0].1[0].1, 7, "the stack lost its member");
+    assert_eq!(first.casualties, 1);
+    r.ingest(cs.clone(), at);
+    assert_eq!(counted(&r, &r.c, band), first, "the copy counts nothing");
+    // After a save and reopen too.
+    let mut same = reopened(&r, &r.c);
+    same.ingest(&mut r.w, &mut NoInfrastructure, &cs, at);
+    assert_eq!(counted(&r, &same, band), first);
+}
+
+/// MZB-589: a copy that comes after the walk-off has settled (the despawn took the epoch's stack)
+/// is no death, as before the list; the copy changes nothing: units, count, grudge and breaker.
+#[test]
+fn a_casualty_copy_after_the_recall_settled_changes_nothing() {
+    let (mut r, band, epoch, body) =
+        embodied_in_a_fight(raid_in_a_fight_at(36, synth::REFINERY_POS));
+    {
+        let x = &mut r.c.parties[band];
+        x.recalled = vec![(epoch, std::mem::take(&mut x.spawned))];
+        x.embodied = false;
+    }
+    let at = r.c.now() + 1;
+    let cs = Obs::Casualties(killed(band, epoch, body, 1, next_op()));
+    r.ingest(cs.clone(), at);
+    let despawn = despawn_with(&r, band, epoch, 0);
+    r.ingest(despawn, at);
+    assert!(r.c.parties[band].recalled.is_empty(), "the stack is spent");
+    let settled = counted(&r, &r.c, band);
+    r.ingest(cs.clone(), at);
+    assert_eq!(counted(&r, &r.c, band), settled, "the copy changes nothing");
+    let mut same = reopened(&r, &r.c);
+    same.ingest(&mut r.w, &mut NoInfrastructure, &cs, at);
+    assert_eq!(counted(&r, &same, band), settled, "nor after a reopen");
+}
+
+/// MZB-589: a party's slot is reused when it has ended, under a new generation, and the list went
+/// with the party. A copy of the old band's record carries the old agent id: it is no record of
+/// the new party (`party_of` checks the handle's generation), whatever its epoch (the new party
+/// starts at 0, as does an old one's first). Handles retire a slot before its u16 generation would
+/// wrap (`rtsim-kernel` `handle.rs`), so no old agent id comes back to a live party.
+#[test]
+fn a_casualty_copy_of_an_ended_party_does_nothing_to_the_party_in_its_slot() {
+    let mut r = Run::new(36, quiet_goblins());
+    let old = raid_band(&mut r);
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[old].units[0].0).body)
+    };
+    // The old band lost a member at epoch 0, which it counted.
+    {
+        let x = &mut r.c.parties[old];
+        x.embodied = true;
+        x.spawned = x.units.clone();
+    }
+    let op = next_op();
+    let cs = Obs::Casualties(killed(old, 0, body, 1, op));
+    r.ingest(cs.clone(), Tick(40));
+    assert_eq!(r.c.parties[old].casualty_ops, vec![op]);
+    // It ends (as it does when it is home), and the next band takes its slot.
+    r.c.parties.remove(old);
+    let new =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(40),
+        )
+        .unwrap();
+    assert_eq!(new.index(), old.index(), "the slot is reused");
+    assert_ne!(Party::agent(new), Party::agent(old));
+    assert_eq!(r.c.parties[new].epoch, 0);
+    {
+        let x = &mut r.c.parties[new];
+        x.embodied = true;
+        x.spawned = x.units.clone();
+    }
+    assert!(r.c.parties[new].casualty_ops.is_empty());
+    let before = counted(&r, &r.c, new);
+    r.ingest(cs.clone(), Tick(40));
+    assert_eq!(counted(&r, &r.c, new), before, "live: the old agent's copy");
+    let mut same = reopened(&r, &r.c);
+    same.ingest(&mut r.w, &mut NoInfrastructure, &cs, Tick(40));
+    assert_eq!(counted(&r, &same, new), before, "after a reopen");
+    let mut back = restarted(&r);
+    back.ingest(&mut r.w, &mut NoInfrastructure, &cs, Tick(40));
+    assert_eq!(counted(&r, &back, new).units, before.units, "and a restart");
+    assert_eq!(back.stats.casualties, before.casualties);
+    // The new band's own record, with the old op, is a death: the new party has not counted it.
+    r.ingest(Obs::Casualties(killed(new, 0, body, 1, op)), Tick(40));
+    assert_eq!(r.c.stats.casualties, before.casualties + 1);
+}
+
 /// A band recalled at epoch `e`, its bodies walking off, and seen again and embodied at `e + 1`
 /// before that despawn (MZB-131): both stacks hold every alive member. Returns the band, `e` and
 /// the body id of its first unit.
@@ -2480,6 +2909,7 @@ fn casualty_of(band: Handle<Party>, epoch: u32, body: u32) -> Obs {
         body,
         count: 1,
         killer: (0, 0),
+        op: next_op(),
     })
 }
 
@@ -3333,6 +3763,7 @@ fn straggler(r: &mut Run, walls: &mut Walls, band: Handle<Party>, journal: &mut 
         body: body_id(&r.c.cultures, &c.unit(x.units[0].0).body),
         count: 1,
         killer: (0, 0),
+        op: next_op(),
     });
     let at = r.c.now();
     let casualties = r.c.stats.casualties;
@@ -3350,6 +3781,7 @@ fn fillers_casualty() -> Obs {
         body: 0,
         count: 1,
         killer: (0, 0),
+        op: next_op(),
     })
 }
 
@@ -3989,6 +4421,7 @@ fn a_held_decision_then(round: bool, inside: Inside, crash: bool) -> (SiegeAt, T
                     body: body_id(&r.c.cultures, &c.unit(u).body),
                     count: n.unwrap_or(all),
                     killer: (0, 0),
+                    op: next_op(),
                 })
             })
             .collect()
@@ -5654,6 +6087,7 @@ fn a_war_band_wiped_out_on_the_road_records_the_rescue() {
                 body: rtsim_conflict::engine::body_id(&r.c.cultures, &c.unit(u).body),
                 count,
                 killer: synth::PLAYER,
+                op: next_op(),
             }),
             at,
         );
@@ -5692,6 +6126,7 @@ fn strike(r: &mut Run, band: Handle<Party>, by: u32, all: bool, at: Tick) {
                 body: rtsim_conflict::engine::body_id(&r.c.cultures, &c.unit(u).body),
                 count,
                 killer,
+                op: next_op(),
             }),
             at,
         );
@@ -5949,4 +6384,103 @@ fn a_chief_felled_by_no_player_after_a_player_struck_the_band_is_still_that_play
     let rep = r.w.knowledge.report(reps[0]).unwrap();
     assert_eq!((rep.who, rep.whom), (r.p, ashby), "the striker's rescue");
     assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnesses it");
+}
+
+// ---- MZB-589 across a paged save (the M6 re-review's probe) ----
+
+fn paged_store(tag: &str) -> std::sync::Arc<std::sync::RwLock<rtsim_kernel::page::PageStore>> {
+    let d = std::env::temp_dir().join(format!("rtsim-mzb589-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::sync::Arc::new(std::sync::RwLock::new(
+        rtsim_kernel::page::PageStore::open(&d, rtsim_kernel::page::Durability::NoSync).unwrap(),
+    ))
+}
+
+fn paged_save(
+    c: &mut Conflict,
+    s: &std::sync::Arc<std::sync::RwLock<rtsim_kernel::page::PageStore>>,
+) {
+    let mut b = rtsim_kernel::page::SaveBatch::new();
+    let t = c.save_paged(&mut b, rtsim_conflict::scenario::META_KEY);
+    s.write().unwrap().commit(b, 0).unwrap();
+    c.saved(t);
+}
+
+fn paged_open(
+    r: &Run,
+    s: &std::sync::Arc<std::sync::RwLock<rtsim_kernel::page::PageStore>>,
+) -> Conflict {
+    Conflict::open_paged(
+        s.clone(),
+        1 << 20,
+        rtsim_conflict::scenario::META_KEY,
+        r.c.tun.clone(),
+        r.c.cultures.clone(),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+/// MZB-589: the slot is free at a paged save (the old party ended); after open_paged the next
+/// party takes it under the bumped generation, and the old agent's copy does nothing.
+#[test]
+fn a_casualty_copy_of_an_ended_party_does_nothing_across_a_paged_save() {
+    let mut r = Run::new(36, quiet_goblins());
+    let s = paged_store("slot");
+    paged_save(&mut r.c, &s); // the first paged save, full
+    let old = raid_band(&mut r);
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[old].units[0].0).body)
+    };
+    {
+        let x = &mut r.c.parties[old];
+        x.embodied = true;
+        x.spawned = x.units.clone();
+    }
+    let op = next_op();
+    let cs = Obs::Casualties(killed(old, 0, body, 1, op));
+    r.ingest(cs.clone(), Tick(40));
+    paged_save(&mut r.c, &s); // incremental: the party page with the op
+    let mut mid = paged_open(&r, &s);
+    assert_eq!(
+        mid.parties[old].casualty_ops,
+        vec![op],
+        "the op survives an incremental paged save"
+    );
+    mid.ingest(&mut r.w, &mut NoInfrastructure, &cs, Tick(40));
+    assert_eq!(mid.stats.casualties, 1);
+    r.c.parties.remove(old);
+    paged_save(&mut r.c, &s); // incremental: the slot freed, the free list grown
+    let mut c = paged_open(&r, &s);
+    assert!(!c.parties.contains(old));
+    let new = c
+        .order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(40),
+        )
+        .unwrap();
+    assert_eq!(
+        new.index(),
+        old.index(),
+        "the slot is reused after the reopen"
+    );
+    assert_eq!(new.generation(), old.generation() + 1);
+    {
+        let x = &mut c.parties[new];
+        x.embodied = true;
+        x.spawned = x.units.clone();
+    }
+    let units = c.parties[new].units.clone();
+    let cas = c.stats.casualties;
+    c.ingest(&mut r.w, &mut NoInfrastructure, &cs, Tick(40));
+    assert_eq!(
+        c.parties[new].units, units,
+        "the old agent's copy does nothing"
+    );
+    assert_eq!(c.stats.casualties, cas);
 }

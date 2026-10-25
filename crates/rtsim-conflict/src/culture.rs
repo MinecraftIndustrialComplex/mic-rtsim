@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 
 use rtsim_industry::threat::{ThreatClass, ThreatSource};
 use rtsim_kernel::clock::TICKS_PER_DAY;
+use rtsim_kernel::renewal::RenewalRule;
 use serde::{Deserialize, Serialize};
 
 /// What a faction can hold against someone (the brief's list: smog, radioactivity, logging,
@@ -272,6 +273,58 @@ pub struct UnitDef {
     pub without_crystal: Option<String>,
 }
 
+/// How a site's members come back once a player has killed them (EQUILIBRIUM.md §2.2, MZB-251): the
+/// shared renewal rule's numbers, in days. The wait for the next member is `min(cap, base x 2^P)`,
+/// P the recent players' losses, halving every `half_life_days`. Tunables, as the kernel's rule has
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RenewalDef {
+    pub base_days: f32,
+    pub cap_days: f32,
+    pub half_life_days: f32,
+    /// A member lost with no killer named (`BY_NONE`, `BY_OTHER`) is a player's loss: a boss kind's
+    /// unclaimed death is (EQUILIBRIUM.md §2.2), not the Umvuthana's warriors' (MZB-253).
+    #[serde(default)]
+    pub boss: bool,
+}
+
+impl RenewalDef {
+    /// The rule's numbers, each checked on its own, whichever field of a culture they sit in: every
+    /// one finite, `base_days` above 0, `cap_days` at least `base_days`, `half_life_days` above 0
+    /// (MZB-251). `what` names the field in the error.
+    pub fn rule(&self, culture: &str, what: &str) -> Result<RenewalRule, String> {
+        let n = culture;
+        if ![self.base_days, self.cap_days, self.half_life_days]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return Err(format!("{n}: {what} numbers must be finite"));
+        }
+        if self.base_days <= 0.0 {
+            return Err(format!("{n}: {what} base_days must be above 0"));
+        }
+        if self.cap_days < self.base_days {
+            return Err(format!("{n}: {what} cap_days must be at least base_days"));
+        }
+        if self.half_life_days <= 0.0 {
+            return Err(format!("{n}: {what} half_life_days must be above 0"));
+        }
+        Ok(RenewalRule {
+            base_days: self.base_days,
+            cap_days: self.cap_days,
+            half_life_days: self.half_life_days,
+        })
+    }
+}
+
+/// A culture's renewal resolved (MZB-251).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Renewal {
+    pub rule: RenewalRule,
+    /// An unclaimed death bumps the pressure (`RenewalDef::boss`).
+    pub boss: bool,
+}
+
 /// A culture as its JSON says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CultureDef {
@@ -362,6 +415,11 @@ pub struct CultureDef {
     /// its cap. False for a camp whose warriors have no bodies until a party materializes.
     #[serde(default)]
     pub camp_bodies: bool,
+    /// How its camp's members come back after a player's kills (MZB-251): a wait by the shared
+    /// renewal rule in place of the recruiting rate, so a culture with one has `recruits_per_day` 0
+    /// and `camp_bodies` (`Culture::resolve`). Absent: the pool refills by its rate, as M4 built.
+    #[serde(default)]
+    pub renewal: Option<RenewalDef>,
 }
 
 fn one() -> f64 {
@@ -386,6 +444,8 @@ pub struct Culture {
     pub market: rtsim_settle::Culture,
     /// Each unit's row without its chief's crystal (its own index when it has no other).
     pub bare: Vec<u8>,
+    /// `def.renewal` resolved (MZB-251).
+    pub renewal: Option<Renewal>,
 }
 
 /// The longest `repeat_days` a culture may set: ten years.
@@ -491,6 +551,25 @@ impl Culture {
         if def.march_blocks_per_tick <= 0.0 {
             return Err(format!("{n}: march speed must be positive"));
         }
+        // The wait replaces the rate, never joins it (MZB-251, MZB-293): this check belongs to the
+        // `renewal` field alone, the numbers' checks (`RenewalDef::rule`) to any renewal, so a
+        // culture with another rule for its chief (the grove's heir) adds a field of its own that
+        // calls `rule` and leaves this check, and the Frostmaw's, as they are.
+        let renewal = def
+            .renewal
+            .map(|r| -> Result<Renewal, String> {
+                let rule = r.rule(n, "renewal")?;
+                if def.recruits_per_day != 0.0 {
+                    return Err(format!(
+                        "{n}: a renewal replaces recruits_per_day, which must be 0"
+                    ));
+                }
+                if !def.camp_bodies {
+                    return Err(format!("{n}: a renewal needs camp_bodies"));
+                }
+                Ok(Renewal { rule, boss: r.boss })
+            })
+            .transpose()?;
         let lambda = std::f64::consts::LN_2 / (def.half_life_days * TICKS_PER_DAY as f64);
         Ok(Culture {
             signals,
@@ -500,6 +579,7 @@ impl Culture {
             parties,
             market,
             bare,
+            renewal,
             def,
         })
     }
@@ -759,6 +839,88 @@ mod tests {
         assert!(Culture::resolve(def.clone()).is_err());
         def.plunder_mean_days = None;
         assert!(Culture::resolve(def).is_ok());
+    }
+
+    fn frostmaw_def() -> CultureDef {
+        serde_json::from_str(FROSTMAW_JSON).unwrap()
+    }
+
+    /// MZB-252: the Frostmaw's renewal is the den's wait, 6 days a member at no pressure and at
+    /// most 192, pressure halving in 96, an unclaimed death a player's; the grove's is M9's.
+    #[test]
+    fn the_frostmaws_renewal_parses_and_resolves() {
+        let c = Cultures::builtin();
+        let fm = c.get(c.index_of("frostmaw").unwrap());
+        let r = fm.renewal.expect("a renewal");
+        assert_eq!(
+            (r.rule.base_days, r.rule.cap_days, r.rule.half_life_days),
+            (6.0, 192.0, 96.0)
+        );
+        assert!(r.boss);
+        assert_eq!(fm.def.recruits_per_day, 0.0);
+        assert!(fm.def.camp_bodies);
+        assert_eq!(fm.def.renewal.unwrap().boss, r.boss);
+        // The others keep the rate: no renewal, and `boss` is false when a renewal leaves it out.
+        for n in ["goblin", "bandit", "raider", "umvuthana"] {
+            assert!(c.get(c.index_of(n).unwrap()).renewal.is_none(), "{n}");
+        }
+        let d: RenewalDef =
+            serde_json::from_str(r#"{"base_days": 6, "cap_days": 96, "half_life_days": 96}"#)
+                .unwrap();
+        assert!(!d.boss);
+    }
+
+    /// MZB-251: each way a renewal can be wrong is its own error.
+    #[test]
+    fn each_renewal_error_is_its_own() {
+        let with = |edit: &dyn Fn(&mut CultureDef)| {
+            let mut d = frostmaw_def();
+            edit(&mut d);
+            Culture::resolve(d).err()
+        };
+        assert_eq!(with(&|_| {}), None);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for field in 0..3 {
+                let e = with(&|d| {
+                    let r = d.renewal.as_mut().unwrap();
+                    *[&mut r.base_days, &mut r.cap_days, &mut r.half_life_days][field] = bad;
+                })
+                .expect("refused");
+                assert!(e.contains("must be finite"), "{bad} in {field}: {e}");
+            }
+        }
+        for bad in [0.0, -1.0] {
+            let e = with(&|d| d.renewal.as_mut().unwrap().base_days = bad).expect("refused");
+            assert!(e.contains("base_days must be above 0"), "{e}");
+            let e = with(&|d| d.renewal.as_mut().unwrap().half_life_days = bad).expect("refused");
+            assert!(e.contains("half_life_days must be above 0"), "{e}");
+        }
+        let e = with(&|d| d.renewal.as_mut().unwrap().cap_days = 5.9).expect("refused");
+        assert!(e.contains("cap_days must be at least base_days"), "{e}");
+        // A cap equal to the base is a wait that never grows: allowed.
+        assert_eq!(with(&|d| d.renewal.as_mut().unwrap().cap_days = 6.0), None);
+        let e = with(&|d| d.recruits_per_day = 0.5).expect("refused");
+        assert!(e.contains("recruits_per_day"), "{e}");
+        let e = with(&|d| d.camp_bodies = false).expect("refused");
+        assert!(e.contains("camp_bodies"), "{e}");
+        // The numbers' check stands apart from the rate's (MZB-293): a rule checked for another
+        // field of a culture does not look at its rate.
+        let r = RenewalDef {
+            base_days: 6.0,
+            cap_days: 96.0,
+            half_life_days: 96.0,
+            boss: false,
+        };
+        assert!(r.rule("grove", "chief_renewal").is_ok());
+        assert!(
+            RenewalDef {
+                base_days: 0.0,
+                ..r
+            }
+            .rule("grove", "chief_renewal")
+            .unwrap_err()
+            .contains("grove: chief_renewal base_days")
+        );
     }
 
     #[test]

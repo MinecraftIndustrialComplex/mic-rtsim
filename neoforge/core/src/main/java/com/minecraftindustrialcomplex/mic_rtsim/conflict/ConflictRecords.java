@@ -12,6 +12,8 @@ public final class ConflictRecords {
     // ---- kinds (docs/boundary.md §9.1) ----------------------------------------------------------
 
     public static final int BAND_STATE = 0x0090;
+    /** M6: a chief's health and crystal at home (latest-wins, aux = flags; the Frostmaw's steal, MZB-273). */
+    public static final int CHIEF_STATE = 0x0091;
     public static final int FACTION_FOUND = 0x0800;
     public static final int TERRITORY_SIGNAL = 0x0801;
     public static final int POLLUTION = 0x0802;
@@ -91,6 +93,12 @@ public final class ConflictRecords {
         public static final int FLAG_TICKING = 1, FLAG_FIGHTING = 2;
     }
 
+    /** CHIEF_STATE (M6, latest-wins, aux = flags: {@link #CRYSTAL} when the chief holds its crystal). */
+    public static final class ChiefState {
+        public static final int FACTION = 8, HEALTH = 16, SIZE = 24;
+        public static final int CRYSTAL = 1;
+    }
+
     /** FACTION_FOUND (aux = flags). */
     public static final class FactionFound {
         public static final int FACTION = 24, DIM = 32, STRUCTURE = 36, X = 40, Y = 44, Z = 48, SIZE = 56;
@@ -146,9 +154,13 @@ public final class ConflictRecords {
         }
     }
 
-    /** BAND_CASUALTIES (aux = killer kind). */
+    /**
+     * BAND_CASUALTIES (aux = killer kind), with a Java op id (MZB-589): a record journaled on an entity or a
+     * chunk can be committed again by the reassert (a new OBS_SEQ, the same bytes), and the engine skips the
+     * op it has already counted for that party.
+     */
     public static final class Casualties {
-        public static final int AGENT = 24, EPOCH = 32, BODY = 36, COUNT = 40, KILLER_MOST = 48, KILLER_LEAST = 56, SIZE = 64;
+        public static final int AGENT = 24, EPOCH = 32, BODY = 36, COUNT = 40, KILLER_MOST = 48, KILLER_LEAST = 56, OP_ID = 64, SIZE = 72;
     }
 
     /** CHIEF_KILLED (aux = killer kind), with a Java op id. */
@@ -233,8 +245,8 @@ public final class ConflictRecords {
         public static final int S_BODY = 0, S_COUNT = 4, S_FLAGS = 8;
         /** FLAG_FIGHT: a fight's wave, not a sighting's; echoed in BAND_MATERIALIZED. */
         public static final int FLAG_HOSTILE = 1, FLAG_CHIEF = 2, FLAG_SURFACE = 4, FLAG_FIGHT = 8;
-        /** A stack's flags: the war chief is in this stack. */
-        public static final int STACK_CHIEF = 1;
+        /** A stack's flags: the war chief is in this stack; its units have no crystal on them (review C). */
+        public static final int STACK_CHIEF = 1, STACK_BARE = 2;
 
         public static int size(int m) {
             return STACKS + STACK * m;
@@ -276,7 +288,8 @@ public final class ConflictRecords {
         /** Per body. */
         public static final int B_BODY = 0, B_FLAGS = 4, B_SLOT = 8, B_GENERATION = 12, B_UUID_MOST = 16, B_UUID_LEAST = 24;
         public static final int CHIEF = 1, CRYSTAL = 2, THRONE = 4;
-        public static final int BODY_STRAY = 1, BODY_ELSEWHERE = 2, BODY_CHIEF = 4;
+        /** Per body; BODY_CRYSTAL: the crystal is on this chief body (review C: read per body, not off the camp's byte). */
+        public static final int BODY_STRAY = 1, BODY_ELSEWHERE = 2, BODY_CHIEF = 4, BODY_CRYSTAL = 8;
 
         public static int size(int n, int t) {
             return BODIES + BODY * n + TRADER * t;
