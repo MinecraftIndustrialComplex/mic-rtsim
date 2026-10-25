@@ -2866,6 +2866,10 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
     ticks; the chunk shown, the SPAWN is STALE and census 2 lists the stray). Not run; on the unheld `spawnLine` the
     SPAWN plays at once and the den has two Frostmaws. Any recount, not only a held one, now holds SPAWNs until the
     census at the end of that tick.
+  - The hold's bound (re-check P3): never a census past a hidden stray (a double body is worse than a late den), but
+    `strayHold` keeps the age of the hold, and once it is HOLD_MAX ticks old runs the 81-chunk scan once every 100
+    ticks instead of each tick. With saving off (`/save-off`: vanilla skips the entity manager's `autoSave`, the only
+    thing that clears a C2ME-dropped unload) a late den waits for saving to resume.
 - **MZB-661** (M5 C2ME diagnosis; P2): `byUuid` (REMOVE, TAKE and ADOPT by UUID) was `level.getEntity`, which
   misses a body whose chunk is hidden: NOTHING was answered and the stray lived. When `getEntity` misses it now
   falls back to the camp's own index (`live(faction)`) by UUID, with the level checked. GameTest
