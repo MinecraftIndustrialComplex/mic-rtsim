@@ -4,6 +4,8 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim_create.ringmixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "PortRingMixin",
+    "StationPortsRingMixin",
     "TrainRingMixin"
   ],
   "injectors": {
