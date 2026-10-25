@@ -6004,6 +6004,30 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   fix; no format change. Not run (no GameTest); M6's
   `aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll` uses Umvuthana bodies only, so
   its "home 3" is unchanged by the wrap.
+- **MZB-671** (M9's GameTest unload waits, converted as 6d6c6658 did; MZB-662's trap): M9's two
+  `gone()` helpers took UUIDs and checked `getEntity(id) == null`, the "saved and unloaded" wait
+  MZB-662 found false under C2ME, and they took their arguments when the sequence was built, before
+  the `thenExecute` steps that fill the arrays. Four waits, found by reading (M9's GameTests were
+  compiled, never run):
+  - `tributeLandsInAGroveChestWhenTheGroveLoads` (UmvuthanaWorldGameTests): `List.of(id[0])` with
+    `id[0]` null at build time, so `List.of` throws a NullPointerException when the test is built,
+    before its first tick: the test could not run at all.
+  - `anOwedHuntIsAppliedWhenItsDistrictLoadsAndKillsTheNearestEligibleAnimals` (UmvuthanaWorldGameTests), first unload: a
+    `Stream.concat(...).toList()` of the `prey` and `no` UUIDs, all null at build time;
+    `toList()` allows nulls and `getEntity(null)` is null, so the wait passed at once.
+  - The same test's second unload: `List.of(no)`, null elements, the NullPointerException again.
+  - `anEpochsEndAnswersEveryHeldLineStale` (UmvuthiGameTests): `gone(level, id[0])`, a null
+    varargs element, so the wait passed at once.
+  Both `gone()`s now delegate to `MowzieKit.removed` with suppliers read at each poll (each
+  object's own `isRemoved()`, with MZB-664's re-queue of a dropped unload). The callers keep the
+  objects: the Umvuthi as made (`() -> u[0]`), the hunt test's prey and ineligible animals as made
+  (`preyMade`, `noMade`) and, for the second unload, the ineligible animals resolved with
+  `getEntity` before the release (`noLoaded`, checked not null). Both chief tests check after the
+  reload that the Umvuthi is a new object, as MZB-662's robbed Frostmaw does. MowzieGameTests and
+  MowzieKit have no M9 wait of either kind. In a separate commit; compiled, not run.
+  Trap, added to MZB-662's: `List.of` with a null element throws at the sequence's build, so a
+  holder read there fails the test before it starts; `toList()` and varargs let the null through
+  and the wait passes. Either way the wait never waited.
 - **MZB-672** (M7's resident size pin over M9's faction row): tests/rail.rs
   `a_world_with_no_rail_keeps_base_layout_but_for_pointers` pins `FactionRow` at 200 + 8 (f6321fa5's
   row and M7's one rail pointer, MZB-313, MZB-314). M9's `Faction.hunts` (MZB-449), an empty Vec

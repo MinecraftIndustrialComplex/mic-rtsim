@@ -49,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
@@ -107,12 +108,13 @@ public final class UmvuthiGameTests {
         };
     }
 
-    /** Inside {@code thenWaitUntil}: the entity is out of the level (its chunk is unloaded). */
-    private static Runnable gone(ServerLevel level, UUID... ids) {
-        return io(() -> {
-            for (UUID id : ids)
-                check("entity " + id + " is unloaded", level.getEntity(id) == null);
-        });
+    /**
+     * Inside {@code thenWaitUntil}: each entity object is saved and unloaded with its chunk, read at each poll
+     * ({@link MowzieKit#removed}: under C2ME a null {@code getEntity} is not a save, MZB-662).
+     */
+    @SafeVarargs
+    private static Runnable gone(ServerLevel level, Supplier<? extends Entity>... objects) {
+        return MowzieKit.removed(level, objects);
     }
 
     private static boolean unanswered(long faction, long op) {
@@ -808,7 +810,7 @@ public final class UmvuthiGameTests {
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", !ConflictKit.campOuts(g.faction).isEmpty()))
-                .thenWaitUntil(gone(level, id[0]))
+                .thenWaitUntil(gone(level, () -> u[0]))
                 .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[1], 2))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the held lines", ConflictKit.outcomes(g.faction, op[1]), STALE);
@@ -825,6 +827,7 @@ public final class UmvuthiGameTests {
                     check("a new epoch (" + epoch[0] + " then " + MowzieKit.epoch(MowzieKit.census(g.faction, 2)) + ")",
                             MowzieKit.epoch(MowzieKit.census(g.faction, 2)) != epoch[0]);
                     check("no body was taken or removed", level.getEntity(id[0]).isAlive());
+                    check("a new object: the old one was saved and unloaded, not tracked again (MZB-662)", level.getEntity(id[0]) != u[0]);
                     record(test, "epoch", "a held TAKE and a held chief SPAWN answered STALE at CAMP_OUT; the Umvuthi reloaded tagged");
                 })
                 .thenSucceed();
