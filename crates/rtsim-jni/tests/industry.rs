@@ -2979,18 +2979,18 @@ mod ack_never_resends {
         to_the_end(r, x, 2, |_| false);
     }
 
-    /// RP-285 with a chunk's carried answer (`Industry.carryAppliedInChunk`, RP-206). A test's
-    /// order writes a package P into a postbox's offline buffer; the pages stop with P queued;
-    /// the world saves in the step that writes P (after a long run of records the engine
-    /// ignores), before Java applies it. Java applies P and answers it live (S1), then the postbox
-    /// takes its buffer back and its chunk carries P's APPLIED again, journaled with no command
-    /// sequence (S2, as `resultInChunk` writes it). The engine crashes before any page save
-    /// covers either, the chunk having reached disk (J3 for the chunk: the journal lost both).
-    /// The restart, industry off, has P queued in its pages; the chunk loads and Java journals its
-    /// carried record again (REASSERT of S2 under the first session's generation): a first
-    /// answer for P, heard while off, which takes P out of the queue. Java reads an ack past it
-    /// (its chunk then drops the carry, so nothing refuses P any more), and once on the engine
-    /// never sends P. Before RP-285 the copy was ignored and P went out at the switch.
+    /// RP-285 with a chunk's carried answer (`Industry.commandResultInChunk`, the chunk's
+    /// `mic_rtsim:pending` record). A test's order writes a package P into a postbox's offline
+    /// buffer; the pages stop with P queued; the world saves in the step that writes P (after a
+    /// long run of records the engine ignores), before Java applies it. Java applies P into the
+    /// block entity and answers it (S1), and its chunk carries S1 until the engine acknowledges
+    /// it. The engine crashes before any page save covers S1, the chunk having reached disk (J3
+    /// for the chunk: the journal lost S1). The restart, industry off, has P queued in its pages;
+    /// the chunk loads and Java journals its carried record again (`RtsimSession.reassert`: a
+    /// REASSERT of S1 under the first session's generation): a first answer for P, heard while
+    /// off, which takes P out of the queue. Java reads an ack past it (its chunk then drops the
+    /// carry and the journal's op index forgets P, so nothing refuses P any more), and once on
+    /// the engine never sends P. Before RP-285 the copy was ignored and P went out at the switch.
     #[test]
     fn a_carried_answer_heard_with_industry_off_takes_its_queued_command() {
         use rtsim_industry::cmd::{IndustryOps, WritePackage};
@@ -3048,25 +3048,16 @@ mod ack_never_resends {
                     if let Some(a) = answers.iter().find(|a| a.0 == pk) {
                         assert_eq!(a.2, APPLIED);
                         s1 = Some(a.1);
-                        let s2 = j.journal(
-                            obs::COMMAND_RESULT,
-                            obs::command_result::SIZE,
-                            APPLIED,
-                            |rec| {
-                                wire::put_u64(rec, obs::command_result::CMD_SEQ, 0);
-                                wire::put_u64(rec, obs::command_result::OP_ID, pk);
-                            },
-                        );
-                        carried = Some((s2, j.journaled(s2).expect("journaled")));
+                        // Main's `commandResultInChunk` carries the live answer itself.
+                        carried = Some((a.1, j.journaled(a.1).expect("journaled")));
                     }
                 },
             );
             r.after_tick();
             assert!(Instant::now() < deadline);
         }
-        let (s2, bytes) = carried.unwrap();
+        let (_, bytes) = carried.unwrap();
         let s1 = s1.unwrap();
-        r.c.answered(pk, s2, APPLIED);
         r.run("the pages", day(4.0), |r| {
             r.j.e.durable_obs_seq() >= through
         });
@@ -3098,8 +3089,8 @@ mod ack_never_resends {
         r.autosave();
         r.until_read(s);
         eprintln!(
-            "carried: P {pk:#x} live S1 {s1}, carried S2 {s2}, lost with the journal; REASSERT at \
-             {s}, heard while off and acknowledged"
+            "carried: P {pk:#x} live S1 {s1}, carried in its chunk, lost with the journal; \
+             REASSERT at {s}, heard while off and acknowledged"
         );
         on_again_to_the_end(r, pk, 1, |_| false);
     }
