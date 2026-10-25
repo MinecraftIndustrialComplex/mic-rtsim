@@ -4,8 +4,22 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 0a5a4c2
-//!   (Mowzie M3 merged with main 89fb716 and CL-D61: the phase 1 world's catalogue has 10 goods,
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 37a34e40
+//!   (the Mowzie's Mobs camp reconciler, M4 and M5, merged with main 428a331, SEC-1's slice S4c1;
+//!   the conflict's pages are RTC6 with meta version 5, each faction row carrying its cap, its
+//!   members away and its camp ledger, and the wheel's events may be a camp refill, MOWZIE.md
+//!   section 4.9; S4c1's formats: the package stores' pages IST3,
+//!   each store's frontier epoch, the packages it holds toward each frogport with their keys, and
+//!   the held counters, choice SC137; before that, 02d7ea4, S4c1 merged with main f361a6f, and
+//!   edbb390, SEC-1's slice S4p merged with main
+//!   a95bd2a; S4p's formats: the engine's meta page RTJM
+//!   version 2, with the journal's newest acknowledged generation, and its closed generations as
+//!   pages of table 2, docs/boundary.md §3.2, and the journal's `pinnedGen`, SC130; before that,
+//!   5d648ce, SEC-1's slice S4 merged with main 5489045; S4's formats: `IndustryData` format 3, the
+//!   package stores' pages IST2 in table 0x4906, and RG14's `rtsim/bridge-life.txt`, the engine
+//!   life; before that, 21e57d2, SEC-1's slice S3 on main 3391a5d; the formats of 0a5a4c2, Mowzie
+//!   M3 merged with
+//!   main 89fb716 and CL-D61, but for the glass page: the phase 1 world's catalogue has 10 goods,
 //!   `gold_nugget` last; the booked train legs are pages of their own, table 0x4904, ILEG, and the
 //!   industry globals page starts with IGB1 (docs/stress-worlds-results.md 10.10); the conflict's
 //!   pages are RTC5 with meta version 4, each party's recalled stacks kept per epoch, each feud's
@@ -17,17 +31,23 @@
 //!   stats and ledger; the dragons' pages are RTD7 and RTN7, each lair's pressure, wait and fed
 //!   share, and the nest table; the herds' pages are VERSION 4, each herd row its range's K,
 //!   range, home and vacancy; an industry district's glass state is a page of table 0x4903
-//!   starting with IGL1, and the industry globals end with the glass counters and records
-//!   received; an industry district page starts with IDS4, the stations' ports and five threat
-//!   classes). Villages, roads, news, herds,
-//!   a district and its glass page; no caravan is on the road when the server stops (the harness
-//!   world draws caravans). A herd's route draws only when a herd is on the move at the save,
-//!   which depends on when the server stops: 6638edc's save had one, while both runs of 98d6d34
+//!   (IGL1 before S2), and the industry globals end with the glass counters and records
+//!   received; since S3 the glass page starts with IGL5, its sections, the judging units' windows,
+//!   the station joins, the station discards' count and each unit window's base at its counted
+//!   stores (SECTIONS.md §4.2, §5); an industry district page starts with IDS4, the stations'
+//!   ports and five threat classes). Villages, roads, news, herds, a district and its glass page;
+//!   no caravan is on the road when the server stops (the harness world draws caravans). A herd's
+//!   route draws only when a herd is on the move at the save, which depends on when the server
+//!   stops: 6638edc's save had one, while both runs of 98d6d34
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
-//!   0a5a4c2 (the same formats; delete `run-gametest/world` before a create run that follows a
-//!   stress-generator run, whose clock is ahead of the game). Every module's pages, mostly empty:
+//! - `tests/data/create`: neoforge/create's GameTest world, run from 37a34e40 (the core save's
+//!   formats; before that, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm
+//!   funnel-point fix) as part of the plain `./gametest.sh core create mowziesmobs` round, with
+//!   its `run-gametest/world` deleted first (earlier saves of this folder were run with the
+//!   section fixtures, `-Psec1fx`; delete `run-gametest/world` before a create run that follows a
+//!   stress-generator run, whose clock is ahead of the game).
+//!   Every module's pages, mostly empty:
 //!   herds, districts with their glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,

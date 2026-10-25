@@ -28,8 +28,15 @@ import java.util.function.Consumer;
  * <p>The reach is the current at full speed ({@code AirCurrent.getMaxDistance} at {@code fanRotationArgmax}
  * or faster, the longer of the push and pull distances) cut by the blocks ({@code AirCurrent.getFlowLimit}),
  * not the current at the fan's speed now: speed is state, and membership must not follow a clutch (G2-74).
- * A vertical current stays in its fan's chunk column and links nothing. Never loads a chunk; the core
- * drops targets in the source's own chunk and targets that are not industrial.
+ * A vertical current stays in its fan's chunk column and links nothing. The core drops targets in the
+ * source's own chunk and targets that are not industrial.
+ *
+ * <p><b>Never loads a chunk, nor waits for one</b> (R2-11): every read goes through {@link Loaded}, and the
+ * current stops at the first chunk that is not FULL, as Create's own {@code getFlowLimit} stops at an unloaded
+ * one. {@code Level.isLoaded} is not enough: it asks only the chunk's ticket level, so a chunk that is due but
+ * still loading passes it, and the read that follows waits for it, running every other chunk load due on the
+ * server thread meanwhile (the first detection after a start spent up to 2.2 s in one tick that way, in a
+ * host's look). Such a chunk is linked once it loads: its load marks it for the next detection.
  */
 final class FanLinks {
     private FanLinks() {}
@@ -40,9 +47,19 @@ final class FanLinks {
         return Math.max(3, Math.max(k.fanPushDistance.get(), k.fanPullDistance.get()));
     }
 
-    /** The blocks the current of the fan at {@code fan} covers at full speed, counted as the compile's {@code fanZones} counts them. */
+    /**
+     * The blocks the current of the fan at {@code fan} covers at full speed, counted as the compile's {@code fanZones}
+     * counts them, cut short of the first chunk that is not loaded ({@code getFlowLimit} reads every block up to the
+     * reach, and asks only {@code Level.isLoaded}).
+     */
     static int limit(Level level, BlockPos fan, Direction facing) {
-        float flow = AirCurrent.getFlowLimit(level, fan, maxReach(), facing);
+        float max = maxReach();
+        for (int d = 1; d <= (int) Math.ceil(max); d++)
+            if (!Loaded.at(level, fan.relative(facing, d))) {
+                max = Math.min(max, d - 1);
+                break;
+            }
+        float flow = AirCurrent.getFlowLimit(level, fan, max, facing);
         return (float) (int) flow == flow ? (int) flow : (int) flow + 1;
     }
 
@@ -70,11 +87,12 @@ final class FanLinks {
             BlockPos p = start.relative(facing, d);
             if (p.getX() >> 4 == cx && p.getZ() >> 4 == cz)
                 continue;
-            if (!level.isLoaded(p))
+            if (!Loaded.at(level, p))
                 return;
             for (int off = 0; off <= 1; off++) {
                 BlockPos q = p.below(off);
-                if (BlockEntityBehaviour.get(level, q, TransportedItemStackHandlerBehaviour.TYPE) != null)
+                BlockEntity be = Loaded.blockEntity(level, q);
+                if (be != null && host(be))
                     out.accept(q);
             }
         }
@@ -91,14 +109,15 @@ final class FanLinks {
         int reach = (int) Math.ceil(maxReach());
         for (int off = 0; off <= 1; off++) {
             BlockPos col = host.above(off);
-            if (!level.isLoaded(col) || stops(level, col, level.getBlockState(col)))
+            BlockState here = level.isOutsideBuildHeight(col) ? null : Loaded.state(level, col);
+            if (here == null || stops(level, col, here))
                 continue;
             for (Direction dir : Direction.Plane.HORIZONTAL)
                 for (int k = 1; k <= reach; k++) {
                     BlockPos q = col.relative(dir, k);
-                    if (!level.isLoaded(q))
+                    BlockState s = Loaded.state(level, q);
+                    if (s == null)
                         break;
-                    BlockState s = level.getBlockState(q);
                     if (s.getBlock() instanceof EncasedFanBlock) {
                         Direction facing = dir.getOpposite();
                         if (s.getValue(EncasedFanBlock.FACING) == facing && (q.getX() >> 4 != cx || q.getZ() >> 4 != cz)

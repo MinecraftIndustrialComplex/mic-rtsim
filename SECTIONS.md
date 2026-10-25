@@ -1,7 +1,8 @@
 # Sections: factories cut at links and stores
 
 **Status:** design approved by Ben on 2026-10-22 (all six questions in §12 answered, each the
-recommended option); not built. Every other choice is listed in §13 and can be undone.
+recommended option). Built: S1 and S2a to S2c (§10.1); S2d onward to come. Every other choice is
+listed in §13 and can be undone.
 
 **Decided, and binding here:**
 - **SEC-1** (Ben, 2026-10-21, "Cut at links and stores"): districts stop merging across chain conveyors
@@ -53,7 +54,7 @@ scripts that made them.
 | A replay that cannot go on | the district goes to the black box (`glass_mode`, `engine.rs:1597`, `dg.fallback.is_some()`) | the sections the failure names freeze, and the replay goes on over the rest from the tick of the failure; the black box takes the district only when no section replays (§3.5) |
 | Measurement | one window per district per good | one window per section per good, plus the district's own window as the checksum; flows into stores shared by sections are counted at Create's movers (§4) |
 | Chunk loading | the compile, Create's chain conveyors and Create's network recount read through `Level.getBlockEntity`, which loads chunks and pulls an away district into a partial load | the compile reads through `getChunkNow`, and mixins keep Create's chain and network lookups from loading a chunk (§2.8, slice S1) |
-| Saved state | `IndustryData` format 2; glass page `IGL1` | `IndustryData` format 3 (package stores) then 4 (join pairs); glass page `IGL2` (sections inside the district's page); package store pages; a loud reset on load (§5, §6) |
+| Saved state | `IndustryData` format 2; glass page `IGL1` | `IndustryData` format 3 (package stores) then 4 (join pairs); glass page `IGL2`, `IGL3`, `IGL4` then `IGL5` (sections, the judging units' windows, the station joins, then the counted stores' bases, inside the district's page); package store pages; a loud reset on load (§5, §6) |
 
 ---
 
@@ -190,10 +191,17 @@ here first.
 
 **The package store.**
 
-- **Identity.** Java keeps each package store in `IndustryData` (format 3, slice S4): a persisted id
-  given at first sight, its frogports (district, inventory, address filter, the position of the conveyor
-  it serves), the hop counts between those conveyors along the walk, and the chunks of no district the
-  chain passes through (§3.6). It is sent to Rust as a new `IND_PACKAGE_STORE` record when it changes. A
+- **Identity.** Java keeps each package store in `IndustryData` (format 3, slice S4a; `PackageStores`): a
+  persisted id given at first sight, its frogports (district, inventory, address filter, the position of
+  the conveyor it serves) and the hop counts between those conveyors along the walk. The chunks of no
+  district the chain passes through (§3.6) wait for a later slice; S4a keeps none. It is sent to Rust as
+  a new `IND_PACKAGE_STORE` record when it changes, at its first walk after a restart, and all at once
+  when the engine forgot what it was told (the plugin's `announce`, as for districts). A store is found
+  where its frogports are: a district's compile walks each chain network its frogports serve, once per
+  compile, and a package at a frogport on no known store walks its chain, at most once in 1200 ticks per
+  frogport. A frogport in a chunk of no district counts as an owner of its own, so a chain from a
+  district to it is a store. A network of more than 200 frogports stays edges, so its record stays under
+  64 KiB. A
   re-walk that finds the same frogports keeps the id. When a network splits, the piece holding the
   lowest frogport position keeps the id, the rest get new ids, and what the store owes each frogport
   goes with that frogport; when networks merge, the lowest id stays and the contents add. A walk that
@@ -201,19 +209,27 @@ here first.
 - **The compile.** On a package store's network, the compile makes no `CHAIN` edges; each frogport's
   chain side is a port.
 - **Records.** Every package that leaves a frogport of a package store onto the chain, and every one
-  that lands in one, is an `IND_PACKAGE` (the layout of `IndRecords.Package` :353: district, inventory,
-  direction, address, packages, op id, contents) with the new direction `CHAIN_OUT` (3) or `CHAIN_IN`
-  (4), from two mixins at the count points of §2.2. The engine books it into the store and as a port of
-  the district's window. It never books it into `dist.links`: today's IN and OUT path for postbox mail
-  adds a `LinkKey::Mail` that is never cleared (`engine.rs:2967` to `:2986`, `district.rs:300`), and
-  `glass_mode` sends any district with links to the black box (`engine.rs:1591` to `:1599`). A
+  that lands in one, is an `IND_CHAIN_PACKAGE` (journaled, `IndRecords.ChainPackage`: store, district,
+  inventory, direction `CHAIN_OUT` (3) or `CHAIN_IN` (4), the frogport's index in the store, the
+  destination, packages, address, op id, contents; choice SC97). One mixin on `FrogportBlockEntity.tick`
+  wraps the two calls that move a package between a frogport and its chain (PATCHES.md row 78): the
+  export onto the chain, counted when it answers true, and the insert into the frogport's inventory,
+  counted when nothing is left over. The engine books it into the store and as a port of the district's
+  window. While the district is loaded and not replaying, it also learns a link,
+  `LinkKey::Chain` (the inventory, the destination frogport's position, the good): a `CHAIN_OUT`
+  toward a frogport that is in a district books it negative, a `CHAIN_IN` that Create moved books it
+  positive (choice SC108). A district with chain links runs the black box, as one with mail links
+  does (SC107; replaying a chain port in the glass box is a follow-up). A `CHAIN_IN` that an
+  IND_WRITE_CHAIN wrote carries the engine's op id and is no link: the replay already drew it (SC113). A
   package between two frogports of one district on a package store's network is that district's
   `CHAIN_OUT` and `CHAIN_IN`, counted once each way, because the compile has no `CHAIN` edge there.
-- **Routing.** Rust resolves each (exporter frogport, address) to the frogport Create would deliver to:
-  a walk by hops from the exporter's conveyor over the store's last walk, taking the first matching
-  frogport on the least-distance path (so a frogport on the way takes it), `*` filters last, matching
-  as `matchAddress` does. Create breaks ties by advert timing, which Rust cannot know; Rust takes the
-  lowest frogport position. The store keeps one pool per destination frogport and one for packages
+- **Routing.** Java resolves each (exporter frogport, address) to the frogport Create would deliver to
+  and sends it as the record's destination (choice SC100: Java has the walk and Create's own
+  `matchAddress`): the matching frogport of the least distance, hops along the chain from the
+  exporter's conveyor plus 1000 for a `*` filter, as Create's tables count; then the first matching
+  frogport on a least-hop way there, which takes it on the way. Create breaks ties by advert timing,
+  which neither side can know; Java takes the lowest frogport position. A package no frogport matches has
+  no destination (it circles). A `CHAIN_IN`'s destination is the frogport itself. The store keeps one pool per destination frogport and one for packages
   with no route, in goods and in packages, and a `CHAIN_OUT` books into the pool its (exporter,
   address) resolves to. The no-route pool is drawn by no one; at the exporter's reconcile its packages
   are written back into the exporter's inventory, room permitting (Create would have them circling).
@@ -222,25 +238,70 @@ here first.
   So the store's room toward one destination from one exporter is 20 times the conveyors on the route
   (an ESTIMATE of where Create stops the exporter: arrivals overshoot a gate by a few, and routes that
   share conveyors share their room). An exporter's replay books an export only while its destination's
-  pool holds less than that room.
+  pool holds less than that room, less the real packages the last census counted toward that
+  destination, in whole batches: the batch is the frogport's last `CHAIN_OUT`, else the good's stack
+  (choice SC110).
 - **The census.** A player can hang packages on a chain or take them off, and none of that is counted.
   While every chunk of a store ticks, Java counts the packages on its conveyors (looping and travelling,
-  by the destination their address resolves to) once per sweep and sends the count with the sweep;
-  Rust sets the pools to it, and the difference is the store's residue, shown by `/rtsim district
-  sections`. A `CHAIN_IN` beyond its pool takes the pool to zero, never below.
-- **An end that does not replay.** A district on the store that runs the black box or is frozen neither
-  books into the store nor draws from it while away; the store keeps what it holds, and the other ends
-  see it as it is.
+  by the destination their address resolves to from the conveyor they are on) and in its frogports'
+  arrival animations, every 200 ticks (choice SC99), and sends the count as a latest-wins
+  `IND_STORE_CENSUS`; Rust sets the pools to it, and the difference is the store's residue, shown by `/rtsim district
+  sections`. The census runs after its tick's block entities, so it already counts that tick's crossings,
+  whose journaled records reach the engine after it: Rust orders them by the records' own game times and
+  books into the pools only the crossings of later ticks. A `CHAIN_IN` beyond its pool takes the pool to
+  zero, never below.
+- **An end that does not replay.** A district on the store that is frozen, or whose replay cluster
+  would pass `cluster_districts_max` (its chain links are dropped, `chain_links_dropped`, logged once
+  for each store; choice SC112), neither books into the store nor draws from it while away; the store
+  keeps what it holds, and the other ends see it as it is. A destination frogport in no district is
+  no route: its exporter's `CHAIN_OUT` learns no link.
 
-**Both ends away.** The exporter's replay books its exports into the pool while the room allows; the
-importer's replay draws from its pool no earlier than the route's travel time (`RPM / 360` blocks per
-tick along the chain, GLASSBOX.md §1). The store is a pool shared by the districts of one replay
-cluster; today every pool belongs to one district (`cluster.rs`, the module comment), so this is new
-(§10.3), and slice S4 builds it first. When an importer loads, the packages its pool holds are written
-into its frogport as real packages, room permitting and the rest as room appears, as mail is written
-into postboxes (INDUSTRY.md §8.2); Java journals one `CHAIN_IN` for each as it writes it. What the
-pool holds for an importer that is still away is production owed to an unloaded chunk, which UR-1
-lets a reset lose.
+**Both ends away** (slice S4b). A replay that starts joins the clusters that hold its district's chain
+pools, so the exporter and the importer of one store replay as one cluster, up to
+`cluster_districts_max` districts (choice SC112). Each (store, destination frogport, good) is one
+cluster pool, `PoolKey::Chain`, which starts from what the store owes that frogport (choice SC109). The
+exporter's link books its exports into the pool toward the room as its target, and stops there; it
+starts again one batch below (SC110). The importer's link draws from the pool into the district's stock;
+once it stops on an empty pool, it starts again no earlier than the route's travel time, the hops
+to the farthest frogport of the store times `chain_ticks_per_hop` (60; choice SC111, an ESTIMATE for
+a chain at 64 RPM, where GLASSBOX.md §1 gives `RPM / 360` blocks per tick). A replay covers only
+the district's unloaded inventories, so a district replayed in part whose frogport's chunk is loaded
+has no chain link there: packages Create moves at that frogport are an ordinary port, never the
+replay's stock, and the engine writes to it as to any loaded frogport. When the cluster stops, each
+pool goes back to what the store that lists the frogport now owes it (a split may have moved it);
+with none, to its own store, which keeps it for a frogport that comes back; with that store gone
+too, it is lost (`chain_pools_lost`).
+
+**Writes** (choice SC113). While a frogport is loaded and its store owes it packages, or a cluster
+holds a pool toward it, the engine sends one IND_WRITE_CHAIN for each good, every
+`chain_write_ticks` (200) at most, and none while an earlier write there is unanswered: one still
+in the engine's outbox always holds the next, and an answer missing ten periods after the engine
+handed the write on no longer does (a crash between the command and its result). Whole batches, at most 18 packages (a frogport's slots),
+or one part package when no cluster draws on it. Java writes what fits into the frogport's inventory
+as real packages addressed to its own filter, keeping one slot free for a package Create is
+catching (one that lands in a full frogport drops into the world), where Create moves them on as
+packages that came off the chain, and journals one `CHAIN_IN` with the command's op id; the engine
+takes it from the cluster's pool first, then from what the store owes (never below zero). Nothing
+written is FAILED, which answers the write, and the engine writes again later. A frogport is saved
+with its chunk, so the chunk carries the `CHAIN_IN` and the COMMAND_RESULT until the engine
+acknowledges them. The engine's Replay takes each op once while it remembers the op; a chunk that
+unloaded before the acknowledgement journals them again at its next load, after a world save let
+Replay forget it, so the store also marks each frogport's last written record (its game time and
+op): a written record no later than the mark is dropped (`chain_writes_again`). The record names its
+frogport by position as well as by index, since a store declared again may list its frogports in
+another order. A written record of a write the engine still waits for is that write's answer, taken
+at the frogport the write named and never judged by the mark: after a crash the world's clock goes
+back to its last save, and Java's next writes are recorded before a mark that a record from the lost
+stretch set. A write unanswered a hundred periods after it was handed on (into the link's queue,
+not yet Java's hands) is forgotten when the engine next looks to write toward its frogport, which
+it does only while the frogport is loaded and owed or pooled; at most eight are kept toward a
+frogport, so elsewhere up to eight wait uncounted (`chain_writes_unanswered`). A late answer to a
+forgotten one is judged by the mark, which may drop it when a crash moved the clock back meanwhile
+(accepted: it needs a crash and a write left unanswered for a hundred periods). The marks are
+looked up in the record's store and in the store of its dimension that lists the frogport now, so
+a frogport rebuilt into another store still turns its old records away. What the store owes
+a frogport that is still away is production owed to an unloaded chunk, which UR-1 lets a reset lose
+(`chain_owed_lost` counts what a store removed with no heir held).
 
 **One end loaded, the other away** (Q5). Recommended, the G2-11 way:
 
@@ -248,19 +309,28 @@ lets a reset lose.
   a conveyor in a chunk that does not tick is refused at the hand-off as a full one is, and is not
   looked up.
 - **Routes kept.** While a far frogport's chunk does not tick, a mixin keeps its route entry on the
-  boundary conveyor (the last ticking conveyor on the way to it), with its filter and its distance
-  from the store's saved walk, through an accessor for the private `ChainConveyorRoutingTable.insert`
-  and the public `RoutingTableEntry` record. Create's own adverts carry it back along the near side.
-  This also covers a restart, when Create's tables start empty (UNVERIFIED that the tables are not
-  saved; the first GameTest of slice S4 records it).
+  boundary conveyor (the last ticking conveyor on the way to it), with its filter and the distance of
+  Create's own entry as it expired (choice SC135: the store's saved walk has no hops from a boundary
+  conveyor), through an accessor for the private `ChainConveyorRoutingTable.insert` and the public
+  `RoutingTableEntry` record. Create's own adverts carry it back along the near side. When the next
+  conveyor ticks again (the boundary moved out) the kept route moves on along the chain to the new
+  boundary conveyor. The kept routes are saved with the frontier, which covers a restart: Create's
+  tables are not saved (Create 6.0.10's `ChainConveyorRoutingTable` has no write), so they start empty.
 - **The hold.** Packages for the far frogport then travel to the boundary conveyor and circle there,
   refused at its hand-off; behind them the near side backs up through Create's own gates. A held package
   stays in the world. When the frontier first holds a package it writes a key into the package's
-  vanilla `minecraft:custom_data` component (the store's id, the engine's epoch, which every engine
-  reset changes, and a serial) and sends an `IND_PACKAGE` with the new direction `CHAIN_HELD` (5)
-  carrying the key. It is no port: a held package was already its exporter's `CHAIN_OUT`. A
-  component type rtsim registered may not decode once rtsim is removed (UNVERIFIED for 1.21.1), so
-  the vanilla one is used either way.
+  vanilla `minecraft:custom_data` component (the store's id, the frontier's epoch, which every
+  industry announce changes and so every engine reset, and a serial; choice SC136) and sends an
+  `IND_CHAIN_PACKAGE` with the direction `CHAIN_HELD` (5) carrying the key. It is no port: a held
+  package was already its exporter's `CHAIN_OUT`. A held key is followed, never stripped: Java tells
+  it again when it moves to another store or destination, and once in each session. It leaves the
+  hold where a frogport takes the package (its `CHAIN_IN` carries the key), where Create drops it or
+  a player takes it (`CHAIN_RELEASED`, 6), and at a census, which releases every key its walk did not
+  find (choice SC137). Once in each session Java lists the keys it holds (`IND_HELD_LIST`) and the
+  engine strikes any other key of that epoch, and each boundary conveyor's first tick in the session
+  releases the packages Java last held there that it no longer carries (choice SC140: a crash can leave
+  either side holding a key no package has). A component type rtsim registered may not decode once rtsim is removed
+  (UNVERIFIED for 1.21.1), so the vanilla one is used either way.
 - **The draw.** The far district's replay draws held packages as G2-11's simulated side draws a live
   store's stock and owes the change. Each draw goes to Java at once (a command, `IND_PACKAGE_DRAWN`:
   store id and key), and Java keeps the drawn keys with the store.
@@ -429,15 +499,16 @@ folded so each section is a working line:
    group that touches a store (an unknown machine between stores, kept apart so that its window fails
    alone).
 2. A **transfer** section (movers, junctions, buffers only) folds into the nearest working section it
-   reaches through one store, downstream first, then upstream; ties go to the section holding the lowest
-   node position (never Java's node order).
+   reaches through one store, downstream first, then upstream; ties go to the working piece (the
+   section's seed, not what has folded into it) with the lowest node position, then to the one whose
+   nodes' records hash lowest (never Java's node order).
 3. Transfer sections that reach no working section merge with each other across the stores they share:
    a storage system (vaults, funnels and belts sorting goods between them) is one section.
 4. An **idle** piece (no machine and no store, or a residual group that touches nothing) keeps no state;
    its nodes belong to no section and carry no flow in the solve.
 5. If more than `glass.sectionsMax` (TUNABLE, 64) sections remain, the two smallest sections (by
    nodes) that share a store merge, else the two smallest that share a domain, else the two smallest
-   in the district, ties by the lowest node position, until it holds. The same merge serves the row
+   in the district, ties by the lowest node position, then by the nodes' records, until it holds. The same merge serves the row
    caps of §7.2. A merged section starts learning; its parts' windows are dropped.
 
 This leaves sections the size of working lines and storage systems, and few shared stores, measured on
@@ -467,8 +538,11 @@ computes the same hash inline at `solve.rs:106`) over a canonical encoding sorte
 - for each domain it touches, its **own** nodes' ratio times the level speed, not the whole network's
   members, so a machine added elsewhere on the network leaves it alone.
 
-State slots (a heater's burn left, a controller's output, a domain's live level, stress and capacity)
-are not part of it. A network's load on the section is §3.6's domain check, not the fingerprint.
+A level is the node's own speed there (its ratio times the level's speed): which member Create takes as
+the network's root depends on the chunks loaded, and a new root scales every ratio and every level's
+speed but not their products. State slots (a heater's burn left and heat level, a boiler's active heat
+and water supply, a controller's output and level, a domain's live level, stress and capacity) are not
+part of it. A network's load on the section is §3.6's domain check, not the fingerprint.
 
 ### 3.4 Learning and verdicts
 
@@ -540,13 +614,17 @@ are not part of it. A network's load on the section is §3.6's domain check, not
   network (from the walk and the compiles), and an edit to a chain conveyor or a kinetic block in one
   is sent as an `IND_EDIT` to every district on that object: it lies in no node box, so it stales no
   section, and it asks those districts to recompile, which updates the store or the network's part.
+  S2d sends it for the kinetic networks, at any kinetic block entity a player places or breaks in such a
+  chunk (a plugin's network part; a chest or a sign there edits nothing) (SC77); package stores follow in
+  S4.
 - Stale sections stop replaying at once (I5, I7). The others keep their windows and their replay.
 - **Other discards** (`report.rs`, the `discard` reasons). `REVISION` and `SESSION` discard every
   section's open window and the district's: the inventory indices, or the session the window counts
   in, are gone. `RECOMPILE` discards only the sections the recompile changed (below). `NOT_LIVE` is
-  per section (§3.4). A station's `Discard.OTHER` (`TrainWatch.java:306`, `:314`: a cargo change no one
-  measured) discards the sections the station's last `IND_STATION_PORTS` named, every section when it
-  named none, and the district window.
+  per section (§3.4). A station's `Discard.OTHER` (`TrainWatch.java`: a cargo change no one measured)
+  carries the station (`IND_DISCARD` offset 32, SC76) and discards the units holding the inventories the
+  station's last `IND_STATION_PORTS` named, every unit when it named none, and the district window; it
+  counts as `STATION`. The other `IND_DISCARD` reasons stay the learner's.
 - **The recompile** (G-B3). The new compile's sections are matched to the held ones by fingerprint. A
   section whose fingerprint is unchanged keeps its passed window, strikes, replay standing and open
   window rows (remapped to the new node indices and store positions). A changed or new section starts
@@ -598,32 +676,66 @@ belong to `s`.
 
 Recommended: **count at the movers**.
 
-- Rust tells Java which movers to count at which stores, per compile (`IND_COUNT_SET`, a command
-  without an op id, as `IND_PROBE_SET` 0x8406 is, choice GB5). Java answers in the sweep with
-  cumulative amounts per (mover, store, good, direction) (`IND_COUNT_SAMPLE`, not counted in the
-  sweep's records, as `IND_PROBE_SAMPLE` 0x004D is, choice GB3). The mover's position names its node,
-  so the section is known with no face mapping.
-- The count points are Create's own movers, where they move real goods:
-  - `InvManipulationBehaviour.insert` and `extract` (funnels and every other user of the behaviour),
-    skipping simulated calls (`CapManipulationBehaviourBase.simulateNext`);
-  - the chute's transfers (`ChuteBlockEntity.handleInput` :346, `handleDownwardOutput` :367,
-    `handleUpwardOutput` :423, through the handler `grabCapability` :503 returns);
-  - the arm's `ArmInteractionPoint.insert` :116 and `extract` :123 and :130, which carry the
-    `ArmBlockEntity`;
-  - the basin's outputs into a neighbouring inventory (`BasinBlockEntity.tryClearingSpoutputOverflow`,
-    lines 416, 426 and 448 to 449; `acceptOutputsInner`, lines 546 to 549, 597 and 606);
-  - the frogport's push into and pull from neighbouring inventories
-    (`FrogportBlockEntity.tryPushingToAdjacentInventories`, lines 262 to 282; the pull, lines 302 to
-    308);
-  - the packager's extraction from its target (`PackagerBlockEntity.attemptToSend`, lines 440 and 455)
-    and its unpacking into it (`DefaultUnpackingHandler.unpack`, lines 41 to 74);
+- Rust tells Java which movers to count at which stores (`IND_COUNT_SET` 0x8408, a command
+  without an op id, as `IND_PROBE_SET` 0x8406 is, choice GB5): the (mover, store) node pairs of a
+  compile, sent when the district's units change and the set differs from the one Java holds (SC89).
+  Java keys each pair's counters by the mover's and the store's positions, so a pair a later set
+  names again keeps them (a compile or a revision change does not clear them), and answers in each
+  sweep, before the sweep's END, with cumulative amounts per (mover, store, good) in and out since the
+  pair's `since` (`IND_COUNT_SAMPLE` 0x004F, not counted in the sweep's records, as `IND_PROBE_SAMPLE`
+  0x004D is, choice GB3), in the numbers of the latest compile whose END it sent (SC90). A pair's counts
+  are taken at the moment the sampler reads the store's inventory in that sweep, so a count and the stock
+  it explains belong to one instant, and a store the sweep did not read sends nothing (SC88). A set is
+  ignored when its compile is not Java's latest complete one (the engine's outbox sends it again,
+  SC89); a district on a moving frame (a Sable contraption) has no counted store, so the engine sends
+  none and its shared stores keep their S2 judging group (SC122); a set that names a pair keeps its counters, one that leaves it out drops
+  them, and an empty set drops the district's. The mover's position names its node, so the unit is
+  known with no face mapping; movers at one block (a packager's two nodes) share its counts, each
+  direction taken once (SC94).
+- The count points are Create's own movers, where they move real goods. Each wraps the one call that
+  touches the inventory (MixinExtras `@WrapOperation`, PATCHES.md rows 64 to 76), counts only a real
+  call (not `simulate`, a server level) and only when the mover's block has a counted pair, so a move
+  is counted once; the inventory is the target's canonical inventory (`Districts.canonicalInventory`):
+  - `InvManipulationBehaviour.extract` and `insert` (rows 64, 65): the andesite and brass funnels, the
+    funnel under a belt, the mechanical crafter's output and the smart observer's extraction; the
+    mover is the behaviour's block entity. An arm's insert at a funnel point goes through the funnel's
+    behaviour, and is counted once there under the arm (row 81, SC125): the compile's edge is the arm's;
+  - the chute's and the smart chute's transfers (rows 66 to 68): `handleInput`, the draw from the
+    inventory above (`startLocation` 1) or below (0), `handleDownwardOutput` and `handleUpwardOutput`;
+  - the arm's `ArmInteractionPoint.insert` and `extract` (rows 69, 70), the base class's calls: the
+    special points (funnel, belt, depot, composter) override them and do not reach an inventory
+    through them;
+  - the basin's spout push, the real insert in `BasinBlockEntity.tryClearingSpoutputOverflow` (row 71);
+    `acceptOutputsInner` only fills the spout buffer and moves nothing. A basin's spout turns sideways
+    only for a belt, a funnel or a block with a `DirectBeltInputBehaviour` (`BasinBlock.canOutputTo`),
+    and none of those is a store, but a funnel on a vault takes the pour into the vault behind it: the
+    funnel offers no item handler, so the basin inserts into the funnel's own `InvManipulationBehaviour`
+    inventory and skips the behaviour's count point; the hook counts that under the funnel's position and
+    the store behind it, the pair the engine names from the funnel's adjacency edge (SC82, SC120);
+  - the frogport's push into and pull from the inventory below it (rows 72, 73), a package counting as
+    its contents;
+  - the packager's extraction from its target (`PackagerBlockEntity.attemptToSend`, row 74) and its
+    unpacking into it (`DefaultUnpackingHandler.unpack`, row 75); the special unpacking handlers
+    (basin, crafter, a block that voids) and a mod's own are not counted;
+  - a repackager's draws out of its target (`RepackagerBlockEntity.attemptToRepackage`) and its unwrapped
+    box into it (`unwrapBox`), which override the packager's two calls without `super` (row 76, SC121);
   - fluids at `FluidNetwork.tick` :66, where a pipe network fills and drains its endpoints
-    (UNVERIFIED: which position names the mover, the pump or the pipe end at the store).
+    (UNVERIFIED: which position names the mover, the pump or the pipe end at the store). Not in S3:
+    a fluid store is never counted, so it makes a judging group (SC79).
 - Not counted in these slices: vanilla hoppers and droppers (they use the `Container` directly), the
   drill's cobblestone shortcut into a hopper below (`DrillBlockEntity`, lines 76 to 79), and other mods'
   movers. A shared store that one of them reaches makes a judging group (§4.3).
-- A section's window at a counted store starts at the first sweep that carries `IND_COUNT_SAMPLE` for
-  it after the count set changed.
+- **A unit's row at a counted store.** A unit's measured series is its interior stock, less the
+  ports at its inventories, plus what its own movers put into and took from the counted stores
+  between units, plus each such store's residue since the window opened: the store's stock less
+  its ports and every pair's counted moves there (SC88). A residue is another mod's mover, a
+  player's hand or a count missed, and it fails every unit at the store on that good, so the
+  district learns as a judging group would.
+- A unit's window opens only at a sweep whose sample holds every pair at its counted stores. A
+  sweep missing one discards the unit's window, with warm-up; a pair whose `since` changed (Java
+  forgot it: a restart, a set without it) starts the window again from that sweep, with no
+  warm-up (SC91). A counted store a unit's takers run dry is short in their units, split by flow
+  share, as a shortfall at an interior store is (SC88).
 - **Why not at the store.** A counting wrapper around the store's handler, put in place at NeoForge's
   `BlockCapability.getCapability` (:200), changes Create's behaviour:
   - an item vault's handler is a `VersionedInventoryWrapper`, and `VersionedInventoryTrackerBehaviour`
@@ -651,8 +763,10 @@ model is right. A group forms:
   the drill's shortcut, or any store past `glass.countedStoresMax` (§7.3);
 - **for one window**, at a counted store whose residue over the window is not zero: the model lacks that
   move, so the group's row fails on those goods as the district window does, and the district's other
-  sections are judged apart;
-- **for train cargo** that maps to several sections or to a shared store (§4.4).
+  sections are judged apart. As built (S3, SC88) no group is formed: the residue is added to the row
+  of every unit at the store, which fails each of them on those goods, as the group's row would;
+- **for a station's ports**: the units holding the inventories one station's interfaces reach are
+  judged as one, since its cargo cannot be split between them (§4.4, SC75).
 
 A player's session at a shared store is a port into it (`obs.rs:150`), not a residue. A group is
 smaller than the district. Shared stores after the fold are few, measured on the reference base, see
@@ -668,12 +782,15 @@ whole (§3.6).
   the store is interior.
 - **Train cargo** is the whole train's change at departure, with no inventory (`TrainWatch.java:316` to
   `:328`). Portable storage interfaces look up no neighbour: they expose the train's storage, and the
-  movers beside them pull and push. `IND_STATION_PORTS` (`TrainWatch.java:394`) names the district
-  inventories the docked interfaces reach through conveyance. The cargo goes to the sections of those
-  inventories: to one section as its port; to several sections, or to a shared store, as a judging
-  group for the cargo's goods with that store interior. Cargo that names no inventory stays in
-  `ports_d`. Java journals `TRAIN_CARGO` before the same departure's `IND_STATION_PORTS`
-  (`TrainWatch.java:327`, `:331`), so the engine maps a cargo port after it has read the whole step.
+  movers beside them pull and push. The compile claims each interface that reaches a district inventory with no node (SC95), so a mover
+  beside one has no supply in the graph: what it moves is the cargo, booked as the port. `IND_STATION_PORTS` (`TrainWatch.java:394`) names the district
+  inventories the docked interfaces reach through conveyance. The units holding one station's ports are joined
+  into one (§4.3, SC75), so the cargo is that unit's port, booked once at its first inventory. Cargo
+  naming inventories of several units (before the station's ports joined them) or of a unit and of none
+  costs those units their open windows (`STATION`); cargo naming no inventory, or none a unit holds,
+  stays in `ports_d`. Java journals the departure's `IND_STATION_PORTS` before its `TRAIN_CARGO`
+  (`TrainWatch.java`), and the engine finds the station through the train's arrival, which the
+  departure that follows removes.
   A split per interface would need a mixin on the interface's transfer (§10.3, not in these slices).
 - A player's toss or pickup has no inventory and stays in `ports_d`; a player's session at an inventory
   is a port with that inventory.
@@ -687,11 +804,14 @@ whole (§3.6).
   table of their own: the per-section fields of §3.3, and the open window rows as one sorted array.
   `section_of` is not saved: it is recomputed from the compile's records on restore, as `Graph::build`
   rebuilds the indices.
-- The page magic becomes `IGL2` (`glass/page.rs:32`), in slice S2. A restored page whose stored
-  fingerprints do not match the sections recomputed from its compile (a changed tunable such as
-  `sectionsMax`, or a changed fold), or one with the old magic `IGL1`, drops **that district's** glass
-  state, and the district learns again; the restore logs one line with the number of districts
-  dropped. Only an undecodable page fails the whole restore, as G2-82 says.
+- The page magic becomes `IGL2` (`glass/page.rs:32`) in slice S2a, with the sections, `IGL3` in
+  S2b, with the judging units' windows (SC63), `IGL4` in S2d, with the station joins and the
+  `STATION` discard count (SC76), and `IGL5` in S3, with each unit's counted pairs and residue
+  bases (SC92). A restored page whose stored fingerprints do not match
+  the sections recomputed from its compile (a changed tunable such as `sectionsMax`, or a changed
+  fold), or one with an older magic (`IGL1` to `IGL4`), drops **that district's** glass state, and the
+  district learns again; the restore logs one line with the number of districts dropped. Only an
+  undecodable page fails the whole restore, as G2-82 says.
 - **Package stores** each get one page in the same page store (a new table next to `GLASS_TABLE`, id
   given at build), in slice S4: the pools per destination frogport and the no-route pool, the held
   packages and the drawn keys with the engine's epoch, and what is owed per frogport. Shared kinetic
@@ -709,17 +829,22 @@ whole (§3.6).
 No migration code (no backward compatibility before release; G2-85). On load:
 
 - **An older `IndustryData` format with districts.** Today an older format only warns and loads the
-  districts, dissolving them as detection reaches them (`IndustryData.java:177` to `:180`). New: Java
-  drops them, and the format change itself resets the industry engine through the host's fresh-start
-  path (the one G2-82 uses), so Rust keeps no district Java no longer has, whether or not a glass page
-  exists. Districts re-derive from the seed attachments at the first detection. Slice S4 brings this
-  in with format 3 (package stores); slice S6's format 4 (join pairs) goes through the same path.
+  districts, dissolving them as detection reaches them. New (format 3, slice S4a; choice SC98): Java
+  drops them on load and keeps the rest (exclusions, merges, patches, the id counter), and at the
+  session's start journals an `IND_DISTRICT_REMOVED` for each dropped id, so Rust drops every district
+  Java no longer has, with its pages, whether or not a glass page exists. The engine itself is not
+  reset. Districts re-derive from the seed attachments at the first detection, under new ids. Slice
+  S6's format 4 (join pairs) goes through the same path.
 - **A glass page with magic `IGL1`** (slice S2, before any format change) drops its district's glass
-  state, as §5 says; after a format reset there is none to restore.
+  state, as §5 says; the removals of a format drop remove the page with its district.
 - The operator sees one line at start: "rtsim industry: the save format changed (SEC-1); learned
   factory state was reset and districts are detected again." Nothing is lost silently, and only the
-  sim's own knowledge is lost (UR-1). The drawn keys of §2.5 name the old engine's epoch, so the
-  packages they hold are released.
+  sim's own knowledge is lost (UR-1).
+- **Plugins' state.** A format drop also drops the plugins' state in `IndustryData` (format 3 is the
+  first to have any). Format 3 has no store to lose; slice S6's format 4 must remove the package stores
+  from the engine as it drops them (or keep them), since the engine keeps its stores in pages and the
+  store ids would start again at 1. The drawn keys of §2.5 name the engine's epoch, which a format drop
+  does not change; a key Java no longer holds is stripped and its package released.
 - No live world runs rtsim (DR-0). GameTest worlds and rtsim-view's fixtures are regenerated after
   landing, as G2-85 did.
 
@@ -756,7 +881,7 @@ No migration code (no backward compatibility before release; G2-85). On load:
   `glass.sectionRowsMax` (TUNABLE, 1,024 extra rows, about 350 KiB, ESTIMATE); per world,
   `glass.sectionRowsWorldMax` (TUNABLE, 16,384 extra rows, about 5.5 MiB, ESTIMATE). Over either, the
   district with the most extra rows (ties by the lowest district id) merges sections by §3.2 step 5,
-  at its next compile, restore or save, until both hold. Merging all of a district's sections reaches
+  at the sweep that passed the cap (SC57), until both hold. Merging all of a district's sections reaches
   no extra rows, so the caps can always be met. A merged section starts learning (§3.2): coarser
   sections, and the merged sections' learning is lost.
 - **Saves.** Every glass page is written whole at every save today (G2-83); the extra rows add to that
@@ -776,9 +901,11 @@ No migration code (no backward compatibility before release; G2-85). On load:
 
 ### 7.3 Counters (Java)
 
-- One hash test per real move at a count point (is this mover counted), and one counter update when it
-  is. Counted movers are only those at shared stores, which the fold keeps few. A cap
-  `glass.countedStoresMax` (TUNABLE, 256 per dimension) turns the rest into judging groups.
+- One static null test per real move at a count point (`Counting.active()` is null while nothing is
+  counted), then one hash lookup on the mover's position when something is; the target's canonical
+  inventory is worked out, and a counter updated, only for a counted mover. Counted movers are only those
+  at shared stores, which the fold keeps few. A cap
+  `glass.countedStoresMax` (TUNABLE, 256 per district, SC78) turns the rest into judging groups.
 - S1's guards add one `shouldTickBlocksAt` or `getChunkNow` test per chain lookup and per member in a
   network recount, and each saves a chunk load that today costs far more.
 - The frontier adds a route entry per far frogport on each boundary conveyor, refreshed once per advert,
@@ -854,13 +981,13 @@ New `CorpusFactory` fixtures next to `PackageLoopFactory` and `BoilerOverstressF
 
 | Fixture | What it is | Checks |
 |---|---|---|
-| `VaultBetweenMixersFactory` | a vault between two brass mixing lines (one fills it by funnel, one draws by funnel) | two sections, the vault shared and counted at its funnels; each passes its own window; break and replace the second mixer: the first keeps its passed window and replays while away |
+| `VaultBetweenMixersFactory` | a vault between two lines (one fills it by chute, one draws by smart chute; SC83) | two sections, the vault shared and counted at its two movers, the counts exact against the vault's stock; each passes its own window; break and replace the second line's press in one tick: the first keeps its passed window, the counters go on (SC84), and both replay while away |
 | `HopperAtASharedVaultFactory` | the same with a vanilla hopper also feeding the vault | the hopper is modelled and not counted, so the compile makes the two sections a judging group with the vault interior; the group's row balances and passes |
-| `ResidueAtASharedVaultFactory` | `VaultBetweenMixersFactory` with the test inserting into the vault through its capability for one window (another mod's mover) | that window makes a judging group that fails on the inserted good; the next window judges the two sections apart again |
-| `BasinIntoASharedVaultFactory` | a mixer's basin putting its output into a vault another line draws from | the basin's outputs are counted (§4.2); two sections, each passes |
+| `ResidueAtASharedVaultFactory` | `VaultBetweenMixersFactory` with the test inserting into the vault through its capability for one window (another mod's mover) | that window's residue fails both units on the inserted good, as a judging group would (SC88); the next window judges the two apart again |
+| `BasinIntoASharedVaultFactory` | a mixer's basin pouring into a chute onto a vault another line draws from (a basin cannot pour into a store itself; SC82) | two sections, each passes; the basin's pair, forced by the test, counts the recipe's output and the chute counts it on into the vault |
 | `BeltIntoPressFactory` | a belt straight from a press into a saw | one section (SEC-1's "cannot be split") |
 | `SharedBoilerTwoLinesFactory` | one boiler network driving a crushing line and a press line that share nothing else | three sections: the boiler's, and two lines on one domain (Q1 a); an edit to the press line's belt stales only it; adding presses until the stress passes the least capacity the crushing line's window ran at stales the crushing line too |
-| `StationPressLineFactory` | a station's portable storage interface emptied by a funnel into a vault feeding a press line (`StationCargoGameTests`' kit) | the cargo maps through `IND_STATION_PORTS` to the press line's section |
+| `StationPressLineFactory` | a station's portable storage interface emptied by a smart chute into a vault feeding a press line (`StationCargoGameTests`' kit) | the cargo maps through `IND_STATION_PORTS` to the press line's unit: a loaded call in the middle of its window leaves the window to pass, with the unit's goods bounded; cargo whose ports name that unit's vault and an inventory of no unit takes the `STATION` discard (the negative control) |
 | `FrozenNeighbourFactory` | two lines on a vault, the first made to oscillate | the fallback names the first section, which freezes; the replay is rebuilt at the fallback's tick, and the second goes on drawing from the vault until it is empty; the district does not go to the black box |
 | `HalfLoadedFactory` | two lines in one district, one in chunks out of simulation distance | the ticking line learns and passes; the other replays if passed |
 
@@ -889,8 +1016,9 @@ Each runs the corpus cycle: loaded for a window, away for a replay, back for a r
   exporter with a frogport on the way, `*` last and ties by position; room per route; the census and
   the floor at zero; an end in the black box neither books nor draws; held packages, drawn keys,
   epochs and what is owed; `clusterDistrictsMax` and its fallback.
-- The page: `IGL2` round trip; a page whose fingerprints disagree with its compile, or an `IGL1` page,
-  drops only its district's glass state; the row caps count extra rows only, and merging meets them.
+- The page: `IGL5` round trip; a page whose fingerprints disagree with its compile, or an `IGL1`
+  to `IGL4` page, drops only its district's glass state; the row caps count extra rows only, and merging
+  meets them.
 
 ### 9.4 The reference base, offline
 
@@ -1129,7 +1257,87 @@ The options below stay as the record of what was offered.
 | SC44 | A network is crossing when a listed source or member lies outside the district, or a listed member inside links out of it (a face across the district's border, a chain connection, a large cog's diagonal) to a chunk that is not loaded or to a kinetic block entity of the same network; with its root unlisted its ratios are taken from the lowest loaded listed member that turns | structural: Create's own count of members it has not seen (`unloadedMembers`) is wrong both ways (it is a saved number, decremented with a clamp, and reset by whichever member's save starts the network), and a link into a chunk that is not loaded may reach members that never loaded this session; the root's own speed is not held. `aCompileLoadsNoChunk` takes the away part out of the network, as a restart leaves it |
 | SC45 | A chunk reported below FULL is noted until it unloads; when it is reported FULL or more again it is queued and re-synced (`StaleKinetics.chunkFull`) at the next server tick's start or end, not inside the promotion. Chunks that never left FULL are not queued; chunks loaded anew are, since SC73 | the promotion runs inside the chunk system's own task queue, and a propagation there could re-enter it; a promotion by several levels at once reports only its last status. Left open: the chunk is readable and ticks from its promotion, and the report of it runs later, from the main thread's task queue, so for up to one tick its block entities run before the re-sync; a source that changes in that tick, or Create's periodic validation falling in it, meets the stale part, and Create's own rule applies to it. A promotion reported for a chunk that a demotion has taken below FULL since leaves it noted |
 | SC46 | `Loaded.capability` answers null for a Create multiblock (a vault, a tank) with any chunk of its box not loaded, the box taken from its controller (the least corner: `getHeight` along the main axis, `getWidth` across) | a vault's controller builds its handler from every member through `Level.getBlockEntity`, which loads; a tank's does not, so for a tank this is stricter than needed, and a tank across an away chunk reads as away |
+| SC47 | S2 is built in four sub-slices: S2a the sections themselves (the cut, the fold, fingerprints, judging groups, `Compiled.sections`, the `IGL2` page with the per-district drop, `rtsim-cli glass` output, Java's residual groups), changing no window or replay rule (but SC55's residual groups change the graph a district with residual blocks sends: a node per group, not one per district, so its solve's SCCs, latencies and node count, and so its window or verdict, can differ); S2b per-section windows and verdicts, liveness, discards, staleness by box, recompile matching by fingerprint and the row caps; S2c per-section replay, the freeze and rebuild at the fallback's tick, the black box only when no section replays, the domain check; S2d edits between districts, train cargo through `IND_STATION_PORTS`, §9.3's GameTest fixtures and a residual groups GameTest | each lands with its own review and tests; S2a moves no replay, so a fault in the cut shows in its tests and its output before any window reads it |
+| SC48 | The void sink (`SINK_VOID`) is a cut, as a store is, and lies in no box; a piece with an edge into it is working | one void sink per district would glue every line that drops into it; dropping goods into the void is work a window measures |
+| SC49 | Only goods edges make a store a section's: an `OBSERVE` edge claims no store, and `HEAT` and `CONTROL` edges join the nodes they link, as any edge between two nodes that are not cuts does | a controller reading a vault another line fills moves nothing there; a heater and its machine, a switch and what it drives, run as one |
+| SC50 | A section's box holds its nodes, the stores it touches (interior and shared) and each residual group's extent, grown by one block | staleness by box (S2b) must see an edit beside a section's store and inside an unknown machine's blocks |
+| SC51 | The fold's ties: a transfer piece takes the section of a piece it reaches through one store, downstream (a store it gives into) first, then upstream, by the working piece's own lowest position, then the sum of its nodes' record hashes; each round's moves apply together at its end. The cap's merge ranks sections by (nodes, lowest position, record hashes) and takes the two smallest of a store's group (the group whose two are smallest together), else a domain's, else of all. Sections are ordered by (lowest position, fingerprint, first node), the last only between sections with the same records | §3.2's "never Java's node order": the result does not depend on the order pieces are visited in |
+| SC52 | A section's fingerprint is FNV-1a 64 over its records, each encoded alone with its length and the encodings sorted: each node by codec kind, model, position (a virtual node by kind only), flags, rule, capacity, whether it has a domain, params with state slots zeroed (a boiler's active heat and water supply are state, as a heater's burn left and heat level are: the solve takes a boiler's level from its heat edges and water inflow) and its rates (a level by its selector and the node's own speed there, its ratio times the level's speed, when it is listed on its domain; a recipe by its contents); its stores; the edges with an end in it; per domain the `STRESS_DISABLED` flag, its levels' selectors and the section's own members with their speeds at each level, never the driver | the same factory in any node order gives the same print; a shared domain's other members are other sections', and a driver can change while the section does not; Create's root (which loaded chunks choose) scales ratios and level speeds both, not their products |
+| SC53 | A glass page of format `IGL1`, or whose sections are not those its compile cuts into now, is read as absent: the district is restored with no glass state (as `rtsim-view`'s inspect restores one alone), its key is marked so the next save deletes the page, the host logs it, and the district learns again. A page that does not decode still fails the whole restore | §5's per-district drop: every other district's glass state is kept |
+| SC54 | Until S2c the sections are in no `Report` and not in the bridge's `to_f64s`; `rtsim-cli glass` shows them (count, merges by the cap, judging groups, shared stores, each section's nodes, stores, box and fingerprint, and each node's section with `--graph`), cut with the default `glass.sectionsMax` | the bridge's report header is fixed, and Java needs the sections only once they replay |
+| SC55 | Residual groups: the residual positions sorted and joined by their faces and by any plugin's `links` (not only Ender Transmission's) when both ends are residual, numbered by their lowest position; a group's node sits at its lowest corner with params `dx, dy, dz` (its extent) and the FNV-1a hash of its sorted positions, made when a plugin's edge first reaches it; the compile is a black box one when any group node was made | SC14's groups; the hook is the district detection's own, so a mod's wires join here as they join there; the hash tells two groups of one box apart |
+| SC56 | S2b judges a **judging unit** (a judging group of §4.3: in S2, which counts no mover, every section sharing a store with another is in its group) on its own rows, and only with two units or more: one unit's window would be the district's. A unit's bounds per good: L and the class from its own store edges (the solve's class of the component past each edge, which never crosses a store); `U(u) = max(U(d) - (L(d) - L(u)), L(u))`, infinite when the district's U is or when the unit's own edges for the good are unbounded (past a black box or a port, by the solve's class); an exact unit is bounded only when the district's own why is `U_INFINITE` (another unit's black box does not loosen it); its variance is its own sources' and rolls', netted by the share of what they made that reaches its stores; its batch the largest into plus out of its stores | §4.1's per-section P, bounds and variance by the same sums, from what `Solution` holds today (`per_store`, the goods' bounds): no per-edge LP per unit |
+| SC57 | The row caps cut at the sweep whose rows passed a cap, to the most sections below the district's count whose units would hold no more extra rows than allowed (the goods of the units each new unit merges, a binary search over `Sections::compute`'s counts: a lower count only merges more). The cut is kept in the district's glass state (`sections_cap`, saved) for its later compiles and its restores, under `glass.sectionsMax`. It is not a `report::discard` reason (that array is Java's report layout): units the cut leaves keep their windows, merged ones start learning | rows only grow at sweeps; keeping the cut stops a district from growing past the cap and merging again at every compile |
+| SC58 | Liveness per unit: a sweep with IND_SWEEP_END's live flag runs every unit but those SC67 stops; one without runs the units whose chunks are all loaded, reported block-ticking by IND_CHUNK_TICKING and did not stop (unload, or stop ticking) since the last sweep that sampled (`DistrictGlass::stopped`, saved, cleared by a session start). For units an empty ticking set means nothing ticks: Java reports a chunk when it starts ticking and never one that has not, so G2-17's reading (an empty set ticks every loaded chunk) stays the district window's alone, as does the engine's `chunk_runs`. A unit whose chunks cannot be listed (a moving frame, a residual group past 256 chunks) never runs on a partial sweep. A unit that did not run warms up afresh, whether or not its window was open. A partial sweep in which no unit ran is today's discard of everything | §3.4: a chunk that unloaded and loaded again between two sweeps did not run throughout, though it is loaded at both; a district between the simulation and the view distance reports no ticking chunk, and its units must not learn that nothing moved |
+| SC59 | A district that goes away (`Presence::Unloaded`) discards every unit's window, and no unit runs until it is back (`DistrictGlass::away`, saved), whatever a sweep still in flight at the unload says, live or not; its return (its presence leaves `Unloaded`: `Glass::back`) and a session start each discard every unit's window again, so each warms up afresh from there; the district window keeps today's rules | Java may send no per-chunk unloads (`per_chunk_unloads`), and a unit's window must not span a stretch its chunks did not run |
+| SC60 | Ports per unit are kept per inventory a unit holds, cumulative since the compile (`Compiled::ports_at`): reconcile results applied to an inventory, a destroyed block's spill (out), port transfers naming an inventory, and packages in or out of an inventory whether the district is loaded or simulated; only for the compile's own revision. A unit's measured series is its stores' stock less them. Ports naming no inventory (a player's toss, cargo mapped to none) are the district's alone; station cargo maps through the station's ports (SC75) | §4.4's ports that belong to a section, from the records that carry an inventory today |
+| SC61 | A unit's window follows the district's rules: the district's target length, three samples at least, warm-up from the compile and after each discard of its own, a pass clearing its edit and strikes, a fail adding a strike. A unit's failure derates nothing and probes nothing: the district's window still does that, but with the units active its search for the limiting node starts from the store edges of the unit whose own last window failed worst on the good (the lowest η, then the lowest unit), with that window's η and direction; with no such unit, or no node found there, over the district. A unit's window that started before the last derate (`Compiled::derated_at`, saved, carried by a recompile) was judged against another model and names no node; a derate on a unit's node (`UnitState::derated_at`) stales the unit's pass from before it, and the unit does not carry across a recompile, whose model has no derates (§3.6) | the verdict rule (§3.4) is what S2b adds; derates and probes act on the one solve the district has, and the district's η on one line of two would derate the line that matched |
+| SC62 | A recompile of the same revision carries each unit whose key (its sections' fingerprints, sorted) is unique in both compiles: its passed window, strikes, verdicts and open window, which the old compile's model integrates up to the recompile; the recompile clears its edit (the compile found it as it was). Only when the engine knows the district (the new compile's first solve reads its stores); never across a revision change | §3.6; two units with one key cannot be told apart, so neither carries |
+| SC63 | `IGL3`: the district page adds `sections_cap`, `stopped` and `away`, the compile adds `veto`, each unit's state, the units' rows (one `Vec` sorted by unit and good) and `ports_at`. The units and their bounds are recomputed on restore from the sections and the solve, and the saved unit state is checked against them (a mismatch is an invalid page). `IGL2` pages read as dropped, as `IGL1` pages do (SC53) | §5; nothing derived is saved |
+| SC64 | Extra rows are counted as the (unit, good) pairs open or in a unit's last window, less the district's distinct goods among them; counted per district after each sweep, edit, discard and compile, and summed for the world cap (recounted on restore, not saved) | §7.2's "beyond what one section per district would hold": a good of one unit only costs nothing extra |
+| SC65 | A unit may replay while its own last window passed (SC66), no edit staled it since, and the district's last concluded window failed on none of the goods the unit touches: those of its last window, its open rows, its bounds under the current solve, and every good its windows' rows held since the compile (`UnitState::touched`, saved: a discard drops the rows, not what the unit touched); with fewer than two units the district's rule (G-B4). Ports are kept only while the units are active. `rtsim-cli glass` lists each unit (sections, stores, chunks, window, last and passed windows, strikes, edit, may replay) with the extra rows and the cut; the units are in the `Report` since S2d (SC74) | §3.4's verdict rule; S2c's replay reads it |
+| SC66 | A unit's passed window counts only if at least one of its goods passed, or if its goods are all unbounded (a black box, a port, a model demoted here, whose rows start unbounded as the solve treats it) or it has none (a unit with no store, as a boiler its pumps fill from a source, which only drives a network; or a window in which none of the unit's stores measured a good, as an idle line's), and the district's rule allows a replay (G-B4: a passed district window no edit staled): such a window judged nothing, so the unit leans on the district's pass, as the same line as a district alone does. Gated, a unit with no store would stop every unit on the network it drives, which passed with it running. A recompile keeps the district's veto: the new compile carries the goods the old one's last concluded window failed on (`Compiled::veto`, saved) until its own first district window concludes | §3.4; a recompile follows every edit, and the new compile's district window takes a warm-up and a window to conclude |
+| SC67 | A chunk that stopped since the last sweep that sampled stops its units on a live sweep too (the sweep between was dropped, a skip under GB101, so the stop was never taken): the live flag has no dimension, so the stop is matched by chunk x and z, and a unit whose chunks cannot be listed does not run while any stop is recorded. The district window keeps today's rule | a dropped sweep must not let a unit's window span its chunk's unload |
+| SC68 | S2c gates by unit (§3.5): with two units or more, the replay gates off (`Regime.gate_off`) every simulated node other than a store whose unit does not replay (it may not, SC65, or a fallback froze it), and every simulated node on a domain such a node drives, so a boiler of a unit that does not replay stops its network; stores stay, as pools only replaying neighbours touch, so the residual learned from the district's pass (G-B13) books into no store of a unit that is not on: shares are weighed over every store and a gated unit's share is dropped, not given to the others, and a freeze recomputes the residual of a replay that runs as one part (a split one started with none, and units only go off while it runs). Idle nodes (in no unit) and live nodes are never gated. With one unit or none, the district's rule as before. The domains are the district's compile's own: a network another district's compile also holds is not reached from here (the shared network's parts are S5's, §2.6) | §3.5; a gated node keeps its stress, so the gate changes no domain level |
+| SC69 | A fallback names units (§3.5): each part counts per unit its `hits` (stops and watches of the unit's stores and controllers that fired since the part's last outside event or rebuild, the stop past `glass.breakpointsPerEventMax` included) and its `flips` (the unit's stores' and controllers' flags that flipped in the last regime build). Oscillating and Stuck name the units replaying in the part with the most hits, Unsettled those with the most flips; Unexpected, or a fallback where no candidate scored, names every unit replaying in the part. A named unit stays frozen for the rest of the replay, so each freezes at most once | §3.5's "the sections those name freeze"; naming every unit of the part ends that part's glass replay, as §3.5 says |
+| SC70 | Freeze and rebuild (§3.5): at the fallback's tick, the part that fell back and every part whose own nodes' gates changed are rebuilt from the levels as they are, keeping every booking (`Cluster::replace_proc`); a part that falls back in its rebuild names its units in turn. The district's replay ends, with today's fallback (the black box until the district is live again), only when no unit's simulated node runs anywhere or a part falls back with no unit replaying in it. A start whose first regime falls back freezes the units it names and tries again without them, by the same rule. Frozen units and the freeze count are saved with the replay (`IGL3`) | the cluster keeps no snapshot to go back to; a part with nothing left to freeze cannot go on |
+| SC71 | Glass or freeze (§3.5, I5): a district replays in glass while some unit may replay (`Compiled::replayable`), and freezes when none may; a fallback still sends it to the black box. A replay whose units' allowance changed since its start (a unit went stale, failed, passed or was cut anew, `Replay::same_units`) is started again at the next sync, and so is one of an older compile: a recompile that keeps every unit (Java recompiles after every edit) would otherwise leave a replay that stops at its next step, so its bounds and timers would never be acted on while it still reported glass. `Report.eligible` reads `replayable`. The units, each with its frozen flag, are in the `Report` since S2d (SC74); the freeze count is not, and none of them is in `GlassStats` (`GlassStats` lives in the globals page, which has no format version); `rtsim-cli glass` shows them (units replaying and frozen, freezes, nodes gated off), and the engine notes each fallback that froze units | as SC54 |
+| SC72 | The domain check (§3.6) runs at a same-revision recompile, on each unit it carries: a unit's window records, per domain it is on, the least capacity the solve's running level had over its sweeps (`DomCap`, by the level's selector), kept with its passed window. The recompile finds each domain again by the unit's lowest node position on it and whether that node drives it (a domain's index is its compile's; an anchor two domains of the unit share is dropped). A carried unit goes stale (as an edit in its box makes it) when a domain of its open or passed window is not found again, or when the new compile's stress at the passed level's speed is above the capacity recorded; a domain with stress disabled never fails, one without that level always does. Only the district's own compile: the check across districts on a shared network is S5's (§2.6) | §3.6; Java recompiles after every edit, so the carry is where a load added elsewhere on the network shows |
 | SC73 | A chunk loaded anew (`ChunkEvent.Load` on the server thread) is noted as a demoted one is and re-synced at its first FULL report (SC45); `StaleKinetics.chunkFull` takes every kinetic block entity, attached or not. A block entity that has not joined its network (before Create's `initialize`) joins it as its first tick would (`KineticJoin`: `initFromTE` if not yet, then `addSilently`) wherever Create lists it again or takes it out first: at `removeSource` and `setSpeed`, before the speed the join reads changes, at a `setNetwork` to another network, at `remove`, a server-side `read` and `clearKineticInformation`, a generator at `updateGeneratedRotation`, and a powered shaft at its engine's `update` and `remove`, before they change its fields. A join at `clearKineticInformation` outside a `read` that listed the part leaves the network again at once (one already a member stays, as in Create). A join during a `sync` of its network takes its share out of the unloaded share and lists it once the sync ends, unless it left by then, and the network then recounts at once (at a tick when the sync or a change threw); every such change runs even when one throws, and a change that threw recounts the network. Nothing joins off the server (a client, a ponder scene) | in a FULL chunk that does not tick (level 33, around every ticking chunk) nothing attaches, so row 56's re-sync never ran there and a compile read the stale speeds; the re-sync's `add` would leave a part that had not joined counted in the unloaded share too, and its frontier reaches such parts in every FULL chunk around, so a join of the re-synced chunk alone missed some; a removal or a generator's update (a steam engine updates its shaft two blocks away) would leave or list such parts likewise; `sync` iterates `members`, and a part an `onSpeedChanged` changes there must not enter it; a `networkDirty` mark set after a sync is cleared by the tick that ran it; `clearKineticInformation` (a `setBlock` to another axis outside Create's `switchToBlockState`, as `/setblock` gives it) forgets the network without taking the part out. Left open: a generator other than a powered shaft whose generated speed changes before its first tick (a water wheel's flow, a hand crank a deployer turns, a creative motor a computer sets) has its share taken out at its new speed, not the one the network counted (clamped at 0), and so does a `/data` merge that changes a generator's own fields read before Create's `read` (a hand crank's, a windmill bearing's); an addon generator's update during a sync of its own network ends it with Create's own ConcurrentModificationException; if C2ME posts `ChunkEvent.Load` off the server thread, its loads are not noted, and a chunk it loads FULL is re-synced only at its first attach, once it ticks |
+| SC74 | The `Report` carries the judging units (§3.4): after the goods, the units' count and per unit (`UNIT_STRIDE` 15) its sections, nodes, box (its sections' node boxes, each grown by one block), open window ticks, windows completed, last verdict, strikes, flags (passed, stale, may replay, frozen, unbounded) and ready tick; no unit with one unit or none. The header grows to 42, slot 41 the `STATION` discard count. Java reads them with `GlassReport.units()` | the GameTests of §9.2 judge each unit; the flat form already crosses the JNI, so no new call |
+| SC75 | A station's ports join their units (§4.3, §4.4). At each `IND_STATION_PORTS` the engine gives the glass every set of the district's stations' ports with two inventories or more, numbering the district's revision. The glass keeps them (`DistrictGlass::joins`, saved) and regroups that revision's compile: `Units::build` unions the groups holding one set's inventories (in a section's nodes or its stores), and each unit left unchanged keeps its state, as a recompile adopts it (SC62); a later compile of the revision groups so from the start. A loaded call's `TRAIN_CARGO` (no inventory) maps through the station the train stands at (the engine's arrival for the train): its ports all in one unit, that unit's port at the first of them, once; ports in several units, or in a unit and in none, discard those units' windows (`STATION`); none in a unit, the district's alone. Java journals `IND_STATION_PORTS` before the departure's `TRAIN_CARGO` | discarding the units on every call that reaches two of them would keep a station-fed line from ever passing; the units cannot tell the cargo's split, one unit over them can |
+| SC76 | A station's `Discard.OTHER` carries the station (`IND_DISCARD` grows to 40 bytes, the station at 32, 0 for none): the engine discards the district's window and the windows of the units holding the station's last ports, every unit's when they named none. A discard with no station stays the learner's alone, as before. The glass counts it as discard reason `STATION` (8). The discard counts are saved, so the glass page goes to `IGL4` with SC75's joins; `IGL3` pages read as dropped (SC53) | §3.6 |
+| SC77 | Edits between districts, the kinetic part (§3.6). Each compile keeps the chunks outside its district that its kinetic networks reach (`GraphBuilder.reachedChunks`): a listed member's chunk, each chunk a member links into (`reachesOut`, which now looks at every member of every network instead of stopping at the first link out), and each loaded chunk outside the district across a face a listed member may turn, though nothing is there yet (a shaft or cog run to the district's border: the first part a player places beyond it is an edit). The compiler indexes them per dimension and chunk, for this session: a compile replaces its district's, the district's removal drops them, and a compile that is not compilable keeps the last ones (an edit there still asks the district to recompile). A network part a player places or breaks in a chunk of no district (`IndustryPlugin.networkPart`: Create's kinetic block entities, chain conveyors among them; a chest or a sign is none) is an `IND_EDIT` (placed or broken, at its position) of every district indexed there: it lies in none of their node boxes, so it stales no unit; it drops their open windows, makes a learned district stale as any edit does (I5), notes the player as one of their builders, and recompiles them. Left open: a chunk a network reaches only after the compile, past the chunks across its members' faces (a shaft run on through a new chunk before the recompile its first edit asks for), is indexed at that recompile; package stores are S4's and the shared network's parts S5's | §3.6; the recompile's domain check (SC72) is where a load added outside the district shows |
+| SC78 | `glass.countedStoresMax` (§4.2, §7.3) is per district, not per dimension: past it the district's counted stores are the lowest positions first, and a row cap's cut (SC57) counts only the stores the full cut counts and still shares, so it never counts a store the full cut did not | per dimension, one district's compile would change another's cut, and the cut must stay a function of the compile and the tunables (§3.1) |
+| SC79 | A shared store is counted (S3) when it is an item store and every goods edge at it runs to one of §4.2's count points (`COUNTED_MODELS`: chute, andesite and brass funnels, arm, smart chute, packager, frogport, basin); observe edges do not count (SC49). Fluid stores are not counted in S3: they stay in their sections' judging group | the fluid mover's position at `FluidNetwork.tick` is UNVERIFIED; a store a hopper or another mod reaches cannot be counted at all |
+| SC80 | `HopperAtASharedVaultFactory` (§9.2) presses its second line's brass into sheets instead of mixing it (no mixing recipe takes brass), and draws from the vault by a smart chute under it, not a funnel; `FrozenNeighbourFactory` is the same two lines without the hopper. `StationPressLineFactory` empties the interface into its vault by a smart chute, not a funnel | the fixture tests the judging group a hopper makes, which needs only a mover that draws from the vault; the corpus' press line is already learned |
+| SC81 | `SharedBoilerTwoLinesFactory` (§9.2) stands a millstone line for the crushing line (a crushing wheel needs the item-drop machinery around it), and drives the press through a gearbox off the 128 RPM stage, so the press, its extra presses and the millstone all sit on the boiler's domain. Its edit breaks the press line's input smart chute and places a plain chute there (the node's model changes, so the press section's fingerprint does, and the revision does not; a smart chute placed again with a filter on the only good it moves would change nothing the compile records), and shafts stand from the build where the extra presses go, so a press changes no chunk and the recompile carries the units | the fixture tests two units on one domain and the domain check, which need only two lines that share the boiler's network and nothing else; an edit that changes nothing is cleared by its recompile (SC62), and a new chunk changes the revision, which carries no unit |
+| SC82 | `BasinIntoASharedVaultFactory` (§9.2) is `BrassMixingFactory`'s line with its spout chute onto the vault (the build `VaultBetweenMixersFactory` shares), not a basin pouring into the vault: `BasinBlock.canOutputTo` turns a spout sideways only for a belt, a funnel or a block with a `DirectBeltInputBehaviour` below and beside it (a chute, another basin, a drain, a saw, a drill, a millstone, a crafter), and no store has one, so a vault there leaves the spout facing down and the goods in the basin's own output. A basin cannot pour into a vault directly in Create 6.0.10, but it can through a funnel facing up on the vault (SC120, `BasinThroughFunnelFactory`); `BasinIntoASharedVaultFactory` is the chute variant: the move into the vault is counted at the spout chute (`ChuteBlockEntityMixin`), and the row's "two sections, each passes" is checked on that build. The basin's own count point (row 71) is tested on its real hop, basin to chute, with the pair (basin, chute) forced onto the district (`Counting.holdForTest`: every later set keeps it, and the engine skips it in a sample): the basin counts the recipe's output and the chute counts the same goods on into the vault, within what the chute holds. `COUNTED_MODELS` (SC79) names BASIN, but a basin under a mixer or press is a MIXER or PRESS node (`CreateCompile.basinNode`); a modded store with a `DirectBeltInputBehaviour` that a basin fed directly would not be counted until the engine adds those models there, which needs no Java change (the hook is at the basin block) | a basin pouring into a vault directly cannot be built with Create's blocks, but the pour through a funnel can (SC120, `BasinThroughFunnelFactory`); this fixture checks the chute variant |
+| SC83 | `VaultBetweenMixersFactory` (§9.2) fills the vault by the corpus' spout chute over it and draws it by the press line's smart chute under it, as SC80 does, so its counted movers are a chute and a smart chute, not two funnels. Create's `handleInput` (the smart chute's draw), `handleDownwardOutput` (the chute's push) and the count's exactness (over 600 ticks the stock changes by what the pairs counted in less out) are checked there; the funnel, arm, frogport, packager and unpacking count points (PATCHES.md rows 64, 65, 68 to 70, 72 to 75) have no fixture, and are checked only by the launch (`defaultRequire 1`: a Create update that moves their call fails the boot). A mixin whose call is still there but no longer reaches the inventory would count nothing, which shows as a residue and a failed window (SC88), not a wrong pass | each needs a build the corpus lacks (an arm or a frogport at a shared store, a packager with a unit on each side); the funnel and the other point's hooks are the same wrap on one call |
+| SC84 | An edit that spans a compile resets the units at a shared counted store, and with them Java's counters: `VaultBetweenMixersFactory` first broke the second line's press and placed it 20 ticks later, and a compile between the two (line B without its press) left both units with 0 windows and no verdict, and the pairs with a new `since`, as a changed section fingerprint drops a unit's state (SC62; the vault is held by one section's nodes or by two, and the fingerprints name their stores). The fixture now breaks and places the press in one tick, which is the table's "break and replace": the recompile finds the press as it was and clears the second unit's edit (§3.6), the first keeps its passed window, and the pairs keep their `since`. The second unit is therefore not stale after the recompile, which the fixture did not expect at first. A player who replaces a machine over several ticks resets what the two lines at a shared vault had learned (the lines learn again, and nothing is judged wrong in the meantime) | the observed behaviour of the engine's recompile; the cause (the fingerprint change) is read from the engine, not isolated by a test |
+| SC88 | A unit's row at its counted stores (§4.2): interior stock less the ports at its interior inventories, plus its own pairs' moves (in less out), plus each counted store's residue (the store's stock less the ports at its inventory and every pair's moves there) less the residue at the window's first sample. The residue goes to every unit at the store, so a move no pair counted fails each of them on its good, and the district learns as it would with one judging group. Ports naming a counted store's inventory are booked there and are no unit's production. In the bounds a counted store's edge is its mover's unit's, and a drain shortfall at a counted store goes to its takers' units, split by flow share | the identity of §4.1 stays exact for each unit, and a residue cannot be split between the units, so it is charged to all of them |
+| SC89 | `IND_COUNT_SET` is an outbox: the glass keeps the (compile, pairs) Java holds per district, marks a district at every change to its units (and at a compile kept across a session) and, at the end of each ingest, sends a set where they differ: the (mover, store) pairs of its counted stores between units (stores whose sections lie in two units or more; one inside one unit needs no count), ascending. An empty set goes when Java holds one and nothing is counted now (no compile, one unit, a compile of the last session's numbers). An ignored resend marks what Java holds unknown, so the set goes again; a new session clears it | a set at every END would repeat every `glass.resendTicks`; a set only at an accepted compile would miss a cut a sweep or a station's ports changed |
+| SC90 | Java's count contract: it keys each pair's counters by the mover's and the store's positions, so a pair a later set names again keeps its counts and `since`, and an empty set drops the district's counters. Each sweep's `IND_COUNT_SAMPLE` goes before that sweep's END and is in the node numbers of the latest compile whose END Java sent, leaving out pairs that compile lacks; a pair that counted nothing yet comes with no good, for its `since`. The engine reads a sample only of the compile it holds | a recompile that renumbers the nodes must not restart a line's counters; samples of a compile the engine has not accepted yet name other blocks |
+| SC91 | A unit's window opens only at a sweep whose sample holds every pair at its counted stores. Its pairs' `since`, by position, is kept with the window (`UnitState::count_since`): a sweep missing a pair discards the unit's window with warm-up; a pair whose `since` changed (Java forgot it) starts the window again from that sweep, with no warm-up. A unit with no counted store is unaffected | a missing sample leaves the unit's moves unknown for that sweep; a restart of Java's counters is a new base, not a fault of the line |
+| SC92 | `IGL5`: each unit's state adds its pairs' `since` and its residue bases, and the page's cut keys add a hash of the counted stores, so a changed `glass.countedStoresMax` drops the district's glass state as a changed `sectionsMax` does (SC53); `IGL4` pages read as dropped | a window's base must survive a save for the window to go on |
+| SC93 | The counting stats (samples read, sets sent) are `CountStats`, in memory only, not in `GlassStats`: the globals page has no format version, so a field added there fails the whole industry restore | as SC71 |
+| SC94 | Movers at one block share Java's counters, which are keyed by position: a packager is two nodes (packing and unpacking) at its block, and Java names the same counts under both pairs. The engine takes each direction once per (block, store): into the store from the lowest pair with an edge that way, out of it likewise, else the lowest pair (`Units::pair_dirs`) | counting both would double the packager's moves in its unit and in the store's residue; Java cannot tell which node a move was |
+| SC95 | The Create compile claims each portable storage interface with no node (§4.4) when its conveying walk (`TrainWatch.reached`, the walk of `IND_STATION_PORTS`) reaches a district inventory; one that reaches none stays residual | it exposes a docked train's storage, whose change is the station's cargo, booked through `IND_STATION_PORTS`; left to the residual, the mover beside it reached a black box, so every station-fed unit was unbounded and unbooked cargo could not fail its window. An interface that reaches no inventory (onto a belt into a machine) has no port to book its cargo on: claimed, what it fed would rise against a prediction of none and fail every window, so it keeps the black box |
+| SC96 | The section fixtures (§9.2, `SectionsFxGameTests`) are opt-in: `./gametest.sh create -Psec1fx` adds their namespace to the create run | each is a full corpus cycle of several windows; on by default they lengthen every create run on the shared heavy lock, for every session |
+| SC97 | A package store's frogport packages are a new journaled record, `IND_CHAIN_PACKAGE` (0x0419; directions `CHAIN_OUT` 3, `CHAIN_IN` 4, later `CHAIN_HELD` 5), not `IND_PACKAGE` with new directions (SC7's record); it carries the store, the frogport's index in the store and the destination (§2.5) | the engine books it into a store, not a district's mail path, and the destination (SC100) is a field `IND_PACKAGE` does not have; one record kind per path leaves the mail path as it is |
+| SC98 | `IndustryData` format 3 drops an older format's districts on load and journals an `IND_DISTRICT_REMOVED` for each at the session's start, instead of resetting the engine; exclusions, merges, patches and the id counter stay (§6) | the removals reach Rust by the path a dissolved district already takes, need no host hook, and leave the engine's other state alone; new districts never reuse a dropped id |
+| SC99 | A store's census every 200 ticks (TUNABLE, `PackageStores.CENSUS_TICKS`) while every chunk of it ticks, as a latest-wins record of its own (`IND_STORE_CENSUS`, 0x0051), not with a district's sweep | a store belongs to no district, so no sweep carries it; one walk and count a store every 10 s bounds the cost (D1) and keeps the residue fresh enough for `/rtsim district sections` |
+| SC100 | Java resolves a chain package's destination: the matching frogport of the least distance (hops, plus 1000 for a `*` filter), ties to the lowest position, then the first matching frogport on a least-hop way there; the record carries it and Rust books by it | Java has the walk and Create's own `matchAddress`; routing in Rust would need the filters and a glob matcher kept in step with Create's |
+| SC101 | A store's frogports are found by a scan of the loaded chunks of its walk's conveyors and their neighbours, from each district's compile and from a package at a frogport of no known store (at most once in 1200 ticks per frogport, TUNABLE) | a frogport stands within `packagePortRange` (5 blocks) of its conveyor; the scan reads loaded chunks only (§2.8), and the compile already walks the chain |
+| SC102 | A network of more than 200 frogports (TUNABLE, `PackageStores.MAX_PORTS`) is no store: it keeps its `CHAIN` edges, with one warning | its `IND_PACKAGE_STORE` must fit one record (64 KiB: 48 bytes a frogport, 2 a pair) |
+| SC103 | A frogport in a chunk of no district counts as an owner of its own, so a chain from a district to frogports outside every district is a store | packages the district sends there leave it, and as edges they would lead to no node |
+| SC104 | A walk that leaves frogports behind (they now serve another network) walks their network at once, at most 4 deep; a later census or compile carries on past that | each piece of a split gets its store at once, at a bounded cost per call |
+| SC105 | The chunks of no district a store's chain passes through (§2.5, §3.6) wait for a later slice; S4a keeps none | nothing in S4a reads them; §3.6's staleness is their first user |
+| SC106 | A store is declared again at its first walk after a restart, and every store at once when the engine forgot what it was told (`PackageStores.announce`, run with the districts' announce) | Java keeps no copy of the last declaration across a restart; the engine keeps its stores in pages, rolled back with them (P29), so a repeat changes nothing there. A store whose saved hops do not fit its frogports keeps its id with unknown hops until the next walk |
+| SC107 | A district with chain links runs the black box, as one with mail links does; replaying a chain port in the glass box is left for a follow-up | the glass box has no port for a link that moves goods out of the district's window; the black box already replays links at their learned rates |
+| SC108 | `LinkKey::Chain` (inventory, destination frogport, good) is learned only while the district is loaded and not replaying: a `CHAIN_OUT` toward a frogport in a district books it negative, a `CHAIN_IN` with no op id positive; a `CHAIN_IN` an IND_WRITE_CHAIN wrote (op id set) is a port, never a link | a write is the replay's own draw coming back; learning from it would count the draw twice. An export to a frogport of no district has no importer to replay it |
+| SC109 | A cluster pool `PoolKey::Chain` (store, destination frogport, good), save tag 4, starts from what the store owes that frogport and goes back, when the cluster stops, to the store that lists the frogport now; with none, to its own store (kept as its `left` pools are); with that gone too, it is lost and counted (`chain_pools_lost`) | the store's owed count is the one ledger both ends see while loaded; a pool that outlived its store has nowhere else to go, and UR-1 lets a reset lose production owed to unloaded chunks |
+| SC110 | The export's room is a target: `chain_room_per_conveyor` (20, TUNABLE) times the conveyors from the exporter to the destination (hops plus 1), less the real packages the last census counted toward it; the link stops there and starts again one batch below. The batch is the frogport's last `CHAIN_OUT`, else the good's stack | §2.5's room estimate, in whole batches as Create's own exports leave; the restart gap keeps a full pool from toggling every step |
+| SC111 | The import link draws from the pool into stock; after it stops on an empty pool it restarts no earlier than the hops to the store's farthest frogport times `chain_ticks_per_hop` (60, TUNABLE). A replay's chain links are those of its part's (unloaded) inventories, so a loaded frogport of a district replayed in part is a port and is written, never drawn by the replay | an ESTIMATE that needs no chain speed: a replay does not know the RPM of an unloaded chain, and the farthest hop bounds every route of the store |
+| SC112 | A replay that starts joins the clusters that hold its district's chain pools; past `cluster_districts_max` (16) it drops its chain links instead (`chain_links_dropped`, logged once for each store) | one cluster per store keeps both ends on one pool; the cap bounds a cluster's step cost (D1), and a district without its links replays as one that does not replay the store |
+| SC113 | IND_WRITE_CHAIN (0x8409): while a frogport is loaded and owed, or a cluster holds a pool toward it, one command for each good every `chain_write_ticks` (200, TUNABLE), of min(whole batches, 18) packages, or one part package when no cluster holds the pool; none while an earlier write there is unanswered (one in the engine's outbox always holds the next; an answer missing 10 periods after the drain no longer does; forgotten after 100 periods at the next look toward a loaded, owed or pooled frogport, at most 8 kept, `chain_writes_unanswered`). Java writes what fits, one slot kept free, addressed to the frogport's filter, and journals one `CHAIN_IN` with the op id, which the chunk carries with the COMMAND_RESULT until acknowledged and Replay takes once by op; the store marks each frogport's last written record (game time, ops) and drops a written record no later than the mark (a chunk saved before the acknowledgement journals it again after Replay forgot the op), looked up by the frogport's position, which the record carries (an index shifts when a store is declared again), in the record's store and the store of its dimension that lists the position; a record of a write the engine still waits for is that write's answer, taken at the write's frogport and never judged by the mark (a crash moves the clock back behind it). The engine takes it from the pool, then from owed, never below zero. FAILED moved nothing, answers the write, and the engine writes again | real packages written into a loaded frogport keep UR-1 (Rust never holds the only copy of a package that exists in the world); carrying the record in the chunk covers a chunk saved before the journal reaches disk |
+| SC120 | A basin that pours through a funnel into a store is counted at the funnel: `BasinBlockEntityMixin` finds no item handler at the spout block, takes the block's `InvManipulationBehaviour` and counts (funnel position, `getTarget().getConnectedPos()`), the pair the engine names from the funnel's adjacency edge (`CreateCompile.funnelEdges`). The basin's own pair is kept for a spout block that offers an item handler. `BasinThroughFunnelFactory` (`sec1fx_basin_funnel_vault`) is the basin line of `BasinIntoASharedVaultFactory` with an andesite funnel facing up on the vault where that fixture has the chute | review B1 found the pour uncounted (the basin skips the behaviour's own count point), leaving residue at the vault and false failures at the line that draws from it; counting under the funnel is what the engine's pair asks for and needs no engine change |
+| SC121 | A repackager's moves are counted: `RepackagerBlockEntityMixin` wraps the four `extractItem` calls of `attemptToRepackage` (the real removals count out) and the `insertItem` of `unwrapBox` (counts in), as `PackagerBlockEntityMixin` and `DefaultUnpackingHandlerMixin` do for a packager. Not tested by a fixture (SC83) | the engine compiles a repackager as a packager, so it names pairs (repackager, store); the class overrides both methods the packager hooks without calling `super`, so its moves went uncounted and left residue at a shared store (review S1). The alternative, compiling a repackager to a model the engine does not count, would put the store back into group judgement for a block that is common in package lines |
+| SC122 | A district on a moving frame (`end.frame != 0`) has no counted stores: `Sections::compute_counted` returns none, so every cut (`cut_counted`, the page's and the check's) judges its shared stores as in S2, one group per shared store | Java ignores a count set on a moving frame and never samples one (`num.frame != 0`), so a store counted there had no cover, its units were discarded at every sweep and never judged (a regression against S2, where the district was judged), and the engine resent a set Java ignored at every END resend. Doing it in `compute_counted` keeps the units, the page and the persisted cut on the same rule |
+| SC123 | A count sample's records are cut only between (mover node, store node) pairs (`Counting.cuts`), not every 1637 entries; one pair with more goods than a record holds is split, and may lose part of itself with a lost record | a record lost on a full outbound ring then leaves a pair missing, which the engine reads as no cover and discards the sweep's unit, where a pair cut in two kept its `since` and read the goods in the lost half as not moved (a false residue and a window that could fail) (review S3). The split case is reachable: a key keeps every good ever moved through its pair and never prunes it, and goods differing in components (damaged gear, Destroy mixtures, enchanted books) count apart, so a long-lived pair can pass the 1,600 or so entries one record holds. So each entry of a pair carries the pair's total entry count (the reserved u32 of Count40, `E_ENTRIES`), and the engine gives no cover to a pair it got fewer entries of than that (`CountTake::since_of`), where it would read the goods of a lost part as not moved. Pruning a good's counters at a snapshot is not done: it would shift the cumulative counts the open window's residue base was taken from and read as a residue, and a counter restarts only with its key (`since`) |
+| SC124 | The review's nits, taken together: a resend END marks the count set unknown only for a district that was sent one (no empty `IND_COUNT_SET` to every district per resend); `session_start` and a numbers reset clear the last count sample; each count point is guarded (`Counting.isMover` and `moved` catch, and each hook's whole body, its argument evaluation included, sits in a try that hands the exception to `Counting.failed`, which logs the first failure and each doubling; the move goes uncounted: Create's tick is never broken); a set that leaves no pair drops its `Held` so `Counting.active()` goes null; a malformed set (negative or too large a count, a header too short, none of its nodes in the compile) is counted in `setsIgnored` and leaves the counters; the insert hooks count a copy of the stack taken before the original call, and only when the block is a counted mover and the call is not a simulation (the test comes first, so an uncounted block pays no copy). The arm hooks (rows 69, 70) are documented as mattering for third-party store blocks only: no point of Create's own lands on a store node. Not done: the CLI report's use of the default `counted_stores_max` (nit 7), the test helper's stale index (5), the per-move canonical-inventory cost (9) | each is a robustness or tidiness change with no effect on a correct set or move; the three left out change nothing a player or a verdict sees |
+| SC125 | A mechanical arm's insert at a funnel point is counted under the arm, not the funnel: `ArmFunnelPointMixin` (row 81) names the arm for the call, and the funnel's count point counts under `Counting.moverOf` | the compile models an arm putting into a funnel on a store as an ARM edge from the arm to the store, with the funnel a junction whose one edge is its adjacency to the store; with nothing else feeding it the funnel is a section of its own, the store is counted between the two, and a count under the funnel put the arm's goods in the funnel's unit: neither unit balanced and the district never replayed (`glassreplay.arm_burners_depots` on the S3 landing round). Changing the compile to an ARM edge into the funnel would change the solve's arm rule for every such line |
+| SC126 | S4p's text is docs/boundary.md §3.2 "Generations and copies", under §3 (the journal), and the code's references name it there | no §2.5 exists on any branch; generations are the journal's, not a record kind's |
+| SC127 | `rtsim-host` names each session by a hash of the world save it opens (`java::nonce_of`), not a random nonce | forked host runs must write identical pages (the lockstep test compares them byte for byte), and the host has no holders, so nothing ever judges a copy by its nonce there |
+| SC128 | A session whose first record past the pages is not a JOURNAL_GEN opens an unnamed generation (`UNNAMED_GEN` with the session's first sequence) and logs it | a bridge that names no generation must still close the one before where it ended, or its sequences (a crash hands them out again) would read as that generation's |
+| SC129 | A record too large to wrap (32 bytes plus the record above `MAX_RECORD`) is journaled again plainly, as before generations, and counted (`/rtsim status`, "too large to copy"); a holder's records carry their generation in `PendingRecords` entries and in `EpochEntry.gen` (0 when the record has none: always new) | only an IND_RECONCILE_RESULT within 32 bytes of the record limit gets there (thousands of entries or broken blocks in one chunk); its plain recommit is judged as before S4p, by its op id, and losing the copy's protection there is better than a record that cannot be journaled |
+| SC130 | Java's journal keeps the newest acknowledged JOURNAL_GEN outside its entries (`Journal.pinnedGen`, NBT key `pinnedGen`, the host's `WorldSave.pinned_gen`), checked at load (a JOURNAL_GEN below the first entry, or the journal is corrupt), sent before them, not counted in `size`, `bytes` or `firstSeq` | in the entries it would move `JOURNAL_FIRST_OBS_SEQ` below a real gap (lost observations reported as in sync), and a flag in the saved list could not tell it from an unacknowledged JOURNAL_GEN; the stub now forgets its transfer and command op ids at WORLD_SAVED (its event op counts stay, a test counter), refuses pages from before (magic `RTS2`), and opens the unnamed generation as the engine does, and `appliedCmdOps` counts the entries holding each op (the review's nits) |
+| SC135 | The frontier keeps a route entry on a conveyor just before the tick that would expire it (timeout 1 or less, `Frontier.beforeRoutes` before `ChainConveyorRoutingTable.tick`, row 80) when its connection is still the conveyor's, its next conveyor does not tick and its port is the filter of a frogport of the conveyor's store whose chunk does not tick: the entry gets Create's full timeout (100) and is kept with its port, the distance it had, its connection and its store; each conveyor with kept routes inserts them again every `KEEP_TICKS` (TUNABLE, 20; a turn by game time and position) through Create's private `insert` (row 79), and the kept routes are saved with the frontier (SC139); one goes when its store, its connection or every far frogport with its filter is gone. When its next conveyor ticks again (the boundary moved out) it moves on along the chain, one hop nearer per conveyor, while each conveyor has one way on (but the way back) that ticks, and is kept and inserted on the first whose way on does not tick (`Frontier.handOver`, at most `HAND_OVER_MAX`, TUNABLE, 64); it goes instead when a conveyor on the way has a route of its port already, the way forks or ends, or it reaches the port's own conveyor | §2.5 named the store's saved walk for the distance, but the walk only has hops between frogports' conveyors, none from a boundary conveyor; Create's own distance is the one its adverts would have kept; without the hand-over a boundary that moves out loses the route (the new boundary conveyor has no entry to advertise) and the packages behind it circle unrouted. Limits: a far side that stopped ticking before any capture (no route to it ever reached the boundary conveyor) gets no kept route until it ticks once; a route through a chunk that does not tick to a frogport that does is not kept; a package already on the connection when the route expired waits unkeyed; a far port is the store's first frogport with the filter whose chunk does not tick (`awayPort`), so two far frogports of one filter are held toward the first; the hand-over follows linear chains only (a fork drops the route, and its packages circle unrouted until the far side ticks); a far frogport whose own chunk does not tick but whose conveyor's does gets no kept route (its port's entry ends on a conveyor that ticks), so its packages circle unrouted until it ticks; a conveyor's table is read only at the tick its soonest entry may expire (`scanAt`, a field the mixin adds to each conveyor, row 80: Create lowers a timeout by one a tick, and a new or refreshed entry starts at 100) and, for the insert, on its turn, so any other conveyor tick costs a modulo and two compares |
+| SC136 | A held package's key is `{store, epoch, serial}` under `mic_rtsim_held` in vanilla `minecraft:custom_data`; the epoch is the frontier's, random and nonzero at first, raised by one (skipping 0) at every industry announce (`PackageStores.announce`: an engine whose pages lack what the journal dropped, a sim reset, or the industry switched on again), and sent in each IND_PACKAGE_STORE (at 36) and in a keyed IND_CHAIN_PACKAGE (epoch at 84, serial at 88; 0 at 84 is no key); a serial's high 32 bits are random per session; the engine compares epochs for equality only and adopts the declaration's | §2.5 said "the engine's epoch", but Java writes the keys, so Java owns it and the engine learns it; an epoch counted up from 1 would meet old keys again after an engine reset that also lost the plugin's state, and serials handed out again after a crash before a save would match keys still in the world |
+| SC137 | The held packages are listed twice: the engine's store keeps them toward each frogport, oldest first (`PackageStore::on_hold`, store pages IST3), booked in the pools like any package; Java's frontier keeps each by serial (store, dimension, destination, conveyor) in its saved state. Java follows a held key and tells it again (`CHAIN_HELD`, the same key) when its store or destination changed and once in each session; the engine then moves it, keeping its place (`held_again`; across stores too), and turns away only a hold with no key or of another epoch than the last declaration's (`held_stale`). Java moves its entries as the engine moves its own: with a frogport that changes store (`from`), into the store a removal names, forgotten with a removal into none. A key leaves on both sides: a keyed `CHAIN_IN` (`held_landed`) or a `CHAIN_RELEASED` (direction 6, no frogport, destination, packages or goods; `held_released`) strikes it wherever it is held; Java releases a key when Create drops its package (`ChainConveyorBlockEntity.drop`, row 80), a player takes it off the chain (row 82), a frogport takes it but no `CHAIN_IN` carried the key (a partial insert, a frogport of no store), the hold finds a key of this epoch Java does not hold, or a census's complete walk did not find a key held for the store or last held on one of its conveyors (strays of this epoch it finds are stripped and released); a census no longer clears anything; a declaration of another epoch drops the keys of any other | S4c2's draw needs both sides to agree on which packages the far district may take; the engine never decides a key is Java's on its own. A census that cleared the held lists would let a store that ticks whole, for a moment, forget packages still bound for a frogport that stops ticking again; Java's walk sees each package, so it is the one that can tell which left. Telling a key again once per session covers a crash that kept the key in its chunk and in `IndustryData` but lost the record. The other way round can happen too: `IndustryData` is a plain SavedData written at every save, so it can be a save ahead of the journal's held-back file (SC138), and a chunk saved at unload can be ahead of both; the held list and the first-tick look (SC140) cover that. Limits: a package that leaves some way no hook sees (a contraption moves its conveyor, a command) stays held until its store's census, which needs all of the store to tick; the package dropped keeps nothing of rtsim's but where the census strips a stray |
+| SC138 | The hold is at the S1 guard's refusal (`ChainConveyorBlockEntityMixin.exitTicks`, row 80): a package whose route (the first entry `PackageItem.matchAddress` takes) is a far frogport of the conveyor's store is keyed once and journaled as `CHAIN_HELD` (frogport and destination the far frogport's index, position the boundary conveyor, district none, op none), the conveyor's chunk noted for the journal barrier (`Industry.journalDependsOn`, now public: the journal's next file waits for that chunk, R21); a package held already, here and told this session, costs one key read; one held but with no route here to a far frogport stays held toward its frogport while that does not tick, and is released otherwise; any other key is stripped (and released when of this epoch). Keys are stripped where a frogport takes the package (`FrogportChainMixin`, row 78, its `CHAIN_IN` carrying the key), where Create drops it or a player takes it (and released, SC137), and where a census finds a key Java does not hold. They are not stripped at `CHAIN_OUT` | the key must travel with the package for S4c2 (a drawn package that lands another way is struck, §2.5); a chunk saved ahead of the journal is the order §3.1 allows, so the barrier makes the record reach disk no earlier than the key. Keys are stripped whether or not the industry is on (UR-1: a package keeps no stray tag); a strip while it is off releases nothing, and the next session's held list and first-tick look (SC140) clear what it left. Where a frogport's insert leaves something over, Create drops the original package rather than the copy it offered, so the original is stripped too (row 78). Limits: a chunk saved with a new key whose record and `IndustryData` entry a crash both lost carries a key Java does not hold, so its next hold strips it and keys the package again (a new serial, one more CHAIN_HELD; the lost record never reached the engine); one whose `IndustryData` entry was saved but whose record was lost is told again at its next hold, once per session (SC137) |
+| SC139 | The frontier's state is its own `IndustryData` plugin entry (`mic_rtsim_create:frontier`: the epoch, the kept routes as one list, the held packages one tag each by serial), updated in place at each change, apart from the package stores' own state | a hold is one tag written, not every store's state; one plugin per mod (D4) still holds, as both entries are `mic_rtsim_create`'s |
+| SC140 | Once in each session, at the first package-store tick (`PackageStores.tick`, `Frontier.listOnce`), Java journals one IND_HELD_LIST (0x041B: the frontier's epoch and the serials it holds, ascending), and the engine strikes from each store of that epoch every held key the list does not name (`PackageStore::keep_listed`, counted `held_unlisted`; stores of another epoch keep theirs). The first tick of each conveyor in the session (`scanAt` 0) looks for the packages loaded from `IndustryData` as last held on it that no hook has seen this session (`Frontier.firstTick`): one it does not carry, looping or on a connection, is released (`CHAIN_RELEASED`, counted `unfound`). The engine also checks a told-again hold against its new store before striking it from the old one (`PackageStore::takes_hold`), so a hold turned away leaves the key where it was | the second review found that a crash can leave the engine holding a key that neither Java nor any package has (a landing's keyed `CHAIN_IN` in the held-back journal file while `IndustryData` and the frogport's chunk were saved), and Java holding one no package has (a chunk saved at unload after a player took the package, then a crash before its release and `IndustryData` reached disk); S4c2's draw would take such a ghost, and only a whole-store census would clear it, which needs the far side to tick. Java writes the keys, so its list is the one that can say; the first tick is where the conveyor's own saved packages can be compared with Java's. Limits: one list a session of at most `HeldList.MAX_SERIALS` (8,187) serials; past that none is sent (logged) and only releases and censuses clear the engine's extras; a frontier made again within a session (the industry switched off and on) does not look on conveyors that tick already, but its announce raises the epoch anyway; a package that left its boundary conveyor on the way on unseen is released there and keyed again where it is held next |
 
 ---
 
@@ -1162,6 +1370,16 @@ The options below stay as the record of what was offered.
   state into a loaded network is not part of this design.
 - **Fluid counting** (§4.2): which position names a pipe network's mover is UNVERIFIED. Until it is, a
   store shared by two sections through pipes is a judging group.
+- **Counting at the movers** (§4.2, S3). Verified by GameTest at a vault between two lines
+  (`VaultBetweenMixersFactory`, `ResidueAtASharedVaultFactory`): a chute's push and a smart chute's draw are each
+  counted once (over 600 ticks the vault's stock changes by what the pairs counted in less out), Java takes the
+  engine's sets for the far and the control copy, nothing counts while the far copy is away, a move no count
+  point knows (a test's capability insert) leaves a residue that fails both units' window on that good (SC88),
+  and the next window passes both again with their strikes back at 0. UNVERIFIED by any GameTest, and checked
+  only by the launch (`defaultRequire 1`): the funnel, arm, frogport, packager and unpacking count points (SC83),
+  and whether a Create update adds a path into an inventory that no hooked call touches (it would show as a
+  residue and a failed window, not a wrong pass). A basin has no store to pour into in Create 6.0.10 (SC82), so
+  its hook is tested only on its hop to a chute.
 - **Uncounted movers at shared stores** (vanilla hoppers, the drill's shortcut, other mods) make judging
   groups (§4.3). How many shared stores a hopper reaches was not measured; on a base with many hoppers
   at shared stores, more sections are judged together.
@@ -1175,6 +1393,12 @@ The options below stay as the record of what was offered.
 - **Members and sources in chunks of no district** on a shared network are reported as last loaded by
   one district's compile (§2.6); an edit there now asks for a recompile (§3.6), but a change that is
   not an edit (a source's chunk unloading) is not seen until that district compiles again.
+- **A unit's edit box is its nodes' positions** (a store's controller block, a residual group's
+  extent; §3.6). An edit at another block of a multiblock store, or along a pipe or belt between
+  two nodes, lands in no unit's box: the district's window goes, the units go on. Java recompiles
+  after every edit, and the recompile carries no unit whose sections' fingerprints changed, so the
+  gap is the stretch from the edit to the new compile's END. Java sends no store's extent and no
+  route's blocks today; both would close it.
 - **Section counts on other bases** may differ from the reference base: `sectionsMax` and the row caps
   bound the cost either way, at the price of coarser sections.
 - **Stores shared by many sections** are few after the fold, measured on the reference base, see the

@@ -29,6 +29,98 @@ fn transfer_order(op: u64, count: i32) -> Order {
     }
 }
 
+/// How long a test waits for its save to become durable before it gives up. A wall clock, wide
+/// on purpose: the step pool and the IO lane share the machine with every other test and agent.
+const DURABLE_WAIT: Duration = Duration::from_secs(60);
+
+/// Saves at the next step and waits until the pages on disk hold every observation the engine has
+/// applied (`durable_obs_seq` has caught up with `stats_array()[4]`), driving the fake Java side
+/// while it waits. Panics after `DURABLE_WAIT` instead of hanging, saying what it waited for.
+///
+/// One order, one `idle` and a poll are not enough to wait on. The step that takes the save holds
+/// the observations applied up to it; a later step can apply more (Java's answer to a command the
+/// save step wrote), and then no save is coming to cover them. So each round orders a save,
+/// idles, waits for that save's commit (it lands on the IO lane by itself), and goes again while
+/// the pages still trail the engine. In a quiet world that is one round, as it always was.
+fn save_durable(e: &Engine, j: &mut Java) {
+    const APPLIED: usize = 4;
+    const DURABLE: usize = 5;
+    const SAVES_DONE: usize = 9;
+    const SAVE_FAILURES: usize = 15;
+    let deadline = Instant::now() + DURABLE_WAIT;
+    let give_up = |e: &Engine, rounds: u32| -> ! {
+        let s = e.stats_array();
+        panic!(
+            "the pages never became durable: waited {DURABLE_WAIT:?} for durable_obs_seq to reach \
+             the observations the engine applied; durable_obs_seq {}, applied through {} \
+             ({rounds} save rounds, {} saves done, {} failed)",
+            s[DURABLE], s[APPLIED], s[SAVES_DONE], s[SAVE_FAILURES]
+        );
+    };
+    let mut rounds = 0;
+    loop {
+        let before = e.stats_array();
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        rounds += 1;
+        // The commit runs on the IO lane and lands (or fails) without Java.
+        loop {
+            let s = e.stats_array();
+            if s[SAVES_DONE] != before[SAVES_DONE] || s[SAVE_FAILURES] != before[SAVE_FAILURES] {
+                break;
+            }
+            if Instant::now() >= deadline {
+                give_up(e, rounds);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let s = e.stats_array();
+        if s[DURABLE] >= s[APPLIED] {
+            return;
+        }
+        if Instant::now() >= deadline {
+            give_up(e, rounds);
+        }
+    }
+}
+
+/// Runs Java in lockstep with the engine until `done`: one game tick a step (`Java::flush` hands
+/// over, waits for that step and applies its commands), at most `max_ticks` of game time. For a
+/// wait whose outcome counts game time: `Java::run_until` ticks on the wall clock, so under load
+/// the engine falls behind, one step takes in hundreds of game ticks, and a clock the test races
+/// (wool regrowing, a player's presence going stale) runs out between two of the engine's answers.
+fn flush_until(j: &mut Java, what: &str, max_ticks: i64, mut done: impl FnMut(&mut Java) -> bool) {
+    let start = j.game_time;
+    while !done(j) {
+        assert!(
+            j.game_time - start < max_ticks,
+            "timed out waiting for {what}: not within {max_ticks} game ticks in lockstep"
+        );
+        j.flush();
+    }
+}
+
+/// `save_durable` covers what the save step's own commands bring back: an engine transfer is
+/// written in the step that takes the save, Java's answer is applied one step after it, and the
+/// pages must hold that answer too. (One order and one wait on `durable_obs_seq` never ends here.)
+#[test]
+fn a_durable_wait_covers_a_reply_applied_after_the_save_step() {
+    let dir = tmpdir("durable-reply");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.idle();
+    e.order(vec![transfer_order(4242, 3)]).unwrap();
+    save_durable(&e, &mut j);
+    let s = e.stats_array();
+    assert!(
+        s[4] >= 1,
+        "Java's answer to the transfer was applied: {s:?}"
+    );
+    assert!(s[5] >= s[4], "and the pages hold it: {s:?}");
+    assert!(e.inspect().op_applied(4242), "the transfer was applied");
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn hand_overs_alternate_buffers_and_never_overlap() {
     let dir = tmpdir("alternate");
@@ -248,9 +340,10 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     }
     j.idle();
     j.idle();
-    // The world saved with its journal at 10; ten more arrive in the same hand-over.
+    // The world saved with its journal at 11 (the session's JOURNAL_GEN, then ten transfers);
+    // ten more arrive in the same hand-over.
     let through = j.next_obs - 1;
-    assert_eq!(through, 10);
+    assert_eq!(through, 11);
     e.request_save(through);
     for i in 0..10 {
         j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
@@ -268,7 +361,7 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     );
     assert_eq!(
         j.journal.front().map(|(s, _)| *s),
-        Some(11),
+        Some(12),
         "trimmed to the acknowledgement"
     );
     e.close(true, Duration::from_secs(5)).unwrap();
@@ -567,10 +660,35 @@ fn a_save_failing_partway_costs_that_save_not_the_engine() {
         );
         let world = j.world_save();
         let through = j.next_obs - 1;
-        e.request_save(through);
-        j.run_until("the next save", |j| j.e.durable_obs_seq() >= through);
+        // The failed commit counts its failure (what the wait above saw) a moment before it
+        // reopens the store and hands its tickets back, and a save the step builds in that
+        // moment is stale (PF14, `paging::Job::stale`): refused, counted as a failure too, and
+        // the save after it writes the pages. The test cannot tell which side of that moment its
+        // next save falls on, so a refused save is asked for again, at most twice more (as
+        // industry.rs's `industry_save_tries`).
+        let mut refused = 0;
+        loop {
+            let failed = e.stats_array()[15];
+            e.request_save(through);
+            j.run_until("the next save, made or refused", |j| {
+                j.e.durable_obs_seq() >= through || j.e.stats_array()[15] != failed
+            });
+            if e.durable_obs_seq() >= through {
+                break;
+            }
+            refused += 1;
+            assert!(
+                refused < 3,
+                "{fault:?}: {refused} saves after the failed one refused too (failed saves {})",
+                e.stats_array()[15]
+            );
+        }
         j.run_until("its acknowledgement", |j| j.acks.contains(&through));
-        assert_eq!(e.stats_array()[15], 1, "{fault:?}: one failure");
+        assert_eq!(
+            e.stats_array()[15],
+            1 + refused,
+            "{fault:?}: one failure, and {refused} stale save(s) refused after it"
+        );
         assert!(
             e.protocol_error().is_none(),
             "{fault:?}: {:?}",
@@ -822,11 +940,7 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     assert!(p1_stat(&e, 7) >= 1, "gossip sent");
 
     // A save, then a crash: the pages' input log rebuilds the same world.
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
-    while e.durable_obs_seq() < e.stats_array()[4] {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    save_durable(&e, &mut j);
     let (hash, _, _) = e.phase1_state();
     assert_ne!(hash, before.0, "the world moved on");
     let saved = j.world_save();
@@ -1134,11 +1248,7 @@ fn phase1_works_are_bought_placed_refused_and_replayed_across_a_crash() {
     assert_eq!(p1_stat(&e, P1_WORKS_BOUGHT), 17);
 
     // A save, then a crash: the same world, works and all.
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
-    while e.durable_obs_seq() < e.stats_array()[4] {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    save_durable(&e, &mut j);
     let saved = j.world_save();
     let _ = j.crash();
     let e = engine(&dir, 256 * 1024);
@@ -1229,11 +1339,7 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     let cargo = phase1_caravan(&e, &mut j, agent);
     assert!(!cargo.is_empty());
     // Pages with the caravan in them.
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
-    while e.durable_obs_seq() < e.stats_array()[4] {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    save_durable(&e, &mut j);
     // A robbery after that save, booked live.
     let (member, item, n) = cargo
         .iter()
@@ -1310,14 +1416,6 @@ mod talk {
             .map(|e| wire::i32_at(&rec, e + 16))
     }
 
-    fn wait_durable(e: &Engine) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            assert!(Instant::now() < deadline, "the pages never became durable");
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    }
-
     /// A talk credits its village once: a TALKED reported twice under one op id (a double report)
     /// is applied once, one the pages include is skipped on replay, one they lack is applied once on
     /// replay, and the sentiment Java's ribbits read (the SENTIMENT command) and the answer to a
@@ -1345,9 +1443,7 @@ mod talk {
         );
 
         // Pages that include the first talk.
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        wait_durable(&e);
+        save_durable(&e, &mut j);
 
         // After that save: a talk with another ribbit (a new op id), reported twice.
         let op2 = wire::JAVA_OP_BIT | 0x7a2;
@@ -1653,11 +1749,7 @@ mod dragons {
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(&e, &mut j);
 
         // After the save: a hoard robbery and a spawn-egg dragon, journaled; the world saves,
         // then the server dies.
@@ -1845,11 +1937,7 @@ mod dragons {
             "a failed stack goes again as a new op"
         );
         assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(&e, &mut j);
         let saved = j.world_save();
         let _ = j.crash();
 
@@ -1924,16 +2012,19 @@ mod dragons {
                 _ => None,
             })
         };
-        let mut ticks = 0;
+        // In lockstep. A roll draws only while the player's last report is fresh (within
+        // `presence_fresh_ticks`, 200), and a step runs the dragons to its time before it reads
+        // the step's players. A step that takes in more than 200 game ticks (Java ticking ahead
+        // of a loaded engine) finds a roll late in it stale: the rolls stop, start again from the
+        // next report with a new wait, and the 12,000 ticks ran out under load.
+        let start = j.game_time;
         while drawn(&j).is_none() {
             assert!(
-                ticks < 12_000,
+                j.game_time - start < 12_000,
                 "no field flight drawn: {:?}",
                 e.dragon_stats()
             );
-            j.tick();
-            ticks += 1;
-            std::thread::sleep(Duration::from_micros(100));
+            j.flush();
         }
         j.idle();
         let m = drawn(&j).unwrap();
@@ -1988,11 +2079,7 @@ mod dragons {
         );
 
         // A save, then 20 more breaths journaled after it, and a crash.
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(&e, &mut j);
         j.dragon_obs(&O::Breaths(db::Breaths {
             agent: m.agent,
             epoch: m.epoch,
@@ -2073,6 +2160,7 @@ mod dragons {
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
+        assert_eq!(body.age_days, 110, "its age in whole days, as the body reported it (DH-7)");
 
         // Captured, it is abstract again: at its lair, or on a leg in game time.
         let seen = j.far.len();
@@ -2081,6 +2169,7 @@ mod dragons {
         let after = last(&j);
         assert!(j.far.len() > seen, "a change sends a record");
         assert_ne!(after.state, FarState::Body, "{after:?}");
+        assert_eq!(after.age_days, 110, "the body's age, a day not yet passed");
         assert!(
             after.t0 <= j.game_time && after.t0 >= j.game_time - 200,
             "times are game time: {} at {}",
@@ -2310,11 +2399,7 @@ mod ships {
     }
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// The ships through the native engine and a fake ships plugin: ports and a haven reported,
@@ -2373,11 +2458,15 @@ mod ships {
                 m.role == sb::Role::Merchant && !m.cargo.is_empty() && m.times[3] > now + 400
             })
         };
-        let mut ticks = 0;
-        j.run_until("a merchant with a hold in view", |j| {
-            ticks += 1;
+        // In lockstep: "most of its voyage ahead" is the engine's clock, and the fight and the loot
+        // below land at Java's. Ticking on the wall clock (`run_until`) let Java run ahead of a
+        // loaded engine, so the loot landed after the merchant had docked and sold its hold: no
+        // loot booked.
+        let t0 = j.game_time;
+        flush_until(&mut j, "a merchant with a hold in view", 12_000, |j| {
             laden(j, &j.e.clone()).is_some()
         });
+        let ticks = j.game_time - t0;
         let m = laden(&j, &e).expect("found");
         assert_eq!(m.agent >> 56, 0x53, "a ship's agent id");
         assert_eq!(m.dimension, dim, "the dimension in Java's dictionary");
@@ -2970,11 +3059,7 @@ mod herds {
     }
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// Founds `n` herds of 20 sheep, 64 blocks apart along a line, in one order unit.
@@ -3163,6 +3248,9 @@ mod herds {
         let sheared = j.herd_plugin.shear(agent, 1, PLAYER);
         let led = j.herd_plugin.lead(agent, PLAYER).expect("one led away");
         assert_eq!((killed.len(), sheared.len()), (1, 1));
+        // From here to the second group, Java runs in lockstep with the engine: the sheared sheep
+        // is still sheared only while its wool has not regrown (`sheared_ticks` of game time).
+        let shorn_at = j.game_time;
         j.herd_flush();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -3225,7 +3313,7 @@ mod herds {
 
         // The player leaves: the group is captured, each member with its state.
         j.players.clear();
-        j.run_until("the group captured", |j| {
+        flush_until(&mut j, "the group captured", 1_000, |j| {
             j.herds
                 .iter()
                 .any(|(_, c)| matches!(c, H::Despawn(d) if d.agent == agent && d.epoch == m.epoch))
@@ -3245,8 +3333,16 @@ mod herds {
 
         // The player is back: the same sheep, the sheared one still sheared, no dead one.
         j.players = vec![(PLAYER, dim, pos)];
-        j.run_until("the group again", |j| materializations(j).len() >= 2);
+        flush_until(&mut j, "the group again", 1_000, |j| {
+            materializations(j).len() >= 2
+        });
         j.idle();
+        let regrow = e.with_herds(|h, _| h.tun.sheared_ticks) as i64;
+        assert!(
+            j.game_time - shorn_at < regrow,
+            "the group came back {} game ticks after the shearing, past the {regrow} its wool takes to regrow",
+            j.game_time - shorn_at
+        );
         let m2 = materializations(&j).remove(1);
         assert!(m2.epoch > m.epoch, "a new epoch for every materialization");
         let first: std::collections::BTreeMap<u64, u32> =
@@ -3550,11 +3646,7 @@ mod conflict {
     }
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// A goblin camp reported (FACTION_FOUND) joins the world as a haven and its territory goes
@@ -4920,8 +5012,9 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// A body killed at the camp is CAMP_DEATH, journaled with its op id: the member is gone from
-    /// its slot and the pool, once, and a second copy of the record (a replay's) books nothing.
+    /// A body killed at the camp is CAMP_DEATH, journaled under its own sequence: the member is gone
+    /// from its slot and the pool, once, and a second copy of the record (a replay's) books nothing,
+    /// because the slot's generation is retired at the first (the death keeps no op id).
     #[test]
     fn a_death_is_booked_through_the_journal_once() {
         let (_dir, e, mut j) = grove("camp-death", 3);
@@ -4941,7 +5034,7 @@ mod conflict {
         assert_eq!(
             e.with_conflict(|c, _| c.stats.camp_deaths),
             1,
-            "once, by its op id"
+            "once: the second copy finds the slot's generation retired"
         );
         let (pool, cap) = e.with_conflict(|c, _| {
             let f = &c.factions[c.faction_of_key(CAMP).unwrap() as usize];
@@ -5071,6 +5164,175 @@ mod conflict {
         );
         assert_eq!(slots(&e), [3, 0, 0, 0, 0], "nothing moves");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A camp's record carried on a holder comes back as a REASSERT (docs/boundary.md section 3.2,
+    /// MZB-652), and the engine judges the copy by the generation that journaled it, not by the
+    /// record's (op, line): a copy of a record it applied is dropped even where the camp has
+    /// forgotten the line; a copy from a generation it never heard is booked once, under the copy's
+    /// own sequence; and a copy journaled in the last session and replayed stays inside the replay
+    /// window, so the replayed census after it still only marks its camp out.
+    #[test]
+    fn a_camp_record_a_holder_journals_again_is_judged_by_its_generation() {
+        use std::sync::atomic::Ordering;
+        /// A generation no engine heard: the one a crash lost with its journal.
+        const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+        let copies = |e: &Engine| {
+            (
+                e.stats.copies_applied.load(Ordering::Acquire),
+                e.stats.copies_dropped.load(Ordering::Acquire),
+            )
+        };
+        let answers = |e: &Engine| e.with_conflict(|c, _| c.stats.camp_answers);
+        let kept = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .unwrap()
+                    .answered
+                    .iter()
+                    .map(|a| (a.line, a.seq))
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The record as a holder kept it: one op's answer, split in lines, journaled by a session
+        // the engine never heard (its sequence is that session's).
+        let held = |j: &Java, o: &O, seq: u64| {
+            let mut b = Vec::new();
+            cb::encode_obs(0, j.game_time, o, &mut b);
+            wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+            b
+        };
+        let answer = |j: &mut Java| {
+            let record = j
+                .conflict_plugin
+                .queued()
+                .into_iter()
+                .find_map(|o| match o {
+                    O::CampBodies(b) => Some(b),
+                    _ => None,
+                })
+                .expect("the answer, on its way");
+            let _ = j.conflict_plugin.drop_queued();
+            record
+        };
+        let part = |record: &cb::CampBodies, lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+
+        // A dropped copy books nothing, and an unknown one is booked once.
+        let (_dir, e, mut j) = grove("camp-copies", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        let record = answer(&mut j);
+        assert_eq!(record.lines.len(), 3);
+        let first = j.conflict_obs(&part(&record, &record.lines[..1]));
+        let original = j.journaled(first).unwrap();
+        let nonce = j.nonce;
+        j.idle();
+        assert_eq!((answers(&e), slots(&e)), (1, [1, 2, 0, 0, 0]));
+        // A save durable through it, and the camp's next answer forgets the line (MZB-177): a plain
+        // resend of the line would book it again, by state (the test above).
+        let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+            panic!()
+        };
+        wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, first);
+        j.idle();
+        j.conflict_obs(&part(&record, &record.lines[2..]));
+        j.idle();
+        assert_eq!((answers(&e), slots(&e)), (2, [2, 1, 0, 0, 0]));
+        assert_eq!(
+            kept(&e).iter().map(|k| k.0).collect::<Vec<_>>(),
+            vec![record.lines[2].line],
+            "line 0 forgotten"
+        );
+        let before = kept(&e);
+        j.reassert(nonce, &original);
+        j.idle();
+        assert_eq!(copies(&e), (0, 1), "a copy of the open generation's record");
+        assert_eq!(
+            answers(&e),
+            2,
+            "dropped: nothing booked, though the line is forgotten"
+        );
+        assert_eq!(slots(&e), [2, 1, 0, 0, 0]);
+        assert_eq!(kept(&e), before);
+
+        // A record of an earlier generation, whose original the crash lost: the copy is all of it.
+        let lost = held(&j, &part(&record, &record.lines[1..2]), 7);
+        let copy = j.reassert(EARLIER_GEN, &lost);
+        j.idle();
+        assert_eq!(copies(&e), (1, 1));
+        assert_eq!((answers(&e), slots(&e)), (3, [3, 0, 0, 0, 0]));
+        assert_eq!(
+            kept(&e).iter().find(|k| k.0 == record.lines[1].line),
+            Some(&(record.lines[1].line, copy)),
+            "booked under the copy's sequence, not the record's own (7)"
+        );
+        j.reassert(EARLIER_GEN, &lost);
+        j.idle();
+        assert_eq!(copies(&e), (1, 2), "the second copy of it is dropped");
+        assert_eq!((answers(&e), slots(&e)), (3, [3, 0, 0, 0, 0]));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A copy the last session journaled, replayed: inside the replay window.
+        let (dir, e, mut j) = grove("camp-copies-replay", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        save(&e, &mut j);
+        camp_in(&mut j);
+        let record = answer(&mut j);
+        let lost = held(&j, &part(&record, &record.lines[..1]), 7);
+        j.reassert(EARLIER_GEN, &lost);
+        // A later census, journaled after the copy: live, it would order a reconcile.
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.camp_out(CAMP, at);
+        j.conflict_flush();
+        j.idle();
+        camp_in(&mut j);
+        assert_eq!(
+            copies(&e),
+            (1, 0),
+            "applied in the session that journaled it"
+        );
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let mut plugin =
+            std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+        let _ = plugin.drop_queued();
+        for camp in plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.conflict_plugin = plugin;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0], "the pages predate the census");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(copies(&e), (1, 0), "the replay applied the copy, once");
+        assert_eq!(
+            slots(&e),
+            [1, 2, 0, 0, 0],
+            "the copy's line, booked by state"
+        );
+        assert_eq!(
+            reconciles(&j).len(),
+            0,
+            "the census after the copy was replayed, not live"
+        );
+        assert!(
+            !e.with_conflict(|c, _| c.camp_is_in(c.faction_of_key(CAMP).unwrap())),
+            "its camp is out"
+        );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -5895,11 +6157,7 @@ mod worldmodel {
     const MODULES: u32 = 0b1111 | MODULE_HERDS;
 
     fn save(e: &Engine, j: &mut Java) {
-        e.order(vec![Order::SaveAtNextStep]).unwrap();
-        j.idle();
-        while e.durable_obs_seq() < e.stats_array()[4] {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        save_durable(e, j);
     }
 
     /// Region (0, 0): sea west of x = `shore`, plains east of it.

@@ -20,7 +20,7 @@
 
 use std::collections::BTreeSet;
 
-use rtsim_kernel::clock::Tick;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::rows::PagedArena;
 use rtsim_space::topology::Topologies;
 
@@ -92,6 +92,9 @@ pub struct FarLeg {
     pub t1: Tick,
     /// A hunt's circle, blocks; 0 otherwise.
     pub radius: u32,
+    /// Age in whole days at the record's time, as Ice and Fire counts it (`getAgeInDays`, 24,000
+    /// ticks a day): the far model's size between stages (DECISIONS.md DH-7). 0 for a gone record.
+    pub age_days: u32,
 }
 
 /// The dragons' far feed state (not saved: per session).
@@ -144,6 +147,7 @@ pub(crate) fn leg_of(
         t0: at,
         t1: at,
         radius: 0,
+        age_days: age_days(x.age(at)),
     };
     match (x.state, x.leg) {
         (State::Flying(_), Some(l)) => {
@@ -192,7 +196,13 @@ fn gone(d: DragonId, at: Tick) -> FarLeg {
         t0: at,
         t1: at,
         radius: 0,
+        age_days: 0,
     }
+}
+
+/// An age in ticks as whole days, as Ice and Fire's `getAgeInDays` gives it, held to `u32`.
+fn age_days(ticks: u64) -> u32 {
+    u32::try_from(ticks / TICKS_PER_DAY).unwrap_or(u32::MAX)
 }
 
 impl Dragons {
@@ -284,6 +294,7 @@ pub fn encode(seq: u64, r: &FarLeg, body: u32, dimension: u32, offset: u64, buf:
     b[56..64].copy_from_slice(&game(r.t0).to_le_bytes());
     b[64..72].copy_from_slice(&game(r.t1).to_le_bytes());
     b[72..76].copy_from_slice(&r.radius.to_le_bytes());
+    b[76..80].copy_from_slice(&r.age_days.to_le_bytes());
 }
 
 /// One FAR_LEG as Java reads it (tests and tools): every field raw, times in game time.
@@ -305,6 +316,7 @@ pub struct Decoded {
     pub t0: i64,
     pub t1: i64,
     pub radius: u32,
+    pub age_days: u32,
 }
 
 /// Reads one FAR_LEG at the start of `b`; `None` for another kind, a short buffer or a state
@@ -337,6 +349,7 @@ pub fn decode(b: &[u8]) -> Option<Decoded> {
         t0: u64_at(56) as i64,
         t1: u64_at(64) as i64,
         radius: u32_at(72),
+        age_days: u32_at(76),
     })
 }
 
@@ -360,6 +373,7 @@ mod tests {
             t0: Tick(10_000),
             t1: Tick(12_500),
             radius: 0,
+            age_days: 87,
         }
     }
 
@@ -377,7 +391,8 @@ mod tests {
         assert_eq!((d.variant, d.stage, d.y), (2, 4, 180));
         assert_eq!((d.x0, d.z0, d.x1, d.z1), (-1200, 300, 4096, -77));
         assert_eq!((d.t0, d.t1), (6_000, 8_500), "engine ticks less the offset");
-        assert_eq!(&buf[76..80], &[0; 4], "reserved bytes stay zero");
+        assert_eq!(d.age_days, 87);
+        assert_eq!(buf[35], 0, "the reserved byte stays zero");
     }
 
     /// The same bytes are decoded by the Java side's FarLegsTest
@@ -390,7 +405,7 @@ mod tests {
         assert_eq!(
             hex,
             "008c5000010000002a000000000000000700000000000044090000000300000001020400b400000050fbffff\
-             2c01000000100000b3ffffff701700000000000034210000000000000000000000000000"
+             2c01000000100000b3ffffff701700000000000034210000000000000000000057000000"
         );
     }
 

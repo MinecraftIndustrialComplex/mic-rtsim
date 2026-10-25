@@ -16,6 +16,7 @@ pub mod persist;
 pub mod reconcile;
 pub mod scenario;
 pub(crate) mod ser;
+pub mod stores;
 pub mod threat;
 pub mod tracked;
 pub mod tunables;

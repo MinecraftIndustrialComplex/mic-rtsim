@@ -194,6 +194,8 @@ an operation id at most once.
 | 0x0105 | DIED | member index | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0110 | TRANSFER | transfer kind | 24 u64 opId, 32 u64 from, 40 u64 to, 48 u32 item, 52 reserved, 56 i64 amount | 64 |
 | 0x0111 | COMMAND_RESULT | status | 24 u64 cmdSeq, 32 u64 opId | 40 |
+| 0x0130 | JOURNAL_GEN | 0 | 24 u64 gen: the session's generation, random, never 0. A session's first journaled record (§3.2) | 32 |
+| 0x0131 | REASSERT | 0 | 24 u64 gen (the inner record's; 0: none), 32 the record a holder carried, whole as first journaled. gameTime the inner record's (§3.2) | 32 + record |
 | 0x0020 to 0x0022, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
 
 **MEMBER_STATE** (what a body adapter captured):
@@ -247,9 +249,11 @@ count (docs/choices-journal-barrier.md JB1). The next hand-over carries the valu
 forget op ids applied at or before it, and a camp ledger forgets the CAMP_BODIES answers it booked from
 records at or before it (MOWZIE.md §4.9, MZB-177).
 
-**Idempotent events.** TAKEN, DIED and COMMAND_RESULT may arrive more than once (§3.1). The engine
-applies each at most once: by op id while it remembers it, and by state after that (a member that
-is already gone, an op that is already done).
+**Idempotent events.** A record a chunk or entity carries arrives again as a copy (REASSERT, §3.1,
+§3.2), which the engine judges by the generation the record was journaled in, not by op id. The
+engine still applies an op id at most once while it remembers it, and by state after that (a member
+that is already gone, an op that is already done): a record too large to copy is journaled again
+plainly, and an engine that a crash rolled back resends commands Java may have applied.
 
 **Deaths are journaled at the end of the tick** they happen in, once they are certain: another mod
 can still cancel a death after the bridge saw LivingDeathEvent.
@@ -308,12 +312,13 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
 disk. It holds:
 - `lastAppliedCmdSeq`;
 - every journaled observation the engine has not acknowledged, as the exact record bytes;
+- the newest JOURNAL_GEN the engine acknowledged, kept past the trim (`pinnedGen`, §3.2);
 - `nextObsSeq`;
 - Java's dictionary.
 
 **Replay is the normal path.** Journaled observations always reach the engine from the journal: at
 each hand-over Java copies the entries it has not sent yet this session. At a session start it has
-sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The engine acknowledges
+sent none, so everything unacknowledged goes out again, flagged `REPLAY`, after the kept JOURNAL_GEN. The engine acknowledges
 (`ackedObsSeq`) only what pages on disk include, and Java then trims.
 
 **Op ids, both ways:**
@@ -339,11 +344,19 @@ acknowledges them **in the same session**:
 - a taken creature carries its MEMBER_STATE and TAKEN;
 - each item a dying member dropped carries its MEMBER_STATE and DIED.
 
-When the holder loads in a later session (a chunk load, an entity read from disk), Java journals the
-records again: the same bytes and op ids, new sequences. It drops them from the holder once the engine
-acknowledges a sequence at or past them in this session; within one session sequences are never
-reused, so that comparison is exact. A known gap: an item picked up before the acknowledgement takes
+Each record is kept with the generation it was journaled in (§3.2), and so is a reconcile epoch's
+pending IND_RECONCILE_RESULT (`mic_rtsim:reconcile`). When the holder loads (a chunk load, an entity
+read from disk), Java journals a copy of each record (REASSERT), which the engine applies only when its
+own state lacks the record. It drops them from the holder once the engine acknowledges a sequence at or
+past the copies in this session; within one session sequences are never reused, so that comparison is
+exact. The holder keeps the record as first journaled, never the copy, so a holder that loads again
+before the acknowledgement journals the same copy again. A known gap: an item picked up before the acknowledgement takes
 its record into a player's inventory, where nothing carries it.
+
+The records carry the engine life they were written in (docs/choices-reinstall-guard.md RG14). A
+holder that loads into another life, after a sim reset, drops them without journaling them: the new
+engine took the world's state from the world, so the old records could only apply something twice. An
+op id of another life is not looked up for DUPLICATE either.
 
 **The other way round** (the journal ahead of a chunk): vanilla writes the journal in `saveLevelData`,
 before it serializes any chunk, and skips a chunk saved in the last 10 s, so a journal could say applied
@@ -358,6 +371,69 @@ R21 to R24). Entities that carry records are not covered.
 **Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29). A held or
 failed journal write widens that window to the next world save; WORLD_SAVED no longer reports it, so P29's
 `confirm_through` will keep the older page generation (docs/choices-journal-barrier.md JB1, JB6).
+
+### 3.2 Generations and copies (SEC-1 S4p, DECISIONS.md)
+
+**Why.** A holder's records used to be journaled again as themselves, and the engine refused a repeat
+by op id. But it forgets op ids at each WORLD_SAVED, while Java drops the holder's records only at the
+acknowledgement of their new sequences, which comes with a later page save. A holder that unloads and
+loads again in between, or stays unloaded across sessions, journaled a record the engine had applied
+and no longer recognised; a record with no op id at all (a TRANSFER without one, an industry record
+only its sequence names) was never recognised. So a copy is judged by something the engine never
+forgets: the generation that journaled the record.
+
+**Generations.** Each session journals JOURNAL_GEN first, a random nonzero 64-bit nonce, right after
+Java moves past the pages, so its sequence is the session's first (`max(worldNextObsSeq, pagesObsSeq
++ 1)`). The engine opens that generation there and closes the one before; every record it admits after
+moves the open generation's last sequence. A session whose first record is not a JOURNAL_GEN (a bridge
+from before generations) gets an unnamed generation, so the generation before it still closes where it
+ended.
+
+**Copies.** A holder keeps each record with its generation. At the holder's load Java journals
+REASSERT: the generation, then the record whole as first journaled, under a new sequence. The engine
+admits the REASSERT by its own sequence like any record, then judges the copy by (gen, s), s the inner
+record's own sequence, in this order:
+1. gen 0 (no generation named it): new;
+2. a copy of (gen, s) applied before: dropped;
+3. gen is the open generation: new only past its last sequence (in practice never: the open generation
+   is the session's own, which admitted s before the copy);
+4. gen is closed: new when s is past the last sequence it admitted;
+5. gen unknown (no page holds it: a crash lost the session's pages with its journal, or a sim reset):
+   new.
+
+A new copy applies as its record under the copy's sequence (its op id checked as any record's) and
+joins the applied copies, for an unknown generation too, so a second copy of it is dropped. A dropped
+copy is answered as a record whose op id was already heard (an industry or dragons record gets its
+answer again). Java's journal is drained in sequence order, so a generation that admitted a sequence
+past s was offered s before it; a crash that lost the pages lost the generation's last sequence with
+the record, and the copy applies. A record too large to wrap (32 bytes plus the record above
+MAX_RECORD) is journaled again plainly, as before generations, and counted (`/rtsim status`).
+
+**Where the engine keeps them.** The kernel's `Replay`: the open generation (nonce, last sequence, the
+copies applied in it) in the meta page (version 2). A closed generation never changes again, so the
+closed ones are written once, in blocks of 256 at page table 2 (magic `RTJG`): a save writes the blocks
+that gained one, or all of them after a failed save. Nothing falls off: a holder unloaded for a thousand
+sessions is still judged by its own generation, at about 14 bytes a session on disk, plus 12 for each
+applied copy (copies apply only after a crash or a reset).
+
+**The journal keeps its newest acknowledged JOURNAL_GEN.** A trim drops the entries the engine
+acknowledged, except the newest JOURNAL_GEN among them (`Journal.pinnedGen`, saved with the journal
+as `pinnedGen`), which is sent first at each session start like an entry; pages that include it skip
+it. The entries after it, up to the next JOURNAL_GEN among them, are that generation's. Without it,
+pages older than the journal's first entry (restored from a backup, say) would admit those entries
+under the pages' own open generation, and a copy of one of them would find its generation unknown and
+apply a second time. It is not an entry: the journal's first sequence (`SESSION_START`'s
+`JOURNAL_FIRST_OBS_SEQ`) is the first entry after it.
+
+**Known limit.** When the pages are older than the journal's first entry (a journal trimmed past the
+pages, §3), the engine skips the gaps and admits the rest: the kept JOURNAL_GEN opens its generation,
+and the entries after it move that generation's last sequence past the trimmed stretch, so a copy of
+a record from that stretch is dropped. It is part of what that case loses anyway; the bridge announces
+again what it remembers (`BoundarySession.observationsLost`).
+
+**After a reset** (the reinstall guard's choice RG14): an engine that started over took its state
+from the world. The guard drops the old engine's records in Java before they are journaled; without
+it, a copy applies unless the generation the journal kept admitted that sequence or a later one.
 
 ## 4. Phase 1: caravans and markets (PLAN.md §8)
 
@@ -2043,7 +2119,7 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 | 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
 | 56, 64 | i64 | t0, t1, game time |
 | 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
-| 76 | u32 | reserved |
+| 76 | u32 | age: whole days at the record's time, as Ice and Fire's `getAgeInDays` counts them (24,000 ticks a day); 0 in a GONE record (DECISIONS.md DH-7) |
 
 | aux | State | Meaning |
 |---|---|---|
@@ -2066,6 +2142,9 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
   table and drops any record still on its way (the engine drops its own queue, GONE records included);
   the engine resends every dragon when the module comes back. A changed dragon whose page will not load
   is skipped and counted (`far_read_failed`): Java draws its last leg until it next changes.
+- **The age** sizes the far model between stages as Ice and Fire sizes the body (DH-7): the far feed's
+  INTRO carries it (§12.2). It is the age when the record was made, so a dragon that sends nothing for
+  days keeps its last age until its next record; at a hand-over the last record is the leg it arrived on.
 
 ### 12.2 The payloads and the far feed's message
 
@@ -2095,7 +2174,7 @@ GONE   5: handle
 
 - **Looks** (version 2, DHT60): an INTRO's `shape` is the content hash of what the object looks like (0:
   none, drawn as a box), its `age` the object's age in days (a dragon's, for its size between stages; -1:
-  the source does not say, as the engine's legs do not). `style`, `variant` and `size` are a dragon's
+  the source does not say). The engine's legs say it since DH-7 (FAR_LEG's age, §12.1). `style`, `variant` and `size` are a dragon's
   species, colour and stage.
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
   use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE

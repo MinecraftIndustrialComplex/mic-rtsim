@@ -57,7 +57,10 @@ neoForge {
         // defaultRequire 1, so a Create mixin that no longer matches fails the launch.
         gameTestServer {
             type = 'gameTestServer'
-            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            // -Psec1fx adds SEC-1's section fixtures (gametest/glass/SectionsFxGameTests, long runs, choice SC96);
+            // -PgametestNamespaces=mic_rtsim_create_sec1fx runs only them.
+            systemProperty 'neoforge.enabledGameTestNamespaces', (project.findProperty('gametestNamespaces')
+                    ?: (mod_id + (project.hasProperty('sec1fx') ? ',mic_rtsim_create_sec1fx' : ''))).toString()
             systemProperty 'mic_rtsim.gametest', 'true'
             // The session's engine, as the core's run: native (rtsim-jni, with the industry engine behind it)
             // unless -PrtsimEngine=stub. The industry commands the tests script go to the native engine as
