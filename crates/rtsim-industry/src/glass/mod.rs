@@ -254,6 +254,7 @@ impl Glass {
                         comp.probes.clear();
                         // and the last session's count sample, whose sweep numbers it may collide with.
                         comp.counts = None;
+                        comp.counted_res.clear();
                         if let Some(rp) = dg.replay.as_mut() {
                             rp.renumber(c.end.compile);
                         }

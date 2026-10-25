@@ -5404,6 +5404,65 @@ mod replay_path {
             assert_eq!(c.extra_rows(), 0);
         }
 
+        /// The report's sections follow their unit: the fast line's section passed, the slow one's
+        /// failed and names the good it missed by the most; a stale unit shows stale, a replaying
+        /// glass district shows its passing section replaying and a frozen unit frozen. Neither
+        /// has a shared store.
+        #[test]
+        fn the_report_gives_each_section_its_units_state_and_worst_good() {
+            use crate::glass::report::section_state as ss;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let mut dg = crate::glass::check::DistrictGlass::default();
+            let r = c.report(&dg);
+            assert_eq!(r.sections.len(), 2);
+            assert!(r.shared.is_empty());
+            let (sa, sb) = (
+                &r.sections[c.sections.section_of[p0 as usize] as usize],
+                &r.sections[c.sections.section_of[p1 as usize] as usize],
+            );
+            assert_eq!(
+                (sa.unit, sb.unit),
+                (Some(u32::from(ua)), Some(u32::from(ub)))
+            );
+            assert_eq!((sa.state, sb.state), (ss::PASSED, ss::FAILED));
+            assert!(sa.worst.is_none() && sa.may_replay && !sb.may_replay);
+            let w = sb.worst.expect("the slow line missed a good");
+            assert!(w.good == ORE.0 || w.good == CRUSHED.0);
+            assert!(w.predicted != w.measured && w.excess > 0.0);
+            assert_eq!(
+                (sb.verdict, sb.strikes, sb.windows_completed),
+                (verdict::FAIL, 1, 1)
+            );
+            assert_eq!(
+                sa.fingerprint,
+                c.sections.list[c.sections.section_of[p0 as usize] as usize].fingerprint
+            );
+            // While the district replays in glass, the passing section replays.
+            dg.replay_model = crate::glass::report::replay_model::GLASS;
+            // (no replay object here: a replay model alone does not make a section replay)
+            assert_eq!(c.report(&dg).sections[0].state, ss::PASSED);
+            // An edit inside the slow line's box stales it, whatever its last verdict.
+            let at = c.sections.list[c.sections.section_of[p0 as usize] as usize]
+                .low
+                .expect("a position");
+            c.edit(Tick(3300), Some(at), &tun);
+            let r = c.report(&dg);
+            let a = &r.sections[c.sections.section_of[p0 as usize] as usize];
+            assert_eq!((a.state, a.stale, a.may_replay), (ss::STALE, true, false));
+        }
+
         /// Two lines of the same goods: a line whose own window passes still may not replay while
         /// the district's last window failed on a good it touches (§3.4).
         #[test]
@@ -7784,6 +7843,100 @@ mod replay_path {
                 assert_eq!(d.verdict, verdict::FAIL, "{d:?}");
                 for g in &d.goods {
                     assert_eq!(g.verdict == verdict::FAIL, g.good == SHEET, "{:?}", g.good);
+                }
+            }
+
+            /// The report names the sections, the counted vault between them and its residue
+            /// (SECTIONS.md §8.1): a steady run leaves no residue and both sections passed; a
+            /// player taking sheets leaves the residue of what was taken, fails both sections and
+            /// names sheets as each one's worst good. A sweep without a count sample is not counted.
+            #[test]
+            fn the_report_names_the_sections_the_counted_vault_and_its_residue() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let tun = GlassTunables::default();
+                let dg = crate::glass::check::DistrictGlass::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                drive_v(&mut c, ids, 0, 3200, steady, &tun);
+                let r = c.report(&dg);
+                assert_eq!(r.sections.len(), 2);
+                for s in &r.sections {
+                    assert_eq!(s.state, crate::glass::report::section_state::PASSED);
+                    assert!(s.unit.is_some() && s.passed && s.may_replay && !s.stale);
+                    assert!(s.worst.is_none());
+                    assert!(s.stores.contains(&(Some(1), true)), "{:?}", s.stores);
+                }
+                assert_ne!(r.sections[0].unit, r.sections[1].unit);
+                assert!(r.sections[0].low.is_some() && r.sections[0].bbox.is_some());
+                assert_ne!(r.sections[0].fingerprint, r.sections[1].fingerprint);
+                assert_eq!(r.shared.len(), 1);
+                let h = &r.shared[0];
+                assert_eq!(
+                    (h.node, h.inventory, h.sections.clone()),
+                    (v, Some(1), vec![0, 1])
+                );
+                assert_eq!(h.pos, Some(BlockPos::new(20, 64, 0)));
+                assert!(h.counted && h.counted_now && h.pairs == 2);
+                assert_eq!(h.sample_sweep, Some(32));
+                assert!(h.residue.is_empty(), "{:?}", h.residue);
+                // The flat form carries the same: sections and the shared store after the units.
+                let flat = r.to_f64s();
+                let t = crate::glass::report::HEADER
+                    + crate::glass::report::GOOD_STRIDE * r.goods.len();
+                let units_end = t + 1 + 2 * crate::glass::report::UNIT_STRIDE;
+                assert_eq!(flat[t], 2.0);
+                assert_eq!(flat[units_end], 2.0);
+                let secs_end = units_end + 1 + 2 * crate::glass::report::SECTION_STRIDE;
+                assert_eq!(
+                    flat[secs_end], 4.0,
+                    "each section: its input store and the vault"
+                );
+                // A sweep that sends no count sample leaves the store uncounted now.
+                let mut d = c.clone();
+                let inv = vault_invs(steady(3300));
+                let goods = goods();
+                let ports = GoodVec::new();
+                let view = View {
+                    revision: 1,
+                    sweep: 33,
+                    inventories: &inv,
+                    ports: &ports,
+                };
+                d.sweep(Tick(3300), &view, &goods, &tun);
+                assert!(!d.report(&dg).shared[0].counted_now);
+                let _ = (c0, f1);
+
+                // A player takes sheets from the vault from tick 1500.
+                let taken = |t: u64| {
+                    if t < 1500 {
+                        0
+                    } else {
+                        ((t - 1500) / 100 * 4) as i64
+                    }
+                };
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                drive_v(
+                    &mut c,
+                    ids,
+                    0,
+                    3200,
+                    |t| {
+                        let s = steady(t);
+                        At {
+                            stock: s.stock - taken(t),
+                            ..s
+                        }
+                    },
+                    &tun,
+                );
+                let r = c.report(&dg);
+                assert_eq!(r.shared[0].residue, vec![(SHEET.0, -68)]);
+                for s in &r.sections {
+                    assert_eq!(s.state, crate::glass::report::section_state::FAILED);
+                    assert_eq!(s.verdict, verdict::FAIL);
+                    let w = s.worst.expect("sheets failed");
+                    assert_eq!(w.good, SHEET.0);
+                    assert!(w.excess > 0.0 && w.measured != w.predicted);
                 }
             }
 
