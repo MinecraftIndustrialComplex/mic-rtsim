@@ -15,6 +15,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
+use rtsim_space::topology::{Topologies, Topology};
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 
@@ -1373,5 +1374,76 @@ fn a_near_tangent_exit_is_not_rebooked_tick_after_tick() {
     assert!(
         (0.0..=worst + 1.0).contains(&stepped),
         "{stepped} ticks past the root, the bound is {worst}"
+    );
+}
+
+/// MZB-456 (ledger 23's seam lap, MZB-751): a band that has crossed an x seam and routs walks home
+/// from its position in the route's chart, not from its canonical cell. The canonical cell is a
+/// lap away from the waypoints (x wraps over [0, 1200), the band stands on the far side of the
+/// seam), so a route that starts there has a first segment as long as the world, and its first
+/// steer would send the band across it.
+#[test]
+fn a_band_routed_after_the_seam_walks_home_from_its_chart_position_not_a_lap_away() {
+    let seed = 21;
+    let (mut w, _) = synth::world(seed);
+    let mut c = synth::conflict(seed, &w);
+    let mut topos = Topologies::new();
+    topos.set(0, Topology::x_wrap(0, 1200));
+    c.set_topologies(topos.shared());
+    c.add_faction(&mut w, synth::CAMP, "frostmaw", synth::CAMP_POS, Tick::ZERO)
+        .unwrap();
+    let who = c.player(&mut w, synth::PLAYER);
+    // The camp is at x 900; the target at x 100 is 400 blocks east across the seam.
+    let band = c
+        .order_party(
+            &mut w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::Pos(Pos::new(0, 100, 1000)),
+            Some(who),
+            Tick(20),
+        )
+        .expect("a raid");
+    let mut t = c.parties[band].until;
+    let end = *c.parties[band].times.last().expect("a route");
+    // Walk it out until it stands past the seam: its chart cell and its canonical cell differ.
+    let mut over = false;
+    while t < end {
+        t += 20;
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        let _ = c.take_commands();
+        if !c.parties.contains(band) {
+            break;
+        }
+        if c.party_chart_pos(band, t) != c.party_pos(band, t) {
+            over = true;
+            break;
+        }
+    }
+    assert!(over, "the band never crossed the seam");
+    let here = c.party_chart_pos(band, t);
+    let canonical = c.party_pos(band, t);
+    assert_ne!(here, canonical, "past the seam the two cells differ");
+    let (route, seg) = (c.parties[band].route.clone(), c.parties[band].seg as usize);
+    c.chief_killed(&mut w, band, None, t);
+    let x = &c.parties[band];
+    assert_eq!(x.phase, Phase::Home);
+    // The way home is `here`, then the road it came by, back to front.
+    let mut want: Vec<(i32, i32)> = route[..=seg].to_vec();
+    want.reverse();
+    if want.first() != Some(&here) {
+        want.insert(0, here);
+    }
+    assert_eq!(
+        x.route, want,
+        "the route home starts at the chart cell {here:?}, not the canonical {canonical:?}"
+    );
+    // Its first segment is as long as the walk it has made, within one block's rounding.
+    let first =
+        f64::from(x.route[1].0 - x.route[0].0).hypot(f64::from(x.route[1].1 - x.route[0].1));
+    let walked = f64::from(here.0 - route[seg].0).hypot(f64::from(here.1 - route[seg].1));
+    assert!(
+        (first - walked).abs() < 2.0,
+        "the first segment is {first:.1} blocks and the walk made is {walked:.1}"
     );
 }
