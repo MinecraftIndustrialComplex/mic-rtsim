@@ -751,8 +751,7 @@ impl Java {
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
                         } else if self.unloaded_transfers {
-                            // CommandDispatcher: the chunk is not loaded.
-                            obs::command_result::FAILED
+                            obs::command_result::NOT_LOADED
                         } else if self.fail_transfers {
                             obs::command_result::FAILED
                         } else {
@@ -873,7 +872,9 @@ impl Java {
     ///   materializations and adoptions, with their own SPAWN_REJECTED kinds;
     /// - every despawn, departure or recall answers not embodied (reason 6) with nothing captured,
     ///   as the bridge and its plugins answer one for a body they do not have;
-    /// - every command that carries an op id is answered COMMAND_RESULT failed (3): transfers,
+    /// - a transfer is answered COMMAND_RESULT not loaded (6), as CommandDispatcher answers one
+    ///   whose container's chunk is not loaded;
+    /// - every other command that carries an op id is answered COMMAND_RESULT failed (3):
     ///   gossip, houses, residents, industry commands, ship cargo, and a dragon discard (op 0);
     /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
     ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
@@ -884,21 +885,19 @@ impl Java {
         use rtsim_ecology::herds::boundary as hb;
         use rtsim_ships::boundary as sb;
         *self.refused.entry(kind).or_default() += 1;
-        let failed = |j: &mut Java, op: u64| {
-            j.journal(
-                obs::COMMAND_RESULT,
-                obs::command_result::SIZE,
-                obs::command_result::FAILED,
-                |r| {
-                    wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
-                    wire::put_u64(r, obs::command_result::OP_ID, op);
-                },
-            );
+        let answer = |j: &mut Java, op: u64, status: u32| {
+            j.journal(obs::COMMAND_RESULT, obs::command_result::SIZE, status, |r| {
+                wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                wire::put_u64(r, obs::command_result::OP_ID, op);
+            });
         };
+        let failed = |j: &mut Java, op: u64| answer(j, op, obs::command_result::FAILED);
         match kind {
-            cmd::TRANSFER_TO_CONTAINER => {
-                failed(self, wire::u64_at(b, cmd::transfer_to_container::OP_ID))
-            }
+            cmd::TRANSFER_TO_CONTAINER => answer(
+                self,
+                wire::u64_at(b, cmd::transfer_to_container::OP_ID),
+                obs::command_result::NOT_LOADED,
+            ),
             cmd::WRITE_GOSSIP => failed(self, wire::u64_at(b, cmd::write_gossip::OP_ID)),
             cmd::PLACE_HOUSE => failed(self, wire::u64_at(b, cmd::place_house::OP_ID)),
             cmd::SPAWN_RESIDENT => failed(self, wire::u64_at(b, cmd::spawn_resident::OP_ID)),

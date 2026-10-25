@@ -1964,7 +1964,8 @@ mod dragons {
             "the village's books: its tribute paid"
         );
 
-        // The plugin finds the chest, but the chunk is gone again: every stack fails and waits.
+        // The plugin finds the chest, but it is full when the stacks arrive: every stack fails
+        // and waits.
         let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
         let lair_chest = O::LairChest(db::LairChest {
             lair: LAIR,
@@ -2142,6 +2143,93 @@ mod dragons {
             "the coin is in the chest once"
         );
         assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed, once");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A tribute stack that finds its chest's chunk not loaded (NOT_LOADED, RP-210) stays placing
+    /// under its op id and is not sent again until its lair reports a chest. Then it goes to the
+    /// chest it went to first, whichever chest the report names: only that chest's chunk could
+    /// carry the record that it is already there. New coin goes to the reported chest.
+    #[test]
+    fn a_tribute_stack_whose_chunk_is_not_loaded_waits_under_its_op_id_for_its_own_chest() {
+        let dir = tmpdir("tribute-unloaded");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [_, _, coins, _] = e.dragons_tribute();
+        let stacks = (coins + 63) / 64;
+        let report = |pos: [i32; 3]| {
+            O::LairChest(db::LairChest {
+                lair: LAIR,
+                dimension: dim,
+                pos: (pos[0], pos[1], pos[2]),
+            })
+        };
+        let first = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let other = [HOME.0 + 20, HOME.1 - 4, HOME.2 + 20];
+
+        j.unloaded_transfers = true;
+        j.dragon_obs(&report(first));
+        j.idle();
+        j.idle();
+        let sent = transfer_ops(&j);
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, 0, 0, stacks],
+            "not loaded: still placing, no coin back to wait"
+        );
+        let has_chest = |e: &Engine| {
+            e.with_dragons(|d, _| d.lair_of_key(LAIR).and_then(|l| d.chest(l)).is_some())
+        };
+        assert!(!has_chest(&e), "the chest is forgotten until reported again");
+        let commands = j.commands.len();
+        j.idle();
+        j.idle();
+        assert_eq!(j.commands.len(), commands, "parked: not sent again every step");
+
+        // The plugin reports another chest of the lair (the first one's chunk loaded meanwhile,
+        // carrying nothing): the parked stacks go again under their op ids, to the first chest.
+        j.unloaded_transfers = false;
+        j.dragon_obs(&report(other));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(transfer_ops(&j), sent, "the same op ids, no new ones");
+        assert_eq!(j.containers.get(&first).copied(), Some(coins as i32));
+        assert_eq!(j.containers.get(&other), None, "none into the other chest");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0]);
+        assert!(has_chest(&e), "the reported chest is kept for new coin");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 

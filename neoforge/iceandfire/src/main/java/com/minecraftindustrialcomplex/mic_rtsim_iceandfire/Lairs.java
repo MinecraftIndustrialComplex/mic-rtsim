@@ -53,8 +53,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * chunks of each lair reported this session are looked over for a chest with room, the nearest the lair's
  * home; the first found is reported (LAIR_CHEST), and the engine sends the lair's tribute into it. A lair is
  * reported again only when its chest is gone, full, or its chunk was unloaded since (the engine forgets a
- * chest whose transfer failed, and an unloaded chunk is what fails one), and every session. A lair with no chest sends
- * nothing.
+ * chest whose transfer failed or found its chunk not loaded), and every session. A report also sends again
+ * the lair's stacks that found their chunk not loaded, each to the chest it went to first (RP-210). A lair
+ * with no chest sends nothing.
  */
 public final class Lairs {
     /** {@code #mic_rtsim_iceandfire:hoard}: blocks that are a lair's hoard (Ice and Fire's gold, silver and copper piles). */
