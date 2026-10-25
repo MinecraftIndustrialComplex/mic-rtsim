@@ -464,13 +464,20 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
 /// wake of the time it was off fires) and takes every district as unloaded until Java reports
 /// them again; Java announces its districts and load states again when the module turns on, as
 /// at a session start.
+///
+/// The chain writes the link held while off (queued, or kept in the outbox) go to Java now, so
+/// the engine awaits their answers from now (RP-294, docs/replay-gate.md 9.7: the switch gates
+/// only new decisions): else the catch-up would take each as lost ten periods after the drain
+/// that first handed it on (SC113) and write its frogport again under a new op, and Java would
+/// write the same goods twice.
 fn set_enabled(st: &mut State, on: bool) {
     let gt = tick(st.game_time);
     let l = &mut st.industry;
     let was = l.enabled;
     l.enabled = on;
     if on && !was {
-        l.session_start_at = Some(gt.max(l.engine.now()));
+        let at = gt.max(l.engine.now());
+        l.session_start_at = Some(at);
         // An answer that came while off was ignored: every kept command goes again, under a new
         // sequence (Java skips any at or below the last it applied), and Java answers it by op id
         // (DUPLICATE if it had applied it), so none waits in the outbox for an answer already gone.
@@ -478,6 +485,11 @@ fn set_enabled(st: &mut State, on: bool) {
         l.resend.clear();
         for c in kept.into_iter().rev() {
             l.queue.push_front(c);
+        }
+        for c in &l.queue {
+            if let Cmd::WriteChain(w) = c {
+                l.engine.hand_on_again(w.op, at);
+            }
         }
         l.gauges();
     }

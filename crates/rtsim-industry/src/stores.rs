@@ -505,6 +505,23 @@ impl PackageStore {
         }
     }
 
+    /// Write `op` goes to Java again at `at`, after the host held it (its module was switched
+    /// off): its answer is awaited from then (RP-294). True when this store sent it.
+    pub fn write_handed_on_again(&mut self, op: OpId, at: Tick) -> bool {
+        match self
+            .writing
+            .values_mut()
+            .flat_map(|w| w.iter_mut())
+            .find(|s| s.op == op)
+        {
+            Some(s) => {
+                s.at = Some(at);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Whether a write toward `pos` still holds the next at `at`: one in the engine's outbox, or
     /// one handed on less than `lost` ticks ago and not answered.
     pub fn write_pending(&self, pos: BlockPos, at: Tick, lost: u64) -> bool {
