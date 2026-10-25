@@ -518,3 +518,105 @@ fn a_ship_command_ordered_without_a_replay_is_written_at_once() {
     );
     e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// A generation no engine heard: the one a crash lost with its journal.
+const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+
+/// A ship at rest, and a SHIP_MATERIALIZED of an epoch five above its own, journaled first and
+/// followed by 8,000 fillers: so that its replay is read in the first hand-over and the engine
+/// is seen mid-replay. `copy`: the record is a holder's copy (REASSERT) of a record the crash
+/// lost, else the session's own. Returns the ship's agent, its epoch before, and what the engine
+/// holds of it after the first hand-over and after the replay end: (embodied, epoch).
+fn a_replayed_materialization(copy: bool) -> (u64, u32, (bool, u32), (bool, u32), u32) {
+    let name = if copy {
+        "ships-replay-copy"
+    } else {
+        "ships-replay-honour"
+    };
+    let (dir, e, mut j, _) = scene(name, wire::MIN_CAPACITY);
+    let (agent, before) = e.with_ships(|s, _| {
+        let (id, x) = s
+            .ships
+            .iter()
+            .find(|(_, x)| x.is_active() && !x.embodied)
+            .expect("a ship at rest");
+        (Ship::agent(id), x.epoch)
+    });
+    let spent = before + 5;
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    let o = O::Materialized(sb::Materialized {
+        agent,
+        epoch: spent,
+        dimension: dim,
+        entity: (0x11, 0x22),
+    });
+    if copy {
+        let mut b = Vec::new();
+        sb::encode_obs(0, j.game_time, &o, &mut b);
+        wire::put_u64(&mut b, wire::obs::OBS_SEQ, 7);
+        j.reassert(EARLIER_GEN, &b);
+    } else {
+        j.ship_obs(&o);
+    }
+    fillers(&mut j, 8_000);
+    j.idle();
+    let gt = j.game_time;
+    let saved = j.crash();
+
+    let (e, mut j) = reopen(&dir, saved, gt, wire::MIN_CAPACITY);
+    j.idle();
+    assert_eq!(
+        replay_counts(&e).0,
+        0,
+        "the replay runs past its first hand-over"
+    );
+    let held = |e: &Engine| {
+        e.with_ships(|s, _| {
+            let x = s.ship(Ship::id_of_agent(agent).unwrap()).unwrap();
+            (x.embodied, x.epoch)
+        })
+    };
+    let mid = held(&e);
+    hand_over_all(&mut j);
+    j.idle();
+    assert_eq!(replay_counts(&e).0, 1, "the replay ended");
+    let end = held(&e);
+    let next = e.with_ships(|s, _| s.next_epoch(Ship::id_of_agent(agent).unwrap()));
+    assert_eq!(e.ship_gate_counts().never, 0);
+    e.close(true, Duration::from_secs(5)).unwrap();
+    (agent, before, mid, end, next)
+}
+
+/// RP-97 (a copy is applied by identity): a holder's copy of a SHIP_MATERIALIZED embodies
+/// nothing; the engine only raises the ship's epoch floor, which the replay end folds into the
+/// ship's epoch. The host routes a REASSERT to the ships' `ingest_copy`; routed to `ingest` it
+/// would be honoured like the session's own record (the control), and the ship would be seen
+/// embodied in a body the crash took.
+#[test]
+fn a_copy_of_a_materialization_embodies_nothing_and_raises_the_floor() {
+    let (_, before, mid, end, next) = a_replayed_materialization(true);
+    assert_eq!(
+        mid,
+        (false, before),
+        "mid-replay: not embodied, its epoch unchanged"
+    );
+    assert_eq!(end, (false, before + 5), "the replay end folds the floor");
+    assert_eq!(next, before + 6, "and the next body is above it");
+}
+
+/// The control: the session's own record, replayed, is honoured (RP-6).
+#[test]
+fn a_replayed_materialization_is_honoured_on_the_pages_ship() {
+    let (_, before, mid, end, next) = a_replayed_materialization(false);
+    assert_eq!(
+        mid,
+        (true, before + 5),
+        "mid-replay: embodied at the record's epoch"
+    );
+    assert_eq!(
+        end,
+        (false, before + 5),
+        "abstract at the replay end, the epoch kept"
+    );
+    assert_eq!(next, before + 6);
+}
