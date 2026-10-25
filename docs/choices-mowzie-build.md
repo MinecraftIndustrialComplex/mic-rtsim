@@ -6992,7 +6992,9 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   in); without the call it fails at tests/industry.rs:1660. The goods left the train once, at the first
   application, so the books keep what the re-decision booked; no IND_CARRIAGE_RESULT comes for the
   op. A station exchange is left alone (conservative: a DUPLICATE there is a copy of a command
-  whose result is journaled and comes, and dropping it would lose that result's correction). The
+  whose result is journaled and comes, and dropping it would lose that result's correction).
+  Amended by RP-199: that premise fails in J3 on the ring (the result is lost with the journal), so
+  a DUPLICATE now drops any pending exchange, loot or station. The
   two orders of the replayed IND_CARRIAGE_RESULT of the live application against the re-decided
   raid, both possible in the host (industry's records run no `catch_up`, so whether the raider
   reaches the raid's tick before the result's record depends on the module records between them):
@@ -7147,13 +7149,16 @@ only (the create plugin, one core test helper); no Rust, wire, page or record ch
 already modelled the ring, `Dedup::Ring`, RP-184). Create facts are from cfr on Create 6.0.10, the jar
 neoforge/create compiles and runs against (`create_packMods`: deep-time/smoke/mic/server/mods/
 create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and `TrainRingGameTests`
-(8 GameTests).
+(8 GameTests). The second review (review2, at 7d00b265) and its fixes (RP-199, RP-250 to RP-256) bring
+them to 14 unit tests and 14 GameTests and add rtsim-jni host tests; since RP-250 the ring is bounded by
+the engine's acknowledgement of each op's answer, not by a count.
 
 - **RP-190** (the ring and its key; the brief's item 1): an `AppliedOpRing` (create, reusable, RP-198)
   of `TrainRing.CAPACITY` holds a train's applied IND_CARRIAGE_DELTA op ids, oldest first. It lives on Create's `Train` as a field
   `ringmixin.TrainRingMixin` adds (`@Unique`, made on the first delta), reached through
   `AppliedOpsHolder`, an interface outside the mixin package that the mixin implements (no bespoke
-  entity, D3). It is saved as one long array under `mic_rtsim:applied_ops` (`TrainRing.KEY`) in the
+  entity, D3). It is saved as one long array under `mic_rtsim:applied_ops` (`TrainRing.KEY`; since
+  RP-250 with the answers' `_at` array and the `_gen` long beside it) in the
   compound `Train.write(DimensionPalette, HolderLookup.Provider)` returns (an `@Inject` at RETURN) and
   read back by an `@Inject` at RETURN of the static `Train.read(CompoundTag, HolderLookup.Provider,
   Map, DimensionPalette)`, onto the train it returns. Full descriptors, `remap = false` as TrainMixin.
@@ -7184,7 +7189,8 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   by `DimensionalCarriageEntity.read`. So the goods and the ring are one call's output in one file: a
   crash keeps both or neither, and no chunk write can save the goods without the ring. (A train
   disassembled at a station puts its goods into blocks, and is then the train Create no longer has.)
-- **RP-192** (the bound; item 3): 256 ops a train, not 64; the oldest falls out first, and an op
+- **RP-192** (the bound; item 3; corrected and replaced by RP-250, see the correction at its end): 256
+  ops a train, not 64; the oldest falls out first, and an op
   already held is not added again (a resend). The ring must hold every op the engine can send again
   after a crash: the ones applied between the engine's last durable save and Create's last write of the
   tracks file. That window is one autosave interval normally (6,000 ticks; rtsim-jni `window_grows`:
@@ -7202,6 +7208,17 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   is applied again (a double); accepted. Not built: pruning on the engine's ack (`Industry.whenAcked`)
   would bound the ring by the window instead of a count, but needs the ack of each op.
   `AppliedOpRingTest` pins the bound and the order; the bound is `TrainRing.CAPACITY`.
+  Correction (review2 P2): the window premise is wrong, and the count broke J1. The window has no
+  bound: `Engine::window_grows` (rtsim-jni engine.rs:996) widens it on every save Java asked for that
+  was not made (the IO lane refused it, :1973; its commit failed, :2075), on an engine that stopped
+  simulating (:1340, :1353), and on a replay holding the start of a session that ended with no save
+  (:1824, a crash loop), each adding at least an autosave of deltas; and even 24,000 ticks overflow
+  256 at one arrival per 94 ticks. Past the count, an op pushed out by later deltas and then decided
+  again was applied twice in J1, which slice T alone kept exact for any window (its journal index
+  held the op until the engine's acknowledgement): the reviewer's repro, now
+  `anOpPushedPastTheOldCountByLaterExchangesIsTakenOnce` (RP-254), answered APPLIED and left 12 iron
+  of 32 on 7d00b265's ring. RP-250 builds what this record left unbuilt: an op leaves on the engine's
+  acknowledgement of its answer, and 4096 is a valve.
 - **RP-193** (the fallback; item 4): the ring mixin has its own config,
   `mic_rtsim_create_ring.mixins.json` ("required": false, injectors `defaultRequire` 0, each `@Inject`
   `require = 0`), a second `[[mixins]]` entry in create's neoforge.mods.toml, in its own package
@@ -7214,8 +7231,10 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   carriages, no graph) with a probe op keeps it through `Train.write` then `Train.read`. If not, it logs
   one WARN naming what broke ("the train op ring is off (...)") and `carriageDelta` dedups by the
   journal's index: slice T's dedup, J3 a double and J4 a dupe (RP-196). On, it logs one INFO.
-  Tests: the two fallback GameTests (RP-195) switch the ring off (`TrainRing.fallbackForTest`) and run
-  that branch, and check the WARN is logged once for the probe and two deltas.
+  Tests: the two fallback GameTests (RP-195) break one of the ring's hooks (`TrainRing.breakForTest`,
+  RP-253: the write for J3, the read for J4), so the real probe fails through its own branch; each
+  checks the reason the probe gave and that the WARN is logged once for the probe and two deltas.
+  `theProbeFindsEachBrokenHookAndSaysWhich` walks the probe's three failure branches.
 - **RP-194** (UR-1 and the module switch): with industry off the key is not written, so the next save
   of each train drops it and keeps every key of Create's; the train loads as Create would, its ring
   read but unused. The ring stays on the train in memory, so a switch back on before a restart saves
@@ -7223,8 +7242,14 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   it, since that restart's own save moved the engine past it. With the plugin removed the mixin is
   gone, Create's `Train.read` ignores the key and its `Train.write` drops it (RP-190). Undoing the
   slice is removing the ring config. Test: `withIndustryOffASavedTrainLoadsAndItsNextSaveDropsTheRing`.
+  Since RP-250: with the module off the industry's plugin does not tick, so no op leaves on an
+  acknowledgement; when the module comes back on (or the engine lost observations), the industry's
+  announce makes every answer this session gave unknown (`TrainRing.announce`, `forgetAnswers`): what
+  Java answered while the module was off is not known to have reached the engine's pages. Those ops
+  stay until the engine answers them again, or the valve (RP-255).
 - **RP-195** (the GameTests; item 5): `TrainRingGameTests` (namespace `mic_rtsim_create`, batches
-  `train_ring_1` to `train_ring_8`, one test each; the eighth is RP-198's) emulate a crash on a synthetic train of 32 iron
+  `train_ring_1` to `train_ring_8`, one test each; the eighth is RP-198's; since review2 also
+  `train_ring_9`, RP-253's, and `train_ring_10` to `train_ring_14`, RP-254's) emulate a crash on a synthetic train of 32 iron
   (IndustryGameTests' `syntheticTrain`, given a dimensional entry, since a carriage saves its storage
   only in those, and found through `TrainWatch.seenForTest`). The tracks file is what
   `RailwaySavedData.save` writes for the train (Create's own `Train.write`, a dimension palette, the
@@ -7235,7 +7260,12 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   live GameTest cannot hold: the engine acks within ticks). A raid of 10 (one IND_CARRIAGE_DELTA, loot)
   is applied, the crash taken, and the raid sent again under the same op, as the replay re-decides it
   (slice T's key). The raider holds the 10 the surviving decision credits it, so the goods are
-  conserved when the train and the raider hold 32 between them. The crash is at the data level (RP-198):
+  conserved when the train and the raider hold 32 between them. "Conserved" covers Java only (review2
+  P3-4): the stub engine has no raider, so the raider's 10 is a constant (`TAKEN`) and the check
+  restates the train's iron; the engine's books against the world are checked through the host, in
+  rtsim-jni (RP-196's host tests, RP-199, RP-252). The crash tests hold the prunes
+  (`TrainRing.holdPrunesForTest`, RP-254): each sends the raid again after its answer may have been
+  acknowledged, which a real engine never does. The crash is at the data level (RP-198):
   no test runs a real save or depends on the order the server writes SavedData in. Results (the whole
   create suite on db221b97's code plus two temporary demo tests, native engine; 227 tests in 20.4 min): all
   eight ring GameTests pass, and 224 of the 225 required tests pass. The one failure is
@@ -7249,7 +7279,7 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   that is slice T's code: J3 failed "the goods are conserved: train 12 plus raider 10 = 22, not 32" and
   J4 failed "train 32 plus raider 10 = 42, not 32". So J3 doubles and J4 dupes on T alone, and neither
   happens on T2. The probe's INFO ("the train op ring is on") and one WARN for each fallback switch were
-  logged.
+  logged. RP-254 has review2's run.
 - **RP-196** (the four cases, J1 to J4; the coordinator's table): which of Java's two saves landed
   after the raid's application (RP-184), the raider's pages older than the raid:
 
@@ -7261,9 +7291,23 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   | J4, journal saved, goods not | Rust: `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`, `a_bands_ambush_after_a_crash_carries_what_left_the_train` (rtsim-conflict, counts the train and the band together); GameTests: `aCrashThatKeptTheJournalAndNotTheGoodsTakesATrainOpOnce` (T2), `withoutTheRingACrashThatKeptTheJournalAndNotTheGoodsLeavesThemOnTheTrain` (T alone) | once (a new op on the restored goods) | a dupe (DUPLICATE on restored goods, the raider credited again) | once (applied to the restored goods: the ring came back without the op) |
 
   The Rust tests run both dedups through the harness (`Dedup::Ring`, `Dedup::Journal`); the GameTests
-  run Java's own on Create's own save code. With the ring's mixin not applied (RP-193), T and T2 give
-  slice T alone's column. What is left: an op past the ring's bound (RP-192), and the deposit deltas'
-  own two files (slice U, RP-189).
+  run Java's own on Create's own save code, and their "conserved" is Java's side only (RP-195); the
+  host tests (rtsim-jni `a_crash_that_kept_the_trains_and_not_the_journal_takes_a_train_raid_once`,
+  `a_crash_that_kept_the_journal_and_not_the_trains_takes_a_train_raid_once`, review2 P3-2) check the
+  engine's books against the world for J3 and J4 (the fake world saves its applied set with its
+  trains, so it models the ring). Since RP-250 the J1 column holds for any window length: the ring
+  keeps an op until the engine acknowledges its answer. With the ring's mixin not applied (RP-193), T
+  and T2 give slice T alone's column, and holes (a) and (b) besides (RP-252).
+  The J4 shortfall (review2 P3-4, not fixed): in J4 on the ring the raid is applied twice to the
+  goods, once live and once to the goods the restart restored. When the replayed IND_CARRIAGE_RESULT
+  of the live application took the exchange first (RP-182's O1), the second application's result
+  finds no exchange and is ignored, so if the restored goods fell short of the request by another
+  amount than the live goods did, `books.stolen` keeps the live shortfall's correction, not the
+  second's. Books only (the goods moved as Java applied them), the same class as RP-182's O2
+  residual, and none when both applications had what was asked (the usual case).
+  What is left: an op pushed out of a full ring (the valve), the ops the ring keeps with an unknown
+  answer (leftovers), the shortfalls (RP-199's, the J4 one above, RP-182's O2) and the fallback's
+  holes, all in RP-255; and the deposit deltas' own two files (slice U, RP-189).
 - **RP-197** (the docs): docs/replay-gate.md §3.6's industry bullet says T2 closes J3 and J4 and §6.1's
   "What slice T alone leaves" is now what T and T2 leave (the ring's bound, and slice T's two cases
   only when the ring's mixin did not apply); docs/industry-boundary.md §4.3's IND_CARRIAGE_DELTA
@@ -7280,7 +7324,11 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   empty when nothing is saved there) and the static `savedIn(tag, key)`; the key must be namespaced
   (`mod:name`), else IllegalArgumentException. The train's bound is `TrainRing.CAPACITY`, its key
   `TrainRing.KEY`. Slice U reuses the class for Create's GlobalPackagePort offline buffer (also in
-  create_tracks.dat); that ring is not built here. Only the three NBT methods touch Minecraft, and the
+  create_tracks.dat); that ring is not built here. Since RP-250 the class also keeps each op's answer
+  and a generation (`answered`, `answerOf`, `pruneIfAnsweredAt`, `forgetAnswers`, `settle`,
+  `unknownCount`, `gen`, `evictions`, `load(long[], long[])`), and `writeTo` writes the `_at` array only
+  while an answer is known and the `_gen` long only while a generation is set; a ring that records
+  neither (slice U's station port rings) writes its one array as before. Only the three NBT methods touch Minecraft, and the
   create unit tests' classpath has no Minecraft, so the NBT form is the GameTest
   `anAppliedOpRingSavesUnderItsKeyBesideTheOwnersKeys` (`train_ring_8`). (2) The J1 to J4 GameTests
   work at the data level: the tracks file is the bytes of Create's `Train.write` for the train, taken
@@ -7289,3 +7337,204 @@ create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and 
   the order vanilla or NeoForge writes SavedData in. Slice U moves the journal's write to the end of
   the save (after every dimension's SavedData); a real crash then gives J3 and never J4, and the J4
   tests keep pinning the ring's answer for a journal that outlived its goods.
+- **RP-199** (a DUPLICATE drops any pending exchange; review2 P3-1; amends RP-182):
+  `Engine::command_duplicate(op)` (rtsim-industry engine.rs) removes the pending exchange of `op`
+  whatever its reason, loot or station; rtsim-jni calls it as before, in `command_result` and in
+  `answered_again`. The ordering it closes (J3 on the ring): a train's arrival at a station of an
+  unloaded district is journaled and the journal saved; Java applies the station exchange E it derives and the tracks file is saved with E in
+  the ring; the server dies before the journal's next save. The replay derives E again from the
+  arrival under the same op, and the ring answers DUPLICATE. The replay heard no answer for E (its
+  APPLIED went with the journal), so the DUPLICATE is a new answer and reaches `command_result`, which
+  kept a station exchange: E stayed pending for ever, into every page, and its result never came. Why
+  any pending exchange may go: Java journals an application's IND_CARRIAGE_RESULT in the call that
+  applies it, before its APPLIED (`TrainWatch.carriageDelta`: `writeCarriageResult`, then
+  `commandResult`), so before any DUPLICATE for the op, and the engine reads the records in that
+  order; an exchange still pending at a DUPLICATE lost its result with the journal, and none will
+  come. RP-182's premise for keeping a station exchange ("a copy of a command whose result is
+  journaled and comes") holds only while the journal kept the application. `Engine::exchange_pending`
+  is for the tests. Test: rtsim-jni
+  `a_station_exchange_derived_again_after_a_crash_that_lost_its_result_is_dropped` (fails on the
+  loot-only drop: the exchange is still pending). The shortfall residual (not fixed, RP-255): what the
+  live application fell short of the request (a carriage without the room or the goods) was in the
+  lost IND_CARRIAGE_RESULT, whose correction (`carriage_result`: the district's stock, or the ports'
+  booking) never comes, so the engine keeps the district's stock as the full request moved it. None
+  when the carriage took or gave what was asked, the usual case.
+- **RP-250** (the ring bounded by the acknowledgement; review2 P2, the lead's rule): each op in a
+  train's ring carries `at`, the sequence of the last COMMAND_RESULT this session journaled for it
+  (APPLIED when `carriageDelta` applied it, DUPLICATE when the ring answered a resend or a re-decision),
+  or UNKNOWN (0): an answer no durable save of the engine is known to hold. `TrainRing.answered`
+  registers `RtsimSession.afterAck(at, ...)`; the session runs it when the engine's acknowledgement (the
+  highest sequence its saved pages include, `BoundarySession.applyCommands`'s `onConsumed`) reaches
+  `at`, and `TrainRing.tick` (the industry plugin's tick, after the industry's announce in the same
+  tick) removes the op if its answer is still `at` and the ring and the acknowledgement are this
+  session's, then marks Create's tracks dirty. An op answered again since, or made unknown by an
+  announce (RP-194), stays. So a ring holds only the ops whose last answers the engine has not saved,
+  whatever the window (RP-192's correction), and an idle train's ring empties (review2 P3-5, D1: the
+  keys go with the last op). The NBT: the ops as before under `mic_rtsim:applied_ops`, oldest first;
+  the answers in the same order under `mic_rtsim:applied_ops_at`, written only while one is known; the
+  settling session's generation under `mic_rtsim:applied_ops_gen` (RP-251); an empty ring removes all
+  three. The valve: `TrainRing.CAPACITY` 4096. A full ring drops its oldest op, counted
+  (`TrainRing.evictions()`, and each ring's `AppliedOpRing.evictions()`), and the first eviction on a
+  train in a session logs one WARN; later ones on that train are only counted. The WARN prints:
+  `[mic_rtsim_create] train <name> (<uuid>) has a full op ring: 4096 ops whose answers the engine has
+  not acknowledged, so op <hex> leaves it, and if the engine decides that op again it applies twice
+  (docs/choices-mowzie-build.md RP-250). Further evictions on this train are only counted (<n> on all
+  trains so far, /rtsim district perf)`. The counts are readable from a test (`TrainRing.evictions()`,
+  `pruned()`, `unknownCount()`) and in `/rtsim district perf`, whose industry line ends `train rings: N
+  ops on T trains (U answers unknown), A acknowledged away, Q acknowledgements pending; S settled (X
+  away, K kept unknown, against pages P); E evicted on W trains (valve 4096)` (the parenthesis names
+  why when this session's view proves nothing, RP-251). Two checks the lead asked for. The same call:
+  `TrainRing.write` runs inside `Train.write` (the mixin's inject at RETURN), which
+  `RailwaySavedData.save` calls for each train while it builds the compound, on the server thread, and
+  the same `Train.write` writes the carriage goods (RP-191); the ring changes only on the server thread
+  (`carriageDelta` in the commands' application, the prunes in the plugin tick, the settles at the
+  session's start and in `Train.read`), so a compound holds the goods and the ring of one moment. The
+  prune never drops an op whose tracks save is older than the engine's durable save: a prune follows a
+  durable, requested save of the engine (pressure saves are pending generations, rolled back at start,
+  and never acknowledged) that holds the op's last answer and so its last decision, and the engine never
+  sends that op again. A tracks file on disk is then from before the application (it lacks the op and
+  its goods change: the pages ahead of the world save, P29, which no dedup can mend and which pruning
+  does not change), from between the application and the prune (it holds the op, an extra entry the
+  next start settles, RP-251), or from after the prune (it lacks an op the engine never sends again).
+  Cost: 8 bytes an op and 8 an answer, while unacknowledged, in create_tracks.dat at every save and in
+  memory; at most 64 KiB of each a train at the valve.
+- **RP-251** (the settle; the lead's seq-reuse check): an answer `at` is a sequence of the session
+  that journaled it, and a later session reuses the sequences a crash's lost journal tail had. The
+  lead's case: W writes the tracks with X answered at 95 and dies with its journal on disk at 90 and
+  the pages at 80; V reserves from 91, its pages become durable at 120, its tracks file is lost; U
+  loads W's tracks with pages at 120, and 95 in those pages is V's record. It happens: the engine's
+  pages advance only on a save Java asked for (`BridgeEvents.onLevelSave`'s `requestSave(through)`;
+  pressure saves never acknowledge, `SaveAtNextStep` is the GameTests', `close(save)` runs after the
+  final flushed world save), and that page commits on the engine's IO lane while the SavedData files
+  wait on vanilla's IO worker, which an autosave does not wait for (only a flush save does), so the
+  pages can be durable while create_tracks.dat is not (P29). The settle: each session takes one view
+  at its start (`TrainRing.SessionHook`, a `SessionPlugin`, before any tick; or at the first ring
+  access if that came first), `RingView(gen, writerGen, pages, written, firstSeq)`: this session's
+  generation; the newest JOURNAL_GEN below this session's first sequence in the loaded journal (its
+  pinned record and its entries), whose nonce names the session whose journal file was loaded (the
+  writer); the pages `P` (`SessionStart.pagesObsSeq`); the journal file's end `E`
+  (`JournalSavedData.writtenThrough`); and this session's first sequence `s0` (`replayUpTo + 1`). It
+  proves the pages when the writer is named, `E < s0` and `P <= E`. A ring whose `_gen` differs from
+  this session's is settled once (`AppliedOpRing.settle`): when the view proves the pages and the
+  ring's generation is the writer's, an op answered at or below `P` leaves; every other op stays, its
+  answer UNKNOWN; then the ring takes this session's generation. An UNKNOWN op leaves only once this
+  session answers it again and the engine acknowledges that answer. The argument: a session reserves
+  its sequences past the journal file and the pages it loaded, and its first durable page holds its
+  own first record (no page is taken while its replay runs), so a later session's pages are past the
+  writer's file end. With `P <= E` no later session's page landed, every sequence the pages hold up to
+  the writer's answers is the writer's own, and the ring's answers at or below `P` are in the pages as
+  the writer journaled them. In the lead's case: if V's journal file landed, its writer is V, not the
+  ring's W, and X stays; if it did not, the pages (V's, 120) are past the loaded file's end (W's, 90)
+  and X stays. `E` is read at the session's start, before any write of this session can land; if one
+  had landed, `E >= s0` and the view proves nothing (every op stays, unknown), the safe side; no core
+  accessor was added (the journal's durable mark at load exists only on SEC-1's branch). The bound is
+  `P` with `P <= E`, not `min(P, E)` as first proposed to the lead: in a three-session case (W answers X
+  at 450, its journal file ends at 500; V replays it, so its engine decides X again live after the
+  replay end, and V's pages pass 500 before V dies with its tracks file lost; U loads W's tracks)
+  `min(P, E)` is 500 and would drop X, and the AppliedOpRingTest
+  `anOpALaterSessionReplayedStaysUnknownWhicheverOfItsFilesLanded` pins that X stays. At a clean stop
+  the final world save writes both files and `close(save)` then takes the pages through what the
+  engine was sent, which the journal holds, so `P <= E`, every answer is at or below `P`, and the next
+  start empties every ring. The session's start logs one INFO: `train rings settle against the engine's
+  pages through P, written by generation G (RP-251)`, or `train rings settle against nothing: <why>;
+  every op another session answered stays, its answer unknown`.
+- **RP-252** (holes (a) and (b), and why the rule is the answer's acknowledgement; the reviewer's rule,
+  the journal's index and SEC-1's DurableOpRing): take J1 after a crash: the journal on disk holds X's
+  APPLIED at S, the pages are older than S. (a) The replay reads that APPLIED, and the engine's
+  acknowledgement passes S at the first durable save past the replay end; the raider decides X again
+  at its own pace (RP-188: live, at industry's present), which can come after that save. A dedup that
+  forgot X by then answers APPLIED, and the goods leave twice; no second crash is needed. (b) If the
+  re-decision falls in the step whose page covers S, that page holds X sent and unanswered (Java's
+  DUPLICATE D comes after the cut); the acknowledgement of S drops X from a dedup that keys on S (a
+  DUPLICATE is not in the journal's applied set), and a second crash before a page covering D makes
+  the engine send X again (W4): applied twice. In both, the engine consumed X's old answer and not its
+  own last decision of X. This ring keeps X until the acknowledgement of X's last answer: in (a) X was
+  settled to UNKNOWN (S > P) and stays until the re-decision's DUPLICATE is acknowledged; in (b) the
+  DUPLICATE restamps X with D, so the acknowledgement of S does not match, and a tracks file of the
+  second crash keeps X (its answer past that session's pages, or another writer: unknown). The
+  reviewer's rule (prune the ops loaded from the tracks file at the first durable save past the replay
+  end) doubles in J3: the raid applied and the tracks saved with X, the journal on disk from before it,
+  the pages older; the replay holds no answer for X, the raider decides X again live after that first
+  durable save, the rule has dropped X, and the ring answers APPLIED. Slice T's journal index, the
+  fallback, has both holes: it forgets X when the journal trims X's APPLIED at the acknowledgement
+  (a), and keys on S (b). SEC-1's core `journal/DurableOpRing` (fix/deposit-journal-last at 3c0c8173,
+  docs/choices-journal-barrier.md RP-204) keeps the same entries, (op, sequence of its answer), with a
+  cap of 4096 and an overflow counter, but trims on the journal file's mark: at the store's save an
+  entry goes once the journal's file on disk holds its answer, an entry read from disk goes at the
+  first trim when at or below the journal's end at load (`durableAtLoad`) and otherwise waits PENDING
+  until the op is answered again; its premise is that the journal on disk is then the dedup and that
+  the engine never sends an acknowledged op again. This ring trims on the engine's acknowledgement of
+  the entry's own answer and settles another session's answers against the engine's pages with the
+  generation check (RP-251). Hole (a) breaks a journal-mark trim for a train op: in J1, X's answer S is
+  at or below `durableAtLoad`, so X leaves the ring at its first trim; the journal's index forgets X at
+  the acknowledgement of S; a re-decision after both is applied twice. In J3 the two rules agree (S is
+  past `durableAtLoad`, so DurableOpRing keeps X PENDING). Whether a re-decision after the
+  acknowledgement reaches SEC-1's own ops (deposit deltas, packages) is not checked here. T2 keeps its
+  own class and lands first; slice U's station port rings reuse `AppliedOpRing` (RP-198). Tests
+  (rtsim-jni, through the host; the fake world saves its applied set with its trains, so it models the
+  ring, and `FakeWorld::forget_applied` drops an op as an early trim would):
+  `a_j1_raid_decided_again_after_the_first_durable_save_is_taken_once` and
+  `a_j3_raid_decided_again_after_the_first_durable_save_is_taken_once` (the ring keeps X; taken once,
+  the books close), `a_j1_raid_decided_again_after_a_trim_on_the_journals_mark_is_taken_twice` and
+  `a_j3_raid_decided_again_after_a_ring_trimmed_at_the_first_durable_save_is_taken_twice` (X dropped at
+  that save: the world against the books is off by 22 crushed raw iron, the raid taken twice). The
+  GameTest `aRingAnotherSessionAnsweredKeepsItsOpUntilAnAnswerOfThisSessionIsAcknowledged` runs (a) on
+  Create's own save code. Hole (b) needs two crashes inside one window and has no host test; the
+  restamp it rests on is the unit test `anAnsweredOpLeavesOnlyOnTheAcknowledgementOfItsLastAnswer`.
+- **RP-253** (the fallback's detection; review2 P3-3): `TrainRing.fallbackForTest` replaced the probe,
+  so its failure branches and its real WARN never ran in a test. `TrainRing.breakForTest(HOLDER | WRITE
+  | READ)` now breaks one of the ring's hooks (`of` answers null, as if the class mixin had not applied;
+  `write` or `read` does nothing, as if that injection had not), and a change probes again at the next
+  `available`, so the real probe fails through its own branch and logs its own WARN. The J3 fallback
+  test breaks the write ("Train.write wrote no mic_rtsim:applied_ops: its injection did not apply"),
+  the J4 one the read ("Train.read did not read ..."), and each checks the reason it got;
+  `theProbeFindsEachBrokenHookAndSaysWhich` (`train_ring_9`) walks the three branches, one WARN each,
+  then the probe passes again. The probe's catch (a probe that throws) has no switch. No test failed
+  before: this is coverage (7d00b265 has no switch to break a hook).
+- **RP-254** (review2's tests): GameTests, `TrainRingGameTests`: `anOpPushedPastTheOldCountByLaterExchangesIsTakenOnce`
+  (`train_ring_10`, the reviewer's repro: a raid, 304 station exchanges to the same train in batches of
+  16 with the prunes held, J1's save and reload, the raid again: DUPLICATE, 22 iron, 305 ops held);
+  `anAcknowledgedOpLeavesTheRing` (`train_ring_11`: an applied op leaves once the engine acknowledges
+  its answer after a requested save, the save then holds no ring key, the prune counter rises);
+  `aRingAnotherSessionAnsweredKeepsItsOpUntilAnAnswerOfThisSessionIsAcknowledged` (`train_ring_12`:
+  a ring whose generation is another session's reloads with its op unknown, the acknowledgements of
+  its old answer pass and it stays, the raid again is answered DUPLICATE at a later sequence, and that
+  answer's acknowledgement removes it); `theSettleTakesWhatThePagesHoldAndKeepsTheRestUnknown`
+  (`train_ring_13`, the settle's three cases through `Train.read` against a set view: at or below the
+  pages leaves, above them stays unknown, unknown stays; another generation keeps all three, this
+  session's own keeps its answers, pages past the file's end keep all three); and
+  `aFullRingEvictsItsOldestCountsItAndWarnsOncePerTrain` (`train_ring_14`: a ring of 4096 and one more
+  op, one eviction counted and one WARN; a second eviction on the train counted and not logged). The
+  crash and UR-1 tests hold the prunes (`TrainRing.holdPrunesForTest`); `IndustryKit.fastConfig`
+  releases the hold and the view override. Unit tests, `AppliedOpRingTest` (14): the settle's three
+  cases and a bound of 0, the prune on the last answer only, a resend keeping its answer, the forget,
+  the answers' order and load, the view's proofs, the writer's selection and the three-session case of
+  RP-251. Host tests: RP-199's and RP-252's. Failures before the fixes: the overflow repro, compiled
+  against cbce20e3 (7d00b265's ring and count) in a scratch copy as a one-test namespace, failed "J1
+  past 256 exchanges: DUPLICATE, answered 1" with 12 iron of 32 (APPLIED, the raid taken twice); the
+  station exchange host test fails on the loot-only drop (still pending); the trimmed arms of RP-252
+  are the failures themselves, pinned as such. Results of the whole create suite on this branch: see
+  the end of this record.
+- **RP-255** (what is left, review2's residuals): (1) Leftovers (D1): ops kept with an unknown answer.
+  They come from a crash whose tracks file holds answers past the pages (the J1 and J3 windows), from a
+  view that proves nothing (the pages ahead of the loaded journal file, P29; a journal naming no
+  earlier session), from a ring another session than the journal's writer settled last, from a module
+  toggle or lost observations (RP-194), and from a stop whose `close(save)` failed. Each costs 8 bytes
+  in the ops array (no `_at` array while every answer is unknown) plus the 8-byte `_gen` once a train,
+  in create_tracks.dat at every save, since Create dirties its tracks every tick while trains exist,
+  and in memory. One leaves when the engine sends it again (a resend or a re-decision, which the ring
+  answers DUPLICATE) and acknowledges that answer; one the engine never sends again stays until the
+  valve pushes it out, which is harmless but counted and logged like any eviction. A clean stop leaves
+  none (RP-251). (2) The valve: an op pushed out of a full ring before its answer was acknowledged is
+  applied again if the engine sends it again, which needs more than 4096 unacknowledged ops (or
+  leftovers) on one train; logged once a train and counted (RP-250). (3) The fallback's holes, only
+  when the ring's mixin did not apply (one WARN, RP-193): the journal's index gives J3 a double and J4
+  a dupe (RP-184) and has holes (a) and (b) (RP-252). (4) The shortfalls, not fixed: RP-199's (a
+  station exchange whose result was lost: the district's stock as the full request moved it), RP-196's
+  J4 one and RP-182's O2 one (books only); each is zero when the carriage had what was asked. (5) P29
+  itself (the pages ahead of the world save lose the effect of what they acknowledged), unchanged.
+- **RP-256** (the docs): docs/replay-gate.md §6.1's "What slices T and T2 leave" names the valve and the
+  leftovers, not a count of 256; docs/industry-boundary.md §4.3's IND_CARRIAGE_DELTA bullet says an op
+  leaves the ring on the engine's acknowledgement of its answer; PATCHES.md row 85 has the valve of
+  4096 and the session hook, and the attached-data table the `_at` and `_gen` keys. TrainWatch's
+  comment at the dedup and TrainRing's class comment say the same.
