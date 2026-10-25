@@ -45,9 +45,10 @@ public final class TrainRing {
 
     /** Null until the first {@link #available} after start or a test switch; then the answer. */
     private static Boolean available;
-    private static boolean fallbackForTest;
+    private static BreakForTest broken = BreakForTest.NONE;
     private static boolean probing;
     private static int fallbackLogs;
+    private static String lastFallback;
 
     /**
      * True when the ring mixin applied: {@code Train} implements {@link AppliedOpsHolder} and a probe train's
@@ -55,10 +56,11 @@ public final class TrainRing {
      */
     public static boolean available(MinecraftServer server) {
         if (available == null) {
-            String why = fallbackForTest ? "switched off by a GameTest" : probe(server.registryAccess());
+            String why = probe(server.registryAccess());
             available = why == null;
             if (why != null) {
                 fallbackLogs++;
+                lastFallback = why;
                 MicRtsim.LOGGER.warn("[mic_rtsim_create] the train op ring is off ({}): IND_CARRIAGE_DELTA's dedup is the "
                         + "journal's op index, which repeats a train op after a crash that kept the goods file and not the journal's "
                         + "(docs/choices-mowzie-build.md RP-193)", why);
@@ -71,6 +73,8 @@ public final class TrainRing {
 
     /** The ring of a train, made on first use; null when the mixin did not apply. */
     public static AppliedOpRing of(Train train) {
+        if (broken == BreakForTest.HOLDER)
+            return null;
         return (Object) train instanceof AppliedOpsHolder h ? h.mic_rtsim$appliedOps() : null;
     }
 
@@ -80,7 +84,7 @@ public final class TrainRing {
      * on the train until the server stops.
      */
     public static void write(Object train, CompoundTag tag) {
-        if (!(train instanceof AppliedOpsHolder h) || tag == null)
+        if (!(train instanceof AppliedOpsHolder h) || tag == null || broken == BreakForTest.WRITE)
             return;
         AppliedOpRing ring = h.mic_rtsim$appliedOpsIfAny();
         if (ring == null || ring.isEmpty())
@@ -92,7 +96,7 @@ public final class TrainRing {
 
     /** {@code Train.read}'s hook: the saved ring onto the train Create made. */
     public static void read(Object train, CompoundTag tag) {
-        if (!(train instanceof AppliedOpsHolder h) || tag == null || !AppliedOpRing.savedIn(tag, KEY))
+        if (!(train instanceof AppliedOpsHolder h) || tag == null || broken == BreakForTest.READ || !AppliedOpRing.savedIn(tag, KEY))
             return;
         h.mic_rtsim$appliedOps().readFrom(tag, KEY);
     }
@@ -127,13 +131,20 @@ public final class TrainRing {
     // ---- GameTests ----------------------------------------------------------------------------
 
     /**
-     * Switches the ring off (true) as if the mixin had not applied, or back to the probe (false). A change
-     * probes again at the next {@link #available}, and logs again when off.
+     * What a GameTest breaks so that the real probe fails as on a Create the mixin missed in part (review2
+     * P3-3): {@link #HOLDER}, as if the class mixin had not applied ({@link #of} answers null); {@link #WRITE}
+     * or {@link #READ}, as if that injection had not ({@link #write} or {@link #read} does nothing).
      */
-    public static void fallbackForTest(boolean on) {
-        if (fallbackForTest == on)
+    public enum BreakForTest { NONE, HOLDER, WRITE, READ }
+
+    /**
+     * Breaks one of the ring's hooks ({@link BreakForTest}), or none. A change probes again at the next
+     * {@link #available}: the probe runs as at start, fails through its own branch and logs its WARN.
+     */
+    public static void breakForTest(BreakForTest what) {
+        if (broken == what)
             return;
-        fallbackForTest = on;
+        broken = what;
         available = null;
     }
 
@@ -145,5 +156,10 @@ public final class TrainRing {
     /** How many times the fallback was logged: once per probe that failed. */
     public static int fallbackLogsForTest() {
         return fallbackLogs;
+    }
+
+    /** What the last failed probe found broken, as its WARN said; null before any. */
+    public static String lastFallbackForTest() {
+        return lastFallback;
     }
 }

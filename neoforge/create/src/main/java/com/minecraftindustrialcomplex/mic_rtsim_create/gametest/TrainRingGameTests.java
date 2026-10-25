@@ -12,6 +12,7 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.AppliedOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing;
+import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing.BreakForTest;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.graph.DimensionPalette;
@@ -33,6 +34,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -71,19 +73,19 @@ public final class TrainRingGameTests {
     /** J1, both files saved: the ring holds the op and answers DUPLICATE; taken once. */
     @GameTest(template = YARD, batch = "train_ring_1", timeoutTicks = 1200)
     public static void aCrashThatKeptBothFilesTakesATrainOpOnce(GameTestHelper helper) {
-        crash(helper, "aCrashThatKeptBothFilesTakesATrainOpOnce", true, true, true, true);
+        crash(helper, "aCrashThatKeptBothFilesTakesATrainOpOnce", BreakForTest.NONE, true, true, true);
     }
 
     /** J2, neither file saved: the restored train and its ring are from before the op, which is applied. */
     @GameTest(template = YARD, batch = "train_ring_2", timeoutTicks = 1200)
     public static void aCrashThatKeptNeitherFileTakesATrainOpOnce(GameTestHelper helper) {
-        crash(helper, "aCrashThatKeptNeitherFileTakesATrainOpOnce", true, false, false, true);
+        crash(helper, "aCrashThatKeptNeitherFileTakesATrainOpOnce", BreakForTest.NONE, false, false, true);
     }
 
     /** J3, the tracks saved and not the journal: the ring came back with the goods and answers DUPLICATE. */
     @GameTest(template = YARD, batch = "train_ring_3", timeoutTicks = 1200)
     public static void aCrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpOnce(GameTestHelper helper) {
-        crash(helper, "aCrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpOnce", true, true, false, true);
+        crash(helper, "aCrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpOnce", BreakForTest.NONE, true, false, true);
     }
 
     /**
@@ -92,38 +94,45 @@ public final class TrainRingGameTests {
      */
     @GameTest(template = YARD, batch = "train_ring_4", timeoutTicks = 1200)
     public static void aCrashThatKeptTheJournalAndNotTheGoodsTakesATrainOpOnce(GameTestHelper helper) {
-        crash(helper, "aCrashThatKeptTheJournalAndNotTheGoodsTakesATrainOpOnce", true, false, true, true);
+        crash(helper, "aCrashThatKeptTheJournalAndNotTheGoodsTakesATrainOpOnce", BreakForTest.NONE, false, true, true);
     }
 
     // ---- the fallback: the journal's op index, slice T's dedup (RP-193) ----------------------------
 
     /**
-     * The ring switched off as if its mixin had not applied: the fallback is logged once and the dedup is
-     * the journal's op index. J3 on it is slice T's double: the journal from before the op applies it again
-     * on goods that already lost it, 20 taken for a raid of 10.
+     * The ring's write injection broken ({@link BreakForTest#WRITE}), as if it had not applied: the real probe
+     * fails at its write check and logs its WARN once, and the dedup is the journal's op index. J3 on it is
+     * slice T's double: the journal from before the op applies it again on goods that already lost it, 20
+     * taken for a raid of 10.
      */
     @GameTest(template = YARD, batch = "train_ring_5", timeoutTicks = 1200)
     public static void withoutTheRingACrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpTwice(GameTestHelper helper) {
-        crash(helper, "withoutTheRingACrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpTwice", false, true, false, false);
+        crash(helper, "withoutTheRingACrashThatKeptTheGoodsAndNotTheJournalTakesATrainOpTwice", BreakForTest.WRITE, true, false, false);
     }
 
     /**
-     * J4 on the journal's op index, slice T's dupe (review P1-1): the journal answers DUPLICATE on restored
-     * goods, so the train keeps its 32 iron while the raider holds 10: 42 between them.
+     * J4 on the journal's op index, slice T's dupe (review P1-1), with the ring's read injection broken
+     * ({@link BreakForTest#READ}): the real probe fails at its read check and logs its WARN once, and the
+     * journal answers DUPLICATE on restored goods, so the train keeps its 32 iron while the raider holds 10:
+     * 42 between them.
      */
     @GameTest(template = YARD, batch = "train_ring_6", timeoutTicks = 1200)
     public static void withoutTheRingACrashThatKeptTheJournalAndNotTheGoodsLeavesThemOnTheTrain(GameTestHelper helper) {
-        crash(helper, "withoutTheRingACrashThatKeptTheJournalAndNotTheGoodsLeavesThemOnTheTrain", false, false, true, false);
+        crash(helper, "withoutTheRingACrashThatKeptTheJournalAndNotTheGoodsLeavesThemOnTheTrain", BreakForTest.READ, false, true, false);
     }
 
     /**
      * One crash: a train of 32 iron, a raid of 10 applied, the tracks file from after the raid
      * ({@code tracksSaved}) or before it, the journal knowing the op ({@code journalSaved}) or not, and the
      * raid sent again. The second answer and the iron left follow the dedup under test: the ring knows the op
-     * when the tracks were saved, the journal's index when the journal was. {@code conserve} checks that the
-     * train and the raider hold 32 between them; without it the totals are recorded only.
+     * when the tracks were saved, the journal's index when the journal was. {@code broken} is the ring hook a
+     * fallback test breaks (none for the ring's own tests): the real probe then fails through that hook's
+     * branch. {@code conserve} checks that the train and the raider hold 32 between them, with the raider's
+     * share a constant {@code TAKEN} (the stub engine has no raider), so it covers Java's side only; without
+     * it the totals are recorded only.
      */
-    private static void crash(GameTestHelper helper, String test, boolean ring, boolean tracksSaved, boolean journalSaved, boolean conserve) {
+    private static void crash(GameTestHelper helper, String test, BreakForTest broken, boolean tracksSaved, boolean journalSaved, boolean conserve) {
+        boolean ring = broken == BreakForTest.NONE;
         fastConfig();
         forget(helper);
         ServerLevel level = helper.getLevel();
@@ -135,10 +144,13 @@ public final class TrainRingGameTests {
         String kase = "J" + (tracksSaved ? journalSaved ? 1 : 3 : journalSaved ? 4 : 2);
         helper.startSequence()
                 .thenExecute(() -> {
-                    TrainRing.fallbackForTest(!ring);
                     logs[0] = TrainRing.fallbackLogsForTest();
-                    check("the ring is " + (ring ? "on: its mixin applied and the probe passed" : "switched off"),
+                    TrainRing.breakForTest(broken);
+                    check("the ring is " + (ring ? "on: its mixin applied and the probe passed" : "off: the probe found " + broken + " broken"),
                             TrainRing.available(level.getServer()) == ring);
+                    if (!ring)
+                        check("the probe's WARN names the broken hook: " + TrainRing.lastFallbackForTest(),
+                                TrainRing.lastFallbackForTest().startsWith(broken == BreakForTest.WRITE ? "Train.write wrote no " : "Train.read did not read "));
                     train[0] = ringTrain(helper);
                     before[0] = saveTracks(level, train[0]);
                 })
@@ -185,7 +197,7 @@ public final class TrainRingGameTests {
                         check("the fallback was logged once: " + (TrainRing.fallbackLogsForTest() - logs[0]), TrainRing.fallbackLogsForTest() == logs[0] + 1);
                     journal().forgetAppliedForTest(op);
                     TrainWatch.forget(train[0]);
-                    TrainRing.fallbackForTest(false);
+                    TrainRing.breakForTest(BreakForTest.NONE);
                 })
                 .thenSucceed();
     }
@@ -288,6 +300,40 @@ public final class TrainRingGameTests {
             } catch (IllegalArgumentException expected) {
                 // refused
             }
+        }
+        helper.succeed();
+    }
+
+    // ---- the probe's own branches (RP-193, RP-253) -----------------------------------------------
+
+    /**
+     * The real probe against each hook broken in turn ({@link BreakForTest}): the class mixin (the train is no
+     * AppliedOpsHolder), the write injection and the read injection. Each fails through its own branch, logs
+     * its WARN once and leaves the ring off; nothing broken, it passes again.
+     */
+    @GameTest(template = YARD, batch = "train_ring_9")
+    public static void theProbeFindsEachBrokenHookAndSaysWhich(GameTestHelper helper) {
+        fastConfig();
+        var server = helper.getLevel().getServer();
+        try {
+            check("the ring is on", TrainRing.available(server));
+            Map<BreakForTest, String> said = new EnumMap<>(BreakForTest.class);
+            for (BreakForTest b : new BreakForTest[] {BreakForTest.HOLDER, BreakForTest.WRITE, BreakForTest.READ}) {
+                int logs = TrainRing.fallbackLogsForTest();
+                TrainRing.breakForTest(b);
+                check(b + " broken: the ring is off", !TrainRing.available(server));
+                check(b + " broken: asked again, the probe does not run again", !TrainRing.available(server));
+                check(b + " broken: one WARN, " + (TrainRing.fallbackLogsForTest() - logs), TrainRing.fallbackLogsForTest() == logs + 1);
+                said.put(b, TrainRing.lastFallbackForTest());
+            }
+            check("the class mixin: " + said.get(BreakForTest.HOLDER), said.get(BreakForTest.HOLDER).startsWith("Train does not implement AppliedOpsHolder"));
+            check("the write injection: " + said.get(BreakForTest.WRITE), said.get(BreakForTest.WRITE).startsWith("Train.write wrote no " + TrainRing.KEY));
+            check("the read injection: " + said.get(BreakForTest.READ), said.get(BreakForTest.READ).startsWith("Train.read did not read " + TrainRing.KEY));
+            TrainRing.breakForTest(BreakForTest.NONE);
+            check("nothing broken: the probe passes again", TrainRing.available(server));
+            record("theProbeFindsEachBrokenHookAndSaysWhich", "the probe's reasons", String.join(" | ", said.values()));
+        } finally {
+            TrainRing.breakForTest(BreakForTest.NONE);
         }
         helper.succeed();
     }
