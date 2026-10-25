@@ -655,7 +655,8 @@ pub struct Engine {
     orders_tx: Mutex<Sender<Vec<Order>>>,
     received_rx: Mutex<Option<Receiver<Received>>>,
     pub stats: Stats,
-    /// `through + 1` of a requested save; 0 when none is pending.
+    /// `through + 1` of the oldest pending requested save ([`Engine::request_save`]); 0 when
+    /// none is pending.
     save_through: AtomicU64,
     save_at_step_end: AtomicBool,
     /// The observation sequence the pages on disk include.
@@ -1089,9 +1090,17 @@ impl Engine {
     }
 
     /// A save request (never blocks): pages stop exactly where the world save's journal did.
+    /// The oldest pending request stays (RP-49): one asked for while the engine has not reached
+    /// the pending one is dropped, and the next world save asks again. Replacing it moved the
+    /// target past an engine that lags the journal by more than a save interval at every world
+    /// save, so no save was ever taken.
     pub fn request_save(&self, through: u64) {
-        self.save_through
-            .store(through.saturating_add(1), Ordering::Release);
+        let want = through.saturating_add(1);
+        let _ = self
+            .save_through
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                (pending == 0 || want < pending).then_some(want)
+            });
     }
 
     /// Queues one unit of orders (decoded from `nOrder`).
