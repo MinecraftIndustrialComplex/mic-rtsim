@@ -473,6 +473,8 @@ public final class ConflictBridge implements SessionPlugin {
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<Watch>> watches = new HashMap<>();
     private Difficulty difficulty;
     private boolean held;
+    /** The camp reconciler (M5): the camps plugins declare, their censuses and reconciles. */
+    private final Camps reconciler = new Camps(this);
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, placed, requeued, pendingTests, watchFlips, placeMoves, casualties, chiefsKilled,
@@ -484,6 +486,11 @@ public final class ConflictBridge implements SessionPlugin {
 
     public RtsimSession session() {
         return session;
+    }
+
+    /** The camp reconciler (GameTests and the core's hooks). */
+    public Camps reconciler() {
+        return reconciler;
     }
 
     // ---- SessionPlugin: lifecycle ---------------------------------------------------------------
@@ -512,6 +519,7 @@ public final class ConflictBridge implements SessionPlugin {
         lastSettled = 0;
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
+        reconciler.sessionStarted();
     }
 
     @Override
@@ -520,6 +528,7 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         long now = s.gameTime();
         settleDeaths(now);
+        reconciler.sessionStopping(now);
         flushSignals(now, true);
         for (Party p : List.copyOf(byAgent.values()))
             capture(p, ConflictRecords.Dematerialized.SESSION_END, now);
@@ -536,6 +545,7 @@ public final class ConflictBridge implements SessionPlugin {
         watches.clear();
         signals.clear();
         notices.clear();
+        reconciler.sessionFailed();
     }
 
     /**
@@ -544,6 +554,7 @@ public final class ConflictBridge implements SessionPlugin {
      */
     void serverStopped() {
         camps.clear();
+        reconciler.clear();
         byAgent.clear();
         byUuid.clear();
         territories.clear();
@@ -645,6 +656,10 @@ public final class ConflictBridge implements SessionPlugin {
             case ConflictRecords.BAND_STEER -> steer(b, at, aux, now);
             case ConflictRecords.BAND_RECALL -> recall(b, at, aux, now);
             case ConflictRecords.DEMAND_SETTLED -> settled(b, at, aux);
+            case ConflictRecords.CAMP_RECONCILE -> {
+                if (RtsimConfig.on(Module.CONFLICT))
+                    reconciler.reconcile(b, at, size, aux, names, now);
+            }
             default -> unknownCommands++; // a later slice's command (MOWZIE.md §9): nothing here plays it
         }
         return true;
@@ -656,7 +671,7 @@ public final class ConflictBridge implements SessionPlugin {
         return loc == null ? null : session.server().getLevel(ResourceKey.create(Registries.DIMENSION, loc));
     }
 
-    private ServerLevel level(ResourceKey<Level> dim) {
+    ServerLevel level(ResourceKey<Level> dim) {
         return session == null ? null : session.server().getLevel(dim);
     }
 
@@ -987,11 +1002,27 @@ public final class ConflictBridge implements SessionPlugin {
         Party p = byAgent.get(b.getLong(at + ConflictRecords.Recall.AGENT));
         if (p == null || p.epoch != b.getInt(at + ConflictRecords.Recall.EPOCH) || p.recalling)
             return;
+        long timeout = b.getInt(at + ConflictRecords.Recall.TIMEOUT) & 0xFFFF_FFFFL;
+        startRecall(p, reason, timeout, b.getDouble(at + ConflictRecords.Recall.TOWARD_X),
+                b.getDouble(at + ConflictRecords.Recall.TOWARD_Z), now);
+    }
+
+    /**
+     * A band handed back to its camp is home (MOWZIE.md §4.9, a homecoming): the engine sends no recall at a
+     * camp that is in, so what is left of it (a raptor pack, a puppet with no line) walks toward the camp and
+     * goes as a recalled band does, and its BAND_DEMATERIALIZED, for a party the engine has ended, books
+     * nothing (MZB-211).
+     */
+    void homeAt(Party p, double x, double z, long now) {
+        if (byAgent.get(p.agent) != p || p.recalling)
+            return;
+        startRecall(p, ConflictRecords.RECALL_DONE, 0L, x, z, now);
+    }
+
+    private void startRecall(Party p, int reason, long timeout, double x, double z, long now) {
         p.recalling = true;
         p.recallReason = reason;
-        long timeout = b.getInt(at + ConflictRecords.Recall.TIMEOUT) & 0xFFFF_FFFFL;
         p.recallDeadline = now + (timeout > 0 ? timeout : RECALL_TIMEOUT);
-        double x = b.getDouble(at + ConflictRecords.Recall.TOWARD_X), z = b.getDouble(at + ConflictRecords.Recall.TOWARD_Z);
         for (Stack st : p.stacks) {
             if (st.state == StackState.PENDING) {
                 unwatch(st);
@@ -1093,20 +1124,40 @@ public final class ConflictBridge implements SessionPlugin {
                 todo.add(sl);
         float yaw = (float) (Mth.atan2(st.hz, st.hx) * (180.0 / Math.PI)) - 90.0f;
         List<Mob> made = new ArrayList<>();
+        // A camp body this party set out with in this hand-over is handed to its puppet where it stands (§4.9).
+        List<Camps.SetOut> handOffs = new ArrayList<>();
         for (Slot sl : todo) {
-            double[] q = sl.placeXZ(now);
-            int bx = Mth.floor(q[0]), bz = Mth.floor(q[1]);
-            double y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
+            Camps.SetOut so = reconciler.claim(p.agent, p.epoch, sl.body);
+            Mob from = so == null ? null : reconciler.claimed(so);
+            double x, y, z;
+            float yw = yaw;
+            if (from != null) {
+                x = from.getX();
+                y = from.getY();
+                z = from.getZ();
+                yw = from.getYRot();
+            } else {
+                double[] q = sl.placeXZ(now);
+                x = q[0];
+                z = q[1];
+                y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
+            }
             Mob m;
             try {
-                m = ConflictBodies.create(level, sl.type, q[0], y, q[1], yaw);
+                m = ConflictBodies.create(level, sl.type, x, y, z, yw);
+                if (m != null && from != null)
+                    so.site.kind.copy(from, m);
             } catch (RuntimeException ex) {
                 MicRtsim.LOGGER.error("[mic_rtsim] creating a conflict body {} failed", sl.body, ex);
                 m = null;
             }
+            if (so != null)
+                handOffs.add(so);
             if (m == null) {
-                for (Mob x : made)
-                    x.discard();
+                for (Mob q : made)
+                    q.discard();
+                for (Camps.SetOut h : handOffs)
+                    reconciler.unclaim(h);
                 return false;
             }
             m.setData(RtsimAttachments.AGENT, tag);
@@ -1125,9 +1176,13 @@ public final class ConflictBridge implements SessionPlugin {
             if (!level.addFreshEntity(made.get(i))) {
                 for (Slot sl : todo)
                     despawn(sl);
+                for (Camps.SetOut h : handOffs)
+                    reconciler.unclaim(h);
                 return false;
             }
         }
+        for (Camps.SetOut h : handOffs)
+            reconciler.handedOff(h, now);
         for (Slot sl : todo) {
             Mob m = sl.entity;
             sl.goal = new ConflictFollowGoal(m, sl);
@@ -1278,6 +1333,7 @@ public final class ConflictBridge implements SessionPlugin {
         if (!RtsimConfig.on(Module.CONFLICT)) {
             if (held)
                 switchedOff(now);
+            reconciler.switchedOff(now);
             return;
         }
         Difficulty d = s.server().getWorldData().getDifficulty();
@@ -1290,8 +1346,10 @@ public final class ConflictBridge implements SessionPlugin {
                         st.dirty = true;
         }
         held = !byAgent.isEmpty() || !territories.isEmpty() || !notices.isEmpty() || !signals.isEmpty();
-        if (!held)
+        if (!held) {
+            reconciler.tick(now); // nothing without a camp declared (D1)
             return; // D1: no faction, nothing to do
+        }
         settleDeaths(now);
         passing.clear();
         passing.addAll(byAgent.values());
@@ -1309,6 +1367,8 @@ public final class ConflictBridge implements SessionPlugin {
                     tryPlace(st, level, now);
         }
         passing.clear();
+        // After the placings: a materialize of this tick has claimed the set-out bodies it hands off.
+        reconciler.tick(now);
         flushSignals(now, false);
         if (now % NOTICE_CHECK == 0)
             checkNotices(now);
@@ -1581,6 +1641,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** LivingDeathEvent (lowest, not cancelled): a member's death is journaled at the end of the tick, once certain. */
     void onDeath(LivingEntity dead, DamageSource source, long now) {
+        reconciler.onDeath(dead, source);
         Slot sl = live(dead);
         Entity killer = source.getEntity();
         if (sl != null) {
@@ -2124,8 +2185,16 @@ public final class ConflictBridge implements SessionPlugin {
         campsReported++;
         if (!RtsimConfig.on(Module.CONFLICT))
             return key;
-        int structureId = s.dictId(Obs.DICT_STRUCTURE, structure);
-        long now = s.gameTime();
+        journalFound(key, level, structure, pos, late, homeBodies, census, s.gameTime());
+        return key;
+    }
+
+    /** FACTION_FOUND for a camp at {@code pos} (a block in its start chunk). */
+    private void journalFound(long key, ServerLevel level, String structure, BlockPos pos, boolean late, int homeBodies, int census,
+                              long now) {
+        RtsimSession s = session;
+        int dim = s.dimId(level.dimension());
+        int structureId = s.dictId(Obs.DICT_STRUCTURE, structure); // before beginJournaled: a define may journal
         ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.FACTION_FOUND, ConflictRecords.FactionFound.SIZE,
                 late ? ConflictRecords.FactionFound.FLAG_LATE : 0, now);
         r.putLong(ConflictRecords.FactionFound.FACTION, key);
@@ -2137,7 +2206,34 @@ public final class ConflictBridge implements SessionPlugin {
         r.putShort(ConflictRecords.FactionFound.HOME_BODIES, (short) Mth.clamp(homeBodies, 0, 0xFFFF));
         r.put(ConflictRecords.FactionFound.CENSUS, (byte) census);
         s.boundary().commit(r);
-        return key;
+    }
+
+    /** A camp the reconciler declared: its kin and sound as a reported camp's (the killing signal, notices). */
+    void putCamp(Camps.Site c) {
+        camps.put(c.faction, new Camp(c.faction, c.dimension, c.pos, c.structure, c.kind.kin(), c.kind.sound()));
+        campsReported++;
+    }
+
+    /** A declared camp's FACTION_FOUND, at its first census of the session (MZB-206). */
+    void factionFound(Camps.Site c, ServerLevel level, int homeBodies, int census, long now) {
+        journalFound(c.faction, level, c.structure, c.pos, c.late, homeBodies, census, now);
+    }
+
+    /** A party's live puppet of {@code body}, for a hand-back; null with none. */
+    Slot puppetOf(Party p, String body) {
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots)
+                if (sl.alive && sl.pendingDeath == null && !sl.removing && sl.entity != null && !sl.entity.isRemoved()
+                        && sl.entity.isAlive() && sl.body.equals(body))
+                    return sl;
+        return null;
+    }
+
+    /** A puppet handed back to its camp: its body goes and the member is the party's no more (the camp's body stands for it). */
+    void handBack(Slot sl) {
+        despawn(sl);
+        sl.alive = false;
+        sl.removing = true;
     }
 
     /** A member carried items off from a container (BAND_LOOTED, a Java op id). False when it is no live member. */

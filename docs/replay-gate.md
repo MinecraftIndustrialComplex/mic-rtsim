@@ -349,6 +349,41 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
    shared.rs, phase1.rs, worldmodel.rs), and RP touches no kernel journal code and no industry file.
    Both touch engine.rs (items 1 and 2) and tests/protocol.rs (item 4).
 
+**The M5 merge** (this branch merging main 4ac4801a: M5 at 4b926efb, SEC-1 S4c1 at 428a3311, the
+M10 doc; RP-64). The one textual conflict was rtsim-conflict engine.rs: `ConflictStats` (both
+sides' stats kept) and the `Conflict` fields and `Conflict::new` (both sides' kept but M5's
+`replaying`). The rest is semantic:
+
+1. **`replaying` goes.** M5's `pub replaying: bool` was MZB-141's flag, set by `session_start`
+   and cleared by `replay_done`, which RP-2 and RP-10 had retired for the outbox's (§3.3). Its
+   readers use `replaying()`: the CAMP_CENSUS arm (engine/camp.rs), synth's `CampRun` (its
+   restart opens the window with `begin_replay(true)`, the host's session start; its save and load
+   asserts the window is closed, since the host takes no page while replaying, RP-42), and
+   tests/camp.rs (the window through `begin_replay` and `replay_done`). M5's `session_start` is
+   gone with it: git carried its `camp_session_start` loop into `begin_replay`, its command filter
+   is the gate's queued column, and its MZB-138 fold stays retired (RP-10, §5.4). Nothing of M5
+   runs at an MZB-141 trigger: rtsim-jni has none since RP-2, and main added none.
+2. **`obs_seq` and `durable_obs_seq` stay** (MZB-177). rtsim-jni sets them as main does:
+   `obs_seq` in engine/conflict.rs `journaled` from each record's OBS_SEQ, `durable_obs_seq` at
+   WORLD_SAVED (engine.rs, never lowered). A replayed record's `obs_seq` is below `session_first`
+   (every record dispatched while replaying is an earlier session's, §2.2), a replayed copy's too,
+   its OBS_SEQ being the REASSERT's own (§2.3); a live record's, a live copy's among them, is at or
+   past it. A CAMP_BODIES answer is kept by that sequence until a WORLD_SAVED makes it durable.
+3. **The gate**: no new kind (§4.4).
+4. **The floors** (RP-57): no new `Obs` kind either. The camp kinds (CAMP_CENSUS, CAMP_BODIES,
+   CAMP_OUT) carry a camp's epoch, a u64 Java draws (`Journal.newOpId`, M5), never one the engine
+   issues, and CAMP_DEATH and CHIEF_PAID none: `party_epoch` stays None for them, as RP-57's table
+   says.
+5. **S4c1 and the meeting points.** S4c1 changes rtsim-industry and Create's Java (the frontier,
+   package stores) and none of rtsim-jni's session start arm, `journaled()` or `reasserted()`;
+   main's rtsim-jni engine.rs gains only the WORLD_SAVED line above. S4p's `seq < session_first`
+   test, REASSERT's judgement and the pinned JOURNAL_GEN hold as §2.1 to §2.3 say. On the Java side
+   M5's camp holders carry the generation each record was journaled in (RtsimSession, MZB-652) and
+   reassert a holder's carried records before its new ones: a copy is still judged by S4p's
+   `copy_is_new`, by that generation, so §2.3's two cases stand.
+6. **Fixtures**: main regenerated the rtsim-view fixtures at cc0c8c34 (M5's head); no converter yet
+   (no ChunkWait on main).
+
 ## 3. The flag
 
 ### 3.1 Where it is set and cleared (rtsim-jni)
@@ -566,7 +601,7 @@ rtsim-jni's `take_commands` for each module reads the outbox's counts after each
 
 The counts live in the module's JNI stats, not saved.
 
-### 4.4 Conflict (rtsim-conflict boundary.rs `Cmd`, main 3391a5d9)
+### 4.4 Conflict (rtsim-conflict boundary.rs `Cmd`, main 3391a5d9; with M5, main 4ac4801a)
 
 | Kind | Queued at the session start | While replaying | Why |
 |---|---|---|---|
@@ -578,16 +613,20 @@ The counts live in the module's JNI stats, not saved.
 | Recall | drop | drop | the same |
 | Settled | keep | drop | news only; the envoy that would name it is gone (RP-12) |
 | AmbushSpot | drop | drop | a body's lurk |
-| Reconcile | drop | never | answers a CAMP_CENSUS of this session with spawn, adopt and take lines (MOWZIE.md §4.9); M9 gates it on `is_in`, false all through a replay |
+| Reconcile | drop | never | answers a CAMP_CENSUS of this session with spawn, adopt and take lines (MOWZIE.md §4.9); M5's `send_lines` orders only a camp that is in (`is_in`), false all through a replay: `begin_replay`'s `camp_session_start` makes every camp out and a census replayed only marks its camp out (RP-64) |
 | TrainRobbed | keep | drop | a roar (RP-12) |
 | ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
 | March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
 | OwedHunt (M9, not on main) | drop | drop | held hunts go again at the replay end (§7.4) |
 
-The queued column is today's `session_start` filter exactly (agent kinds, Territory, Notice and
-Reconcile dropped). On main only Territory, Notice, Settled, Envoy, Materialize, Steer and Recall
-have push sites (engine.rs about 1018, 1986, 2217, 2909, 3669, 3973, 4381, 4427); the others come
-with M5, M7 and M9, whose merges meet the exhaustive match.
+The queued column is the old `session_start` filter exactly (agent kinds, Territory, Notice and
+Reconcile dropped); M5's `session_start` had the same filter, which the merge left to the gate
+(RP-64). After the M5 merge, Territory, Notice, Settled, Envoy, Materialize, Steer, Recall and
+Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4830, 4880, 5065,
+5127; engine/camp.rs about 629, `send_lines`, which M5 wrote as a `Vec` extend around the gate and
+the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
+table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
+March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
 
 **M7's rail caller (feat/mowzie-m7, not on main): a note for whichever of M7 and fix/replay-push
 lands second.**
