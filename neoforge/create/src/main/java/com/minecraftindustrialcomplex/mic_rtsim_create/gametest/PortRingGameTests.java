@@ -50,10 +50,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.lang.ref.WeakReference;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.*;
 
@@ -543,23 +541,30 @@ public final class PortRingGameTests {
         return chunk;
     }
 
-    // ---- UR-1 -----------------------------------------------------------------------------------
+    // ---- the module switch and UR-1 ---------------------------------------------------------------
 
     /**
-     * UR-1: with the industry module off a station's save leaves the rings out and keeps every key of Create's in the
-     * port's entry; the rings stay on the port, and on again a save writes them once more. A tracks file with the rings
-     * reads into ports as Create makes them. (With the plugin removed the mixins are gone, Create's read skips the two
-     * long arrays and its next write leaves them out.)
+     * The rings and the module switch (docs/replay-gate.md 9.6): a package written offline, the industry module
+     * switched off, a world save (the tracks file with the rings: the switch never gates a ring's save), then a crash
+     * before the journal's write, and a restart with the module on. The resend is refused: one package for one op.
+     * Before the rule a save with the module off left the rings out, and the resend wrote the package again. The file
+     * keeps every key of Create's, and reads into ports as Create makes them (UR-1: with the plugin removed the
+     * mixins are gone, Create's read skips the two long arrays and its next write leaves them out).
      */
-    @GameTest(template = IndustryKit.YARD, batch = "port_ring_7", timeoutTicks = 600)
-    public static void withIndustryOffAStationSaveDropsThePortRings(GameTestHelper helper) {
+    @GameTest(template = IndustryKit.YARD, batch = "port_ring_7", timeoutTicks = 1200)
+    public static void aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused(GameTestHelper helper) {
+        String test = "aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused";
         fastConfig();
+        forgetAll(helper);
         IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
         PortRing.fallbackForTest(false);
         BlockPos stationPos = stationPos(helper, 10);
-        BlockPos postbox = helper.absolutePos(new BlockPos(3, 1, 3));
+        long farChunk = ChunkPos.asLong((stationPos.getX() >> 4) + 7200, (stationPos.getZ() >> 4) + 7200);
+        BlockPos postbox = new BlockPos(ChunkPos.getX(farChunk) * 16 + 5, 70, ChunkPos.getZ(farChunk) * 16 + 5);
         GlobalStation[] st = {null};
+        District[] d = {null};
+        CompoundTag[] offFile = {null};
         long op = engineOp();
         helper.startSequence()
                 .thenIdle(5)
@@ -570,31 +575,44 @@ public final class PortRingGameTests {
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = ADDRESS;
                     st[0].connectedPorts.put(postbox, port);
-                    PortRing.record(port, op, false);
-                    PortRing.record(port, op + 1, true);
+                    d[0] = ind().districts().createForTest(level, farChunk);
+                    writePackage(op, d[0].id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
+                })
+                .thenWaitUntil(() -> check("applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
+                .thenExecute(() -> {
+                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    check("one package in the buffer, primed", packages(port.offlineBuffer) == 1 && port.primed);
                     CompoundTag on = portEntry(saveStation(level, st[0]));
-                    check("on: both rings saved", Arrays.equals(on.getLongArray(PortRing.KEY), new long[] {op})
-                            && Arrays.equals(on.getLongArray(PortRing.POSTBOX_KEY), new long[] {op + 1}));
-                    CompoundTag offFile;
+                    // The switch off, and the world save that follows it.
                     RtsimConfig.Test.setModule(Module.INDUSTRY, false);
                     try {
-                        offFile = saveStation(level, st[0]);
+                        check("the industry module is off", !RtsimConfig.on(Module.INDUSTRY));
+                        offFile[0] = saveStation(level, st[0]);
                     } finally {
                         RtsimConfig.Test.setModule(Module.INDUSTRY, null);
                     }
-                    CompoundTag off = portEntry(offFile);
-                    Set<String> create = new HashSet<>(on.getAllKeys());
-                    create.remove(PortRing.KEY);
-                    create.remove(PortRing.POSTBOX_KEY);
-                    check("off: the rings left out, Create's keys kept: " + off.getAllKeys() + " vs " + create, off.getAllKeys().equals(create));
-                    check("the rings stayed on the port", PortRing.wroteToBuffer(port, op) && PortRing.wroteToPostbox(port, op + 1));
-                    CompoundTag again = portEntry(saveStation(level, st[0]));
-                    check("on again, the next save writes them", Arrays.equals(again.getLongArray(PortRing.KEY), new long[] {op}));
-                    loadStation(level, st[0], saveStation(level, st[0]));
+                    CompoundTag off = portEntry(offFile[0]);
+                    check("off: the buffer's ring saved: " + Arrays.toString(off.getLongArray(PortRing.KEY)),
+                            Arrays.equals(off.getLongArray(PortRing.KEY), new long[] {op}));
+                    check("off: the same keys as on: " + off.getAllKeys() + " vs " + on.getAllKeys(), off.getAllKeys().equals(on.getAllKeys()));
+                    // The crash before the journal's write, and the restart with the module on.
+                    journal().forgetAppliedForTest(op);
+                    check("the journal does not know the op", !ind().opApplied(op));
+                    loadStation(level, st[0], offFile[0]);
                     GlobalPackagePort back = st[0].connectedPorts.get(postbox);
-                    check("read back onto the port Create made", back != port && back.address.equals(ADDRESS)
-                            && PortRing.wroteToBuffer(back, op) && PortRing.wroteToPostbox(back, op + 1));
-                    record("withIndustryOffAStationSaveDropsThePortRings", "port entry keys on, off", on.getAllKeys().size() + ", " + off.getAllKeys().size());
+                    check("read back onto the port Create made", back != null && back != port && back.address.equals(ADDRESS)
+                            && PortRing.wroteToBuffer(back, op));
+                    check("with its package", packages(back.offlineBuffer) == 1);
+                    writePackage(op, d[0].id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
+                })
+                .thenWaitUntil(() -> check("the resend is answered", commandResults(op).size() == 2))
+                .thenExecute(() -> {
+                    int second = commandResults(op).get(1);
+                    int got = packages(st[0].connectedPorts.get(postbox).offlineBuffer);
+                    record(test, "second answer, packages in the buffer", status(second) + ", " + got);
+                    check("refused: DUPLICATE, answered " + status(second), second == Obs.CommandResult.DUPLICATE_OP);
+                    check("one package for one op: " + got, got == 1);
+                    journal().forgetAppliedForTest(op);
                     st[0].connectedPorts.remove(postbox);
                 })
                 .thenSucceed();
