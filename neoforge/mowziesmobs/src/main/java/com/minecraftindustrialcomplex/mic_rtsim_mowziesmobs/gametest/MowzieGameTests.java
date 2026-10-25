@@ -2602,8 +2602,9 @@ public final class MowzieGameTests {
      * was claimed and handed to a puppet (handedOff 1), which {@code holdLurks} then found no hold point for and
      * discarded: "no hand-off was made (1)". Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_lurk_refused", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_lurk_refused", skyAccess = true)
     public static void aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2626,22 +2627,22 @@ public final class MowzieGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     agent[0] = ConflictKit.newAgent();
                     ConflictKit.ambushSpot(agent[0], 1, den.faction, RtsimTests.dimension(helper),
                             new double[] {den.spot.x, den.spot.y, den.spot.z - 4.0}, new double[] {den.spot.x, den.spot.y, den.spot.z}, 8.0f);
                 })
-                .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent[0]))))
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent[0])))))
                 .thenExecute(() -> {
                     Camps c = MowzieKit.camps();
                     was[0] = c.handedOff;
@@ -2660,10 +2661,10 @@ public final class MowzieGameTests {
                         ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
                     });
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(den.faction, op[1], 1);
                     check("the bridge refused the lurk (" + (ConflictKit.bridge().lurksRefused - was[2]) + " times)", ConflictKit.bridge().lurksRefused > was[2]);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
                     Camps c = MowzieKit.camps();
@@ -2678,7 +2679,7 @@ public final class MowzieGameTests {
                     record(test, "refused", "the lurk was refused " + (ConflictKit.bridge().lurksRefused - was[2]) + " times before the SET_OUT was claimed: taken, not handed off, no puppet made from the body and then discarded");
                     ConflictKit.ambushRemoved(agent[0], 1, den.faction, RtsimTests.dimension(helper));
                 })
-                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent[0]))))
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent[0])))))
                 .thenSucceed();
     }
 
