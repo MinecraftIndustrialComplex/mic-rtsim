@@ -10734,8 +10734,9 @@ mod conflict {
     /// a crash. The restart from those pages holds the arrival again while it replays (the
     /// pages kept its poll) and runs it after its replay end: the band is never read as
     /// fighting at its target, and its books end as in the session that went on. A band going
-    /// home is never seen (`seen`), so no record of a sighting can follow a held raid's
-    /// arrival to be read as its fight.
+    /// home is met like one going out (MZB-457), but `seen` waits for the replay end, and a
+    /// sighting's BAND_MATERIALIZE carries no BAND_FIGHT flag: only the flag makes a record the
+    /// fight, so a sighting that follows a held raid's arrival is not read as its fight.
     #[test]
     fn a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight() {
         let (dir, e, mut j) = camp("conflict-rp42-held");

@@ -8570,7 +8570,9 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
 - **MZB-744** (what could not be written, and why): the Umvuthi's puppet and its throne part are M11's, so no test here
   puts the chief in a band that is handed back; test 28's engine half (the Invasion still reaches its target; pool plus
   away stay at the cap) and the engine's count of the march belong to the rtsim-jni protocol tests; the "band met walking
-  home is embodied" variant of test 32 is test 33 (core). Forms that move are driven by `ConflictKit.steer` at 0.2 blocks
+  home is embodied" variant of test 32 is covered in the engine by `tests/mowzie_march.rs`,
+  `a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered` (its `home = true` pass), not by test 33
+  (core), whose `column()` sends no march record (corrected by MZB-755). Forms that move are driven by `ConflictKit.steer` at 0.2 blocks
   a tick so the walk is in the test and the recall reads the real anchor; the stationary form is only written for the
   out half's idle (40 ticks, about 8 blocks), where the puppets walk toward the centre over unloaded chunks.
 - **MZB-745** (sight; P2 and P3-4 of the Opus review of M10b): the trim (MZB-473) and the recall used one fixed 64 blocks
@@ -8712,6 +8714,35 @@ An Opus review of M10's head (2443e915) found one P1, one P2 and seven P3s. Each
   above and close in horizontally) is in sight at 128, and 150 out at ground level is not; and the edge and a diagonal.
   Not done (the review named it, the brief did not): each player's own view distance and the scaled tracking range
   (`sightRange` still uses the server's view distance); visual only.
+- **MZB-754** (P3-3: the stop's inset in the design text). MZB-746 made the stop's square two chunks inside the
+  entity-ticking edge, and said the design texts were its now, but `MOWZIE.md` still said "one chunk inside" at
+  §2 (the custom-roll ledger's pending-stack row), §4.14's tunables table, §4.16's stop paragraph, §6's cost table, §7
+  test 34's walk-through, and the §8 MZ-17 row. All six now say two chunks. No other file keeps the old
+  inset: `docs/boundary.md` was corrected by MZB-746, and `StopSquare.java`'s comment is about why one chunk was not
+  enough.
+- **MZB-755** (P3-5: MZB-744's pointer was wrong). MZB-744 said test 32's "band met walking home is embodied"
+  variant is test 33. Test 33's `column()` sends no march record. The coverage is
+  `tests/mowzie_march.rs::a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered`, whose `home = true`
+  pass meets a Home band, embodies it in one group and steers it along its segment. MZB-744's text is corrected in
+  place.
+- **MZB-756** (P3-6: a stale doc comment). The comment on `a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight`
+  (`rtsim-jni/tests/protocol.rs`) said "A band going home is never seen"; MZB-457 made that false (`seen` meets a Home
+  band). The test still passes for the reason now written: `seen` waits for the replay end, and a sighting's
+  BAND_MATERIALIZE carries no BAND_FIGHT flag, so it is not read as the held raid's fight. Comment only. The file's
+  base is not rustfmt-clean, so it is not formatted.
+- **MZB-757** (P3-2 and P3-7, residuals, nothing built):
+  - *A later wave at radius 0* (MZB-747). The engine cannot reach it: `seen` always takes a new epoch, and that
+    epoch's materialize captures the old party. Only `ConflictKit` drives it, and only JUnit covers it. An arc wave
+    overwrites `p.hdx`/`p.hdz` of a party with stacks already out (ConflictBridge, in `materialize`); the next steer
+    recomputes the heading, so it is harmless. Not covered: a wave at radius 0 through a real engine, because no engine
+    path produces one.
+  - *Test 33's 150-block clause* (a fight whose target does not tick through to its end). Met in parts: the stop
+    GameTest's band C is clamped and holds at simulation distance 8 and at 4 (`MarchGameTests.aStoppedBandKeepsToThePlayersSquare`
+    and `...AtSimulationDistanceFour`). Not covered: a run in which the fight's target itself does not tick for the whole
+    fight, which needs a long GameTest with a player parked at the edge, and is left for the M10 acceptance round.
+  - The review's "not checked by tests, reasoned safe" items are unchanged: a HAND_BACK answer against the band's
+    BAND_DEMATERIALIZED cut with the camp in (only the camp-out case, camp.rs's `camp_out` path, is tested), a set-out
+    hand-off cut with a march, and CHIEF_KILLED copies after an unwatched resolve.
 
 ## M11 Aloft
 
