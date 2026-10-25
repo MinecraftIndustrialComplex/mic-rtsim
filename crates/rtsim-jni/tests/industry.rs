@@ -2622,16 +2622,16 @@ mod ack_never_resends {
     /// its answer S, so MODULES goes ahead of S in that hand-over (BoundarySession.handOver writes
     /// the preamble, MODULES included, before it drains the journal, so every answer not drained
     /// yet when the switch comes lands behind it: this tick's, and any a full open buffer left
-    /// over). Java's autosave then takes the pages past S and Java reads that ack: S was live in
-    /// this session, so its rings prune X (they prune with the module off, RP-257). On again, the
-    /// engine sends its outbox under new sequences (`set_enabled`).
+    /// over). Java's autosave then takes the pages past S and Java reads that ack: Java trims its
+    /// journal through it, and the journal's op index, which refuses an op Java applied, forgets X
+    /// with it. The fake world's applied set never prunes, so the probe drops X from it there, as
+    /// that index does. On again, the engine sends its outbox under new sequences (`set_enabled`).
     ///
-    /// Before RP-285 (at b5f3c55f) the engine ignored S while off (U10), kept X in its outbox and
-    /// sent it again after the ack past S: a real Java (rings pruned, journal trimmed through the
-    /// ack) would have applied it twice (the fake world answered DUPLICATE, its applied set never
-    /// pruning). Now S takes X out at once. The exchange's IND_CARRIAGE_RESULT, journaled just
+    /// Before RP-285 (at 37b2dcfb) the engine ignored S while off (U10), kept X in its outbox and
+    /// sent it again after the ack past S, and the world, which no longer knew X, applied it a
+    /// second time. Now S takes X out at once. The exchange's IND_CARRIAGE_RESULT, journaled just
     /// before S, is an answer too: the engine keeps it, with its tick, and books it at the switch
-    /// (at 9bbf1569 the switch made the engine drop the exchange unbooked instead).
+    /// (ignored before, it left the exchange waiting for a result that never came).
     #[test]
     fn an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack() {
         let mut r = Rig::new("ack-switch", false);
@@ -2786,7 +2786,7 @@ mod ack_never_resends {
     }
 
     /// With industry off since the answer S of X: a page save past S lands and Java reads its ack
-    /// (its rings forget X, its journal is trimmed past S), the world saves after a long run of
+    /// (its journal, and the op index that refuses X, is trimmed past S), the world saves after a long run of
     /// records the engine ignores, and the engine crashes with the module still off. Restarts on a
     /// minimum-size buffer with the module off, checks the replay spans hand-overs, and returns
     /// the restart's settle and the engine's clock before the crash.
@@ -2913,9 +2913,10 @@ mod ack_never_resends {
     /// after Java applied X. The replay (several hand-overs) derives X again under the same op and
     /// the world refuses it DUPLICATE live at S, in the tick industry goes off (MODULES ahead of S).
     /// Off, the engine hears S: X leaves the outbox at once, and S is kept for the switch, which
-    /// drops the exchange derived again (RP-199) at S's tick. Then [`crash_while_off_after_the_ack`]
-    /// (the exchange still waits, S kept in the link page) and on again: the switch drops it once,
-    /// and X is never sent in the third session.
+    /// books it at S's tick as `command_result` does with the module on. Then
+    /// [`crash_while_off_after_the_ack`] (S kept in the link page) and on again: X is never sent in
+    /// the third session. On main a DUPLICATE only takes its command, so the exchange derived again
+    /// still waits after the switch, as it would with the module on; slice T's RP-199 drops it.
     #[test]
     fn a_duplicate_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off() {
         let mut r = Rig::new("ack-off-dup", false);
@@ -2971,7 +2972,10 @@ mod ack_never_resends {
             "the pages hold the exchange derived again, S kept"
         );
         switch_on(&mut r);
-        assert!(!pending(&r), "the switch dropped it");
+        assert!(
+            pending(&r),
+            "main's DUPLICATE only takes the command, with the module on or off"
+        );
         to_the_end(r, x, 2, |_| false);
     }
 
@@ -3562,7 +3566,8 @@ mod ack_never_resends {
         r.j.e.close(false, Duration::from_secs(5)).unwrap();
         eprintln!(
             "same: X {x:#x} cut short; the window is seqs {first} to {} ({window} answers), world {:?}",
-            saved.end, r.j.mc().t
+            saved.end,
+            r.j.mc().t
         );
         let run = |modules: u32, tag: &str| {
             let mut a = from_snapshot(&r.dir, &saved, r.cfg, modules, tag);
