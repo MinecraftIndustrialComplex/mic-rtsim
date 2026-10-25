@@ -961,6 +961,69 @@ public final class NestGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * RP-251 (the review's P3-7): worms loaded before their nest is known are settled when it is found. A nest places a
+     * worm (ordinal 0) and is then dropped from the Nests (the file lost it) while the worm stays loaded, unlisted: its
+     * join ran when the nest was unknown. The engine asks for the nest again (PLACE_NEST) and the chamber is found
+     * standing: the worm is adopted into the rebuilt nest (listed, spawned 1, counted as an adoption) and a census follows
+     * NEST_FOUND. One more worm is then owed: it is placed with ordinal 1, not 0, so the nest holds two worms of two
+     * ordinals. Without the settling the old worm stays unlisted and the new one takes ordinal 0, two worms of one
+     * ordinal, one of them outside the nest's books.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_worm_settle")
+    public static void aWormLoadedBeforeItsNestWasFoundIsSettled(GameTestHelper helper) {
+        String test = "aWormLoadedBeforeItsNestWasFoundIsSettled";
+        Site s = new Site(helper, 1);
+        long id = s.nest();
+        UUID[] first = {null};
+        long[] before = new long[2];
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenExecute(() -> {
+                    s.build();
+                    DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 1))
+                .thenWaitUntil(() -> check("one worm placed (" + s.worms(id).size() + ")", s.worms(id).size() == 1 && nests().nest(id).owed == 0))
+                .thenExecute(() -> {
+                    DeathWormEntity w = s.worms(id).get(0);
+                    first[0] = w.getUUID();
+                    check("it carries ordinal 0", w.getPersistentData().getInt(Nests.ORDINAL_TAG) == 0);
+                    // The file lost the nest; the worm stays loaded, unknown to it.
+                    nests().forgetForTest(id);
+                    check("the nest dropped, the worm still there", nests().nest(id) == null && s.level.getEntity(first[0]) instanceof DeathWormEntity x && x.isAlive());
+                    before[0] = nests().adoptedWorms;
+                    before[1] = nests().censuses;
+                    DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("NEST_FOUND again (" + found(id).size() + ")", found(id).size() == 2))
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id);
+                    check("the nest is back with its chamber standing", n != null && !n.broken);
+                    check("the loaded worm adopted: listed (" + n.worms.size() + ")", n.worms.contains(first[0]) && n.worms.size() == 1);
+                    check("spawned 1 (" + n.spawned + ")", n.spawned == 1);
+                    check("counted as an adoption (" + (nests().adoptedWorms - before[0]) + ")", nests().adoptedWorms == before[0] + 1);
+                    check("a census followed (" + (nests().censuses - before[1]) + ")", nests().censuses > before[1]);
+                    // One more worm owed, due now.
+                    n.owed = 1;
+                    n.dueAt = 0;
+                })
+                .thenWaitUntil(() -> check("a second worm placed (" + s.worms(id).size() + ")", s.worms(id).size() == 2))
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id);
+                    boolean ordinals = true;
+                    for (DeathWormEntity w : s.worms(id))
+                        if (!w.getUUID().equals(first[0]))
+                            ordinals = w.getPersistentData().getInt(Nests.ORDINAL_TAG) == 1;
+                    check("the new worm took ordinal 1, not 0", ordinals);
+                    check("two worms near the site, both listed (" + s.allWorms().size() + ", " + n.worms.size() + ")", s.allWorms().size() == 2 && n.worms.size() == 2);
+                    record(test, "settled", "a worm placed and the nest then dropped from the Nests: the chamber found again adopted the loaded worm (listed, "
+                            + "spawned 1, a census after NEST_FOUND); the next worm took ordinal 1; two worms, both in the nest's books");
+                })
+                .thenSucceed();
+    }
+
     // ---- the engine's nest (native) -------------------------------------------------------------------
 
     /**

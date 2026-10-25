@@ -618,11 +618,12 @@ public final class OilFieldGameTests {
      * RP-244 (audit row D2, direction A): a placed lair whose start chunk lacks the structure's start (the chunk is older
      * than the record that the lair was placed) is placed again, at the same chunk, once. A lair whose start is there is
      * left alone (the control: every placed lair is looked at again, none placed again). Then the start is removed from
-     * the chunk (and the roost's dragon, which the older entity file would not hold) and the placed lairs are looked at
-     * again: the lair is placed once more with the same start chunk and lair id, though its own references survive in
-     * the box chunks (the re-placement skips the reference test: asserted that a reference is there), the start is back,
-     * one lair of the field stays in L, LAIR_FOUND was sent once, one dragon is in the roost, and a further 80 ticks place
-     * nothing more.
+     * the chunk, with its own reference (the home chunk from before), and the roost's dragon is kept in the box: the
+     * placed lairs are looked at again. The lair is placed once more with the same start chunk and lair id, though the
+     * other box chunks' references survive (the re-placement skips the reference test, builds only where the reference is
+     * missing, and discards a dragon it spawns: RP-244, the review's fix), the start and the reference are back, one lair
+     * of the field stays in L, LAIR_FOUND was sent once, and the box holds exactly one dragon, the one from the first
+     * placement, at the end and after a further 80 ticks, which place nothing more.
      */
     @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_lair_replace")
     public static void aLairWhoseStartIsMissingIsPlacedAgainOnce(GameTestHelper helper) {
@@ -639,6 +640,7 @@ public final class OilFieldGameTests {
         long[] before = new long[4];
         int placements0 = placer.placements.size();
         Structure[] roost = {null};
+        UUID[] dragon = {null};
         DragonKit.onEnd(helper, () -> {
             forgetLair(placer, field);
             unforce.run();
@@ -666,20 +668,24 @@ public final class OilFieldGameTests {
                 .thenExecute(() -> {
                     check("a lair whose start is there is not placed again (" + (placer.replaced - before[1]) + " replaced, "
                             + (placer.placedCount - before[0]) + " placed)", placer.replaced == before[1] && placer.placedCount == before[0] + 1);
-                    // The chunk from before: no start in it, and no dragon in the roost (the older entity file holds none).
+                    // The chunk from before: no start in it and no reference of its own; the dragon stays in the box.
                     LevelChunk home = level.getChunk(got[0].start().x, got[0].start().z);
                     check("the start is there to remove", home.getStartForStructure(roost[0]) != null);
+                    EntityType<?> fire0 = IafDragons.speciesType(DragonKit.FIRE);
+                    List<DragonBaseEntity> kept = new ArrayList<>();
+                    for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, AABB.of(got[0].box()).inflate(48)))
+                        if (d.getType() == fire0 && !d.isRemoved())
+                            kept.add(d);
+                    check("the roost's own dragon is in the box (" + kept.size() + ")", kept.size() == 1);
+                    dragon[0] = kept.get(0).getUUID();
                     check("its references stand in the box chunks", ChunkPos.rangeClosed(new ChunkPos(new BlockPos(got[0].box().minX(), 0, got[0].box().minZ())),
                             new ChunkPos(new BlockPos(got[0].box().maxX(), 0, got[0].box().maxZ()))).anyMatch(c ->
                             !level.getChunk(c.x, c.z).getReferencesForStructure(roost[0]).isEmpty()));
                     Map<Structure, StructureStart> starts = new HashMap<>(home.getAllStarts());
                     starts.remove(roost[0]);
                     home.setAllStarts(starts);
+                    home.getReferencesForStructure(roost[0]).remove(got[0].start().toLong());
                     check("the start is gone", home.getStartForStructure(roost[0]) == null);
-                    EntityType<?> fire = IafDragons.speciesType(DragonKit.FIRE);
-                    for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, AABB.of(got[0].box()).inflate(48)))
-                        if (d.getType() == fire)
-                            d.discard();
                     before[2] = placer.replaced;
                     before[3] = placer.placedCount;
                     placer.unverifyForTest();
@@ -698,18 +704,27 @@ public final class OilFieldGameTests {
                             DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, got[0].lair()).size() == 1);
                     EntityType<?> fire = IafDragons.speciesType(DragonKit.FIRE);
                     int dragons = 0;
+                    boolean same = false;
                     for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, AABB.of(got[0].box()).inflate(48)))
-                        if (d.getType() == fire && !d.isRemoved())
+                        if (d.getType() == fire && !d.isRemoved()) {
                             dragons++;
-                    check("one dragon in the roost (" + dragons + ")", dragons == 1);
+                            same |= d.getUUID().equals(dragon[0]);
+                        }
+                    check("exactly one dragon in the roost (" + dragons + ")", dragons == 1);
+                    check("and it is the one from the first placement", same);
+                    check("the home chunk holds its reference again", home.getReferencesForStructure(roost[0]).contains(got[0].start().toLong()));
                     check("one structure start in the loaded chunks (" + startsAround(level, sc, 5, ROOST) + ")", startsAround(level, sc, 5, ROOST) == 1);
                 })
                 .thenIdle(80)
                 .thenExecute(() -> {
                     check("placed again once, not again (" + (placer.replaced - before[2]) + " replaced, " + (placer.placedCount - before[3]) + " placed)",
                             placer.replaced == before[2] + 1 && placer.placedCount == before[3] + 1);
-                    record(test, "replaced", "the start of the roost at chunk " + got[0].start() + " removed with its dragon (the older chunk): the lair was placed again once, "
-                            + "same chunk and lair id, its references standing in the box chunks; LAIR_FOUND sent once; one dragon; the control (start there) placed nothing");
+                    check("still exactly one dragon after 80 ticks", level.getEntitiesOfClass(DragonBaseEntity.class, AABB.of(got[0].box()).inflate(48)).stream()
+                            .filter(d -> d.getType() == IafDragons.speciesType(DragonKit.FIRE) && !d.isRemoved()).count() == 1);
+                    record(test, "replaced", "the start and the home chunk's own reference of the roost at chunk " + got[0].start() + " removed (the older chunk), its "
+                            + "dragon kept in the box: the lair was placed again once, same chunk and lair id, built only where the reference was missing, "
+                            + placer.replacedDragonsDiscarded + " spawned dragon(s) discarded; LAIR_FOUND sent once; exactly one dragon, the first one; the control "
+                            + "(start there) placed nothing");
                 })
                 .thenSucceed();
     }
