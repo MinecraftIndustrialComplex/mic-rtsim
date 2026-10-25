@@ -713,11 +713,13 @@ pub struct Ships {
     /// Whether this engine came back from its pages (docs/replay-gate.md §5.2, RP-31): set by
     /// [`Ships::begin_replay`]; only then is a replayed SHIP_MATERIALIZED honoured. In memory only.
     pub(crate) replay_from_pages: bool,
-    /// The ship arena's next index when [`Ships::begin_replay`] ran (RP-93): a replayed
-    /// SHIP_MATERIALIZED is honoured only on a ship that existed then. Ships are allocated in
-    /// order and never reused (`PagedArena`), so a ship the replay allocated (a network built or
-    /// a port or haven that joined inside the replayed window) may not be the one the live run
-    /// gave that index; its epoch only raises the floor. In memory only.
+    /// The ship arena's next index when the session began ([`Ships::begin_session`], RP-93,
+    /// RP-100), lowered only by [`Ships::begin_replay`]: a replayed record names a ship by its
+    /// agent id, and finds it only if it existed then. Ships are allocated in order and never
+    /// reused (`PagedArena`), so a ship the replay allocated (a network built or a port or
+    /// haven that joined inside the replayed window) may not be the one the live run gave that
+    /// index; a record about it only raises the floor. `u32::MAX` before a session (every handle
+    /// counts) and after a replay. In memory only.
     pub(crate) replay_next: u32,
     /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30, RP-57): agent to the highest epoch
     /// a replayed or copied record named that the ship does not hold. The ship's next body takes
@@ -870,7 +872,7 @@ impl Ships {
             over_berths: Vec::new(),
             outbox: Outbox::default(),
             replay_from_pages: false,
-            replay_next: 0,
+            replay_next: u32::MAX,
             floors: BTreeMap::new(),
             log_enabled: false,
             log: Vec::new(),
@@ -2388,9 +2390,21 @@ impl Ships {
     /// replayed SHIP_MATERIALIZED honoured (§5.2). For the native link; the engine's own runs
     /// have no sessions.
     pub fn begin_replay(&mut self, from_pages: bool) {
-        self.replay_from_pages = from_pages;
-        self.replay_next = self.ships.meta().1;
+        // The bound and the pages' flag are the session's and taken once (RP-100): a switch off
+        // and on inside the replay begins it again, when the arena holds the replay's own ships
+        // too, and a first dock or haven begins it after the ones that made it active.
+        if !self.outbox.replaying() {
+            self.replay_from_pages = from_pages;
+        }
+        self.replay_next = self.replay_next.min(self.ships.meta().1);
         self.outbox.begin_replay();
+    }
+
+    /// A session begins, whether or not the ships run (RP-100): the ships it can name are the
+    /// ones the engine holds now (its pages). The replay itself begins later (the first dock,
+    /// haven or ship, a switch-on) and keeps this bound.
+    pub fn begin_session(&mut self) {
+        self.replay_next = self.ships.meta().1;
     }
 
     /// The session's replay has caught up (docs/replay-gate.md §5.6; docs/boundary.md §2.3:
@@ -2405,6 +2419,7 @@ impl Ships {
             return;
         }
         self.outbox.replay_done();
+        self.replay_next = u32::MAX;
         let was = std::mem::take(&mut self.embodied);
         for &id in &was {
             if let Some(x) = self.ships.get_mut(id) {
@@ -2446,10 +2461,14 @@ impl Ships {
         self.ships[id].epoch.max(floor).wrapping_add(1).max(1)
     }
 
-    /// A ship's epoch becomes `epoch`, which its floor is at or below: the floor is spent.
-    fn set_epoch(&mut self, id: ShipId, epoch: u32) {
+    /// A ship's epoch becomes `epoch`: its floor is spent if the epoch reaches it. A floor above
+    /// (a copy folded at the hand-over's time, a later record) stays for the next body (RP-101).
+    pub(crate) fn set_epoch(&mut self, id: ShipId, epoch: u32) {
         self.ships[id].epoch = epoch;
-        self.floors.remove(&Ship::agent(id));
+        let agent = Ship::agent(id);
+        if self.floors.get(&agent).is_some_and(|&f| f <= epoch) {
+            self.floors.remove(&agent);
+        }
     }
 
     /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a
@@ -4371,14 +4390,14 @@ impl Ships {
 
     /// Who did a thing the plugin reported, as the archive's id: the player's actor if the world
     /// knows them already (this only looks, it never registers), the ship's handle, else 0.
-    fn doer(w: &World, by: By, player: Uuid, ship: u64) -> u128 {
+    fn doer(&self, w: &World, by: By, player: Uuid, ship: u64) -> u128 {
         match by {
             By::Player => w
                 .knowledge
                 .actors()
                 .find(ActorKind::Player, uuid_hash(player.0, player.1))
                 .map_or(0, aid),
-            By::Ship => Ship::id_of_agent(ship).map_or(0, sid),
+            By::Ship => self.named_ship(ship).map_or(0, sid),
             _ => 0,
         }
     }
@@ -5514,16 +5533,13 @@ impl Ships {
     /// ship has no body to count against (its late reports change nothing). The ship's voyage
     /// and books are the pages' (the replay end makes it abstract again).
     fn materialized(&mut self, m: &boundary::Materialized) {
-        if !self.outbox.replaying() || !self.replay_from_pages {
+        if !self.outbox.replaying() {
             return;
         }
-        let Some(s) = Ship::id_of_agent(m.agent) else {
+        // A ship the replay allocated is not necessarily the live run's (RP-93): the floor only.
+        let Some(s) = self.named_ship(m.agent) else {
             return;
         };
-        // A ship the replay allocated is not necessarily the live run's (RP-93): the floor only.
-        if s.index() >= self.replay_next {
-            return;
-        }
         let Some(x) = self.ships.get(s) else {
             return;
         };
@@ -5537,20 +5553,31 @@ impl Ships {
 
     /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
     /// RP-8, RP-9, RP-97), called by the host instead of [`Ships::ingest`] while it applies one.
-    /// Its body is gone, so a copy embodies nothing: every copy that names a ship's epoch
-    /// raises the agent's epoch floor to it, live or replayed (RP-57), and a SHIP_MATERIALIZED
-    /// copy does nothing more. Every other kind as [`Ships::ingest`]: by the ship's epoch as
-    /// held, or by op id, so a copy of a body this engine never had changes nothing.
-    pub fn ingest_copy(&mut self, w: &mut World, o: &Obs, mask: &dyn WaterMask, at: Tick) {
+    /// Its body is gone, and the ships carry nothing a copy could add (§5.7): every copy that
+    /// names a ship's epoch raises the agent's epoch floor to it, live or replayed (RP-57), and
+    /// no copy does more, whatever its kind (RP-98). The handle a copy names may be another ship
+    /// than the one the earlier session had (a ship allocated since), and a copy of a sinking or
+    /// of loot is lost rather than booked to the wrong body. `w`, `mask` and `at` are those of
+    /// [`Ships::ingest`], which the host's call mirrors.
+    pub fn ingest_copy(&mut self, _w: &mut World, o: &Obs, _mask: &dyn WaterMask, _at: Tick) {
         self.fold_epoch(o);
-        match o {
-            Obs::Materialized(_) => {}
-            _ => self.ingest(w, o, mask, at),
+    }
+
+    /// The ship an agent id names for a record of this session's replay (RP-93, RP-100): while
+    /// replaying only a ship the pages held when the session began, and none at all on an engine
+    /// that did not come from its pages. A handle at or above the bound may be another ship than
+    /// the one the live run gave that index (the replay builds its network and joins its docks
+    /// and havens in its own order); a record about it raises the floor and no more.
+    fn named_ship(&self, agent: u64) -> Option<ShipId> {
+        let s = Ship::id_of_agent(agent)?;
+        if self.outbox.replaying() && (!self.replay_from_pages || s.index() >= self.replay_next) {
+            return None;
         }
+        Some(s)
     }
 
     fn ship_of(&self, agent: u64, epoch: u32) -> Option<ShipId> {
-        let s = Ship::id_of_agent(agent)?;
+        let s = self.named_ship(agent)?;
         let x = self.ships.get(s)?;
         (x.epoch == epoch).then_some(s)
     }
@@ -5561,7 +5588,7 @@ impl Ships {
     /// materialization; or carried by a chunk) for a body this engine no longer knows. The op id
     /// applies it once (overnight choice U14, as phase 1's review 3 P2).
     fn ship_of_op(&self, agent: u64) -> Option<ShipId> {
-        let s = Ship::id_of_agent(agent)?;
+        let s = self.named_ship(agent)?;
         self.ships.get(s).map(|_| s)
     }
 
@@ -5639,7 +5666,7 @@ impl Ships {
                 let lost = f64::from(before.saturating_sub(x.hull_milli)) / 1000.0;
                 if self.ships[s].crew == 0 && matches!(self.ships[s].role, Role::Pirate { .. }) {
                     let killer = (d.by == By::Player).then(|| self.player(w, d.player));
-                    let by = Self::doer(w, d.by, d.player, d.ship);
+                    let by = self.doer(w, d.by, d.player, d.ship);
                     if self.lose_if_crewless(w, s, by, killer, at) {
                         return;
                     }
@@ -5677,7 +5704,7 @@ impl Ships {
                     return;
                 };
                 let killer = (k.by == By::Player).then(|| self.player(w, k.player));
-                let by = Self::doer(w, k.by, k.player, k.ship);
+                let by = self.doer(w, k.by, k.player, k.ship);
                 match self.ships[s].role {
                     Role::Pirate { .. } => self.lose_pirate(w, s, by, killer, at),
                     _ => {
@@ -5726,14 +5753,14 @@ impl Ships {
                                 self.lose_pirate(w, s, aid(pl), Some(pl), at);
                             }
                             _ => {
-                                let by = Self::doer(w, c.by, c.player, c.ship);
+                                let by = self.doer(w, c.by, c.player, c.ship);
                                 self.lose_merchant(w, s, by, "captured by a player", at);
                             }
                         }
                     }
                     By::Ship => {
                         let Some(p) =
-                            Ship::id_of_agent(c.ship).filter(|&p| self.haven_of(p).is_some())
+                            self.named_ship(c.ship).filter(|&p| self.haven_of(p).is_some())
                         else {
                             return;
                         };
@@ -5805,7 +5832,7 @@ impl Ships {
                     }
                     By::Ship => {
                         let Some(p) =
-                            Ship::id_of_agent(c.ship).filter(|&p| self.haven_of(p).is_some())
+                            self.named_ship(c.ship).filter(|&p| self.haven_of(p).is_some())
                         else {
                             // Nobody of ours took it: back into the hold.
                             for (g, a) in taken {
@@ -5829,7 +5856,7 @@ impl Ships {
             }
             Obs::Fight(f) => {
                 let (Some(a), Some(d)) =
-                    (Ship::id_of_agent(f.attacker), Ship::id_of_agent(f.defender))
+                    (self.named_ship(f.attacker), self.named_ship(f.defender))
                 else {
                     return;
                 };
