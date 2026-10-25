@@ -359,6 +359,37 @@ fn the_offline_replay_sends_the_reconciles_the_native_engine_sent() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- the crash tests' shape (slice R, docs/choices-mowzie-build.md RP-276) -----------------------
+
+/// Journaled records every industry crash test puts right after its pages (ship damage reports
+/// the engine ignores, [`fillers`]): restarted on a minimum-size buffer, the replay then spans
+/// several hand-overs, as a long replay in play does, so the test meets what only such a replay
+/// does (RP-263: on bc669502 the first replayed hand-over ran the industry engine to the
+/// present). About 900 fill one buffer.
+const REPLAY_FILLERS: usize = 2_000;
+
+/// The engine started again after a crash, as Java starts it: on a minimum-size buffer (the
+/// caller's `e`), from the world's save, at the world's present (`Java::open` starts the game
+/// time at 1,000, below every replayed record: RP-269).
+fn restart(e: std::sync::Arc<Engine>, jsave: WorldSave, mc: FakeWorld, modules: u32) -> Java {
+    let present = mc.t;
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = modules;
+    j.game_time = present.0 as i64;
+    j
+}
+
+/// The hand-overs the session's replay took, which must be several (RP-276).
+fn replayed_over_several(j: &Java) -> u64 {
+    let n =
+        j.e.stats
+            .replay_handovers
+            .load(std::sync::atomic::Ordering::Acquire);
+    assert!(n >= 2, "the replay spans hand-overs: {n}");
+    n
+}
+
 /// What a crash leaves: the engine at its pages, the world at its save, maybe a chunk saved ahead.
 enum Crash {
     /// The world saved after the reconcile was applied and its result journaled; the pages hold it.
@@ -390,17 +421,16 @@ fn crash_run(crash: Crash) {
         _ => day(2.5),
     };
     j.mc_run_until(save_at);
-    // The world saves; the engine is asked for pages that stop exactly there.
-    let jsave = j.world_save();
-    let msave = j.mc().saved();
+    // The engine is asked for pages that stop here; the world saves after the fillers, so the
+    // replay spans hand-overs (RP-276).
     let through = j.next_obs - 1;
     j.e.request_save(through);
     mc_tick_until_durable(&mut j, through);
-    assert_eq!(
-        j.e.durable_obs_seq(),
-        through,
-        "the pages stop at the world save"
-    );
+    assert_eq!(j.e.durable_obs_seq(), through, "the pages stop here");
+    fillers(&mut j, REPLAY_FILLERS);
+    j.mc_tick();
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
     let crash_at = match crash {
         Crash::AfterTheResult => day(3.0) + 600,
         Crash::BeforeTheLoad => day(3.0) + 600,
@@ -423,12 +453,11 @@ fn crash_run(crash: Crash) {
         _ => mc.restore(&msave),
     }
     let applied_before = mc.reconciled.len();
-    let e = engine(&dir, 256 * 1024);
-    let mut j = Java::open(e, jsave);
-    j.mc = Some(mc);
-    j.module_mask = MODULE_INDUSTRY;
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
     // To the moment of the crash: a world that never saw what was lost runs it again.
     j.mc_run_until(crash_at);
+    replayed_over_several(&j);
     let bars_again = bars(&j, &ids);
     let end = match crash {
         Crash::ChunkSavedAhead => day(3.6),
@@ -852,25 +881,27 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
         .cloned()
         .unwrap();
     let held_op = held.op().unwrap();
-    // The world saves now (it never applied the delta), and the pages stop at the same point:
-    // their outbox holds the delta.
-    let jsave = j.world_save();
-    let msave = j.mc().saved();
+    // The pages stop here: their outbox holds the delta. The world saves after the fillers (it
+    // never applied the delta), so the replay spans hand-overs (RP-276).
     let through = j.next_obs - 1;
-    assert!(jsave.last_applied_cmd < held_seq);
     j.e.request_save(through);
     mc_tick_until_durable(&mut j, through);
     assert!(
         j.e.with_industry(|_, l| l.outbox) >= 1,
         "the delta waits in the outbox"
     );
+    fillers(&mut j, REPLAY_FILLERS);
+    j.mc_tick();
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    assert!(jsave.last_applied_cmd < held_seq);
     let mut mc = j.mc.take().unwrap();
     j.e.close(false, Duration::from_secs(5)).unwrap();
     mc.restore(&msave);
-    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
-    let mut j = Java::open(e, jsave);
-    j.mc = Some(mc);
-    j.module_mask = MODULE_INDUSTRY;
+    let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
     j.mc_tick();
     let first = j
         .ind_commands
@@ -897,6 +928,7 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
         "written once in this session"
     );
     iron_run_to_end(&mut j, &cfg);
+    replayed_over_several(&j);
     conserves(&j);
     assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
     assert_eq!(j.stale_commands, 0);
@@ -905,9 +937,10 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
 
 /// The pages stop at day 2.5 (a save that landed); the world saves later, at day 3 + 100, after the
 /// reconcile was applied and its result journaled, and the page commit for that save never lands.
-/// The journal then replays 2.5 to 3 + 100 into the engine: with its session start held until the
-/// replay is in (W19), the engine re-derives the same reconcile under the same op ids, takes the
-/// replayed result for it, and the books close. (Review finding 1: run first, the session start
+/// The journal then replays 2.5 to 3 + 100 into the engine, over several hand-overs (RP-276): with
+/// its session start and its runs of the clock held until the replay is in (W19, RP-274), the
+/// engine re-derives the same reconcile under the same op ids, takes the replayed result for it,
+/// and the books close. (Review finding 1: run first, the session start
 /// carried the engine to day 3 + 100 and the replay re-derived a different reconcile.)
 #[test]
 fn pages_behind_the_world_save_rederive_the_same_reconcile() {
@@ -922,6 +955,7 @@ fn pages_behind_the_world_save_rederive_the_same_reconcile() {
     let through = j.next_obs - 1;
     j.e.request_save(through);
     mc_tick_until_durable(&mut j, through);
+    fillers(&mut j, REPLAY_FILLERS);
     j.mc_run_until(day(3.0) + 100);
     assert!(!reconciles(&j).is_empty(), "applied before the world save");
     let ops = |j: &Java| -> Vec<u64> {
@@ -945,11 +979,10 @@ fn pages_behind_the_world_save_rederive_the_same_reconcile() {
     j.e.close(false, Duration::from_secs(5)).unwrap();
     mc.restore(&msave);
     let applied_before = mc.reconciled.len();
-    let e = engine(&dir, 256 * 1024);
-    let mut j = Java::open(e, jsave);
-    j.mc = Some(mc);
-    j.module_mask = MODULE_INDUSTRY;
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
     j.mc_run_until(day(3.0) + 2_000);
+    replayed_over_several(&j);
     let after: Vec<_> = reconciles(&j)[applied_before..].to_vec();
     assert!(after.is_empty(), "nothing applied again: {after:?}");
     let pending = industry(&j.e, |ie| ie.district(MILL).map(|d| d.pending.len()));
@@ -958,7 +991,11 @@ fn pages_behind_the_world_save_rederive_the_same_reconcile() {
         Some(0),
         "the replayed results answered the re-derived reconcile"
     );
-    eprintln!("first ops {first_ops:x?}, re-derived {:x?}", ops(&j));
+    assert_eq!(
+        ops(&j),
+        first_ops,
+        "the same reconciles under the same op ids"
+    );
     conserves(&j);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
@@ -988,19 +1025,25 @@ fn failed_carriage(crash: bool) {
     mc_tick_until_durable(&mut j, through);
     assert_eq!(j.e.durable_obs_seq(), through);
     if crash {
-        // The world saves now: its journal holds the FAILED answer, lastAppliedCmdSeq >= seq.
+        // The world saves after the fillers (RP-276): its journal holds the FAILED answer,
+        // lastAppliedCmdSeq >= seq.
+        fillers(&mut j, REPLAY_FILLERS);
+        j.mc_tick();
         let jsave = j.world_save();
         assert!(jsave.last_applied_cmd >= seq);
         let msave = j.mc().saved();
         let mut mc = j.mc.take().unwrap();
         j.e.close(false, Duration::from_secs(5)).unwrap();
         mc.restore(&msave);
-        let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
-        j = Java::open(e, jsave);
-        j.mc = Some(mc);
-        j.module_mask = MODULE_INDUSTRY;
+        let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+            c.industry_seed = Some(cfg.seed)
+        });
+        j = restart(e, jsave, mc, MODULE_INDUSTRY);
     }
     iron_run_to_end(&mut j, &cfg);
+    if crash {
+        replayed_over_several(&j);
+    }
     assert!(j.e.with_industry(|_, l| l.results_failed) >= 1);
     conserves(&j);
     j.e.close(true, Duration::from_secs(5)).unwrap();
@@ -1053,10 +1096,11 @@ fn industry_pages_in_another_format_start_the_industry_engine_afresh() {
 /// smog (the Destroy plugin's attribution, I14, a deposit good the industry engine learns as an
 /// output) is the settlers' grievance (P14) once the model is learned; the ladder climbs while the
 /// player is away (an envoy nobody meets, scouts, a raid), and the war band meets the unloaded
-/// mill abstractly, carrying and breaking by its own units' loads. The world and the pages save
-/// while away, after the raid; the mill loads again and the raid's theft and broken blocks land in
-/// its reconcile; then a crash: the restarted engine derives the same reconcile from the same
-/// pages and the world that never saw it gets it once.
+/// mill abstractly, carrying and breaking by its own units' loads. The pages save while away,
+/// after the raid, and the world after a replay's worth of fillers (RP-276); the mill loads again
+/// and the raid's theft and broken blocks land in its reconcile; then a crash: the restarted
+/// engine replays over several hand-overs, derives the same reconcile from the same pages, and
+/// the world that never saw it gets it once.
 #[test]
 fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
     use rtsim_conflict::boundary::{self as cb, Obs as O};
@@ -1161,13 +1205,15 @@ fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
         j.mc().districts[0].broken.is_empty(),
         "nothing happens in the world while it is away"
     );
-    // The world saves while away, after the raid; the pages stop exactly there.
-    let jsave = j.world_save();
-    let msave = j.mc().saved();
+    // The pages stop while away, after the raid; the world saves after the fillers, so the
+    // replay spans hand-overs (RP-276).
     let through = j.next_obs - 1;
     j.e.request_save(through);
     mc_tick_until_durable(&mut j, through);
-    let gt = j.game_time;
+    fillers(&mut j, REPLAY_FILLERS);
+    j.mc_tick();
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
     // The player comes back: the raid lands in the reconcile.
     at_mill(&mut j, true);
     j.mc_run_until(day(BACK) + 600);
@@ -1183,17 +1229,15 @@ fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
     j.e.close(false, Duration::from_secs(5)).unwrap();
     mc.restore(&msave);
     let applied_before = mc.reconciled.len();
-    let e = engine(&dir, 256 * 1024);
-    let mut j = Java::open(e, jsave);
-    j.mc = Some(mc);
-    j.module_mask = MODULES;
-    j.game_time = gt;
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = restart(e, jsave, mc, MODULES);
     assert_eq!(
         j.e.conflict_restore_check(),
         (None, false),
         "the conflict reads back to its saved state hash"
     );
     j.mc_run_until(day(BACK) + 600);
+    replayed_over_several(&j);
     let after: Vec<_> = reconciles(&j)[applied_before..].to_vec();
     let epoch = |v: &[(u64, u32, ChunkPos)]| {
         let mut x: Vec<_> = v.to_vec();
@@ -1672,9 +1716,10 @@ fn a_replay_of_several_hand_overs_rederives_the_same_op_ids() {
         day(3.0) + 101,
     );
     assert!(!b.before.is_empty(), "the reconcile ran before the crash");
+    // The long replay of the industry crash tests (RP-276): nine hand-overs.
     assert!(
-        b.replay_handovers >= 3,
-        "the replay spans hand-overs: {}",
+        b.replay_handovers >= 9,
+        "the replay spans nine hand-overs: {}",
         b.replay_handovers
     );
     assert_eq!(
