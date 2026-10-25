@@ -1275,6 +1275,69 @@ fn a_replayed_census_only_marks_its_camp_out() {
     ok(&mut r);
 }
 
+/// RP-68 (the M5 merge check's item 4): a world save reported while the replay runs (WORLD_SAVED
+/// between a long replay's hand-overs) makes no camp forget the answers of replayed records until
+/// the replay end, so a holder's copy of one, journaled again in the replay, is booked once. At
+/// the end the save's sequence is the durable one.
+#[test]
+fn a_world_save_while_replaying_forgets_no_answer_until_the_replay_end() {
+    let mut r = grove(132, 9);
+    come_in(&mut r);
+    r.c.begin_replay(true);
+    let at = r.c.now();
+    let epoch = 777;
+    let census = Obs::CampCensus(boundary::CampCensus {
+        faction: r.key,
+        epoch,
+        flags: 0,
+        health: 0.0,
+        throne: (0.0, 0.0, 0.0),
+        direction: 0.0,
+        traded_slot: 0,
+        traded_generation: 0,
+        bodies: Vec::new(),
+        traded: Vec::new(),
+    });
+    let mut infra = rtsim_ecology::infra::NoInfrastructure;
+    r.c.ingest(&mut r.w, &mut infra, &census, at);
+    let s = &r.c.camp(r.f).unwrap().slots[0];
+    let answer = |op| {
+        Obs::CampBodies(boundary::CampBodies {
+            faction: r.key,
+            epoch,
+            op,
+            lines: vec![boundary::LineAnswer {
+                line: 0,
+                slot: s.id,
+                generation: s.generation,
+                action: boundary::ACTION_SPAWN,
+                outcome: boundary::LINE_DONE,
+            }],
+        })
+    };
+    let (first, second) = (answer(0xA1), answer(0xA2));
+    let answers = r.c.stats.camp_answers;
+    r.c.obs_seq = 5;
+    r.c.ingest(&mut r.w, &mut infra, &first, at);
+    r.c.world_saved(100);
+    // The next answer booked is where a camp forgets (MZB-177).
+    r.c.obs_seq = 6;
+    r.c.ingest(&mut r.w, &mut infra, &second, at);
+    r.c.obs_seq = 7;
+    r.c.ingest_copy(&mut r.w, &mut infra, &first, at);
+    assert_eq!(
+        r.c.stats.camp_answers,
+        answers + 2,
+        "the copy of the first answer is not booked again"
+    );
+    assert_eq!(r.c.durable_obs_seq, 0, "held while replaying");
+    r.c.replay_done();
+    assert_eq!(r.c.durable_obs_seq, 100, "durable from the replay end");
+    // Live, a save is durable at once.
+    r.c.world_saved(150);
+    assert_eq!(r.c.durable_obs_seq, 150);
+}
+
 // ---- answers lost, replayed and stale ---------------------------------------------------------
 
 /// An answer applied by Java but lost on its way to the engine (a crash between the world's save
