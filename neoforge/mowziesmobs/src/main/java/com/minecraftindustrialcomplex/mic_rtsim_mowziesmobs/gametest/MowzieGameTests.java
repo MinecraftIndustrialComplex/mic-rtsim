@@ -881,8 +881,8 @@ public final class MowzieGameTests {
     }
 
     /**
-     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's
-     * {@value ConflictBridge#OUT_OF_VIEW} blocks of the band, so a HAND_BACK's recall does not despawn the band's
+     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's sight
+     * ({@link ConflictBridge#sightRange}, 128 blocks) of the band, so a HAND_BACK's recall does not despawn the band's
      * other puppets as unseen, and beyond a warrior's sight. It holds no ticket and loads nothing.
      */
     private static ServerPlayer watcher(GameTestHelper helper, Grove g, String name) {

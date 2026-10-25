@@ -8518,6 +8518,26 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
   home is embodied" variant of test 32 is test 33 (core). Forms that move are driven by `ConflictKit.steer` at 0.2 blocks
   a tick so the walk is in the test and the recall reads the real anchor; the stationary form is only written for the
   out half's idle (40 ticks, about 8 blocks), where the puppets walk toward the centre over unloaded chunks.
+- **MZB-745** (sight; P2 and P3-4 of the Opus review of M10b): the trim (MZB-473) and the recall used one fixed 64 blocks
+  (`OUT_OF_VIEW`) as "a player can see it", so a band was cut, or sent home and gone, in plain view of a player 100 blocks
+  off (a warrior is tracked to 128). Both now ask one helper, `ConflictBridge.sightRange(entity, level)`:
+  `min(max(128, type.clientTrackingRange() * 16), serverViewDistance * 16)`, and a view distance of 0 or less (a GameTest
+  server's) is no bound. 128 is `SIGHT_FLOOR`: a warrior's and a raptor's tracking range, and vanilla's despawn distance.
+  `OUT_OF_VIEW` stays for what it also was, the distance at which a held puppet drops its target (`aim`).
+  - **Extras count.** A member is seen when its body or any of its extras (a raptor's four followers) is within the range
+    of a player: a leader out of sight with a follower in sight is not cut and not despawned.
+  - **Spectators are ignored on purpose** (P3-4), as vanilla's despawn ignores them (`getNearestPlayer` with no spectators):
+    a spectator beside a band does not keep it from being cut or recalled. The GameTest puts one 10 blocks from the band.
+  - The recall's `seen` and the trim's `inSight` are the same rule now; a recalled band stays while a player is anywhere
+    in the entity's sight, where it went at once for a player between 64 and 128 blocks off.
+  - GameTests (MarchMowzieGameTests): `theTrimAndTheRecallSeeAsFarAsTheServerSends` (a player at 100: nothing cut, still
+    due; a player at 170 and a spectator at 10: cut on the beat; a player at 100 and a BAND_RECALL: the band stays, goes
+    within a few ticks of the player's going) and `aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs` (leader at 140,
+    one follower held at 120, the others at 146: not cut; the follower moved out: cut on the beat with its pack). The
+    brief gave 100 and 160, and 66 against 50, for the old 64 rule; the numbers here are against the 128 the rule now is,
+    and the far player stands at 170 (past the 160 of the Umvuthi's tracking range of 10). The tests set the server's view
+    distance to 10 (restored when the test ends); the rest of the GameTests with a watching player stand within 50 blocks
+    or beyond 128 and are not moved by the wider rule.
 
 ## M11 Aloft
 
