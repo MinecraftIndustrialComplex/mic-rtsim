@@ -129,8 +129,12 @@ public final class RailFrostmawGameTests {
     static final int ICE_OFF = 18, PASSES = 4, NEAR_X = 40, GAP = 220;
     static final double[] ICE_SPEEDS = {0.5, 1.0, 1.4, 2.0};
 
-    /** Test 9: the lurk point is this far ahead of the train, the spot this far off the rail, the second station this far from the first. */
-    static final int LURK_AHEAD = 40, LATERAL = 4, B_AWAY = 60, HEARER_BEHIND = 20, HOLD_TICKS = 200;
+    /**
+     * Test 9: the lurk point is this far ahead of the train, the spot this far off the rail (the engine's own:
+     * {@code SPOT_BLOCKS} of rail.rs, 5 whole blocks from the track point toward the den, here due north), the
+     * second station this far from the first.
+     */
+    static final int LURK_AHEAD = 40, LATERAL = 5, B_AWAY = 60, HEARER_BEHIND = 20, HOLD_TICKS = 200;
     static final float REACH = 8.0f;
 
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_pass", timeoutTicks = 2400)
@@ -832,8 +836,12 @@ public final class RailFrostmawGameTests {
         long trainId;
         boolean lurkEnded;
 
-        LurkRun(GameTestHelper helper) {
-            super(helper, 8, 2);
+        /** The train's speed in this run (blocks a tick). */
+        final double speed;
+
+        LurkRun(GameTestHelper helper, double speed) {
+            super(helper, 10, 2);
+            this.speed = speed;
             atEnd.add(() -> {
                 if (!lurkEnded && agent != 0) {
                     ConflictKit.ambushRemoved(agent, 1, faction, dim);
@@ -847,6 +855,12 @@ public final class RailFrostmawGameTests {
                 if (puppet != null && !puppet.isRemoved())
                     puppet.discard();
             });
+        }
+
+        /** Driven at this run's speed. */
+        @Override
+        void hold() {
+            hold(speed);
         }
 
         /** Each poll of the hold phase: the puppet near its spot, off the rail, awake. */
@@ -916,10 +930,31 @@ public final class RailFrostmawGameTests {
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk", timeoutTicks = 3600)
     public static void aLurkingFrostmawStandsOffTheRailAndSwipesAPassingCarriage(GameTestHelper helper) {
-        LurkRun t = new LurkRun(helper);
+        lurk(helper, 1.0, true);
+    }
+
+    /** The pass of test 9 at half a block a tick, on the engine's own spot: the strike still lands (review C, item 2). */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_slow", timeoutTicks = 2400)
+    public static void aLurkingFrostmawSwipesACarriageAtHalfABlockATick(GameTestHelper helper) {
+        lurk(helper, 0.5, false);
+    }
+
+    /** The pass of test 9 at 1.4 blocks a tick (Create's default top speed is about that), on the engine's own spot. */
+    @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_lurk_fast", timeoutTicks = 2400)
+    public static void aLurkingFrostmawSwipesACarriageAtOnePointFourBlocksATick(GameTestHelper helper) {
+        lurk(helper, 1.4, false);
+    }
+
+    /**
+     * Test 9's body at {@code speed}. {@code full} is the whole of it (the hold with its bait, the hearer, the
+     * cargo delta, the robbery and its roar, the lurk's end); not full it is the pass alone: the puppet placed, a
+     * zombie seated, the train driven past, the swipe's hit, TRAIN_PASSED.
+     */
+    private static void lurk(GameTestHelper helper, double speed, boolean full) {
+        LurkRun t = new LurkRun(helper, speed);
         ServerLevel level = t.level;
 
-        probed(t, laid(t, true))
+        GameTestSequence s = probed(t, laid(t, true))
                 .thenExecute(() -> {
                     t.hold();
                     t.settle();
@@ -962,8 +997,9 @@ public final class RailFrostmawGameTests {
                 .thenWaitUntil(paced(() -> {
                     t.puppet = RtsimApi.lurkBody(t.agent);
                     check("the puppet stands in the world", t.puppet != null);
-                }))
-                .thenExecute(() -> {
+                }));
+        if (full) {
+            s = s.thenExecute(() -> {
                     t.bait = FakePlayers.add(level, new Vec3(t.spot.x, t.spot.y, t.spot.z - 30.0), "frostmaw-bait");
                     t.holdFrom = level.getGameTime();
                     record("railFrostmaw", "lurk", "puppet at " + t.puppet.position() + ", spot " + t.spot + ", the bait at " + t.bait.position());
@@ -987,12 +1023,19 @@ public final class RailFrostmawGameTests {
                     t.bait.setPos(t.spot.x, t.spot.y, t.spot.z - 300.0);
                     t.puppet.setTarget(null);
                 })
-                .thenIdle(60)
-                .thenExecute(() -> {
+                .thenIdle(60);
+        } else {
+            // The sampler's next sample (once in 20 ticks) puts the train in the near set, now the puppet lives
+            s = s.thenIdle(40);
+        }
+        s = s.thenExecute(() -> {
                     // The hearer stands behind the first station (away from the lurk), the zombie rides the first carriage
-                    t.hearer = FakePlayers.hearing(level, new Vec3(t.x0 + STATION_AT + 0.5 - t.sign * HEARER_BEHIND, t.y, t.z0 + 0.5 + 3.0), "frostmaw-hearer");
-                    double apart = Math.hypot(t.hearer.getX() - t.puppet.getX(), t.hearer.getZ() - t.puppet.getZ());
-                    check("the hearer is more than 56 blocks from the puppet (" + apart + ")", apart > 56.0);
+                    double apart = -1.0;
+                    if (full) {
+                        t.hearer = FakePlayers.hearing(level, new Vec3(t.x0 + STATION_AT + 0.5 - t.sign * HEARER_BEHIND, t.y, t.z0 + 0.5 + 3.0), "frostmaw-hearer");
+                        apart = Math.hypot(t.hearer.getX() - t.puppet.getX(), t.hearer.getZ() - t.puppet.getZ());
+                        check("the hearer is more than 56 blocks from the puppet (" + apart + ")", apart > 56.0);
+                    }
                     if (!(typeOf(ZOMBIE).create(level) instanceof LivingEntity z))
                         throw new GameTestAssertException("could not create a zombie");
                     t.rider = z;
@@ -1007,7 +1050,8 @@ public final class RailFrostmawGameTests {
                     t.blocks0 = t.blocks();
                     t.strikes0 = ConflictKit.lurkStrikes();
                     t.passes0 = ConflictKit.bridge().trainPasses;
-                    record("railFrostmaw", "lurk", "the zombie rides carriage 0 at " + z.position() + ", hearer " + apart + " blocks from the puppet");
+                    record("railFrostmaw", "lurk", "the zombie rides carriage 0 at " + z.position() + ", train speed " + t.speed
+                            + (full ? ", hearer " + apart + " blocks from the puppet" : ""));
                 })
                 // The pass
                 .thenWaitUntil(() -> {
@@ -1019,11 +1063,11 @@ public final class RailFrostmawGameTests {
                 .thenExecute(() -> {
                     t.train.speed = 0.0;
                     long strikes = ConflictKit.lurkStrikes() - t.strikes0;
-                    record("railFrostmaw", "lurk", "pass: strikes " + strikes + ", zombie health " + t.rider.getHealth() + " of " + t.health0
+                    record("railFrostmaw", "lurk", "pass at " + t.speed + ": strikes " + strikes + ", zombie health " + t.rider.getHealth() + " of " + t.health0
                             + ", yBodyRot off the bearing to the zombie by " + t.hitDeviation + " degrees, overlapped " + t.overlapped);
                     check("the train is on the rail", !t.train.derailed && !t.train.invalid);
-                    check("the lurk struck (" + strikes + ")", strikes >= 1);
-                    check("the zombie was hurt (health " + t.rider.getHealth() + " of " + t.health0 + ")", t.hit);
+                    check("the lurk struck at " + t.speed + " (" + strikes + ")", strikes >= 1);
+                    check("the zombie was hurt at " + t.speed + " (health " + t.rider.getHealth() + " of " + t.health0 + ")", t.hit);
                     check("the puppet faced the zombie within 30 degrees at the hit (" + t.hitDeviation + ")", t.hitDeviation >= 0 && t.hitDeviation <= 30.0);
                     check("no carriage box touched the puppet's", !t.overlapped);
                     check("the contraptions' block count is unchanged (" + t.blocks() + " of " + t.blocks0 + ")", t.blocks() == t.blocks0);
@@ -1036,9 +1080,13 @@ public final class RailFrostmawGameTests {
                     check("PASSED_WATCHED", r.watched());
                     check("a carriage in range (" + r.carriage() + ")", r.carriage() >= 0 && r.carriage() < t.train.carriages.size());
                     check("the train's id", r.train() == t.trainId);
-                }))
-                // IND_CARRIAGE_DELTA for the train that was struck
-                .thenExecute(() -> {
+                }));
+        if (!full) {
+            s.thenSucceed();
+            return;
+        }
+        // IND_CARRIAGE_DELTA for the train that was struck
+        s.thenExecute(() -> {
                     t.op = IndustryKit.engineOp();
                     IndustryKit.carriageDelta(t.op, t.trainId, IndRecords.CarriageDelta.EXCHANGE,
                             List.<Object[]>of(new Object[] {1, "i/64/minecraft:copper_ingot", 5L}));
