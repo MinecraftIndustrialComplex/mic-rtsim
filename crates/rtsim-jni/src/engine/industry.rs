@@ -34,7 +34,7 @@ use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
 use rtsim_industry::persist::{
-    CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE,
+    CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, STORE_TABLE,
 };
 use rtsim_industry::threat::Threat;
 use rtsim_industry::tunables::Tunables;
@@ -54,13 +54,16 @@ const LINK_MAGIC: u32 = u32::from_le_bytes(*b"RTJI");
 const LINK_VERSION: u16 = 1;
 
 /// The industry engine's own page tables (rtsim-industry `persist.rs`, F36; the glass box's, G2-9;
-/// the booked train legs', ID10).
-pub const TABLES: [u16; 5] = [
+/// the booked train legs', ID10; the package stores', slice S4). A table left out is written at
+/// every save and never read back: the package stores' was, so a restart lost every store, with
+/// its debts, pools and write marks (found by RP-285's chain case).
+pub const TABLES: [u16; 6] = [
     GLOBAL_TABLE,
     DISTRICT_TABLE,
     CLUSTER_TABLE,
     GLASS_TABLE,
     LEG_TABLE,
+    STORE_TABLE,
 ];
 
 /// docs/industry-boundary.md §2.2.
