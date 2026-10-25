@@ -8099,6 +8099,173 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// [`reopen_mask`], watching the replay (MZB-484): after every hand-over that leaves part of
+    /// the journal still to send, no BAND_MARCH has been sent. Returns the engine, Java and the
+    /// number of hand-overs the replay was behind.
+    fn reopen_watching(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        capacity: usize,
+    ) -> (std::sync::Arc<Engine>, Java, usize) {
+        let e = engine(dir, capacity);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        let mut behind = 0;
+        for _ in 0..64 {
+            j.flush();
+            if j.sent_obs >= last {
+                break;
+            }
+            behind += 1;
+            assert!(
+                !cmds(&j).any(|c| matches!(c, C::March(_))),
+                "a march record while the replay is behind (hand-over {behind}, {} of {last})",
+                j.sent_obs
+            );
+        }
+        assert!(j.sent_obs >= last, "the whole journal handed over");
+        // What the replay's end queues goes with the next steps.
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (e, j, behind)
+    }
+
+    /// The BAND_MARCH records Java has been sent for `p`, in order.
+    fn marches(j: &Java, p: Handle<Party>) -> Vec<cb::BandMarch> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::March(m) if m.agent == Party::agent(p) => Some(m.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// MZB-451, MZB-484 (M10): a session start sends BAND_MARCH for every party once the replay
+    /// has caught up, and not before: Java's map of marches is per session, and a record sent
+    /// while the replay ran would describe a state the replay was about to change. With 4,000
+    /// fillers in the journal the replay takes several hand-overs on a minimum-size buffer, the
+    /// casualties journaled after the save come in the last, and the record carries what they
+    /// left: the units alive, each death counted once. The revision is the page's, one on.
+    #[test]
+    fn a_session_start_sends_each_party_its_march_after_the_replay_has_caught_up() {
+        let (dir, e, mut j) = camp("conflict-march-session-start");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        assert!(!marches(&j, p).is_empty(), "the live session sent its march");
+        save(&e, &mut j);
+        let rev = e.with_conflict(|c, _| c.parties[p].march_rev);
+        fillers(&mut j, 4_000);
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j, behind) = reopen_watching(&dir, saved, gt, wire::MIN_CAPACITY);
+        assert!(behind >= 3, "the replay took several hand-overs: {behind}");
+        assert_eq!(books(&e, p).0, n - lost, "the replay counts each death once");
+        let got = marches(&j, p);
+        assert_eq!(got.len(), 1, "one record for the party: {got:?}");
+        let m = &got[0];
+        assert_eq!(m.revision, rev + 1, "the page's revision, one on");
+        assert_eq!(m.flags & cb::MARCH_ENDED, 0, "the party goes on");
+        assert_eq!(m.phase, cb::MARCH_OUT);
+        assert_eq!(
+            m.units.iter().map(|u| u.1).sum::<u32>(),
+            n - lost,
+            "the units the replay left"
+        );
+        assert!(!m.waypoints.is_empty(), "the road it is on");
+        let parties = e.with_conflict(|c, _| c.parties.iter().count());
+        let sent = cmds(&j).filter(|c| matches!(c, C::March(_))).count();
+        assert_eq!(sent, parties, "one record for every party");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-451, MZB-484 (M10): a raid that routed and walks home in its bodies loses a member on
+    /// the way (BAND_CASUALTIES, journaled after the save), and the engine stops before the march
+    /// record that says so: the replay counts the casualty once, and the session's first record
+    /// carries it (the units alive, the phase Home, no end).
+    #[test]
+    fn a_casualty_on_the_walk_home_across_a_restart_counts_once_and_the_next_march_carries_it() {
+        let (dir, e, mut j) = camp("conflict-march-walk-home-crash");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.6,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 20, 2 * DAY, "the routed band walking home", |j| {
+            party(&j.e, p) == Some((Phase::Home, true))
+        });
+        let (home, epoch, ..) = books(&e, p);
+        assert!(home >= 3, "a band with members to lose on the way: {home}");
+        let body = cmds(&j)
+            .find_map(|c| match c {
+                C::Materialize(m) if m.agent == Party::agent(p) => {
+                    m.members.iter().find(|s| s.count > 0).map(|s| s.body)
+                }
+                _ => None,
+            })
+            .expect("the raid's materialize");
+        save(&e, &mut j);
+        let rev = e.with_conflict(|c, _| c.parties[p].march_rev);
+        j.conflict_obs(&O::Casualties(cb::BandCasualties {
+            agent: Party::agent(p),
+            epoch,
+            by: cb::BY_MOB,
+            body,
+            count: 1,
+            killer: (0, 0),
+            op: next_casualty_op(),
+        }));
+        // No step between the record and the crash: its march record was never built.
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j, _) = reopen_watching(&dir, saved, gt, 256 * 1024);
+        let (alive, _, embodied, ..) = books(&e, p);
+        assert_eq!(alive, home - 1, "the replay counts the casualty once");
+        assert!(!embodied, "abstract at the replay's end");
+        assert_eq!(party(&e, p).map(|x| x.0), Some(Phase::Home), "still walking home");
+        let got = marches(&j, p);
+        assert_eq!(got.len(), 1, "one record at the session start: {got:?}");
+        let m = &got[0];
+        assert_eq!((m.phase, m.revision), (cb::MARCH_HOME, rev + 1));
+        assert_eq!(m.flags & cb::MARCH_ENDED, 0);
+        assert_eq!(
+            m.units.iter().map(|u| u.1).sum::<u32>(),
+            home - 1,
+            "the record carries the casualty"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     // ---- the replay gate (docs/replay-gate.md, fix/replay-push) ----------------------------
 
     /// A buffer that holds a whole long replay in one hand-over.
