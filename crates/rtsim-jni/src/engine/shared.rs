@@ -388,11 +388,20 @@ fn replay_end(st: &mut State) {
     st.replaying = false;
     st.replays_ended += 1;
     let g = conflict::gate_counts(st);
+    let dg = dragons::gate_counts(st);
     log_info(&format!(
         "the session's replay is over after {} hand-overs: {} records applied while replaying; \
          conflict: {} commands dropped while replaying, {} of a kind that embodies (a bug), {} \
-         decisions that embody deferred",
-        st.replay_handovers, st.replay_records, g.dropped, g.never, g.deferred
+         decisions that embody deferred; dragons: {} commands dropped while replaying, {} of a kind \
+         that embodies (a bug), {} decisions that embody deferred",
+        st.replay_handovers,
+        st.replay_records,
+        g.dropped,
+        g.never,
+        g.deferred,
+        dg.dropped,
+        dg.never,
+        dg.deferred
     ));
     dragons::replay_end(st);
     ships::replay_end(st);
