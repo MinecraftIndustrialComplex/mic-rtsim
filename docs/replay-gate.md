@@ -678,6 +678,9 @@ the agent is embodied as the last session had it:
     which counted such a record where live did not. A live recall folds as before.)
   - **The same epoch, at or above the party's `wave`:** the waves from the party's `wave` to the
     record's are filled (normally one). Below it: nothing; the pages already hold that wave's fill.
+    Not embodied: nothing, the body is gone; but a fighting band not embodied is one whose first
+    wave Java refused (RP-54), and its later wave's record embodies it again and is filled, as
+    live `wave` embodies the band when it commands that wave (RP-58, RP-61).
   - **The fill** is `spawn_wave`'s own, without the command, from one function both call so that they
     cannot part: the room is `spawn_quota` (16) less the bodies in Minecraft by the books; the units
     in order, each up to its alive members not yet placed; then `wave` = the record's + 1. One
