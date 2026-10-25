@@ -1725,10 +1725,14 @@ fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
     let (alive, counted) = (r.c.parties[band].alive(), r.c.stats.casualties);
     r.watch = true;
     r.next_obs = r.c.now();
-    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    let fight_end = arrival + r.c.tun.watched_fight_ticks + 600;
+    // The band walks home in its bodies after the fight (MZB-456) and is recalled when it gets
+    // there: run until its row is gone.
+    let end = Tick(fight_end.0 + day(2.0).0);
     let (mut fight, mut reported, mut recalled) = (None, 0, Vec::new());
+    let (mut counted_at_end, mut alive_at_end) = (None, None);
     let mut t = r.c.now();
-    while t < end {
+    while t < end && r.c.parties.contains(band) {
         let next = [
             r.c.next_due(),
             r.plugin.next_due(),
@@ -1776,13 +1780,18 @@ fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
         }
         r.plugin.apply(to_plugin, next);
         t = next;
+        if counted_at_end.is_none() && t >= fight_end {
+            counted_at_end = Some(r.c.stats.casualties - counted);
+            alive_at_end = r.c.parties.get(band).map(|x| x.alive());
+        }
     }
     assert!(fight.is_some(), "the band's fight began");
+    assert!(!r.c.parties.contains(band), "the band walked home");
     (
         reported,
-        r.c.stats.casualties - counted,
+        counted_at_end.unwrap(),
         alive,
-        r.c.parties[band].alive(),
+        alive_at_end.unwrap(),
         recalled,
     )
 }
@@ -3369,8 +3378,10 @@ fn a_raid_arriving_after_the_save(
 /// unseen, its arrival in view of the player, and Java refusing every wave of its fight
 /// ([`Run::refuse`]). The session that went on fights unembodied to the fight's end, then walks
 /// home. `crash`: a restart from the pages replays the records, which hold the arrival. Read
-/// 600 ticks past the fight's end, the replay still running: the band's phase, whether embodied,
-/// epoch, phase end, fights watched since the save, and abstract raids since the save.
+/// 600 ticks past the fight's end, the replay still running: the band's phase, whether embodied
+/// before its walk home (a live band walks home in the bodies its books hold, MZB-456; a
+/// replayed one is recalled, as no body of the session stands yet), epoch, phase end, fights
+/// watched since the save, and abstract raids since the save.
 fn a_refused_fight_after_the_save(crash: bool) -> (Phase, bool, u32, Tick, u64, Vec<Tick>) {
     let mut r = Run::new(36, quiet_goblins());
     let band = raid_band(&mut r);
@@ -3399,7 +3410,7 @@ fn a_refused_fight_after_the_save(crash: bool) -> (Phase, bool, u32, Tick, u64, 
         let raids = walls.raids.range(saved_at + 1..).copied().collect();
         (
             x.phase,
-            x.embodied,
+            x.embodied && x.phase != Phase::Home,
             x.epoch,
             x.until,
             c.stats.raids_watched - watched,
@@ -4361,9 +4372,10 @@ fn patient_goblins() -> Cultures {
     Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
 }
 
-/// A siege as [`a_siege_held_then`] reads it: its phase, whether it is embodied and at which
-/// epoch, when its phase ends, the fights watched since the save, and the abstract raids since
-/// the save (by when).
+/// A siege as [`a_siege_held_then`] reads it: its phase, whether it is embodied (before its walk
+/// home: a live band walks home in the bodies its books hold, a replayed one is recalled, as no
+/// body of the session stands yet, MZB-456) and at which epoch, when its phase ends, the fights
+/// watched since the save, and the abstract raids since the save (by when).
 #[derive(Debug)]
 struct SiegeAt {
     phase: Phase,
@@ -4379,7 +4391,7 @@ impl SiegeAt {
         let x = &c.parties[band];
         SiegeAt {
             phase: x.phase,
-            embodied: x.embodied,
+            embodied: x.embodied && x.phase != Phase::Home,
             epoch: x.epoch,
             until: x.until,
             watched: c.stats.raids_watched - watched,

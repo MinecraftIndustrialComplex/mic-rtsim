@@ -3465,27 +3465,20 @@ impl Conflict {
         self.home(w, p, at);
     }
 
-    fn start_segment(
-        &mut self,
-        w: &mut World,
-        infra: &mut dyn Infrastructure,
-        p: Handle<Party>,
-        at: Tick,
-    ) {
+    /// An embodied band's orders for the segment it is on (`seg`): a segment that crosses an
+    /// edge_stop seam is recalled (RECALL_PASSING toward the segment's end, TP12); else the band
+    /// is steered to the segment's end, attacking only on a war band's last segment out, and its
+    /// watcher's unseen check is booked. A band that is not embodied is left alone. `start_segment`
+    /// calls it for each segment, and `go_home` for the first one home (MZB-456).
+    fn steer_segment(&mut self, w: &mut World, p: Handle<Party>, at: Tick) {
         let x = &self.parties[p];
+        if !x.embodied {
+            return;
+        }
         let s = x.seg as usize;
         let (a, b) = (x.route[s], x.route[s + 1]);
-        let (t0, t1) = (x.times[s], x.times[s + 1]);
-        let (kind, phase, embodied, epoch, frame) = (x.kind, x.phase, x.embodied, x.epoch, x.frame);
-        // A band bound for a track has its trains from sampling (MOWZIE.md ledger 8).
-        let to_track = matches!(x.target, Target::Track { .. });
-        // A route the record cannot hold whole sends the window from this segment on (MZB-455).
-        if x.route.len() - s >= boundary::MAX_ENTRIES {
-            self.march_changed(p);
-        }
-        self.book_leg(w, p, a, b, t0.max(at), t1);
-        let plan = self.bump(p);
-        self.schedule(t1, Ev::Party { party: p, plan });
+        let t1 = x.times[s + 1];
+        let (kind, phase, epoch, frame) = (x.kind, x.phase, x.epoch, x.frame);
         // A watched band never walks a body across an edge_stop seam: it is recalled at the
         // start of a segment that would, and marches on abstract (TP12).
         let crosses_stop = {
@@ -3496,7 +3489,7 @@ impl Conflict {
                 t.stopped_crossing((f.x, f.z), e).is_some()
             }
         };
-        if embodied && crosses_stop {
+        if crosses_stop {
             self.note(
                 at,
                 Some(self.parties[p].faction),
@@ -3504,7 +3497,7 @@ impl Conflict {
                 "its march crosses an edge_stop seam".into(),
             );
             self.recall(p, epoch, boundary::RECALL_PASSING, b);
-        } else if embodied {
+        } else {
             let speed = self
                 .culture(self.parties[p].faction)
                 .def
@@ -3524,6 +3517,30 @@ impl Conflict {
             }));
             self.book_unseen(w, p, at);
         }
+    }
+
+    fn start_segment(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
+        let x = &self.parties[p];
+        let s = x.seg as usize;
+        let (a, b) = (x.route[s], x.route[s + 1]);
+        let (t0, t1) = (x.times[s], x.times[s + 1]);
+        let (kind, phase, frame) = (x.kind, x.phase, x.frame);
+        // A band bound for a track has its trains from sampling (MOWZIE.md ledger 8).
+        let to_track = matches!(x.target, Target::Track { .. });
+        // A route the record cannot hold whole sends the window from this segment on (MZB-455).
+        if x.route.len() - s >= boundary::MAX_ENTRIES {
+            self.march_changed(p);
+        }
+        self.book_leg(w, p, a, b, t0.max(at), t1);
+        let plan = self.bump(p);
+        self.schedule(t1, Ev::Party { party: p, plan });
+        self.steer_segment(w, p, at);
         // Supply lines (C16, I24): a war band on its way out may fall on a train leg it crosses.
         if phase == Phase::Out
             && !to_track
@@ -4760,9 +4777,25 @@ impl Conflict {
         if self.lurking(p) {
             self.lurk_end(p);
         }
-        let here = self.party_pos(p, at);
+        // The route is in the chart: a canonical `here` among its waypoints would send the walk
+        // across the world after a seam (MZB-456).
+        let here = self.party_chart_pos(p, at);
         let f = self.parties[p].faction;
-        if self.parties[p].embodied {
+        // A watched band that is done, bored or routed walks home in its own bodies, where its
+        // watcher can see it go; the rest are recalled toward the camp, as ever. Not while the
+        // session's replay runs: no body of this session stands yet, and a replayed record must
+        // not make the pages' bodies walk (MZB-456, MZB-484).
+        let x = &self.parties[p];
+        let walks = x.embodied
+            && matches!(
+                reason,
+                boundary::RECALL_DONE | boundary::RECALL_BORED | boundary::RECALL_ROUTED
+            )
+            && x.spawned.iter().any(|s| s.1 > 0)
+            && x.kind != PartyKind::Envoy
+            && !self.peaceful
+            && !self.outbox.replaying();
+        if x.embodied && !walks {
             let camp = self.factions[f as usize].pos;
             let epoch = self.parties[p].epoch;
             self.recall(p, epoch, reason, (camp.x, camp.z));
@@ -4789,6 +4822,9 @@ impl Conflict {
         self.book_leg(w, p, a, b, at, t1);
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
+        if walks {
+            self.steer_segment(w, p, at);
+        }
         // The feud it served may move on while it walks home.
         if let Some(a) = self.parties[p].feud {
             if let Some(feud) = self.feud_mut(f, a)

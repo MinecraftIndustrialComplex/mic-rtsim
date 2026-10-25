@@ -515,3 +515,160 @@ fn a_band_home_in_minecraft_with_no_hand_back_is_recalled_before_its_end() {
         }
     }
 }
+
+// ---- the walk home in bodies (MZB-456, MZB-489) ------------------------------------------------
+
+/// A raid band on its way out, a tick past its muster, and the engine's phase there.
+fn out_on_the_road(r: &mut Run) -> Handle<Party> {
+    let band = r.raid();
+    r.flush(Tick(21));
+    let muster = r.c.parties[band].until;
+    r.run(muster + 1);
+    assert_eq!(r.c.parties[band].phase, Phase::Out, "on the road");
+    band
+}
+
+/// The steers and recalls sent for `agent` from command `mark` on, in order: (index, steer's
+/// epoch, target, flags) and (index, recall's epoch, reason).
+type Orders = (Vec<(usize, u32, (f64, f64), u32)>, Vec<(usize, u32, u32)>);
+
+fn orders_since(r: &Run, agent: u64, mark: usize) -> Orders {
+    let (mut steers, mut recalls) = (Vec::new(), Vec::new());
+    for (i, (_, c)) in r.cmds.iter().enumerate().skip(mark) {
+        match c {
+            Cmd::Steer(s) if s.agent == agent => {
+                steers.push((i, s.epoch, (s.pos.0, s.pos.2), s.flags));
+            }
+            Cmd::Recall(x) if x.agent == agent => recalls.push((i, x.epoch, x.reason)),
+            _ => {}
+        }
+    }
+    (steers, recalls)
+}
+
+/// MZB-456: a band in bodies that is routed (its chief killed) walks home where its watcher can
+/// see it: no recall at the order, one steer toward each home segment's end (never the war
+/// band's attack flag), and the recall fallback only at its door.
+#[test]
+fn a_routed_band_in_bodies_walks_home_a_segment_at_a_time() {
+    let mut r = Run::new(44);
+    let band = out_on_the_road(&mut r);
+    let agent = Party::agent(band);
+    let epoch = embody(&mut r, band);
+    let mark = r.cmds.len();
+    let at = r.c.now() + 10;
+    r.c.chief_killed(&mut r.w, band, None, at);
+    r.flush(at);
+    let x = &r.c.parties[band];
+    assert!(
+        x.phase == Phase::Home && x.embodied,
+        "walking home in its bodies"
+    );
+    assert_eq!(x.epoch, epoch, "the same bodies");
+    let (route, end) = (x.route.clone(), x.times.last().copied().unwrap());
+    let (steers, recalls) = orders_since(&r, agent, mark);
+    assert_eq!(steers.len(), 1, "the first segment is steered at the order");
+    assert!(
+        recalls.is_empty(),
+        "nothing is recalled at the order: {recalls:?}"
+    );
+    r.run(end + 100);
+    assert!(!r.c.parties.contains(band), "home");
+    let (steers, recalls) = orders_since(&r, agent, mark);
+    assert_eq!(steers.len(), route.len() - 1, "one steer per segment home");
+    for (s, w) in steers.iter().zip(route.iter().skip(1)) {
+        assert_eq!(s.1, epoch);
+        assert_eq!(
+            s.2,
+            (f64::from(w.0), f64::from(w.1)),
+            "toward the segment's end"
+        );
+        assert_eq!(s.3, 0, "walking home attacks nothing");
+    }
+    assert_eq!(
+        recalls.len(),
+        1,
+        "only the fallback at the door: {recalls:?}"
+    );
+    assert!(recalls[0].0 > steers.last().unwrap().0);
+    assert_eq!((recalls[0].1, recalls[0].2), (epoch, boundary::RECALL_DONE));
+}
+
+/// MZB-456: the rest are recalled toward the camp as before: on Peaceful, with nothing placed
+/// in Minecraft, and while the session's replay runs (no body of this session stands yet).
+#[test]
+fn a_band_that_cannot_walk_home_is_recalled_where_it_stands() {
+    for case in ["peaceful", "nothing placed", "replaying"] {
+        let mut r = Run::new(44);
+        let band = out_on_the_road(&mut r);
+        let agent = Party::agent(band);
+        let epoch = embody(&mut r, band);
+        let mark = r.cmds.len();
+        let at = r.c.now() + 10;
+        match case {
+            "peaceful" => r.c.set_difficulty(&mut r.w, boundary::DIFFICULTY_PEACEFUL),
+            "nothing placed" => {
+                r.c.parties[band].spawned.clear();
+                r.c.chief_killed(&mut r.w, band, None, at);
+            }
+            _ => {
+                restart(&mut r);
+                assert!(r.c.parties[band].embodied, "the pages hold it embodied");
+                r.c.chief_killed(&mut r.w, band, None, at);
+            }
+        }
+        r.flush(at);
+        let x = &r.c.parties[band];
+        assert!(
+            x.phase == Phase::Home && !x.embodied,
+            "{case}: sent home recalled"
+        );
+        let (steers, recalls) = orders_since(&r, agent, mark);
+        assert!(steers.is_empty(), "{case}: nothing steered: {steers:?}");
+        if case != "replaying" {
+            assert_eq!(recalls.len(), 1, "{case}: {recalls:?}");
+            assert_eq!(recalls[0].1, epoch);
+        }
+    }
+}
+
+/// MZB-456: a siege in bodies that grows bored at its target walks home too, and the walk's
+/// first steer is sent at the order.
+#[test]
+fn a_bored_siege_in_bodies_walks_home() {
+    let mut r = Run::new(45);
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.flush(Tick(21));
+    let mut t = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        t = t + 600;
+        r.run(t);
+        assert!(t < Tick(20 * 24_000), "the siege never reached its target");
+    }
+    let agent = Party::agent(band);
+    let epoch = embody(&mut r, band);
+    let mark = r.cmds.len();
+    let bored = r.c.parties[band].bored_at;
+    while r.c.parties.contains(band) && r.c.parties[band].phase == Phase::Waiting {
+        t = t + 100;
+        r.run(t);
+        assert!(t < bored + 20_000, "the siege never grew bored");
+    }
+    let (steers, recalls) = orders_since(&r, agent, mark);
+    let x = &r.c.parties[band];
+    assert!(
+        x.phase == Phase::Home && x.embodied,
+        "walking home in its bodies"
+    );
+    assert!(!steers.is_empty() && steers.iter().all(|s| s.1 == epoch));
+    assert!(recalls.is_empty(), "{recalls:?}");
+}

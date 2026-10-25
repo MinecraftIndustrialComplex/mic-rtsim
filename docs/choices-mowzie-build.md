@@ -7898,6 +7898,17 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   with no hand-back line, a camp with no ledger, and a camp that is out with nothing embodied return false);
   `home` recalls an embodied band with RECALL_DONE toward its camp when nothing handled it, for every kind. The
   clamp keeps each `spawned` entry no larger than its unit's count while the band is embodied.
+- **MZB-489** (the walk home as built; MZB-456): `go_home` walks when the band is embodied, the reason is
+  RECALL_DONE, RECALL_BORED or RECALL_ROUTED, some `spawned` entry is above 0, the kind is not Envoy, the world is
+  not Peaceful and the outbox is not replaying; any other band is recalled toward its camp as before. The first
+  home segment is steered by `go_home` and each later one by `start_segment`, both through `steer_segment`, which
+  also owns the edge_stop seam rule (a segment that would cross a seam is recalled with RECALL_PASSING toward its
+  end) and books the watcher's unseen check. The home steer never carries STEER_ATTACK (only a war band's last
+  segment out does). The row's end at `home` is where the fallback recall of MZB-463 lands. Fork: the fight-end
+  tests in tests/mowzie_records.rs that read a band's `embodied` after a fight now read "embodied before its walk
+  home" (a replayed band is recalled while the live one walks, MZB-484), and the refused-fight helper runs on
+  until the band's row is gone so it meets the fallback recall's epoch. No test of a seam on the way home was
+  written: no engine test builds an edge_stop topology.
 
 ## M11 Aloft
 
