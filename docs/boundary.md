@@ -1635,8 +1635,8 @@ are untouched.
 All of 0x0800 to 0x0817 are journaled; 0x0090 and 0x0091 are latest-wins (§2.3), and 0x0092 and
 0x0093 are retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, the camp records
 (0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census), the chief's (0x0091 and
-0x880A) and the grove's (0x0810, 0x0814, 0x0816, 0x0817 and 0x880C) today; RAIL_PASS and TRAIN_PASSED
-are deferred (§9.6).
+0x880A), the grove's (0x0810, 0x0814, 0x0816, 0x0817 and 0x880C), the rail's RAIL_PASS (0x080C, M7)
+and the lurk's TRAIN_PASSED (0x080D, M8) today; none is deferred (§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1789,7 +1789,10 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   is not lurking, or the record's epoch is later than the party's: a watch bumps the party's epoch past the
   spot's, so an earlier epoch still counts. The record is stamped with the game time it is sent at, and the
   engine takes it at that time (`Conflict::ingest` runs to it), so one stamped inside the lurk's wait
-  meets a live lurk and one stamped after its removal is stale.
+  meets a live lurk and one stamped after its removal is stale. It has no op id and no holder carries it
+  (ConflictBridge journals it at once): a replayed one rolls as live, against industry's present
+  (docs/replay-gate.md §4.4), and a copy, were one ever sent, only raises the party's epoch floor and is
+  dropped (RP-150).
 
 ### 9.4 Commands
 

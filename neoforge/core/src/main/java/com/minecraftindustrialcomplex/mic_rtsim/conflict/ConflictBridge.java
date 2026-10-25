@@ -1239,7 +1239,8 @@ public final class ConflictBridge implements SessionPlugin {
             // decided before a camp body is claimed (the second re-check's P3): a refusal after the claim left the hand-off
             // claimed for the tick, or handed a body a player can see to a puppet that holdLurks then discarded; before it,
             // the SET_OUT is unclaimed and the tick's end resolves it as a take, with the body's records on a marker: the camp
-            // body is still removed (taken, its health and crystal state lost), not discarded unseen after a hand-off.
+            // body is still removed (taken, its health and crystal state lost), not discarded unseen after a hand-off. A kind
+            // whose takes wait (a grove's, Rule U, MZB-433) holds that take while a player is near; a den's goes at once.
             Vec3 at = lk == null ? null : holdPoint(level, lk, sl);
             if (lk != null && at == null) {
                 lurksRefused++;
