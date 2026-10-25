@@ -297,6 +297,16 @@ public final class RtsimSession {
     }
 
     /**
+     * As {@link #carryOnEntity}, and the journal's next file waits for the holder's entity chunk, found where it
+     * stands at the save (a resident, RP-212; camps use {@link #carryOnCampHolder}).
+     */
+    public void carryOnHolder(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        carry(holder, records, lastSeq);
+        if (holder.level() instanceof ServerLevel level)
+            journalData.chunks().dependsOnHolder(level, holder);
+    }
+
+    /**
      * The tag of a {@code minecraft:marker} that only holds records (MOWZIE.md §4.9): it is discarded once
      * the engine has acknowledged what it holds. Saved in the marker's vanilla {@code Tags}, so a world
      * without rtsim keeps an inert marker (no tick, never sent to a client).
