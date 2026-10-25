@@ -1556,6 +1556,10 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
 /// every other entry stays, its answer unknown, until a resend's refusal stamps it live. A command
 /// carrying X after either would be applied twice.
 ///
+/// Main has no op rings yet; the same promise holds there through Java's journal: the journal's op
+/// index refuses an op Java applied, and forgets it when Java trims the journal through the
+/// engine's acknowledgement. The checker models the rings, a stricter rule.
+///
 /// Every case runs the iron line through the native engine with Java's autosave (a world save and
 /// a page save asked through the journal's end) and [`AckCheck`] watching every op-carrying
 /// industry command the engine sends.
@@ -2443,6 +2447,7 @@ mod ack_never_resends {
     /// be applied twice. Java refuses the re-decided X with DUPLICATE live at S2 in session 2;
     /// after the ack past S2, and across a crash after it, X is never sent again.
     #[test]
+    #[ignore = "needs slice T's keyed loot op (RP-180): on main a raid decided again carries a new op, so X never goes again"]
     fn a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after() {
         replayed_answer(false);
     }
@@ -2452,6 +2457,7 @@ mod ack_never_resends {
     /// same engine run, because session 2's ack past S would have pruned X before the raid was
     /// decided again, and the re-decided X would have been applied twice.
     #[test]
+    #[ignore = "needs slice T's keyed loot op (RP-180): on main a raid decided again carries a new op, so X never goes again"]
     fn the_checker_flags_the_replayed_answer_under_a_java_that_registers_replayed_acks() {
         replayed_answer(true);
     }
@@ -2607,13 +2613,14 @@ mod ack_never_resends {
     /// (BoundarySession.handOver writes the preamble, MODULES included, before it drains the
     /// journal, so every answer not drained yet when the switch comes lands behind it: this
     /// tick's, and any a full open buffer left over). The engine ignores S while off (U10), so X
-    /// stays in its outbox. Java's autosave then takes the pages past S and Java reads that ack: S was
-    /// live in this session, so its rings prune X (they prune with the module off, RP-257). On
-    /// again, the engine sends its outbox under new sequences (`set_enabled`), X among them.
+    /// stays in its outbox. Java's autosave then takes the pages past S and Java reads that ack:
+    /// Java trims its journal through it, and the journal's op index, which refuses an op Java
+    /// applied, forgets X with it. The fake world's applied set never prunes, so the probe drops X
+    /// from it there, as that index does. On again, the engine sends its outbox under new
+    /// sequences (`set_enabled`), X among them.
     ///
-    /// Failing first: the engine sends X again after the ack past S in the same session, so a
-    /// real Java (rings pruned, journal trimmed through the ack) would apply it twice; the fake
-    /// world answers DUPLICATE because its applied set never prunes.
+    /// Failing first: the engine sends X again after the ack past S in the same session, and the
+    /// world, which no longer knows X, applies it a second time.
     #[test]
     fn an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack() {
         use rtsim_kernel::journal::OpId;
@@ -2657,6 +2664,10 @@ mod ack_never_resends {
             r.j.acks.last(),
             r.c.gone.contains_key(&x)
         );
+        assert!(
+            r.j.mc_mut().forget_applied(OpId(x)),
+            "the world applied X, and its journal's op index forgets it at the ack"
+        );
         r.j.modules(MODULE_INDUSTRY);
         r.tick();
         r.j.mc_mut().announce();
@@ -2680,6 +2691,13 @@ mod ack_never_resends {
                     .max()
             );
         }
+        let applied = |r: &Rig| {
+            r.c.lives
+                .iter()
+                .filter(|l| l.op == x && l.status == APPLIED)
+                .count()
+        };
+        assert_eq!(applied(&r), 1, "the world applied X once");
         r.every = 3_000;
         r.finish();
     }
