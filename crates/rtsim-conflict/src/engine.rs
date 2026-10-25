@@ -166,6 +166,9 @@ pub struct Hunt {
 pub const HUNT_RADIUS: u32 = 48;
 /// The slot space of the hunts' op ids (`rtsim_world::ribbits::identity_op`).
 const HUNT_SLOT: u64 = 0x4d5a_000a << 32;
+/// The blocks around a war party's position target it looks for a district to raid within
+/// (`resolve`).
+const RAID_NEAR_BLOCKS: i64 = 64;
 
 /// What an envoy asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -918,10 +921,11 @@ pub struct Conflict {
     /// (docs/replay-gate.md §6.1, RP-23): per party, its [`Held`]. In memory only: a restart
     /// from pages saved mid-replay arrives again at the poll.
     pub(crate) held: BTreeMap<Handle<Party>, Held>,
-    /// Set while [`Conflict::end_hold`] runs a held decision's `party_event`: `arrive` and
-    /// `wait_over` decide it then, unwatched, inside the hold's slack too (RP-59). In memory
-    /// only.
-    pub(crate) hold_ending: bool,
+    /// The hold's tick while [`Conflict::end_hold`] runs a held decision's `party_event`:
+    /// `arrive` and `wait_over` decide it then, unwatched, inside the hold's slack too (RP-59),
+    /// and a hunt it owes takes its op from this tick, the one the session that went on decided
+    /// at (`owe_hunt`, RP-133). In memory only.
+    pub(crate) hold_ending: Option<Tick>,
     /// The replayed fights that found no hold (RP-56): per party, the epoch of its fight
     /// recorded at or past its hold's slack, counted once in `ConflictStats::fights_unheld`;
     /// its loot counts against nothing, as its bodies. In memory only, cleared at the replay end.
@@ -1055,7 +1059,7 @@ impl Conflict {
             floors: BTreeMap::new(),
             fill_deaths: BTreeMap::new(),
             held: BTreeMap::new(),
-            hold_ending: false,
+            hold_ending: None,
             unheld_fights: BTreeMap::new(),
             fights_unanswered: BTreeMap::new(),
             obs_seq: 0,
@@ -3696,7 +3700,7 @@ impl Conflict {
                 // up to the hold's slack. Past it no fight answered the hold, and it resolves
                 // unwatched, as the last session did (RP-48).
                 let watcher = if self.outbox.defer() {
-                    if !self.hold_ending && at < arrival + REPLAY_HOLD_SLACK_TICKS {
+                    if self.hold_ending.is_none() && at < arrival + REPLAY_HOLD_SLACK_TICKS {
                         self.hold(p, arrival, at, true);
                         return;
                     }
@@ -3781,9 +3785,9 @@ impl Conflict {
         at: Tick,
     ) {
         let left = std::mem::replace(&mut self.parties[p].units, h.units.clone());
-        self.hold_ending = true;
+        self.hold_ending = Some(h.since);
         self.party_event(w, infra, p, at);
-        self.hold_ending = false;
+        self.hold_ending = None;
         let x = &mut self.parties[p];
         let after = std::mem::replace(&mut x.units, left);
         let count = |v: &[(u8, u32)], u: u8| v.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
@@ -3805,6 +3809,15 @@ impl Conflict {
     /// one just before its fight's BAND_MATERIALIZED (`ConflictBridge.materialize`), which would
     /// end the hold of a fight about to be honoured. The members a hold's end decides with are
     /// the hold's, whatever such a record took since (`Held`, RP-60).
+    ///
+    /// A HUNT_APPLIED ends the holds of its faction's parties bound for its district, or for a
+    /// position the district is near (`resolve` raids a district near one), oldest first
+    /// (RP-133): the session that went on decided them before the answer, and a raid that
+    /// resolved unwatched owed its hunt there, or replaced the one in flight. Ended first, each
+    /// owes its hunt under the op that session sent (`owe_hunt` hashes the hold's tick), and the
+    /// answer then books the hunt it names. Applied on the hold, the answer found no hunt, and
+    /// the hold's end owed it again under a new op, which the next session's plugin killed for
+    /// again.
     fn release_before(
         &mut self,
         w: &mut World,
@@ -3842,6 +3855,35 @@ impl Conflict {
                 if !copy && !self.peaceful && d.difficulty == boundary::DIFFICULTY_PEACEFUL =>
             {
                 self.held.keys().copied().collect()
+            }
+            Obs::HuntApplied(ha) => {
+                let Some(&f) = self.by_key.get(&ha.faction) else {
+                    return;
+                };
+                let mut v: Vec<(Tick, Handle<Party>)> = Vec::new();
+                for (&p, h) in &self.held {
+                    let Some(x) = self.parties.get(p).filter(|x| x.faction == f) else {
+                        continue;
+                    };
+                    let bound = match x.target {
+                        Target::District(d, _) => d.0 == ha.district,
+                        Target::Pos(pos) => infra
+                            .districts_near(
+                                pos.frame,
+                                i64::from(pos.x),
+                                i64::from(pos.z),
+                                RAID_NEAR_BLOCKS,
+                            )
+                            .iter()
+                            .any(|s| s.id.0 == ha.district),
+                        Target::Node(_) | Target::Track { .. } => false,
+                    };
+                    if bound {
+                        v.push((h.since, p));
+                    }
+                }
+                v.sort_unstable();
+                v.into_iter().map(|e| e.1).collect()
             }
             _ => return,
         };
@@ -3941,7 +3983,7 @@ impl Conflict {
         if kind == PartyKind::Siege && round < x.bored_at && x.alive() > 0 && !self.peaceful {
             // As `arrive`'s (§6.1, RP-23, RP-48).
             let watcher = if self.outbox.defer() {
-                if !self.hold_ending && at < round + REPLAY_HOLD_SLACK_TICKS {
+                if self.hold_ending.is_none() && at < round + REPLAY_HOLD_SLACK_TICKS {
                     self.hold(p, round, at, false);
                     return;
                 }
@@ -4012,7 +4054,12 @@ impl Conflict {
             Target::Node(i) => (self.raid_node(w, p, i, at), 0),
             Target::Pos(pos) => {
                 // Nothing of the player's here that the sim knows: look for a district near it.
-                let sites = infra.districts_near(pos.frame, i64::from(pos.x), i64::from(pos.z), 64);
+                let sites = infra.districts_near(
+                    pos.frame,
+                    i64::from(pos.x),
+                    i64::from(pos.z),
+                    RAID_NEAR_BLOCKS,
+                );
                 match sites.iter().find(|s| !s.watched) {
                     Some(s) => {
                         self.parties[p].target = Target::District(s.id, s.pos);
@@ -4191,7 +4238,9 @@ impl Conflict {
     /// a new op. The hunt it replaces is kept one deep with `rest`, what this raid owes on its own
     /// (`min(cap, count)`): if the plugin applied the replaced hunt before it read this one, it
     /// kills `rest` and not the sum (review P3-8 and the re-check, OWED_HUNT's `replaced` and
-    /// `rest`). Nothing is owed on Peaceful, nor by a culture with no cap.
+    /// `rest`). Nothing is owed on Peaceful, nor by a culture with no cap. The op is hashed from
+    /// the district, the decision's tick and the op in flight: `at` live, the hold's tick when a
+    /// held decision ends while replaying (RP-133), so a live raid's op is M9's.
     /// Public so that a test can stand in for a raid on a district (`with_conflict_mut`).
     pub fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
         let cap = self.culture(f).def.hunt_cap;
@@ -4205,7 +4254,19 @@ impl Conflict {
             .iter()
             .find(|h| h.district == d)
             .map_or(0, |h| h.op);
-        let slot = fnv1a64(&[d.0.to_le_bytes(), at.0.to_le_bytes(), held.to_le_bytes()].concat());
+        // The decision's tick: `at`, or a held decision's own (RP-133). The replay resolves a
+        // held raid at its slack or before a record, later than the session that went on did
+        // at the hold's tick; hashed from that tick, the hunt is owed under the op that session
+        // sent, which its replayed HUNT_APPLIED names.
+        let decided = self.hold_ending.unwrap_or(at);
+        let slot = fnv1a64(
+            &[
+                d.0.to_le_bytes(),
+                decided.0.to_le_bytes(),
+                held.to_le_bytes(),
+            ]
+            .concat(),
+        );
         let op = boundary::AGENT_NAMESPACE << 56
             | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
         let x = &mut self.factions[f as usize];
