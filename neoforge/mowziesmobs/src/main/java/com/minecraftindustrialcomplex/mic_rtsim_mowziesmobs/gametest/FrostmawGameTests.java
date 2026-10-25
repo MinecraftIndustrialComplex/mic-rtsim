@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
+import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.ilexiconn.llibrary.server.animation.IAnimatedEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
@@ -716,8 +717,10 @@ public final class FrostmawGameTests {
     /**
      * The other end of the same uninstall (UR-1): a puppet still held when the conflict module is switched off is
      * not left in the world. The body is discarded and the lurk's table cleared, and switched on again nothing
-     * stands in its place. (This holds on the code before the fix too: it is the guard that the release does not
-     * change the switch-off.) Not run.
+     * stands in its place. The switch-off is a session stop's path (both end in {@code capture}, which {@code despawn}s
+     * every living member), so the Lurker's state for the discarded body must be gone too ("the Lurker keeps nothing"):
+     * on 86f97f99 {@code despawn} never asked the Lurker, and the check fails there by reading (the body is gone either
+     * way). Not run.
      */
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_off", skyAccess = true)
     public static void aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld(GameTestHelper helper) {
@@ -749,14 +752,12 @@ public final class FrostmawGameTests {
     }
 
     /**
-     * A killed puppet is let go of in full (MZB-361, the second re-check's P2): the plugin kept the walking goals it
-     * took out of a held body in a map by body, and each goal has its body as {@code mob}, so a puppet that left the
-     * world by any way but a release (killed, discarded, the session over) was held, with its level, until the server
-     * stopped. The goals are on the core's slot now, which goes with the member; here the puppet is killed once held,
-     * the engine has the casualty, and the body is out of the world: the plugin keeps no stamp, bearing or search time
-     * for it and the bridge has no member for it. (A session stop proper cannot be made in a shared session; the module
-     * switched off, in the test above, is the same capture.) On the code before the fix {@code release} skipped a
-     * removed body and nothing else dropped the goals. Not run.
+     * A killed puppet is let go of in full (MZB-361, the second re-check's P2): the puppet is killed once held, the
+     * engine has the casualty, and the body is out of the world: the plugin keeps no stamp, bearing or search time for
+     * it and the bridge has no member for it. A regression guard, not the leak's test: the death path released the
+     * dying body (still in the world) on 86f97f99 too, so this passes there; the leaks are driven by the two tests
+     * after it (a body removed by something else, and the module switched off, which is a session stop's
+     * {@code capture}). Not run.
      */
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_killed", skyAccess = true)
     public static void aKilledHeldPuppetLeavesNothingInTheLurker(GameTestHelper helper) {
@@ -773,6 +774,38 @@ public final class FrostmawGameTests {
                     check("the plugin keeps nothing of the killed puppet", !tracked(h.f[0]));
                     check("the bridge has no member for it", ConflictKit.bridge().slotOf(h.f[0]) == null);
                     record(test, "killed", "a held puppet was killed: the casualty is booked, the body is gone, and the plugin keeps no stamp, bearing or search time for it");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenSucceed();
+    }
+
+    /**
+     * A held puppet removed by something else (a command, another mod: {@code discard}) leaves nothing in the Lurker
+     * (MZB-361, the second re-check's P2 and the third check's P3): the bridge's {@code left} sees the removal with
+     * reason DISCARDED and {@code gone} lets the member go, whose {@code forget} released the body only while it was
+     * still in the world, so a removed body kept its hold stamp, its bearing, its search time and the walking goals it
+     * had taken out (each holding the body). The body is discarded from outside the bridge once held; the engine has
+     * the casualty (kind other) and the plugin keeps nothing of it. On 86f97f99, by reading its {@code releaseLurk}
+     * (skipped for a removed body), the check "the plugin keeps nothing of the removed puppet" fails (the first
+     * assertion of the Lurker's state in the old code); the plugin's {@code tracked} is new, so the old build does
+     * not compile the test. Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_discarded", skyAccess = true)
+    public static void aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker(GameTestHelper helper) {
+        String test = "aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker";
+        Held h = new Held(helper, test);
+        h.up(helper)
+                .thenExecute(() -> {
+                    check("the premise: the plugin keeps a stamp for the held body", tracked(h.f[0]));
+                    h.f[0].discard();
+                })
+                .thenWaitUntil(io(() -> check("the engine has the casualty", ConflictKit.about(ConflictRecords.BAND_CASUALTIES, h.agent).size() == 1)))
+                .thenExecute(() -> {
+                    check("the body is out of the world", h.f[0].isRemoved());
+                    check("the plugin keeps nothing of the removed puppet", !tracked(h.f[0]));
+                    check("the bridge has no member for it", ConflictKit.bridge().slotOf(h.f[0]) == null);
+                    record(test, "discarded", "a held puppet discarded from outside: the casualty is booked and the plugin keeps no stamp, bearing or search time for it");
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
                 .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
@@ -1110,7 +1143,7 @@ public final class FrostmawGameTests {
         String test = "aLurkWithNoRailDirectionButARailNearItsSpotIsRefusedAndStandsOnceNoneIs";
         Held h = new Held(helper, test);
         boolean[] near = {true};
-        double[] asked = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
+        double[] asked = {Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN};
         RailAxes before = LurkSpots.axes();
         LurkSpots.register(new RailAxes() {
             @Override
@@ -1119,11 +1152,12 @@ public final class FrostmawGameTests {
             }
 
             @Override
-            public boolean trackNear(ServerLevel level, Vec3 point, double radius) {
+            public boolean trackNear(ServerLevel level, Vec3 point, double radius, double height) {
                 asked[0] = point.x;
                 asked[1] = point.y;
                 asked[2] = point.z;
                 asked[3] = radius;
+                asked[4] = height;
                 return near[0];
             }
         });
@@ -1134,7 +1168,8 @@ public final class FrostmawGameTests {
                         ConflictKit.bridge().lurksRefused > refused[0])))
                 .thenExecute(() -> {
                     check("the radius asked is the half width and the rail clearance (" + asked[3] + ")", Math.abs(asked[3] - 3.5) < 1e-9);
-                    check("about the engine's spot, at the track's height (" + asked[0] + ", " + asked[1] + ", " + asked[2] + ")",
+                    check("and the body's height (" + asked[4] + "), the span from its feet up", Math.abs(asked[4] - EntityHandler.FROSTMAW.get().getHeight()) < 1e-6);
+                    check("about the engine's spot, at the floor the body would stand on, level with the track here (" + asked[0] + ", " + asked[1] + ", " + asked[2] + ")",
                             Math.abs(asked[0] - h.spot[0].x) < 1e-6 && Math.abs(asked[1] - h.track[0].y) < 1e-6 && Math.abs(asked[2] - h.spot[0].z) < 1e-6);
                     check("no Frostmaw stands in the place", h.level.getEntitiesOfClass(EntityFrostmaw.class,
                             new AABB(h.x - 14, h.track[0].y - 12, h.z - 14, h.x + 14, h.track[0].y + 12, h.z + 14)).isEmpty());

@@ -19,13 +19,15 @@ public interface RailAxes {
 
     /**
      * Whether any piece of track (a straight piece, a junction, or one segment of a curve) lies within {@code radius}
-     * blocks (horizontal, block centre to {@code point}, and within a few blocks of its height) of {@code point}. The
-     * core asks it where {@link #at} knew no direction: the middle of a curve, a crossing, a junction. A body put at the
-     * engine's spot there might stand on, or against, the rail, so the lurk is refused when a rail is that near and the
-     * engine's spot kept only when none is (the second re-check's P3). False for a provider that cannot tell (the
-     * default). Called on the server thread, rarely (once per body held).
+     * blocks (horizontal, block centre to {@code point}) of {@code point} and in the blocks a body of {@code height}
+     * blocks standing at {@code point} (its feet) would fill, from the feet's block up to the head's: a rail below the
+     * feet is out of the body's way, whatever the body's neighbour column. The core asks it where {@link #at} knew no
+     * direction: the middle of a curve, a crossing, a junction. A body put at the engine's spot there might stand on, or
+     * against, the rail, so the lurk is refused when a rail is that near and the engine's spot kept only when none is
+     * (the second re-check's P3; counted from the floor up, the third check's P3). False for a provider that cannot
+     * tell (the default). Called on the server thread, rarely (once per body held).
      */
-    default boolean trackNear(ServerLevel level, Vec3 point, double radius) {
+    default boolean trackNear(ServerLevel level, Vec3 point, double radius, double height) {
         return false;
     }
 }

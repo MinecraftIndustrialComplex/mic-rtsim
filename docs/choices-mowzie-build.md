@@ -3644,7 +3644,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     marker). Now `spawn` asks `holdPoint` first for every slot of a lurking party, and refuses the whole stack
     (`lurksRefused`, the made bodies discarded, the earlier slots' claims released, `RETRY_FAILED`) before it claims a
     camp body. The SET_OUT is then unclaimed, and the tick's end resolves it as the take it is for a line no
-    materialize claimed (§4.9: the engine gets fresh puppets when the party is seen later). A hand-off with a lurk
+    materialize claimed (§4.9: the engine gets fresh puppets when the party is seen later). The camp body a player
+    can see is still removed: taken, with its records on a marker, not handed to a puppet that is then discarded
+    unseen. (The third check found the first wording of this amendment, "nothing discarded", wrong.) The residual is
+    what a take loses against a hand-off: the body's health and crystal state (the fresh puppet starts whole); the
+    engine takes any found body of a `Left` slot whose party is not mustering (camp.rs, the census reconcile), so
+    only an engine check of the hold point before the set-out would leave the body in its camp. That is backlog; M8
+    makes no engine change. A hand-off with a lurk
     sets the hold point at spawn (the puppet starts where the camp body stood and the hold walks it to the point).
     `holdLurks` keeps its own refusal for a body that stood before its lurk was known (or whose spot moved), a body
     a player may see as well; it despawns and requeues as before (the lurk arriving after a placed party is not a
@@ -3653,6 +3659,17 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     alternative, keeping the SET_OUT claimed and answering it later, would hold the camp's count open for the
     retry. Test (written and compiled, not run): `MowzieGameTests.aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake`
     (no hand-off made, one taken, the camp holds nothing, no puppet stands, the refusal counted).
+  - Amendment (the third check's P3, `trackNear` refused falsely; compiled and the JUnit run, the GameTests not run):
+    `RailAxes.trackNear` took the point at the track's height and looked 3 blocks above and 3 below it, so a body that
+    stands on an embankment or a bank 2 or 3 above a lower line (or beside a lower line on a cutting's far side) was
+    refused for a rail it could not touch. It is now `trackNear(level, point, radius, height)`: `point` is the body's
+    feet, as `holdPoint` asks it (the floor `floorAt` finds at the engine's spot, no longer the track's y), and the
+    blocks that count are those from the feet's block up to `height` above it (the body's height: 4.0 for a Frostmaw);
+    a rail below the feet or above the head is not near. Radius unchanged (half the width and the rail clearance, 3.5).
+    `RailDirections.NEAR_HEIGHT` is gone. For the flat ground the tests lay the floor's top is the track's y, so the
+    point is the same one as before. Tests (written and compiled, not run): `RailDirectionsGameTests` (a rail at the
+    head's block counts, one above the head, one below the feet, and the fixture's own track 3 blocks under the feet,
+    do not), `FrostmawGameTests` (the point and the height asked).
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
@@ -3797,6 +3814,26 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     `frostmaw_lurk_killed`) kills a held puppet, waits for the casualty and the removal, and asserts that nothing is
     tracked and the bridge has no member for it. A session stop proper is not made in a GameTest (the session is
     shared); the module switched off runs the same `capture`.
+    - Correction (the third check's P3): the killed test does not fail on 86f97f99: `settleDeaths` released the dying
+      body while it was still in the world (`isDeadOrDying`, not yet removed), so the old release ran. It stays as a
+      guard. The leaks are driven by `aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker` (batch
+      `frostmaw_lurk_discarded`: a held body discarded from outside, `left` with reason DISCARDED, `gone`, `forget`, whose
+      release was skipped for a removed body: fails on 86f97f99 by reading, the plugin still tracking the body) and by
+      the module-off test (a session stop's `capture`, whose `despawn` never asked the Lurker on 86f97f99: fails there
+      by reading). A requeue (`holdLurks` refusing, `despawn`) takes the same `despawn`. None has run; `tracked` is new
+      in this range, so the old build does not compile them and "fails before" is a reading of its code.
+  - Amendment (the third check's P3, the second `noLeap` wrap and lava; compiled, not run): the wrap on
+    `EntityFrostmaw.setDeltaMovement(DDD)V` matched both calls of `tick()` (`require = 2, allow = 2`); the second, cfr
+    line 592 (bytecode offset 2954), is the asleep and waking branch's `setDeltaMovement(0, y, 0)`, which stills the body
+    and which a hold wants too, and a held body that is waking (the ACTIVATE animations) does run it. Wrapping it kept
+    the body's own horizontal motion through a stilling. Now the wrap is pinned to `ordinal = 0` (the dodge's, offset
+    1017, the first of the two by javap of the 1.8.2 jar), `require = 1, allow = 1`. Fork: this gives up the earlier
+    "a jar with any other count fails to load" (a third call, or the dodge's call moving behind another, is no longer
+    caught); the alternative, two wraps with an ordinal each, would keep a check on the second at the cost of a
+    second hook that does nothing, and the pin is the tighter match. And a held body in lava (`isInLava()`) is let leap:
+    the original velocity goes through whole, so the dodge carries it out of the lava instead of hopping it in place
+    until it burns. The lava dodge test hurts the body with a lava damage source, not in lava, so it still dodges in
+    place; a body standing in lava has no test.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
@@ -3978,8 +4015,26 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       `halfWidth * sqrt(2)` and the near slack `OBLIQUE_NEAR_SLACK` (MZB-360's amendment); the rule holds by
       itself, 5.0 - 0.17 - 0.5 - 2.83 = 1.50 >= 1.5 (it rested on the 4.95 the lattice gives before). Test 9 asserts
       it for an axis rail and for a diagonal.
-    - The ordering of the two passes has no test: it needs a train of two carriages, one with a rider, in front of a
-      puppet, which the riders test's one-carriage line does not lay.
+    - The ordering of the two passes had no test: it needs a train of two carriages, one with a rider, in front of a
+      puppet, which the riders test's one-carriage line does not lay (the third check's P3 adds one: the next
+      amendment).
+  - Amendment (the third check's P3, the bogey pass, the gate and the test of the order; compiled, not run):
+    - `strikeAt` skips its second pass (the bare bogeys) whenever any carriage in the cheap range has a rider, struck
+      or not in reach: a riderless carriage 0's bogey must not spend the swing (`SWING_TICKS`, the puppet busy) while
+      carriage 1's rider is still outside `riderAim`'s window and will be inside it a tick or two on. A train none of
+      whose gated carriages has a rider is struck at its bogeys as before.
+    - The gate is built from the longest reach: `far = SWIPE_RANGE + 1.0 + SWING_TICKS * |speed| + BODY_SLACK`, not
+      from the horizontal `STRIKE_REACH`, so a rider at a long carriage's overhang (up to 6.8 in 3D, a block or so
+      more than the bogey's 6.0) is not gated out before `riderAim` is asked.
+    - Test (written and compiled, not run): `RailFrostmawGameTests.theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront`
+      (batch `rail_frostmaw_riders_first`). A stopped train of a short carriage and a long one with a plank floor
+      (`mixedCars`); the puppet two blocks past carriage 0's bogey, 5 off the rail. A zombie (AI on, goals out, feet
+      on the plank) first on the far plank of carriage 1, out of the swipe's 3D reach with the carriage gated in: no
+      strike in the 40 ticks after the sampler has seen the train (fails with the bogey pass left running). Then on the
+      near plank, in reach: the puppet's yaw at the first strike is within 20 degrees of the bearing to the zombie
+      and more than 20 off the bearing to the bogey, the two being 35 or more apart (fails on the carriage-by-carriage
+      order of the second re-check, where the bogey of carriage 0 is struck first). The premises (the bogey in reach,
+      the planks' 3D distances against the range, the bearings apart) are checked in the test.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.

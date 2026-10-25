@@ -28,18 +28,18 @@ public final class RailDirections implements RailAxes {
         return axisAt(level, point);
     }
 
-    /** How far above and below the point's block a piece of track still counts as near it (blocks). */
-    private static final int NEAR_HEIGHT = 3;
-
     /**
      * Whether a piece of Create track is within {@code radius} blocks (horizontal, block centre to point) of the point and
-     * within {@link #NEAR_HEIGHT} blocks of its height: any {@code ITrackBlock} (straight, diagonal, slope, crossing,
-     * junction) or a {@code FakeTrackBlock}, the block Create fills a curve's span with (a bezier piece has an
-     * {@code ITrackBlock} only at its two ends). Not loaded counts as no track.
+     * in the blocks from the point's own (the body's feet) up to {@code height} above it (its head): any
+     * {@code ITrackBlock} (straight, diagonal, slope, crossing, junction) or a {@code FakeTrackBlock}, the block Create
+     * fills a curve's span with (a bezier piece has an {@code ITrackBlock} only at its two ends). A rail below the feet
+     * is not counted (the third check's P3: a body on an embankment beside a lower line is not refused for it). Not
+     * loaded counts as no track.
      */
     @Override
-    public boolean trackNear(ServerLevel level, Vec3 point, double radius) {
+    public boolean trackNear(ServerLevel level, Vec3 point, double radius, double height) {
         int bx = Mth.floor(point.x), by = Mth.floor(point.y), bz = Mth.floor(point.z);
+        int top = Mth.floor(point.y + Math.max(height, 0.0));
         int r = Mth.ceil(radius) + 1;
         double r2 = radius * radius;
         BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
@@ -48,8 +48,8 @@ public final class RailDirections implements RailAxes {
                 double cx = bx + dx + 0.5 - point.x, cz = bz + dz + 0.5 - point.z;
                 if (cx * cx + cz * cz > r2 || !level.hasChunk((bx + dx) >> 4, (bz + dz) >> 4))
                     continue;
-                for (int dy = -NEAR_HEIGHT; dy <= NEAR_HEIGHT; dy++) {
-                    at.set(bx + dx, by + dy, bz + dz);
+                for (int y = by; y <= top; y++) {
+                    at.set(bx + dx, y, bz + dz);
                     if (isTrack(level.getBlockState(at)))
                         return true;
                 }

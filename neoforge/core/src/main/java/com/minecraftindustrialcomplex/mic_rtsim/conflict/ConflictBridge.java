@@ -1183,7 +1183,8 @@ public final class ConflictBridge implements SessionPlugin {
             // re-check's P2). None standable refuses the lurk: the stack is tried again after RETRY_FAILED ticks. It is
             // decided before a camp body is claimed (the second re-check's P3): a refusal after the claim left the hand-off
             // claimed for the tick, or handed a body a player can see to a puppet that holdLurks then discarded; before it,
-            // the SET_OUT is unclaimed and the tick's end resolves it as a take, with the body's records on a marker.
+            // the SET_OUT is unclaimed and the tick's end resolves it as a take, with the body's records on a marker: the camp
+            // body is still removed (taken, its health and crystal state lost), not discarded unseen after a hand-off.
             Vec3 at = lk == null ? null : holdPoint(level, lk, sl);
             if (lk != null && at == null) {
                 lurksRefused++;
@@ -2466,10 +2467,12 @@ public final class ConflictBridge implements SessionPlugin {
             double x = sl.placeX(1.0), z = sl.placeZ(1.0);
             // No direction known (a curve's middle, a crossing, no plugin): the engine's spot stands, unless a rail lies where
             // the body's box would reach it (the second re-check's P3): half the body's width and the rail clearance from
-            // the spot, 3.5 blocks for the 4-wide Frostmaw. Refused, as when no side has a floor.
-            if (rails != null && rails.trackNear(level, new Vec3(x, l.track().y, z), sl.type.getWidth() / 2.0 + LurkGeometry.RAIL_CLEARANCE))
+            // the spot, 3.5 blocks for the 4-wide Frostmaw, in the blocks from the floor the body stands on up to its head
+            // (the third check's P3: a rail below the floor is not in its way). Refused, as when no side has a floor.
+            double y = floorAt(level, l, x, z, sl.type);
+            if (rails != null && rails.trackNear(level, new Vec3(x, y, z), sl.type.getWidth() / 2.0 + LurkGeometry.RAIL_CLEARANCE, sl.type.getHeight()))
                 return null;
-            return new Vec3(x, floorAt(level, l, x, z, sl.type), z);
+            return new Vec3(x, y, z);
         }
         for (Vec3 c : LurkSpots.candidates(l.track(), l.spot(), axis)) {
             double x = c.x + ox, z = c.z + oz, y = standAt(level, l, x, z, sl.type);
