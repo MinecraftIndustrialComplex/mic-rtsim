@@ -713,4 +713,236 @@ public final class SectionsJoinGameTests {
                 }))
                 .thenSucceed();
     }
+
+    // ---- 7. two stations in one chunk ---------------------------------------------------------------------
+
+    /** A port inside one chunk: a chest with copper, a chute over it and a portable storage interface over the chute. */
+    private static void buildPort(GameTestHelper helper, BlockPos chest) {
+        ServerLevel level = helper.getLevel();
+        set(helper, chest, Blocks.CHEST.defaultBlockState());
+        set(helper, chest.above(), block("create:chute").defaultBlockState());
+        set(helper, chest.above(2), block("create:portable_storage_interface").defaultBlockState()
+                .setValue(PortableStorageInterfaceBlock.FACING, Direction.SOUTH));
+        ItemHandlerHelper.insertItemStacked(items(level, chest), new ItemStack(Items.COPPER_INGOT, 64), false);
+    }
+
+    private static void removeTrack(GameTestHelper helper, BlockPos stationPos, int fromX, int toX) {
+        for (int x = fromX; x <= toX; x++)
+            set(helper, new BlockPos(x, stationPos.getY(), stationPos.getZ() - 1), Blocks.AIR.defaultBlockState());
+    }
+
+    /**
+     * Chunk S has no seed and holds two real stations, P1 and P2 (P1 has the lower {@code BlockPos.asLong()}), each on
+     * its own track, away from the borders. Chunk A (west of S) and chunk B (east of S) each hold a press seed and a
+     * port (a portable storage interface over a chute over a chest), all inside A or B; nothing in S touches either.
+     * P1 makes a loaded call docked with A's interface, then P2 one docked with B's, with a detection after each:
+     * S goes by the lowest station whose served chunk is in a district (SC156), so S is in A's district and
+     * {@code stationServedChunk(S)} is A's chest chunk, with both entries saved. Then P1 is broken (its block and
+     * track removed), S is marked and a detection runs: P1's entry goes (a detection that walked S saw no station at
+     * its position), P2's stays, S is in B's district and A's no longer holds it.
+     */
+    @GameTest(template = YARD, batch = "sec1_join_7", timeoutTicks = 2400)
+    public static void twoStationsInOneChunkGoByTheLowestInADistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        TrainWatch.forgetPorts();
+        String t = "twoStationsInOneChunkGoByTheLowestInADistrict";
+        ServerLevel level = helper.getLevel();
+        BlockPos p1 = at(helper, 0, 6, 6), p2 = at(helper, 0, 6, 10);
+        BlockPos chestA = at(helper, -1, 4, 8), psiA = chestA.above(2), pressA = at(helper, -1, 10, 11);
+        BlockPos chestB = at(helper, 1, 4, 8), psiB = chestB.above(2), pressB = at(helper, 1, 10, 11);
+        long cA = chunk(pressA), cS = chunk(p1), cB = chunk(pressB);
+        check("P1 is the lower station: " + p1.asLong() + " against " + p2.asLong(), p1.asLong() < p2.asLong());
+        check("both stations are in S, the chests in A and B", chunk(p2) == cS && chunk(chestA) == cA && chunk(chestB) == cB);
+        GlobalStation st1 = syntheticStation(level, p1, "Lower Halt");
+        GlobalStation st2 = syntheticStation(level, p2, "Upper Halt");
+        GlobalStation partner = syntheticStation(level, p1.offset(400, 0, 0), "Far Halt");
+        helper.startSequence()
+                .thenExecute(() -> {
+                    trackFor(helper, p1, p1.getX(), p1.getX() + 8);
+                    trackFor(helper, p2, p2.getX(), p2.getX() + 8);
+                    set(helper, pressA, block("create:mechanical_press").defaultBlockState());
+                    set(helper, pressB, block("create:mechanical_press").defaultBlockState());
+                    buildPort(helper, chestA);
+                    buildPort(helper, chestB);
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    placeStation(helper, p1);
+                    placeStation(helper, p2);
+                    playerPlacedBare(helper, pressA);
+                    playerPlacedBare(helper, pressB);
+                })
+                .thenWaitUntil(() -> {
+                    StationBlockEntity s1 = level.getBlockEntity(p1) instanceof StationBlockEntity s ? s : null;
+                    StationBlockEntity s2 = level.getBlockEntity(p2) instanceof StationBlockEntity s ? s : null;
+                    check("both stations joined the track graph", s1 != null && s1.getStation() != null && s2 != null && s2.getStation() != null);
+                })
+                .thenExecute(() -> ind().districts().rescanNow(level))
+                .thenWaitUntil(() -> {
+                    District a = districtAt(helper, pressA), b = districtAt(helper, pressB);
+                    check("a district at each factory: " + describe(a) + " | " + describe(b), a != null && b != null);
+                    check("two districts, not one: " + describe(a), a != b);
+                    District s = districtAt(helper, p1);
+                    check("S is in A's or B's district: " + describe(s), s == a || s == b);
+                    check("both stations are in the same district: " + describe(districtAt(helper, p2)), districtAt(helper, p2) == s);
+                    record(t, "before any docking", "A " + a.id + ", B " + b.id + "; S is in " + (s == a ? "A's" : "B's"));
+                })
+                .thenExecute(() -> {
+                    loadedCall(helper, st1, partner, psiA, chestA);
+                    ind().districts().rescanNow(level);
+                })
+                .thenWaitUntil(() -> {
+                    Long served = ind().districts().stationServedChunk(level.dimension(), cS);
+                    check("S served A's chest chunk " + name(cA) + ": " + (served == null ? "nothing" : name(served)), served != null && served == cA);
+                    District a = districtAt(helper, pressA), b = districtAt(helper, pressB);
+                    check("a district at each factory: " + describe(a) + " | " + describe(b), a != null && b != null && a != b);
+                    check("S is with A after P1's call: " + describe(a), districtAt(helper, p1) == a && holds(a, cA, cS));
+                    check("B's district does not hold S: " + describe(b), holds(b, cB));
+                    record(t, "after P1's call", "stationJoins " + IndustryData.get(level.getServer()).stationJoins(level.dimension()));
+                })
+                .thenExecute(() -> {
+                    loadedCall(helper, st2, partner, psiB, chestB);
+                    ind().districts().rescanNow(level);
+                })
+                .thenWaitUntil(() -> {
+                    Long2LongOpenHashMap sj = IndustryData.get(level.getServer()).stationJoins(level.dimension());
+                    check("both stations have an entry: " + sj, sj.containsKey(p1.asLong()) && sj.containsKey(p2.asLong()));
+                    check("P1 served A's chest chunk and P2 B's: " + sj, sj.get(p1.asLong()) == chunk(chestA) && sj.get(p2.asLong()) == chunk(chestB));
+                    Long served = ind().districts().stationServedChunk(level.dimension(), cS);
+                    check("S goes by the lowest station, A's chest chunk " + name(cA) + ": " + (served == null ? "nothing" : name(served)),
+                            served != null && served == cA);
+                    District a = districtAt(helper, pressA), b = districtAt(helper, pressB);
+                    check("a district at each factory: " + describe(a) + " | " + describe(b), a != null && b != null && a != b);
+                    check("S is still with A: " + describe(a) + " | " + describe(b), districtAt(helper, p1) == a && holds(a, cA, cS) && holds(b, cB));
+                    record(t, "after P2's call", "stationJoins " + sj + ", served chunk of S " + name(served));
+                })
+                .thenExecute(() -> {
+                    set(helper, p1, Blocks.AIR.defaultBlockState());
+                    removeTrack(helper, p1, p1.getX(), p1.getX() + 8);
+                    ind().districts().markDirty(level.dimension(), cS);
+                    ind().districts().rescanNow(level);
+                })
+                .thenWaitUntil(() -> {
+                    Long2LongOpenHashMap sj = IndustryData.get(level.getServer()).stationJoins(level.dimension());
+                    check("P1's entry is gone: " + sj, !sj.containsKey(p1.asLong()));
+                    check("P2's entry stays: " + sj, sj.containsKey(p2.asLong()) && sj.get(p2.asLong()) == chunk(chestB));
+                    District a = districtAt(helper, pressA), b = districtAt(helper, pressB);
+                    check("a district at each factory: " + describe(a) + " | " + describe(b), a != null && b != null && a != b);
+                    check("S is with B: " + describe(b), districtAt(helper, p2) == b && holds(b, cB, cS));
+                    check("A's district no longer holds S: " + describe(a), holds(a, cA));
+                    record(t, "after P1 is broken", "stationJoins " + sj + "; A " + describe(a) + "; B " + describe(b));
+                })
+                .thenExecute(() -> {
+                    set(helper, p2, Blocks.AIR.defaultBlockState());
+                    removeTrack(helper, p2, p2.getX(), p2.getX() + 8);
+                    TrainWatch.forgetPorts();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 8. a chunk held by an away pair -------------------------------------------------------------------
+
+    /**
+     * Two far force-loaded chunks X (west) and Y (east). Y holds a press seed and a mechanical arm one block from the
+     * border with X, taking from a depot in X (three blocks away) and depositing onto a depot of its own; X holds only
+     * that depot (no seed), and nothing in Y touches X across the border. After the arm has ticked: one district with
+     * both chunks and the pair (X, Y). Then Y alone unloads (X gets a FULL-only ticket first, as in
+     * anUnloadedMemberKeepsItsJoins), X is marked and a detection runs: the same district, X in it and the pair kept
+     * (X holds an industrial block entity and has a saved pair to an unloaded member, so it roots the walk). Then X's
+     * depot is removed and a detection runs again: X is no longer in the district, while the district (Y, unloaded)
+     * stays. Both states are recorded; if Y does not stay a member while unloaded, the last check fails and says so.
+     */
+    @GameTest(template = YARD, batch = "sec1_join_8", timeoutTicks = 6000)
+    public static void aChunkHeldByAnAwayPairStaysUntilEmptied(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        String t = "aChunkHeldByAnAwayPairStaysUntilEmptied";
+        ServerLevel level = helper.getLevel();
+        int xx = farChunk(helper, true, FAR_OFFSET + 40), zz = farChunk(helper, false, FAR_OFFSET + 40), yx = xx + 1, z = zz * 16 + 8;
+        ChunkPos x = new ChunkPos(xx, zz);
+        long cx = x.toLong(), cy = ChunkPos.asLong(yx, zz);
+        BlockPos arm = new BlockPos(yx * 16 + 1, FAR_Y, z), take = new BlockPos(xx * 16 + 14, FAR_Y, z);
+        BlockPos deposit = new BlockPos(yx * 16 + 4, FAR_Y, z), press = new BlockPos(yx * 16 + 9, FAR_Y, z - 5);
+        long[] id = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(xx, zz, true);
+                    level.setChunkForced(yx, zz, true);
+                })
+                .thenWaitUntil(paced(() -> check("X and Y load", level.getChunkSource().getChunkNow(xx, zz) != null
+                        && level.getChunkSource().getChunkNow(yx, zz) != null)))
+                .thenExecute(() -> {
+                    clearFar(level, xx - 1, zz - 1, yx + 1, zz + 1);
+                    set(helper, take, block("create:depot").defaultBlockState());
+                    set(helper, deposit, block("create:depot").defaultBlockState());
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    set(helper, arm, block("create:mechanical_arm").defaultBlockState());
+                    GlassCalibrationKit.armTargets(helper, arm, List.of(take), List.of(deposit), ArmBlockEntity.SelectionMode.ROUND_ROBIN);
+                    playerPlacedBare(helper, press);
+                    playerPlacedBare(helper, arm);
+                })
+                .thenWaitUntil(() -> {
+                    ArmBlockEntity a = armAt(helper, arm);
+                    check("the arm exists", a != null);
+                    check("the arm has read its points (pending " + CreateGlassAccess.armPointsPending(a) + ", inputs " + armInputs(a) + ")",
+                            !CreateGlassAccess.armPointsPending(a) && armInputs(a) == 1);
+                })
+                .thenExecute(() -> ind().districts().rescanNow(level))
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, press);
+                    check("the press's district: " + describe(d), d != null);
+                    check("X and Y in one district: " + describe(d), holds(d, cx, cy));
+                    check("the pair is saved: " + describe(d), d.joins.contains(District.join(cx, cy)));
+                    check("X has no seed: " + describe(d), d.seedCounts.get(cx) == 0 && d.seedCounts.get(cy) == 1);
+                    id[0] = d.id;
+                    record(t, "before the unload", describe(d));
+                })
+                .thenExecute(() -> {
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, x, 0, x);
+                    level.setChunkForced(xx, zz, false);
+                    level.setChunkForced(yx, zz, false);
+                })
+                .thenWaitUntil(paced(() -> {
+                    District d = ind().district(id[0]);
+                    check("Y unloads, X stays: X " + (level.getChunkSource().getChunkNow(xx, zz) != null) + ", Y "
+                            + (level.getChunkSource().getChunkNow(yx, zz) != null) + ", loaded chunks "
+                            + (d == null ? -1 : ind().districts().loadedChunks(d)),
+                            level.getChunkSource().getChunkNow(yx, zz) == null && level.getChunkSource().getChunkNow(xx, zz) != null
+                                    && d != null && ind().districts().loadedChunks(d) == 1);
+                }))
+                .thenExecute(() -> {
+                    ind().districts().markDirty(level.dimension(), cx);
+                    ind().districts().rescanNow(level);
+                    District d = ind().district(id[0]);
+                    check("the same district: " + describe(d), d != null);
+                    check("X is still in it, with Y: " + describe(d), holds(d, cx, cy));
+                    check("the pair is kept: " + describe(d), d.joins.contains(District.join(cx, cy)));
+                    check("Y is still unloaded", level.getChunkSource().getChunkNow(yx, zz) == null);
+                    record(t, "after a detection with Y unloaded", describe(d));
+                })
+                .thenExecute(() -> {
+                    set(helper, take, Blocks.AIR.defaultBlockState());
+                    ind().districts().markDirty(level.dimension(), cx);
+                    ind().districts().rescanNow(level);
+                    District d = ind().district(id[0]);
+                    record(t, "after X's depot is removed", describe(d));
+                    check("the district stays with Y, unloaded: " + describe(d), d != null && d.chunks.contains(cy));
+                    check("X has left it: " + describe(d), !d.chunks.contains(cx));
+                    check("Y is still unloaded", level.getChunkSource().getChunkNow(yx, zz) == null);
+                })
+                .thenExecute(() -> {
+                    level.setChunkForced(xx, zz, true);
+                    level.setChunkForced(yx, zz, true);
+                })
+                .thenWaitUntil(paced(() -> check("X and Y load for the clean-up", level.getChunkSource().getChunkNow(xx, zz) != null
+                        && level.getChunkSource().getChunkNow(yx, zz) != null)))
+                .thenExecute(() -> {
+                    clearFar(level, xx - 1, zz - 1, yx + 1, zz + 1);
+                    level.getChunkSource().removeRegionTicket(FULL_ONLY, x, 0, x);
+                    level.setChunkForced(xx, zz, false);
+                    level.setChunkForced(yx, zz, false);
+                })
+                .thenSucceed();
+    }
 }
