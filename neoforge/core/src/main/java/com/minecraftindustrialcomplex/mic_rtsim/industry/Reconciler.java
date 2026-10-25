@@ -7,6 +7,7 @@ import net.minecraft.commands.arguments.blocks.BlockStateParser;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -20,6 +21,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,10 +55,12 @@ import java.util.concurrent.CompletableFuture;
  *       count skipped) and COMMAND_RESULT are journaled.</li>
  *   <li>The drops of the breaks wait in memory while the chunks the breaks changed are written now
  *       ({@code ChunkWriteBarrier.writeNow}), and join the level once they are on disk, each when its own
- *       chunk's entities are loaded (docs/choices-journal-barrier.md RP-213). Item entities are saved apart
- *       from their chunk, in {@code entities/}; a drop on disk with its chunk from before, the block still
- *       standing and the epoch not yet applied, would be dropped again by the resent command. A write that
- *       fails, or a stop while they wait, loses them (logged, counted): lose, never double.</li>
+ *       chunk's entities are loaded (docs/choices-journal-barrier.md RP-213). A ticket holds those chunks
+ *       loaded until then. Item entities are saved apart from their chunk, in {@code entities/}; a drop on
+ *       disk with its chunk from before, the block still standing and the epoch not yet applied, would be
+ *       dropped again by the resent command. A write that fails or does not land within
+ *       {@code WRITE_NOW_MILLIS} loses them (logged, counted); so does a stop while they wait (counted, logged
+ *       once at {@link #close}): lose, never double.</li>
  * </ol>
  * A crash anywhere replays correctly: a chunk saved before step 5 still has its older epoch and its
  * older contents, and the journal's file is written only after the chunk's
@@ -70,13 +74,28 @@ public final class Reconciler {
 
     private record Held(byte[] bytes, long cmdSeq, int epoch) {}
 
-    /** The drops of one reconcile's breaks, waiting for the chunks they changed to be on disk (RP-213). */
-    private record Drops(ServerLevel level, List<ItemEntity> items, CompletableFuture<Boolean> written) {}
+    /**
+     * The drops of one reconcile's breaks, waiting for the chunks they changed to be on disk (RP-213), and the
+     * chunks they lie in, held loaded under ticket {@code batch} until the batch ends.
+     */
+    private record Drops(ServerLevel level, List<ItemEntity> items, CompletableFuture<Boolean> written, long batch, List<ChunkPos> held) {}
+
+    /** The drops ticket's timeout, ticks (PLACEHOLDER: five times writeNow's 60 s bound at 20 ticks a second). */
+    static final int DROPS_TICKET_TICKS = 6000;
+    /**
+     * Keeps the chunk a held drop lies in loaded, its entities with it, until the drop joins the level or is lost
+     * (RP-213): with the chunk gone, the drop would wait in memory until the chunk loaded again. One ticket a batch
+     * (its value), so two batches in one chunk do not share one. The timeout is a backstop only: a batch's write
+     * resolves within {@code ChunkWriteBarrier.WRITE_NOW_MILLIS}, its drops then join at once, and it removes its
+     * tickets. If the timeout ends one first, the drops still wait in memory, not lost.
+     */
+    static final TicketType<Long> DROPS_TICKET = TicketType.create("mic_rtsim_drops", Long::compare, DROPS_TICKET_TICKS);
 
     private final Industry ind;
     private final Map<ChunkKey, List<Held>> held = new HashMap<>();
     private final Set<String> recommitted = new HashSet<>();
     private final List<Drops> drops = new ArrayList<>();
+    private long nextBatch;
     /** The level whose item joins are taken as a break's drops, while a reconcile breaks blocks; else null. */
     private ServerLevel capturing;
     private final List<ItemEntity> captured = new ArrayList<>();
@@ -93,7 +112,7 @@ public final class Reconciler {
     long blocksBroken;
     long blocksSkipped;
     long shortfalls;
-    /** Items a reconcile's breaks dropped, kept until their chunks were on disk; and those lost to a failed write. */
+    /** Items a reconcile's breaks dropped, kept until their chunks were on disk; those lost (a failed write, a stop). */
     long dropsKept;
     long dropsLost;
 
@@ -461,7 +480,22 @@ public final class Reconciler {
             ind.fail("writing the chunks of a reconcile's breaks", ex);
             written = CompletableFuture.completedFuture(false);
         }
-        drops.add(new Drops(level, items, written));
+        long batch = nextBatch++;
+        Set<Long> at = new LinkedHashSet<>();
+        for (ItemEntity item : items)
+            at.add(ChunkPos.asLong(item.blockPosition()));
+        List<ChunkPos> held = new ArrayList<>(at.size());
+        for (long c : at) {
+            ChunkPos cp = new ChunkPos(c);
+            level.getChunkSource().addRegionTicket(DROPS_TICKET, cp, 0, batch); // FULL: entities loaded, nothing ticks for it
+            held.add(cp);
+        }
+        drops.add(new Drops(level, items, written, batch, held));
+    }
+
+    private static void release(Drops d) {
+        for (ChunkPos cp : d.held())
+            d.level().getChunkSource().removeRegionTicket(DROPS_TICKET, cp, 0, d.batch());
     }
 
     /**
@@ -477,6 +511,7 @@ public final class Reconciler {
                 dropsLost += d.items().size();
                 MicRtsim.LOGGER.warn("[mic_rtsim] industry: {} item stacks a reconcile dropped are lost: their chunks could not be written first",
                         d.items().size());
+                release(d);
                 it.remove();
                 continue;
             }
@@ -487,9 +522,28 @@ public final class Reconciler {
                 d.level().addFreshEntity(item);
                 return true;
             });
-            if (d.items().isEmpty())
+            if (d.items().isEmpty()) {
+                release(d);
                 it.remove();
+            }
         }
+    }
+
+    /**
+     * The session ends (after the stop's world save): drops still held, in memory only, are lost. Counted and logged
+     * once. Their tickets go with the server; the timeout ends them if the server goes on.
+     */
+    void close() {
+        int n = captured.size();
+        for (Drops d : drops)
+            n += d.items().size();
+        if (n > 0) {
+            dropsLost += n;
+            MicRtsim.LOGGER.warn("[mic_rtsim] industry: {} item stacks reconciles dropped were still waiting for their chunks' write at the "
+                    + "stop and are lost (docs/choices-journal-barrier.md RP-213)", n);
+        }
+        drops.clear();
+        captured.clear();
     }
 
     /** Drop batches waiting for their chunks' write or their entity chunks (the GameTests). */
