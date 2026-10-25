@@ -1145,3 +1145,486 @@ fn a_save_with_nothing_changed_is_flat_in_the_herds() {
         "a save with nothing changed wrote {small} bytes at 64 herds and {big} at 256"
     );
 }
+
+// ---- the replay gate (docs/replay-gate.md §9.4, RP-80 to RP-89) -----------------------------------
+
+/// A rig whose flock has a group in view at day 12: the herds as the pages of a save would hold
+/// them.
+fn with_group(seed: u64) -> (Rig, HerdId, Tick) {
+    let mut r = Rig::valley(seed);
+    let f = flock(&r);
+    let t = Tick::from_days(12);
+    r.run(t, 2_000, None);
+    let p = r.near(f, t);
+    r.run(t + 1_500, 100, Some(p));
+    assert!(r.fake.group_of(agent_of(f)).is_some(), "a group in view");
+    let now = r.h.now();
+    (r, f, now)
+}
+
+/// One record of each kind naming `epoch` of `agent`, by name (docs/replay-gate.md §5.3, RP-57).
+fn records_naming(agent: u64, epoch: u32) -> Vec<(&'static str, Obs)> {
+    use boundary::{
+        Dematerialized, GroupState, Killed, KillerKind, Materialized, Sheared, SpawnRejected,
+        Taken, TakenHow,
+    };
+    vec![
+        (
+            "HERD_GROUP_STATE",
+            Obs::GroupState(GroupState {
+                agent,
+                epoch,
+                flags: 0,
+                dimension: 0,
+                present: 3,
+                pos: (0.0, 64.0, 0.0),
+            }),
+        ),
+        (
+            "HERD_MATERIALIZED",
+            Obs::Materialized(Materialized {
+                agent,
+                epoch,
+                dimension: 0,
+                spawned: 3,
+            }),
+        ),
+        (
+            "HERD_SPAWN_REJECTED",
+            Obs::SpawnRejected(SpawnRejected {
+                agent,
+                epoch,
+                reason: 1,
+                cmd_seq: 0,
+            }),
+        ),
+        (
+            "HERD_DEMATERIALIZED",
+            Obs::Dematerialized(Dematerialized {
+                agent,
+                epoch,
+                reason: 1,
+                members: Vec::new(),
+            }),
+        ),
+        (
+            "HERD_KILLED",
+            Obs::Killed(Killed {
+                agent,
+                epoch,
+                member: 0,
+                by: KillerKind::Player,
+                killer: PLAYER,
+                op: 1 << 62 | 1,
+            }),
+        ),
+        (
+            "HERD_SHEARED",
+            Obs::Sheared(Sheared {
+                agent,
+                epoch,
+                member: 1,
+                player: PLAYER,
+            }),
+        ),
+        (
+            "HERD_TAKEN",
+            Obs::Taken(Taken {
+                agent,
+                epoch,
+                member: 2,
+                how: TakenHow::Lead,
+                player: PLAYER,
+                op: 1 << 62 | 2,
+            }),
+        ),
+        (
+            "HERD_OBSTACLE",
+            Obs::Obstacle(boundary::Obstacle {
+                agent,
+                epoch,
+                failures: 1,
+                present: 3,
+                stuck: (0, 0),
+                target: (64, 64),
+            }),
+        ),
+    ]
+}
+
+/// The epoch the flock's next group takes, from a rig that has applied a record: the player
+/// walks up to the flock.
+fn next_epoch(mut r: Rig, f: HerdId, from: Tick) -> u32 {
+    let p = r.near(f, from);
+    r.run(from + 1_500, 100, Some(p));
+    r.fake
+        .group_of(agent_of(f))
+        .map(|g| g.epoch)
+        .expect("a group came")
+}
+
+/// No epoch is used twice (RP-7, RP-30, RP-57, RP-81): a replayed record or a copy that names a
+/// group's epoch raises the herd's floor, whatever its kind and whatever the record does after,
+/// on an engine from its pages, on a fresh one and for a copy. The next group takes an epoch
+/// above it, 5 after a record of 4 (the floor sits under the wrap rule's `+ 1`). Before, the
+/// engine knew none of them and took 1.
+#[test]
+fn every_record_naming_an_epoch_raises_its_floor() {
+    let mut cases = 0;
+    for path in ["pages", "fresh", "copy"] {
+        for i in 0..records_naming(0, 4).len() {
+            let mut r = Rig::valley(5);
+            let f = flock(&r);
+            let now = Tick::from_days(12);
+            r.run(now, 2_000, None);
+            let (name, o) = records_naming(agent_of(f), 4).swap_remove(i);
+            match path {
+                "pages" | "fresh" => {
+                    r.h.begin_replay(path == "pages");
+                    r.h.ingest(&mut r.legs, &o, now);
+                    r.h.replay_done(&mut r.legs, now);
+                }
+                _ => r.h.ingest_copy(&mut r.legs, &o, now),
+            }
+            let _ = r.h.take_commands();
+            r.h.check(now).unwrap();
+            assert_eq!(next_epoch(r, f, now), 5, "{name} on the {path} path");
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 24);
+}
+
+/// A record of an epoch the herd holds raises nothing (its next group is 2 after a group 1 and a
+/// record of 1); a record of the highest epoch a group can have gives the highest, not a wrapped
+/// one (the wrap rule only turns the one after it).
+#[test]
+fn the_floor_is_above_the_herds_own_epoch_and_below_the_wrap() {
+    let (mut r, f, now) = with_group(23);
+    let agent = agent_of(f);
+    let first = r.fake.group_of(agent).map(|g| g.epoch).unwrap();
+    assert_eq!(first, 1);
+    r.h.begin_replay(true);
+    for (_, o) in records_naming(agent, 1) {
+        if matches!(o, Obs::Dematerialized(_) | Obs::Materialized(_)) {
+            r.h.ingest(&mut r.legs, &o, now);
+        }
+    }
+    r.h.replay_done(&mut r.legs, now);
+    assert_eq!(r.h.herd(f).unwrap().epoch, 1, "the herd holds epoch 1");
+    r.fake = FakeHerds::default();
+    assert_eq!(next_epoch(r, f, now), 2);
+
+    let mut r = Rig::valley(5);
+    let f = flock(&r);
+    let now = Tick::from_days(12);
+    r.run(now, 2_000, None);
+    let (_, o) = records_naming(agent_of(f), u32::MAX - 1).swap_remove(2);
+    r.h.begin_replay(true);
+    r.h.ingest(&mut r.legs, &o, now);
+    r.h.replay_done(&mut r.legs, now);
+    assert_eq!(next_epoch(r, f, now), u32::MAX);
+}
+
+/// A floor of an agent with no herd yet stays past the replay end (a herd founded after it, on a
+/// handle an old life used, RP-31): its first group takes an epoch above it.
+#[test]
+fn a_floor_of_an_agent_with_no_herd_stays_past_the_replay_end() {
+    let new = || NewHerd {
+        name: "Late flock".into(),
+        species: rtsim_ecology::herds::HerdSpecies::Sheep,
+        frame: 0,
+        pos: (300, 1_700),
+        count: 60,
+        seed: Some(9),
+    };
+    let now = Tick::from_days(12);
+    // The agent the next herd takes, from an engine that is the same up to it.
+    let mut probe = Rig::valley(5);
+    probe.run(now, 2_000, None);
+    let ghost = agent_of(probe.h.add_herd(new(), now));
+
+    let mut r = Rig::valley(5);
+    r.run(now, 2_000, None);
+    let (_, o) = records_naming(ghost, 7).swap_remove(2);
+    r.h.begin_replay(true);
+    r.h.ingest(&mut r.legs, &o, now);
+    r.h.replay_done(&mut r.legs, now);
+    let late = r.h.add_herd(new(), now);
+    assert_eq!(agent_of(late), ghost);
+    r.run(now + 2_000, 100, None);
+    let p = r.near(late, r.h.now());
+    r.run(now + 4_000, 100, Some(p));
+    let g = r.fake.group_of(ghost).expect("a group of the late flock");
+    assert_eq!(g.epoch, 8, "above the floor of the old life's record");
+}
+
+/// A command decided while replaying is dropped and counted, not queued (RP-3, RP-80): a group
+/// the pages hold in view is steered by an obstacle's replan, and the Steer goes nowhere. Control:
+/// the same obstacle with no replay queues it.
+#[test]
+fn a_steer_decided_while_replaying_is_dropped_and_counted() {
+    for replaying in [true, false] {
+        let mut r = Rig::valley(17);
+        let f = flock(&r);
+        let mut t = Tick::from_days(4);
+        r.run(t, 2_000, None);
+        while r.h.herd(f).unwrap().route.segment_at(t + 2_500).is_none() {
+            t += 6_000;
+            r.run(t, 6_000, None);
+        }
+        let p = r.near(f, t);
+        r.run(t + 2_000, 100, Some(p));
+        let agent = agent_of(f);
+        let g = r.fake.group_of(agent).cloned().expect("embodied");
+        let now = r.h.now();
+        let pos = r.h.position(f, now);
+        let target = r.h.herd(f).unwrap().route.heading(now);
+        let o = Obs::Obstacle(boundary::Obstacle {
+            agent,
+            epoch: g.epoch,
+            failures: g.bodies.len() as u32,
+            present: g.bodies.len() as u32,
+            stuck: (pos.0 as i32, pos.1 as i32),
+            target,
+        });
+        if replaying {
+            r.h.begin_replay(true);
+        }
+        r.h.ingest(&mut r.legs, &o, now);
+        let cmds = r.h.take_commands();
+        let counts = r.h.replay_gate_counts();
+        if replaying {
+            assert!(cmds.is_empty(), "{cmds:?}");
+            assert_eq!(counts.dropped, 1, "the steer was dropped");
+            assert_eq!((counts.never, counts.deferred), (0, 0));
+            // The replay end makes the group abstract; what is decided after it is sent.
+            r.h.replay_done(&mut r.legs, now);
+            assert!(r.h.herd(f).unwrap().embodied.is_none());
+        } else {
+            assert!(cmds.iter().any(|c| matches!(c, Cmd::Steer(_))), "{cmds:?}");
+            assert_eq!(counts.dropped, 0);
+        }
+    }
+}
+
+/// Nothing embodies while replaying (RP-3, RP-83): a meeting booked before the session (the pages'
+/// wheel holds the sighting) falls due with the area still live, and the herd stays abstract and
+/// consistent. The sighting the replay end routes books its own meeting. Control: with no replay
+/// the same meeting embodies a group.
+#[test]
+fn a_meeting_from_the_pages_embodies_nothing_while_replaying() {
+    for replaying in [true, false] {
+        let mut r = Rig::valley(23);
+        let f = flock(&r);
+        let t = Tick::from_days(12);
+        r.run(t, 2_000, None);
+        let p = r.near(f, t);
+        // The player's area and its meeting with the flock are booked; the sighting is not due.
+        r.h.observe_player(&mut r.legs, PLAYER, p, t);
+        if replaying {
+            r.h.begin_replay(true);
+        }
+        r.h.run_until(&mut r.legs, t + 1_500);
+        r.pump(t + 1_500);
+        r.h.check(t + 1_500).unwrap();
+        let counts = r.h.replay_gate_counts();
+        if replaying {
+            assert!(r.fake.history.is_empty(), "nothing materialized");
+            assert!(r.h.herd(f).unwrap().embodied.is_none());
+            assert_eq!(r.h.stats.seen, 0, "the sighting did nothing");
+            assert!(counts.deferred >= 1, "{counts:?}");
+            assert_eq!(counts.never, 0);
+            r.h.replay_done(&mut r.legs, t + 1_500);
+            // The player is routed again at the replay end: a new meeting, a group.
+            let p2 = r.near(f, t + 1_500);
+            r.run(t + 3_500, 100, Some(p2));
+            assert_eq!(r.fake.history.len(), 1, "one group after the replay end");
+        } else {
+            assert_eq!(r.fake.history.len(), 1, "the control embodies");
+            assert_eq!(counts.deferred, 0);
+        }
+    }
+}
+
+/// The players' puppet counts end at the replay end (RP-26, RP-86), not at its start: the start
+/// changes no group (RP-5). Control: a group in view at the start still has its puppets then.
+#[test]
+fn the_puppet_counts_and_the_players_areas_end_at_the_replay_end() {
+    let (mut r, f, now) = with_group(23);
+    let legs_before = r.legs.len();
+    let puppets = r.h.puppets(PLAYER);
+    assert!(puppets > 0);
+    assert!(r.h.player_area(PLAYER).is_some());
+    r.h.begin_replay(true);
+    assert_eq!(r.h.puppets(PLAYER), puppets, "the start changes no count");
+    assert!(r.h.herd(f).unwrap().embodied.is_some());
+    assert!(r.h.player_area(PLAYER).is_some());
+    assert_eq!(r.legs.len(), legs_before);
+    r.h.replay_done(&mut r.legs, now);
+    assert_eq!(r.h.puppets(PLAYER), 0);
+    assert!(r.h.player_area(PLAYER).is_none());
+    assert!(r.h.herd(f).unwrap().embodied.is_none());
+    assert!(r.legs.len() < legs_before);
+    r.h.check(now).unwrap();
+}
+
+/// A replayed HERD_MATERIALIZED is honoured only on an engine from its pages and only while
+/// replaying (RP-31, RP-82): the herd is embodied at the record's epoch with its picked members,
+/// no player, and nothing is sent or counted as a puppet. The replayed capture that follows lands
+/// on those members (the herd's seen map). Control: the other three paths honour nothing, and the
+/// same capture is late.
+#[test]
+fn a_replayed_materialization_is_honoured_only_on_an_engine_from_its_pages() {
+    use rtsim_ecology::herds::herd::NO_PLAYER;
+    // (path, from the pages, replaying, a copy, honoured)
+    for (path, from_pages, replaying, copy, honoured) in [
+        ("pages", true, true, false, true),
+        ("fresh", false, true, false, false),
+        ("live", true, false, false, false),
+        ("copy", true, true, true, false),
+    ] {
+        let mut r = Rig::valley(5);
+        let f = flock(&r);
+        let now = Tick::from_days(12);
+        r.run(now, 2_000, None);
+        if replaying {
+            r.h.begin_replay(from_pages);
+        }
+        let m = Obs::Materialized(boundary::Materialized {
+            agent: agent_of(f),
+            epoch: 1,
+            dimension: 0,
+            spawned: 3,
+        });
+        if copy {
+            r.h.ingest_copy(&mut r.legs, &m, now);
+        } else {
+            r.h.ingest(&mut r.legs, &m, now);
+        }
+        assert!(r.h.take_commands().is_empty(), "{path}: nothing is sent");
+        assert_eq!(r.h.puppets(PLAYER), 0, "{path}");
+        r.h.check(now).unwrap();
+        let x = r.h.herd(f).unwrap();
+        assert_eq!(x.embodied.is_some(), honoured, "{path}");
+        if !honoured {
+            assert_eq!(r.h.replay_honoured(), 0, "{path}");
+            continue;
+        }
+        let e = x.embodied.clone().unwrap();
+        assert_eq!((e.epoch, e.members.len(), e.player), (1, 3, NO_PLAYER));
+        assert_eq!(r.h.replay_honoured(), 1);
+        // Its capture, replayed: the members come back seen at the record's time.
+        let later = now + 500;
+        let caps: Vec<boundary::Capture> = e
+            .members
+            .iter()
+            .map(|&member| boundary::Capture {
+                member,
+                flags: boundary::MEMBER_SHEARED,
+                health: 8.0,
+                x: 10,
+                z: 20,
+            })
+            .collect();
+        let d = Obs::Dematerialized(boundary::Dematerialized {
+            agent: agent_of(f),
+            epoch: 1,
+            reason: 1,
+            members: caps,
+        });
+        r.h.ingest(&mut r.legs, &d, later);
+        assert_eq!(r.h.stats.captures, 1);
+        let x = r.h.herd(f).unwrap();
+        assert!(x.embodied.is_none());
+        for k in &e.members {
+            let s = x.seen.get(k).expect("seen");
+            assert_eq!((s.last, s.sheared_at), (later, Some(later)));
+        }
+        r.h.check(later).unwrap();
+    }
+}
+
+/// Honouring edges (RP-82): a record of an epoch at or below the group the pages hold changes
+/// nothing; a newer one replaces it (the older group's end was not journaled), its members stay
+/// seen; and a group still honoured at the replay end becomes abstract with its members seen.
+#[test]
+fn a_replayed_materialization_of_an_older_epoch_changes_nothing_and_a_newer_one_replaces() {
+    let (mut r, f, now) = with_group(23);
+    let agent = agent_of(f);
+    let held = r.h.herd(f).unwrap().embodied.clone().unwrap();
+    assert_eq!(held.epoch, 1);
+    r.h.begin_replay(true);
+    let m = |epoch, spawned| {
+        Obs::Materialized(boundary::Materialized {
+            agent,
+            epoch,
+            dimension: 0,
+            spawned,
+        })
+    };
+    r.h.ingest(&mut r.legs, &m(1, 5), now);
+    assert_eq!(r.h.herd(f).unwrap().embodied.as_ref(), Some(&held));
+    assert_eq!(r.h.replay_honoured(), 0);
+    r.h.ingest(&mut r.legs, &m(2, 4), now + 10);
+    let e = r.h.herd(f).unwrap().embodied.clone().unwrap();
+    assert_eq!((e.epoch, e.members.len()), (2, 4));
+    assert_eq!(r.h.replay_honoured(), 1);
+    r.h.check(now + 10).unwrap();
+    let later = now + 600;
+    r.h.replay_done(&mut r.legs, later);
+    let x = r.h.herd(f).unwrap();
+    assert!(x.embodied.is_none());
+    for k in &e.members {
+        assert_eq!(x.seen.get(k).map(|s| s.last), Some(later));
+    }
+    assert_eq!(x.epoch, 2);
+    r.h.check(later).unwrap();
+}
+
+/// An ending epoch is never reused (RP-7, RP-81): a group that ended in the replayed window (its
+/// materialization and its capture both replayed, on an engine whose pages did not have it) is
+/// not decided again after the replay end. Control: a group the pages held, ended in the window,
+/// takes the next epoch too.
+#[test]
+fn an_epoch_that_ended_in_the_replayed_window_is_not_taken_again() {
+    // The pages hold nothing of the group.
+    let mut r = Rig::valley(5);
+    let f = flock(&r);
+    let now = Tick::from_days(12);
+    r.run(now, 2_000, None);
+    let agent = agent_of(f);
+    r.h.begin_replay(true);
+    let m = Obs::Materialized(boundary::Materialized {
+        agent,
+        epoch: 1,
+        dimension: 0,
+        spawned: 3,
+    });
+    r.h.ingest(&mut r.legs, &m, now + 10);
+    let d = Obs::Dematerialized(boundary::Dematerialized {
+        agent,
+        epoch: 1,
+        reason: 1,
+        members: Vec::new(),
+    });
+    r.h.ingest(&mut r.legs, &d, now + 20);
+    assert!(r.h.herd(f).unwrap().embodied.is_none(), "the group ended");
+    r.h.replay_done(&mut r.legs, now + 30);
+    assert_eq!(next_epoch(r, f, now + 30), 2);
+
+    // The pages held it.
+    let (mut r, f, now) = with_group(23);
+    let agent = agent_of(f);
+    r.h.begin_replay(true);
+    let d = Obs::Dematerialized(boundary::Dematerialized {
+        agent,
+        epoch: 1,
+        reason: 1,
+        members: Vec::new(),
+    });
+    r.h.ingest(&mut r.legs, &d, now + 20);
+    r.h.replay_done(&mut r.legs, now + 30);
+    r.fake = FakeHerds::default();
+    assert_eq!(next_epoch(r, f, now + 30), 2);
+}

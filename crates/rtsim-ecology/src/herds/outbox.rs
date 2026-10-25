@@ -198,7 +198,11 @@ mod tests {
         assert_eq!(o.len(), cmds.len());
         o.begin_replay();
         assert!(o.replaying());
-        assert_eq!(o.take().len(), 0, "the session's start drops what the pages queued");
+        assert_eq!(
+            o.take().len(),
+            0,
+            "the session's start drops what the pages queued"
+        );
         for c in cmds
             .iter()
             .filter(|c| gate(c).replaying != Replaying::Never)
