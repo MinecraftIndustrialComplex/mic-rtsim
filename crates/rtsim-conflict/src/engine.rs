@@ -3843,6 +3843,13 @@ impl Conflict {
     /// answer then books the hunt it names. Applied on the hold, the answer found no hunt, and
     /// the hold's end owed it again under a new op, which the next session's plugin killed for
     /// again.
+    ///
+    /// Whatever record ends a hold, the holds end in the order the session that went on decided
+    /// them (RP-135): each hold the record names takes the faction's older holds bound for the
+    /// same district with it, and all go by `since`, so that the hunts' op chain (each op folds
+    /// in the one in flight) is the live one. A later hold ended alone, or before an older one
+    /// (a casualty for the later band, Peaceful's handle order), owed the hunt first and the older
+    /// raid's answer then named an op the replay never held.
     fn release_before(
         &mut self,
         w: &mut World,
@@ -3912,7 +3919,36 @@ impl Conflict {
             }
             _ => return,
         };
-        for p in parties {
+        // The holds end in the order the session that went on decided them: each listed hold's
+        // older holds of its faction bound for the same district join the list, and the whole
+        // list goes by `since` (RP-135). A later raid's hold ended first would otherwise owe the
+        // district's hunt before the older raid's, and the older one's answer would end it under
+        // an op chain the session never sent.
+        let district = |x: &Party| match x.target {
+            Target::District(d, _) => Some(d),
+            _ => None,
+        };
+        let mut ending: Vec<(Tick, Handle<Party>)> = Vec::new();
+        for &p in &parties {
+            let (Some(h), Some(x)) = (self.held.get(&p), self.parties.get(p)) else {
+                continue;
+            };
+            ending.push((h.since, p));
+            let Some(d) = district(x) else {
+                continue;
+            };
+            for (&q, g) in &self.held {
+                let Some(y) = self.parties.get(q) else {
+                    continue;
+                };
+                if q != p && y.faction == x.faction && district(y) == Some(d) && g.since < h.since {
+                    ending.push((g.since, q));
+                }
+            }
+        }
+        ending.sort_unstable();
+        ending.dedup();
+        for (_, p) in ending {
             let Some(h) = self.held.remove(&p) else {
                 continue;
             };

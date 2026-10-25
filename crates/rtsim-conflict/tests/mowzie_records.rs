@@ -6753,3 +6753,167 @@ fn a_casualty_copy_of_an_ended_party_does_nothing_across_a_paged_save() {
     );
     assert_eq!(c.stats.casualties, cas);
 }
+
+// ---- RP-135: a hold ended before an older one keeps the live ops' order -------------------------
+
+/// The record that ends the later hold of [`holds_ended_out_of_order`] first.
+#[derive(Clone, Copy)]
+enum FirstEnd {
+    /// A stray BAND_CASUALTIES for the later band, at its own epoch.
+    Straggler,
+    /// The world turns Peaceful (every hold ends, by `since`: the bands' handles run the other
+    /// way).
+    Peaceful,
+}
+
+/// Two bands of one faction raid the refinery unwatched, the later one 380 ticks after the older
+/// one, inside its slack (the second hunt replaces the first), each hunt being answered 500 ticks
+/// after it was owed, and `end` comes 10 ticks after the later arrival. Replayed, the record ends
+/// the later hold first, which owes `op(d, its arrival, 0)`; the older hold must then owe under
+/// `op(d, its arrival, that)`, the live chain, or the first hunt's answer books nothing and the
+/// next session's plugin kills the animals again.
+fn holds_ended_out_of_order(replay: bool, end: FirstEnd) -> HuntRun {
+    let mut r = Run::new(36, hunting_goblins());
+    let order = |r: &mut Run, who: Option<ActorId>, at: u64| {
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            who,
+            Tick(at),
+        )
+        .expect("a band")
+    };
+    // Peaceful ends them by handle: the later band takes the first.
+    let (older, later) = match end {
+        FirstEnd::Straggler => {
+            let a = raid_band(&mut r);
+            (a, order(&mut r, None, 20 + 380))
+        }
+        FirstEnd::Peaceful => {
+            r.kill(2.0, Tick(10));
+            let b = order(&mut r, None, 20 + 380);
+            let p = r.p;
+            (order(&mut r, Some(p), 20), b)
+        }
+    };
+    let bands = [older, later];
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.plugin.hunt_kills = Some(99);
+    r.plugin.answer_ticks = 500;
+    let arrival = *r.c.parties[older].times.last().unwrap();
+    let arrival_b = *r.c.parties[later].times.last().unwrap();
+    assert!(arrival_b > arrival, "the later band comes later");
+    assert_eq!(
+        matches!(end, FirstEnd::Peaceful),
+        later < older,
+        "the handles run the other way for Peaceful"
+    );
+    let mut walls = Open::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    journal.clear();
+    // Ten ticks after the later arrival (a straggler is dropped live; the world goes Peaceful
+    // after both raids were decided).
+    let at = arrival_b + 10;
+    run_journaled(&mut r, &mut walls, at, &mut journal);
+    let record = match end {
+        FirstEnd::Straggler => Obs::Casualties(boundary::BandCasualties {
+            agent: Party::agent(later),
+            epoch: r.c.parties[later].epoch,
+            by: boundary::BY_MOB,
+            body: 0,
+            count: 1,
+            killer: (0, 0),
+            op: 0x7777_0001,
+        }),
+        FirstEnd::Peaceful => difficulty(boundary::DIFFICULTY_PEACEFUL),
+    };
+    r.c.ingest(&mut r.w, &mut walls, &record, at);
+    journal.push((at, record));
+    let mut to = at;
+    while bands.iter().any(|&b| r.c.parties.get(b).is_some()) {
+        to += 600;
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    let sent = |p: &FakeConflict| -> Vec<(u64, u32)> {
+        p.hunts_sent.iter().map(|h| (h.op, h.count)).collect()
+    };
+    let live = sent(&r.plugin);
+    if !replay {
+        return HuntRun {
+            killed: r.plugin.animals_killed,
+            live,
+            next: Vec::new(),
+            owed: r.c.factions[r.f as usize].hunts().len(),
+        };
+    }
+    let last = r.c.now();
+    journal.push((last, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Open::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.resend_notices();
+    let mut plugin = FakeConflict::new(synth::PLAYER);
+    plugin.hunt_kills = Some(99);
+    let mut next = Run {
+        w,
+        c: back,
+        f: r.f,
+        p: r.p,
+        plugin,
+        cmds: Vec::new(),
+        watch: false,
+        next_obs: Tick::ZERO,
+        refuse: None,
+        refuse_wave0_only: false,
+    };
+    let now = next.c.now();
+    next.flush(now);
+    run_journaled(
+        &mut next,
+        &mut walls,
+        now + 2 * TICKS_PER_DAY,
+        &mut Vec::new(),
+    );
+    HuntRun {
+        killed: r.plugin.animals_killed + next.plugin.animals_killed,
+        live,
+        next: sent(&next.plugin),
+        owed: next.c.factions[next.f as usize].hunts().len(),
+    }
+}
+
+/// RP-135, the re-check's P3-1: a stray casualty record ends the later raid's hold first.
+#[test]
+fn a_later_hold_ended_first_by_a_straggler_leaves_the_older_hold_its_live_op() {
+    let live = holds_ended_out_of_order(false, FirstEnd::Straggler);
+    assert!(live.live.len() >= 2, "{live:?}");
+    assert!(live.killed > 0 && live.owed == 0, "{live:?}");
+    let back = holds_ended_out_of_order(true, FirstEnd::Straggler);
+    assert_eq!(back.live, live.live, "the first session as the live one");
+    assert_eq!(back.next, [], "no hunt to the next session: {back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+}
+
+/// RP-135, the Peaceful branch: every hold ends, and by `since`, whatever order the bands'
+/// handles run in.
+#[test]
+fn peaceful_ends_the_holds_in_the_order_they_were_decided() {
+    let live = holds_ended_out_of_order(false, FirstEnd::Peaceful);
+    assert!(live.live.len() >= 2, "{live:?}");
+    assert!(live.killed > 0 && live.owed == 0, "{live:?}");
+    let back = holds_ended_out_of_order(true, FirstEnd::Peaceful);
+    assert_eq!(back.live, live.live, "the first session as the live one");
+    assert_eq!(back.next, [], "no hunt to the next session: {back:?}");
+    assert_eq!((back.killed, back.owed), (live.killed, 0), "{back:?}");
+}
