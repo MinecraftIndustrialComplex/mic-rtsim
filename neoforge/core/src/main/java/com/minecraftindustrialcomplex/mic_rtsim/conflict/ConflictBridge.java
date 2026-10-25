@@ -1947,12 +1947,12 @@ public final class ConflictBridge implements SessionPlugin {
 
     /**
      * Whether a player (not a spectator: vanilla's despawn ignores them too, MZB-745) in the level is within
-     * {@link #sightRange} of the entity.
+     * {@link #sightRange} of the entity, measured on the ground plane as vanilla's tracking is (MZB-753).
      */
     private static boolean seenBy(Entity e, ServerLevel level) {
         double r = sightRange(e, level);
         for (ServerPlayer pl : level.players())
-            if (!pl.isSpectator() && pl.distanceToSqr(e) <= r * r)
+            if (!pl.isSpectator() && MarchTrim.withinSight(pl.getX() - e.getX(), pl.getZ() - e.getZ(), r))
                 return true;
         return false;
     }

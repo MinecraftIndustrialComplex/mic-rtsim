@@ -8704,6 +8704,14 @@ An Opus review of M10's head (2443e915) found one P1, one P2 and seven P3s. Each
   canonical (0, 1000)": the route is `[(0, 1000), (900, 1000)]`, a first segment of 900 blocks for a walk
   of 300 (the right route's first segment is the 300 blocks from (1200, 1000) back to the camp's x 900), and passes
   with `party_chart_pos`.
+- **MZB-753** (P3-1: sight is horizontal). MZB-745's `seenBy` measured 3D (`pl.distanceToSqr(e)`). Vanilla's
+  tracking (`ChunkMap.TrackedEntity.updatePlayer`) uses the horizontal distance, so a player 150 blocks up and 50 out
+  still sees a band that the trim cut and the recall despawned. `seenBy` now asks `MarchTrim.withinSight(dx, dz,
+  range)`, `dx*dx + dz*dz <= range*range` on the ground plane (the one pure seam; `ConflictBridge` is not loadable in a
+  JUnit). `MarchTrimTest.sightIsMeasuredOnTheGroundPlaneNotInThreeDimensions` has the two cases: 50 out (a player high
+  above and close in horizontally) is in sight at 128, and 150 out at ground level is not; and the edge and a diagonal.
+  Not done (the review named it, the brief did not): each player's own view distance and the scaled tracking range
+  (`sightRange` still uses the server's view distance); visual only.
 
 ## M11 Aloft
 
