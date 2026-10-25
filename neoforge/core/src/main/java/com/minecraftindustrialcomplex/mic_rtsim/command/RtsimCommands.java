@@ -55,6 +55,7 @@ public final class RtsimCommands {
                 "hand-overs: " + b.handover().submits() + " submitted, " + b.handover().ticksWaiting() + " ticks waited on the engine",
                 "journal: " + b.journal().size() + " unacknowledged (" + b.journal().bytes() + " bytes), last applied command " + b.journal().lastAppliedCmdSeq()
                         + "; carried records journaled again " + s.reasserted() + " (" + b.plainRecommits() + " too large to copy), of an earlier engine life dropped " + s.stalePending(),
+                s.journal().describe() + "; deposit deltas refused by a store's ring " + s.industry.depositRingHits() + engineResends(s),
                 "puppets: " + s.registry().size() + " groups; spawned " + s.spawnedGroups() + ", rejected " + s.rejectedSpawns()
                         + ", captured " + s.capturedGroups() + ", taken " + s.takes() + ", died " + s.deaths()
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),
@@ -79,6 +80,11 @@ public final class RtsimCommands {
      * What the native engine's phase 1 world holds, beside what Java counts: after a sim reset the two
      * village counts say whether the engine was told again (runbook 8.6 of docs/deploy-rehearsal-live.md).
      */
+    /** The engine's resends at this session's start (RP-205); the stub has none. */
+    private static String engineResends(RtsimSession s) {
+        return s.engine() instanceof NativeEngine n ? "; the engine resent " + n.resendAtStart() + " kept commands at this start" : "";
+    }
+
     private static String enginePhase1(RtsimSession s) {
         if (!(s.engine() instanceof NativeEngine n))
             return "";

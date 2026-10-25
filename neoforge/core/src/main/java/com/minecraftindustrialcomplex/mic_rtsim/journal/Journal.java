@@ -59,6 +59,8 @@ public final class Journal {
     private final List<DictEntry> dict = new ArrayList<>();
     private final Map<DictEntry, Integer> dictIds = new HashMap<>();
     private Runnable onChange = () -> {};
+    /** Records committed that hold an applied op ({@link #appliedOpAt}), since this start ({@link #appliedRecords}). */
+    private long appliedRecords;
     /**
      * Java op ids are random, not the record's sequence: a crash can roll the journal back while a
      * chunk saved on unload keeps a record (and its op id) from the lost stretch, and that stretch's
@@ -142,10 +144,20 @@ public final class Journal {
         entries.addLast(new Entry(seq, bytes));
         entryBytes += bytes.length;
         int opAt = appliedOpAt(record);
-        if (opAt >= 0)
+        if (opAt >= 0) {
             appliedCmdOps.merge(record.getLong(opAt), 1, Integer::sum);
+            appliedRecords++;
+        }
         onChange.run();
         return seq;
+    }
+
+    /**
+     * Records committed since this start that hold an applied op (a COMMAND_RESULT APPLIED, or a copy of one): a
+     * running count, so the journal's file can say how many applied ops it is behind (RP-205).
+     */
+    public long appliedRecords() {
+        return appliedRecords;
     }
 
     /**

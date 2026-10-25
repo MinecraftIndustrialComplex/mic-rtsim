@@ -18,7 +18,7 @@ public abstract class MinecraftServerSaveMixin {
     private void mic_rtsim$saveBegins(boolean suppressLog, boolean flush, boolean forced, CallbackInfoReturnable<Boolean> cir) {
         MinecraftServer server = (MinecraftServer) (Object) this;
         if (server.isSameThread())
-            WorldSaveOrder.begin(server);
+            WorldSaveOrder.begin(server, flush);
     }
 
     @Inject(method = "saveAllChunks", at = @At("RETURN"))

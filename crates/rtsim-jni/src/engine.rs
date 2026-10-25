@@ -305,6 +305,10 @@ pub struct Stats {
     pub gaps: AtomicU64,
     pub commands_written: AtomicU64,
     pub save_failures: AtomicU64,
+    /// Kept commands this session's start resends, every module's (the core's, phase 1's and
+    /// industry's resend queues): the commands Java's journal on disk did not hold as applied
+    /// (docs/choices-journal-barrier.md RP-205).
+    pub resend_at_start: AtomicU64,
     pub steps_submitted: AtomicU64,
     /// Phase 1's counters (`nPhase1Stats`, phase1::stat).
     pub phase1: [AtomicU64; phase1::STATS],
@@ -345,7 +349,7 @@ pub struct Stats {
     pub window_grew: AtomicU64,
 }
 
-pub const STATS_LEN: usize = 16;
+pub const STATS_LEN: usize = 17;
 
 struct State {
     replay: Replay,
@@ -867,6 +871,7 @@ impl Engine {
             l(&s.gaps),
             l(&s.commands_written),
             l(&s.save_failures),
+            l(&s.resend_at_start),
         ]
     }
 
@@ -1139,14 +1144,19 @@ impl Engine {
                 b.put_u64(off, 0);
             }
         }
+        let resends = st.resend.len() + st.phase1.resend_len() + st.industry.resend_len();
+        self.stats
+            .resend_at_start
+            .store(resends as u64, Ordering::Release);
         self.publish_stats(&st);
         if self.cfg.test {
             self.publish_inspect(&st);
         }
         log_info(&format!(
-            "engine started: pages include observation {pages_obs}, {} agents, {} outbox commands to resend, next command {next_cmd}",
+            "engine started: pages include observation {pages_obs}, {} agents, {} outbox commands to resend ({} of every module), next command {next_cmd}",
             st.world.agents.len(),
-            st.resend.len()
+            st.resend.len(),
+            resends
         ));
         Ok((pages_obs, next_cmd))
     }

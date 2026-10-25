@@ -31,9 +31,18 @@ import java.util.function.Consumer;
  * level's ({@link WorldSaveOrder}), with the levels' {@code data/} directories synced first: the file on disk never
  * claims what another SavedData file of the same save lacks either (docs/choices-journal-barrier.md RP-200, RP-201).
  * Only a world save writes it: a level saved by itself leaves it dirty for the next world save (RP-203).
+ *
+ * <p>A held write is held again at every world save, with no limit; a flush save tries once more and then keeps the
+ * older file, logged at error ({@link #flushKept}). The file's lag is counted in applied ops ({@link #appliedBehind})
+ * and logged once past {@link #BEHIND_WARN} (RP-205).
  */
 public final class JournalSavedData extends SavedData {
     public static final String FILE = "mic_rtsim_journal";
+    /**
+     * Applied ops the file on disk may be behind the journal before it is logged, once (PLACEHOLDER, TUNABLE: several
+     * autosaves' worth on a busy server; RP-205).
+     */
+    public static final long BEHIND_WARN = 10_000;
 
     private final Journal journal;
     private final ChunkWriteBarrier chunks = new ChunkWriteBarrier();
@@ -44,6 +53,13 @@ public final class JournalSavedData extends SavedData {
     private long durableAtLoad;
     private final AtomicLong writes = new AtomicLong();
     private final AtomicLong skipped = new AtomicLong();
+    /** The last write was held by its chunks (not an IO error), set on the IO chain: a flush save's retry looks. */
+    private volatile boolean heldLast;
+    /** Flush saves that kept the older file after their second try. */
+    private final AtomicLong flushKept = new AtomicLong();
+    /** {@link Journal#appliedRecords} at the snapshot the file on disk holds (this start's; 0 before the first write). */
+    private volatile long appliedDurable;
+    private boolean warnedBehind;
 
     /**
      * GameTests: run once, on the IO chain, right before the journal's next write (its chunks on disk), with the
@@ -93,27 +109,63 @@ public final class JournalSavedData extends SavedData {
             skip();
             return;
         }
+        boolean last = WorldSaveOrder.retrying();
         retry = false;
-        ChunkWriteBarrier.Round round = chunks.arm();
+        heldLast = false;
+        ChunkWriteBarrier.Round round = chunks.arm(last);
         Journal.Snapshot s = journal.snapshot();
         CompoundTag tag = new CompoundTag();
         tag.put("data", write(s, new CompoundTag()));
         NbtUtils.addCurrentDataVersion(tag);
         CompoundTag copied = tag.copy(); // as SavedData.save: nothing shared with the live journal
         long through = s.nextObsSeq() - 1;
+        long applied = journal.appliedRecords();
+        watchBehind(applied);
         List<Path> dirs = WorldSaveOrder.dataDirs(file.toPath().getParent());
         setDirty(false);
-        WorldSaveOrder.queue(() -> writeWhenLanded(round, copied, file, through, dirs));
+        WorldSaveOrder.queue(() -> writeWhenLanded(round, copied, file, through, applied, dirs, last));
+        WorldSaveOrder.afterFlush(() -> retryAfterFlush(file, registries));
+    }
+
+    /**
+     * A flush save's second try, on the server thread, after the chain wrote that save (RP-205): when the first was
+     * held by its chunks, every chunk is flushed now, so the barrier has what it waited for, or never will.
+     */
+    private void retryAfterFlush(File file, HolderLookup.Provider registries) {
+        if (!heldLast)
+            return;
+        MicRtsim.LOGGER.warn("[mic_rtsim] a flush save held the journal's file ({}); every chunk is flushed now, so it tries once more", chunks.lastHeld());
+        save(file, registries);
+    }
+
+    /** Logs once when the file on disk is {@link #BEHIND_WARN} applied ops behind; again after it catches up. */
+    private void watchBehind(long applied) {
+        long behind = applied - appliedDurable;
+        if (behind < BEHIND_WARN) {
+            warnedBehind = false;
+        } else if (!warnedBehind) {
+            warnedBehind = true;
+            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind (its writes held {} world saves in a row: {}); a crash"
+                    + " replays them from the older file, and the chunks and stores they changed must answer them (RP-205)",
+                    behind, chunks.heldInARow(), chunks.lastHeld());
+        }
     }
 
     /**
      * On the IO chain, behind every SavedData of the save. Never throws: an exception would skip every SavedData
-     * write queued after it.
+     * write queued after it. {@code last}: a flush save's second try, whose hold keeps the older file.
      */
-    private void writeWhenLanded(ChunkWriteBarrier.Round round, CompoundTag tag, File file, long through, List<Path> dirs) {
+    private void writeWhenLanded(ChunkWriteBarrier.Round round, CompoundTag tag, File file, long through, long applied, List<Path> dirs, boolean last) {
         try {
             if (!chunks.await(round)) {
                 retry = true;
+                heldLast = true;
+                if (last) {
+                    flushKept.incrementAndGet();
+                    MicRtsim.LOGGER.error("[mic_rtsim] the journal's file is kept as it was at this flush save, after a second try ({}): it is {}"
+                            + " applied ops behind; a restart replays them from the older file (docs/choices-journal-barrier.md RP-205)",
+                            chunks.lastHeld(), applied - appliedDurable);
+                }
                 return;
             }
             for (Path d : dirs) // their renames are durable before the journal's can be (RP-201)
@@ -123,6 +175,8 @@ public final class JournalSavedData extends SavedData {
             DirectorySync.sync(file.toPath().getParent()); // the marker (WORLD_SAVED) never claims a rename a power loss undoes
             if (through > writtenThrough)
                 writtenThrough = through;
+            if (applied > appliedDurable)
+                appliedDurable = applied;
             writes.incrementAndGet();
             forTest(AFTER_WRITE_FOR_TEST, file);
         } catch (IOException | RuntimeException e) {
@@ -148,6 +202,28 @@ public final class JournalSavedData extends SavedData {
     /** Saves of the overworld outside a world save that left the journal's file to the next one (RP-203). */
     public long skipped() {
         return skipped.get();
+    }
+
+    /** Flush saves (the stop, {@code /save-all flush}) that kept the older file after their second try (RP-205). */
+    public long flushKept() {
+        return flushKept.get();
+    }
+
+    /**
+     * Records holding an applied op journaled since the snapshot the file on disk holds (this start's): what a crash
+     * now would replay from the older file (RP-205). Server thread.
+     */
+    public long appliedBehind() {
+        return journal.appliedRecords() - appliedDurable;
+    }
+
+    /** One line for {@code /rtsim perf} (RP-205). Server thread. */
+    public String describe() {
+        ChunkWriteBarrier b = chunks;
+        return "journal file: written " + writes() + ", through observation " + writtenThrough + ", " + appliedBehind() + " applied ops behind"
+                + "; held " + b.held() + " (" + b.heldInARow() + " in a row" + (b.lastHeld().isEmpty() ? "" : ", last: " + b.lastHeld()) + ")"
+                + ", late " + b.late() + ", wait max " + b.maxWaitMillis() + " ms, kept at a flush save " + flushKept()
+                + ", outside a world save " + skipped() + "; applied-op rings: overflowed " + DurableOpRing.overflowedTotal();
     }
 
     private static void forTest(AtomicReference<Consumer<Path>> hook, File file) {
