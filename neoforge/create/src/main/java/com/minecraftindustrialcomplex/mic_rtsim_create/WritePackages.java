@@ -97,8 +97,13 @@ public final class WritePackages {
         // The port is looked up for a loaded postbox too: its rings are the dedup of both paths.
         GlobalPackagePort port = level == null ? null : port(level, pos);
         // A port this life does not know to match its postbox, whose chunk is not loaded: the chunk as saved first,
-        // the write held meanwhile (PortRing.refreshed: a crash can leave the tracks file older than the chunk).
-        if (postbox == null && rings && port != null && chunk == null && !PortRing.refreshed(port, level, pos, ind))
+        // the write held meanwhile (PortRing.refreshed: a crash can leave the tracks file older than the chunk). An op
+        // the port's rings already refuse is answered without the hold. With the chunk loaded, a read begun before
+        // its load is stale and is dropped.
+        if (rings && port != null && chunk != null)
+            PortRing.dropRead(port);
+        if (postbox == null && rings && port != null && chunk == null && !PortRing.wroteToBuffer(port, opId)
+                && !PortRing.wroteToPostbox(port, opId) && !PortRing.refreshed(port, level, pos, ind))
             return false;
         boolean duplicate;
         if (postbox != null)
@@ -114,7 +119,9 @@ public final class WritePackages {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
-        IItemHandlerModifiable target = postbox != null ? postbox.inventory : port == null ? null : port.offlineBuffer;
+        // A port whose postbox's chunk is loaded without the postbox is an orphan: Create drops a port at the postbox's
+        // removal only through a loaded station (PackagePortBlockEntity.destroy), and no postbox would take its buffer.
+        IItemHandlerModifiable target = postbox != null ? postbox.inventory : port == null || chunk != null ? null : port.offlineBuffer;
         if (target == null) {
             failed++;
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);

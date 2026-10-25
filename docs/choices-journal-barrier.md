@@ -264,12 +264,27 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
       - *The first offline write into a port.* A port whose buffer this life has not seen Create fill
         from its postbox (`PortMirrorMixin` marks it at the restore of a primed buffer and at Create's
         save of a postbox into its buffer) holds the industry command stream while it reads the postbox's
-        chunk as saved (`ChunkMap.read`, off the server thread; at most 10 s, then the write goes on as
-        before, logged). The chunk's carried ops go into the postbox's ring, so their resend is refused,
-        and an unprimed buffer takes the chunk's postbox inventory, so the write does not prime a copy
-        older than the chunk. A primed buffer is left alone: it is Create's newer state. Without it the
-        resend primed the tracks file's older mirror, and the restore put it back over the chunk:
-        automation's takes since then undone (a dupe), its puts lost.
+        chunk as saved (`ChunkMap.read`, off the server thread). The chunk's carried ops go into the
+        postbox's ring, so their resend is refused, and an unprimed buffer takes the chunk's postbox
+        inventory, so the write does not prime a copy older than the chunk. A primed buffer is left alone:
+        it is Create's newer state. Without it the resend primed the tracks file's older mirror, and the
+        restore put it back over the chunk: automation's takes since then undone (a dupe), its puts lost.
+        - An op either ring of the port already refuses is answered DUPLICATE before the hold. Ports are
+          read one at a time, as their writes come; there is no read ahead for a batch.
+        - A read that fails or takes over 10 s lets this write go on as before, logged, and the port's next
+          offline write reads again; after three such reads the port is taken as fresh for the life.
+        - A read begun before the postbox's chunk loaded is dropped at a write that finds the chunk loaded:
+          the chunk can change while loaded.
+        - A chunk of another data version (saved before a game upgrade) gives its carried ops, not its
+          inventory: vanilla reads it through its fixers, and the hook does not.
+        - Why the mirror is not primed when the chunk lacks an op of the postbox's ring (the U-a review's
+          P3 4): a chunk's carried results go at the engine's acknowledgement and the port's rings keep
+          theirs, so a missing op does not show the chunk is older than the write. Taking the chunk's
+          inventory when it is older is a loss; priming the mirror when the chunk is newer is a dupe.
+    - *An orphan port.* A port whose postbox's chunk is loaded without the postbox answers FAILED: Create
+      drops a port at the postbox's removal only through a loaded station
+      (`PackagePortBlockEntity.destroy` calling `deregister`), so a port can outlive its postbox, and its
+      buffer would reach no postbox. Before the U-a review's P3 6 the write went into it, APPLIED.
     - A write records the op in its path's ring and marks the tracks dirty; the loaded path never primes.
     - The rings are saved whatever the industry module's switch (replay-gate 9.6, "Rings and the module
       switch"). Until 2026-10-25 they followed RP-194's gate, left out of a save with the module off; a
@@ -285,14 +300,19 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     package each, `aCrashThatKeptTheBufferAndNotTheJournalWritesAPackageOnce` being K2), the fallback's
     dupe pinned (`withoutTheRingsACrashThatKeptTheBufferAndNotTheJournalWritesAPackageTwice`: two
     packages for one op), `aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce` (written again
-    while loaded, refused offline with nothing put in the buffer) and
+    while loaded, refused offline with nothing put in the buffer, and a new op into the orphan port left
+    FAILED) and
     `aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused` (the module switch, and Create's keys
     kept for UR-1). The chunk newer than the tracks file:
     `aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce` (the first test that runs Create's
-    `restoreOfflineBuffer`) and `anUnloadedPostboxWhoseChunkOutlivedTheTracksTakesEachPackageOnce` (a
-    synthetic chunk written through `ChunkMap.write`), each with its twin with the chunk checks off
-    (`PortRing.chunkChecksForTest`) pinning the old outcome: two packages for one op, and the stale mirror
-    primed.
+    `restoreOfflineBuffer`; the postbox's chunk far off, forced loaded for the restore) and
+    `anUnloadedPostboxWhoseChunkOutlivedTheTracksTakesEachPackageOnce` (a synthetic chunk written through
+    `ChunkMap.write`), each with its twin with the chunk checks off (`PortRing.chunkChecksForTest`)
+    pinning the old outcome: two packages for one op, and the stale mirror primed.
+    - Not tested: a chunk saved by vanilla in the unloaded case (the test builds the chunk's tag by hand,
+      with only what the read looks at); a save, load and REASSERT round trip after the restore; that
+      `StationPortRestoreMixin` applied, other than through the restore test's outcome; the retries of a
+      failed read; the stale read dropped.
   - *Left.*
     - The crash above with the postbox unloaded at the resend: refused by the postbox's ring while the
       package is only in the unprimed mirror, a loss. Priming the mirror would revert the postbox to the
@@ -305,7 +325,8 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     - The chunk newer than the tracks file, where the hooks do not reach (replay-gate 9.6, residual 8):
       a primed buffer whose postbox's chunk is newer (Create's restore overwrites the postbox with the
       buffer, its own behaviour); the restore with the industry module off or the rings unavailable (no
-      carry); a chunk read that fails or takes over 10 s; a postbox changed in this life while its station
+      carry); three chunk reads of a port that fail or take over 10 s; a chunk of another data version
+      (its inventory is not taken); a postbox changed in this life while its station
       did not attach it, after the port's mirror was marked fresh; a chunk saved in the window between
       the postbox's unload and Create's next save of it into the buffer.
 - **RP-207, Destroy's pollution: one ring per file.**

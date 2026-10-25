@@ -153,6 +153,9 @@ public final class PortRing {
     /** How long an offline write waits for its postbox's chunk to be read before it goes on without it. */
     static final long REFRESH_WAIT_NANOS = 10_000_000_000L;
     private static final java.util.Map<GlobalPackagePort, PendingRead> READS = new java.util.WeakHashMap<>();
+    /** Reads of a port's chunk that failed or timed out; at {@link #REFRESH_TRIES} the port is taken as fresh. */
+    private static final java.util.Map<GlobalPackagePort, Integer> FAILS = new java.util.WeakHashMap<>();
+    static final int REFRESH_TRIES = 3;
     /** GameTests: the restore's carry and the chunk read switched off, as before them. */
     private static boolean chunkChecksOff;
 
@@ -206,7 +209,7 @@ public final class PortRing {
             try {
                 read = level.getChunkSource().chunkMap.read(new net.minecraft.world.level.ChunkPos(pos));
             } catch (RuntimeException e) {
-                refreshFailed(h, pos, "the read threw " + e);
+                refreshFailed(port, h, pos, "the read threw " + e);
                 return true;
             }
             READS.put(port, new PendingRead(read, System.nanoTime()));
@@ -219,7 +222,7 @@ public final class PortRing {
                 return false;
             }
             READS.remove(port);
-            refreshFailed(h, pos, "the read took longer than " + REFRESH_WAIT_NANOS / 1_000_000_000L + " s");
+            refreshFailed(port, h, pos, "the read took longer than " + REFRESH_WAIT_NANOS / 1_000_000_000L + " s");
             return true;
         }
         READS.remove(port);
@@ -227,14 +230,20 @@ public final class PortRing {
         try {
             tag = r.read.join();
         } catch (RuntimeException e) {
-            refreshFailed(h, pos, "the read failed: " + e);
+            refreshFailed(port, h, pos, "the read failed: " + e);
             return true;
         }
         refreshes++;
+        FAILS.remove(port);
         if (tag.isPresent())
             refreshFrom(port, h, tag.get(), pos, level.registryAccess(), ind);
         h.mic_rtsim$markMirrorFresh();
         return true;
+    }
+
+    /** The postbox's chunk is loaded: a read of it begun before is stale. */
+    static void dropRead(GlobalPackagePort port) {
+        READS.remove(port);
     }
 
     private static void refreshFrom(GlobalPackagePort port, PortRingHolder h, CompoundTag chunk, BlockPos pos,
@@ -272,11 +281,19 @@ public final class PortRing {
         }
     }
 
-    private static void refreshFailed(PortRingHolder h, BlockPos pos, String why) {
-        h.mic_rtsim$markMirrorFresh();
+    /**
+     * A read that failed or timed out: this write goes on without it, and the next offline write into the port reads
+     * the chunk again, up to {@link #REFRESH_TRIES} reads, after which the port is taken as fresh for the life.
+     */
+    private static void refreshFailed(GlobalPackagePort port, PortRingHolder h, BlockPos pos, String why) {
+        int n = FAILS.merge(port, 1, Integer::sum);
+        if (n >= REFRESH_TRIES) {
+            FAILS.remove(port);
+            h.mic_rtsim$markMirrorFresh();
+        }
         if (refreshFailLogs++ < 8)
-            MicRtsim.LOGGER.warn("[mic_rtsim_create] IND_WRITE_PACKAGE: the postbox's chunk at {} was not read ({}): the offline buffer "
-                    + "is written as create_tracks.dat left it (docs/choices-journal-barrier.md RP-206)", pos, why);
+            MicRtsim.LOGGER.warn("[mic_rtsim_create] IND_WRITE_PACKAGE: the postbox's chunk at {} was not read ({}, {} of {}): the offline "
+                    + "buffer is written as create_tracks.dat left it (docs/choices-journal-barrier.md RP-206)", pos, why, n, REFRESH_TRIES);
     }
 
     /** Switches the restore's carry and the chunk read off (true), as before them, or back on. */
