@@ -2610,6 +2610,7 @@ impl Compiled {
     pub fn section_reports(&self, dg: &DistrictGlass) -> Vec<report::SectionReport> {
         let glass_replay = dg.replay.is_some() && dg.replay_model == report::replay_model::GLASS;
         let frozen = dg.replay.as_ref().map(|r| r.frozen());
+        let on = dg.replay.as_ref().map(|r| r.units_on()).unwrap_or_default();
         let active = self.units.active();
         self.sections
             .list
@@ -2645,18 +2646,30 @@ impl Compiled {
                             .map_or(0, |w| w.last.0.saturating_sub(w.start.0)),
                     ),
                 };
-                let may_replay = self.unit_may_replay(unit.unwrap_or(0));
-                let is_frozen = frozen
-                    .and_then(|f| f.get(unit.unwrap_or(0) as usize))
-                    .copied()
-                    .unwrap_or(false);
+                // The running replay decides what replays and what froze; with one unit or none the
+                // district's own replay is the section's.
+                let (may_replay, is_frozen, replaying) = match unit {
+                    Some(u) => (
+                        self.unit_may_replay(u),
+                        frozen
+                            .and_then(|f| f.get(u as usize))
+                            .copied()
+                            .unwrap_or(false),
+                        glass_replay && on.get(u as usize).copied().unwrap_or(false),
+                    ),
+                    None => (
+                        self.unit_may_replay(0),
+                        frozen.and_then(|f| f.first()).copied().unwrap_or(false),
+                        glass_replay,
+                    ),
+                };
                 let verdict = last.map_or(report::verdict::NONE, |r| r.verdict);
                 use report::section_state as ss;
                 let state = if is_frozen {
                     ss::FROZEN
                 } else if stale {
                     ss::STALE
-                } else if glass_replay && may_replay {
+                } else if replaying {
                     ss::REPLAYING
                 } else if verdict == report::verdict::FAIL {
                     ss::FAILED
