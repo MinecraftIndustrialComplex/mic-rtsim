@@ -304,11 +304,6 @@ public final class RtsimApi {
         com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.register(axes);
     }
 
-    /** Where the lurk puppet of an agent is held (the hold point, not the engine's spot), or null while it is not held. */
-    public static net.minecraft.world.phys.Vec3 lurkHold(long agent) {
-        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.lurkHold(agent);
-    }
-
     /**
      * The war parties lying in wait by a rail, by agent: the engine's AMBUSH_SPOTs of this session, an unmodifiable
      * view (read only; M8's train sampler reads it every sample, so it allocates nothing).

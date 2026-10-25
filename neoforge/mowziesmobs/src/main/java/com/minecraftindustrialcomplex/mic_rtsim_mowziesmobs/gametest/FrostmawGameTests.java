@@ -884,7 +884,7 @@ public final class FrostmawGameTests {
     /** Inside a step: the bridge's hold point, the body at it, and its distance from the rail. */
     private static void holds(Held h, String test, double[] expectAt) {
         Vec3 want = h.hold(expectAt);
-        Vec3 hold = RtsimApi.lurkHold(h.agent);
+        Vec3 hold = ConflictKit.lurkHold(h.agent);
         check("the bridge holds the puppet at a point", hold != null);
         check("the hold point is (" + want.x + ", " + want.y + ", " + want.z + "), a block centre " + Math.abs(expectAt[1]) + " off the rail (" + hold + ")",
                 Math.abs(hold.x - want.x) < 1e-6 && Math.abs(hold.y - want.y) < 1e-6 && Math.abs(hold.z - want.z) < 1e-6);
@@ -905,7 +905,7 @@ public final class FrostmawGameTests {
                     check("no Frostmaw stands in the place", h.level.getEntitiesOfClass(EntityFrostmaw.class,
                             new AABB(h.x - 14, h.track[0].y - 12, h.z - 14, h.x + 14, h.track[0].y + 12, h.z + 14)).isEmpty());
                     check("the table has no body for it", RtsimApi.lurkBody(h.agent) == null);
-                    check("and no hold point", RtsimApi.lurkHold(h.agent) == null);
+                    check("and no hold point", ConflictKit.lurkHold(h.agent) == null);
                     firstRefusals[0] = (int) (ConflictKit.bridge().lurksRefused - refused[0]);
                     record(test, "refused", "neither side of the rail had a floor within the search: refused " + firstRefusals[0] + " times so far, nothing stands");
                     // The south floor comes back; the next retry stands the body there
