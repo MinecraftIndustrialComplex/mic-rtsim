@@ -1543,3 +1543,145 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+// ---- slice R: the op ids a replay derives (RP-260 to RP-269) --------------------------------
+
+/// Filler a replay must read through: `count` damage reports of a ship the engine never had,
+/// which change nothing (about 56 bytes each: about a thousand fill a minimum-size buffer).
+fn fillers(j: &mut Java, count: usize) {
+    use rtsim_ships::boundary::{self as sb, By, Obs as O};
+    for _ in 0..count {
+        j.ship_obs(&O::Damaged(sb::Damaged {
+            agent: 0,
+            epoch: 0,
+            by: By::Other,
+            hull_milli: 1000,
+            crew_lost: 0,
+            player: (0, 0),
+            ship: 0,
+        }));
+    }
+}
+
+/// What a crash after the pages did to the op ids.
+struct Behind {
+    /// The reconciles' op ids as Java was sent them before the crash, and again after it.
+    before: Vec<u64>,
+    after: Vec<u64>,
+    /// The hand-overs the replay took.
+    replay_handovers: u64,
+    /// Reconciles the world applied again after the crash.
+    applied_again: usize,
+    /// The district's reconciles still waiting for an answer after the replay.
+    pending: Option<usize>,
+}
+
+/// [`pages_behind_the_world_save_rederive_the_same_reconcile`] with `filler` journaled records
+/// right after the pages (so the replay of a small engine spans hand-overs) and the engine
+/// reopened with `capacity` bytes of record area, at the game time `present` (the harness's
+/// `Java::open` resets it to 1000, below every replayed record, which hides the case).
+fn behind_the_save(tag: &str, filler: usize, capacity: usize, present: Tick) -> Behind {
+    let (dir, mut j) = mill_engine(tag);
+    let _ids = mill(
+        &mut j,
+        20_000,
+        &[(0.0, true), (1.0, false), (3.0, true)],
+        false,
+    );
+    j.mc_run_until(day(2.5));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    j.mc_run_until(day(2.6));
+    fillers(&mut j, filler);
+    j.mc_run_until(day(3.0) + 100);
+    assert!(!reconciles(&j).is_empty(), "applied before the world save");
+    let ops = |j: &Java| -> Vec<u64> {
+        let mut v: Vec<u64> = j
+            .ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::ChunkReconcile(r) => Some(r.op.0),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = ops(&j);
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    j.mc_run_until(day(3.0) + 600);
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let applied_before = mc.reconciled.len();
+    let e = engine(&dir, capacity);
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    j.game_time = present.0 as i64;
+    j.mc_run_until(day(3.0) + 2_000);
+    let replay_handovers =
+        j.e.stats
+            .replay_handovers
+            .load(std::sync::atomic::Ordering::Acquire);
+    let applied_again = reconciles(&j)[applied_before..].len();
+    let pending = industry(&j.e, |ie| ie.district(MILL).map(|d| d.pending.len()));
+    let after = ops(&j);
+    eprintln!(
+        "{tag}: {replay_handovers} replay hand-overs; first ops {before:x?}, re-derived {after:x?}; applied again {applied_again}, pending {pending:?}"
+    );
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    Behind {
+        before,
+        after,
+        replay_handovers,
+        applied_again,
+        pending,
+    }
+}
+
+/// The control: a replay of one hand-over, the engine reopened at the world's present. The
+/// journal is read whole before `simulate` runs the engine to the present and starts its session,
+/// so every record is taken at its own tick, as live: the same reconciles under the same op ids,
+/// applied once, answered by the replayed results. Holds.
+#[test]
+fn a_one_hand_over_replay_rederives_the_same_op_ids() {
+    let b = behind_the_save("ind-ids-one", 0, 256 * 1024, day(3.0) + 101);
+    assert!(!b.before.is_empty(), "the reconcile ran before the crash");
+    assert_eq!(b.replay_handovers, 1, "a replay of one hand-over");
+    assert_eq!(b.after, b.before, "the same reconciles, the same op ids");
+    assert_eq!(b.applied_again, 0, "nothing applied again");
+    assert_eq!(b.pending, Some(0), "the replayed results answer them");
+}
+
+/// A replay of several hand-overs (8,000 filler records after the pages, a minimum-size buffer):
+/// the industry engine is not held while replaying (docs/replay-gate.md §3.6, decided 2026-10-24),
+/// so the first replayed hand-over's `simulate` starts the engine's session and runs it to Java's
+/// present (`advance_to`), before the later hand-overs' records arrive. Those records are then
+/// taken at `max(t.at, present)`: the day-3 load's reconcile is re-derived at the present with
+/// another content and another op id. Fails on bc669502.
+#[test]
+#[ignore = "slice R: a replay of several hand-overs runs the industry engine to the present after the first (RP-263)"]
+fn a_replay_of_several_hand_overs_rederives_the_same_op_ids() {
+    let b = behind_the_save(
+        "ind-ids-many",
+        8_000,
+        rtsim_jni::wire::MIN_CAPACITY,
+        day(3.0) + 101,
+    );
+    assert!(!b.before.is_empty(), "the reconcile ran before the crash");
+    assert!(
+        b.replay_handovers >= 3,
+        "the replay spans hand-overs: {}",
+        b.replay_handovers
+    );
+    assert_eq!(
+        b.after, b.before,
+        "the same reconciles under the same op ids (replay hand-overs {})",
+        b.replay_handovers
+    );
+    assert_eq!(b.applied_again, 0, "nothing applied again");
+    assert_eq!(b.pending, Some(0), "the replayed results answer them");
+}
