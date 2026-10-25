@@ -96,15 +96,16 @@ pub fn card(cx: &Ctx, layer: &str, id: &str) -> Option<Card> {
             let v = cx.saved.industry.as_ref()?;
             section(&cx.saved.names, v, d.parse().ok()?, i.parse().ok()?)
         }
+        // An edge's id is its store's or network's, then the edge ("7:0-1", "3:2").
         "industry.stores" => store(
             &cx.saved.names,
             cx.saved.industry.as_ref()?,
-            id.parse().ok()?,
+            id.split(':').next()?.parse().ok()?,
         ),
         "industry.networks" => network(
             &cx.saved.names,
             cx.saved.industry.as_ref()?,
-            id.parse().ok()?,
+            id.split(':').next()?.parse().ok()?,
         ),
         _ => None,
     }
