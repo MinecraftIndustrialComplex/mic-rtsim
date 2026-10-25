@@ -6,6 +6,7 @@ import com.ilexiconn.llibrary.server.animation.IAnimatedEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Map;
@@ -30,6 +31,9 @@ public final class FrostmawLurker implements Lurker {
     /** The swipe hits at this animation tick (AnimationAreaAttackAI damage frame): the body faces the strike until then. */
     public static final int SWIPE_HIT_TICK = 9;
 
+    /** Path searches the hold asked for, and live paths it dropped (D1 diagnostics, {@link Lurker#pathSearches}). */
+    private long searches, dropped;
+
     /** The bearing (yaw) of a strike in progress, by body: dropped in {@link #hold} once its swing is past the hit frame. */
     private final Map<Mob, Float> bearings = new WeakHashMap<>();
 
@@ -53,21 +57,46 @@ public final class FrostmawLurker implements Lurker {
                 f.setYRot(yaw);
                 f.setYHeadRot(yaw);
             }
-            f.getNavigation().stop();
+            stop(f);
             return;
         }
         // The strike's swing is over (any other animation, or past the hit frame): its bearing must not turn the
         // Frostmaw's own swipes at a player later (MZB-361)
         bearings.remove(f);
         if (f.getAnimation() != IAnimatedEntity.NO_ANIMATION) {
-            f.getNavigation().stop();
+            stop(f);
             return;
         }
         double dx = spot.x - f.getX(), dz = spot.z - f.getZ();
-        if (dx * dx + dz * dz > STAND * STAND)
-            f.getNavigation().moveTo(spot.x, spot.y, spot.z, 1.0);
-        else
-            f.getNavigation().stop();
+        if (dx * dx + dz * dz <= STAND * STAND) {
+            stop(f);
+            return;
+        }
+        // Walk back: one search when the navigation is not already on its way to the spot, not one a tick (D1)
+        PathNavigation nav = f.getNavigation();
+        BlockPos heading = nav.getTargetPos();
+        if (nav.isDone() || heading == null || heading.distSqr(centre) > 2.0) {
+            searches++;
+            nav.moveTo(spot.x, spot.y, spot.z, 1.0);
+        }
+    }
+
+    /** Stops the navigation (a swing or a roar is not walked out of, and within its stand it stays), counting a live path it drops. */
+    private void stop(Mob f) {
+        PathNavigation nav = f.getNavigation();
+        if (!nav.isDone())
+            dropped++;
+        nav.stop();
+    }
+
+    @Override
+    public long pathSearches() {
+        return searches;
+    }
+
+    @Override
+    public long pathsDropped() {
+        return dropped;
     }
 
     @Override

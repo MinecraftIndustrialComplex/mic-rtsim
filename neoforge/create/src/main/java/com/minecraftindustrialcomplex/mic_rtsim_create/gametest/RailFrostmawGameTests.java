@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
@@ -726,7 +727,8 @@ public final class RailFrostmawGameTests {
      * ball is thrown at the rider when it comes by), and none otherwise. A pass is a hit when the rider is frozen
      * during it. Between passes the train stands until the rider is free again and {@value #GAP} ticks have gone
      * since the last ball (the jar's cooldown is 200). Logs {@code [gametest] ice ball v=<v>: <hits>/4}. The rates
-     * are a measurement, not a gate: the test fails only when the rider is on two vehicles.
+     * are a measurement, not a gate: the test fails when the rider is on two vehicles, or when no pass at the slowest
+     * speed froze the rider ("at least one pass at 0.5 blocks a tick froze the rider (0/4 ...)", review C).
      */
     @GameTest(templateNamespace = MicRtsimCreate.MODID, template = YARD, batch = "rail_frostmaw_ice_rates", timeoutTicks = 16000)
     public static void theIceBallHitRatesAgainstAMovingTrain(GameTestHelper helper) {
@@ -810,6 +812,9 @@ public final class RailFrostmawGameTests {
                 .thenExecute(() -> {
                     for (int v = 0; v < ICE_SPEEDS.length; v++)
                         MicRtsim.LOGGER.info("[gametest] ice ball v={}: {}/{} (balls thrown at the rider: {})", ICE_SPEEDS[v], t.hits[v], PASSES, t.thrown[v]);
+                    // The one gate on the rates: at the slowest speed some pass froze the rider, or the test measured nothing
+                    check("at least one pass at " + ICE_SPEEDS[0] + " blocks a tick froze the rider (" + t.hits[0] + "/" + PASSES + ", balls thrown at it: "
+                            + t.thrown[0] + ")", t.hits[0] >= 1);
                 })
                 .thenSucceed();
     }
@@ -829,7 +834,7 @@ public final class RailFrostmawGameTests {
         LivingEntity rider;
         float health0;
         int blocks0;
-        long strikes0, holdFrom = -1, passes0;
+        long strikes0, holdFrom = -1, passes0, searches0, dropped0;
         double nearest = Double.MAX_VALUE, stray, clearance = Double.MAX_VALUE, hitDeviation = -1, hitBearing;
         boolean targeted, hit, overlapped;
         long op;
@@ -872,12 +877,13 @@ public final class RailFrostmawGameTests {
             stray = Math.max(stray, Math.hypot(dx, dz));
             if (stray > 2.0)
                 stop("the puppet strayed " + stray + " blocks from its spot (2 allowed)");
-            // The Frostmaw is 4 wide: its near edge is its distance to the rail's centre line less 2 (2.0 at the spot,
-            // and it stands within 1.5 of the spot, away from the rail while it has the bait as its target)
+            // The Frostmaw is 4 wide: its near edge is its distance to the rail's centre line less 2 (3.0 at the spot,
+            // which is LATERAL = 5 off the rail, and it stands within 1.5 of the spot: 1.5 at the nearest it stands,
+            // and it walks away from the rail while it has the bait as its target)
             double edge = Math.abs(puppet.getZ() - (z0 + 0.5)) - 2.0;
             clearance = Math.min(clearance, edge);
-            if (edge < 0.5)
-                stop("the puppet's near edge is " + edge + " blocks from the rail's centre line (0.5 needed)");
+            if (edge < 1.5)
+                stop("the puppet's near edge is " + edge + " blocks from the rail's centre line (1.5 needed)");
             if (puppet.getTarget() != null)
                 targeted = true;
         }
@@ -911,7 +917,8 @@ public final class RailFrostmawGameTests {
      *
      * <ul>
      * <li>For {@value #HOLD_TICKS} ticks the puppet stays within 2 blocks of the spot, its near edge (the spot's is 2.0
-     * from the rail's centre line) at least 0.5 blocks off it, and its NBT has {@code alwaysActive}.
+     * from the rail's centre line) at least 1.5 blocks off it, and its NBT has {@code alwaysActive}. The path searches
+     * its hold asked for, and the live paths the hold dropped, are logged per second (D1; a count, not a check).
      * <li>The bait goes, and the train passes at 1.0 blocks a tick: exactly one TRAIN_PASSED with PASSED_WATCHED and
      * a carriage in range; {@code lurkStrikes} up by one or more; at the tick the zombie's health first drops, the
      * puppet's {@code yBodyRot} within 30 degrees of the bearing to the zombie; the zombie hurt; no carriage box
@@ -1002,6 +1009,8 @@ public final class RailFrostmawGameTests {
             s = s.thenExecute(() -> {
                     t.bait = FakePlayers.add(level, new Vec3(t.spot.x, t.spot.y, t.spot.z - 30.0), "frostmaw-bait");
                     t.holdFrom = level.getGameTime();
+                    t.searches0 = Lurkers.of(t.puppet).pathSearches();
+                    t.dropped0 = Lurkers.of(t.puppet).pathsDropped();
                     record("railFrostmaw", "lurk", "puppet at " + t.puppet.position() + ", spot " + t.spot + ", the bait at " + t.bait.position());
                 })
                 // The hold: the bait is the target and walks away (0.05 blocks a tick, 10 over the phase), the puppet stays
@@ -1018,6 +1027,11 @@ public final class RailFrostmawGameTests {
                     check("the lurk is still in the table", RtsimApi.lurks().containsKey(t.agent));
                     record("railFrostmaw", "lurk", "held " + HOLD_TICKS + " ticks: strayed at most " + t.stray + " blocks, near edge at least " + t.clearance
                             + " blocks from the rail's centre line");
+                    // D1: what the hold itself asked of the pathfinder (the jar's own goals search besides)
+                    long searches = Lurkers.of(t.puppet).pathSearches() - t.searches0, dropped = Lurkers.of(t.puppet).pathsDropped() - t.dropped0;
+                    double seconds = (level.getGameTime() - t.holdFrom) / 20.0;
+                    record("railFrostmaw", "lurk", "the held puppet's path searches per second: " + searches / seconds + " (" + searches + " in " + seconds
+                            + " s), live paths the hold dropped per second: " + dropped / seconds + " (" + dropped + ")");
                     // The bait goes: out of the list, out of view
                     FakePlayers.remove(t.bait);
                     t.bait.setPos(t.spot.x, t.spot.y, t.spot.z - 300.0);

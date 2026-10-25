@@ -1659,13 +1659,29 @@ passing carriage's riders (the plugin's `Lurker`). `reach` is the distance from 
 the sampler sends TRAIN_PASSED (8.0 blocks). A lurk is not saved: the engine derives it from the party's
 phase, kind and target, so the pages stay at M7's format (MZB-357).
 
+**The spot's distance is a contract between three numbers** (MZB-374, review C). The engine puts the spot
+`SPOT_BLOCKS` (rail.rs, 5.0) from the track point toward the den, in whole blocks (the block plus 0.5 as a
+double). `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it is not
+how far the body can strike. A strike is the plugin's call, and it is gated on a smaller number: the create
+plugin's sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider (else its bogey
+point) will be within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks
+on, at the train's present speed. That is the Frostmaw's swipe (range 6.5, 135 degree arc, a 3D feet-to-feet
+filter that adds the target's half-width and counts a rider seated above the floor), less the margin the 3D
+test takes. A spot 5 blocks off therefore leaves 1.0 block of margin, and the puppet rests anywhere within
+`FrostmawLurker.STAND` (1.5) of the spot (its restriction radius is 2). A puppet that rests 1.5 off the spot
+on the far side from the rail is 6.5 from the track, which is past the gate for a bogey point on the centre
+line. So a change to `SPOT_BLOCKS` is a change to the sampler's gate and to the Lurker's reach, made
+together, and a body kind with another swing registers its own reach, hit frame and stand. GameTest 9
+(`RailFrostmawGameTests`, three speeds) runs at the engine's own 5 blocks, not at a distance chosen to pass.
+
 **TRAIN_ROBBED** tells the plugin a lurk took something from a train (the engine's roll hit and the
 train's cargo lost at least one item, of any good). `faction` is the robbing camp's key and `train` the
 train's id. It is a sound and an animation, nothing written: the plugin keeps `(train, faction)` in a
 per-session map (256 at most, the oldest dropped; a train robbed again waits as the newest), a held
 puppet of a lurk of that faction roars at once, and when that train next reaches a station (the create
 plugin's arrival hook) every non-spectator player within 64 blocks (three-dimensional) of the station
-hears the camp's sound, placed 32 blocks toward the camp at the notices' volume (a camp with no sound
+hears the camp's sound (a real player: a NeoForge `FakePlayer`, a deployer's or a mod's stand-in, is skipped; a
+GameTest's `FakePlayers` hearer is an ordinary `ServerPlayer` and does hear), placed 32 blocks toward the camp at the notices' volume (a camp with no sound
 plays the raid horn). The entry goes only once a player heard it, so an arrival with nobody near keeps it
 for the next one. No chat, action-bar or title line, and nothing goes back to the engine.
 
