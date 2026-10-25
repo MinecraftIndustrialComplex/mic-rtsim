@@ -5602,5 +5602,9 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   found. Not changed, outside the slice: core Industry.java's `depositDelta` comment and Q22
   (docs/overnight-choices-indplugins.md) make the same claim for IND_DEPOSIT_DELTA ("as H17"),
   whose store (Diesel's `OilChunksSavedData`) is a SavedData file of its own, written apart from
-  the journal's, so it can part from it as RP-184 says (not checked further); the overnight records
-  are left as written.
+  the journal's, so it can part from it as RP-184 says; the overnight records are left as written.
+  The review checked it (its P1 2, predating this slice): a deposit delta can double (the oil file
+  on disk without the journal: the re-derived delta is applied again, oil destroyed twice) and
+  dupe (the journal without the oil file: the tanks hold the oil and the deposit keeps it). Slice U
+  owns the deposit claim and its fix; this slice leaves Industry.java and DieselOilPlugin.java
+  alone.
