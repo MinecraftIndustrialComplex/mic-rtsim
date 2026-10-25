@@ -3557,7 +3557,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   ```java
   public interface Lurker {
       void hold(Mob mob, Vec3 spot);      // each server tick while it lurks
-      boolean strike(Mob mob, Vec3 at);   // start a strike at a carriage point; false if busy
+      boolean strike(Mob mob, Vec3 at, Vec3 motion); // start a strike at a carriage point that moves by motion a tick; false if busy
       void release(Mob mob);              // the lurk ended or the body left it
       void roar(Mob mob);                 // a train it robbed is gone
   }
@@ -3572,7 +3572,9 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - while a strike's swing runs (`getAnimation() == SWIPE_ANIMATION` and `getAnimationTick() <= 9`), it
       sets `yBodyRot`, `yRot` and `yHeadRot` to the strike's bearing.
   - `strike`: only in `NO_ANIMATION`. It records the bearing, turns the body, and calls
-    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`.
+    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`. The bearing
+    is toward where the point will be when the swing lands (MZB-365's second amendment), so it takes the
+    point's motion.
   - `release`: `setAlwaysActive(false)` and `clearRestriction()`.
   - `roar`: in `NO_ANIMATION`, `sendAnimationMessage(frostmaw, EntityFrostmaw.ROAR_ANIMATION)`. The jar
     plays its own roar sound in that animation.
@@ -3622,6 +3624,28 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     point stays in reach, so a carriage is struck at most once and a refusal loses nothing (the design
     marked it on the call). `RtsimApi.strike` picks the nearest held puppet of the agent. The near set drops a
     train that is invalid, derailed or without a graph.
+  - Second amendment (found writing test 9, step 8; the design's geometry could not land a blow). The swing
+    lands at animation tick 9, so 9 or 10 ticks after the call, and a carriage point at 1.0 blocks a tick has
+    moved 9 or 10 blocks by then. The jar's area attack (`AnimationAreaAttackAI.hitEntities`) takes living
+    entities whose 3D `distanceTo` (feet to feet) is within range + half their width (6.5 + 0.3 for a zombie),
+    then keeps those whose horizontal distance less half their width is within 6.5 and whose bearing is within
+    67.5 degrees of `yBodyRot`. With the design's spot 5 blocks off the rail and a strike at the first tick
+    the point is 6.5 blocks away (along the rail 4.15 from the closest approach), the point is 4.85 past the
+    closest approach when the swing lands: 6.96 blocks horizontally, and 84 degrees off the bearing the body
+    was turned to. Both miss. Three changes:
+    - `Lurker.strike(mob, at, motion)` and `RtsimApi.strike(agent, at, motion)` (and `ConflictBridge.strike`)
+      take the point's displacement a tick, and `FrostmawLurker` turns to `at + motion * 9`
+      (`SWIPE_HIT_TICK`), where the point will be at the landing. `TrainSampler.motionOf` is the track's
+      direction at the point (a 0.25-block step along its edge, never across a node) times `train.speed`, zero
+      for a stopped train.
+    - The test's spot is 4 blocks off the rail (`LATERAL`), so the point is within the swing's range when it
+      lands: 5.6 to 6.3 blocks horizontally, from a strike at the first tick within 6.5.
+    - The test's rider sits on a seat directly on the first bogey (rail + 2), the least a seat can be, which
+      keeps the 3D distance short (about 6.1 to 6.7 against the limit of 6.8 at worst). The figures are
+      predictions: nothing has run. If the round shows the landing a tick off, `SWIPE_HIT_TICK` and
+      `LATERAL` are the two numbers to move.
+    A real player on a train passing a lurk at speed is struck in the same way; a train at a standstill in
+    reach is struck at once, with a zero motion.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -3663,6 +3687,43 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - Amendment (built, step 5): `ConflictKit.trainsPassed(agent)` reads the TRAIN_PASSED records the
     scripted engine received (the bridge keeps no per-agent counter), and `lurkStrikes()` the bridge's
     strike counter.
+  - Amendment (built, step 8; nothing run): `RailFrostmawGameTests` has one fixture, `Line` (the far chunks,
+    the cleared box and floor, a 150-block track, the stations, the train, and its restoring), which test 10
+    runs on unchanged in behaviour, and four tests in four batches.
+    - Test 8 is two tests. `anIceBallUnseatsARiderFromACarriage` (batch `rail_frostmaw_ice`) is the static
+      form. `theIceBallHitRatesAgainstAMovingTrain` (batch `rail_frostmaw_ice_rates`, 16,000 ticks) is the
+      moving form, split off because its 16 passes and their cooldowns take thousands of ticks and the
+      static form should not wait on them, and because it is a measurement: it logs
+      `[gametest] ice ball v=<v>: <hits>/4` and fails only if the rider is on two vehicles. The design's "within
+      60 ticks of the freeze ending the rider has no vehicle" is a wait for no vehicle, with the freeze itself
+      failing the test if it holds the rider 200 ticks (the jar's is 50).
+    - The riders are health 1000, so a swipe or a freeze cannot kill one. The mock player is a plain `Player`
+      (`GameTestHelper.makeMockPlayer`: not a `ServerPlayer`, `isLocalPlayer` true), added with
+      `addFreshEntity`; `FakePlayers` players (the bait and the hearer) are in `level.players()` only. The
+      Frostmaw's target is set again at every poll (the restriction gates targeting, MZB-362, and a target
+      once dropped is not found again), in the hold phase too.
+    - Test 9 lays its lurk 40 blocks ahead of the train on the 150-block line (not a 96-block straight with
+      the lurk at its middle), its second station 60 blocks along from the first on the side the train goes,
+      the spot 4 blocks off (MZB-365's second amendment), and the camp's sound is the registry holder
+      `mowziesmobs:frostmaw.roar` (the plugin's `DenKind.sound()` is a `DeferredHolder`; the create project
+      names no Mowzie class). The hold's checks are: within 2 blocks of the spot, the near edge at least 0.5
+      off the rail's centre line (the spot's is 2.0; the Frostmaw stands within 1.5 of it, and away from the
+      rail while it has the bait), `alwaysActive` true, a target at some poll. The bait walks 0.05 blocks a
+      tick away from the rail, 30 blocks off to begin with.
+    - The yBodyRot check is the puppet's `yBodyRot` against the bearing from the puppet to the zombie at the
+      first poll that finds the zombie's health down (the swing landed in the tick before, the zombie moved
+      at most a block: 14 degrees at 4 blocks off, inside the 30 allowed).
+    - The roar part is in the other order than the design's: TRAIN_ROBBED, then `Train.arriveAt` the second
+      station with nobody within 64 blocks (nothing plays; the entry stays), then `arriveAt` the first with
+      the hearer 20 blocks off (one sound packet, the roar's, and nothing in `raw`, `overlay` or `titles`;
+      the entry gone). The entry goes once a player has heard it, so the arrival with nobody near has to be
+      first. `Train.arriveAt(GlobalStation)` is public and safe to repeat, and is what `TrainMixin` hooks, so
+      the test drives the real path without moving the train. The hearer stands 20 blocks behind the first
+      station, away from the lurk, so it is about 61 blocks from the puppet (not a target, 50; out of the
+      puppet's own sounds) and 80 from the second station.
+    - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
+      on a failure; the train, its glue, the track, the stations and the box are put back as they were
+      (`TrainWatch.forget` too).
 - **MZB-371** (run 1's ambush half):
   - The synth's rail lines also run as booked legs in a FakeWorld industry through `IndustryLink`, so
     `raid_train` finds the leg and its cargo.
@@ -3992,6 +4053,8 @@ each at its own far base, scripted engine):
      nothing. A second arrival with nobody near plays nothing, and the entry stays (`pendingRoars()`).
    - A scripted REMOVED: `alwaysActive` is false, `hasRestriction()` is false, and the agent is gone from
      `RtsimApi.lurks()`.
+   - Built at step 8, not run: the spot is 4 blocks off, the line 150 blocks and test 8 two tests (MZB-365's
+     second amendment, MZB-370's last).
 
 **Rust tests** (`crates/rtsim-conflict/tests/lurk.rs`):
 - The lurk's life: `a_raid_on_a_track_sends_its_ambush_spot`,
