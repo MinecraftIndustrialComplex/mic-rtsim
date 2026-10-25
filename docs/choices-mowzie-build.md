@@ -8549,6 +8549,22 @@ in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `
   blocks and the square's four sides are two chunks in (`aStoppedBandKeepsToTheSquareAtSimulationDistanceFour` is the
   GameTest the review asked for), and the one at 8 asserts the same.
 
+- **MZB-747** (later waves fall in behind the column; P3-3 of the Opus review of M10b): `materialize` reset the party's
+  heading from the record's bearing and planned every wave from `back` 0, so a band's later wave met on the march
+  (radius 0) appeared on the first rows of the wave already out, bodies in bodies. Now a wave of a party that has a
+  stack still in play (not `GONE`, pending ones count) keeps the party's heading (`p.hdx`, `p.hdz`: a steer may have
+  turned it, and the rows out were laid by it) and its plan starts at `MarchColumn.after(rear.back, rearIsPack)`: one
+  `ROW` behind the rearmost stack, or one `PACK_ROW` when that is a raptor's. `MarchColumn.plan` has a fifth
+  argument, `start` (the old four-argument form is `start` 0), which moves the first row of a met plan and is not used
+  on an arc. Conservative choices: an arc wave is unchanged (each wave's stacks walk off their arc points on their own
+  and the existing GameTests place by them); the first wave's war chief stays at the rear of the first wave, not of
+  the whole band (the later wave's rows are behind it, and the chief is not moved); a gap behind stacks that died is
+  left (the rearmost is taken over every stack in play, not only the living, so a wave never lands on a dead
+  stack's rows). `MarchColumnTest` gains five tests (the next row after a grunt's and a raptor's, a later wave
+  starting behind the rows out, a later wave behind a raptor pair, a start of nothing and an arc ignoring it, every
+  unit kept with only the rows moved); no GameTest changes (`anEmptyFightWaveIsEchoedAndTheNextWaveComes` places a
+  second wave and asserts counts and states, not places).
+
 ## M11 Aloft
 
 (none yet)

@@ -31,9 +31,19 @@ final class MarchColumn {
      * chief makes no stack. {@code met}: the band appears at the head (radius 0).
      */
     static List<Plan> plan(int[] counts, boolean[] pack, boolean[] chief, boolean met) {
+        return plan(counts, pack, chief, met, 0.0);
+    }
+
+    /**
+     * {@link #plan(int[], boolean[], boolean[], boolean)} for a wave that joins a band whose column is already out
+     * (MZB-747): met on the march the first row is {@code start} behind the head, not at it, so the wave falls in
+     * behind the rows the band already has ({@link #after}). On an arc each entry keeps its own column from its arc
+     * point and {@code start} is not used.
+     */
+    static List<Plan> plan(int[] counts, boolean[] pack, boolean[] chief, boolean met, double start) {
         int m = counts.length;
         List<Plan> out = new ArrayList<>();
-        double cursor = 0;
+        double cursor = met ? Math.max(0.0, start) : 0.0;
         List<Integer> rear = new ArrayList<>();
         for (int i = 0; i < m; i++) {
             if (counts[i] == 0 && !chief[i])
@@ -67,6 +77,17 @@ final class MarchColumn {
             cursor += ConflictBridge.ROW;
         }
         return out;
+    }
+
+    /**
+     * Where the next row of a column goes (MZB-747): behind its rearmost stack, one row on ({@link ConflictBridge#ROW})
+     * or, for a raptor pair, one pack row ({@link #PACK_ROW}).
+     *
+     * @param rearBack the rearmost stack's {@code back}
+     * @param rearPack whether that stack is one of a raptor pack
+     */
+    static double after(double rearBack, boolean rearPack) {
+        return rearBack + (rearPack ? PACK_ROW : ConflictBridge.ROW);
     }
 
     /** The column's heading for a bearing in degrees, from +x toward +z (BAND_MATERIALIZE's, MZB-457): a unit vector. */

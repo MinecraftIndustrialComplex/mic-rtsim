@@ -1076,10 +1076,24 @@ public final class ConflictBridge implements SessionPlugin {
                 at0[i] = new double[]{cx + radius * Math.cos(a), cz + radius * Math.sin(a)};
             }
         }
+        // A later wave of a band whose column is already out (MZB-747) falls in behind it: met on the march it keeps the
+        // column's heading (a steer may have turned it, and the rows out are laid by it) and its rows start behind the
+        // rearmost stack still in play, not on the first rows of the band's own first wave. On an arc each wave's stacks
+        // walk off their arc points on their own and nothing changes.
+        Stack rear = null;
+        if (radius == 0)
+            for (Stack st : p.stacks)
+                if (st.state != StackState.GONE && (rear == null || st.back > rear.back))
+                    rear = st;
+        double start = rear == null ? 0.0
+                : MarchColumn.after(rear.back, !rear.chief && !rear.slots.isEmpty() && ConflictBodies.pack(rear.slots.get(0).body));
         // The column's heading (MZB-469). Met on the march (radius 0) it is the march's: the record's bearing, from +x
         // toward +z. On an arc it runs from where the stacks appear to their target.
         double hx, hz;
-        if (radius == 0) {
+        if (rear != null) {
+            hx = p.hdx;
+            hz = p.hdz;
+        } else if (radius == 0) {
             double[] h = MarchColumn.heading(bearing);
             hx = h[0];
             hz = h[1];
@@ -1104,7 +1118,7 @@ public final class ConflictBridge implements SessionPlugin {
             chief[i] = chiefFlag && (sflags[i] & ConflictRecords.Materialize.STACK_CHIEF) != 0;
         }
         boolean met = radius == 0;
-        for (MarchColumn.Plan pl : MarchColumn.plan(counts, pack, chief, met)) {
+        for (MarchColumn.Plan pl : MarchColumn.plan(counts, pack, chief, met, start)) {
             Kind k = kinds.get(pl.entry());
             Stack st = columnStack(p, wave, at0[pl.entry()], met, hx, hz, pl.back(), pl.side(), now);
             st.chief = pl.chief();
