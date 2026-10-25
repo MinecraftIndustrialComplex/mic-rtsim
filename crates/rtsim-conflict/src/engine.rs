@@ -5626,7 +5626,9 @@ impl Conflict {
     ///   no hold raises the floor only, and its later records count against nothing (RP-56).
     /// - The same epoch, embodied, at or above the party's `wave`: the waves from the party's
     ///   to the record's are filled. Below it, or not embodied: nothing (the pages hold that
-    ///   fill, or the body is gone).
+    ///   fill, or the body is gone). But a fighting band's, not embodied: the fight's later wave
+    ///   after Java refused its first (RP-54), which live `wave` embodied the band again when it
+    ///   commanded it (RP-58, RP-61): embodied again and filled.
     /// - An older epoch: nothing.
     ///
     /// The fill is `spawn_wave`'s ([`Conflict::wave_fill`]), with the deaths in view since the
@@ -5644,9 +5646,13 @@ impl Conflict {
     ) {
         let x = &self.parties[p];
         let newer = m.epoch > x.epoch;
-        let same = m.epoch == x.epoch && x.embodied && u32::from(x.wave) <= m.wave;
+        let again = m.epoch == x.epoch && !x.embodied && x.phase == Phase::Fighting;
+        let same = m.epoch == x.epoch && (x.embodied || again) && u32::from(x.wave) <= m.wave;
         if !newer && !same {
             return;
+        }
+        if again {
+            self.parties[p].embodied = true;
         }
         // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command,
         // and `start_fight` always takes a new epoch, so a record of the same one, or a

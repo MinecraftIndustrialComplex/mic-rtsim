@@ -47,6 +47,8 @@ struct Run {
     /// Java refuses this band's fights: in [`run_journaled`], each BAND_MATERIALIZED the plugin
     /// answers at the epoch the band fights at is a BAND_SPAWN_REJECTED (1, not ticking).
     refuse: Option<Handle<Party>>,
+    /// With [`Run::refuse`], Java refuses only each fight's first wave (0).
+    refuse_wave0_only: bool,
 }
 
 impl Run {
@@ -68,6 +70,7 @@ impl Run {
             watch: false,
             next_obs: Tick::ZERO,
             refuse: None,
+            refuse_wave0_only: false,
         }
     }
 
@@ -80,7 +83,8 @@ impl Run {
                         .c
                         .parties
                         .get(band)
-                        .is_some_and(|x| x.phase == Phase::Fighting && x.epoch == m.epoch) =>
+                        .is_some_and(|x| x.phase == Phase::Fighting && x.epoch == m.epoch)
+                    && (!self.refuse_wave0_only || m.wave == 0) =>
             {
                 Obs::SpawnRejected(boundary::BandSpawnRejected {
                     agent: m.agent,
@@ -4033,6 +4037,99 @@ fn a_held_decision_raids_with_the_members_it_had_at_its_tick() {
     }
 }
 
+/// What a watched raid's arrival whose first wave alone Java refused came to: the band's phase
+/// and epoch, the fights watched, the deaths counted, the band's members alive, and the
+/// abstract raids (by when), since the save.
+type FirstWave = (Phase, u32, u64, u64, u32, Vec<Tick>);
+
+/// A watched raid's arrival whose first wave alone Java refused (the checker's case; its later
+/// waves placed), and `fight_record_gap_max`: the session that went on, the plugin killing a
+/// quarter of each wave at the base 1,500 ticks after it spawns; or, with `crash`, a replay of
+/// its journal on an engine from the pages saved 3,000 ticks before the arrival.
+fn a_first_wave_refused(crash: bool) -> (FirstWave, u64) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.refuse = Some(band);
+    r.refuse_wave0_only = true;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (watched, saved_at, cas) = (r.c.stats.raids_watched, r.c.now(), r.c.stats.casualties);
+    journal.clear();
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let agent = Party::agent(band);
+    assert!(
+        journal
+            .iter()
+            .any(|(_, o)| matches!(o, Obs::SpawnRejected(x) if x.agent == agent && x.wave == 0)),
+        "the first wave refused"
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|(_, o)| matches!(o, Obs::Materialized(x) if x.agent == agent && x.wave > 0)),
+        "a later wave placed"
+    );
+    journal.push((end, fillers_casualty()));
+    let read = |c: &Conflict, walls: &Walls, watched: u64, cas: u64| {
+        let x = &c.parties[band];
+        let books = (
+            x.phase,
+            x.epoch,
+            c.stats.raids_watched - watched,
+            c.stats.casualties - cas,
+            x.alive(),
+            walls.raids.range(saved_at + 1..).copied().collect(),
+        );
+        (books, c.stats.fight_record_gap_max)
+    };
+    if !crash {
+        return read(&r.c, &walls, watched, cas);
+    }
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let (watched, cas) = (back.stats.raids_watched, back.stats.casualties);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    read(&back, &walls, watched, cas)
+}
+
+/// fixes6 (RP-61, item 5's replay half): a watched arrival whose first wave alone Java refused,
+/// replayed on an engine from the pages saved before it. The refusal ends the hold as the fight
+/// (RP-54), unembodied; the fight's later waves' BAND_MATERIALIZED embodies the band again, as
+/// live `wave` did when it commanded them (RP-58), so their deaths count as live. The replay
+/// used to honour no record of an unembodied band's epoch: its deaths counted against nothing.
+#[test]
+fn a_held_arrival_whose_first_wave_alone_is_refused_counts_its_later_waves() {
+    let (live, _) = a_first_wave_refused(false);
+    assert_eq!(
+        (live.0, live.2, live.5.len()),
+        (Phase::Home, 1, 0),
+        "fought, no abstract raid: {live:?}"
+    );
+    assert!(live.3 > 0, "the later waves' deaths count: {live:?}");
+    let (back, _) = a_first_wave_refused(true);
+    assert_eq!(back, live);
+}
+
 /// fixes4 item 3 (RP-52): a siege round, nobody near, that kills the last of the band (every
 /// raider held at the walls, all of them falling), the round before the band's boredom and the
 /// hold's slack after it; the pages from the band waiting for it. The session that went on
@@ -4581,6 +4678,7 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
         watch: false,
         next_obs: Tick::ZERO,
         refuse: None,
+        refuse_wave0_only: false,
     };
     assert!(b.c.peaceful, "still Peaceful after the restart");
     assert_eq!(b.c.peaceful_since, a.c.peaceful_since);

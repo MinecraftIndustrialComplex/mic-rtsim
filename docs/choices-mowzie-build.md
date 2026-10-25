@@ -1452,3 +1452,21 @@ conservative option at its fork.
   stack's members gone, and, as the control RP-59 already passed, 1 member killed instead): the
   despawn's raid sent 32 members against live's 34, for a siege's round and its arrival; the death
   already sent 34 with RP-59 alone. Now 34 in all four. The sims are unchanged.
+- **RP-61** (item 5's replay half: a refused first wave's later waves are honoured; §5.2; RP-54;
+  RP-58; fixes6): with RP-58 live, a replay of the same fight still counted none of its later
+  waves' deaths. RP-54 ends a held arrival's hold at the refusal of its first wave, the band
+  Fighting and not embodied, and `honour` honoured a record of the party's own epoch only when it
+  was embodied ("not embodied: the body is gone"), so the later waves' BAND_MATERIALIZED placed
+  nothing and their BAND_CASUALTIES found no band in view. The fix: `honour` takes a record of the
+  same epoch, at or above the party's `wave`, for a fighting band that is not embodied as the
+  fight's later wave: it embodies the band again and fills it, as live `wave` does at the command
+  (RP-58). Kept apart from d092dafd, which goes to main alone and has no replay gate to change.
+  A known edge, rarer than the case fixed: Java answering a wave commanded just before a despawn
+  of the same epoch (chunks unloaded) after the despawn, which live leaves unembodied, is
+  embodied by the replay; its bodies are in Minecraft, so the replay's books are the truer.
+  Failing first, mowzie_records'
+  `a_held_arrival_whose_first_wave_alone_is_refused_counts_its_later_waves` (the checker's scratch
+  case, renamed: a watched raid's arrival whose wave 0 alone is refused, the plugin killing a
+  quarter of each later wave at the base, replayed from the pages saved 3,000 ticks before):
+  replayed (phase, epoch, watched, deaths, alive, raids) = (Home, 2, 1, 0, 12, []) against the
+  session that went on's (Home, 2, 1, 6, 6, []). Now as live. The sims are unchanged.
