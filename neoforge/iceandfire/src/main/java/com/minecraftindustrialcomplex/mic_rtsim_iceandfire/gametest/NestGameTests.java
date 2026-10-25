@@ -962,7 +962,7 @@ public final class NestGameTests {
     }
 
     /**
-     * RP-251 (the review's P3-7): worms loaded before their nest is known are settled when it is found. A nest places a
+     * RP-241 (the review's P3-7): worms loaded before their nest is known are settled when it is found. A nest places a
      * worm (ordinal 0) and is then dropped from the Nests (the file lost it) while the worm stays loaded, unlisted: its
      * join ran when the nest was unknown. The engine asks for the nest again (PLACE_NEST) and the chamber is found
      * standing: the worm is adopted into the rebuilt nest (listed, spawned 1, counted as an adoption) and a census follows

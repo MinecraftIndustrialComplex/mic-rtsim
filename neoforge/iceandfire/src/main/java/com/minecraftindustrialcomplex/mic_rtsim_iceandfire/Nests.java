@@ -151,7 +151,7 @@ public final class Nests {
          * the one way left to owe a renewal twice (RP-232: more than eight lives, and a hand-mixed restore).
          */
         public static final int LIVES = 8;
-        /** The most holes a nest keeps (RP-250): far above any brood in use; the lowest is dropped past it. */
+        /** The most holes a nest keeps (RP-242): far above any brood in use; the lowest is dropped past it. */
         public static final int HOLES_MAX = 32;
 
         public final long id;
@@ -166,7 +166,7 @@ public final class Nests {
          */
         public int spawned;
         /**
-         * Ordinals below {@link #spawned} that were skipped (RP-242, RP-250): a worm adopted at ordinal k above the count
+         * Ordinals below {@link #spawned} that were skipped (RP-242, RP-242): a worm adopted at ordinal k above the count
          * leaves {@code spawned..k-1} here, because the worms of those ordinals may be in entity files that load after it.
          * A hole is a worm the file's brood still owes, so the join rule adopts its copy (once) where it would discard
          * one of an ordinal below the count, and the nest's own spawn takes the lowest hole before it raises the count (the
@@ -298,7 +298,7 @@ public final class Nests {
         /**
          * The join rule of a nest worm (RP-242). {@code ordinal} is the worm's {@link Nests#ORDINAL_TAG}, or
          * {@code -1} for a worm that has none. A worm the list holds is normal whatever its ordinal. An unlisted one
-         * of a hole's ordinal (RP-250) is adopted: a worm a later session spawned, whose entity file loaded after a
+         * of a hole's ordinal (RP-242) is adopted: a worm a later session spawned, whose entity file loaded after a
          * higher one's. An unlisted one below {@link #spawned} otherwise is a stale copy: lose, never double (the count
          * it was spawned at was spawned again, or it died, and either way the nest's books no longer owe it). One at or
          * above the count was spawned by a session whose count did not reach this file, and is adopted.
@@ -314,7 +314,7 @@ public final class Nests {
         /**
          * Takes an adopted worm into the nest (RP-242): listed, its ordinal counted as spawned, and one worm
          * less owed (never below 0: {@link #owed} still covers the worms of the ordinals skipped). The ordinals it skips,
-         * the count up to it, become {@link #holes} (RP-250), so their worms are adopted when they load, whatever the
+         * the count up to it, become {@link #holes} (RP-242), so their worms are adopted when they load, whatever the
          * order; a hole it fills is taken off. Only the {@link #HOLES_MAX} highest are kept.
          */
         public void adopt(UUID worm, int ordinal) {
@@ -337,7 +337,7 @@ public final class Nests {
         public record Settled(List<UUID> stale, int adopted) {}
 
         /**
-         * The join rule over worms already loaded when the nest was registered (RP-251): each goes through {@link #judge}
+         * The join rule over worms already loaded when the nest was registered (RP-241): each goes through {@link #judge}
          * in turn, a stale one is returned to be discarded, an adopted one is {@link #adopt adopted}. Order does not
          * matter (the holes see to that), and two worms of one ordinal end as one adopted and one stale.
          */
@@ -358,7 +358,7 @@ public final class Nests {
         }
 
         /**
-         * The ordinal the nest's next worm carries (RP-250): the lowest hole, taken, else the count, raised. The old copy
+         * The ordinal the nest's next worm carries (RP-242): the lowest hole, taken, else the count, raised. The old copy
          * of an ordinal spawned again finds no hole and is stale. {@link #returnOrdinal} undoes it if the worm cannot join.
          */
         public int takeOrdinal() {
@@ -828,7 +828,7 @@ public final class Nests {
     }
 
     /**
-     * The worms of nest {@code n} already loaded when its chamber was found standing (RP-251): their joins ran while the
+     * The worms of nest {@code n} already loaded when its chamber was found standing (RP-241): their joins ran while the
      * file did not know the nest, so {@link #staleCopy} let them through. They go through the join rule now, once, so a
      * chunk that stays loaded until the next renewal cannot hold both an old worm and the one the nest spawns. The scan is
      * the heart's chunk and the ring of chunks round it (48 by 48 blocks, the world's full height), through the level's
@@ -1589,7 +1589,7 @@ public final class Nests {
                         n.remember(((CompoundTag) x).getLong("life"), ((CompoundTag) x).getLong("serial"));
                 // The worms ever spawned (RP-242): a file from before it loads 0, and no worm it holds carries an ordinal.
                 n.spawned = Math.max(0, t.getInt("spawned"));
-                // The skipped ordinals (RP-250): a file from before them has none. Only ordinals below the count, at most
+                // The skipped ordinals (RP-242): a file from before them has none. Only ordinals below the count, at most
                 // HOLES_MAX of the highest, so a hand-edited file cannot grow the set.
                 for (int h : t.getIntArray("holes"))
                     if (h >= 0 && h < n.spawned)
