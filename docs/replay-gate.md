@@ -465,6 +465,8 @@ What the merge checked:
    `observe_state`), so it is newer than every replayed record. While the outbox replays it now
    waits for `replay_done`, the latest for each faction, as RP-68's world save does. Before, a
    replayed FACTION_FOUND's census byte undid it, or it found its faction unknown and was dropped.
+   It is held while the host replays too (`st.replaying`), since the engine's own replay begins only once
+   the conflict is in the world, after a replayed FACTION_FOUND.
 5. **RP-66:** M6 adds no `Order::ConflictCommand` test in Rust. Its GameTests order reconciles
    and materializes through `ConflictKit` in the middle of a session, after no restart. One ordered
    while a server's start replays waits for the replay end.
