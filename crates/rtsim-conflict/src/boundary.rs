@@ -78,6 +78,10 @@ pub const DEMAND_STOP: u32 = 2;
 pub const BAND_HOSTILE: u8 = 1;
 pub const BAND_CHIEF: u8 = 2;
 pub const BAND_SURFACE: u8 = 4;
+/// A fight's wave (`start_fight`'s and `wave`'s, which spawn on an arc), not a sighting's: Java
+/// echoes the flags in BAND_MATERIALIZED, so that a replay tells a held decision's fight from a
+/// sighting (docs/replay-gate.md §6.1, RP-56).
+pub const BAND_FIGHT: u8 = 8;
 /// BAND_MATERIALIZE member flags.
 pub const MEMBER_CHIEF: u32 = 1;
 /// BAND_STEER flags.
@@ -239,6 +243,8 @@ pub struct BandMaterialized {
     pub dimension: u32,
     pub wave: u32,
     pub spawned: u32,
+    /// The BAND_MATERIALIZE's flags, echoed ([`BAND_FIGHT`] among them); 0 for an envoy's.
+    pub flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -554,6 +560,42 @@ impl Obs {
             Obs::ChiefPaid(c) => Some(c.op),
             _ => None,
         }
+    }
+
+    /// The party epoch the record names, as (agent, epoch): the engine's own numbering, which a
+    /// replayed record or a copy folds into the agent's epoch floor, so that no epoch is used
+    /// twice (docs/replay-gate.md §5.3, RP-7, RP-57). None for a kind that names none (the camp
+    /// records' epoch is a camp's, Java's op id, which the engine never allocates) and for agent
+    /// 0 (a tribute paid at the camp). Every kind is listed, so a new one must say.
+    pub fn party_epoch(&self) -> Option<(u64, u32)> {
+        let (agent, epoch) = match self {
+            Obs::State(s) => (s.agent, s.epoch),
+            Obs::Materialized(m) => (m.agent, m.epoch),
+            Obs::SpawnRejected(r) => (r.agent, r.epoch),
+            Obs::Dematerialized(d) => (d.agent, d.epoch),
+            Obs::Casualties(c) => (c.agent, c.epoch),
+            Obs::ChiefKilled(c) => (c.agent, c.epoch),
+            Obs::EnvoyAnswer(a) => (a.agent, a.epoch),
+            Obs::TributePaid(t) => (t.agent, t.epoch),
+            Obs::Looted(l) => (l.agent, l.epoch),
+            Obs::TrainPassed(t) => (t.agent, t.epoch),
+            Obs::FactionFound(_)
+            | Obs::Signal(_)
+            | Obs::Pollution(_)
+            | Obs::GiftGiven(_)
+            | Obs::ChiefState(_)
+            | Obs::HavenChest(_)
+            | Obs::Difficulty(_)
+            | Obs::RailPass(_)
+            | Obs::CampDeath(_)
+            | Obs::CampCensus(_)
+            | Obs::Traded(_)
+            | Obs::NoticeShown(_)
+            | Obs::CampBodies(_)
+            | Obs::CampOut(_)
+            | Obs::ChiefPaid(_) => return None,
+        };
+        (agent != 0).then_some((agent, epoch))
     }
 }
 
@@ -1034,6 +1076,7 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(32, m.epoch);
             w.u32(36, m.dimension);
             w.u32(40, m.wave);
+            w.u32(44, m.flags);
             w.finish(BAND_MATERIALIZED, m.spawned, 48);
         }
         Obs::SpawnRejected(r) => {
@@ -1273,6 +1316,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             dimension: r.u32(36)?,
             wave: r.u32(40)?,
             spawned: aux,
+            flags: r.u32(44)?,
         }),
         BAND_SPAWN_REJECTED => Obs::SpawnRejected(BandSpawnRejected {
             agent: r.u64(24)?,
@@ -1800,7 +1844,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
@@ -1848,6 +1892,7 @@ mod tests {
                 dimension: 1,
                 wave: 2,
                 spawned: 8,
+                flags: u32::from(BAND_HOSTILE | BAND_FIGHT),
             }),
             Obs::SpawnRejected(BandSpawnRejected {
                 agent: 5,
@@ -2025,7 +2070,8 @@ mod tests {
         ]
     }
 
-    fn cmds() -> Vec<Cmd> {
+    /// One command of each kind (the replay gate's table test reads them too, `outbox.rs`).
+    pub(crate) fn cmds() -> Vec<Cmd> {
         vec![
             Cmd::Territory(Territory {
                 faction: 77,

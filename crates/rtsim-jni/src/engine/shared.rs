@@ -36,7 +36,7 @@ use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 
-use super::{State, conflict, dragons, herds, phase1, ships};
+use super::{State, conflict, dragons, herds, log_info, phase1, ships};
 use crate::wire::{self, Rec, obs};
 
 /// A player not reported for this many game ticks has left (phase 1's own rule, V8's
@@ -81,8 +81,18 @@ fn with_viewers<R>(
     st: &mut State,
     f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
 ) -> R {
+    with_viewers_of(st, true, f)
+}
+
+/// [`with_viewers`], the conflict among them only when `conflict` (the session start leaves it
+/// out, RP-26).
+fn with_viewers_of<R>(
+    st: &mut State,
+    conflict: bool,
+    f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
+) -> R {
     let (d_on, s_on, h_on) = (dragons::running(st), ships::running(st), herds::running(st));
-    let c_on = conflict::running(st);
+    let c_on = conflict && conflict::running(st);
     let w = &mut st.phase1.world;
     let mut v: Vec<&mut dyn Viewer> = Vec::with_capacity(4);
     if d_on {
@@ -155,8 +165,11 @@ pub(super) fn introduce_conflict(st: &mut State) {
 
 // ---- the interest areas ---------------------------------------------------------------------------
 
-/// SESSION_START: every player's area goes (the world forgets where players were), and every
-/// module hears it.
+/// SESSION_START: every player's area goes (the world forgets where players were). The dragons,
+/// the ships and the herds hear it (their bodies end at the arm until their slices move that
+/// work into their replay end); the conflict does not (docs/replay-gate.md §2.1, §5.1, RP-26):
+/// its `player_left` would recall the bands the pages hold in view, whose replayed records count
+/// against them, and its replay end does that player work for every player (§5.6).
 pub(super) fn session_start(st: &mut State) {
     st.shared.pending.clear();
     st.shared.present.clear();
@@ -172,7 +185,7 @@ pub(super) fn session_start(st: &mut State) {
         return;
     }
     for p in with_area {
-        leave(st, p);
+        with_viewers_of(st, false, |w, v| w.leave_area(p, v));
     }
     st.phase1.taint();
 }
@@ -203,8 +216,13 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
 }
 
 /// The simulate point, after the modules ran to the hand-over's time: each reported player's
-/// area kept or booked anew and routed; players gone stale leave.
+/// area kept or booked anew and routed; players gone stale leave. Nothing while replaying.
 pub(super) fn simulate(st: &mut State) {
+    // Sightings wait for the replay end (docs/replay-gate.md §6, RP-11): the positions are kept,
+    // the latest per player, and routed in the step the replay ends.
+    if st.replaying {
+        return;
+    }
     let pending = std::mem::take(&mut st.shared.pending);
     let gt = st.game_time;
     if !any_viewer(st) {
@@ -297,7 +315,87 @@ pub(super) fn run_to(st: &mut State, at: Tick) {
 pub(super) fn catch_up(st: &mut State, rec: &Rec<'_>) {
     if rec.size() >= obs::BODY {
         let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
-        let at = Tick(phase1::world_tick(st, gt));
-        run_to(st, at);
+        catch_up_to(st, Tick(phase1::world_tick(st, gt)));
     }
+}
+
+/// [`catch_up`] to world tick `at`, a journaled record's own time. While replaying the record
+/// is a replayed one (the first record at or past `session_first` ends the replay before it is
+/// admitted), and the replay clock rises to it first (docs/replay-gate.md §3.6, RP-24): the
+/// clock follows the records.
+pub(super) fn catch_up_to(st: &mut State, at: Tick) {
+    if st.replaying {
+        st.replay_clock = st.replay_clock.max(at);
+    }
+    run_to(st, at);
+}
+
+/// The world tick a run of the clock may reach for world tick `at` (docs/replay-gate.md §3.6,
+/// RP-24). While the session's replay runs and a module that shares the world runs
+/// ([`any_viewer`]), no later than the replay clock: the world's present at SESSION_START,
+/// raised by each replayed record ([`catch_up_to`]). The hand-over's time is Java's present, at
+/// or past the last replayed record, and running the clock there would fire the whole window's
+/// events (a fight's end, a band home and pooled) before the later hand-overs' records of that
+/// window arrive. Otherwise `at`: with none of the four running a phase 1 world alone keeps
+/// today's clock.
+pub(super) fn clock_target(st: &State, at: Tick) -> Tick {
+    if st.replaying && any_viewer(st) {
+        at.min(st.replay_clock)
+    } else {
+        at
+    }
+}
+
+/// The hand-over's game time as a run of the clock may reach it: [`clock_target`] of its world
+/// tick. Every read of the hand-over's time that runs the clock takes it (the four modules'
+/// `simulate` and resets, phase 1's `simulate` and latest-state inputs, the ships' build, the
+/// records applied at the hand-over's time: STATE kinds and the rejects).
+pub(super) fn hand_over_target(st: &State) -> Tick {
+    clock_target(st, Tick(phase1::world_tick(st, st.game_time)))
+}
+
+// ---- the replay end ---------------------------------------------------------------------------------
+
+/// The step's top, after the observations are read (docs/replay-gate.md §2.2, trigger 2): a
+/// replay whose last record was the hand-over's last ends here.
+pub(super) fn replay_end_if_due(st: &mut State) {
+    if st.replaying && st.replay.applied_through().0 + 1 >= st.session_first {
+        replay_end(st);
+    }
+}
+
+/// The SESSION_START arm's end (§2.1, trigger 3): with nothing to replay the replay ends at once.
+/// Java's journal counts too (RP-29): one that starts at or past `session_first`
+/// (`journal_first`, 0 read as `world_next` by the caller) sends nothing below it.
+pub(super) fn replay_end_at_session_start(st: &mut State, journal_first: u64) {
+    if st.replaying && (st.replay.applied_through().0 + 1).max(journal_first) >= st.session_first {
+        replay_end(st);
+    }
+}
+
+/// The top of `journaled()` (§2.2, trigger 1): the first record at or past `session_first` ends
+/// the replay before it is admitted, whatever its kind.
+pub(super) fn replay_end_before(st: &mut State, seq: u64) {
+    if st.replaying && seq >= st.session_first {
+        replay_end(st);
+    }
+}
+
+/// The replay is over (§3.2), once a session: logged with its counts, then each module's own end
+/// in the step's order. Each module's end runs at the replay clock; the held part of the
+/// hand-over's time runs at the next run of the clock.
+fn replay_end(st: &mut State) {
+    st.replaying = false;
+    st.replays_ended += 1;
+    let g = conflict::gate_counts(st);
+    log_info(&format!(
+        "the session's replay is over after {} hand-overs: {} records applied while replaying; \
+         conflict: {} commands dropped while replaying, {} of a kind that embodies (a bug), {} \
+         decisions that embody deferred",
+        st.replay_handovers, st.replay_records, g.dropped, g.never, g.deferred
+    ));
+    dragons::replay_end(st);
+    ships::replay_end(st);
+    herds::replay_end(st);
+    conflict::replay_end(st);
 }

@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
-use rtsim_conflict::engine::{Conflict, Demand, Party, Phase, Signal, Target, body_id, item_of};
+use rtsim_conflict::engine::{
+    Conflict, Demand, Party, Phase, REPLAY_HOLD_SLACK_TICKS, Signal, Target, body_id, item_of,
+};
 use rtsim_conflict::synth::{self, Answer, FakeConflict};
 use rtsim_conflict::{ConflictTunables, Cultures, Step};
 use rtsim_ecology::infra::NoInfrastructure;
@@ -42,6 +44,11 @@ struct Run {
     /// The player stands at the refinery (observed every 1,200 ticks) while this is set.
     watch: bool,
     next_obs: Tick,
+    /// Java refuses this band's fights: in [`run_journaled`], each BAND_MATERIALIZED the plugin
+    /// answers at the epoch the band fights at is a BAND_SPAWN_REJECTED (1, not ticking).
+    refuse: Option<Handle<Party>>,
+    /// With [`Run::refuse`], Java refuses only each fight's first wave (0).
+    refuse_wave0_only: bool,
 }
 
 impl Run {
@@ -62,6 +69,32 @@ impl Run {
             cmds: Vec::new(),
             watch: false,
             next_obs: Tick::ZERO,
+            refuse: None,
+            refuse_wave0_only: false,
+        }
+    }
+
+    /// `o`, or Java's refusal of it when [`Run::refuse`] names its band, fighting at its epoch.
+    fn refused(&self, o: Obs) -> Obs {
+        match (&o, self.refuse) {
+            (Obs::Materialized(m), Some(band))
+                if m.agent == Party::agent(band)
+                    && self
+                        .c
+                        .parties
+                        .get(band)
+                        .is_some_and(|x| x.phase == Phase::Fighting && x.epoch == m.epoch)
+                    && (!self.refuse_wave0_only || m.wave == 0) =>
+            {
+                Obs::SpawnRejected(boundary::BandSpawnRejected {
+                    agent: m.agent,
+                    epoch: m.epoch,
+                    wave: m.wave,
+                    reason: 1,
+                    cmd_seq: 0,
+                })
+            }
+            _ => o,
         }
     }
 
@@ -245,7 +278,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     assert_eq!(r.c.kept_notices(), vec![n], "kept, unplayed");
     // A session start sends it again, after the faction's territory.
     let mark = r.cmds.len();
-    r.c.session_start();
+    r.c.begin_replay(true);
     r.c.resend_notices();
     r.flush(r.c.now());
     assert_eq!(r.notices_since(mark), vec![n]);
@@ -262,7 +295,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     r.c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     assert_eq!(r.c.kept_notices(), vec![n]);
     let mark = r.cmds.len();
-    r.c.session_start();
+    r.c.begin_replay(true);
     assert!(r.notices_since(mark).is_empty(), "not before the replay");
     r.c.resend_notices();
     r.flush(r.c.now());
@@ -302,7 +335,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     assert!(r.c.kept_notices().is_empty());
     assert_eq!(r.c.stats.notices_shown, 1);
     let mark = r.cmds.len();
-    r.c.session_start();
+    r.c.begin_replay(true);
     r.c.resend_notices();
     r.flush(r.c.now());
     assert!(r.notices_since(mark).is_empty(), "not resent once shown");
@@ -1786,7 +1819,7 @@ fn despawn_with(r: &Run, band: Handle<Party>, epoch: u32, dead: u32) -> Obs {
 /// A restart: the engine as the pages saved it, loaded again, in its next session.
 fn restarted(r: &Run) -> Conflict {
     let mut c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
-    c.session_start();
+    c.begin_replay(true);
     c
 }
 
@@ -1845,9 +1878,9 @@ fn the_stacks_a_restart_kept_are_dropped_when_the_replay_has_caught_up() {
     };
     let alive = r.c.parties[band].alive();
     let mut back = restarted(&r);
-    assert!(back.replaying);
+    assert!(back.replaying());
     back.resend_notices();
-    assert!(!back.replaying);
+    assert!(!back.replaying());
     assert!(
         back.parties[band].recalled.is_empty(),
         "nothing left to count"
@@ -1865,8 +1898,8 @@ fn the_stacks_a_restart_kept_are_dropped_when_the_replay_has_caught_up() {
 
 /// MZB-138: a band in Minecraft when the pages were saved, its casualties and then its despawn
 /// journaled after. The restart's replay counts them as the session that went on counts them:
-/// the bodies the pages held in the world are a recalled stack of their epoch for the replayed
-/// records.
+/// the bodies the pages held in the world stay embodied at their epoch, with their stack, for
+/// the replayed records (docs/replay-gate.md §5.1, RP-5; no fold into a recalled stack, RP-10).
 #[test]
 fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted() {
     let mut r = Run::new(36, quiet_goblins());
@@ -1894,18 +1927,20 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
     });
     let mut same = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     let mut back = restarted(&r);
-    assert_eq!(
-        back.parties[band].recalled,
-        vec![(epoch, r.c.parties[band].spawned.clone())],
+    assert!(
+        back.parties[band].embodied,
         "the bodies in the world are kept for the replay"
     );
-    assert!(!back.parties[band].embodied);
-    assert!(back.parties[band].spawned.is_empty());
+    assert_eq!(back.parties[band].epoch, epoch);
+    assert_eq!(back.parties[band].spawned, r.c.parties[band].spawned);
+    assert!(back.parties[band].recalled.is_empty(), "nothing folded");
     // One death reported, then one more that died unreported before the chunks unloaded.
     let despawn = despawn_with(&r, band, epoch, 2);
     for c in [&mut same, &mut back] {
         c.ingest(&mut r.w, &mut NoInfrastructure, &casualty, r.c.now() + 1);
         c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, r.c.now() + 2);
+        assert!(!c.parties[band].embodied, "the despawn ends the body");
+        assert!(c.parties[band].spawned.is_empty());
     }
     assert_eq!(
         same.parties[band].alive(),
@@ -1926,6 +1961,424 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
         alive - 2,
         "kept after the replay"
     );
+}
+
+/// docs/replay-gate.md §5.1 and §5.6 (RP-5, RP-10): the replay's start changes no party; its end
+/// makes every party abstract with what the replay left. A band watched and fighting at the
+/// crash, with a stack still walking off from an older epoch: kept as the pages had it while
+/// replaying, then not embodied, nobody watching, nothing in Minecraft, no stack walking off,
+/// and the fight goes on abstractly (Waiting). Its members are all alive throughout.
+#[test]
+fn the_replay_keeps_the_bodies_and_its_end_makes_them_abstract() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.recalled = vec![(x.epoch, x.units.clone())];
+        x.epoch += 1;
+        x.embodied = true;
+        x.seen_by = Some(r.p);
+        x.spawned = x.units.clone();
+        x.phase = Phase::Fighting;
+    }
+    let kept = r.c.parties[band].clone();
+    let alive = kept.alive();
+    let mut back = restarted(&r);
+    assert!(back.replaying());
+    assert_eq!(
+        back.parties[band], kept,
+        "the replay's start changes no party"
+    );
+    back.replay_done();
+    assert!(!back.replaying());
+    let x = &back.parties[band];
+    assert!(!x.embodied);
+    assert_eq!(x.seen_by, None);
+    assert!(x.spawned.is_empty());
+    assert!(
+        x.recalled.is_empty(),
+        "nothing of an ended session reports again"
+    );
+    assert_eq!(x.phase, Phase::Waiting);
+    assert_eq!(x.epoch, kept.epoch);
+    assert_eq!(x.alive(), alive);
+    // A second end changes nothing (the host's resend_notices calls it again).
+    let after = back.parties[band].clone();
+    back.resend_notices();
+    assert_eq!(back.parties[band], after);
+}
+
+/// A replayed BAND_MATERIALIZED for `band` at `epoch`, `wave`, with `spawned` placed at once: a
+/// sighting's (no [`boundary::BAND_FIGHT`]).
+fn materialized(band: Handle<Party>, epoch: u32, wave: u32, spawned: u32) -> Obs {
+    Obs::Materialized(boundary::BandMaterialized {
+        agent: Party::agent(band),
+        epoch,
+        dimension: 0,
+        wave,
+        spawned,
+        flags: 0,
+    })
+}
+
+/// [`materialized`] for a fight's wave ([`boundary::BAND_FIGHT`], RP-56).
+fn fought(band: Handle<Party>, epoch: u32, wave: u32, spawned: u32) -> Obs {
+    Obs::Materialized(boundary::BandMaterialized {
+        agent: Party::agent(band),
+        epoch,
+        dimension: 0,
+        wave,
+        spawned,
+        flags: u32::from(boundary::BAND_HOSTILE | boundary::BAND_FIGHT),
+    })
+}
+
+/// The first BAND_MATERIALIZE of `band` the engine sends while the player watches its target:
+/// runs the engine and the plugin up to four days.
+fn first_materialize(r: &mut Run, band: Handle<Party>) -> Option<boundary::BandMaterialize> {
+    r.watch = true;
+    let agent = Party::agent(band);
+    let from = r.cmds.len();
+    let limit = r.c.now() + 4 * TICKS_PER_DAY;
+    while r.c.now() < limit {
+        r.run(r.c.now() + 600);
+        let got = r.cmds[from..].iter().find_map(|(_, c)| match c {
+            Cmd::Materialize(m) if m.agent == agent => Some(m.clone()),
+            _ => None,
+        });
+        if got.is_some() {
+            return got;
+        }
+    }
+    None
+}
+
+/// docs/replay-gate.md §5.3 (RP-7, RP-30): a fresh engine (not from its pages, RP-31) replays a
+/// BAND_MATERIALIZED at epoch 4 of a party at epoch 0. It does not embody, nor raise the epoch
+/// while replaying (a body at an older epoch would lose its records); the floor holds 4. At the
+/// replay end the floor becomes the epoch, and the next body takes 5. Control: no such record,
+/// the next body takes 1.
+#[test]
+fn a_fresh_engines_replayed_materialize_raises_the_epoch_floor_only() {
+    let next_body = |record: bool| {
+        let mut r = Run::new(36, quiet_goblins());
+        let band = raid_band(&mut r);
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        assert_eq!(r.c.parties[band].epoch, 0);
+        r.c.begin_replay(false);
+        if record {
+            let at = r.c.now() + 1;
+            r.ingest(materialized(band, 4, 0, 6), at);
+            let x = &r.c.parties[band];
+            assert!(!x.embodied, "a fresh engine's record embodies nothing");
+            assert!(x.spawned.is_empty());
+            assert_eq!(x.epoch, 0, "the floor, not the epoch");
+        }
+        r.c.replay_done();
+        let after = r.c.parties[band].epoch;
+        let m = first_materialize(&mut r, band).expect("the band came into view");
+        (after, m.epoch)
+    };
+    assert_eq!(next_body(false), (0, 1), "control");
+    assert_eq!(next_body(true), (4, 5));
+}
+
+/// fixes5 item 1 (RP-57): a replayed BAND_SPAWN_REJECTED of epoch 1 (the last session's sighting
+/// of the band on its road, which Java refused) for a raid at epoch 0 that is not held, on an
+/// engine from its pages. No epoch is used twice (§5.3): after the replay end the band's next
+/// body takes 2. The replay used to leave no floor, so it took 1 again. Control: no record, 1.
+#[test]
+fn a_replayed_refusal_for_a_party_not_held_raises_its_epoch_floor() {
+    let next_body = |record: bool| {
+        let mut r = Run::new(36, quiet_goblins());
+        let band = raid_band(&mut r);
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        while r.c.parties[band].phase != Phase::Out {
+            assert!(r.c.now() < day(4.0), "the raid sets out");
+            r.run(r.c.now() + 600);
+        }
+        r.c = restarted(&r);
+        let x = &r.c.parties[band];
+        assert!(x.phase == Phase::Out && !x.embodied && x.epoch == 0);
+        assert!(
+            r.c.now() + 1 < *x.times.last().unwrap(),
+            "on its road: not held"
+        );
+        if record {
+            let at = r.c.now() + 1;
+            r.ingest(refusal(band, 1, 0), at);
+            assert_eq!(
+                r.c.parties[band].epoch, 0,
+                "not held: the floor, not the epoch"
+            );
+        }
+        r.c.replay_done();
+        first_materialize(&mut r, band)
+            .expect("the band came into view")
+            .epoch
+    };
+    assert_eq!(next_body(false), 1, "control");
+    assert_eq!(next_body(true), 2);
+}
+
+/// BAND_SPAWN_REJECTED for `band` at `epoch`, `wave` (1, not ticking).
+fn refusal(band: Handle<Party>, epoch: u32, wave: u32) -> Obs {
+    Obs::SpawnRejected(boundary::BandSpawnRejected {
+        agent: Party::agent(band),
+        epoch,
+        wave,
+        reason: 1,
+        cmd_seq: 0,
+    })
+}
+
+/// How a record reaches the engine in [`every_record_naming_an_epoch_raises_its_floor`].
+#[derive(Clone, Copy, Debug)]
+enum Reached {
+    /// Replayed on an engine from its pages.
+    Pages,
+    /// Replayed on a fresh engine (RP-31).
+    Fresh,
+    /// A copy (REASSERT) replayed on an engine from its pages.
+    Copy,
+}
+
+/// fixes5 item 1's sweep (RP-57): every record kind that names a party's epoch, at epoch 4 for a
+/// raid at epoch 0 that is not held, replayed on an engine from its pages, on a fresh engine and
+/// as a copy. After the replay end the band holds epoch 4 at least, so its next body takes 5 or
+/// more (`next_epoch`): none of them can be used again. The camp records (CAMP_CENSUS,
+/// CAMP_BODIES, CAMP_OUT) carry a camp's epoch, Java's op id, which the engine never allocates.
+#[test]
+fn every_record_naming_an_epoch_raises_its_floor() {
+    let player = (1, 2);
+    let records = |band: Handle<Party>| {
+        let agent = Party::agent(band);
+        vec![
+            Obs::State(boundary::BandState {
+                agent,
+                epoch: 4,
+                flags: 0,
+                dimension: 0,
+                present: 0,
+                pos: (0.0, 0.0, 0.0),
+            }),
+            materialized(band, 4, 0, 6),
+            fought(band, 4, 0, 6),
+            refusal(band, 4, 0),
+            refusal(band, 4, 1),
+            Obs::Dematerialized(boundary::BandDematerialized {
+                agent,
+                epoch: 4,
+                reason: 1,
+                survivors: Vec::new(),
+            }),
+            Obs::Casualties(boundary::BandCasualties {
+                agent,
+                epoch: 4,
+                by: boundary::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+            }),
+            Obs::ChiefKilled(boundary::ChiefKilled {
+                agent,
+                epoch: 4,
+                by: boundary::BY_MOB,
+                killer: (0, 0),
+                op: 901,
+            }),
+            Obs::EnvoyAnswer(boundary::EnvoyAnswer {
+                agent,
+                epoch: 4,
+                answer: boundary::ANSWER_REFUSED,
+                player,
+            }),
+            Obs::TributePaid(boundary::TributePaid {
+                faction: synth::CAMP,
+                agent,
+                epoch: 4,
+                player,
+                op: 902,
+                items: Vec::new(),
+            }),
+            Obs::Looted(boundary::BandLooted {
+                agent,
+                epoch: 4,
+                op: 903,
+                items: Vec::new(),
+            }),
+            Obs::TrainPassed(boundary::TrainPassed {
+                agent,
+                epoch: 4,
+                flags: 0,
+                carriage: 0,
+                train: 7,
+            }),
+        ]
+    };
+    let mut missed = Vec::new();
+    for reached in [Reached::Pages, Reached::Fresh, Reached::Copy] {
+        let mut r = Run::new(36, quiet_goblins());
+        let band = raid_band(&mut r);
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        for o in records(band) {
+            assert_eq!(o.party_epoch(), Some((Party::agent(band), 4)), "{o:?}");
+            let mut c = match reached {
+                Reached::Fresh => {
+                    let mut c =
+                        Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+                    c.begin_replay(false);
+                    c
+                }
+                Reached::Pages | Reached::Copy => restarted(&r),
+            };
+            let mut w = world_from(36, &r.w.save());
+            let at = c.now() + 1;
+            match reached {
+                Reached::Copy => c.ingest_copy(&mut w, &mut NoInfrastructure, &o, at),
+                Reached::Pages | Reached::Fresh => c.ingest(&mut w, &mut NoInfrastructure, &o, at),
+            }
+            c.replay_done();
+            let epoch = c.parties.get(band).map(|x| x.epoch);
+            if epoch < Some(4) {
+                missed.push(format!("{reached:?} {:#06x}: {epoch:?}", o.kind()));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
+/// A raid band of 26 members of its first unit's body, abstract at epoch 0.
+fn band_of_26(r: &mut Run) -> (Handle<Party>, u32) {
+    let band = raid_band(r);
+    let x = &mut r.c.parties[band];
+    let u = x.units[0].0;
+    x.units = vec![(u, 26)];
+    x.start_units = 26;
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(u).body)
+    };
+    (band, body)
+}
+
+fn placed(c: &Conflict, band: Handle<Party>) -> u32 {
+    c.parties[band].spawned.iter().map(|s| s.1).sum()
+}
+
+/// docs/replay-gate.md §5.2 (RP-6, RP-22): a replayed BAND_MATERIALIZED on an engine from its
+/// pages embodies the party at the record's epoch with the quota's members (16 of 26), not every
+/// alive member; a live one changes nothing. At a newer epoch an older embodied epoch's bodies
+/// leave the books, as live `start_fight` drops them (RP-46): no recalled stack. A record below
+/// the party's wave, or of an older epoch, changes nothing.
+#[test]
+fn a_replayed_materialize_embodies_with_what_java_was_commanded() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, _) = band_of_26(&mut r);
+    // Live: nothing.
+    let mut live = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    let at = r.c.now() + 1;
+    live.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 1, 0, 16),
+        at,
+    );
+    assert!(
+        !live.parties[band].embodied,
+        "a live record embodies nothing"
+    );
+    assert_eq!(live.parties[band].epoch, 0);
+    // Replayed, from the pages.
+    let mut back = restarted(&r);
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 1, 0, 16),
+        at,
+    );
+    let x = &back.parties[band];
+    assert!(x.embodied && x.epoch == 1 && x.wave == 1);
+    assert_eq!(x.seen_by, None);
+    assert_eq!(placed(&back, band), 16, "the quota, not all 26");
+    // Below its wave, and an older epoch: nothing.
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 1, 0, 16),
+        at + 1,
+    );
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 0, 3, 16),
+        at + 2,
+    );
+    assert_eq!((back.parties[band].epoch, back.parties[band].wave), (1, 1));
+    assert_eq!(placed(&back, band), 16);
+    // A newer epoch: epoch 1's bodies leave the books unfolded, epoch 2 has the quota.
+    back.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &materialized(band, 2, 0, 16),
+        at + 3,
+    );
+    let x = &back.parties[band];
+    assert_eq!((x.epoch, x.wave), (2, 1));
+    assert!(x.recalled.is_empty(), "no recalled stack: {:?}", x.recalled);
+    assert_eq!(placed(&back, band), 16);
+}
+
+/// RP-22: the same epoch's next wave, replayed. The pages hold the band embodied at epoch 1,
+/// wave 0 placed, 20 alive and 10 of them in Minecraft (6 died before the save). Its wave 1,
+/// decided after the save, is filled from the room the quota leaves: 6. With 2 more deaths in
+/// view journaled before the record, the live engine may have placed 6 or 8 (the deaths read or
+/// not); the honour counts them as placed and fills 6, never above what Java was commanded.
+#[test]
+fn a_same_epoch_wave_is_filled_never_above_what_java_was_commanded() {
+    let fill = |deaths: u32| {
+        let mut r = Run::new(36, quiet_goblins());
+        let (band, body) = band_of_26(&mut r);
+        {
+            let x = &mut r.c.parties[band];
+            let u = x.units[0].0;
+            x.units = vec![(u, 20)];
+            x.epoch = 1;
+            x.embodied = true;
+            x.spawned = vec![(u, 10)];
+            x.wave = 1;
+        }
+        let mut back = restarted(&r);
+        let at = r.c.now() + 1;
+        if deaths > 0 {
+            back.ingest(
+                &mut r.w,
+                &mut NoInfrastructure,
+                &Obs::Casualties(boundary::BandCasualties {
+                    agent: Party::agent(band),
+                    epoch: 1,
+                    by: boundary::BY_MOB,
+                    body,
+                    count: deaths,
+                    killer: (0, 0),
+                }),
+                at,
+            );
+        }
+        let before = placed(&back, band);
+        back.ingest(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &materialized(band, 1, 1, 6),
+            at + 1,
+        );
+        let x = &back.parties[band];
+        assert_eq!((x.epoch, x.wave), (1, 2));
+        (before, placed(&back, band), x.alive())
+    };
+    assert_eq!(fill(0), (10, 16, 20), "the room: 16 less 10 in Minecraft");
+    assert_eq!(fill(2), (8, 14, 18), "6 more, not 8");
 }
 
 /// MZB-142 (re-review P2-2): a player's killing of a band on its walk-off, after it was recalled
@@ -1957,9 +2410,9 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
         count: 2,
         killer: synth::PLAYER,
     });
-    // The restart that replays it: the bodies the pages held are a recalled stack.
+    // The restart that replays it: the bodies the pages held stay embodied (RP-5).
     let mut replayed = restarted(&r);
-    assert!(replayed.replaying);
+    assert!(replayed.replaying());
     // The session that went on: the player left, the band was recalled, its bodies walk off.
     let mut live = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     {
@@ -1967,7 +2420,7 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
         x.recalled = vec![(epoch, std::mem::take(&mut x.spawned))];
         x.embodied = false;
     }
-    assert!(!live.replaying);
+    assert!(!live.replaying());
     let at = r.c.now() + 1;
     for c in [&mut live, &mut replayed] {
         c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at);
@@ -1996,6 +2449,1915 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
         c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at + 2);
         assert_eq!(c.parties[band].alive(), alive - 3);
     }
+}
+
+/// A band recalled at epoch `e`, its bodies walking off, and seen again and embodied at `e + 1`
+/// before that despawn (MZB-131): both stacks hold every alive member. Returns the band, `e` and
+/// the body id of its first unit.
+fn walking_off_and_embodied_again(r: &mut Run) -> (Handle<Party>, u32, u32) {
+    let band = raid_band(r);
+    let e = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.recalled = vec![(x.epoch, x.units.clone())];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch - 1
+    };
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[0].0).body)
+    };
+    (band, e, body)
+}
+
+fn casualty_of(band: Handle<Party>, epoch: u32, body: u32) -> Obs {
+    Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_MOB,
+        body,
+        count: 1,
+        killer: (0, 0),
+    })
+}
+
+/// RP-27 (MZB-131, docs/replay-gate.md §5.9): a casualty finds its stack by the record's epoch. A
+/// death on the walk-off of epoch `e` while the band is embodied again at `e + 1` takes from the
+/// recalled stack of `e` and caps `spawned` at the units left alive (RP-25's cap); one of `e + 1`
+/// takes from `spawned`. Before it the death of `e` was dropped (`party_of` wants the current
+/// epoch), and the despawn of `e` then counted that member as a survivor.
+#[test]
+fn a_walk_off_death_of_an_older_epoch_counts_against_its_own_stack() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, e, body) = walking_off_and_embodied_again(&mut r);
+    let alive = r.c.parties[band].alive();
+    let first = r.c.parties[band].units[0];
+    let at = r.c.now() + 1;
+    r.ingest(casualty_of(band, e, body), at);
+    let x = &r.c.parties[band];
+    assert_eq!(x.alive(), alive - 1, "the walk-off's death is counted");
+    assert_eq!(
+        x.recalled,
+        vec![(e, {
+            let mut s = x.units.clone();
+            s[0].1 = first.1 - 1;
+            s
+        })],
+        "against the recalled stack of its epoch"
+    );
+    assert_eq!(
+        x.spawned[0],
+        (first.0, first.1 - 1),
+        "and the newer epoch's bodies are capped at the alive"
+    );
+    assert_eq!(r.c.stats.casualties, 1);
+    r.ingest(casualty_of(band, e + 1, body), at + 1);
+    let x = &r.c.parties[band];
+    assert_eq!(x.alive(), alive - 2);
+    assert_eq!(
+        x.spawned[0],
+        (first.0, first.1 - 2),
+        "a death of e + 1 takes from spawned"
+    );
+    assert_eq!(
+        x.recalled[0].1[0],
+        (first.0, first.1 - 1),
+        "and not from e's stack"
+    );
+    assert_eq!(r.c.stats.casualties, 2);
+}
+
+/// RP-27 (the re-review's item 7): a walk-off death of `e` while the band is embodied again at
+/// `e + 1`, and a plugin that despawns `e + 1` first, holding every body it placed. The cap on
+/// `spawned` keeps the death: `alive - spawned + min(spawned, survivors)` with `spawned` capped
+/// at the alive gives the alive, where the whole `spawned` gave the death back. `e`'s despawn
+/// then counts no more deaths. Control: the bridge's order (ConflictBridge ends `e` before it
+/// materializes `e + 1`), `e` despawned first, whose despawn clamps `spawned` itself.
+#[test]
+fn a_walk_off_death_is_not_undone_when_the_newer_epoch_despawns_first() {
+    for newer_first in [true, false] {
+        let mut r = Run::new(36, quiet_goblins());
+        let (band, e, body) = walking_off_and_embodied_again(&mut r);
+        let alive = r.c.parties[band].alive();
+        let at = r.c.now() + 1;
+        // Java holds every body of `e + 1` it placed, and those of `e` but the one that died.
+        let newer = despawn_with(&r, band, e + 1, 0);
+        let older = despawn_with(&r, band, e, 1);
+        r.ingest(casualty_of(band, e, body), at);
+        assert_eq!(r.c.parties[band].alive(), alive - 1);
+        let (one, two) = if newer_first {
+            (newer, older)
+        } else {
+            (older, newer)
+        };
+        r.ingest(one, at + 1);
+        assert_eq!(
+            r.c.parties[band].alive(),
+            alive - 1,
+            "the first despawn keeps the death, newer first {newer_first}"
+        );
+        r.ingest(two, at + 2);
+        let x = &r.c.parties[band];
+        assert!(!x.embodied && x.recalled.is_empty() && x.spawned.is_empty());
+        assert_eq!(
+            x.alive(),
+            alive - 1,
+            "and so does the second, newer first {newer_first}"
+        );
+        assert_eq!(r.c.stats.casualties, 1);
+    }
+}
+
+/// RP-27's control: deaths of the newer epoch only take from `spawned`, as they did before.
+#[test]
+fn a_death_of_the_newer_epoch_counts_against_spawned_alone() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, e, body) = walking_off_and_embodied_again(&mut r);
+    let alive = r.c.parties[band].alive();
+    let first = r.c.parties[band].units[0];
+    let at = r.c.now() + 1;
+    r.ingest(casualty_of(band, e + 1, body), at);
+    r.ingest(casualty_of(band, e + 1, body), at + 1);
+    let x = &r.c.parties[band];
+    assert_eq!(x.alive(), alive - 2);
+    assert_eq!(x.spawned[0], (first.0, first.1 - 2));
+    assert_eq!(
+        x.recalled,
+        vec![(e, {
+            let mut s = x.units.clone();
+            s[0].1 = first.1;
+            s
+        })],
+        "the walk-off's stack is untouched"
+    );
+    assert_eq!(r.c.stats.casualties, 2);
+}
+
+/// A raid band of 6 members of its first unit's body, embodied at epoch 2 with all 6 placed.
+fn six_placed(r: &mut Run) -> (Handle<Party>, u32) {
+    let band = raid_band(r);
+    let x = &mut r.c.parties[band];
+    let u = x.units[0].0;
+    x.units = vec![(u, 6)];
+    x.start_units = 6;
+    x.epoch = 2;
+    x.embodied = true;
+    x.spawned = vec![(u, 6)];
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(u).body)
+    };
+    (band, body)
+}
+
+/// docs/replay-gate.md §5.7 (RP-9, RP-25): a copied BAND_CASUALTIES (an ended session's record,
+/// S4p's REASSERT) of a band embodied again with all 6 placed counts the death against its alive
+/// units and caps `spawned` at them. Java's despawn of the 6 it holds then leaves 5: without the
+/// cap `spawned` stays 6 and the despawn gives `5 - 6 + min(6, 6)` = 6, the death undone. Control:
+/// a live death in view and a despawn of 5 survivors, 5.
+#[test]
+fn a_copied_casualty_is_not_undone_by_the_next_despawn() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, body) = six_placed(&mut r);
+    let at = r.c.now() + 1;
+    let copy = casualty_of(band, 1, body);
+    r.c.ingest_copy(&mut r.w, &mut NoInfrastructure, &copy, at);
+    assert_eq!(r.c.parties[band].alive(), 5, "the copy counts");
+    assert_eq!(r.c.stats.casualties, 1);
+    let despawn = despawn_with(&r, band, 2, 0);
+    let Obs::Dematerialized(d) = &despawn else {
+        unreachable!()
+    };
+    assert_eq!(d.survivors[0].1, 5);
+    // Java holds 6 bodies of epoch 2: all 6 come back.
+    let mut six = d.clone();
+    six.survivors[0].1 = 6;
+    r.ingest(Obs::Dematerialized(six), at + 1);
+    let x = &r.c.parties[band];
+    assert!(!x.embodied);
+    assert_eq!(x.alive(), 5, "the copied death is not undone");
+
+    // Control: the death in view, live, and 5 survivors.
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, body) = six_placed(&mut r);
+    let at = r.c.now() + 1;
+    r.ingest(casualty_of(band, 2, body), at);
+    assert_eq!(r.c.parties[band].alive(), 5);
+    let despawn = despawn_with(&r, band, 2, 0);
+    r.ingest(despawn, at + 1);
+    assert_eq!(r.c.parties[band].alive(), 5, "control");
+}
+
+/// docs/replay-gate.md §2.3 (the conflict copy gap, RP-8, RP-9): a copied BAND_CASUALTIES names
+/// a body of an ended session. Replayed on an engine from its pages, it counts once against a
+/// band that is abstract (no stack to take from, and its epoch floor rises to the record's, so the
+/// replay end leaves the band at epoch 3), and against one embodied again at a newer epoch, whose
+/// stack is untouched (3 placed of 5 alive). Control: the same record through `ingest` is a
+/// straggler both times (the band's epoch is not the record's and no recalled stack has it),
+/// whose epoch still reaches the floor (RP-57).
+#[test]
+fn a_copied_casualty_counts_against_an_abstract_band_once() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, body) = six_placed(&mut r);
+    let u = r.c.parties[band].units[0].0;
+    {
+        let x = &mut r.c.parties[band];
+        x.epoch = 0;
+        x.embodied = false;
+        x.spawned.clear();
+    }
+    let at = r.c.now() + 1;
+    let record = casualty_of(band, 3, body);
+    for copy in [true, false] {
+        let mut back = restarted(&r);
+        if copy {
+            back.ingest_copy(&mut r.w, &mut NoInfrastructure, &record, at);
+        } else {
+            back.ingest(&mut r.w, &mut NoInfrastructure, &record, at);
+        }
+        let x = &back.parties[band];
+        assert_eq!(x.alive(), if copy { 5 } else { 6 }, "abstract, copy {copy}");
+        assert!(x.spawned.is_empty() && x.recalled.is_empty());
+        assert_eq!(back.stats.casualties, u64::from(copy));
+        back.replay_done();
+        let x = &back.parties[band];
+        assert_eq!(x.alive(), if copy { 5 } else { 6 }, "counted once");
+        assert_eq!(x.epoch, 3, "the record's floor, copy {copy}");
+    }
+    {
+        let x = &mut r.c.parties[band];
+        x.epoch = 4;
+        x.embodied = true;
+        x.spawned = vec![(u, 3)];
+    }
+    for copy in [true, false] {
+        let mut back = restarted(&r);
+        if copy {
+            back.ingest_copy(&mut r.w, &mut NoInfrastructure, &record, at);
+        } else {
+            back.ingest(&mut r.w, &mut NoInfrastructure, &record, at);
+        }
+        let x = &back.parties[band];
+        assert_eq!(x.alive(), if copy { 5 } else { 6 }, "embodied, copy {copy}");
+        assert!(x.embodied && x.epoch == 4);
+        assert_eq!(
+            x.spawned,
+            vec![(u, 3)],
+            "the newer epoch's stack is untouched"
+        );
+        assert_eq!(back.stats.casualties, u64::from(copy));
+    }
+}
+
+/// The abstract district raids an infrastructure was asked for (`Infrastructure::raid`): one
+/// tick per raid, whatever its classes, and the members each sent, its classes summed. With
+/// `rout`, every raider is held at the walls (none survive); otherwise the raid has no outcome.
+#[derive(Default)]
+struct Walls {
+    raids: std::collections::BTreeSet<Tick>,
+    members: BTreeMap<Tick, u32>,
+    rout: bool,
+}
+
+impl rtsim_ecology::infra::Infrastructure for Walls {
+    fn districts_near(
+        &mut self,
+        _: u16,
+        _: i64,
+        _: i64,
+        _: i64,
+    ) -> Vec<rtsim_ecology::infra::DistrictSite> {
+        Vec::new()
+    }
+    fn raid(
+        &mut self,
+        t: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_ecology::infra::RaidOutcome> {
+        self.raids.insert(t.at);
+        *self.members.entry(t.at).or_insert(0) += t.count;
+        self.rout.then(|| rtsim_ecology::infra::RaidOutcome {
+            survived: 0.0,
+            floor: None,
+            untested: false,
+            stolen: rtsim_industry::ids::GoodVec::new(),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
+    }
+    fn good_name(&self, _: rtsim_industry::ids::Good) -> Option<String> {
+        None
+    }
+    fn trains_crossed(
+        &mut self,
+        _: u16,
+        _: &[(i32, i32)],
+        _: Tick,
+        _: Tick,
+    ) -> Vec<rtsim_ecology::infra::TrainSighting> {
+        Vec::new()
+    }
+}
+
+/// [`Run::run`] on `infra`, the plugin's records also kept in `journal` with when Java wrote
+/// them.
+fn run_journaled(
+    r: &mut Run,
+    infra: &mut dyn rtsim_ecology::infra::Infrastructure,
+    to: Tick,
+    journal: &mut Vec<(Tick, Obs)>,
+) {
+    let mut t = r.c.now();
+    while t < to {
+        let next = [
+            r.c.next_due(),
+            r.plugin.next_due(),
+            r.watch.then_some(r.next_obs),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(to)
+        .clamp(t + 1, to);
+        for (at, o) in r.plugin.due(next) {
+            let o = r.refused(o);
+            r.c.ingest(&mut r.w, infra, &o, at);
+            journal.push((at, o));
+        }
+        r.c.run_until(&mut r.w, infra, next);
+        if r.watch && next >= r.next_obs {
+            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.next_obs = next + 1_200;
+        }
+        r.flush(next);
+        t = next;
+    }
+}
+
+/// What a raid's arrival came to: the abstract raids (by when), the casualties counted, the
+/// raids fought in view, and the camp's pool on day 9 (its closed form, so that a band pooled
+/// earlier or later, or with other members, shows).
+#[derive(Debug, PartialEq)]
+struct Arrival {
+    raids: Vec<Tick>,
+    casualties: u64,
+    watched: u64,
+    pool: f64,
+}
+
+/// RP-23 (the review's amendment b, docs/replay-gate.md §6.1): a raid on the refinery, the pages
+/// saved while it marches there unseen. `watched`: the player stands at the refinery from the
+/// save on, so the band is fought there (a quarter of each wave at the base falls) and walks
+/// home. The session goes on until the band is home. `crash`: the session ends there instead,
+/// and a restart from the pages, the world's and the engine's, replays the plugin's records (the
+/// player's position forgotten, as the arm forgets it), ends its replay and runs on two days
+/// with nobody near. `restart`: also a second restart, from both pages saved once the replay
+/// holds the arrival, whose clock then runs that many ticks before the next record (past the
+/// poll: it arrives again first). Since RP-42 the host takes no page while replaying, so this
+/// restart happens only here, at engine level: it keeps `held_since`'s inference from the pages
+/// tested as a defence.
+/// `straggler`: a body of the band's older epoch dies in its fight ([`straggler`], RP-46).
+fn a_raid_arriving_after_the_save(
+    watched: bool,
+    crash: bool,
+    restart: Option<u64>,
+    straggler: bool,
+) -> Arrival {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let f = r.f;
+    let now = r.c.now();
+    r.c.factions[f as usize].pool = 10.0;
+    r.c.factions[f as usize].pool_at = now;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (casualties, raids_watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
+    journal.clear();
+    r.watch = watched;
+    r.next_obs = r.c.now();
+    let mut end = arrival;
+    let mut straggled = !straggler;
+    while r.c.parties.get(band).is_some() {
+        end += 600;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+        if !straggled && fight_materialized(&r, band, &journal) {
+            straggled = true;
+            self::straggler(&mut r, &mut walls, band, &mut journal);
+        }
+    }
+    assert!(straggled, "the band fought");
+    // Java journals other records all along: one past the band's, so that the replayed window
+    // holds its arrival whatever the band's records are.
+    journal.push((end, fillers_casualty()));
+    let arrival_of = |c: &Conflict, walls: &Walls| Arrival {
+        raids: walls.raids.iter().copied().collect(),
+        casualties: c.stats.casualties - casualties,
+        watched: c.stats.raids_watched - raids_watched,
+        pool: c.pool_at(f, day(9.0)),
+    };
+    if !crash {
+        return arrival_of(&r.c, &walls);
+    }
+    // The restart: the world and the engine from the pages (the world the live session went on
+    // with is not the one Java restarts with).
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let tun = r.c.tun.clone();
+    let cultures = r.c.cultures.clone();
+    let mut back = Conflict::load(tun.clone(), cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    let mut restarted_once = restart.is_none();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        if let Some(x) = back.parties.get(band) {
+            assert!(
+                (x.seg as usize) < x.route.len(),
+                "seg past the route: {} of {}",
+                x.seg,
+                x.route.len()
+            );
+        }
+        if !restarted_once && back.now() > arrival {
+            // Pages saved while the replay holds the arrival, and a restart from them.
+            restarted_once = true;
+            let phase = back.parties.get(band).map(|x| x.phase);
+            assert_eq!(phase, Some(Phase::Out), "held, not resolved");
+            assert!(walls.raids.is_empty());
+            let x = &back.parties[band];
+            assert_eq!(x.seg as usize + 2, x.route.len(), "on its last segment");
+            let target = *x.route.last().unwrap();
+            assert_eq!(back.party_pos(band, back.now()), target, "where it arrived");
+            back = Conflict::load(tun.clone(), cultures.clone(), &back.save()).unwrap();
+            w = world_from(36, &w.save());
+            back.begin_replay(true);
+            let to = back.now() + restart.unwrap_or(0);
+            back.run_until(&mut w, &mut walls, to);
+            assert_eq!(back.parties[band].phase, Phase::Out, "held again");
+        }
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(restarted_once);
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.run_until(&mut w, &mut walls, end + 2 * TICKS_PER_DAY);
+    let mut a = arrival_of(&back, &walls);
+    if !watched {
+        // The journal goes on past the hold's slack: no fight answered it, and it resolves
+        // there, while replaying (RP-48).
+        let slack = arrival + REPLAY_HOLD_SLACK_TICKS;
+        assert!(
+            a.raids.iter().all(|&t| t == slack),
+            "at the hold's slack ({slack:?}): {a:?}"
+        );
+        // Resolved at the slack, the band comes home later than in the session that went on:
+        // its pool is not compared.
+        a.pool = f64::NAN;
+    }
+    a
+}
+
+/// fixes4 item 5 (RP-54): a raid on the refinery, the pages saved while it marches there
+/// unseen, its arrival in view of the player, and Java refusing every wave of its fight
+/// ([`Run::refuse`]). The session that went on fights unembodied to the fight's end, then walks
+/// home. `crash`: a restart from the pages replays the records, which hold the arrival. Read
+/// 600 ticks past the fight's end, the replay still running: the band's phase, whether embodied,
+/// epoch, phase end, fights watched since the save, and abstract raids since the save.
+fn a_refused_fight_after_the_save(crash: bool) -> (Phase, bool, u32, Tick, u64, Vec<Tick>) {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.refuse = Some(band);
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (watched, saved_at) = (r.c.stats.raids_watched, r.c.now());
+    journal.clear();
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let refused = journal.iter().any(
+        |(_, o)| matches!(o, Obs::SpawnRejected(x) if x.agent == Party::agent(band) && x.wave == 0),
+    );
+    assert!(refused, "its fight's first wave refused");
+    journal.push((end, fillers_casualty()));
+    let read = |c: &Conflict, walls: &Walls| {
+        let x = &c.parties[band];
+        let raids = walls.raids.range(saved_at + 1..).copied().collect();
+        (
+            x.phase,
+            x.embodied,
+            x.epoch,
+            x.until,
+            c.stats.raids_watched - watched,
+            raids,
+        )
+    };
+    if !crash {
+        return read(&r.c, &walls);
+    }
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    read(&back, &walls)
+}
+
+/// fixes4 item 5 (RP-54): a held arrival whose fight Java refused (BAND_SPAWN_REJECTED of its
+/// first wave, at the fight's epoch) is the last session's fight, as an honoured
+/// BAND_MATERIALIZED is: the refusal ends the hold. The replay used to read the refusal against
+/// the party's older epoch, keep the hold and resolve the arrival unwatched at the slack, where
+/// the session that went on fought.
+#[test]
+fn a_held_arrivals_refused_fight_is_fought_when_replayed() {
+    let live = a_refused_fight_after_the_save(false);
+    assert_eq!((live.1, live.4, live.5.len()), (false, 1, 0), "{live:?}");
+    assert_eq!(a_refused_fight_after_the_save(true), live);
+}
+
+/// How a held arrival's fight records come in [`a_held_arrivals_fight`]'s replay.
+#[derive(Clone, Copy, Debug)]
+enum Records {
+    /// Java's journal stalls at the fight's first record: it and every record after it come
+    /// later than the session that went on had them, the fight's at the held arrival + this.
+    FightAt(u64),
+    /// The band's sighting, decided the tick before its arrival, journaled in the fight's step:
+    /// its record at the fight's tick, just before it (RP-56's case B).
+    SightingWithTheFight,
+    /// Java refuses the fight's first wave (`every_wave`: and every later one; else they are
+    /// placed), and its journal stalls at that refusal: it and every record after it come later
+    /// than the session that went on had them, the refusal at the held arrival + `at`.
+    Refused { at: u64, every_wave: bool },
+}
+
+/// What [`a_held_arrivals_fight`] came to: the session that went on's arrival and the replay's
+/// (the replay's pool not compared), the items each took from players, the replay's fight
+/// records that found no hold, and the arrival's tick.
+#[derive(Debug)]
+struct HeldFight {
+    live: Arrival,
+    back: Arrival,
+    live_loot: i128,
+    back_loot: i128,
+    unheld: u64,
+    arrival: Tick,
+}
+
+/// fixes4 item 2 (RP-56): a raid on the refinery, the pages saved while it marches there unseen,
+/// the player watching from `watch` ticks before its arrival, so the band is seen on its road
+/// and fought at its arrival; once its fight's first record is in, its bodies carry 5 items off
+/// a player's container (BAND_LOOTED at the fight's epoch). The session goes on until the band
+/// is home. A restart from the pages replays the records as `records` has them, ends its replay
+/// and runs on two days.
+fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    // Java places one of the fight's waves, whose bodies loot.
+    let placed = !matches!(
+        records,
+        Records::Refused {
+            every_wave: true,
+            ..
+        }
+    );
+    if let Records::Refused { every_wave, .. } = records {
+        r.refuse = Some(band);
+        r.refuse_wave0_only = !every_wave;
+    }
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (casualties, watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
+    journal.clear();
+    run_journaled(
+        &mut r,
+        &mut walls,
+        Tick(arrival.0 - watch - 1),
+        &mut journal,
+    );
+    r.watch = true;
+    r.next_obs = Tick(arrival.0 - watch);
+    let mut end = arrival;
+    let mut looted = false;
+    while r.c.parties.get(band).is_some() {
+        end += 100;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+        if !looted && r.c.parties.contains(band) && fight_materialized(&r, band, &journal) {
+            looted = true;
+            let iron =
+                r.w.goods
+                    .find("iron")
+                    .or_else(|| r.w.goods.ids().next())
+                    .unwrap();
+            let o = Obs::Looted(boundary::BandLooted {
+                agent: Party::agent(band),
+                epoch: r.c.parties[band].epoch,
+                op: 77,
+                items: vec![boundary::Item {
+                    item: item_of(iron),
+                    count: 5,
+                }],
+            });
+            r.c.ingest(&mut r.w, &mut walls, &o, end);
+            journal.push((end, o));
+        }
+    }
+    assert_eq!(looted, placed, "the band fought, its bodies placed");
+    let loot = |c: &Conflict| c.ledger.from_players.values().sum::<i128>();
+    let live = Arrival {
+        raids: walls.raids.iter().copied().collect(),
+        casualties: r.c.stats.casualties - casualties,
+        watched: r.c.stats.raids_watched - watched,
+        pool: f64::NAN,
+    };
+    let live_loot = loot(&r.c);
+    let fight = journal
+        .iter()
+        .position(|(_, o)| {
+            matches!(o, Obs::Materialized(m)
+                if m.agent == Party::agent(band) && m.flags & u32::from(boundary::BAND_FIGHT) != 0)
+        })
+        .unwrap_or(journal.len());
+    assert_eq!(fight < journal.len(), placed, "the fight's record");
+    let mut late = 0;
+    match records {
+        Records::FightAt(at) => {
+            late = (arrival.0 + at)
+                .checked_sub(journal[fight].0.0)
+                .expect("recorded after its decision");
+            for (t, _) in &mut journal[fight..] {
+                *t += late;
+            }
+        }
+        Records::Refused { at, .. } => {
+            let refused = journal
+                .iter()
+                .position(|(_, o)| {
+                    matches!(o, Obs::SpawnRejected(x) if x.agent == Party::agent(band) && x.wave == 0)
+                })
+                .expect("the first wave refused");
+            assert!(
+                refused < fight,
+                "refused before a later wave's record, if any"
+            );
+            late = (arrival.0 + at)
+                .checked_sub(journal[refused].0.0)
+                .expect("recorded after its decision");
+            for (t, _) in &mut journal[refused..] {
+                *t += late;
+            }
+        }
+        Records::SightingWithTheFight => {
+            let (seen, (at, o)) = journal[..fight]
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (_, o))| matches!(o, Obs::Materialized(m) if m.agent == Party::agent(band)))
+                .expect("seen on its road");
+            assert!(
+                matches!(o, Obs::Materialized(m) if m.flags & u32::from(boundary::BAND_FIGHT) == 0),
+                "a sighting's record"
+            );
+            assert!(
+                *at >= arrival && seen + 1 == fight,
+                "seen the tick before the arrival: {at:?}, the arrival {arrival:?}"
+            );
+            journal[seen].0 = journal[fight].0;
+        }
+    }
+    journal.push((end + late, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let (casualties, watched) = (back.stats.casualties, back.stats.raids_watched);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.run_until(&mut w, &mut walls, end + late + 2 * TICKS_PER_DAY);
+    HeldFight {
+        live,
+        back: Arrival {
+            raids: walls.raids.iter().copied().collect(),
+            casualties: back.stats.casualties - casualties,
+            watched: back.stats.raids_watched - watched,
+            pool: f64::NAN,
+        },
+        live_loot,
+        back_loot: loot(&back),
+        unheld: back.stats.fights_unheld,
+        arrival,
+    }
+}
+
+impl HeldFight {
+    /// The replay's fight as the session that went on had it, every record held.
+    fn assert_as_live(&self) {
+        let of = |a: &Arrival, loot: i128| (a.raids.clone(), a.casualties, a.watched, loot);
+        assert_eq!(
+            (of(&self.back, self.back_loot), self.unheld),
+            (of(&self.live, self.live_loot), 0),
+            "{self:?}"
+        );
+    }
+}
+
+/// [`a_held_arrivals_fight`] past the hold's slack: the replay resolved the arrival unwatched
+/// there, once, and the fight's records count against nothing: no casualty, no item, no fight
+/// watched, the record counted as unheld.
+fn assert_resolved_at_the_slack(h: &HeldFight) {
+    let slack = h.arrival + REPLAY_HOLD_SLACK_TICKS;
+    assert_eq!(
+        (
+            h.back.raids.as_slice(),
+            h.back.casualties,
+            h.back.watched,
+            h.back_loot,
+            h.unheld
+        ),
+        ([slack].as_slice(), 0, 0, 0, 1),
+        "{h:?}"
+    );
+}
+
+/// fixes4 item 2 (RP-56): a held arrival's fight recorded past the hold's slack is no double.
+/// The replay resolves the arrival unwatched at the slack (one abstract raid), and the late
+/// record, a fight's by its echoed flag, finds no hold: counted, the epoch floor raised, the
+/// band not embodied, so the fight's casualties and loot count against nothing. The replay used
+/// to embody the band at the record's epoch and count them on top of the raid.
+#[test]
+fn a_held_arrivals_fight_recorded_after_the_slack_is_no_double() {
+    let h = a_held_arrivals_fight(3_000, Records::FightAt(REPLAY_HOLD_SLACK_TICKS + 600));
+    assert!(h.live.raids.is_empty() && h.live.watched == 1, "{h:?}");
+    assert_resolved_at_the_slack(&h);
+}
+
+/// fixes4 item 2 (RP-56): the slack's edge. A fight recorded one tick inside it is the held
+/// arrival's fight, as the session that went on had it (watched, its casualties and loot
+/// counted once, no abstract raid); one exactly at `since` + the slack is past it: the poll
+/// there resolved the arrival unwatched, and the record finds no hold, as one after the slack.
+#[test]
+fn a_held_arrivals_fight_recorded_exactly_at_the_slack_finds_no_hold() {
+    let h = a_held_arrivals_fight(3_000, Records::FightAt(REPLAY_HOLD_SLACK_TICKS - 1));
+    assert!(h.live.casualties > 0 && h.live_loot > 0, "{h:?}");
+    h.assert_as_live();
+    assert_resolved_at_the_slack(&a_held_arrivals_fight(
+        3_000,
+        Records::FightAt(REPLAY_HOLD_SLACK_TICKS),
+    ));
+}
+
+/// fixes6 item 4 (RP-63): a held arrival's fight whose first wave alone Java refused, the
+/// refusal recorded past the hold's slack. The replay resolves the arrival unwatched at the slack
+/// (one abstract raid), and the late refusal finds no hold: it marks the fight's epoch as unheld,
+/// as a late fight record does (RP-56), so that the later waves' casualties and loot count
+/// against nothing. The replay used to mark nothing at the refusal.
+#[test]
+fn a_held_arrivals_refused_first_wave_recorded_after_the_slack_is_no_double() {
+    let h = a_held_arrivals_fight(
+        3_000,
+        Records::Refused {
+            at: REPLAY_HOLD_SLACK_TICKS + 600,
+            every_wave: false,
+        },
+    );
+    assert!(
+        h.live.raids.is_empty() && h.live.watched == 1 && h.live.casualties > 0 && h.live_loot > 0,
+        "{h:?}"
+    );
+    assert_resolved_at_the_slack(&h);
+}
+
+/// fixes6 item 4 (RP-63): as above, every wave refused, so the late refusal is the fight's only
+/// record. It is counted as a fight record that found no hold, once.
+#[test]
+fn a_held_arrivals_fight_refused_whole_and_recorded_after_the_slack_counts_as_unheld() {
+    let h = a_held_arrivals_fight(
+        3_000,
+        Records::Refused {
+            at: REPLAY_HOLD_SLACK_TICKS + 600,
+            every_wave: true,
+        },
+    );
+    assert!(h.live.watched == 1 && h.live_loot == 0, "{h:?}");
+    assert_resolved_at_the_slack(&h);
+}
+
+/// fixes4 item 2 (RP-56, the lead's case B): the band seen the tick before its arrival, the
+/// arrival watched, both journaled in one step, so the sighting's record and the fight's come
+/// at the same tick inside the hold, the sighting's first. The sighting only embodies and keeps
+/// the hold; the fight's record ends it: one fight, its casualties and loot counted once, as in
+/// the session that went on, and no abstract raid. Ending the hold at the sighting (resolving
+/// the arrival unwatched there) would have raided as well as fought.
+#[test]
+fn a_sighting_journaled_with_a_held_arrivals_fight_is_no_double() {
+    let h = a_held_arrivals_fight(1, Records::SightingWithTheFight);
+    assert!(
+        h.live.raids.is_empty() && h.live.watched == 1 && h.live.casualties > 0 && h.live_loot > 0,
+        "{h:?}"
+    );
+    h.assert_as_live();
+}
+
+/// Whether `band` fights, its fight's BAND_MATERIALIZED journaled.
+fn fight_materialized(r: &Run, band: Handle<Party>, journal: &[(Tick, Obs)]) -> bool {
+    let x = &r.c.parties[band];
+    x.phase == Phase::Fighting
+        && journal.iter().any(|(_, o)| {
+            matches!(o, Obs::Materialized(m) if m.agent == Party::agent(band) && m.epoch == x.epoch)
+        })
+}
+
+/// RP-46 (the fix round's item 6): a body of `band`'s epoch before its fight's dies, after the
+/// fight's BAND_MATERIALIZED: a straggler Java still had. The band was seen on its road at that
+/// epoch, and `start_fight` took the next without folding its bodies into a recalled stack, so
+/// live the death counts against no stack.
+fn straggler(r: &mut Run, walls: &mut Walls, band: Handle<Party>, journal: &mut Vec<(Tick, Obs)>) {
+    let x = &r.c.parties[band];
+    let older = x.epoch - 1;
+    let seen = journal.iter().any(|(_, o)| {
+        matches!(o, Obs::Materialized(m)
+            if m.agent == Party::agent(band) && m.epoch == older && m.spawned > 0)
+    });
+    assert!(seen, "seen on its road at epoch {older}");
+    let c = r.c.cultures.get(0).clone();
+    let o = Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch: older,
+        by: boundary::BY_MOB,
+        body: body_id(&r.c.cultures, &c.unit(x.units[0].0).body),
+        count: 1,
+        killer: (0, 0),
+    });
+    let at = r.c.now();
+    let casualties = r.c.stats.casualties;
+    r.c.ingest(&mut r.w, walls, &o, at);
+    assert_eq!(r.c.stats.casualties, casualties, "live, no stack");
+    journal.push((at, o));
+}
+
+/// A filler record: a casualty of a band the engine never had.
+fn fillers_casualty() -> Obs {
+    Obs::Casualties(boundary::BandCasualties {
+        agent: 0,
+        epoch: 0,
+        by: boundary::BY_MOB,
+        body: 0,
+        count: 1,
+        killer: (0, 0),
+    })
+}
+
+/// fixes4 item 1 (RP-51): the largest gap between a live watched fight's decision
+/// (`start_fight`) and its first BAND_MATERIALIZED, the data RP-48's slack is set from
+/// (`ConflictStats::fight_record_gap_max`). A raid on the refinery, the player there from 3,000
+/// ticks before its arrival: the band is seen on its road (a sighting, not measured) and fought
+/// at its arrival, and the plugin answers each command a tick after it. A later record of the
+/// fight's epoch measures nothing: only the first answers the decision.
+#[test]
+fn a_watched_fights_record_gap_is_measured_from_its_decision() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.c.log_enabled = true;
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let mut end = r.c.now();
+    while !fight_materialized(&r, band, &journal) {
+        end += 100;
+        assert!(end < arrival + 6_000, "the band fought");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    let epoch = r.c.parties[band].epoch;
+    let decided =
+        r.c.log
+            .iter()
+            .find(|l| l.what.contains("arrives where a player watches"))
+            .map(|l| l.tick)
+            .expect("the fight's decision");
+    let records: Vec<(u32, u64)> = journal
+        .iter()
+        .filter_map(|(at, o)| match o {
+            Obs::Materialized(m) if m.agent == Party::agent(band) => Some((m.epoch, at.0)),
+            _ => None,
+        })
+        .collect();
+    assert!(records[0].0 < epoch, "seen on its road first: {records:?}");
+    let fought = records
+        .iter()
+        .find(|(e, _)| *e == epoch)
+        .expect("the fight's record")
+        .1;
+    assert!(fought > decided, "{records:?}, decided at {decided}");
+    assert_eq!(r.c.stats.fight_record_gap_max, fought - decided);
+    r.ingest(materialized(band, epoch, 1, 0), Tick(decided + 5_000));
+    assert_eq!(
+        r.c.stats.fight_record_gap_max,
+        fought - decided,
+        "a later wave's record measures nothing"
+    );
+}
+
+/// RP-23 (amendment b): a raid reaching a watched target in the replayed window, its
+/// BAND_MATERIALIZED and casualties replayed: resolved once, by the fight (no abstract raid), its
+/// casualties counted, and its pool as the session that went on left it.
+#[test]
+fn a_watched_arrival_in_the_replayed_window_is_resolved_once() {
+    let live = a_raid_arriving_after_the_save(true, false, None, false);
+    assert!(live.raids.is_empty(), "fought, not raided: {live:?}");
+    assert_eq!(live.watched, 1);
+    assert!(live.casualties >= 2, "{live:?}");
+    assert_eq!(
+        a_raid_arriving_after_the_save(true, true, None, false),
+        live
+    );
+}
+
+/// RP-23: the same with a restart from pages saved while the replay holds the arrival: its
+/// fight's record comes before the poll arrives again (found by the pages' `seg` and route), and
+/// after it (the map again). The host takes no such page since RP-42 (rtsim-jni's
+/// `a_held_arrival_across_a_clean_close_before_the_replay_end_is_resolved_once`); this restart,
+/// at engine level, keeps `held_since`'s inference, the defence, tested.
+#[test]
+fn a_held_arrival_survives_a_restart_from_pages_saved_mid_replay() {
+    let live = a_raid_arriving_after_the_save(true, false, None, false);
+    assert_eq!(
+        a_raid_arriving_after_the_save(true, true, Some(0), false),
+        live
+    );
+    assert_eq!(
+        a_raid_arriving_after_the_save(true, true, Some(50), false),
+        live
+    );
+}
+
+/// RP-46 (the fix round's item 6): a straggler of the band's older epoch dies in its fight: live
+/// it counts against no stack, and so replayed. The replay's honoured fight used to fold the
+/// older epoch's bodies into its recalled stack, which counted the death.
+#[test]
+fn a_straggler_of_an_older_epoch_counts_as_live_when_replayed() {
+    let live = a_raid_arriving_after_the_save(true, false, None, true);
+    assert_eq!(
+        live,
+        a_raid_arriving_after_the_save(true, false, None, false)
+    );
+    assert_eq!(a_raid_arriving_after_the_save(true, true, None, true), live);
+}
+
+/// RP-23's control: an unwatched arrival in the window resolves abstractly once (and once in the
+/// session that went on), at the hold's slack (RP-48): the journal goes on past it.
+#[test]
+fn an_unwatched_arrival_in_the_replayed_window_is_resolved_once_at_the_holds_slack() {
+    let live = a_raid_arriving_after_the_save(false, false, None, false);
+    assert_eq!(live.raids.len(), 1, "{live:?}");
+    assert_eq!((live.watched, live.casualties), (0, 0));
+    let back = a_raid_arriving_after_the_save(false, true, None, false);
+    assert_eq!(back.raids.len(), 1, "{back:?}");
+    assert_eq!((back.watched, back.casualties), (0, 0));
+}
+
+/// RP-23 (§6.1): a siege's next round is held as an arrival is. A siege on the refinery, nobody
+/// near, waiting after its first round when the pages are saved; its next round comes in the
+/// replayed window, the journal's last record `past` ticks after it. The session that went on
+/// raids at the round. The replay holds it: with the last record inside the hold's slack it
+/// raids nothing while replaying, and the round comes once, after the replay end; past it, the
+/// round resolves once at the slack (RP-48). Returns the raids after the save, those while
+/// replaying, and the replay end (the round's tick without a crash).
+fn a_siege_round_after_the_save(crash: bool, past: u64) -> (Vec<Tick>, Vec<Tick>, Tick) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let mut to = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        to += 600;
+        assert!(to < day(6.0), "the siege waits at its target");
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    assert_eq!(walls.raids.len(), 1, "its first round");
+    let x = &r.c.parties[band];
+    let round = x.until;
+    assert!(round < x.bored_at, "a next round, not bored");
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let end = round + past;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let after = |walls: &Walls| -> Vec<Tick> {
+        walls
+            .raids
+            .iter()
+            .copied()
+            .filter(|&t| t > saved_at)
+            .collect()
+    };
+    if !crash {
+        return (after(&walls), Vec::new(), round);
+    }
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in journal.iter().filter(|(at, _)| *at > saved_at) {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+    }
+    assert_eq!(back.parties[band].phase, Phase::Waiting, "held or waiting");
+    let replaying = after(&walls);
+    let replay_end = back.now();
+    back.resend_notices();
+    back.run_until(&mut w, &mut walls, end + 600);
+    (after(&walls), replaying, replay_end)
+}
+
+#[test]
+fn a_siege_round_in_the_replayed_window_waits_for_the_replay_end() {
+    let past = REPLAY_HOLD_SLACK_TICKS / 2;
+    let (live, _, round) = a_siege_round_after_the_save(false, past);
+    assert_eq!(live, vec![round], "the session that went on");
+    let (back, replaying, replay_end) = a_siege_round_after_the_save(true, past);
+    assert!(replaying.is_empty(), "nothing raided while replaying");
+    assert_eq!(back.len(), 1, "once: {back:?}");
+    assert!(back[0] >= replay_end, "after the replay end: {back:?}");
+}
+
+/// RP-48: the same with the journal going on past the hold's slack: no fight answered the hold,
+/// so the round resolves there, once, while replaying.
+#[test]
+fn a_siege_round_in_the_replayed_window_resolves_at_the_holds_slack() {
+    let past = REPLAY_HOLD_SLACK_TICKS + 600;
+    let (live, _, round) = a_siege_round_after_the_save(false, past);
+    assert_eq!(live, vec![round], "the session that went on");
+    let (back, replaying, _) = a_siege_round_after_the_save(true, past);
+    let slack = round + REPLAY_HOLD_SLACK_TICKS;
+    assert_eq!(replaying, vec![slack], "at the slack, while replaying");
+    assert_eq!(back, vec![slack], "once");
+}
+
+/// The world as `pages` (its `save`) left it, for a restart (`Run::new`'s world, seed `seed`).
+fn world_from(seed: u64, pages: &[u8]) -> World {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    World::load(synth::world_config(seed), goods, book, pages).unwrap()
+}
+
+/// RP-45 (the fix round's item 5): a siege on the refinery, nobody near, the pages saved while it
+/// marches there unseen. Its arrival comes in the replayed window and is held, the journal's last
+/// record inside the hold's slack (RP-48); its poll arrives again after the replay end. `crash`:
+/// the restart, the world and the engine from the pages.
+/// Returns the siege's `bored_at` once it waits at its target, and the tick it turns for home.
+fn a_siege_arriving_after_the_save(crash: bool) -> (Tick, Tick) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    assert_eq!(r.c.parties[band].phase, Phase::Out, "on its road");
+    let (pages, world) = (r.c.save(), r.w.save());
+    journal.clear();
+    let end = arrival + REPLAY_HOLD_SLACK_TICKS / 2;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    if !crash {
+        return siege_patience(&mut r.c, &mut r.w, &mut walls, band);
+    }
+    // Java journals other records all along: one past the arrival.
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(walls.raids.is_empty(), "nothing raided while replaying");
+    assert_eq!(back.parties[band].phase, Phase::Out, "held");
+    back.resend_notices();
+    assert!(!back.replaying());
+    siege_patience(&mut back, &mut w, &mut walls, band)
+}
+
+/// A siege's `bored_at` once it waits at its target, and the tick it turns for home (its road
+/// home's first time).
+fn siege_patience(
+    c: &mut Conflict,
+    w: &mut World,
+    walls: &mut Walls,
+    band: Handle<Party>,
+) -> (Tick, Tick) {
+    let mut bored_at = None;
+    let mut t = c.now();
+    loop {
+        let x = c.parties.get(band).expect("the siege is out");
+        match x.phase {
+            Phase::Waiting => {
+                bored_at.get_or_insert(x.bored_at);
+            }
+            Phase::Home => return (bored_at.expect("it waited"), x.times[0]),
+            _ => {}
+        }
+        t += 600;
+        assert!(t < day(8.0), "the siege turns for home");
+        c.run_until(w, walls, t);
+        let _ = c.take_commands();
+    }
+}
+
+/// RP-45: a held siege's patience runs from its arrival, as the session that went on has it:
+/// bored on the same tick, home from there on the same tick. It used to run from the poll that
+/// arrived again after the replay end.
+#[test]
+fn a_held_siege_arrival_is_bored_when_the_session_that_went_on_was() {
+    let live = a_siege_arriving_after_the_save(false);
+    assert_eq!(a_siege_arriving_after_the_save(true), live);
+}
+
+/// [`quiet_goblins`] with five days' patience, so that a siege waits through two rounds after
+/// its arrival's.
+fn patient_goblins() -> Cultures {
+    let mut d: CultureDef = serde_json::from_str(GOBLIN_JSON).unwrap();
+    d.plunder_mean_days = None;
+    d.patience_days = 5.0;
+    Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
+}
+
+/// A siege as [`a_siege_held_then`] reads it: its phase, whether it is embodied and at which
+/// epoch, when its phase ends, the fights watched since the save, and the abstract raids since
+/// the save (by when).
+#[derive(Debug)]
+struct SiegeAt {
+    phase: Phase,
+    embodied: bool,
+    epoch: u32,
+    until: Tick,
+    watched: u64,
+    raids: Vec<Tick>,
+}
+
+impl SiegeAt {
+    fn of(c: &Conflict, band: Handle<Party>, walls: &Walls, watched: u64, saved_at: Tick) -> Self {
+        let x = &c.parties[band];
+        SiegeAt {
+            phase: x.phase,
+            embodied: x.embodied,
+            epoch: x.epoch,
+            until: x.until,
+            watched: c.stats.raids_watched - watched,
+            raids: walls
+                .raids
+                .iter()
+                .copied()
+                .filter(|&t| t > saved_at)
+                .collect(),
+        }
+    }
+
+    /// As the session that went on left it, its raids up to the hold's slack later
+    /// ([`REPLAY_HOLD_SLACK_TICKS`], RP-48): a replay resolves an unwatched decision there.
+    fn assert_as(&self, live: &SiegeAt) {
+        let late = |b: &Tick, l: &Tick| l <= b && b.0 <= l.0 + REPLAY_HOLD_SLACK_TICKS;
+        assert!(
+            self.raids.len() == live.raids.len()
+                && self.raids.iter().zip(&live.raids).all(|(b, l)| late(b, l)),
+            "replayed {self:?}, the session that went on {live:?}"
+        );
+        let state = |s: &SiegeAt| (s.phase, s.embodied, s.epoch, s.until, s.watched);
+        assert_eq!(
+            state(self),
+            state(live),
+            "replayed {self:?}, the session that went on {live:?}"
+        );
+    }
+}
+
+/// What follows a held, unwatched siege decision in [`a_siege_held_then`].
+#[derive(Clone, Copy, Debug)]
+enum Then {
+    /// A player comes into view of the waiting band 3,000 ticks after the decision, once (seen,
+    /// no fight), and goes stale.
+    Sighting,
+    /// The same 300 ticks after the decision: its record inside the hold's slack (RP-56).
+    SightingInSlack,
+    /// A player stands at the refinery from 600 ticks before the band's next round on: seen
+    /// there, and the round fought.
+    Fight,
+}
+
+/// RP-48 (the re-review's P1, docs/replay-gate.md §6.1): a siege on the refinery, nobody near at
+/// a decision that asks for a watcher: its arrival (`round` false: the pages saved while it
+/// marches there unseen) or its next round after it (`round` true: saved while it waits). The
+/// decision resolves unwatched (the abstract raid) and the band waits for its next round; then
+/// `then`. `crash`: a restart from the pages, the world's and the engine's, replays the plugin's
+/// records, which hold the decision. The siege is read at the last record, the replay still
+/// running. Returns it, and the decision's tick.
+fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
+    let mut r = Run::new(36, patient_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let decision = if round {
+        let mut to = r.c.now();
+        while r.c.parties[band].phase != Phase::Waiting {
+            to += 600;
+            assert!(to < day(6.0), "the siege waits at its target");
+            run_journaled(&mut r, &mut walls, to, &mut journal);
+        }
+        r.c.parties[band].until
+    } else {
+        let arrival = *r.c.parties[band].times.last().unwrap();
+        run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+        arrival
+    };
+    let x = &r.c.parties[band];
+    assert!(!x.embodied && decision < x.bored_at, "unseen, not bored");
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let watched = r.c.stats.raids_watched;
+    journal.clear();
+    // Past the decision: up to the sighting's, inside the slack, for that one.
+    let past = match then {
+        Then::SightingInSlack => 1,
+        _ => 600,
+    };
+    run_journaled(&mut r, &mut walls, decision + past, &mut journal);
+    let x = &r.c.parties[band];
+    assert_eq!(
+        (x.phase, x.embodied),
+        (Phase::Waiting, false),
+        "resolved unwatched"
+    );
+    assert!(walls.raids.contains(&decision), "{:?}", walls.raids);
+    let next = x.until;
+    let end = match then {
+        Then::Sighting | Then::SightingInSlack => {
+            let seen = decision
+                + match then {
+                    Then::Sighting => 3_000,
+                    _ => 300,
+                };
+            r.watch = true;
+            r.next_obs = seen;
+            run_journaled(&mut r, &mut walls, seen + 1, &mut journal);
+            r.watch = false;
+            run_journaled(&mut r, &mut walls, seen + 600, &mut journal);
+            let x = &r.c.parties[band];
+            assert_eq!(
+                (x.phase, x.embodied),
+                (Phase::Waiting, true),
+                "seen waiting"
+            );
+            seen + 2_000
+        }
+        Then::Fight => {
+            assert!(next + 6_000 < r.c.parties[band].bored_at, "a next round");
+            r.watch = true;
+            r.next_obs = Tick(next.0 - 600);
+            run_journaled(&mut r, &mut walls, next + 600, &mut journal);
+            assert_eq!(r.c.parties[band].phase, Phase::Fighting, "the round fought");
+            next + 3_000
+        }
+    };
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let live = SiegeAt::of(&r.c, band, &walls, watched, saved_at);
+    if !crash {
+        return (live, decision);
+    }
+    // Java journals other records all along: one at the end.
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let watched = back.stats.raids_watched;
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        // Rule U: no recall reaches Java while replaying (§4.4), so no body vanishes in view.
+        let sent = back.take_commands();
+        assert!(
+            !sent.iter().any(|c| matches!(c, Cmd::Recall(_))),
+            "{sent:?}"
+        );
+    }
+    assert!(back.replaying());
+    (
+        SiegeAt::of(&back, band, &walls, watched, saved_at),
+        decision,
+    )
+}
+
+/// RP-48: an unwatched siege round, then a sighting of the band waiting for its next round, the
+/// pages from before the round. The replay used to read the sighting's BAND_MATERIALIZED as the
+/// held round's fight: Fighting, a fight watched, and the round's raid lost.
+#[test]
+fn a_sighting_of_a_siege_waiting_after_a_held_round_is_no_fight() {
+    let (live, round) = a_siege_held_then(true, Then::Sighting, false);
+    assert_eq!(live.raids, vec![round], "{live:?}");
+    assert_eq!(
+        (live.phase, live.embodied, live.watched),
+        (Phase::Waiting, true, 0)
+    );
+    a_siege_held_then(true, Then::Sighting, true)
+        .0
+        .assert_as(&live);
+}
+
+/// RP-48: an unwatched siege round, then the next round fought (the player seen there first),
+/// the pages from before the round. The replay used to read the next round's records against the
+/// first round's stale hold: the band out of its fight early, and the first round's raid lost.
+#[test]
+fn a_siege_round_fought_after_a_held_unwatched_round_is_fought_at_its_own_round() {
+    let (live, round) = a_siege_held_then(true, Then::Fight, false);
+    assert_eq!(live.raids, vec![round], "{live:?}");
+    assert_eq!((live.phase, live.watched), (Phase::Fighting, 1));
+    a_siege_held_then(true, Then::Fight, true)
+        .0
+        .assert_as(&live);
+}
+
+/// RP-48: a siege's unwatched arrival, held while replaying, then a sighting of the band waiting
+/// for its next round (and, second, that round fought), the pages from before the arrival.
+#[test]
+fn a_sighting_of_a_siege_waiting_after_a_held_arrival_is_no_fight() {
+    for then in [Then::Sighting, Then::Fight] {
+        let (live, arrival) = a_siege_held_then(false, then, false);
+        assert_eq!(live.raids, vec![arrival], "{then:?}: {live:?}");
+        a_siege_held_then(false, then, true).0.assert_as(&live);
+    }
+}
+
+/// fixes4 item 2 (RP-56): an unwatched siege decision (its arrival, then its next round), then a
+/// sighting of the band waiting, its record inside the hold's slack, the pages from before the
+/// decision. The record is a sighting's by its echoed flag, so it embodies the band, keeps the
+/// hold and fights nothing; the decision resolves unwatched at the slack's poll. The replay used
+/// to read it as the held decision's fight: Fighting, a fight watched, the decision's raid lost.
+///
+/// Case A's cost (decided by the lead): the arrival's poll is `arrive`'s unwatched branch, which
+/// recalls the band the sighting embodied, where the session that went on kept it embodied.
+/// The recall reaches no one while replaying (Rule U, checked in [`a_siege_held_then`]), the
+/// crashed session's bodies are gone, and the replay end makes every band abstract.
+#[test]
+fn a_sighting_inside_a_held_decisions_slack_is_no_fight() {
+    for round in [true, false] {
+        let (live, decision) = a_siege_held_then(round, Then::SightingInSlack, false);
+        assert_eq!(live.raids, vec![decision], "{live:?}");
+        assert_eq!(
+            (live.phase, live.embodied, live.watched),
+            (Phase::Waiting, true, 0),
+            "round {round}"
+        );
+        let back = a_siege_held_then(round, Then::SightingInSlack, true).0;
+        if round {
+            back.assert_as(&live);
+        } else {
+            assert!(!back.embodied, "recalled at the slack's poll: {back:?}");
+            back.assert_as(&SiegeAt {
+                embodied: false,
+                ..live
+            });
+        }
+    }
+}
+
+/// What comes to a held siege decision's band inside the hold's slack, after a sighting there,
+/// in [`a_held_decision_then`]: every member killed at the sighting's epoch, its chief killed,
+/// the world made Peaceful, one member killed, or its bodies despawned with two of the first
+/// placed stack's members gone (deaths Java never reported).
+#[derive(Clone, Copy, Debug)]
+enum Inside {
+    WipedOut,
+    ChiefKilled,
+    Peaceful,
+    Wounded,
+    Despawned,
+}
+
+/// fixes6 items 1 and 2 (RP-59, RP-60; the checker's case): a siege's held decision (its round with
+/// `round`, else its arrival), unwatched, the band with its chief; a sighting 300 ticks after the
+/// decision embodies it inside the hold's slack (RP-56, the hold kept); then `inside`, 50 ticks
+/// later, still inside the slack. Returns the siege as [`SiegeAt`] reads it, the decision, and
+/// the members each abstract raid since the save sent: the session that went on, or, with
+/// `crash`, a replay of its journal on an engine from the pages saved before the decision.
+fn a_held_decision_then(round: bool, inside: Inside, crash: bool) -> (SiegeAt, Tick, Vec<u32>) {
+    let mut r = Run::new(36, patient_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.parties[band].chief = true;
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let decision = if round {
+        let mut to = r.c.now();
+        while r.c.parties[band].phase != Phase::Waiting {
+            to += 600;
+            assert!(to < day(6.0), "the siege waits at its target");
+            run_journaled(&mut r, &mut walls, to, &mut journal);
+        }
+        r.c.parties[band].until
+    } else {
+        let arrival = *r.c.parties[band].times.last().unwrap();
+        run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+        arrival
+    };
+    let x = &r.c.parties[band];
+    assert!(!x.embodied && decision < x.bored_at, "unseen, not bored");
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let watched = r.c.stats.raids_watched;
+    journal.clear();
+    run_journaled(&mut r, &mut walls, decision + 1, &mut journal);
+    assert!(walls.raids.contains(&decision), "resolved unwatched");
+    let seen = decision + 300;
+    r.watch = true;
+    r.next_obs = seen;
+    run_journaled(&mut r, &mut walls, seen + 1, &mut journal);
+    r.watch = false;
+    run_journaled(&mut r, &mut walls, seen + 50, &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.embodied && x.chief, "seen, with its chief");
+    let at = r.c.now();
+    let c = r.c.cultures.get(0).clone();
+    let wounds = |n: Option<u32>| -> Vec<Obs> {
+        x.units
+            .iter()
+            .take(if n.is_some() { 1 } else { x.units.len() })
+            .map(|&(u, all)| {
+                Obs::Casualties(boundary::BandCasualties {
+                    agent: Party::agent(band),
+                    epoch: x.epoch,
+                    by: boundary::BY_MOB,
+                    body: body_id(&r.c.cultures, &c.unit(u).body),
+                    count: n.unwrap_or(all),
+                    killer: (0, 0),
+                })
+            })
+            .collect()
+    };
+    let records = match inside {
+        Inside::WipedOut => wounds(None),
+        Inside::Wounded => wounds(Some(1)),
+        Inside::ChiefKilled => vec![chief_killed_by_mob(band, x.epoch, 7_001)],
+        Inside::Peaceful => vec![difficulty(boundary::DIFFICULTY_PEACEFUL)],
+        Inside::Despawned => {
+            let survivors = x
+                .spawned
+                .iter()
+                .enumerate()
+                .map(|(i, &(u, n))| {
+                    let n = if i == 0 { n.saturating_sub(2) } else { n };
+                    (body_id(&r.c.cultures, &c.unit(u).body), n)
+                })
+                .collect();
+            vec![Obs::Dematerialized(boundary::BandDematerialized {
+                agent: Party::agent(band),
+                epoch: x.epoch,
+                reason: boundary::RECALL_PASSING,
+                survivors,
+            })]
+        }
+    };
+    for o in records {
+        r.c.ingest(&mut r.w, &mut walls, &o, at);
+        journal.push((at, o));
+    }
+    let end = seen + 2_000;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let members = |walls: &Walls| walls.members.range(saved_at + 1..).map(|e| *e.1).collect();
+    let live = SiegeAt::of(&r.c, band, &walls, watched, saved_at);
+    if !crash {
+        return (live, decision, members(&walls));
+    }
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let watched = back.stats.raids_watched;
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.run_until(&mut w, &mut walls, end + 1_000);
+    (
+        SiegeAt::of(&back, band, &walls, watched, saved_at),
+        decision,
+        members(&walls),
+    )
+}
+
+/// fixes6 item 1 (RP-59): a held siege decision, seen inside the hold's slack, then its band
+/// wiped out, its chief killed or the world made Peaceful, still inside the slack, the pages
+/// from before the decision. The session that went on raided at the decision, then sent the
+/// band home. The replay used to send it home with its hold's poll left stale: the raid lost.
+#[test]
+fn a_held_decision_whose_band_is_sent_home_inside_the_slack_keeps_its_raid() {
+    for inside in [Inside::WipedOut, Inside::ChiefKilled, Inside::Peaceful] {
+        for round in [true, false] {
+            let (live, decision, sent) = a_held_decision_then(round, inside, false);
+            assert_eq!(
+                live.raids,
+                vec![decision],
+                "{inside:?} round {round}: {live:?}"
+            );
+            assert_eq!(
+                live.phase,
+                Phase::Home,
+                "{inside:?} round {round}: {live:?}"
+            );
+            let (back, _, back_sent) = a_held_decision_then(round, inside, true);
+            back.assert_as(&live);
+            assert_eq!(
+                back_sent, sent,
+                "{inside:?} round {round}: the raid's members"
+            );
+        }
+    }
+}
+
+/// fixes6 item 2 (RP-59): a held siege decision, seen inside the hold's slack, then one of its
+/// members killed, or its bodies despawned with two members gone, still inside the slack. The
+/// session that went on raided at the decision with every member; the replay resolves the
+/// decision with the members it had then, not the fewer left at the slack's poll.
+#[test]
+fn a_held_decision_raids_with_the_members_it_had_at_its_tick() {
+    for inside in [Inside::Wounded, Inside::Despawned] {
+        for round in [true, false] {
+            let (live, decision, sent) = a_held_decision_then(round, inside, false);
+            assert_eq!(
+                live.raids,
+                vec![decision],
+                "{inside:?} round {round}: {live:?}"
+            );
+            let (back, _, back_sent) = a_held_decision_then(round, inside, true);
+            assert_eq!(
+                (back.raids.len(), back_sent),
+                (1, sent),
+                "{inside:?} round {round}: the raid's members"
+            );
+        }
+    }
+}
+
+/// What a watched raid's arrival whose first wave alone Java refused came to: the band's phase
+/// and epoch, the fights watched, the deaths counted, the band's members alive, and the
+/// abstract raids (by when), since the save.
+type FirstWave = (Phase, u32, u64, u64, u32, Vec<Tick>);
+
+/// A watched raid's arrival whose first wave alone Java refused (the checker's case; its later
+/// waves placed), and `fight_record_gap_max`: the session that went on, the plugin killing a
+/// quarter of each wave at the base 1,500 ticks after it spawns; or, with `crash`, a replay of
+/// its journal on an engine from the pages saved 3,000 ticks before the arrival.
+fn a_first_wave_refused(crash: bool) -> (FirstWave, u64) {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.refuse = Some(band);
+    r.refuse_wave0_only = true;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (watched, saved_at, cas) = (r.c.stats.raids_watched, r.c.now(), r.c.stats.casualties);
+    journal.clear();
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let agent = Party::agent(band);
+    assert!(
+        journal
+            .iter()
+            .any(|(_, o)| matches!(o, Obs::SpawnRejected(x) if x.agent == agent && x.wave == 0)),
+        "the first wave refused"
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|(_, o)| matches!(o, Obs::Materialized(x) if x.agent == agent && x.wave > 0)),
+        "a later wave placed"
+    );
+    journal.push((end, fillers_casualty()));
+    let read = |c: &Conflict, walls: &Walls, watched: u64, cas: u64| {
+        let x = &c.parties[band];
+        let books = (
+            x.phase,
+            x.epoch,
+            c.stats.raids_watched - watched,
+            c.stats.casualties - cas,
+            x.alive(),
+            walls.raids.range(saved_at + 1..).copied().collect(),
+        );
+        (books, c.stats.fight_record_gap_max)
+    };
+    if !crash {
+        return read(&r.c, &walls, watched, cas);
+    }
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let (watched, cas) = (back.stats.raids_watched, back.stats.casualties);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    read(&back, &walls, watched, cas)
+}
+
+/// fixes6 item 3 (RP-62): a live watched fight's first wave refused. Java's refusal is the
+/// fight's first record, the one a replay's hold reads (RP-54), and the gap is measured to it;
+/// it used to be measured to the next wave's BAND_MATERIALIZED, a wave interval later, past the
+/// hold's slack.
+#[test]
+fn a_refused_first_wave_is_its_fights_first_record() {
+    let (_, gap) = a_first_wave_refused(false);
+    assert!(
+        gap < REPLAY_HOLD_SLACK_TICKS,
+        "the gap to the refusal: {gap}"
+    );
+    assert_eq!(gap, 1, "the plugin answers a command a tick later");
+}
+
+/// fixes6 (RP-61, item 5's replay half): a watched arrival whose first wave alone Java refused,
+/// replayed on an engine from the pages saved before it. The refusal ends the hold as the fight
+/// (RP-54), unembodied; the fight's later waves' BAND_MATERIALIZED embodies the band again, as
+/// live `wave` did when it commanded them (RP-58), so their deaths count as live. The replay
+/// used to honour no record of an unembodied band's epoch: its deaths counted against nothing.
+#[test]
+fn a_held_arrival_whose_first_wave_alone_is_refused_counts_its_later_waves() {
+    let (live, _) = a_first_wave_refused(false);
+    assert_eq!(
+        (live.0, live.2, live.5.len()),
+        (Phase::Home, 1, 0),
+        "fought, no abstract raid: {live:?}"
+    );
+    assert!(live.3 > 0, "the later waves' deaths count: {live:?}");
+    let (back, _) = a_first_wave_refused(true);
+    assert_eq!(back, live);
+}
+
+/// fixes4 item 3 (RP-52): a siege round, nobody near, that kills the last of the band (every
+/// raider held at the walls, all of them falling), the round before the band's boredom and the
+/// hold's slack after it; the pages from the band waiting for it. The session that went on
+/// sends the band home done, as of the round. The replay holds the round and resolves it at the
+/// slack, and used to label the walk home by the slack's poll, past the boredom: bored.
+#[test]
+fn a_held_round_that_kills_the_band_before_its_boredom_sends_it_home_done() {
+    let mut r = Run::new(36, patient_goblins());
+    r.c.tun.abstract_loss_share = 1.0;
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let mut to = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        to += 600;
+        assert!(to < day(6.0), "the siege waits at its target");
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    let round = r.c.parties[band].until;
+    r.c.parties[band].bored_at = round + REPLAY_HOLD_SLACK_TICKS / 2;
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let bored = r.c.stats.bored;
+    let read = |c: &Conflict, walls: &Walls| {
+        let x = &c.parties[band];
+        let raids: Vec<Tick> = walls.raids.range(saved_at + 1..).copied().collect();
+        (x.phase, x.alive(), c.stats.bored - bored, raids)
+    };
+    walls.rout = true;
+    journal.clear();
+    let end = round + 2 * REPLAY_HOLD_SLACK_TICKS;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let live = read(&r.c, &walls);
+    assert_eq!(
+        live,
+        (Phase::Home, 0, 0, vec![round]),
+        "done, as of the round"
+    );
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls {
+        rout: true,
+        ..Walls::default()
+    };
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    let (phase, alive, bored, raids) = read(&back, &walls);
+    assert_eq!(
+        raids,
+        vec![round + REPLAY_HOLD_SLACK_TICKS],
+        "resolved at the slack"
+    );
+    assert_eq!((phase, alive, bored), (live.0, live.1, live.2), "as live");
+}
+
+/// fixes4 item 4 (RP-53): a siege's round, nobody near, held while replaying from pages saved
+/// while the band waits for it; its boredom 110 ticks after the round, and its fight's
+/// BAND_MATERIALIZED 115 ticks after it, past the boredom but inside the hold's slack.
+/// `restart`: pages saved 105 ticks after the round (the hold's map lost) and a restart from
+/// them before the record. Returns the band's phase, whether embodied, epoch, phase end, fights
+/// watched since the save, and abstract raids since the save, at the replay's last record.
+fn a_round_fought_past_its_boredom_replayed(
+    restart: bool,
+) -> (Phase, bool, u32, Tick, u64, Vec<Tick>) {
+    let mut r = Run::new(36, patient_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let mut to = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        to += 600;
+        assert!(to < day(6.0), "the siege waits at its target");
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    let round = r.c.parties[band].until;
+    r.c.parties[band].bored_at = round + 110;
+    let (epoch, watched, saved_at) = (r.c.parties[band].epoch, r.c.stats.raids_watched, r.c.now());
+    let (tun, cultures) = (r.c.tun.clone(), r.c.cultures.clone());
+    let mut w = world_from(36, &r.w.save());
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(tun.clone(), cultures.clone(), &r.c.save()).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    back.run_until(&mut w, &mut walls, round + 105);
+    let x = &back.parties[band];
+    assert_eq!((x.phase, x.embodied), (Phase::Waiting, false), "held");
+    if restart {
+        back = Conflict::load(tun, cultures, &back.save()).unwrap();
+        w = world_from(36, &w.save());
+        back.begin_replay(true);
+    }
+    let records = [
+        (round + 115, fought(band, epoch + 1, 0, 4)),
+        (round + 1_000, fillers_casualty()),
+    ];
+    for (at, o) in &records {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    let x = &back.parties[band];
+    let raids = walls.raids.range(saved_at + 1..).copied().collect();
+    (
+        x.phase,
+        x.embodied,
+        x.epoch,
+        x.until,
+        back.stats.raids_watched - watched,
+        raids,
+    )
+}
+
+/// fixes4 item 4 (RP-53): the hold's map honours a held round's fight record past the band's
+/// boredom, inside the slack; so does `held_since`'s inference after a restart that lost the
+/// map. The inference used to gate on the record's tick against the boredom, not the round's,
+/// so it refused the record: the round resolved unwatched at the slack.
+#[test]
+fn a_held_rounds_fight_past_its_boredom_is_honoured_after_a_restart() {
+    let map = a_round_fought_past_its_boredom_replayed(false);
+    assert_eq!((map.4, map.5.len()), (1, 0), "fought, not raided: {map:?}");
+    assert_eq!(a_round_fought_past_its_boredom_replayed(true), map);
 }
 
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
@@ -2380,7 +4742,9 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
     let w = World::load(synth::world_config(seed), goods, book, &a.w.save()).unwrap();
     let mut c = Conflict::load(a.c.tun.clone(), a.c.cultures.clone(), &a.c.save()).unwrap();
     synth::define_names(&mut c, &w);
-    c.session_start();
+    // Nothing to replay: what follows is the new session's.
+    c.begin_replay(true);
+    c.replay_done();
     let mut b = Run {
         w,
         c,
@@ -2390,6 +4754,8 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        refuse: None,
+        refuse_wave0_only: false,
     };
     assert!(b.c.peaceful, "still Peaceful after the restart");
     assert_eq!(b.c.peaceful_since, a.c.peaceful_since);
