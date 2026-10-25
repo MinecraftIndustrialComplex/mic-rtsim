@@ -33,7 +33,7 @@ class NestRenewalSerialTest {
         Nests.Nest n = nest();
         assertTrue(renew(n, LIFE, 1, 2), "the first brood");
         assertEquals(2, n.owed);
-        // The engine decided it again (a restore, or a record the pages still queue): the same serial.
+        // The engine decided it again (a restore from older pages): the same serial.
         assertFalse(renew(n, LIFE, 1, 2));
         assertFalse(renew(n, LIFE, 1, 2));
         assertEquals(2, n.owed, "owed once");
@@ -106,6 +106,103 @@ class NestRenewalSerialTest {
         assertEquals(other, m.life);
         assertEquals(0, m.serial);
         assertEquals(1, m.owed);
+    }
+
+    @Test
+    void aReturnToAnEarlierLifeKeepsThatLivesSerial() {
+        // Lives A, then B, then A again (world/rtsim restored from a backup while world/data stayed): the serials A
+        // already used are still repeats, one serial per life being what the nest remembers (RP-232).
+        long a = LIFE, b = LIFE + 1;
+        Nests.Nest n = nest();
+        assertTrue(renew(n, a, 1, 2));
+        assertTrue(renew(n, a, 2, 1));
+        assertTrue(renew(n, a, 3, 1));
+        assertTrue(renew(n, b, 1, 1), "life B counts from 1");
+        assertEquals(5, n.owed);
+        assertFalse(renew(n, a, 3, 1), "back under A, its serial 3 is a repeat");
+        assertFalse(renew(n, a, 1, 2));
+        assertEquals(5, n.owed, "nothing is owed twice");
+        assertEquals(a, n.life);
+        assertEquals(3, n.serial);
+        assertTrue(renew(n, a, 4, 1), "a renewal above A's last is new");
+        assertEquals(6, n.owed);
+        // And B's serial was kept while A ran.
+        assertFalse(renew(n, b, 1, 1));
+        assertTrue(renew(n, b, 2, 1));
+        assertEquals(7, n.owed);
+        assertEquals(3, n.nextSerial(b));
+        assertEquals(5, n.nextSerial(a));
+    }
+
+    @Test
+    void aNestRemembersTheLastEightLivesAndForgetsTheOldestFirst() {
+        Nests.Nest n = nest();
+        // Nine lives, each applying its serial 1: the first one is forgotten when the ninth begins.
+        for (int i = 1; i <= 9; i++)
+            assertTrue(renew(n, 0x100 + i, 1, 1), "life " + i);
+        assertEquals(9, n.owed);
+        assertEquals(Nests.Nest.LIVES - 1, n.earlier.size(), "the current life and seven before it");
+        assertEquals(0x102, n.earlier.get(0).life(), "oldest first, life 1 forgotten");
+        assertEquals(0x109, n.life);
+        // A life still remembered is a repeat, whichever one it is.
+        assertFalse(renew(n, 0x102, 1, 1), "the oldest of the eight");
+        assertFalse(renew(n, 0x108, 1, 1));
+        assertEquals(9, n.owed);
+        // Returning to a life takes it out of the list and puts the one left behind in: still eight lives.
+        assertEquals(Nests.Nest.LIVES - 1, n.earlier.size());
+        assertEquals(0x108, n.life);
+        // The residual: a life forgotten counts from 0 again, so its serial 1 is owed a second time. That needs more
+        // than eight lives of the nest, and a restore of world/rtsim from a backup.
+        assertTrue(renew(n, 0x101, 1, 1), "life 1 was forgotten");
+        assertEquals(10, n.owed);
+    }
+
+    @Test
+    void theEarlierLivesAreSavedAndAnOldOrMissingListLoadsEmpty() {
+        long a = LIFE, b = LIFE + 1;
+        Nests.Data d = new Nests.Data();
+        Nests.Nest n = nest();
+        assertTrue(renew(n, a, 1, 2));
+        assertTrue(renew(n, a, 2, 1));
+        assertTrue(renew(n, b, 1, 1));
+        d.placed.put(n.id, n);
+        CompoundTag tag = d.save(new CompoundTag(), null);
+        Nests.Nest m = Nests.Data.load(tag, null).placed.get(n.id);
+        assertEquals(b, m.life);
+        assertEquals(1, m.serial);
+        assertEquals(1, m.earlier.size());
+        assertEquals(new Nests.LifeSerial(a, 2), m.earlier.get(0));
+        assertFalse(renew(m, a, 2, 1), "after the reload a return to A is still a repeat");
+        assertEquals(4, m.owed);
+        // A file written before the list (the serial and the life are there, the list is not) loads none.
+        for (var e : tag.getList("placed", 10))
+            ((CompoundTag) e).remove("lives");
+        Nests.Nest o = Nests.Data.load(tag, null).placed.get(n.id);
+        assertEquals(b, o.life);
+        assertEquals(1, o.serial);
+        assertTrue(o.earlier.isEmpty());
+        // Entries that cannot be earlier lives are left out: the current life, a serial 0, a repeated life.
+        ListTag lives = new ListTag();
+        for (long[] e : new long[][] {{b, 7}, {a, 0}, {a, 3}, {a, 5}, {LIFE + 2, 4}}) {
+            CompoundTag c = new CompoundTag();
+            c.putLong("life", e[0]);
+            c.putLong("serial", e[1]);
+            lives.add(c);
+        }
+        for (var e : tag.getList("placed", 10))
+            ((CompoundTag) e).put("lives", lives);
+        Nests.Nest p = Nests.Data.load(tag, null).placed.get(n.id);
+        assertEquals(2, p.earlier.size());
+        assertEquals(5, p.lastUnder(a), "the later of two entries for a life");
+        assertEquals(4, p.lastUnder(LIFE + 2));
+        assertEquals(1, p.lastUnder(b));
+        assertEquals(0, p.lastUnder(LIFE + 3));
+        // An old file (no serial, no life) loads no earlier lives, even with a list in it.
+        for (var e : tag.getList("placed", 10)) {
+            ((CompoundTag) e).remove("serial");
+            ((CompoundTag) e).remove("life");
+        }
+        assertTrue(Nests.Data.load(tag, null).placed.get(n.id).earlier.isEmpty());
     }
 
     @Test

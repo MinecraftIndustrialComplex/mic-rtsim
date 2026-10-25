@@ -400,7 +400,7 @@ public final class NestGameTests {
      * does a lower one (serial 0). A higher serial owes its count. The engine's restore from older pages is not
      * modelled: this scripts the command the restored engine sends, with the serial it would carry.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_renew")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_renew_serial")
     public static void aRenewalDecidedAgainIsNotOwedTwice(GameTestHelper helper) {
         String test = "aRenewalDecidedAgainIsNotOwedTwice";
         Site s = new Site(helper, 1);
