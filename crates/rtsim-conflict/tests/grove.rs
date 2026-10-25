@@ -1848,7 +1848,8 @@ fn a_stack_decided_again_after_a_crash_is_the_same_op_and_amount() {
 /// payment, journaled after the stack went, replays before the camp comes in) is another decision,
 /// so it is another op: the plugin puts it down, and is never told that the 30 nuggets it put down
 /// before the crash were 60 (docs/boundary.md §2.2). What is left is the first stack's 30 in the
-/// chest too many, a gift to the player and never a loss.
+/// chest too many, a gift to the player and never a loss. This is RP-134's residual: the stack in
+/// flight at the crash, whose answer the journal does not hold, so the replay cannot book it.
 #[test]
 fn a_stack_decided_again_from_more_is_another_op() {
     let (mut a, mut b, id) = twin_groves(25);
