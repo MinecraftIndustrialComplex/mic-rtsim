@@ -578,6 +578,12 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
+    // The records of an earlier session are the ones before the session's `replay_done`: the
+    // engine's replay window (its outbox's, from `begin_replay`) covers them (a camp's census among
+    // them only marks its camp out, MOWZIE.md §4.9). Their sequences are below `session_first`, a
+    // replayed copy's too (its OBS_SEQ is the REASSERT's own); a live record's are at or past it.
+    // Set first, so that every path below, `later`'s included, ingests with its own (RP-67).
+    st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
     if st.applying_copy == Some(0) && matches!(o, Obs::Casualties(_)) {
         // A copy of generation 0 is new each time it comes (S4p's `copy_is_new`), and a
         // casualty has no op id to stop a repeat: refused, so that no member dies twice; one may
@@ -613,11 +619,6 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
-    // The records of an earlier session are the ones before the session's `replay_done`: the
-    // engine's replay window (its outbox's, from `begin_replay`) covers them (a camp's census among
-    // them only marks its camp out, MOWZIE.md §4.9). Their sequences are below `session_first`, a
-    // replayed copy's too (its OBS_SEQ is the REASSERT's own); a live record's are at or past it.
-    st.conflict.engine.obs_seq = wire::u64_at(rec.bytes, obs::OBS_SEQ);
     ingest(st, &o, at);
 }
 
