@@ -439,3 +439,139 @@ fn a_copy_from_a_generation_many_sessions_old_is_dropped() {
     assert_eq!(copies(&j.e), (0, 1));
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// The replay's end and the journal's kept JOURNAL_GEN (docs/replay-gate.md §2.5 test 4, §2.1's
+/// pinnedGen): two restarts in a row, each over a journal trimmed past its session's JOURNAL_GEN
+/// and a tail the pages lack. Each session hands over the kept JOURNAL_GEN first (the pages
+/// include it: `stale_skipped` rises by one a session), then the tail, which is replayed, then
+/// its own JOURNAL_GEN, at which the replay ends (the end runs before S4p's JOURNAL_GEN branch):
+/// a record journaled after it in the same hand-over is live, not replayed. No module can tell
+/// the end right before the JOURNAL_GEN from right after it (a JOURNAL_GEN is never dispatched);
+/// what the counts show is the end after the whole tail and before the live record, inside the
+/// first hand-over (without the end at the record, the step's top ends it: 4 records, not 3).
+#[test]
+fn the_replay_ends_right_before_each_sessions_journal_gen() {
+    let dir = tmpdir("reassert-pinned-replay");
+    let replay = |e: &Engine| {
+        (
+            e.stats.replays_ended.load(Ordering::Acquire),
+            e.stats.replay_handovers.load(Ordering::Acquire),
+            e.stats.replay_records.load(Ordering::Acquire),
+        )
+    };
+    let tail = 3;
+    let mut saved = WorldSave::fresh();
+    for session in 0..3u64 {
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        let gen_seq = j.journal.back().unwrap().0;
+        assert_eq!(
+            wire::u16_at(&j.journal.back().unwrap().1, wire::R_KIND),
+            obs::JOURNAL_GEN
+        );
+        let live = 20 + session;
+        carried(&mut j, live, 1);
+        j.idle();
+        no_error(&j);
+        assert_eq!(ledger(&e, live), 1, "session {session}: the live record");
+        if session == 0 {
+            assert_eq!(replay(&e), (1, 0, 0), "nothing to replay: ended at the arm");
+            assert_eq!(e.stats.stale_skipped.load(Ordering::Acquire), 0);
+        } else {
+            assert_eq!(
+                e.stats.stale_skipped.load(Ordering::Acquire),
+                1,
+                "session {session}: the kept JOURNAL_GEN, which the pages include"
+            );
+            assert_eq!(
+                replay(&e),
+                (1, 1, tail),
+                "session {session}: the tail replayed, and nothing after the JOURNAL_GEN"
+            );
+            assert_eq!(
+                ledger(&e, 10 + session - 1),
+                tail as i64,
+                "the tail applied"
+            );
+        }
+        save_pages(&mut j);
+        let through = j.e.inspect().replay.applied_through().0;
+        j.run_until("the acknowledgement", |j| {
+            j.journal.front().is_none_or(|(s, _)| *s > through)
+        });
+        assert_eq!(
+            j.pinned_gen.as_ref().map(|(s, _)| *s),
+            Some(gen_seq),
+            "session {session}: its JOURNAL_GEN outlives the trim"
+        );
+        j.hold_acks = true;
+        for _ in 0..tail {
+            carried(&mut j, 10 + session, 1);
+        }
+        j.idle();
+        saved = j.crash();
+    }
+}
+
+/// SEC-1's meeting-point review, item 2 (docs/replay-gate.md §2.3, RP-50): a copy new by its
+/// generation (generation 0 is new each time) whose op id the engine already heard is answered as
+/// a duplicate. It applies nothing, so it is counted as dropped, not applied, and is dispatched
+/// without the copy bit (`dispatch` asserts the bit only on the apply path). `replaying`: the copy
+/// was journaled after the pages and is replayed after a crash, where the replay counts no record
+/// for it (§3.2); otherwise it comes live.
+fn a_copy_whose_op_id_was_heard(replaying: bool) {
+    let dir = tmpdir(if replaying {
+        "reassert-dup-op-replayed"
+    } else {
+        "reassert-dup-op"
+    });
+    let op = wire::JAVA_OP_BIT | 0x52;
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    let seq = j.transfer(op, 1, 7, 5);
+    let held = Held {
+        nonce: 0,
+        bytes: j.journaled(seq).unwrap(),
+    };
+    j.idle();
+    assert_eq!(ledger(&e, 7), 5);
+    if replaying {
+        save_pages(&mut j);
+    }
+    reassert(&mut j, &held);
+    j.idle();
+    no_error(&j);
+    assert_eq!(ledger(&e, 7), 5, "answered as a duplicate, live");
+    assert_eq!(copies(&e), (0, 1), "dropped, not applied, live");
+    if !replaying {
+        e.close(true, Duration::from_secs(5)).unwrap();
+        return;
+    }
+    let saved = j.crash();
+    let j = start(&dir, saved);
+    no_error(&j);
+    let e = &j.e;
+    assert!(
+        e.inspect().replay.knows_op(rtsim_kernel::journal::OpId(op)),
+        "the pages hold the op id"
+    );
+    assert_eq!(e.stats.replays_ended.load(Ordering::Acquire), 1);
+    assert_eq!(ledger(e, 7), 5, "answered as a duplicate, replayed");
+    assert_eq!(copies(e), (0, 1), "dropped, not applied, replayed");
+    assert_eq!(
+        e.stats.replay_records.load(Ordering::Acquire),
+        0,
+        "and no record applied while replaying"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn a_copy_whose_op_id_was_heard_is_dropped_not_applied() {
+    a_copy_whose_op_id_was_heard(false);
+}
+
+#[test]
+fn a_replayed_copy_whose_op_id_was_heard_is_dropped_not_applied() {
+    a_copy_whose_op_id_was_heard(true);
+}

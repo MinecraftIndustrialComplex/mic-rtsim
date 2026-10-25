@@ -10,7 +10,9 @@ use rtsim_conflict::Step;
 use rtsim_conflict::boundary;
 use rtsim_conflict::culture::{Culture, Cultures, SignalKind};
 use rtsim_conflict::engine::{Party, Signal, SlotState};
-use rtsim_conflict::synth::{CAMP_POS, CampRun, Fight, REFINERY, REFINERY_POS};
+use rtsim_conflict::synth::{
+    CAMP, CAMP_POS, CAMP_STRUCTURE, CampRun, Fight, REFINERY, REFINERY_POS,
+};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
 use rtsim_industry::threat::Threat;
@@ -785,6 +787,70 @@ fn faction_found_reads_the_crystal() {
     // A den found with no body says nothing of a chief: the crystal is the default.
     let r = den(63, 0);
     assert!(crystal_of(&r));
+}
+
+/// CHIEF_STATE while the outbox replays (RP-100): the record is live and nothing journals it, so it
+/// is newer than every record the replay brings back. It waits for the replay end, the latest for
+/// each faction, as a world save does (RP-68): a den's FACTION_FOUND of the last session, replayed
+/// after it, neither drops it (the faction was not known yet) nor undoes it (its census byte is the
+/// world as it was then).
+#[test]
+fn a_chief_state_while_replaying_waits_for_the_replay_end() {
+    use rtsim_conflict::synth;
+    let (mut w, _) = synth::world(65);
+    let mut c = synth::conflict_with(65, &w, Cultures::builtin());
+    let ci = c.cultures.index_of("frostmaw").expect("a built-in culture");
+    let structure = c.cultures.get(ci).def.structures[0].clone();
+    c.define(4, CAMP_STRUCTURE, &structure);
+    let mut infra = rtsim_ecology::infra::NoInfrastructure;
+    let chief_state = |flags: u32| {
+        boundary::Obs::ChiefState(boundary::ChiefState {
+            faction: CAMP,
+            flags,
+            health: 100.0,
+        })
+    };
+    c.begin_replay(true);
+    // The steal of this session's first ticks, then the crystal given back and taken again: the
+    // last of them is the world as it is.
+    c.ingest(&mut w, &mut infra, &chief_state(0), Tick(2));
+    c.ingest(
+        &mut w,
+        &mut infra,
+        &chief_state(boundary::CHIEF_CRYSTAL),
+        Tick(3),
+    );
+    c.ingest(&mut w, &mut infra, &chief_state(0), Tick(4));
+    // The den found last session with its chief and crystal, replayed.
+    c.ingest(
+        &mut w,
+        &mut infra,
+        &boundary::Obs::FactionFound(boundary::FactionFound {
+            faction: CAMP,
+            flags: 0,
+            dimension: u32::from(CAMP_POS.frame),
+            structure: CAMP_STRUCTURE,
+            pos: (CAMP_POS.x, 64, CAMP_POS.z),
+            home_bodies: 1,
+            census: (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8,
+        }),
+        Tick(5),
+    );
+    let f = c.faction_of_key(CAMP).expect("found") as usize;
+    assert!(c.factions[f].crystal, "the replay's census byte, for now");
+    c.replay_done();
+    assert!(
+        !c.factions[f].crystal,
+        "the live record is newer than every replayed one"
+    );
+    // After the replay end a CHIEF_STATE is applied at once.
+    c.ingest(
+        &mut w,
+        &mut infra,
+        &chief_state(boundary::CHIEF_CRYSTAL),
+        Tick(6),
+    );
+    assert!(c.factions[f].crystal);
 }
 
 /// A steal is not a loss (EQUILIBRIUM item 5, MZB-276): the robbed Frostmaw stands in its den, no

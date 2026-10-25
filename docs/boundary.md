@@ -247,7 +247,7 @@ smaller of that value and the last sequence the journal's file on disk actually 
 (`JournalSavedData.writtenThrough`): a write the chunk barrier held, or one that failed, does not
 count (docs/choices-journal-barrier.md JB1). The next hand-over carries the value; the engine may then
 forget op ids applied at or before it, and a camp ledger forgets the CAMP_BODIES answers it booked from
-records at or before it (MOWZIE.md §4.9, MZB-177).
+records at or before it (MOWZIE.md §4.9, MZB-177), from the conflict's replay end on (RP-68).
 
 **Idempotent events.** A record a chunk or entity carries arrives again as a copy (REASSERT, §3.1,
 §3.2), which the engine judges by the generation the record was journaled in, not by op id. The
@@ -262,6 +262,16 @@ can still cancel a death after the bridge saw LivingDeathEvent.
 from before this session, flagged `REPLAY`) never makes an agent embodied again. At SESSION_START every agent the
 engine thought embodied is abstract again, with the last state it knew. The DEMATERIALIZED records
 of a clean shutdown come later, as journal replay.
+
+That is phase 1's rule. The four modules (conflict, dragons, herds, ships) follow the replay gate instead
+(docs/replay-gate.md, choices RP-1 onward): from SESSION_START until the replay end (the first record at
+or past `session_first`) they keep the bodies their pages hold embodied, honour a replayed *_MATERIALIZED
+that is not a copy (an engine started from pages only), decide nothing that embodies or moves a body,
+hold a war party's arrival at a watched target, run their clock and phase 1's world only as far as the
+replayed records (industry's clock is not held), and drop or hold each command kind as their gate says;
+at the replay end every body still embodied becomes abstract. A record is replayed when its own OBS_SEQ
+(a copy's own, for a REASSERT) is below `session_first`. Pages hold no module command for the new
+session: the gate drops a restored body command at the session start.
 
 ### 2.4 Commands (the engine to Java)
 
@@ -636,13 +646,16 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    §1.2; its release store of `published` is its last act on the buffers.
 4. **Journaled observations** go through `Replay::admit` (TRANSFER, TAKEN, DIED and
    COMMAND_RESULT applied or duplicate with their op ids); a gap is logged and skipped
-   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every agent abstract;
-   WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
+   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every phase 1 agent
+   abstract (the four modules make theirs abstract at the replay end instead, §2.3 and
+   docs/replay-gate.md); WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
 5. **Saves**: the pages are snapshotted at a step boundary (before the first journaled record past
    the requested `through`) and written on the IO lane; `ackedObsSeq` names only pages on disk.
 6. **Commands**: transfers go through the `Outbox`, leave it when their COMMAND_RESULT is admitted,
    and are resent after a restart with their original sequences and op ids, before anything new;
-   puppet commands are per session. DICT records come before their first use in the same buffer.
+   puppet commands are per session (the four modules' pass a gate per engine that sends none of them
+   while the journal replays, docs/replay-gate.md §4). DICT records come before their first use in
+   the same buffer.
    What does not fit waits (`MORE`).
 7. **Op ids**: Java's have the top bit set; the engine's leave it clear. Ordered transfers take 55
    random bits (§2.2); the sim's own commands derive theirs from their identity (industry, phase 1).
@@ -856,6 +869,22 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      1 link snapshots at every save, in the same commit. Pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
    - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
+     - **A residual, not built** (the coordinator's ruling; fixes6 item 6; RP-57). Switched off,
+       the conflict ignores its journaled records without folding their epochs (rtsim-jni
+       `engine/conflict.rs:565`, `journaled`), so this sequence can issue an epoch twice (against
+       docs/replay-gate.md §5.3):
+       1. A session crashes with the conflict on, after Java journaled records of epochs it issued
+          since its last save.
+       2. The next start has the conflict off: its replay ignores those records, and it saves past
+          the crashed session's window, so the journal is trimmed of them.
+       3. A later start turns the conflict on. Its pages never saw that window's epochs and its
+          journal no longer holds them, so no floor is raised (RP-57).
+       4. That session can issue the crashed window's epochs again.
+
+       Not the old-life case of RG5 and RG6: that life is Java's, covers the whole directory, and
+       is drawn only when the pages include no observation. The option not taken, with no format
+       change: the jni conflict module detects the gap at switch-on (its pages' `now` older than
+       the journal's start) and raises every party's epoch past the window before it ingests.
    - **Tests.** Order 29 (`CONFLICT_COMMAND`, TEST mode) queues a conflict command record with
      Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
      `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
@@ -1576,8 +1605,8 @@ are untouched.
 | 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved | 56 |
 | 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
 | 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
-| 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 reserved | 48 |
-| 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq | 48 |
+| 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 u32 flags (the BAND_MATERIALIZE's flags, echoed: 8 a fight's wave; without 8 a sighting's; 0 an envoy's; a replay tells a held fight from a sighting by them, docs/replay-gate.md §6.1, RP-56) | 48 |
+| 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq. No free bytes, so unlike BAND_MATERIALIZED it does not echo the command's flags (8 a fight's wave): a replay reads a sighting refused inside a held fight's slack as the fight's refusal, which loses that fight's live parity, not its books (accepted residual, docs/replay-gate.md §6.1, RP-54). For whoever next changes this layout, the option not taken: `wave` is a u32 here and BAND_MATERIALIZE's a u16, so its high half (bytes 38 and 39) could carry the echoed flags | 48 |
 | 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
 | 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId (a Java op id: the top bit set, committed with `commitWithOpId`, MZB-589) | 72 |
 | 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
@@ -1719,7 +1748,8 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   that has it); it is latest-wins, so a crash can lose it, and the next CAMP_CENSUS corrects the
   engine's crystal from the kept chief body's own BODY_CRYSTAL bit (MZB-269, MZB-298). The engine
   ignores one for a faction it does not know or a culture with no camp bodies, and notes only a change
-  of the crystal. **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`),
+  of the crystal. One that comes while the engine replays waits for the replay end, the latest for each
+  faction (docs/replay-gate.md §5.6, RP-100). **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`),
   with that body's slot and generation; **TRADED** a masked trade with the grove's minions;
   **HAVEN_CHEST** a grove chest tribute can go into.
 - **RAIL_PASS** is one Create train's pass through a camp's range, at the sampled point nearest the
@@ -1732,7 +1762,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
 | 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
-| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |

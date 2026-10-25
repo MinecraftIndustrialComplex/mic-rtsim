@@ -331,6 +331,8 @@ pub struct FakeWorld {
     pub probes: Vec<crate::glass::records::ProbeSet>,
     /// Every IND_COUNT_SET the engine sent (SECTIONS.md §4.2), oldest first.
     pub count_sets: Vec<crate::glass::records::CountSet>,
+    /// Every IND_HELD_DRAW the engine sent (SECTIONS.md §2.5, slice S4c2), oldest first.
+    pub held_draws: Vec<crate::cmd::HeldDraw>,
     /// Every chunk reconcile applied: (op, district, epoch, chunk), oldest first.
     pub reconciled: Vec<(OpId, DistrictId, u32, ChunkPos)>,
     obs_seq: u64,
@@ -382,6 +384,7 @@ impl FakeWorld {
             threats_out: Vec::new(),
             probes: Vec::new(),
             count_sets: Vec::new(),
+            held_draws: Vec::new(),
             reconciled: Vec::new(),
             obs_seq: 0,
             cmd_seq: 0,
@@ -1431,6 +1434,8 @@ impl FakeWorld {
             }
             Cmd::ProbeSet(p) => self.probes.push(p),
             Cmd::CountSet(c) => self.count_sets.push(c),
+            // The fake world has no frontier: a test answers with the records itself.
+            Cmd::HeldDraw(d) => self.held_draws.push(d),
         }
     }
 

@@ -491,7 +491,7 @@ fn a_press_on_a_belt_passes_what_it_does_not_press() {
 // ---- boilers and kinetics (§2.5, §9.3) -----------------------------------------------------------
 
 /// A boiler fed by a pump of `pump` mB per tick drives a domain whose press makes sheets: level 4
-/// selects the fast level, level 2 the slow one, which is overstressed.
+/// selects the fast row (32 RPM), level 2 the slow one (16 RPM), which is overstressed.
 fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
     let mut b = B::default();
     let input = b.store(0);
@@ -527,11 +527,11 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
         node_flags::ANY_OUTPUT_BLOCKS,
         vec![
             RateEntry {
-                level: 1,
+                level: 0,
                 ..entry(Some(press), 1, 20)
             },
             RateEntry {
-                level: 2,
+                level: 1,
                 ..entry(Some(press), 1, 10)
             },
         ],
@@ -543,21 +543,21 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
     b.edges[he as usize].param = 4;
     b.edge(input, m);
     b.edge(m, out);
-    let level = |selector: u32, speed: i32, capacity: f64| DomainLevel {
-        selector,
-        speed_num: speed,
-        speed_den: 1,
-        capacity,
-    };
     b.domains.push(GraphDomain {
         head: head(0),
         network: 1,
-        current: 2,
-        driver: Some(boiler),
+        current: Some(1),
         flags,
         live_stress: 0.0,
         live_capacity: 0.0,
-        levels: vec![level(0, 0, 0.0), level(2, 16, 1000.0), level(4, 32, 4096.0)],
+        levels: vec![DomainLevel::speed_row(16), DomainLevel::speed_row(32)],
+        sources: vec![DomainSource::driven(
+            boiler,
+            0,
+            &[(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)],
+            2,
+        )],
+        foreign: 0,
         members: vec![
             Member {
                 node: Some(m),
@@ -584,7 +584,9 @@ fn steam(pump: u32, flags: u32) -> (Graph, Regime, u32) {
 fn the_boiler_level_selects_the_domain_level() {
     let (g, rg, _) = steam(40, 0);
     let s = run(&g, &rg);
-    assert_eq!(s.dom_level, vec![Some(2)]);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.src_row, vec![Some(2)]);
+    assert_eq!(s.dom_cap, vec![4096.0]);
     assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
 }
 
@@ -596,11 +598,12 @@ fn less_water_drops_the_level_into_overstress_and_the_members_stop() {
     assert_eq!(s.dom_level, vec![None]);
     assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
     assert!(s.converged);
-    // Water stopped altogether: level 0, where the press has no entry.
+    // Water stopped altogether: level 0, where the engine gives no speed.
     let (g, mut rg, pump) = steam(40, 0);
     rg.gate_off[pump as usize] = true;
     let s = run(&g, &rg);
-    assert_eq!(s.dom_level, vec![Some(0)]);
+    assert_eq!(s.dom_level, vec![None]);
+    assert_eq!(s.src_row, vec![Some(0)]);
     assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
 }
 
@@ -608,8 +611,187 @@ fn less_water_drops_the_level_into_overstress_and_the_members_stop() {
 fn stress_disabled_domains_never_overstress() {
     let (g, rg, _) = steam(20, domain_flags::STRESS_DISABLED);
     let s = run(&g, &rg);
-    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.dom_level, vec![Some(0)]);
     assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 20));
+}
+
+/// Two tanks on one shaft (SECTIONS.md §2.6): boilers A and B, each fed by its own pump of
+/// `pumps[i]` mB per tick, drive engines (sources at positions 0 and 1, each 16 RPM and 1,000 SU at
+/// boiler level 2, 32 RPM and 4,096 SU at level 4) on one network, B's shaft turning at `ratio_b`
+/// times the reference. `speeds` are the domain's speed rows; the press makes a sheet per 320 / v
+/// ticks at reference speed v, and `load` loads of 16 SU per RPM sit elsewhere on the network.
+/// Returns the graph, its regime and the two pumps.
+fn two_tanks(
+    pumps: [u32; 2],
+    ratio_b: (i32, u32),
+    speeds: &[i32],
+    load: u32,
+) -> (Graph, Regime, [u32; 2]) {
+    let mut b = B::default();
+    let input = b.store(0);
+    let out = b.store(1);
+    let rows = [(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)];
+    let mut sources = Vec::new();
+    let mut ps = [0; 2];
+    for (i, &pump) in pumps.iter().enumerate() {
+        let water = b.node(
+            NodeKind::Source,
+            model::WATER_SOURCE,
+            node_flags::FLUID,
+            Vec::new(),
+        );
+        let p = b.node(
+            NodeKind::Mover,
+            model::PUMP,
+            node_flags::FLUID,
+            vec![RateEntry {
+                flags: rate_flags::SHARED,
+                ..entry(None, pump, 1)
+            }],
+        );
+        let boiler = b.node(
+            NodeKind::Boiler,
+            model::BOILER,
+            node_flags::FLUID,
+            Vec::new(),
+        );
+        b.nodes[boiler as usize].params = [16, 1, 0, 0];
+        let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+        b.nodes[h as usize].params = [0, i64::from(heat::KINDLED), 0, 0];
+        b.edge_k(EdgeKind::Pipe, water, p, &[WATER]);
+        b.edge_k(EdgeKind::Pipe, p, boiler, &[WATER]);
+        let he = b.edge_k(EdgeKind::Heat, h, boiler, &[]);
+        b.edges[he as usize].param = 4;
+        let mut src = DomainSource::driven(boiler, i as i64, &rows, 2);
+        if i == 1 {
+            (src.ratio_num, src.ratio_den) = ratio_b;
+        }
+        sources.push(src);
+        ps[i] = p;
+    }
+    let press = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+    let rates = speeds
+        .iter()
+        .enumerate()
+        .map(|(k, &v)| RateEntry {
+            level: k as u32,
+            ..entry(Some(press), 1, 320 / v.unsigned_abs())
+        })
+        .collect();
+    let m = b.node(
+        NodeKind::Machine,
+        model::PRESS,
+        node_flags::ANY_OUTPUT_BLOCKS,
+        rates,
+    );
+    b.nodes[m as usize].domain = Some(0);
+    b.edge(input, m);
+    b.edge(m, out);
+    let member = |node: Option<u32>, count: u32, impact: f64| Member {
+        node,
+        count,
+        ratio_num: 1,
+        ratio_den: 1,
+        impact,
+    };
+    b.domains.push(GraphDomain {
+        head: head(0),
+        network: 1,
+        current: None,
+        flags: 0,
+        live_stress: 0.0,
+        live_capacity: 0.0,
+        levels: speeds.iter().map(|&v| DomainLevel::speed_row(v)).collect(),
+        sources,
+        foreign: 0,
+        members: vec![member(Some(m), 1, 8.0), member(None, load, 16.0)],
+    });
+    let g = b.graph();
+    let rg = regime(&g, &[(input, &[BRASS])]);
+    (g, rg, ps)
+}
+
+/// The faster tank sets the network's speed and both add their capacity, the slower one at its own
+/// speed (choice SC144): 4,096 + 1,000 SU at 32 RPM, whichever tank is the faster.
+#[test]
+fn two_tanks_on_one_shaft_run_at_the_faster_and_add_their_capacities() {
+    for (pumps, rows) in [
+        ([40, 20], [Some(2), Some(1)]),
+        ([20, 40], [Some(1), Some(2)]),
+    ] {
+        let (g, rg, _) = two_tanks(pumps, (1, 1), &[16, 32], 4);
+        let s = run(&g, &rg);
+        assert_eq!(s.src_row, rows, "{pumps:?}");
+        assert_eq!(s.dom_level, vec![Some(1)], "{pumps:?}");
+        assert_eq!(s.dom_cap, vec![5096.0], "{pumps:?}");
+        assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10), "{pumps:?}");
+    }
+    // B's shaft turns twice as fast as the reference: at level 4 it gives the reference 16 RPM,
+    // A's level 2 as well; with A at level 4 too, A's 32 is the faster.
+    let speeds = [8, 16, 32];
+    let (g, rg, _) = two_tanks([20, 40], (2, 1), &speeds, 4);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.dom_cap, vec![5096.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 20));
+    let (g, rg, _) = two_tanks([40, 40], (2, 1), &speeds, 4);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(2)]);
+    assert_eq!(s.dom_cap, vec![8192.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+}
+
+/// Sources that would turn the network both ways stop it (Create breaks a block there); with B's
+/// water stopped, B gives no speed and A runs the network alone.
+#[test]
+fn sources_turning_against_each_other_stop_the_network() {
+    let (g, rg, ps) = two_tanks([40, 40], (-1, 1), &[-16, 16, -32, 32], 4);
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(2), Some(2)]);
+    assert_eq!(s.dom_level, vec![None]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
+    let mut rg = rg;
+    rg.gate_off[ps[1] as usize] = true;
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(2), Some(0)]);
+    assert_eq!(s.dom_level, vec![Some(3)]);
+    assert_eq!(s.dom_cap, vec![4096.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+}
+
+/// A driven domain needs a speed row for each speed its sources give (Java builds them so): one
+/// missing is refused, not run at a row it does not have.
+#[test]
+fn a_driven_domain_missing_a_sources_speed_row_is_refused() {
+    let (g, _, _) = two_tanks([40, 40], (2, 1), &[8, 16, 32], 4);
+    // B's 8 RPM row goes, and the press's rate there
+    let mut domains = g.domains.clone();
+    domains[0].levels.remove(0);
+    let mut nodes = g.nodes.clone();
+    for n in &mut nodes {
+        n.rates.retain(|r| r.level != 0);
+        for r in &mut n.rates {
+            r.level -= 1;
+        }
+    }
+    let built = Graph::build(g.end, nodes, g.edges.clone(), g.recipes.clone(), domains);
+    assert_eq!(built.err(), Some(super::graph::Invalid::Level(0)));
+}
+
+/// A load only both tanks carry: 4,352 SU at 32 RPM, past A's 4,096 alone. B's 1,000 at 16 RPM
+/// carries it; with B's water stopped the network is overstressed.
+#[test]
+fn a_load_only_the_second_tanks_share_carries() {
+    let (g, mut rg, ps) = two_tanks([40, 20], (1, 1), &[16, 32], 8);
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+    rg.gate_off[ps[1] as usize] = true;
+    let s = run(&g, &rg);
+    assert_eq!(s.dom_level, vec![None]);
+    assert_eq!(s.dom_cap, vec![4096.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
+    assert!(s.converged);
 }
 
 #[test]
@@ -625,17 +807,13 @@ fn an_overstressed_domain_without_a_driver_stops_its_members() {
     let dom = |capacity: f64, flags: u32| GraphDomain {
         head: head(0),
         network: 1,
-        current: 0,
-        driver: None,
+        current: Some(0),
         flags,
         live_stress: 0.0,
         live_capacity: 0.0,
-        levels: vec![DomainLevel {
-            selector: 0,
-            speed_num: 64,
-            speed_den: 1,
-            capacity,
-        }],
+        levels: vec![DomainLevel::speed_row(64)],
+        sources: vec![DomainSource::fixed(0, 64, capacity)],
+        foreign: 0,
         members: vec![Member {
             node: Some(m),
             count: 1,
@@ -4841,7 +5019,9 @@ mod replay_path {
     mod units {
         use super::*;
         use crate::glass::check::{Liveness, UnitState};
-        use crate::glass::page::{GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4};
+        use crate::glass::page::{
+            GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4, GLASS_MAGIC_IGL5,
+        };
         use crate::glass::page::{PageRead, district_page, read_district_page};
         use crate::glass::replay::Replay;
         use crate::glass::report::discard;
@@ -5444,7 +5624,12 @@ mod replay_path {
             assert_eq!(r.rows_len(), c.rows_len());
             assert_eq!(r.ports_at, c.ports_at);
             assert_eq!(district_page(&back), page);
-            for magic in [GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4] {
+            for magic in [
+                GLASS_MAGIC_IGL2,
+                GLASS_MAGIC_IGL3,
+                GLASS_MAGIC_IGL4,
+                GLASS_MAGIC_IGL5,
+            ] {
                 let mut old = page.clone();
                 old[..4].copy_from_slice(&magic.to_le_bytes());
                 assert!(matches!(
@@ -6412,30 +6597,30 @@ mod replay_path {
             let r = b.nodes[p1 as usize].rates[0].recipe;
             b.nodes[p1 as usize].rates = vec![
                 RateEntry {
-                    level: 1,
+                    level: 0,
                     ..entry(r, 1, 20)
                 },
                 RateEntry {
-                    level: 2,
+                    level: 1,
                     ..entry(r, 1, 10)
                 },
             ];
             b.nodes[p1 as usize].domain = Some(0);
-            let level = |selector: u32, speed: i32, capacity: f64| DomainLevel {
-                selector,
-                speed_num: speed,
-                speed_den: 1,
-                capacity,
-            };
             b.domains.push(GraphDomain {
                 head: head(0),
                 network: 1,
-                current: 2,
-                driver: Some(boiler),
+                current: Some(1),
                 flags: 0,
                 live_stress: 0.0,
                 live_capacity: 0.0,
-                levels: vec![level(0, 0, 0.0), level(2, 16, 1000.0), level(4, 32, 4096.0)],
+                levels: vec![DomainLevel::speed_row(16), DomainLevel::speed_row(32)],
+                sources: vec![DomainSource::driven(
+                    boiler,
+                    0,
+                    &[(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)],
+                    2,
+                )],
+                foreign: 0,
                 members: vec![Member {
                     node: Some(p1),
                     count: 1,
@@ -6562,17 +6747,13 @@ mod replay_path {
                 b.domains.push(GraphDomain {
                     head: head(0),
                     network: 1,
-                    current: 0,
-                    driver: None,
+                    current: Some(0),
                     flags: 0,
                     live_stress: 0.0,
                     live_capacity: 0.0,
-                    levels: vec![DomainLevel {
-                        selector: 0,
-                        speed_num: 64,
-                        speed_den: 1,
-                        capacity: 1024.0,
-                    }],
+                    levels: vec![DomainLevel::speed_row(64)],
+                    sources: vec![DomainSource::fixed(0, 64, 1024.0)],
+                    foreign: 0,
                     members: vec![member(Some(p1), 1), member(None, others)],
                 });
                 (b, p0, p1)
@@ -6593,7 +6774,8 @@ mod replay_path {
                 c.unit_state[ub as usize].passed_caps,
                 vec![DomCap {
                     domain: 0,
-                    selector: 0,
+                    source: Some(0),
+                    speed: 64.0,
                     capacity: 1024.0
                 }]
             );

@@ -763,7 +763,11 @@ impl Conflict {
         self.stats.camp_orders += out.len() as u64;
         self.stats.camp_lines += lines.len() as u64;
         let n = lines.len();
-        self.outbox.extend(out);
+        // Through the gate (docs/replay-gate.md §4.4): never while replaying, since every camp is
+        // out from the replay's start (`camp_session_start`) to its end.
+        for c in out {
+            self.outbox.push(c);
+        }
         self.note(
             at,
             Some(f),
@@ -930,7 +934,15 @@ impl Conflict {
     /// (an arrival, a body handed back) is asked for without it. A change only is noted. The
     /// health is not kept: nothing of M6 reads it (the census carries it). A record for a faction
     /// this engine does not know, or one whose camp holds no bodies, is ignored.
+    ///
+    /// While the outbox replays it waits for the replay end, the latest for each faction (RP-100):
+    /// nothing journals it, so it is newer than every record the replay brings back, and one of
+    /// those (a FACTION_FOUND's census byte) would undo it or find its faction unknown.
     pub(super) fn chief_state(&mut self, c: &ChiefState, at: Tick) {
+        if self.outbox.replaying() {
+            self.chief_states_held.insert(c.faction, *c);
+            return;
+        }
         let Some(&f) = self.by_key.get(&c.faction) else {
             return;
         };
@@ -964,7 +976,7 @@ impl Conflict {
         if !self.culture(f).def.camp_bodies {
             return;
         }
-        if self.replaying {
+        if self.outbox.replaying() {
             if let Some(camp) = self.camp_mut(f) {
                 camp.epoch = 0;
                 camp.refill_at = None;

@@ -3791,3 +3791,767 @@ Feud, Raid and Fell paragraphs describe them.
 ## Hand-off
 
 (none yet)
+
+## Replay pushes (fix/replay-push)
+
+The design is docs/replay-gate.md; each choice names its section there. Every choice is the
+conservative option at its fork.
+
+- **RP-1** (one flag; §1.1, §3.1): rtsim-jni's `State.replaying` holds SEC-1's predicate,
+  `applied_through + 1 < session_first`, set at SESSION_START and cleared once a session by the replay
+  end. Each engine holds its own copy in its outbox, set by `begin_replay` and cleared by
+  `replay_done`. Not a second definition: the same predicate, latched so that every module reads one
+  answer and the end runs once. Not saved. Rejected: a parameter on every engine call (dozens of
+  signatures, and a test can pass the wrong value).
+  Amended (SEC-1's meeting-point review, item 5): "the same predicate, latched" overstated it. The
+  flag is set at SESSION_START and cleared by the first of the three triggers (§1.1, §2.2): the top
+  of `journaled()` on a record's sequence at or past `session_first`, the step's top on
+  `applied_through + 1 >= session_first`, and the arm's end with RP-29's journal check, which can
+  clear it while `applied_through + 1 < session_first`.
+- **RP-2** (one replay end for all four modules; §2.2, §3.2): `shared::replay_end` runs at the top of
+  `journaled()` for the first record at or past `session_first`, at the step's top when the replay's
+  last record was the hand-over's last, and at the SESSION_START arm's end when there is nothing to
+  replay. It replaces conflict's two MZB-141 triggers and `notices_due`. Rejected: one end per module
+  (four places that can disagree on when a session's live part starts).
+  Amended (the coordinator, on §10's second question): `replay_end` counts the hand-overs the replay
+  took and the records it replayed, in a stat and in one info log line at the end, so a slow replay
+  shows up.
+  Amended (design review): the hand-over count rises at the step's entry whenever `st.replaying` is
+  true there, so a short replay counts 1. The trigger at the top of `journaled()` covers every
+  module's journaled entry, industry's included, so M7's `rail_call` needs no trigger of its own;
+  whichever of M7 and fix/replay-push lands second deletes M7's conflict-only one (replay-gate.md
+  §4.4's note).
+- The three §10 trade-offs (lose rather than repeat; nothing near players until the replay ends; a
+  copied band death shrinks the band by one, the extra body clearing at the next despawn) were decided
+  by the coordinator on 2026-10-24, as recommended, not by Ben, who can overrule.
+- **RP-3** (the gate at each engine's push; §4.1): an `Outbox` type per engine with a private `Vec`,
+  whose only entry is a gated `push`, and one exhaustive `gate` match with no `_` arm giving each kind
+  a queued verdict (keep or drop at the session start) and a replaying verdict (send, drop or never).
+  At the engine, not at rtsim-jni's `take_commands`: rtsim-host, rtsim-cli and crate tests use engines
+  without rtsim-jni, and the crate's privacy stops a push around it. The queued column also stops the
+  restored outboxes of dragons, herds and ships reaching a new session unfiltered, as they do today.
+- **RP-4** (a "never" kind; §4.1): the decisions that embody return early while replaying, so a
+  "never" kind cannot be pushed; if one is, release skips it, counts it and logs it loudly, and tests
+  `debug_assert`. No release panic. The skip heals at the replay end, which makes every body abstract.
+- **RP-5** (the session start keeps the bodies; §5.1): `begin_replay` changes no body; what the pages
+  hold embodied stays so, at its epoch, until the replay end, where today's session start runs
+  (moved, §5.6). Rejected: abstracting at the start and patching each replayed record kind to find its
+  body (the audit's five LEAKs are that patching, failing).
+  Amended by RP-26: the arm's players leave without any module's `player_left`.
+- **RP-6** (a replayed *_MATERIALIZED is honoured; §5.2): one dispatched while replaying, and not a
+  copy, at an epoch above the agent's, embodies the agent as the last session had it. A live one is
+  handled as today. Conflict counts its casualties by body kind against all alive units, since the
+  record names how many were placed, not which.
+  Amended by RP-22 (conflict's fill), RP-23 (a held party's fight) and RP-31 (only an engine that
+  started from pages honours).
+- **RP-7** (epochs never reused; §5.3): an agent's next epoch is above every epoch seen for it, in the
+  pages, a replayed *_MATERIALIZED and a copy. Each module with epochs (conflict, dragons, herds, ships)
+  gets its own test.
+  Amended by RP-30: the floor is held apart from the epoch until the replay end.
+- **RP-8** (copies never match a body; §2.3, §5.7): a REASSERT's content is an earlier session's, so a
+  copied loss applies by identity (party and body kind, member key) and a copied *_MATERIALIZED only
+  raises the epoch floor. rtsim-jni's `st.applying_copy`, set around S4p's `reasserted()` dispatch,
+  tells the modules; a field, so S4p's signatures stay.
+  Amended (design review): the SESSION_START arm clears `applying_copy` first, since a step that
+  panicked inside a copy's dispatch (caught) leaves it `Some`. Amended again (SEC-1's meeting-point
+  review, item 4): that cannot happen, since a panicked step fails the engine for good and no later
+  step reads a record; the reset stays as a defence.
+- **RP-9** (a copied BAND_CASUALTIES; §2.3, §5.7): `Conflict::ingest_copy` counts it against the
+  party's alive units of that body kind, by party alone, touching no stack. Today, on main and on S4p,
+  such a death is dropped by `party_of`'s exact epoch and the member lives on. Slice C also tests
+  MZB-131's live walk-off death of an old epoch while the band is embodied at a new one, first, and
+  fixes it the same way if it fails. Safe because a named generation's new copy was never applied (SEC-1); the
+  gap case (pages older than the journal, boundary.md §3.2's "Known limit") can count a death twice
+  and stays that limit's case.
+  Amended by RP-25 (the stacks capped after a copied death) and RP-27 (the MZB-131 fix, by epoch).
+- **RP-10** (MZB-138's fold goes; §5.4): the fold of embodied bodies into recalled stacks at the
+  session start existed so replayed records found them; RP-5 keeps them embodied instead. The replay
+  end drops every recalled stack, as `replay_done` does today.
+- **RP-11** (sightings wait; §6): `shared::simulate` returns at its top while replaying, keeping the
+  latest position per player, and every decision that embodies returns early. The kept positions are
+  routed in the step the replay ends in, or the first one after. Costs a bool test per step; loses
+  dragons' home counts and conflict presence for the replay's hand-overs. Phase 1 is untouched (the
+  function serves the four modules only).
+- **RP-12** (conflict re-derived news; §7.3): NOTICE, DEMAND_SETTLED and TRAIN_ROBBED are dropped while
+  replaying. Kept notices go at the replay end (MZB-31, unchanged); a settled demand's news and a
+  roar decided after the last save are lost, never shown twice (Questions for Ben 1).
+- **RP-13** (dragons ADOPT and DISCARD; §4.5): dropped while replaying. DragonBridge reports an untagged
+  dragon once per entity per session at join and never saves the tag, so the live report after the
+  replay end decides again (adopt_again at a new epoch).
+- **RP-14** (NEST_RENEW; §7.1): a renewal serial per nest, carried by the command, applied by Java
+  only above the last it applied. Not an absolute owed count, which races Java's own placing and can
+  double; not a plain drop, which loses a renewal. An old Nests file loads owed 0 and serial 0: never
+  doubled. Slice D drops NEST_RENEW while replaying until slice N adds the serial.
+- **RP-15** (NEST_SORTIE; §7.2): dropped while replaying. Loses the visible worms of a raid on a
+  watched district decided again; the raid's effect on the district stands.
+- **RP-16** (the DEPART trap; §5.8): a DRAGON_DEMATERIALIZED of reason NOT_EMBODIED carries only the
+  agent and the epoch, and the engine took its zeros (health 0, hunger 0, a rest at (0, 0, 0)). It
+  takes no position, health or hunger and resumes the dragon where the engine had it, as
+  SPAWN_REJECTED does. Slice D, with a test.
+- **RP-17** (landing order; §2): neither fix/replay-push nor feat/sec1-s4p must land first; whichever
+  lands second does §2.7's merge and writes §2.5's four tests.
+- **RP-18** (the API; §3.4): each engine's `session_start` is removed and replaced by `begin_replay`
+  and `replay_done`, so that every caller fails to compile and chooses. Rejected: keeping
+  `session_start` as both in one (callers would silently get the old behaviour).
+- **RP-19** (a new engine life; §2.6, §7.1): Java keeps the RG13 engine life beside each nest's last
+  serial and starts a nest's serial afresh under a new life; the owed count stays.
+  Amended (design review): so slice N goes after D and after RG lands; RG13's engine life is only on
+  feat/reinstall-guard (35e9b082 and later).
+- **RP-20** (where the end is checked; §2.2): at the top of `journaled()`, after its `save_through`
+  block, before S4p's branches and `admitted()`: it sees every kind and reads only the sequence, on
+  both branches.
+- **RP-21** (a copy of generation 0; §2.3, SEC-1's review): S4p judges a copy of nonce 0 new every
+  time and records none, so repeats each apply unless an op id stops them. BAND_CASUALTIES has no op
+  id: a copied one of generation 0 is refused and counted, never applied. Loses a death that was
+  really lost (a member lives on); never kills one twice. CHIEF_KILLED (op id) and herds' losses
+  (member key and op id) apply as RP-8 says.
+- **RP-22** (conflict's fill for an honoured BAND_MATERIALIZED; §5.2; amends RP-6; the design
+  review's item 1): `spawned` is rebuilt by `spawn_wave`'s own fill, one function for both, one fill
+  per wave from the party's `wave` to the record's: the units in order, each up to its alive members
+  not placed, within `spawn_quota` less the bodies placed and less the epoch's deaths since the
+  party's previous honoured record. Never above what Java was commanded; a count below it loses
+  nothing journaled. An honoured envoy record fills nothing, as `materialize_envoy` records nothing
+  live (decided by the coordinator, 2026-10-24; the review asked for every unit, which would part the
+  replay from the live path). Rejected: every alive unit
+  (RP-6 as first written: an invasion of 26 with 16 placed despawns to 16); the record's `spawned`
+  (it omits the pending members Java reports at the despawn).
+- **RP-23** (a war party's arrival waits; §6.1; the review's item 2): while replaying, the branches
+  of `arrive()` and `wait_over()` that ask `watcher()` hold the party (in memory, its arrival tick)
+  and poll with its own Ev::Party every `REPLAY_HOLD_TICKS` (PLACEHOLDER 20), so pages saved
+  mid-replay keep an event and no format changes. A replayed, honoured BAND_MATERIALIZED of a held
+  party takes `start_fight`'s state without commands; otherwise the poll at the hold's slack
+  (RP-48), or the first after the replay end if that comes first, decides as today, normally
+  abstractly. Loses rather than doubles: a crash before the fight's BAND_MATERIALIZED was journaled,
+  and a sighting inside the slack read as a fight (amended by RP-48: a sighting on the way home or
+  while a siege waited was read as a fight however late it came). Slices D and S check dragon raids
+  and pirate coast raids for the same pattern. Rejected: resolving at
+  `replay_done` directly (no event in pages saved mid-replay; a restart from them would strand the
+  party).
+- **RP-24** (the clock follows the records; §3.6; the review's item 3): while replaying, with any of
+  the four modules running, every read of the hand-over's time that runs the clock is held at
+  `st.replay_clock`, the latest replayed record's world tick: the modules' `simulate`s, phase 1's
+  world, ships' `build`, herds' `found`, the non-journaled records applied at the hand-over's time;
+  worldmodel founds nothing. The world is held with the modules, since the five share one clock and
+  the world never steps back; the clamps to `phase1.world.now()` stay (the review suggested dropping
+  them; with the world held they carry nothing forward, and they still guard the world's past).
+  Industry is not held (its own clock and replay rules); a held module's train lookups and raids
+  then meet industry's later state, a known limit (decided by the coordinator, 2026-10-24). A
+  phase 1 world alone is not held. Rejected: holding the four alone (the world's run and the next
+  clamp carry them forward).
+- **RP-25** (the copy cap; §5.7; amends RP-9; the review's item 4): after a copied BAND_CASUALTIES,
+  `spawned` and every recalled stack of that unit are capped at its alive units, as the recalled
+  despawn already caps `spawned`. Without it the next despawn undoes the death (6 placed, a copy,
+  6 survivors: 6 again). §10's third answer ("the extra body clears at the next despawn") holds
+  only with this cap.
+- **RP-26** (the arm forgets players without `player_left`; §2.1, §5.6; amends RP-5; the review's
+  item 5): `shared::session_start` calls `World::forget_player_pos` for each player with an area and
+  no viewer's `player_left`, which would recall conflict's watched kept bands and despawn herds'
+  groups. Each module's `replay_done` does the player work instead (conflict's presence spans,
+  dragons' and ships' interest legs, herds' interest and `pos`). Slice C leaves only conflict out
+  of the arm's `player_left`; slices D, H and S each leave their own out with their `replay_done`.
+- **RP-27** (a casualty's stack by epoch; §5.9; the review's item 6; MZB-131): `casualties()` finds
+  the party by agent, then takes from `spawned` when embodied at the record's epoch, else from the
+  recalled stack of that epoch, else counts nothing (a straggler). Rejected: by agent alone (an old
+  epoch's death would come off the new stack and count again at the old despawn).
+  Amended (the re-review's item 7): a walk-off death also takes RP-25's cap, `spawned` and every
+  recalled stack of that unit capped at its alive units. Without it `spawned` stayed above the
+  alive, and a plugin that despawned the newer epoch first, holding every body it placed, undid the
+  death (12 placed, a walk-off death, 11 alive; the despawn of 12 gave 12). ConflictBridge ends the
+  old epoch before it materializes the new one, and that despawn clamps `spawned` itself, so the
+  bridge was safe; the cap makes the order not matter.
+- **RP-28** (backstops; §6): `start_fight` and `wave` return at their top while replaying, `wave`
+  without scheduling the next; the gate stays the last backstop (RP-4).
+- **RP-29** (an empty replay ends at the arm; §2.1): at the SESSION_START arm's end the replay also
+  ends when Java's journal starts at or past `session_first` (`max(applied_through + 1, jf) >=
+  session_first`), so main without S4p does not wait for the first live record. A pinned JOURNAL_GEN
+  below `jf` after this end is harmless (never dispatched to a module); the S4p merger checks.
+- **RP-30** (the epoch floor apart from the epoch; §5.3; amends RP-7): an in-memory map per engine
+  of the highest epoch seen that the agent's `epoch` does not hold; the next epoch is
+  `max(epoch, floor) + 1`; `replay_done` folds the floors into the epochs (everything is abstract
+  then) and clears the map. Rejected: raising `epoch` itself (an embodied party's records at its
+  current epoch would stop matching). Lost at a restart, harmless by RP-8.
+- **RP-31** (only an engine that started from pages honours; §2.6, §5.2): `begin_replay(from_pages)`;
+  a fresh engine (first start, reinstall, a module built without saved state) honours no replayed
+  *_MATERIALIZED and only raises floors, so an old life's record on a reused handle embodies
+  nothing. Loses: a fresh engine's own records journaled before its first save are not honoured
+  after a crash before that save (today's behaviour). RG13's engine life could later tell the two
+  apart.
+
+- **RP-32** (the hand-over count; §2.2): the hand-over that carries SESSION_START enters the step
+  with the last session's `false`, so the arm sets the count to 1 when the replay is still on at
+  its end; each later hand-over counts at the step's entry. A replay that ends at the arm counts 0,
+  one that ends inside the session start's hand-over 1. The counts are JNI `Stats` atomics
+  (`replays_ended`, `replay_handovers`, `replay_records`), not Java's stats array.
+- **RP-33** (the clock's reads; §3.6, RP-24): one function, `shared::hand_over_target` (the
+  hand-over's world tick through `clock_target`), at every read that runs the clock: the four
+  modules' `simulate`, dragons' and herds' `reset_if_due` (conflict's and ships' read no time),
+  phase 1's `simulate` and `input_now` (its latest-state inputs), the STATE kinds applied at the
+  hand-over's time (dragons', ships'), the rejects (conflict's, ships', herds', dragons'
+  `write_queue`), worldmodel's founding. Ships' journaled path raises the replay clock too
+  (`catch_up_to`). Worldmodel's guard is `st.replaying` itself: nothing is founded while replaying,
+  the regions stay pending. Not held: industry (RP-24).
+  Amended (the fix round's item 3): the test orders that run the clock to the hand-over's time
+  (the works grants and raids, `phase1::directive`; TRIBUTE_START; HERD_FOUND) are queued until the
+  replay end, not held at the replay clock. Taken at once, one runs the world to Java's present, and
+  the next replayed record's clamp (`max(record, conflict.now, phase1.world.now)`) carries the
+  conflict there: RP-24's fault. Held at the replay clock instead, each would take effect in the
+  replayed past (a grant spent, a tribute begun, a herd founded before Java gave the order). Queued,
+  a unit that holds one, and every unit after it so that units keep their order, is taken at the
+  first step that starts after the replay end, at the hand-over's time as any order is: after every
+  replayed record, and no earlier than Java gave it. In memory (`held_units`), lost with a crash
+  before the end as any untaken order is. The other orders run no clock: commands are queued for
+  Java, SaveAtNextStep waits anyway (RP-42), and ScriptVillage, Phase1SpawnNear, NestDay and
+  TalkReport move no time. Phase1Advance (a test's fast-forward of the world-tick mapping) is not
+  held; a test gives it outside a replay. Failing first, a kept fight's casualties replayed
+  over several hand-overs with the order taken in the second: a WorksGrant and, apart, a
+  HERD_FOUND (herds on) each undid all 3 (12 out): the camp's pool's closed form 26.92, live 23.92.
+  Amended (the re-review's item 5): a SESSION_START drops the held units (they were the last
+  session's), with a warning and the pending count corrected; a works raid and a TRIBUTE_START
+  (dragons on, its village given works and a purse and its lair found before the save) each have
+  their test, and each fails with its kind taken at once: 26.92 against 23.92 again.
+- **RP-34** (the arm's leave; §2.1, RP-26): `shared::session_start` leaves each player's area
+  through `with_viewers_of(st, false, ..)`, every viewer but the conflict; the conflict's
+  `replay_done` ends every presence span at once (`Presence::every_player_left`).
+- **RP-35** (where a replay's state lives; §3.3, §4.3): the Outbox holds `replaying`
+  (`Conflict::replaying()` reads it) and the gate's counts, cumulative since the engine was built or
+  loaded, so `ConflictStats` (saved) gains no field; `defer()` is the early return and counts it;
+  `last_never` keeps the kind and name for the log. Only conflict's Link has `replay_end_due`;
+  dragons', herds' and ships' `replay_end` are empty until their slices.
+- **RP-36** (`resend_notices` ends the replay; §5.6): it calls `replay_done` first (a no-op unless
+  replaying), so a caller that only resends cannot leave the gate on. Its retain of queued notices
+  stays; rtsim-jni's replay end asserts instead that none is queued (the gate drops them).
+- **RP-37** (the floors' bookkeeping; §5.3, RP-30): keyed by agent; raised only when the party does
+  not hold that epoch; spent (removed) by `next_epoch`.
+- **RP-38** (the honour's edges; §5.2): the epoch's deaths since the last honoured record are taken
+  once per record; a record of the same epoch when the party is not embodied changes nothing (its
+  body is gone); a held arrival takes the fight's state only on a newer epoch (`start_fight`
+  always takes a new one).
+- **RP-39** (copies; §2.3, §5.7, RP-21, RP-25): the generation-0 refusal sits after `translate`
+  and before the `Conflict::later` check and the catch-up, so a refused copy moves no clock; the
+  cap applies to copies only (a live casualty takes from its stack). The rtsim-jni test of a
+  generation-0 copy waits for S4p: nothing on this base sets `applying_copy`.
+- **RP-40** (the held arrivals' details; §6.1, RP-23): `held` maps a party to (since, plan); a
+  poll is answered only while its plan matches, else the entry goes. After a restart from pages
+  saved mid-replay the map is empty, so `held_since` infers the hold from the pages (out, a war
+  party, on its last segment, its arrival due; or a waiting siege whose round is due), and a poll
+  that arrives again keeps the route's last time as its arrival and its patience from there.
+  A siege's hold is from `until.min(at)` and changes neither `seg` nor `bored_at`. `fight_held`
+  leaves `seg` at the route's end, as a live arrival does, ends no earlier than the next tick,
+  counts `raids_watched` and schedules no wave (`wave` is held anyway, RP-28). Since RP-42 the
+  host takes no page while replaying, so the inference from the pages is reached only from
+  engine-level tests that save mid-replay (test (b)'s restarts); kept as a defence (the
+  re-review's item 4).
+- **RP-41** (the tests): (b) is engine-level, in rtsim-conflict's mowzie_records, where an
+  Infrastructure that records every `raid` shows an abstract resolve; (c) lowers the camp's pool so
+  that it shows the band coming home, and compares both the pool's closed form at a fixed time and
+  its raw value and time (the closed form alone does not show when the band came home). The crate
+  tests that called `session_start` call `begin_replay(true)`, and `replay_done` where they wanted
+  the old reset's effects; `boundary::tests::cmds` is `pub(crate)` for the gate's table test.
+- **RP-42** (no save while replaying; §2.2, §3.2; the fix round's item 1): `journaled()` ends the
+  replay before its `save_through` block, so a save due at the first live record is taken after
+  `replay_done`. Beyond the brief's two paths, every path that takes pages waits while replaying:
+  the step end's `SaveAtNextStep`, a `save_through` already due, and `close(save = true)`, which
+  keeps the pages as they were (they were taken mid-replay before: durable 1025, want 2). A request
+  made while replaying is taken at the first journaled record or step end after the replay end. The
+  budget save waits too, so the resident rows may pass the budget by what the replay's hand-overs
+  change: 56,792 B at the peak against 4,096 B over 5 hand-overs, 2,680 B after the end's budget save.
+  Real Java asks for a save through `nextObsSeq - 1`, which is at or past its session's JOURNAL_GEN,
+  so a bridge that names its generation never asks below `session_first`; the ordering case needs a
+  bridge that names none (a level save before the session's first record) or a direct request, which
+  the tests use. A held raid is not read as a fight on either code: a band at home is never seen, and
+  the pages' held state (out, `seg` one short, the poll pending; `held` is not saved) is the same
+  whether they were taken before or after the replay end, since `replay_done` leaves `seg` and the
+  poll as they are; the test is kept as the control.
+- **RP-43** (§2.5's tests, written by the merger at 96ca2219): tests 1, 2, 3 and 5 sit in rtsim-jni
+  tests/protocol.rs's `conflict` module, not tests/reassert.rs, because the camp, raid and band
+  helpers they need live there; test 4 (pinnedGen, no conflict state) sits in tests/reassert.rs
+  beside S4p's. Without the copy bit (`applying_copy`) five fail: the live materialized copy embodies
+  ([1], want [2]), the unknown-generation copy takes 0 of 6, the replayed and live casualty copies
+  leave 12 alive (want 6), and generation 0 refuses 0 (want 4). The replayed materialized variant
+  holds either way, since a replayed BAND_MATERIALIZED raises the epoch floor too; it is kept as the
+  control. Test 4 cannot tell an end right before the JOURNAL_GEN from one right after it (a
+  JOURNAL_GEN is never dispatched, so nothing reads the difference); it does fail with no end at the
+  record, when the step's top ends it after the session's live transfer, counted as replayed
+  ((1, 1, 4), want (1, 1, 3)).
+- **RP-44** (phase 1 shows nothing while replaying; §6; the fix round's item 4): `phase1::simulate`
+  skips `interest()`, `markets()` and the queued P1_SPAWN_NEARs while `st.replaying`, whether or not
+  a module holds the world: the replayed records still to come change what a player would see
+  either way, and the brief names `st.replaying`. The whole of `interest()` waits, not only its
+  materializing half: phase 1's session start leaves no puppet embodied, so nothing is there to
+  steer or capture while nothing is materialized. `last_interest` and `last_market` are left as
+  they were, so both run in the first step after the replay end. The world's own commands
+  (`take_world_commands`: gossip, works) still go as before, outside this item. Failing first, three
+  villages and a goblin camp far off, a player in village A with a caravan near it at the save,
+  4,000 fillers, and a replay at MIN_CAPACITY: (markets, caravans) sent while replaying (1, 2),
+  want (0, 0). The control, the same replay in one hand-over, sends both in its first hand-over
+  on either code.
+- **RP-45** (a held siege's patience; §6.1; the fix round's item 5): `arrive()` takes a war party's
+  arrival as its route's last time, capped at `at`, for every war arrival, not only in the hold:
+  after the replay end `replay_done` clears `held`, so the poll reaches `arrive()` again at the
+  poll's tick, and `bored_at` was reset from there. Live, a war party's last segment is scheduled
+  at its route's last time and never late (the Out chain runs from the muster's end, and Peaceful
+  stands a mustering war party down), so live arrivals are unchanged. Envoys and scouts keep `at`:
+  an envoy held through Peaceful while mustering (MZB-132) can arrive after its route's last time,
+  and its patience runs from its real arrival as before. Failing first, a siege on the refinery
+  with nobody near, the pages saved 3,000 ticks before its arrival, the replay 600 past it: the
+  replayed siege's (`bored_at`, turn for home) (123570, 123570), want the session that went on's
+  (122950, 122950), 620 ticks late (the replay's 600 and one 20-tick poll).
+- **RP-46** (honour as live at a newer epoch; §5.2; the fix round's item 6): `honour` at a newer
+  epoch clears `spawned` without folding it into a recalled stack, as live `start_fight` (and
+  `seen`, which needs the party not embodied) takes a new epoch. A live recall still folds
+  (MZB-131). With the real bridge the fold seldom had anything to fold: `ConflictBridge.materialize`
+  ends an older epoch's party (BAND_DEMATERIALIZED, reason COMMAND, its survivors) before it
+  journals the newer one's BAND_MATERIALIZED, and that despawn, replayed while the party is
+  embodied at the older epoch, takes `dematerialized`'s live branch first. The fake plugin drops
+  the older bodies silently, so a record of the older epoch after the newer one's materialize
+  shows the difference. Failing first, the watched raid of RP-23's test (b), seen on its road at
+  one epoch and fought at the refinery at the next, with one older-epoch body's death after the
+  fight's BAND_MATERIALIZED: live counts it against no stack; replayed, (casualties, pool on day 9)
+  (4, 35.998), want live's (3, 36.998). The engine test of §5.2's honour now asserts no recalled
+  stack at the newer epoch.
+- **RP-47** (a held arrival across two crashes; §6.1; the fix round's item 8): the test sits in
+  rtsim-jni tests/protocol.rs, not at engine level, because "no double" rests on the host: a
+  session that crashes before its replay end takes no page (RP-42) and the journal keeps its
+  records, so the next session replays from the same pages. A resolution is counted by the
+  engine's log note ("finds nothing to raid", a raid on a place with no district), since
+  ConflictStats takes no new field. Unwatched only: a watched arrival's honoured fight is read
+  from the same records in each session, as in the one-crash tests. S2 replays S0's 4,000 records
+  and S1's 20, not S1's JOURNAL_GEN (never dispatched). With the arrival's hold off, S1 resolves
+  it while replaying (Home, want Out). A second case ends S1 with a clean close (`close(true)`,
+  the path RP-42 changed; the re-review's item 3): with `close`'s guard off, S1 saves mid-replay
+  and S2 opens on pages durable through observation 1,026, not S0's save at 3, and replays 2,997
+  records, not 4,020. The outcome holds even then (resolved once, S0's books), through
+  `held_since`'s inference from pages saved mid-replay (RP-40), so the test checks the pages and
+  the replay's records too.
+- **RP-48** (a held decision's slack; §6.1; amends RP-23; the re-review's item 1): while
+  replaying, a held arrival or siege round waits for its fight's BAND_MATERIALIZED only
+  `REPLAY_HOLD_SLACK_TICKS` (600 world ticks, 30 s; the shortest siege interval is a day). Amended
+  by the RP-48/RP-49 check (fixes4 item 1): no hard bound exists on the delay from a watched
+  decision to its record; it is normally 1 to 2 ticks, and a spawn group held by Java's spawn quota
+  (`DEFAULT_SPAWN_QUOTA` 8, which holds every later command), a full command buffer or a lagging
+  engine stretches it. 600 covers 30 s of stall and is no longer a placeholder; a fight recorded
+  past it was a double, and since RP-56 is lost instead (RP-51 measures the delay). Its last poll is scheduled
+  at `since` + the slack; there the Ev::Party arm drops the hold and `party_event` runs `arrive()`
+  or `wait_over()`, which, still replaying and past the slack, take the unwatched branch at once.
+  The replay clock follows the records (§3.6), so that poll runs after every record before the
+  slack and before any at or past it. `held_since` answers only inside the slack, so a later
+  sighting finds no hold and embodies the band as `seen()` did live. The decision is taken as of
+  the hold's tick: `wait_over` reads the round as `until.min(at)`, and both it and `arrive()` check
+  patience at that tick and set a siege's next round from it, so a later round falls where the
+  session that went on had it (live the tick is the event's own). Residual, closed by RP-56 (the
+  record's free bytes 44 to 47 carry the command's echoed flags): a sighting inside the slack was
+  still read as a fight. No rule without one exists here: the record carries the agent,
+  epoch, dimension, wave and units spawned, a fight's first wave and a sighting's are both wave 0
+  at the next epoch, and Java journals both as it applies the command; telling them apart needs a
+  field, a format change. Time: an unwatched decision while replaying resolves up to the slack
+  late. Three tests that resolved at the replay end with a journal past the slack now resolve at
+  the slack (an unwatched arrival, a siege round past the slack) or end the replay inside it
+  (RP-45's siege). Failing first, a siege of patient goblins on a refinery, its round at R1
+  unwatched, the pages from before R1, replayed against the session that went on as (phase,
+  embodied, epoch, `until`, `raids_watched`, raids): a sighting while it waits, (Fighting, true, 1,
+  85270, 1, []) against (Waiting, true, 1, 103270, 0, [79270]); a fight at R2, (Home, true, 2,
+  102673, 1, []) against (Fighting, true, 2, 109270, 1, [79270]); a held arrival then a sighting,
+  (Fighting, true, 1, 61270, 1, []) against (Waiting, true, 1, 79270, 0, [55270]). Rejected:
+  telling the records apart by position (a waiting siege is seen at its target).
+- **RP-49** (the replay's resident peak; §3.2; RP-42; the re-review's item 2): no save path while
+  replaying (the reviewer's pending-generation save is a design change, not this slice's). The
+  bound instead: the replay opens on the last durable save, the last one Java asked for, since the
+  budget's saves are pending generations that a crash rolls back (PF15); taking no page until its
+  end, it holds every row the replayed window touches. So its resident rows are bounded by the rows
+  the crashed session touched between its last durable save and the crash, plus, for each session
+  that crashed before its replay end (RP-47), the rows its own records touched. Java's save cadence
+  limits that window, not the budget. The live session's budget saves kept it near its budget and
+  a step, so the replay passes the live peak by the window's rows less the budget, which grows
+  with the window. Measured in rtsim-jni's
+  `a_replays_resident_peak_is_the_rows_touched_since_the_last_durable_save` (20 camps a hand-over
+  under 4,096 B, no save asked for): the live peak 5,776 B both times; the replay 28,528 B after
+  100 camps and 56,792 B after 200, against the 28,616 B and 56,880 B the same sessions touched
+  with a budget they never reached. The test asserts the bound and the growth. Reported to the build
+  lead as a finding (an excess that is no constant); no fix built. Amended by the RP-48/RP-49 check
+  (fixes4 items 6 and 7): the window is normally empty or one vanilla autosave interval (Java asks
+  for a save on every overworld `LevelEvent.Save`, BridgeEvents.java:175-186, every 6,000 ticks,
+  scaled by `/tick sprint`; save-off stops the journal write as well); the worst case is every paged
+  row of every module, the old unpaged footprint, and for the camps above only with item 6's bug or
+  the causes RP-55 logs. Item 6's bug: `request_save` replaced a pending request, so an engine that
+  lagged the journal by more than one save interval had its target pushed past it at every world
+  save and took no save at all; fixed in 63d1b4fa, which keeps the oldest pending request. Whose
+  code: 0c66e75c (2026-10-20, "rtsim-jni: the native link crate", an agent session co-authored by
+  Claude Opus 5.5 (1M context)), on main through the overnight/jni merges 3e5a7e0c and 3d47d4e6;
+  d1edb812 only reflowed it. The herds, the largest paged module, do not fit "normally small",
+  measured in `a_replays_herd_rows_are_the_rows_touched_since_the_last_durable_save` (128 herds, a 4
+  KiB row budget, 50 transfers a step of 1,200 ticks, no save asked for, a crash; the replayed
+  engine outside TEST mode, RP-55): the replay held 95,540 B after 2 steps (2,400 ticks, less than
+  one autosave) against 186,606 B unpaged, and 191,730 B against 203,970 B after 80 steps; the live
+  peak under the budget was 1,232 B or 95,540 B (2 steps) and 1,400 B or 103,406 B (80), by when
+  the IO lane's saves came back, so it is printed, not asserted. A herd page holds 32 herds and one
+  herd's event dirties it, and no page is taken while replaying (RP-42), so the herd replay's rows
+  grow fast with the window: about half the unpaged footprint after 2 steps, nearly all after 80.
+  Corrected by RP-55 (fixes5 item 3): the 177,178 B first recorded here for 2 steps, and "every
+  start loads every herd page", were TEST mode's read-back hash, main's, not the replay's.
+- **RP-50** (a copy whose op id was heard; §2.3; SEC-1's meeting-point review, item 2): in
+  `reasserted()` the copy bit is set and `copies_applied` counted only on `admit_copy`'s Apply. A
+  new copy whose op id the engine already heard (generation 0 is new each time) is dispatched as
+  DuplicateOp without the bit and counted in `copies_dropped`, so every admitted copy counts once,
+  applied or dropped. `dispatch` debug-asserts the bit only on Apply. No module read the bit on that
+  path, so only the count moves. Failing first, rtsim-jni's
+  `a_copy_whose_op_id_was_heard_is_dropped_not_applied` and its replayed twin: (applied, dropped)
+  (1, 0) against (0, 1); with the assertion and not the fix, both stop at "the copy bit on a
+  DuplicateOp". Rejected: leaving a duplicate-op copy out of both counts.
+- **RP-51** (the slack from data; §6.1; RP-48; fixes4 item 1): `ConflictStats::fight_record_gap_max`,
+  the largest gap from a live `start_fight` to its fight's first BAND_MATERIALIZED (same epoch),
+  measured at the record's ingest tick, the one `held_since` compares with the slack. `start_fight`
+  notes (epoch, tick) per party in an in-memory map, `fights_unanswered`; the first record of that
+  epoch takes it out and raises the stat; a sighting's record has no entry, and a replay none (the
+  map is per process, and `start_fight` does nothing while replaying). An entry whose record never
+  comes (a rejected spawn, a crash) waits for the party's next fight or its removal. Not saved: a
+  field in the saved stats vector would change the page, so the stat is this process's, and
+  rtsim-jni logs each new largest (info; a warning at or past the slack), which a server's log
+  keeps across restarts. Failing first, mowzie_records'
+  `a_watched_fights_record_gap_is_measured_from_its_decision` (the band seen on its road, then
+  fought at its arrival; the plugin answers a tick later): 0 against 1. The sims' JSON gains the
+  field.
+- **RP-52** (a held round's walk home, labelled by the round; §6.1; RP-48; fixes4 item 3):
+  `wait_over` labels the walk home bored when the round (`until.min(at)`) is at or past `bored_at`,
+  not the call's tick. Live they are the same tick; a held siege round resolved at the slack's
+  poll is up to the slack later, so a round that kills the last of the band within the slack
+  before its boredom went home bored in the replay and done in the session that went on. Failing
+  first, mowzie_records' `a_held_round_that_kills_the_band_before_its_boredom_sends_it_home_done`
+  (every raider held at the walls, `abstract_loss_share` 1, `bored_at` the round + 300): the
+  replay's bored count 1 against the live 0. The sims are unchanged.
+- **RP-53** (the inference from the pages gates on the round; §6.1; RP-48; fixes4 item 4):
+  `held_since`'s inference for a siege waiting past its round now asks `until < bored_at` (the
+  round before its boredom, as `wait_over` holds it) instead of the record's tick before it. The
+  map answers by the hold's plan and slack alone, so a fight record past the boredom but inside the
+  slack was honoured with the map and refused after a restart that lost it. Failing first,
+  mowzie_records' `a_held_rounds_fight_past_its_boredom_is_honoured_after_a_restart` (`bored_at`
+  the round + 110, pages at + 105, the record at + 115, before the poll at + 120): after the
+  restart (Home, epoch 1, until R + 601, watched 0, raids [R + 600]) against the map's (Home,
+  epoch 1, until R + 116, watched 1, no raid). The sims are unchanged.
+- **RP-54** (a held fight that Java refused; §6.1; RP-23; fixes4 item 5): a replayed
+  BAND_SPAWN_REJECTED of wave 0 at an epoch newer than a held party's, inside the slack, on an
+  engine from its pages, ends the hold as the fight: `held` loses the party, which takes the
+  record's epoch, not embodied, nothing placed, `wave` 1 (as `spawn_wave` left it), then
+  `fight_held`. Live the refusal leaves the band fighting unembodied to the fight's end; the replay
+  read it against the older epoch (`party_of` found nothing), kept the hold and resolved the
+  arrival unwatched at the slack. Failing first, mowzie_records'
+  `a_held_arrivals_refused_fight_is_fought_when_replayed` (`Run::refuse` turns the plugin's
+  BAND_MATERIALIZED of the band's fight into a refusal, reason 1): replayed (Home, false, epoch 1,
+  until 24020, watched 0, raids [55870]) against live (Home, false, epoch 2, until 61270, watched
+  1, no raid). Corrected (fixes5 item 2): BAND_SPAWN_REJECTED has no free bytes (24 u64 agent, 32
+  u32 epoch, 36 u32 wave, 40 u64 cmdSeq, 48 bytes), so RP-56's echoed flag cannot go there, and no
+  layout changes on this branch. The residual, accepted by the coordinator: a sighting refused
+  inside a held fight's slack is read as the fight's refusal, so the hold ends early, at the
+  refusal, and the fight's own BAND_MATERIALIZED then finds no hold and is lost as RP-56 says (its
+  casualties and loot count against nothing). The books hold (one resolution); only live parity is
+  lost, and only for a sighting refused inside a held fight's slack. The option not taken, pending
+  the coordinator, who wants no wave-field change now: the refusal's `wave` is a u32 and
+  BAND_MATERIALIZE's a u16, so its high half (bytes 38 and 39) could carry the echoed flags; noted
+  in boundary.md's BAND_SPAWN_REJECTED row and §6.1 for whoever next changes that layout. A
+  replayed refusal of a newer epoch for a party not held
+  raised no epoch floor, so the next decision after the replay could take the refused epoch again;
+  closed by RP-57. The sims are unchanged.
+- **RP-55** (the replay window's growth, logged; §3.2; RP-49; fixes4 item 7): the engine logs a
+  warning, and counts it in `Stats::window_grew` (a test hook, not in Java's array), each time the
+  next start's replay window grows past one save interval: a save Java asked for that is not made
+  (the IO lane refuses it, the poisoned store does not reopen, a stale save built before a failed
+  one, the page index unread, the commit fails); an engine that stops simulating (a step's error or
+  panic: no save until the next start); and a replayed JOURNAL_GEN from before this session's first
+  observation that admits as new (an earlier session started past the pages and ended with no save:
+  a crash, or a close, before its replay end or its first save, §6.1's "More than one crash"). The
+  line names the cause and the last durable observation. A budget's save that fails is not logged:
+  it is a pending generation, which a crash rolls back anyway. A close while replaying (RP-42) logs
+  nothing itself; the next start's JOURNAL_GEN line covers it. The tests read the counter, since
+  `log_warn` goes to the host's ring, which drops lines when full. Failing first, the counter's
+  increment cut: `an_engine_failure_publishes_empty_buffers_flagged_failed` 0 against 1,
+  `a_save_failing_partway_costs_that_save_not_the_engine` (TornLog) 0 against 1 (one failure and no
+  stale refusal that run), both `a_held_arrival_across_a_second_*` tests 0 against 1 in S2 (S1
+  asserts 0).
+  Finding 4 (fixes5 item 3), the herd replay near the unpaged footprint: main loads every herd page
+  at each start, with or without a replay, in TEST mode only (the GameTests and rtsim-jni's tests),
+  never in production. The load is rtsim-jni `engine/herds.rs:187`, `saved.map(|_|
+  engine.state_hash())`, TEST mode's read-back check against the hash its save wrote: `state_hash`
+  (rtsim-ecology `herds/engine.rs:2667`) encodes `Herds::save()` (`herds/persist.rs:710-722`), whose
+  `PagedRows::for_each` (rtsim-kernel `rows.rs:799-822`) loads every herd and forage page. Every
+  TEST-mode save does the same (rtsim-jni `engine/paging.rs:158-162`). Both are on origin/main
+  (4a3392f9d and 9d521ea6; main's `paging.rs:161`), and the dragons, the conflict and the ships
+  check the same way at a start (`dragons.rs:193`, `conflict.rs:328`, `ships.rs:199`). A production
+  start reads the meta page only (`Herds::open_paged`, `herds/persist.rs:764-786`) and
+  `session_start` touches the active set (`herds/engine.rs:2110-2128`). Measured in RP-49's 2-step
+  run: 163,314 B resident right after the start in TEST mode, 0 outside it; still resident when the
+  replay's one step returned (177,178 B, the figure RP-49 first gave as the replay's; why that step
+  did not evict them is not traced), gone a step later (95,540 B), and back after each TEST-mode
+  pressure save (175,858 B and 179,438 B, against 46,278 B and 49,466 B outside TEST mode). What the
+  replay itself causes: RP-42's gate (rtsim-jni `engine.rs:1431`, `!st.replaying`, 63b0bd902, not on
+  main, which has no gate at `engine.rs:1307`) takes no pressure save while replaying, so every page
+  the window dirtied stays to the replay end: 95,540 B after 2 steps, 191,730 B after 80, the same
+  in and outside TEST mode. The RP-49 herds test now runs its replayed engine outside TEST mode and
+  asserts that the 2-step replay holds less than the unpaged footprint and the 80-step one more than
+  the 2-step (it asserted the 2-step replay held more than half of it).
+- **RP-56** (a fight's record, told from a sighting's; §6.1; RP-48; RP-23; fixes4 item 2): the
+  command flag `BAND_FIGHT` (8) marks a BAND_MATERIALIZE of a fight's wave (`spawn_wave` with an
+  arc: `start_fight`'s and a siege round's waves; a sighting's passes none), and Java echoes the
+  command's flags into BAND_MATERIALIZED's bytes 44 to 47 (padding Java never wrote, zero-filled by
+  `Journal.begin`, so no layout change: an old record reads as a sighting). Built as option 1,
+  decided by the lead: on an engine from its pages, a newer epoch's sighting inside a held party's
+  slack only embodies it (§5.2) and keeps the hold; a fight record ends the hold in `fight_held` as
+  before; a fight record that finds no hold (at `since` + the slack exactly, as past it) raises the
+  epoch floor only, so its casualties and loot count against nothing (the `Looted` arm skips that
+  epoch's loot while replaying: it counts every party's loot whatever the epoch), and the slack's
+  poll books the round as the abstract raid: lost, never doubled. `ConflictStats::fights_unheld`
+  counts it once per epoch, and rtsim-jni warns of each. Case A's cost, named by the lead (the books
+  matter more than its live parity): for an arrival, the slack's poll is `arrive()`'s unwatched
+  branch, which recalls the band the sighting embodied, where the session that went on kept it
+  embodied; a siege's round recalls nothing. Checked against Rule U before building: BAND_RECALL
+  drops while replaying (§4.4's table), so no body vanishes in a player's sight; the crashed
+  session's bodies are gone; the casualties of that epoch still count through the recalled stack;
+  and the replay end makes every band abstract, so the difference is the engine's `embodied` until
+  the replay end (`a_siege_held_then` asserts that no recall leaves). Tests, mowzie_records:
+  `a_sighting_inside_a_held_decisions_slack_is_no_fight` (a siege's round and its arrival, the
+  sighting 300 ticks after the decision),
+  `a_held_arrivals_fight_recorded_after_the_slack_is_no_double` (the fight's records shifted 1,200
+  ticks past the arrival), `a_held_arrivals_fight_recorded_exactly_at_the_slack_finds_no_hold` (one
+  tick inside is honoured as live; at the slack, no hold) and case B,
+  `a_sighting_journaled_with_a_held_arrivals_fight_is_no_double` (a sighting at T-1 and the watched
+  arrival at T journaled in one step: casualties and loot counted once). Failing first: the sighting
+  in a round's slack replayed (Fighting, true, 1, until 85270, watched 1, raids []) against the
+  session that went on (Waiting, true, 1, 103270, 0, [79270]); the fight at and past the slack
+  (raids, casualties, watched, loot, unheld) ([55870], 3, 0, 5000, 0) against ([55870], 0, 0, 0, 1),
+  live ([], 3, 1, 5000). Case B and the control one tick inside passed before the fix (they guard
+  against reading the flag the other way). The sims are unchanged but for the new stat. Not done: a
+  refused sighting inside the slack (RP-54's residual, accepted).
+- **RP-57** (every record that names an epoch raises the floor; §5.3; RP-7; RP-30; RP-37; fixes5
+  item 1): while replaying, `Conflict::ingest` folds the record's party epoch (`Obs::party_epoch`)
+  into the agent's floor first, before the op-id dedupe, the later kinds' return and any check that
+  drops the record; `ingest_copy` folds every copy's, live or replayed, before its match; rtsim-jni
+  folds the generation-0 casualty copy it refuses (RP-21). `replay_done` then lifts each party's
+  epoch past its floor, as before. Before, only a BAND_MATERIALIZED (fresh engine, or a fight that
+  found no hold) and a copied BAND_CASUALTIES or BAND_MATERIALIZED raised it, so a replayed refusal
+  of a newer epoch for a party not held left the next decision to take that epoch again. Failing
+  first, mowzie_records'
+  `a_replayed_refusal_for_a_party_not_held_raises_its_epoch_floor` (a raid band Out at epoch 0, on
+  an engine from its pages, a replayed BAND_SPAWN_REJECTED of epoch 1, then the replay end): the
+  next BAND_MATERIALIZE took epoch 1 against 2. The sweep,
+  `every_record_naming_an_epoch_raises_its_floor`, applies each kind below at epoch 4 to a band at
+  epoch 0 on three paths (an engine from its pages, a fresh engine, a copy) and reads the epoch
+  after the replay end: 29 of 36 cases stayed at 0 before (every kind but BAND_MATERIALIZED on the
+  pages and fresh paths; every kind but BAND_MATERIALIZED and BAND_CASUALTIES as copies).
+  `a_copied_casualty_counts_against_an_abstract_band_once`'s control changed with it: it asserted
+  epoch 0 after a replayed straggler casualty, which encoded the bug; it now asserts the record's
+  3 on both paths. The sims are unchanged. Every kind that carries an epoch:
+
+| Kind | Epoch | Reaches the floor |
+| --- | --- | --- |
+| 0x0090 BAND_STATE | the party's | Latest-wins, never journaled, so never replayed or copied; rtsim-jni counts it and the engine reads none of it (rtsim-jni `conflict.rs` `observe_state`). `party_epoch` names it, so a slice that reads it folds it through `ingest` |
+| 0x0803 BAND_MATERIALIZED | the party's | `ingest`'s fold (a sighting, a held fight, a fight that finds no hold, a stale epoch, a fresh engine); a copy, `ingest_copy`'s |
+| 0x0804 BAND_SPAWN_REJECTED | the party's | `ingest`'s fold, held or not, any wave; a copy, `ingest_copy`'s |
+| 0x0805 BAND_DEMATERIALIZED | the party's | `ingest`'s fold, a stale epoch too; a copy, `ingest_copy`'s |
+| 0x0806 BAND_CASUALTIES | the party's | `ingest`'s fold; a copy, `ingest_copy`'s; a generation-0 copy refused in rtsim-jni, `fold_epoch` there. Since the M6 merge it carries an op (MZB-589), skipped by the party's list inside `casualties`, after both folds: a casualty the party counted already still raises the floor (the sweep's first case) |
+| 0x0807 CHIEF_KILLED | the party's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s. Since the M6 merge it goes through M6's `chief_killed_by` with the record's epoch, after the fold |
+| 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
+| 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
+| 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
+| 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch |
+| A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
+| Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
+| Herds (HERD_*), dragons (DRAGON_*), ships (SHIP_*) | the module's own | No floor yet in any of them: their `replay_end` is empty (rtsim-jni `engine/herds.rs:263`, `dragons.rs:280`, `ships.rs:275`) and a copy is applied as a live record. Their epochs come from `herds/engine.rs:1920`, rtsim-ecology `engine.rs:3011`, `:4364` and `:4402`, rtsim-ships `engine.rs:2802` and `:3983`. Slices D, H and S build them (§9.2, §9.4, §9.5), to this rule: every kind of theirs that names an epoch, not only the *_MATERIALIZED. Reported, not built here (slice C is the conflict's) |
+
+  A live copy's floor stays in memory until the party's next body (`next_epoch`), as RP-30's did,
+  and a save before it does not write it. Not a gap: the session that issued that epoch moved the
+  party's epoch to it at once, so its own save holds it, or, crashed first, the next start's replay
+  of what Java journaled for it does (this rule), short of the switched-off case above. The
+  rtsim-jni generation-0 fold has no jni-level test of a newer epoch: the fixture's copies are of
+  the pages' own epoch; the engine half is the sweep's Copy path.
+- **RP-58** (a fighting band is embodied again by its next commanded wave; fixes6 item 5; live on
+  main since 283b1254): when Java refused a watched fight's first wave, the `BAND_SPAWN_REJECTED`
+  arm left the band unembodied with nothing placed, and nothing set `embodied` again, as
+  `spawn_wave` never sets it. The later waves Java placed were in Minecraft by the books
+  (`spawned`) but their `BAND_CASUALTIES` found no band in view (`casualties` asks `embodied` and
+  the epoch) and counted nothing, and the fight's end recalled nothing (`go_home` recalls only an
+  embodied band). The fix, my call: `wave` sets `embodied` when it commands a wave (the wave
+  counter moved). Not at the wave's `BAND_MATERIALIZED`: the live engine reads none
+  (`materialized` acts only while replaying), and embodiment is set at command time everywhere
+  else (`start_fight`, `seen`), so a record-time rule would need a new live path. Failing first,
+  live, mowzie_records' `a_fight_whose_first_wave_was_refused_counts_its_later_waves_deaths` (a
+  raid band's fight with only its wave 0 refused, the plugin killing a quarter of each later wave
+  at the base): the plugin reported 3 deaths of epoch 2, the engine counted 0 and the band's alive
+  did not move; now 3, alive down by 3, and the fight's end recalls epoch 2. One commit, d092dafd,
+  code and test only, no dependency on the replay gate: it cherry-picks cleanly onto origin/main
+  (428a3311), where the test fails without the fix with the same values and rtsim-conflict and
+  rtsim-jni pass with it. The sims are unchanged.
+- **RP-59** (a record that moves a held party ends its hold first; §6.1; RP-23; RP-48; RP-56;
+  fixes6 item 1): a held decision's abstract raid was lost when its band was sent home inside the
+  slack. The hold kept the decision while a sighting at `since` + 300 embodied the band (RP-56);
+  then a wipe-out (`casualties`), its chief's death (`chief_killed`) or Peaceful
+  (`stop_war_parties`) sent it home through `go_home`, whose `bump` left the hold's poll stale at
+  the Ev::Party arm, so the decision never resolved. Those three are every path that moves a held
+  war party: the plan's other bumps are `start_segment`, `wait`, `fight_held` and `start_fight`
+  (the hold's own ends), `resume_envoys` and the envoy branches of `casualties` and `envoy_home`
+  (envoys are never held), and `end_fight` (Fighting, not held). The fix: `Conflict::ingest` calls
+  `release_before` after the op-id dedupe and before it applies the record, and `ingest_copy`
+  before a copied BAND_CASUALTIES. A BAND_CASUALTIES or CHIEF_KILLED for a held party at its epoch
+  or an older one (a copy's at any epoch), or a DIFFICULTY that makes the world Peaceful (every
+  held party), ends the hold: `end_hold` runs `party_event` at the record's tick with
+  `hold_ending` set, which `arrive` and `wait_over` read to decide unwatched inside the slack too;
+  then the record applies. Any count of casualties ends it, not only a wipe-out, so as not to
+  repeat `casualties`' reckoning of one; the decision only comes sooner, as of fewer records. A
+  newer epoch's record is the held fight's (honoured or refused, §6.1). A BAND_DEMATERIALIZED ends
+  nothing: `ConflictBridge.materialize` sends one for the band's older epoch just before the
+  fight's BAND_MATERIALIZED, which would end a fight's hold the moment before it is honoured. Its
+  residual, added to §6.1's losses: a death of a band embodied before the decision, journaled in
+  the tick or two between the fight's command and its BAND_MATERIALIZED, ends the hold unwatched
+  and the fight is lost as RP-56 says (one resolution, never two). Failing first,
+  mowzie_records' `a_held_decision_whose_band_is_sent_home_inside_the_slack_keeps_its_raid` (the
+  checker's scratch case, renamed and widened: a siege's round and its arrival, each wiped out,
+  its chief killed and Peaceful, 50 ticks after the sighting): replayed raids [] against the
+  session that went on's [79270] (round) and [55270] (arrival) in all six, the band Home with
+  `until` 79270 and 24020 against 103270 and 79270 (the next round's tick, booked by the decision's
+  `wait` before the band went home). Now as live, and each raid sent 34 members as live did. The
+  sims are unchanged.
+- **RP-60** (a held decision resolves with the members it had at its tick; §6.1; RP-48; RP-59;
+  fixes6 item 2): the slack's poll resolved the held decision with the members left at the poll,
+  fewer than the session that went on had at the decision when a record replayed inside the hold
+  took some. RP-59's release covers a death: a BAND_CASUALTIES ends the hold before it applies, so
+  the decision resolves first, with every member. It does not cover a BAND_DEMATERIALIZED, which
+  ends no hold (RP-59 says why) and whose survivors can be fewer than were placed (deaths Java
+  never reported). The fix: `Held` keeps the party's members at the hold, and `end_hold` (at the
+  slack's poll and at RP-59's release) swaps them in for `party_event`, then takes what the
+  decision cost (each unit's members before less after, the raid's dead) off the members left.
+  Only the map's holds: a restart from pages saved mid-replay (`held_since`'s inference, a
+  defence since RP-42) and a hold the replay end clears decide with the members left, as before.
+  Failing first, mowzie_records' `a_held_decision_raids_with_the_members_it_had_at_its_tick` (as
+  RP-59's case, the band's bodies despawned 50 ticks after the sighting with 2 of the first placed
+  stack's members gone, and, as the control RP-59 already passed, 1 member killed instead): the
+  despawn's raid sent 32 members against live's 34, for a siege's round and its arrival; the death
+  already sent 34 with RP-59 alone. Now 34 in all four. The sims are unchanged.
+- **RP-61** (item 5's replay half: a refused first wave's later waves are honoured; §5.2; RP-54;
+  RP-58; fixes6): with RP-58 live, a replay of the same fight still counted none of its later
+  waves' deaths. RP-54 ends a held arrival's hold at the refusal of its first wave, the band
+  Fighting and not embodied, and `honour` honoured a record of the party's own epoch only when it
+  was embodied ("not embodied: the body is gone"), so the later waves' BAND_MATERIALIZED placed
+  nothing and their BAND_CASUALTIES found no band in view. The fix: `honour` takes a record of the
+  same epoch, at or above the party's `wave`, for a fighting band that is not embodied as the
+  fight's later wave: it embodies the band again and fills it, as live `wave` does at the command
+  (RP-58). Kept apart from d092dafd, which goes to main alone and has no replay gate to change.
+  A known edge, rarer than the case fixed: Java answering a wave commanded just before a despawn
+  of the same epoch (chunks unloaded) after the despawn, which live leaves unembodied, is
+  embodied by the replay; its bodies are in Minecraft, so the replay's books are the truer.
+  Failing first, mowzie_records'
+  `a_held_arrival_whose_first_wave_alone_is_refused_counts_its_later_waves` (the checker's scratch
+  case, renamed: a watched raid's arrival whose wave 0 alone is refused, the plugin killing a
+  quarter of each later wave at the base, replayed from the pages saved 3,000 ticks before):
+  replayed (phase, epoch, watched, deaths, alive, raids) = (Home, 2, 1, 0, 12, []) against the
+  session that went on's (Home, 2, 1, 6, 6, []). Now as live. The sims are unchanged.
+- **RP-62** (the gap stat at a refused first wave; §6.1; RP-51; RP-54; fixes6 item 3): RP-51's
+  `fight_record_gap_max` took a fight's entry in `fights_unanswered` at its first
+  BAND_MATERIALIZED only, so when Java refused the first wave (RP-51's "a rejected spawn" entry
+  that waits) it measured the next wave's record, a wave interval later, past the slack: a gap the
+  hold never waits for, since a replay's hold reads the refusal as the fight (RP-54). The fix:
+  `fight_answered` takes the entry and measures it at either record, a BAND_MATERIALIZED of that
+  epoch or a BAND_SPAWN_REJECTED of its wave 0; RP-51's text on the rejected spawn holds now only
+  for a crash. Failing first, mowzie_records' `a_refused_first_wave_is_its_fights_first_record`
+  (the checker's case live: a watched raid's arrival whose wave 0 alone is refused): 1201 against
+  a slack of 600; now 1, the plugin answering a tick after the command. The sims are unchanged.
+- **RP-63** (a late refused first wave marks its epoch unheld; §6.1; RP-54; RP-56; fixes6 item
+  4): a replayed BAND_SPAWN_REJECTED of a newer epoch's wave 0 that found no hold (at or past the
+  slack, which resolved the arrival unwatched) did nothing, so it was not counted in
+  `fights_unheld`, and nothing kept that epoch's later records from counting. The fix: that arm
+  marks the epoch in `unheld_fights` and counts it once, as `honour` does for a fight's
+  BAND_MATERIALIZED that finds no hold (RP-56). The checker's case (a later accepted wave of that
+  epoch loots) did not double before the fix: every wave of a fight carries BAND_FIGHT, so its
+  BAND_MATERIALIZED marked the epoch at `honour`. The refusal is the fight's only record when Java
+  refused every wave: then the stat missed it. The record carries no flags, so a refused
+  sighting's wave 0 of a newer epoch counts too; a sighting always takes a new epoch, so that one
+  has no bodies, and only the stat moves (the option not taken: a set of the parties whose hold
+  the slack resolved, to tell them apart). Failing first, mowzie_records'
+  `a_held_arrivals_fight_refused_whole_and_recorded_after_the_slack_counts_as_unheld` (every wave
+  refused, the refusal at the slack + 600): `unheld` 0 against 1; the case with the later waves
+  placed, `a_held_arrivals_refused_first_wave_recorded_after_the_slack_is_no_double`, passed
+  before and after (one abstract raid, no loot, counted once). The sims are unchanged.
+- **RP-64** (the M5 merge; replay-gate §2.7's M5 paragraph, §4.4; RP-2; RP-10; RP-42; MZB-177):
+  main's `Conflict::replaying` field (MZB-141's flag) is deleted and its readers use the outbox's
+  `replaying()`. M5's `session_start` goes with it: its camp loop runs in `begin_replay` (git's
+  merge), its command filter is the gate's queued column, its MZB-138 fold stays retired. M5's
+  `send_lines` pushes each CAMP_RECONCILE through the gate instead of extending the queue around
+  it; "never" holds by construction, every camp being out from `begin_replay` to `replay_done`.
+  Choices: synth's `CampRun::restart_to_replay` opens the window with `begin_replay(true)` (the
+  engine holds what its pages would), and `CampRun::round_trip` asserts the window is closed
+  rather than carrying the flag across a load: the window's state (floors, holds, the outbox's
+  flag) is in memory, and the host takes no page while replaying (RP-42); every caller round-trips
+  outside it. tests/camp.rs's `a_replayed_census_only_marks_its_camp_out` opens the window with
+  `begin_replay` and takes its snapshot after it (the window's start already makes the camp out and
+  voids its lines), so it still tests the census alone. No M5 `Cmd` or `Obs` kind is new, so no
+  gate or `party_epoch` arm is added: camp epochs are Java's. `obs_seq` and `durable_obs_seq` stay
+  as main sets them.
+- **RP-65** (the M5 merge check's P2; RP-64): tests/camp.rs's
+  `a_replayed_census_only_marks_its_camp_out` could not catch a census arm that skipped `see`,
+  since `begin_replay` puts the camp out before the census comes. It now feeds an answer of the
+  replayed epoch twice (a holder's copy) and asserts it is booked once. With `see(epoch)` dropped
+  from the replaying arm it fails: `camp_answers` 9 against 10. The arm's `epoch = 0` is
+  equivalent after the merge (dropped, the 64 camp tests pass): `camp_session_start` has made
+  every camp out at the window's start, and only a live census brings one in. It stays as a
+  defence. The option not taken: a window opened without `camp_session_start`, which no host
+  opens.
+- **RP-66** (a test's conflict command waits for the replay end; §4.4; §3.6; RP-33; the M5 merge
+  check's item 2): rtsim-jni's `order_command` puts a TEST order's command straight into the
+  host's queue, around the gate, so a test could send a BAND_MATERIALIZE (a "never" kind) while
+  the replay runs. The conservative option, as the lead asked: such a unit is held with RP-33's
+  (`waits_for_the_replay_end`: the four that run the clock, and `Order::ConflictCommand`). It
+  runs no clock, but holding it lets it take the units after it too, so order is kept. The option
+  not taken: list it in §4.4 as a route with its own verdict per kind. Failing first, protocol's
+  `a_conflict_command_ordered_while_replaying_waits_for_the_replay_end` (eight hand-overs of
+  fillers): "not written while the replay runs". `Order::HerdCommand` is the same kind of route
+  for the herds; it is not this slice's.
+- **RP-67** (`obs_seq` before the `later` path; the M5 merge check's item 3): rtsim-jni's
+  `journaled` set the engine's `obs_seq` only on its last path, so a `later` record (and the
+  refused copy of a casualty) was ingested with the previous record's. It is now set right after
+  the record decodes, on every path. No test can fail on it today: the only reader is
+  `camp_bodies` (an answer is kept with it, MZB-177), and CAMP_BODIES is neither `later` nor a
+  casualty. The records the host makes itself (`reject`'s BAND_SPAWN_REJECTED) carry no
+  sequence and keep the last one set; they read none.
+- **RP-68** (a world save while replaying forgets no answer; §2.7; MZB-177; the M5 merge check's
+  item 4): a WORLD_SAVED between a long replay's hand-overs raised `durable_obs_seq` at once, so
+  the camp's next booking forgot the answers of replayed records, and a holder's copy of one,
+  journaled again later in the replay, was booked twice. `Conflict::world_saved` now keeps the
+  highest sequence reported while the outbox replays in `durable_held` (not state) and raises
+  `durable_obs_seq` with it at `replay_done`; live, it raises it at once. rtsim-jni's WORLD_SAVED
+  arm calls it. `Replay`'s own op-id forgetting on the same line is unchanged (not this
+  check's). Failing first, tests/camp.rs's
+  `a_world_save_while_replaying_forgets_no_answer_until_the_replay_end` with the save applied at
+  once: `camp_answers` 12 against 11.
+- **RP-69** (the M5 merge check's missing tests; §2.7 item 7; item 5): all five are written, and
+  every one passed when written (the paths were right; the tests keep them so).
+  - rtsim-jni: the replayed census test reasserts each answer live for the replayed epoch, with
+    no second booking, and asserts the gate's "never" count stays 0.
+  - rtsim-jni: `a_replay_begun_by_a_replayed_faction_only_marks_its_census_out` (`grove_with`,
+    the pages saved before FACTION_FOUND).
+  - tests/camp.rs: `a_replayed_homecoming_at_an_out_camp_sends_nothing` and
+    `a_replayed_death_of_an_embodied_partys_member_costs_its_unit_and_sends_nothing`. Each marks
+    the party embodied by hand, as the homecoming test does, since no flow of this slice leaves
+    one embodied across a restart.
+- **RP-100** (a CHIEF_STATE while replaying waits for the replay end; the M6 merge; replay-gate
+  §2.7's M6 paragraph, §5.6; RP-68; MZB-268, MZB-269): M6's CHIEF_STATE is latest-wins and never
+  journaled, and rtsim-jni's `observe_state` gives it to the engine at once, also while the outbox
+  replays. So it is newer than every record the replay brings back, and one of those undid it: a
+  replayed FACTION_FOUND's census byte set the crystal as the den was found, and a CHIEF_STATE for
+  a faction that only the replay founds was dropped as unknown. `Conflict::chief_state` now keeps
+  one that comes while replaying in `chief_states_held` (the latest for each faction key, not
+  state) and `replay_done` applies them after the floors, as RP-68 does with a world save. Live,
+  it applies at once, as before. Failing first, frostmaw's
+  `a_chief_state_while_replaying_waits_for_the_replay_end` (three live CHIEF_STATEs, the last
+  with the crystal off, then the den's FACTION_FOUND with chief and crystal, then the replay end):
+  the crystal read true. The sims are unchanged by it (they replay no CHIEF_STATE).
+  The residual, not built: this session's own census of the den, taken before the steal, is
+  journaled and so dispatched after the replay end, behind a CHIEF_STATE written after it. Its
+  crystal mend then puts the crystal back until the den's next census. M6's own window had the
+  same order. The option not taken: carry the record's game time into the engine and keep the
+  crystal's time in state, so that a mend older than the last CHIEF_STATE is skipped. That is a
+  format change, which this merge does not make.
+- **RP-101** (M6's `chief_unit_lost` and RP-27; the M6 merge; a residual, not built): the boss's
+  unit lost with its chief takes from a stack by M6's own rule (`!embodied` and a recalled stack
+  of the epoch), not by `casualties`' (RP-27: `spawned` only when embodied at the record's epoch,
+  else that epoch's recalled stack), and it takes from a stack for a copy of CHIEF_KILLED too, which
+  RP-9 and RP-25 forbid. Nothing can show it today: a boss band is its one unit (the Frostmaw's
+  raid and invasion are one `frostmaw`), so the loss ends the band and its stacks with it. A boss
+  culture with a band of more than one unit must pick the stack as `casualties` does.
