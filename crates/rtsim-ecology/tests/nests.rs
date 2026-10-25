@@ -765,7 +765,11 @@ fn a_renewal_after_the_save_is_not_owed_twice_after_a_restore() {
             t: saved_at,
             cmds: Vec::new(),
         };
-        assert_eq!(b.worms(id), engine - 1, "the pages are from before the renewal");
+        assert_eq!(
+            b.worms(id),
+            engine - 1,
+            "the pages are from before the renewal"
+        );
         b.d.begin_replay(true);
         if route == "the catch-up" {
             b.days(1);
@@ -776,22 +780,39 @@ fn a_renewal_after_the_save_is_not_owed_twice_after_a_restore() {
             b.days(1);
         }
         let again = b.renews();
-        assert_eq!(again.len(), 1, "{route}: the engine decides the renewal again");
+        assert_eq!(
+            again.len(),
+            1,
+            "{route}: the engine decides the renewal again"
+        );
         assert_eq!(serials(&again), vec![2], "{route}: the first run's serial"); // serial
         assert_eq!(again[0].count, first[1].count, "{route}");
-        assert_eq!(b.worms(id), engine, "{route}: the engine is where the first run was");
+        assert_eq!(
+            b.worms(id),
+            engine,
+            "{route}: the engine is where the first run was"
+        );
         assert_eq!(
             b.iaf.nests[&id], world,
             "{route}: Java owes the renewal once (engine {engine}, world {})",
             b.iaf.nests[&id]
         );
-        assert_eq!(b.iaf.renewals_repeated, 1, "{route}: the repeat was dropped"); // serial
+        assert_eq!(
+            b.iaf.renewals_repeated, 1,
+            "{route}: the repeat was dropped"
+        ); // serial
         // Not over-dropped: the next renewal it decides is a new serial, and is owed.
         b.kill(id, 1);
-        let next = b.until(400, |r| r.renews().len() == 2).expect("it renews again");
+        let next = b
+            .until(400, |r| r.renews().len() == 2)
+            .expect("it renews again");
         assert!(next > 0);
         assert_eq!(serials(&b.renews()), vec![2, 3], "{route}"); // serial
-        assert_eq!(b.iaf.nests[&id], b.worms(id), "{route}: the third renewal is owed");
+        assert_eq!(
+            b.iaf.nests[&id],
+            b.worms(id),
+            "{route}: the third renewal is owed"
+        );
         b.d.check(&b.w, None).unwrap();
     }
 }
@@ -802,15 +823,24 @@ fn a_renewal_after_the_save_is_not_owed_twice_after_a_restore() {
 #[test]
 fn two_renewals_carry_two_serials_and_both_are_owed() {
     let (mut r, id) = waiting_nest(21);
-    r.until(400, |r| r.renews().len() == 2).expect("the first renewal");
+    r.until(400, |r| r.renews().len() == 2)
+        .expect("the first renewal");
     let after_first = r.iaf.nests[&id];
     assert_eq!(after_first, r.worms(id));
     r.kill(id, 1);
-    r.until(400, |r| r.renews().len() == 3).expect("the second renewal");
+    r.until(400, |r| r.renews().len() == 3)
+        .expect("the second renewal");
     let all = r.renews();
     assert_eq!(serials(&all), vec![1, 2, 3]); // serial
-    assert_eq!(all.iter().map(|n| n.count).collect::<Vec<_>>(), vec![2, 1, 1]);
-    assert_eq!(r.iaf.nests[&id], r.worms(id), "the world owes what the engine renewed");
+    assert_eq!(
+        all.iter().map(|n| n.count).collect::<Vec<_>>(),
+        vec![2, 1, 1]
+    );
+    assert_eq!(
+        r.iaf.nests[&id],
+        r.worms(id),
+        "the world owes what the engine renewed"
+    );
     assert_eq!(r.iaf.renewals_repeated, 0); // serial
     // The serial is the nest's own count of renewals decided.
     assert_eq!(r.d.nests.get(id).unwrap().renewals, 3); // serial

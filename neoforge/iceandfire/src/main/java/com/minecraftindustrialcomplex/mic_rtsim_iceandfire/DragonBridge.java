@@ -446,7 +446,8 @@ public final class DragonBridge implements SessionPlugin {
                 yield true;
             }
             case DragonRecords.NEST_RENEW -> {
-                nests.renew(b.getLong(at + DragonRecords.NestRenew.NEST), b.getInt(at + DragonRecords.NestRenew.STAGE), aux, now);
+                nests.renew(b.getLong(at + DragonRecords.NestRenew.NEST), b.getInt(at + DragonRecords.NestRenew.STAGE), aux,
+                        Integer.toUnsignedLong(b.getInt(at + DragonRecords.NestRenew.SERIAL)), now);
                 yield true;
             }
             case DragonRecords.NEST_SORTIE -> {
