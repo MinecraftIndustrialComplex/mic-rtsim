@@ -869,13 +869,13 @@ before the merge asked:
 | PlaceLair | keep | send | Java places once per field (LairPlacer's saved `fields`) |
 | OilSurvey | keep | send | a query, answered with OIL_CHUNKS |
 | PlaceNest | keep | send | idempotent (boundary.rs) |
-| NestRenew | keep | drop in slice D; send from slice N | not idempotent until it carries its serial (§7.1) |
+| NestRenew | keep | send (slice N; dropped in slice D) | idempotent by its serial: Java applies a renewal only above the nest's last (§7.1, RP-14) |
 | NestSortie | drop | drop | a watched district's fight, re-derived (RP-15) |
 
 As built (slice D, RP-74): `rtsim-ecology/src/outbox.rs`, `gate` an exhaustive `match` over `Cmd`
 with no `_` arm, every push of nest.rs, oil.rs and engine.rs through `Outbox::push`. "Never"
-(Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew drops while
-replaying until slice N makes it send. The tests are the module's own (§4.2).
+(Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew sends while replaying
+since slice N, which gave it its serial (RP-230). The tests are the module's own (§4.2).
 
 Three routes go around the gate, and all are tests': rtsim-jni engine/dragons.rs `order_command`
 (`Order::DragonCommand`, TEST mode only) puts a command of any kind straight into the host's queue,
@@ -1428,9 +1428,14 @@ are decided again. Java may already have applied them before the crash.
   (RG13), and applies a NEST_RENEW only when its serial is above the last under the same life.
 - **Fail safe on an old file:** a Nests SavedData without the serial loads with every nest's owed at
   0 and its last serial at 0: whatever was owed is dropped, never doubled (the lead's condition 4).
-- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest; the owed count
-  stays (the new life's renewals are its own decisions) (RP-19).
-- Until slice N lands, slice D drops NEST_RENEW while replaying (option a's loss, for one slice).
+- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest, unless the nest
+  remembers that life (one of its last eight, RP-232), in which case it goes on from there; the owed
+  count stays (the new life's renewals are its own decisions) (RP-19).
+- Slice D dropped NEST_RENEW while replaying (option a's loss, for one slice). As built (slice N,
+  RP-230 to RP-239): the serial is at offset 32 of the same 40 bytes, the nest row's `renewals`
+  is saved with it (dragons pages RTD8, meta RTN8), the gate sends it while replaying, and Java's
+  Nests keeps a serial per engine life per nest, for the last eight lives (RP-232). A renewal lost in
+  direction A stays lost (RP-235).
 
 ### 7.2 NEST_SORTIE (RP-15)
 
@@ -1458,10 +1463,10 @@ re-send, and deletes the `outbox.retain` filters for OwedHunt, which `Outbox` re
 | What | Change | Slice |
 |---|---|---|
 | Conflict, herds, ships pages | none (a held party's poll is an ordinary Ev::Party) | C, H, S |
-| Dragons pages: nest rows | `renewals: u32` | N |
+| Dragons pages: nest rows | `renewals: u32` (RTD7 to RTD8; the meta RTN7 to RTN8) | N |
 | Dragons pages: the outbox | NestRenew carries its serial | N |
-| Wire: NEST_RENEW | a u32 serial (docs/boundary.md §6.4, DragonRecords) | N |
-| SavedData: Nests | per nest the last serial and its engine life | N |
+| Wire: NEST_RENEW | a u32 serial in the reserved slot at offset 32, size 40 before and after (docs/boundary.md §6.4, DragonRecords) | N |
+| SavedData: Nests | per nest the last serial and its engine life, and the last serial of each of the eight lives before it | N |
 | META | none (META_VERSION 2 is S4p's) | |
 | Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map and the fill's death counts; each engine's epoch floors | C to S |
 
@@ -1687,6 +1692,14 @@ Tests:
 3. The rtsim-view fixtures (§8).
 
 GameTests: `neoforge/gametest.sh iceandfire`, after deleting the worktree's run-gametest worlds.
+
+As built (fix/replay-nest-serial, RP-230 to RP-239): the engine half is rtsim-ecology's nest.rs
+(`renewals`, `renew`), boundary.rs (the serial at offset 32, the size still 40), persist.rs (RTD8,
+RTN8) and outbox.rs (NestRenew: keep queued, send while replaying); the Java half is Nests.java's
+`Nest.renewed`, with DragonRecords, DragonBridge and the SavedData's `serial` and `life`. Test 1 is
+`a_renewal_after_the_save_is_not_owed_twice_after_a_restore` (tests/nests.rs, both routes), test 2
+is iceandfire's `NestRenewalSerialTest`, and the GameTest `aRenewalDecidedAgainIsNotOwedTwice` is
+compiled and not run. The rtsim-view fixtures need regenerating (the slice N header in choices-mowzie-build.md names the five tests that fail on the bump).
 
 Opus review checks: never doubled on any path (a restore, a repeat, an old file, a new life); the
 serial is the catch-up's own, not a session's; the wire size matches on both sides.

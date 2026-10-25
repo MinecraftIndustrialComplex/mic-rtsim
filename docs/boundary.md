@@ -1036,7 +1036,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flag 1 LATE) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
 | 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
-| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 reserved | 40 | NEST_CENSUS once they spawn |
+| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
@@ -1196,8 +1196,12 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
   answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
   placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
-  Death Worms, sized by the stage), placed on the chamber floor when the heart's chunk ticks entities
-  with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
+  Death Worms, sized by the stage), only when its serial is above the last one the nest applied under
+  the same engine life (RP-14, RP-19, RP-232: a renewal the engine decides again carries the serial it
+  had and owes nothing; a life the nest has not seen starts its serial afresh, and the owed count
+  stays; the nest remembers the last serial of its last eight lives; a Nests file from before the
+  serial loads every nest owed 0, serial 0, life 0), placed on the chamber floor
+  when the heart's chunk ticks entities with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
   chunk. A nest worm breaks no blocks. A worm's death is NEST_LOSS (the boss rule), the heart's breaking
   NEST_HEART. NEST_SORTIE glides the nest's loaded worms through the ground to the raided column and up
   it; a worm stops under a block tagged `#mic_rtsim:armoured_floor` or `#mic_rtsim:burrow_spared` and

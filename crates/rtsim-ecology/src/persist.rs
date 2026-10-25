@@ -58,12 +58,13 @@ use crate::tunables::{DragonTunables, PreyKind};
 /// (SINK.md §4.6), "RTD3" before the oil gate (OILGATE.md), "RTD4" before the fields' daily watch
 /// (choices-oilgate.md OGC52: a world whose gate opened before it would never watch), "RTD5" before
 /// the oil nests (OG-9e), "RTD6" before the lairs' renewal rule (EQUILIBRIUM.md S4: each lair's
-/// pressure, wait and fed share); no older save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD7");
+/// pressure, wait and fed share), "RTD7" before each nest's renewal serial (docs/replay-gate.md §7.1,
+/// RP-14); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD8");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
 /// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests, "RTN6" before the
-/// lairs' renewal rule).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN7");
+/// lairs' renewal rule, "RTN7" before the nests' renewal serial).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN8");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -1054,7 +1055,7 @@ pub(crate) fn put_nest(n: &Nest, w: &mut Writer) {
     put_opt_u32(w, n.reform_milli);
     w.var_i64(n.left_mb);
     w.var_i64(n.peak_mb);
-    for v in [n.renewed, n.lost_player, n.raids] {
+    for v in [n.renewed, n.lost_player, n.raids, n.renewals] {
         w.var_u64(u64::from(v));
     }
 }
@@ -1094,6 +1095,7 @@ fn get_nest(r: &mut Reader<'_>) -> codec::Result<Nest> {
         renewed: u32_of(r.var_u64()?)?,
         lost_player: u32_of(r.var_u64()?)?,
         raids: u32_of(r.var_u64()?)?,
+        renewals: u32_of(r.var_u64()?)?,
     })
 }
 
