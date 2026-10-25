@@ -189,8 +189,10 @@ public final class StationPressLineGameTests {
         for (BlockPos p : List.of(run.sinkVault, StationPressLineFactory.abs(h, StationPressLineFactory.PORT_CHUTE), run.psi,
                 StationPressLineFactory.abs(h, StationPressLineFactory.DRAW)))
             IndustryKit.playerPlaced(h, p);
+        int joined = GlassCorpus.join(h); // the line, its port and the bystander: one district wherever the chunk borders fall
         run.builtAt = run.now();
-        GlassCorpusKit.log(run.f.name(), "station press line built", run.copy.notes() + "; port at " + run.psi.toShortString());
+        GlassCorpusKit.log(run.f.name(), "station press line built", run.copy.notes() + "; port at " + run.psi.toShortString()
+                + "; chunk borders joined: " + joined);
         run.stage(Stage.DISTRICT);
     }
 
