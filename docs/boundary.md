@@ -1197,9 +1197,10 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
   placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
   Death Worms, sized by the stage), only when its serial is above the last one the nest applied under
-  the same engine life (RP-14, RP-19: a renewal the engine decides again carries the serial it had and
-  owes nothing; a new engine life starts the nest's serial afresh, and the owed count stays; a Nests
-  file from before the serial loads every nest owed 0, serial 0, life 0), placed on the chamber floor
+  the same engine life (RP-14, RP-19, RP-232: a renewal the engine decides again carries the serial it
+  had and owes nothing; a life the nest has not seen starts its serial afresh, and the owed count
+  stays; the nest remembers the last serial of its last eight lives; a Nests file from before the
+  serial loads every nest owed 0, serial 0, life 0), placed on the chamber floor
   when the heart's chunk ticks entities with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
   chunk. A nest worm breaks no blocks. A worm's death is NEST_LOSS (the boss rule), the heart's breaking
   NEST_HEART. NEST_SORTIE glides the nest's loaded worms through the ground to the raided column and up

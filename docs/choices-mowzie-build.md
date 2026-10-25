@@ -5801,12 +5801,28 @@ Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles
   run's. A loss of that kind, never a double. Test: the named test below, both routes.
 - **RP-232** (Java's rule and where it reads the engine life; RP-19, RG13): each placed nest keeps
   `serial` and `life` (longs; the wire's serial is read unsigned with `Integer.toUnsignedLong`),
-  saved in Nests.Data beside `owed`, in the same file, so they reach disk together. `Nest.renewed
-  (life, serial, count, stage, now)` is the whole rule: when `life` differs from the nest's, the
-  nest takes it and its serial goes back to 0 (owed, stage and dueAt are not touched, RP-19);
-  then a serial above the nest's is applied (the heart's reform flag, `owed += count`, the stage,
-  `dueAt`), and anything else is a repeat that changes nothing but the life the nest is judged
-  under. `Nests.renew` takes the life from `bridge.session().engineLife()` at each NEST_RENEW:
+  its current life and that life's last serial, and `earlier`, the last serial of each life before
+  it (see the cap below), all saved in Nests.Data beside `owed`, in the same file, so they reach
+  disk together. `Nest.renewed(life, serial, count, stage, now)` is the whole rule: when `life`
+  differs from the nest's, the nest takes it (the life it leaves goes to `earlier` with its serial)
+  and its serial is the one that life had reached if the nest remembers it, else 0 (owed, stage
+  and dueAt are not touched, RP-19); then a serial above the nest's is applied (the heart's reform
+  flag, `owed += count`, the stage, `dueAt`), and anything else is a repeat that changes nothing
+  but the life the nest is judged under. One serial per nest (the first build) let a double
+  through a hand-mixed restore: lives A, then B, then A again (world/rtsim restored from a backup
+  while world/data stayed) reset the serial on the return to A, and the renewals the restored
+  pages decide again applied a second time. Hence the list: a return to a remembered life counts on
+  from where that life stopped. The cap is 8 lives (`Nest.LIVES`: the current life and the seven
+  before it), and the least recently used life is dropped first, so the current life is never the
+  one dropped. An entry with serial 0 is the same as none and is not kept. Saved as a list `lives`
+  of (life, serial) compounds beside `serial` and `life`; a missing list, an old file's or one
+  written before the list, loads empty, and a loaded list leaves out the current life, a serial 0
+  and a repeated life, and keeps the newest eight. The residual: a double needs more than eight
+  lives of one nest and then a hand-mixed restore back to the forgotten one, which counts from 0
+  again. Test: `aReturnToAnEarlierLifeKeepsThatLivesSerial` (fails on the one-life rule: "back
+  under A, its serial 3 is a repeat", expected false, was true),
+  `aNestRemembersTheLastEightLivesAndForgetsTheOldestFirst` (the residual too) and
+  `theEarlierLivesAreSavedAndAnOldOrMissingListLoadsEmpty`. `Nests.renew` takes the life from `bridge.session().engineLife()` at each NEST_RENEW:
   `RtsimSession.engineLife` is a final long set in the session's constructor from
   `ReinstallRules.engineLife(world/rtsim, startsOver, ..)`, so a session that applies a command
   already knows its life. A repeat is counted (`renewsRepeated`) and logged with the serial, the
@@ -5821,9 +5837,9 @@ Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles
   | Path | What Java sees | Owed |
   |---|---|---|
   | a restore, the renewal decided again (the catch-up, or live after the replay end) | the serial it had, at or below the nest's last | once: the repeat is dropped and counted |
-  | a renewal the saved pages still queue (NestRenew is Keep queued, so it is resent after a restore) | the same serial a second time | once, whether or not the first copy reached Java before the crash |
+  | a renewal the saved pages still queue (NestRenew is Keep queued, so it would be resent after a restore) | the same serial a second time | once, whether or not the first copy reached Java before the crash. Reachable only in engine-level tests: rtsim-jni's `dragons::save` (engine/dragons.rs) takes the commands before `paging::save`, so the saved outbox is always empty, and a renewal still in the host link's unsaved queue is lost with the crash (the census heals it: a loss, never a double) |
   | an old Nests file | no `serial` and no `life` key (either missing is an old file): owed 0, serial 0, life 0 | nothing from the file; the engine's next renewal is new and owed once |
-  | a new engine life | the nest's serial starts afresh, owed stays | the new life's serial 1 is new; its repeats are dropped |
+  | a new engine life | a life the nest has not seen: its serial starts afresh, owed stays; one it remembers (RP-232): that life's serial | the new life's serial 1 is new; its repeats are dropped. A started-over engine founds the nest again under the same id, and if its hatch runs before a census reaches it, it sends a first brood of k at serial 1, which Java places on top of the live old worms (`nest_census` clamps `seen` to k): as on the base (RP-19) |
   | two renewals in one tick (the catch-up runs a day each) | serials n and n+1 in the queue's order | both; in the other order the lower would be dropped (a loss), the wire being one ordered queue |
   | a nest removed and placed again | RP-234 | |
   | the serial at u32::MAX | `renewals` saturates, every later serial repeats | none after the top: a loss, never a double (billions of renewals of one nest) |
@@ -5842,7 +5858,10 @@ Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles
   once; Java had nothing of the renewals before, so nothing doubles. (b) the engine's row gone and
   Java's kept (the pages deleted): RG13 gives a started-over engine a new life, RP-19 restarts the
   serial; if the new directory lands on life 0 again the low serials are dropped until the engine
-  passes the old one (RP-232). The GameTests' `forgetForTest` removes the Java row, so the next
+  passes the old one (RP-232). When only the dragons' pages are dropped (a page version bump),
+  `pagesObsSeq` is non-zero, so the engine life stays (RtsimSession.java, the constructor), and the
+  fresh engine's serials 1 to s are dropped as repeats until they pass Java's last one: a loss,
+  never a double. The GameTests' `forgetForTest` removes the Java row, so the next
   test's nest starts at 0 as a new nest.
 - **RP-235** (directions A and B; §7.1): B is the Nests newer than the pages (the audit's D5 under
   journal-last): the engine decides the renewal again, Java has applied it, and the serial makes it a
@@ -5862,7 +5881,7 @@ Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles
   each renewal number counted once (a number Java had is a repeat, a number it lacked is applied).
   Dropped, as slice D had it, a renewal of the replayed window that Java never saw was lost:
   Java owed fewer worms than the nest's `worms` count held. A renewal queued in the pages stays
-  `Keep` and applies at most once for its serial. NestSortie stays dropped (RP-15); NEST_CENSUS is
+  `Keep` and applies at most once for its serial (reachable only in engine-level tests, RP-233). NestSortie stays dropped (RP-15); NEST_CENSUS is
   Java's report, not a command.
 - **RP-237** (RP-57, the floors): NEST_RENEW names no epoch and no agent (`Cmd::agent()` is None),
   so it raises no floor, and the replayed or copied record that carries it has nothing to fold.
@@ -5888,16 +5907,21 @@ Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles
   `nest_renew_carries_its_serial_at_offset_32_and_stays_40_bytes` (rtsim-ecology boundary.rs), and
   the outbox table's NestRenew row now `Keep` and `Send`.
 - **RP-239** (Java's tests, the GameTest, the build): `neoforge/iceandfire` had no unit tests;
-  its build.gradle takes JUnit as the create module does, and puts the main source set's output and
-  compile classpath on the test classpath, because the nest's rule touches `BlockPos` and
-  `CompoundTag`. The rule is a method of `Nests.Nest` (`acceptRenewal`, `renewed`), so the tests need
-  no server: `NestRenewalSerialTest` (nine tests: a repeated serial adds nothing, a higher one adds
+  its build.gradle takes JUnit as the create module does, and gives the test source set Minecraft and
+  NeoForge with MDG's `neoForge.addModdingDependenciesTo(sourceSets.test)`, because the nest's rule
+  touches `BlockPos` and `CompoundTag` (the first build put the main compile classpath there, which
+  pulled in the compileOnly Ice and Fire jars; the main output is on the test classpath already). The rule is a method of `Nests.Nest` (`acceptRenewal`, `renewed`), so the tests need
+  no server: `NestRenewalSerialTest` (twelve tests: a repeated serial adds nothing, a higher one adds
   its count, a gap is applied, two renewals in a row, a new engine life restarts the serial and keeps
-  owed, an old file loads owed 0 and serial 0 and life 0 (and a file with one key missing too), the
-  serial and life round trip including a negative life, a repeat re-forms nothing, `nextSerial`).
+  owed, A then B then A keeps A's serial, the eight-life cap, the earlier lives saved and an old or
+  missing list loading empty, an old file loads owed 0 and serial 0 and life 0 (and a file with one
+  key missing too), the serial and life round trip including a negative life, a repeat re-forms
+  nothing, `nextSerial`). `:iceandfire:test --rerun-tasks` runs all twelve, none from the cache.
   On the base none of them can be written: `Nest.renewed` does not exist and the rule is
   `owed += count`, which gives 4 where the first test wants 2. The GameTest
-  `aRenewalDecidedAgainIsNotOwedTwice` (NestGameTests.java, batch nest_renew, compiled, not run)
+  `aRenewalDecidedAgainIsNotOwedTwice` (NestGameTests.java, its own batch nest_renew_serial, since each
+  site's cleanUp calls `DragonConfig.Test.reset()`, which switches `placeNests` off server-wide, and a
+  late site's PLACE_NEST could be refused; compiled, not run)
   extends the scripted `nestRenewPlacesTaggedWorms` pattern: serial 1 owes two worms and they are
   placed, serial 1 again and serial 0 owe nothing and count as repeats, serial 2 owes a third.
   That is Java's half of direction B. The full direction B (the engine restored from older pages

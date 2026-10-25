@@ -1301,12 +1301,14 @@ are decided again. Java may already have applied them before the crash.
   (RG13), and applies a NEST_RENEW only when its serial is above the last under the same life.
 - **Fail safe on an old file:** a Nests SavedData without the serial loads with every nest's owed at
   0 and its last serial at 0: whatever was owed is dropped, never doubled (the lead's condition 4).
-- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest; the owed count
-  stays (the new life's renewals are its own decisions) (RP-19).
+- **A new engine life** (a reinstall, RG13): the serial starts afresh for that nest, unless the nest
+  remembers that life (one of its last eight, RP-232), in which case it goes on from there; the owed
+  count stays (the new life's renewals are its own decisions) (RP-19).
 - Slice D dropped NEST_RENEW while replaying (option a's loss, for one slice). As built (slice N,
   RP-230 to RP-239): the serial is at offset 32 of the same 40 bytes, the nest row's `renewals`
   is saved with it (dragons pages RTD8, meta RTN8), the gate sends it while replaying, and Java's
-  Nests keeps a serial and a life per nest. A renewal lost in direction A stays lost (RP-235).
+  Nests keeps a serial per engine life per nest, for the last eight lives (RP-232). A renewal lost in
+  direction A stays lost (RP-235).
 
 ### 7.2 NEST_SORTIE (RP-15)
 
@@ -1337,7 +1339,7 @@ re-send, and deletes the `outbox.retain` filters for OwedHunt, which `Outbox` re
 | Dragons pages: nest rows | `renewals: u32` (RTD7 to RTD8; the meta RTN7 to RTN8) | N |
 | Dragons pages: the outbox | NestRenew carries its serial | N |
 | Wire: NEST_RENEW | a u32 serial in the reserved slot at offset 32, size 40 before and after (docs/boundary.md §6.4, DragonRecords) | N |
-| SavedData: Nests | per nest the last serial and its engine life | N |
+| SavedData: Nests | per nest the last serial and its engine life, and the last serial of each of the eight lives before it | N |
 | META | none (META_VERSION 2 is S4p's) | |
 | Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map and the fill's death counts; each engine's epoch floors | C to S |
 
