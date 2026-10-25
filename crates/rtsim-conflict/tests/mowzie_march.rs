@@ -5,7 +5,7 @@
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind};
-use rtsim_conflict::engine::{Conflict, Party, Target, body_id};
+use rtsim_conflict::engine::{Conflict, Party, Phase, Target, body_id};
 use rtsim_conflict::synth::{self, FakeConflict};
 use rtsim_conflict::{ConflictTunables, Cultures};
 use rtsim_ecology::infra::NoInfrastructure;
@@ -464,4 +464,54 @@ fn the_march_fields_survive_a_save_and_a_paged_save() {
         assert!(marches_of(&c.take_commands()).is_empty());
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- the end at home and the books (MZB-462, MZB-463) ------------------------------------------
+
+/// MZB-463: a band that comes home with its puppets in Minecraft and nothing to hand them back
+/// (a faction with no camp ledger) is recalled toward its camp with RECALL_DONE at its epoch,
+/// before its ENDED record; the same band with no puppets is not recalled at all.
+#[test]
+fn a_band_home_in_minecraft_with_no_hand_back_is_recalled_before_its_end() {
+    for embodied in [true, false] {
+        let mut r = Run::new(49);
+        let band = r.raid();
+        r.flush(Tick(21));
+        let mut t = r.c.now();
+        while r.c.parties[band].phase != Phase::Home {
+            t = t + 200;
+            r.run(t);
+            assert!(t < Tick(20 * 24_000), "the band never walked home");
+        }
+        let agent = Party::agent(band);
+        let epoch = if embodied { embody(&mut r, band) } else { 0 };
+        let end = r.c.parties[band].times.last().copied().unwrap();
+        r.run(end + 100);
+        assert!(!r.c.parties.contains(band), "home");
+        let recalls: Vec<(usize, u32, u32)> = r
+            .cmds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, c))| match c {
+                Cmd::Recall(x) if x.agent == agent => Some((i, x.epoch, x.reason)),
+                _ => None,
+            })
+            .collect();
+        let ended = r
+            .cmds
+            .iter()
+            .position(|(_, c)| {
+                matches!(c, Cmd::March(m) if m.agent == agent
+                && m.flags & boundary::MARCH_ENDED != 0)
+            })
+            .expect("the band's end");
+        if embodied {
+            assert_eq!(recalls.len(), 1, "one recall: {recalls:?}");
+            assert_eq!(recalls[0].1, epoch);
+            assert_eq!(recalls[0].2, boundary::RECALL_DONE);
+            assert!(recalls[0].0 < ended, "the recall goes before the end");
+        } else {
+            assert!(recalls.is_empty(), "no puppet, no recall");
+        }
+    }
 }

@@ -1211,11 +1211,13 @@ impl Conflict {
     /// A war party reaches home (`home`): a survivor whose body is still in the camp is home, body
     /// again; one whose body is gone is owed again, and at a camp that is in gets a hand-back line
     /// if its puppet is in the world, else a spawn line; at a camp that is out its puppets are
-    /// recalled as they always were and the next census spawns the bodies.
-    pub(super) fn camp_home(&mut self, p: Handle<Party>, at: Tick) {
+    /// recalled as they always were and the next census spawns the bodies. Returns whether it
+    /// handled the band's bodies: a hand-back line sent, or a recall (MZB-463); `home` recalls a
+    /// band in Minecraft that nothing handled.
+    pub(super) fn camp_home(&mut self, p: Handle<Party>, at: Tick) -> bool {
         let f = self.parties[p].faction;
         if self.camp(f).is_none() {
-            return;
+            return false;
         }
         self.camp_sync(f, at);
         let x = &self.parties[p];
@@ -1262,10 +1264,15 @@ impl Conflict {
         let more = self.spawn_lines(f, &lines);
         lines.extend(more);
         if is_in {
+            let handed = lines.iter().any(|l| l.action == ACTION_HAND_BACK);
             self.send_lines(f, lines, at);
+            handed
         } else if embodied {
             let camp = self.factions[f as usize].pos;
             self.recall(p, epoch, boundary::RECALL_DONE, (camp.x, camp.z));
+            true
+        } else {
+            false
         }
     }
 
@@ -2788,6 +2795,43 @@ mod tests {
             let camp = r.c.camp(r.f).expect("a ledger");
             assert_eq!(camp.pressure.parts().0, pressure, "{cause:?}");
             assert!(camp.arrival_at.is_some(), "{cause:?}: a wait is booked");
+        }
+    }
+
+    /// MZB-462: a band in Minecraft that the engine resolves abstractly keeps `spawned` no larger
+    /// than the members left, and leaves `recalled` as it was: an older epoch's stack is counted
+    /// by its own despawn record, and clamping it would hide deaths in Minecraft. A band that is
+    /// not in Minecraft keeps its (empty) stacks as they are.
+    #[test]
+    fn lose_units_clamps_the_bodies_in_minecraft_and_not_the_recalled_stacks() {
+        for embodied in [true, false] {
+            let mut r = CampRun::new(62, "umvuthana", 9);
+            r.camp_in();
+            let to = r.c.now() + 10;
+            r.run(to);
+            let p = r.raid().expect("a raid goes");
+            let units = r.c.parties[p].units.clone();
+            let total: u32 = units.iter().map(|u| u.1).sum();
+            assert!(total >= 4, "a band to lose members from ({total})");
+            let x = &mut r.c.parties[p];
+            x.epoch += 2;
+            x.recalled = vec![(x.epoch - 1, units.clone())];
+            x.embodied = embodied;
+            x.spawned = if embodied { units.clone() } else { Vec::new() };
+            r.c.lose_units(&mut r.w, p, |_| true, 3, LossCause::Faction);
+            let x = &r.c.parties[p];
+            assert_eq!(x.alive(), total - 3);
+            let bodies: u32 = x.spawned.iter().map(|s| s.1).sum();
+            if embodied {
+                assert_eq!(bodies, total - 3, "the bodies follow the members");
+                for s in &x.spawned {
+                    let left = x.units.iter().find(|u| u.0 == s.0).map_or(0, |u| u.1);
+                    assert!(s.1 <= left);
+                }
+            } else {
+                assert_eq!(bodies, 0, "nothing was in Minecraft");
+            }
+            assert_eq!(x.recalled, vec![(x.epoch - 1, units)], "the older stack");
         }
     }
 }

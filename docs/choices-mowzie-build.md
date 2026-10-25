@@ -7890,6 +7890,14 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   carries, and a restart's first record is one past the pages' last. Fork: a state hash now moves with a
   take's flags, so two engines that took commands at different steps differ by hash; no existing test
   compares such a pair.
+- **MZB-488** (the build order; amends the design's work split): the books' step (`lose_units`' clamp,
+  MZB-462; `camp_home` returning a bool and `home`'s fallback recall, MZB-463) was built and committed before the
+  walk home (MZB-456). The walk leaves a band embodied up to its row's end, so the fight-end tests that counted a
+  recall at the fight's end (lurk.rs, mowzie_records.rs) now meet the recall at `home`, and that recall exists
+  only with the fallback. `camp_home` returns true when it sent a HAND_BACK line or recalled (a camp that is in
+  with no hand-back line, a camp with no ledger, and a camp that is out with nothing embodied return false);
+  `home` recalls an embodied band with RECALL_DONE toward its camp when nothing handled it, for every kind. The
+  clamp keeps each `spawned` entry no larger than its unit's count while the band is embodied.
 
 ## M11 Aloft
 
