@@ -2,7 +2,10 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
+import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.MarchPath;
@@ -14,6 +17,7 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
@@ -1554,6 +1558,194 @@ public final class MarchGameTests {
                     ConflictKit.recall(b, 2, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
                 })
                 .thenWaitUntil(waits.logic(() -> check("B went", about(ConflictRecords.BAND_DEMATERIALIZED, b).size() == 2)))
+                .thenSucceed();
+    }
+
+    // ---- MZB-466: a death after the march ended ----------------------------------------------------------
+
+    /**
+     * MZB-466's Java half: a member of a band the engine has ended (its march says ENDED, its HAND_BACK lines are in flight) that dies
+     * is a loss the engine books nowhere, and the bridge counts it ({@code unbookedHomeDeaths}) and still journals it. Four bands of
+     * three warriors stand placed and a member of each dies in the same tick:
+     * <ul>
+     * <li>X, whose march is live: not counted;</li>
+     * <li>Y, whose march ended: counted, once;</li>
+     * <li>Z, whose march ended and which is recalling (a player holds it in view): not counted, the recall owns its members;</li>
+     * <li>W, which the engine has said no march for: not counted.</li>
+     * </ul>
+     * Each death is journaled (BAND_CASUALTIES, once), counted or not.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_unbooked")
+    public static void aDeathAfterTheMarchEndedIsCountedUnbooked(GameTestHelper helper) {
+        String test = "aDeathAfterTheMarchEndedIsCountedUnbooked";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 1);
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction();
+        long x = ConflictKit.newAgent(), y = ConflictKit.newAgent(), z = ConflictKit.newAgent(), w = ConflictKit.newAgent();
+        long[] agents = {x, y, z, w};
+        double[] zs = {at.z() - 15, at.z() - 5, at.z() + 5, at.z() + 15};
+        Map<String, Integer> three = Map.of(WARRIOR, 3);
+        ServerPlayer[] player = new ServerPlayer[1];
+        long[] n = new long[3];
+        List<ConflictKit.StackSpec> row = List.of(new ConflictKit.StackSpec(WARRIOR, 3, false));
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 1)))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 4; i++)
+                        ConflictKit.materialize(heldBand(agents[i], faction, dim, at.x() - 8, zs[i], HOSTILE), row);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (long agent : agents) {
+                        check("a band appeared", bridge().party(agent) != null);
+                        allStacks(party(agent), PLACED, "a band is placed");
+                    }
+                }))
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    n[0] = bridge().marchRecords;
+                    // X and Z and Y say their marches; Y's and Z's end.
+                    for (long agent : new long[] {x, y, z})
+                        say(agent, 1, dim, faction, OUT, 0, three, wp(at.x(), at.z(), now), wp(at.x() - 200, at.z(), now + 10_000));
+                    for (long agent : new long[] {y, z})
+                        say(agent, 2, dim, faction, OUT, MARCH_ENDED, three, wp(at.x(), at.z(), now));
+                })
+                .thenWaitUntil(waits.logic(() -> check("five records read (" + (bridge().marchRecords - n[0]) + ")", bridge().marchRecords == n[0] + 5
+                        && bridge().marchEnded(y) && bridge().marchEnded(z))))
+                .thenExecute(() -> {
+                    check("X's march is live, W has none: " + bridge().march(x) + ", " + bridge().march(w) + ", ended " + bridge().marchEnded(x) + ", "
+                            + bridge().marchEnded(w), bridge().march(x) != null && bridge().march(w) == null && !bridge().marchEnded(x) && !bridge().marchEnded(w));
+                    // A player holds Z in view while it is recalled.
+                    double px = at.x() + 12;
+                    player[0] = FakePlayers.add(level, new Vec3(px, f.ground(px, at.z()), at.z()), "conflict_march_unbooked_watcher");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    ConflictKit.recall(z, 1, ConflictRecords.RECALL_DONE, 600, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("Z is recalling", party(z).recalling())))
+                .thenExecute(() -> {
+                    n[1] = ConflictKit.unbookedHomeDeaths();
+                    for (long agent : agents)
+                        party(agent).stacks().get(0).slots().get(0).entity().hurt(level.damageSources().generic(), 1000f);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (long agent : agents)
+                        check("a loss was journaled for " + Long.toHexString(agent), about(ConflictRecords.BAND_CASUALTIES, agent).size() == 1);
+                }))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    long counted = ConflictKit.unbookedHomeDeaths() - n[1];
+                    record(test, "unbooked", "counted " + counted + " for four deaths (X live march, Y ended, Z ended and recalling, W no march)");
+                    check("exactly Y's death was counted as unbooked (" + counted + ")", counted == 1);
+                    for (long agent : agents)
+                        check("one casualty for " + Long.toHexString(agent) + ": " + about(ConflictRecords.BAND_CASUALTIES, agent).size(),
+                                about(ConflictRecords.BAND_CASUALTIES, agent).size() == 1);
+                    FakePlayers.remove(player[0]);
+                    for (long agent : new long[] {x, y, w})
+                        ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (long agent : agents)
+                        check("the band went", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty());
+                }))
+                .thenSucceed();
+    }
+
+    // ---- the conflict module off and on --------------------------------------------------------------------
+
+    /**
+     * The conflict module switched off and on again (MZB-731's review, MZB-468): a band with a march and its column stands placed.
+     * With the module off the bridge captures it as it stands (BAND_DEMATERIALIZED, reason SESSION_END 4, its four warriors as
+     * survivors), holds no party, no body and no march for it, and a march said while it is off is not kept. With the module on
+     * again the same agent is materialized and its column forms again (three stacks placed, nothing rejected), and a march of a lower
+     * revision than the one said before the switch is kept, not dropped as stale (the table was emptied).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_switch")
+    public static void aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn(GameTestHelper helper) {
+        String test = "aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 2);
+        MinecraftServer server = level.getServer();
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction();
+        long agent = ConflictKit.newAgent();
+        Map<String, Integer> four = Map.of(WARRIOR, 4);
+        long[] n = new long[3];
+        ConflictKit.Band band = heldBand(agent, faction, dim, at.x(), at.z(), HOSTILE | CHIEF);
+        ConflictKit.Band again = heldBand(agent, faction, dim, at.x(), at.z(), HOSTILE | CHIEF);
+        ConflictKit.onEnd(helper, () -> {
+            RtsimConfig.Test.setModule(Module.CONFLICT, null);
+            BridgeEvents.moduleSwitchesChanged(server);
+        });
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 2)))
+                .thenExecute(() -> {
+                    ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 4, true)));
+                    say(agent, 5, dim, faction, OUT, MARCH_CHIEF, four, wp(at.x(), at.z(), level.getGameTime()), wp(at.x() - 200, at.z(), level.getGameTime() + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the band appeared with its march", bridge().party(agent) != null && bridge().march(agent) != null);
+                    allStacks(party(agent), PLACED, "the column is placed");
+                }))
+                .thenExecute(() -> {
+                    check("a column of three stacks: " + states(party(agent)), party(agent).stacks().size() == 3);
+                    check("the march is revision 5", bridge().march(agent).revision() == 5);
+                    RtsimConfig.Test.setModule(Module.CONFLICT, false);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band was captured", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty())))
+                .thenExecute(() -> {
+                    var done = about(ConflictRecords.BAND_DEMATERIALIZED, agent).get(0);
+                    Map<String, Integer> left = ConflictKit.survivors(done);
+                    record(test, "off", "reason " + done.aux() + ", survivors " + left);
+                    check("captured as the session's end, 4: " + done.aux(), done.aux() == ConflictRecords.Dematerialized.SESSION_END);
+                    check("its four warriors are the survivors: " + left, left.equals(Map.of(WARRIOR, 4)));
+                    check("no party, no body in the world and no march: party " + bridge().party(agent) + ", tagged " + tagged(level, agent, at.x(), at.z())
+                            + ", march " + bridge().march(agent), bridge().party(agent) == null && tagged(level, agent, at.x(), at.z()) == 0
+                            && bridge().march(agent) == null);
+                    // A march said while the module is off is not kept.
+                    n[0] = bridge().marchRecords;
+                    say(agent, 6, dim, faction, OUT, MARCH_CHIEF, four, wp(at.x(), at.z(), level.getGameTime()), wp(at.x() - 200, at.z(), level.getGameTime() + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the record was read", bridge().marchRecords == n[0] + 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("no march is kept while the module is off: " + bridge().march(agent), bridge().march(agent) == null);
+                    RtsimConfig.Test.setModule(Module.CONFLICT, null);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                    n[1] = bridge().marchStale;
+                    n[2] = about(ConflictRecords.BAND_MATERIALIZED, agent).size();
+                    ConflictKit.materialize(again, List.of(new ConflictKit.StackSpec(WARRIOR, 4, true)));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the band appeared again", bridge().party(agent) != null);
+                    allStacks(party(agent), PLACED, "the column is placed again");
+                }))
+                .thenExecute(() -> {
+                    ConflictBridge.Party p = party(agent);
+                    check("the column formed again: three stacks, " + states(p) + ", bodies " + bridge().bodies(agent).size(),
+                            p.stacks().size() == 3 && bridge().bodies(agent).size() == 5 && p.stacks().get(2).chief());
+                    check("it was materialized and not rejected (materialized " + (about(ConflictRecords.BAND_MATERIALIZED, agent).size() - n[2])
+                            + ", rejected " + about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() + ")",
+                            about(ConflictRecords.BAND_MATERIALIZED, agent).size() == n[2] + 1 && about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    // A lower revision than the one said before the switch: kept, since the table was emptied.
+                    say(agent, 1, dim, faction, OUT, MARCH_CHIEF, four, wp(at.x(), at.z(), level.getGameTime()), wp(at.x() - 200, at.z(), level.getGameTime() + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("a march of revision 1 was kept after the switch (stale " + (bridge().marchStale - n[1]) + ")",
+                        bridge().march(agent) != null && bridge().march(agent).revision() == 1)))
+                .thenExecute(() -> {
+                    record(test, "on", "the column formed again and revision 1 was kept (marchStale " + (bridge().marchStale - n[1]) + " more)");
+                    check("it was not dropped as stale: " + (bridge().marchStale - n[1]), bridge().marchStale == n[1]);
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band went", about(ConflictRecords.BAND_DEMATERIALIZED, agent).size() == 2)))
                 .thenSucceed();
     }
 
