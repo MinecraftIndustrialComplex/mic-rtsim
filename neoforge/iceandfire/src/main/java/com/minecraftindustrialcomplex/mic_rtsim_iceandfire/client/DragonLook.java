@@ -138,6 +138,8 @@ public final class DragonLook implements FarLook {
     private ClientLevel levelOf;
     /** New bodies held back while their animation settles (DHT68). */
     final DragonArrivals arrivals = new DragonArrivals();
+    /** A held body's far model's heading and pitch this call ({@link DragonArrivals#turn}). Render thread. */
+    private final float[] turned = new float[2];
     /** The far feed's last RESET, until what nobody asked for again since is freed (DHT70). */
     private final FarLookReset resets = new FarLookReset();
     private long clock, lastSweep;
@@ -204,6 +206,13 @@ public final class DragonLook implements FarLook {
             lastYaw.put(m.key(), yawDeg);
         } else
             yawDeg = lastYaw.getOrDefault(m.key(), 0f);
+        // A far dragon flies level; while its body is held it turns onto the body's heading and pitch, and keeps
+        // them until vanilla draws the body (DHT74)
+        float pitchDeg = 0f;
+        if (arrivals.turn(m.entity(), yawDeg, turned)) {
+            yawDeg = turned[0];
+            pitchDeg = turned[1];
+        }
         float yawRad = (float) Math.toRadians(yawDeg);
         double time = clock + beatOffset(m);
         boolean flying = m.state() != FarState.ROOST;
@@ -214,7 +223,9 @@ public final class DragonLook implements FarLook {
         // The feed's point is the hitbox's middle; the model stands on its feet (DragonFeedSource)
         float centre = (float) (0.6 * Math.min(renderSize(species, age) * 0.35, 7.0));
         float lo = s * p.minY - centre, hi = s * p.maxY - centre, half = Math.max(Math.abs(lo), Math.abs(hi));
-        out.radius = (float) Math.sqrt(s * s * p.maxH2 + half * half);
+        // Pitched, it turns about its feet, and reaches from them no farther than its farthest point
+        out.radius = pitchDeg == 0f ? (float) Math.sqrt(s * s * p.maxH2 + half * half)
+                : (float) Math.sqrt(s * s * (p.maxH2 + Math.max(p.minY * p.minY, p.maxY * p.maxY))) + centre;
         if (live) {
             StandIn st = standIns.computeIfAbsent(m.key(), k -> new StandIn());
             EntityRenderer<DragonBaseEntity> r;
@@ -242,14 +253,17 @@ public final class DragonLook implements FarLook {
             st.used = this.clock;
             DragonBaseEntity d = st.entity;
             pose(d, m.variant(), age, flying, yawDeg, time);
+            d.setDragonPitch(pitchDeg);
+            d.prevDragonPitch = pitchDeg;
             float frac = (float) (time - Math.floor(time));
+            float yawDrawn = yawDeg;
             out.parts = List.of();
             out.local.identity();
             out.lightYaw = Float.NaN;
             out.live = (ps, buffers) -> {
                 ps.pushPose();
                 ps.translate(0f, -centre, 0f);
-                r.render(d, yawDeg, frac, ps, buffers, SKY_LIGHT);
+                r.render(d, yawDrawn, frac, ps, buffers, SKY_LIGHT);
                 ps.popPose();
             };
             liveDrawn++;
@@ -261,8 +275,10 @@ public final class DragonLook implements FarLook {
         else
             parts = p.rest;
         out.parts = parts;
-        // Ice and Fire turns the model by (180 - yaw) about +y; the baked frames have yaw 0 in them already
-        out.local.identity().translate(0f, -centre, 0f).rotateY(-yawRad).scale(s);
+        // Ice and Fire turns the model by (180 - yaw) about +y; the baked frames have yaw 0 in them already. Its
+        // pitch goes outside that, about the world's x axis (its renderer's preRender, before GeckoLib's rotations)
+        out.local.identity().translate(0f, -centre, 0f).rotateX((float) Math.toRadians(pitchDeg)).rotateY(-yawRad)
+                .scale(s);
         out.lightYaw = -yawRad;
         out.live = null;
         return true;
@@ -567,6 +583,9 @@ public final class DragonLook implements FarLook {
         d.yHeadRotO = yaw;
         d.setXRot(0f);
         d.xRotO = 0f;
+        if (d.getDragonPitch() != 0f)
+            d.setDragonPitch(0f);
+        d.prevDragonPitch = 0f;
     }
 
     @SuppressWarnings("unchecked")
