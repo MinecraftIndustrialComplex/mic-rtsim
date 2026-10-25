@@ -125,6 +125,7 @@ fn lane_flow(e: &Engine, l: usize) -> i64 {
 fn scene(
     name: &str,
     capacity: usize,
+    watched: bool,
 ) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, (i32, i32)) {
     let dir = tmpdir(name);
     let e = engine(&dir, capacity);
@@ -142,11 +143,18 @@ fn scene(
         j.idle();
         rounds += 1;
     };
-    save_durable(&e, &mut j);
     let mid = e.with_ships(|s, _| {
         let p = &s.lanes[lane].path;
         p.at(p.length() / 2)
     });
+    if watched {
+        // A player already standing there at the save: the pages hold its interest and the
+        // sightings it booked.
+        stand(&mut j, mid);
+        j.idle();
+        j.idle();
+    }
+    save_durable(&e, &mut j);
     (dir, e, j, mid)
 }
 
@@ -234,7 +242,7 @@ fn fillers(j: &mut Java, count: usize) {
 /// Controls: the session that goes on, and a clean stop and restart.
 #[test]
 fn damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash() {
-    let (dir, e, mut j, mid) = scene("ships-replay-damaged", 256 * 1024);
+    let (dir, e, mut j, mid) = scene("ships-replay-damaged", 256 * 1024, false);
     stand(&mut j, mid);
     j.run_until("a crewed merchant in view", |j| {
         laden(j, &j.e.clone()).is_some()
@@ -279,7 +287,7 @@ fn damage_to_a_ship_seen_after_a_save_is_counted_after_a_crash() {
 /// The control: the same scene stopped cleanly (the pages hold the ship as it was), restarted.
 #[test]
 fn damage_to_a_ship_seen_after_a_save_is_counted_after_a_clean_stop() {
-    let (dir, e, mut j, mid) = scene("ships-replay-clean", 256 * 1024);
+    let (dir, e, mut j, mid) = scene("ships-replay-clean", 256 * 1024, false);
     stand(&mut j, mid);
     j.run_until("a crewed merchant in view", |j| {
         laden(j, &j.e.clone()).is_some()
@@ -321,7 +329,7 @@ fn damage_to_a_ship_seen_after_a_save_is_counted_after_a_clean_stop() {
 /// numbered again from the save's epoch: Java would take it for the body that ended.
 #[test]
 fn an_epoch_the_last_session_ended_is_not_reused_after_a_crash() {
-    let (dir, e, mut j, mid) = scene("ships-replay-epoch", 256 * 1024);
+    let (dir, e, mut j, mid) = scene("ships-replay-epoch", 256 * 1024, false);
     stand(&mut j, mid);
     j.run_until("a crewed merchant in view", |j| {
         laden(j, &j.e.clone()).is_some()
@@ -367,16 +375,25 @@ fn an_epoch_the_last_session_ended_is_not_reused_after_a_crash() {
 }
 
 /// §9.5 test 3, on the host: nothing embodies while a long replay runs. A player stands by a lane
-/// with ships in view; the journal behind the save is 8,000 records, eight hand-overs on a
-/// minimum-size buffer. No ship command is written before the replay ends; once it has, the
-/// ships in view are materialized. (The control is the second half: the same player and the
-/// same lane see ships.)
+/// at the save; the journal behind it is 8,000 records over ten minutes of game time, eight
+/// hand-overs on a minimum-size buffer, so the replay's clock runs the ships' events for ten
+/// minutes. No ship command is written before the replay ends, the gate saw no "never" kind, and
+/// the engine says it held decisions back (`deferred`); once the replay has ended, the ships in
+/// view are materialized (the control: the same player and lane see ships).
+///
+/// This one passes on the base too, and is a regression guard, not the gate's proof: the ships
+/// have no player until the replay ends (`shared::simulate` routes none while replaying, RP-11),
+/// so no sighting reaches them through the host. The early returns (RP-94) are proved where a
+/// player can be registered during the replay, in rtsim-ships' `tests/replay.rs`
+/// (`no_ship_embodies_while_the_replay_runs`).
 #[test]
 fn no_ship_is_materialized_while_a_long_replay_runs() {
-    let (dir, e, mut j, mid) = scene("ships-replay-quiet", wire::MIN_CAPACITY);
+    let (dir, e, mut j, mid) = scene("ships-replay-quiet", wire::MIN_CAPACITY, true);
     let first = j.world_save().next_obs;
-    fillers(&mut j, 8_000);
-    j.idle();
+    for _ in 0..8 {
+        j.game_time += 1_500;
+        fillers(&mut j, 1_000);
+    }
     let gt = j.game_time;
     let saved = j.crash();
     let bytes: usize = saved
@@ -399,25 +416,31 @@ fn no_ship_is_materialized_while_a_long_replay_runs() {
         0,
         "the replay runs past its first hand-over"
     );
-    for _ in 0..3 {
-        j.idle();
-        if replay_counts(&e).0 > 0 {
-            break;
-        }
+    // Every hand-over of the replay: no ship command so far.
+    let mut handed_over = 0;
+    while replay_counts(&e).0 == 0 {
         assert!(
-            materializations(&j).is_empty() && j.ships.is_empty(),
-            "no ship command while the replay runs: {:?}",
-            j.ships.len()
+            j.ships.is_empty(),
+            "a ship command while the replay runs, after {handed_over} idles: {:?}",
+            j.ships.iter().map(|(_, c)| c.kind()).collect::<Vec<_>>()
         );
+        assert!(handed_over < 64, "the replay never ended");
+        j.idle();
+        handed_over += 1;
     }
+    assert!(handed_over >= 3, "a replay of several hand-overs");
+    assert_eq!(replay_counts(&e).0, 1, "the replay ended");
     let gate = e.ship_gate_counts();
+    eprintln!("quiet replay: {gate:?}, {} commands after", j.ships.len());
     assert_eq!(gate.never, 0, "no decision that embodies got by: {gate:?}");
+    assert!(
+        gate.deferred > 0,
+        "the replay held decisions back: {gate:?}"
+    );
     // The control: once the replay has ended the player sees the lane's ships.
-    hand_over_all(&mut j);
     j.run_until("a ship in view after the replay", |j| {
         !materializations(j).is_empty()
     });
-    assert_eq!(replay_counts(&e).0, 1, "the replay ended");
     assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
     e.close(true, Duration::from_secs(5)).unwrap();
 }
@@ -533,7 +556,7 @@ fn a_replayed_materialization(copy: bool) -> (u64, u32, (bool, u32), (bool, u32)
     } else {
         "ships-replay-honour"
     };
-    let (dir, e, mut j, _) = scene(name, wire::MIN_CAPACITY);
+    let (dir, e, mut j, _) = scene(name, wire::MIN_CAPACITY, false);
     let (agent, before) = e.with_ships(|s, _| {
         let (id, x) = s
             .ships
