@@ -925,7 +925,8 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   lagging engine stretches it; 600 covers 30 s of stall. The live engine measures it
   (`ConflictStats::fight_record_gap_max`, and rtsim-jni logs each new largest, warning at or past
   the slack: RP-51), so the value can be set from data: to the fight's first record, its first
-  wave's BAND_SPAWN_REJECTED when Java refused it, which the hold reads as the fight (RP-62). A hold that no record answered by then is
+  wave's BAND_SPAWN_REJECTED when Java refused it, which the hold reads as the fight (RP-62). A
+  hold that no record answered by then is
   read as not fought: the poll at the slack ends the hold and runs `arrive()` or `wait_over()`,
   which, still replaying and past the slack, take the unwatched branch at once (recall, `resolve`,
   then wait or go home), as the session that went on did. The decision runs with the members the
@@ -938,8 +939,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   hold and embodies the band as `seen()` did live. A later fight record (BAND_FIGHT, a newer
   epoch) finds no hold either, at the slack exactly as past it: it only raises the epoch floor
   (§5.3), so its casualties and loot count against nothing, as the abstract raid's were booked at
-  the poll. It is counted once per epoch in `ConflictStats::fights_unheld`, and rtsim-jni warns of
-  each (RP-56).
+  the poll. So does a later BAND_SPAWN_REJECTED of a newer epoch's wave 0 (RP-63), the fight's
+  only record when Java refused every wave; the record carries no flags, so a refused sighting's
+  is read the same (its epoch has no bodies: only the stat moves). It is counted once per epoch in
+  `ConflictStats::fights_unheld`, and rtsim-jni warns of each (RP-56).
 - **Moved inside the slack** (RP-59). A replayed record that would move a held party ends its hold
   first, before it is applied: a BAND_CASUALTIES or CHIEF_KILLED for it at its epoch or an older
   one (a wipe-out or a rout sends it home), a copy of a BAND_CASUALTIES at any epoch (it counts at

@@ -411,7 +411,8 @@ pub struct ConflictStats {
     /// Replayed fight records ([`boundary::BAND_FIGHT`]) of a newer epoch that found no hold:
     /// a fight recorded at or past its hold's slack, which the replay resolved unwatched there
     /// (docs/replay-gate.md §6.1, RP-56). Honoured as the epoch floor only, so it counts once.
-    /// rtsim-jni logs each.
+    /// A BAND_SPAWN_REJECTED of a newer epoch's wave 0 counts too (RP-63), a refused
+    /// sighting's among them (the record has no flags). rtsim-jni logs each.
     pub fights_unheld: u64,
 }
 
@@ -5432,19 +5433,27 @@ impl Conflict {
                     && self.replay_from_pages
                     && let Some(p) = Party::of_agent(r.agent).filter(|p| self.parties.contains(*p))
                     && r.epoch > self.parties[p].epoch
-                    && let Some(arrival) = self.held_since(p, at)
                 {
-                    // A held arrival's (or round's) fight whose first wave Java refused: live
-                    // `start_fight` took the epoch and the refusal left it fighting unembodied,
-                    // so it ends the hold as an honoured BAND_MATERIALIZED does (fixes4 item 5,
-                    // RP-54). `wave` as `spawn_wave` left it.
-                    self.held.remove(&p);
-                    let x = &mut self.parties[p];
-                    x.epoch = r.epoch;
-                    x.embodied = false;
-                    x.spawned.clear();
-                    x.wave = 1;
-                    self.fight_held(w, p, arrival, at);
+                    if let Some(arrival) = self.held_since(p, at) {
+                        // A held arrival's (or round's) fight whose first wave Java refused: live
+                        // `start_fight` took the epoch and the refusal left it fighting
+                        // unembodied, so it ends the hold as an honoured BAND_MATERIALIZED does
+                        // (fixes4 item 5, RP-54). `wave` as `spawn_wave` left it.
+                        self.held.remove(&p);
+                        let x = &mut self.parties[p];
+                        x.epoch = r.epoch;
+                        x.embodied = false;
+                        x.spawned.clear();
+                        x.wave = 1;
+                        self.fight_held(w, p, arrival, at);
+                    } else if self.unheld_fights.insert(p, r.epoch) != Some(r.epoch) {
+                        // No hold: as `honour`'s fight record that found none (RP-56), the
+                        // epoch floor only, and the epoch's later records count against nothing,
+                        // counted once with the fight's later waves (fixes6 item 4, RP-63). The
+                        // record carries no flags, so a refused sighting's counts too: its epoch
+                        // has no bodies, so only the stat.
+                        self.stats.fights_unheld += 1;
+                    }
                 }
             }
             Obs::Dematerialized(d) => {
