@@ -363,7 +363,6 @@ public final class DragonGameTests {
                 if (b != null && !b.isRemoved())
                     b.discard();
             }
-            unforce.run();
         });
         DragonKit.materialize(DragonKit.young(agent, helper, c.add(0, 12, 0), 0));
         DragonKit.materialize(DragonKit.young(other, helper, c.add(12, 12, 0), 0));
@@ -427,6 +426,7 @@ public final class DragonGameTests {
                             + "reason COMMAND), the new one adopted at epoch 2, one body alive; ADOPT at the same epoch, at an older one, and at a puppet "
                             + "of another agent: ALREADY_EMBODIED, the held puppet kept");
                 })
+                .thenExecute(unforce)
                 .thenSucceed();
     }
 
@@ -453,7 +453,6 @@ public final class DragonGameTests {
             Entity b = bridge().body(agent);
             if (b != null && !b.isRemoved())
                 b.discard();
-            unforce.run();
         });
         DragonKit.materialize(DragonKit.young(agent, helper, c.add(0, 12, 0), 0));
         helper.startSequence()
@@ -490,6 +489,7 @@ public final class DragonGameTests {
                     record(test, "supersede-failed", "a puppet at epoch 1 and an ADOPT at epoch 2 of a dragon that is gone: the puppet released (DEMATERIALIZED "
                             + "epoch 1, reason COMMAND, superseded +1), SPAWN_REJECTED SPAWN_FAILED at epoch 2, the agent holds no body");
                 })
+                .thenExecute(unforce)
                 .thenSucceed();
     }
 
