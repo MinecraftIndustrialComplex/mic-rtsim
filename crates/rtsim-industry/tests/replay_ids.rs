@@ -1,0 +1,622 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Slice R, step 1 (RP-260 to RP-269): are the industry engine's derived op ids the same live and
+//! replayed? Every `IndustryOps::derive` call in the reconcile paths passes `self.now`, which
+//! depends on the history of calls, and that history differs between a live run and a replay after
+//! a crash (docs/replay-gate.md, overnight choice W3).
+//!
+//! The harness follows rtsim-jni's engine/industry.rs:
+//! - **Live**: one hand-over is its journaled records, each preceded by the deferred latest-wins
+//!   records stamped before it (`Link::flush(Some(at))`); then the rest of the deferred ones and the
+//!   threats (`simulate`), then `advance_to(G)`, G being the hand-over's game time.
+//! - **Replay** after a crash: the engine restored from the pages of a step boundary, the journaled
+//!   records of the later hand-overs only, in order, with no `advance_to` between them. The
+//!   engine's own session start (`begin_session`) runs after them.
+//!
+//! The commands both runs decide after the pages are compared by content (`Cmd::without_op`), then
+//! by op id. A test that fails (`#[ignore]`d, so the workspace stays green) proves a divergence:
+//! run it with `--ignored`.
+
+use std::collections::VecDeque;
+
+use rtsim_industry::cmd::{ChunkReconcile, Cmd};
+use rtsim_industry::engine::Engine;
+use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
+use rtsim_industry::learn::Learned;
+use rtsim_industry::obs::{
+    DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd, Timed,
+};
+use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
+use rtsim_industry::tunables::Tunables;
+use rtsim_kernel::clock::Tick;
+
+const IRON: Good = Good(1);
+const MILL: DistrictId = DistrictId(1);
+/// A second district, whose declaration is a harmless journaled record.
+const OTHER: DistrictId = DistrictId(2);
+const VAULT: u32 = 0;
+const SEED: u64 = 7;
+
+fn vault_pos() -> BlockPos {
+    BlockPos::new(8, 64, 8)
+}
+
+fn frog_pos() -> BlockPos {
+    BlockPos::new(40, 64, 8)
+}
+
+fn chunks() -> [ChunkPos; 2] {
+    [vault_pos(), frog_pos()].map(|p| ChunkPos {
+        dim: 0,
+        x: p.x >> 4,
+        z: p.z >> 4,
+    })
+}
+
+fn t(at: u64, obs: Obs) -> Timed {
+    Timed { at: Tick(at), obs }
+}
+
+fn load_state(at: u64, state: LoadState, ticking: u32) -> Timed {
+    t(
+        at,
+        Obs::LoadState {
+            district: MILL,
+            state,
+            ticking_chunks: ticking,
+            total_chunks: 2,
+        },
+    )
+}
+
+fn chunk_loaded(at: u64, which: usize) -> Timed {
+    t(
+        at,
+        Obs::ChunkLoaded {
+            district: MILL,
+            chunk: chunks()[which],
+            applied_epoch: 0,
+        },
+    )
+}
+
+/// One hand-over of the industry link: what its records are, and the game time it reaches.
+#[derive(Clone, Default)]
+struct Step {
+    /// The journaled records, in journal order.
+    journaled: Vec<Timed>,
+    /// The latest-wins records (stock samples and the like), by tick.
+    deferred: Vec<Timed>,
+    /// The threats `simulate` applies before `advance_to`.
+    threats: Vec<Threat>,
+    /// The hand-over's game time.
+    g: u64,
+}
+
+impl Step {
+    fn new(g: u64) -> Self {
+        Step {
+            g,
+            ..Step::default()
+        }
+    }
+}
+
+/// A live hand-over, as rtsim-jni runs it. The commands it decided are appended to `out`.
+fn live_step(e: &mut Engine, s: &Step, out: &mut Vec<Cmd>) {
+    let mut deferred: VecDeque<Timed> = s.deferred.iter().cloned().collect();
+    for rec in &s.journaled {
+        // `Link::flush(Some(at))`: the deferred records stamped before this one come first.
+        while deferred.front().is_some_and(|d| d.at < rec.at) {
+            e.ingest(&deferred.pop_front().expect("front"));
+        }
+        e.ingest(rec);
+    }
+    for d in deferred {
+        e.ingest(&d);
+    }
+    for th in &s.threats {
+        e.threat(th);
+    }
+    e.advance_to(Tick(s.g));
+    out.extend(e.drain_commands());
+}
+
+/// A replayed hand-over: the journaled records only, no `advance_to`.
+fn replay_step(e: &mut Engine, s: &Step, out: &mut Vec<Cmd>) {
+    for rec in &s.journaled {
+        e.ingest(rec);
+    }
+    out.extend(e.drain_commands());
+}
+
+/// The mill in a fresh engine: a district of one vault and one frogport, live, with `stock` iron and
+/// a learned model that makes `rate` iron a tick while it is away.
+fn mill(stock: i64, rate: f64) -> Engine {
+    let mut e = Engine::new(SEED, Tunables::default(), Tick(0));
+    e.define_good(IRON, GoodInfo::item("iron", 64));
+    let send = |e: &mut Engine, rec: Timed| e.ingest(&rec);
+    send(
+        &mut e,
+        t(
+            0,
+            Obs::District(DistrictDecl {
+                district: MILL,
+                revision: 1,
+                dim: 0,
+                name: 0,
+                not_learnable: None,
+                inventory_count: 2,
+            }),
+        ),
+    );
+    for (index, pos, kind, slots) in [
+        (VAULT, vault_pos(), InvKind::ITEMS, 100u32),
+        (1, frog_pos(), InvKind::ITEMS, 18),
+    ] {
+        send(
+            &mut e,
+            t(
+                0,
+                Obs::Inventory(InventoryDecl {
+                    district: MILL,
+                    revision: 1,
+                    index,
+                    pos,
+                    kind: InvKind(kind),
+                    item_slots: slots,
+                    fluid_capacity: 0,
+                    energy_capacity: 0,
+                }),
+            ),
+        );
+    }
+    send(&mut e, chunk_loaded(0, 0));
+    send(&mut e, chunk_loaded(0, 1));
+    send(&mut e, load_state(0, LoadState::Live, 2));
+    for (inventory, n) in [(VAULT, stock), (1, 0)] {
+        send(
+            &mut e,
+            t(
+                10,
+                Obs::StockSample {
+                    district: MILL,
+                    inventory,
+                    sweep: 1,
+                    goods: GoodVec::from_pairs([(IRON, n)]),
+                },
+            ),
+        );
+    }
+    send(
+        &mut e,
+        t(
+            10,
+            Obs::SweepEnd(SweepEnd {
+                district: MILL,
+                sweep: 1,
+                records: 2,
+                inventories: 2,
+                live: true,
+                creative: false,
+                overstressed: false,
+            }),
+        ),
+    );
+    e.adopt_model(
+        MILL,
+        Learned {
+            at: Tick(20),
+            window_ticks: 12_000,
+            rates: vec![(IRON, rate)],
+            links: vec![],
+            confidence: 1.0,
+            points: 0,
+            longest_gap: 0,
+            latency_ticks: 0,
+        },
+        vec![],
+    );
+    e.advance_to(Tick(50));
+    let _ = e.drain_commands();
+    e
+}
+
+/// A harmless journaled record: another district's declaration.
+fn harmless(at: u64) -> Timed {
+    t(
+        at,
+        Obs::District(DistrictDecl {
+            district: OTHER,
+            revision: 1,
+            dim: 0,
+            name: 0,
+            not_learnable: None,
+            inventory_count: 0,
+        }),
+    )
+}
+
+/// What a run decided after the save.
+struct Outcome {
+    /// Live: the commands decided in the steps after the save.
+    live: Vec<Cmd>,
+    /// Replayed: the commands decided by the records of those steps and by the session start.
+    replayed: Vec<Cmd>,
+    /// `now` of each engine when the steps are done (the session start is not counted).
+    now_live: Tick,
+    now_replayed: Tick,
+}
+
+/// Runs `steps` live on a fresh mill; saves the pages after step `saved_after` (an index; the
+/// steps up to it are the live prefix); restores a second engine from them and replays the later
+/// steps' journaled records, then runs its session start at `reopen`.
+fn run(
+    mut live: Engine,
+    steps: &[Step],
+    saved_after: usize,
+    reopen: u64,
+    replayed_threats: bool,
+) -> Outcome {
+    let mut sink = Vec::new();
+    let mut pages = None;
+    let mut decided = Vec::new();
+    for (i, s) in steps.iter().enumerate() {
+        let out = if i <= saved_after {
+            &mut sink
+        } else {
+            &mut decided
+        };
+        live_step(&mut live, s, out);
+        if i == saved_after {
+            pages = Some(live.snapshot());
+        }
+    }
+    let mut replay =
+        Engine::restore(pages.expect("saved"), Tunables::default()).expect("the pages restore");
+    let mut replayed = Vec::new();
+    for s in &steps[saved_after + 1..] {
+        replay_step(&mut replay, s, &mut replayed);
+        if replayed_threats {
+            // A raid re-decided by its source at the same tick, after the hand-over's records.
+            for th in &s.threats {
+                replay.threat(th);
+            }
+            replayed.extend(replay.drain_commands());
+        }
+    }
+    let now_replayed = replay.now();
+    replay.session_start(Tick(reopen));
+    replayed.extend(replay.drain_commands());
+    Outcome {
+        live: decided,
+        replayed,
+        now_live: live.now(),
+        now_replayed,
+    }
+}
+
+fn reconciles(cmds: &[Cmd]) -> Vec<&ChunkReconcile> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Cmd::ChunkReconcile(r) => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
+/// For each reconcile `live` decided: the replayed one of the same content, if any, and whether
+/// its op id is the same. Returns the mismatches as text; empty when every live command was
+/// re-decided with the same content and the same id.
+fn mismatches(o: &Outcome) -> Vec<String> {
+    let mut bad = Vec::new();
+    let replayed = reconciles(&o.replayed);
+    for l in reconciles(&o.live) {
+        let want = Cmd::ChunkReconcile(l.clone()).without_op();
+        let same = replayed
+            .iter()
+            .find(|r| Cmd::ChunkReconcile((**r).clone()).without_op() == want);
+        match same {
+            None => bad.push(format!(
+                "live {:#x} (epoch {}, chunk {:?}, {} deltas {:?}) has no replayed command of the same content; replayed: {:?}",
+                l.op.0,
+                l.epoch,
+                l.chunk,
+                l.deltas.len(),
+                l.deltas.iter().map(|d| d.delta).collect::<Vec<_>>(),
+                replayed
+                    .iter()
+                    .map(|r| (r.op.0, r.epoch, r.chunk, r.deltas.iter().map(|d| d.delta).collect::<Vec<_>>()))
+                    .collect::<Vec<_>>()
+            )),
+            Some(r) if r.op != l.op => bad.push(format!(
+                "same content (epoch {}, chunk {:?}, deltas {:?}), live op {:#x}, replayed op {:#x}",
+                l.epoch,
+                l.chunk,
+                l.deltas.iter().map(|d| d.delta).collect::<Vec<_>>(),
+                l.op.0,
+                r.op.0
+            )),
+            Some(_) => {}
+        }
+    }
+    bad
+}
+
+fn assert_same(o: &Outcome, ran: usize, what: &str) {
+    let live = reconciles(&o.live);
+    assert!(
+        live.len() >= ran,
+        "{what}: the case's round did not run live ({} reconciles: {:?}); now live {:?}, replayed {:?}",
+        live.len(),
+        o.live,
+        o.now_live,
+        o.now_replayed
+    );
+    assert!(
+        live.iter().any(|r| !r.deltas.is_empty()),
+        "{what}: the live reconcile moved nothing"
+    );
+    let bad = mismatches(o);
+    assert!(
+        bad.is_empty(),
+        "{what}: live and replayed differ (now at the end: live {}, replayed {}): {bad:#?}",
+        o.now_live.0,
+        o.now_replayed.0
+    );
+}
+
+/// The mill unloads at 100 and replays for 4,900 ticks (hand-over 1, G = 5,000): the pages are
+/// saved there. Hand-over 2 holds `step2`, hand-over 3 the case.
+fn base_steps() -> Vec<Step> {
+    let mut away = Step::new(5_000);
+    away.journaled.push(load_state(100, LoadState::Unloaded, 0));
+    vec![away]
+}
+
+// ---- (e) a round triggered from a record ---------------------------------------------------
+
+/// The control: the chunks load at a tick after the previous hand-over's time, as Java stamps
+/// them. `at = max(t.at, now)` is `t.at` on both paths, whatever the history, so the replayed
+/// reconcile is the live one, op id and all. Holds because `ingest_obs` raises `now` to the
+/// record's own tick (`fire_until(at)`) before its handler runs, and every record of a hand-over
+/// is stamped at or after the hand-over before's G.
+#[test]
+fn a_round_from_a_record_stamped_after_the_last_hand_over_is_rederived_with_the_same_id() {
+    let mut steps = base_steps();
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    steps.push(quiet);
+    let mut load = Step::new(9_500);
+    load.journaled = vec![
+        chunk_loaded(9_200, 0),
+        chunk_loaded(9_200, 1),
+        load_state(9_200, LoadState::Live, 2),
+    ];
+    steps.push(load);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    assert_same(&o, 1, "chunks loaded at 9,200 after G = 9,000");
+}
+
+/// A record the Java side stamped before the previous hand-over's time reaches the next hand-over
+/// (the journal's `drainInto` copies what fits the buffer and leaves the rest for the next one; a
+/// REASSERT keeps its original's GAME_TIME). Live, `now` is that hand-over's G, so
+/// `at = max(8,000, 9,000) = 9,000`; replayed, no `advance_to(9,000)` ran, `now` is the last
+/// record's 5,100, and `at = 8,000`. The round is decided at another tick: another content (the
+/// iron the replay made until then) and another id. Fails on bc669502.
+#[test]
+#[ignore = "slice R: a record stamped before the previous G is taken at G live, at its own tick replayed (RP-262)"]
+fn a_round_from_a_record_stamped_before_the_last_hand_over_is_rederived_with_the_same_id() {
+    let mut steps = base_steps();
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    steps.push(quiet);
+    let mut load = Step::new(9_500);
+    // Left over from the hand-over before: stamped 8,000, G was 9,000.
+    load.journaled = vec![
+        chunk_loaded(8_000, 0),
+        chunk_loaded(8_000, 1),
+        load_state(8_000, LoadState::Live, 2),
+    ];
+    steps.push(load);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    assert_same(&o, 1, "chunks loaded at 8,000 after G = 9,000");
+}
+
+/// The same stale record, with a content that does not depend on the tick: the mill's model
+/// makes nothing, and a raid before the pages (while it is away, no replay running) left its
+/// theft owed, so the reconcile's deltas are the owed ones whatever `at` is. Live and replayed
+/// decide the *same command* (the precondition below holds), and the only thing left to differ is
+/// the op id, which `derive` takes from `self.now`: live 9,000 (the hand-over before's G), replayed
+/// 5,100. Fails on bc669502.
+#[test]
+#[ignore = "slice R: the same command gets another op id when `now` differs (RP-262)"]
+fn a_stale_record_gives_the_same_command_another_op_id_in_the_replay() {
+    let mut steps = Vec::new();
+    let mut away = Step::new(5_000);
+    away.journaled.push(load_state(100, LoadState::Unloaded, 0));
+    away.threats.push(Threat {
+        id: 9,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        loads: None,
+        at: Tick(4_000),
+    });
+    steps.push(away);
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    steps.push(quiet);
+    let mut load = Step::new(9_500);
+    load.journaled = vec![
+        chunk_loaded(8_000, 0),
+        chunk_loaded(8_000, 1),
+        load_state(8_000, LoadState::Live, 2),
+    ];
+    steps.push(load);
+    let o = run(mill(1_000, 0.0), &steps, 0, 20_000, false);
+    let (live, replayed) = (reconciles(&o.live), reconciles(&o.replayed));
+    assert!(
+        !live.is_empty() && live.len() == replayed.len(),
+        "the round ran on both paths: live {:?}, replayed {:?}",
+        o.live,
+        o.replayed
+    );
+    assert!(
+        live.iter().any(|r| r.deltas.iter().any(|d| d.delta < 0)),
+        "the raid's theft is in the reconcile: {live:?}"
+    );
+    for (l, r) in live.iter().zip(&replayed) {
+        assert_eq!(
+            Cmd::ChunkReconcile((*l).clone()).without_op(),
+            Cmd::ChunkReconcile((*r).clone()).without_op(),
+            "the precondition: the same command on both paths"
+        );
+    }
+    assert_same(&o, 1, "owed theft loaded at 8,000 after G = 9,000");
+}
+
+/// The same stale record with no hand-over between it and the pages: the restored engine's `now`
+/// is the saved G, as the live one's: they agree. The divergence needs two hand-overs past the
+/// pages (the first one's `advance_to` is what the replay lacks).
+#[test]
+fn a_stale_record_in_the_first_hand_over_after_the_pages_is_rederived_with_the_same_id() {
+    let mut steps = base_steps();
+    let mut load = Step::new(9_500);
+    load.journaled = vec![
+        chunk_loaded(4_000, 0),
+        chunk_loaded(4_000, 1),
+        load_state(4_000, LoadState::Live, 2),
+    ];
+    steps.push(load);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    assert_same(&o, 1, "stale chunks right after the pages (now = G of the save)");
+}
+
+// ---- (c) latest-wins records moving `now` --------------------------------------------------
+
+/// A deferred stock sample between two journaled records raises `now` to its tick live; the replay
+/// never sees it. The partial round at the chunk's load (a `mark`, flushed by the next record of a
+/// later tick) is decided at the same tick on both: `ingest_obs` flushes at the old `now` before
+/// `fire_until` moves it, and a deferred record is released only before a journaled one stamped
+/// after it, whose own `at` then sets `now`. Holds.
+#[test]
+fn a_deferred_stock_sample_between_two_records_does_not_move_the_ids() {
+    let mut steps = base_steps();
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    steps.push(quiet);
+    let mut load = Step::new(9_500);
+    // The vault's chunk loads at 9,100 (the district is partial: a round flushed by the next
+    // record), a sample is read at 9,200, and the frogport's chunk and the district's live state
+    // come at 9,300.
+    load.journaled = vec![
+        load_state(9_100, LoadState::Partial, 1),
+        chunk_loaded(9_100, 0),
+        chunk_loaded(9_300, 1),
+        load_state(9_300, LoadState::Live, 2),
+    ];
+    load.deferred = vec![
+        t(
+            9_200,
+            Obs::StockSample {
+                district: MILL,
+                inventory: VAULT,
+                sweep: 2,
+                goods: GoodVec::from_pairs([(IRON, 1_400)]),
+            },
+        ),
+        t(
+            9_250,
+            Obs::StockSample {
+                district: MILL,
+                inventory: 1,
+                sweep: 2,
+                goods: GoodVec::from_pairs([(IRON, 0)]),
+            },
+        ),
+    ];
+    steps.push(load);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    // The partial round at 9,100 and the full one at 9,300.
+    assert_same(&o, 1, "a sample at 9,200 between two records");
+}
+
+/// A deferred sample *after* the last journaled record of the hand-over, in the same hand-over as
+/// a dirty mark: live, it flushes the mark at the old `now` before it raises it. Holds, with the
+/// partial round decided at the record's tick on both.
+#[test]
+fn a_deferred_sample_after_the_last_record_flushes_the_marks_at_the_records_tick() {
+    let mut steps = base_steps();
+    let mut load = Step::new(9_500);
+    load.journaled = vec![load_state(8_000, LoadState::Partial, 1), chunk_loaded(8_000, 0)];
+    load.deferred = vec![t(
+        9_300,
+        Obs::StockSample {
+            district: MILL,
+            inventory: VAULT,
+            sweep: 2,
+            goods: GoodVec::from_pairs([(IRON, 1_400)]),
+        },
+    )];
+    steps.push(load);
+    // The next hand-over's first record, the frogport's chunk, closes the district.
+    let mut close = Step::new(9_900);
+    close.journaled = vec![chunk_loaded(9_600, 1), load_state(9_600, LoadState::Live, 2)];
+    steps.push(close);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    assert_same(&o, 1, "a sample at 9,300 after the partial load at 8,000");
+}
+
+// ---- (b) the flush tick at a hand-over's end -------------------------------------------------
+
+/// The last records of hand-over 2 mark the district dirty; live, `advance_to(G)` flushes at the
+/// last record's tick (its `now`), and the replay flushes at the next hand-over's first record
+/// (`at > now`, before `fire_until`), at the same `now`: the partial round is the same command.
+/// Holds.
+#[test]
+fn the_flush_at_a_hand_overs_end_and_at_the_next_hand_overs_first_record_agree() {
+    let mut steps = base_steps();
+    let mut part = Step::new(9_000);
+    part.journaled = vec![load_state(8_000, LoadState::Partial, 1), chunk_loaded(8_000, 0)];
+    steps.push(part);
+    let mut rest = Step::new(9_500);
+    rest.journaled = vec![chunk_loaded(9_100, 1), load_state(9_100, LoadState::Live, 2)];
+    steps.push(rest);
+    let o = run(mill(1_000, 0.05), &steps, 0, 20_000, false);
+    assert_same(&o, 1, "a partial round flushed across the hand-over's end");
+}
+
+// ---- (d) threats -----------------------------------------------------------------------------
+
+/// A bandit raid on the live mill, delivered by `simulate` after the hand-over's records and before
+/// `advance_to`; the same raid (same `at`) re-decided after the replayed hand-over. `threat_with`
+/// takes `at = t.at.max(now)` and runs `advance_to(at)`, so the round (`attack_district`'s
+/// `reconcile_round(Full)`) is decided at `t.at` on both paths when `t.at` is at or past the
+/// engine's `now`, which a raid's source decides at the hand-over's time. Holds.
+#[test]
+fn a_raid_delivered_at_the_hand_overs_time_is_rederived_with_the_same_id() {
+    let mut steps = Vec::new();
+    let mut first = Step::new(1_000);
+    first.journaled.push(harmless(200));
+    steps.push(first);
+    let mut quiet = Step::new(2_000);
+    quiet.journaled.push(harmless(1_100));
+    steps.push(quiet);
+    let mut raid = Step::new(3_000);
+    raid.journaled.push(harmless(2_100));
+    raid.threats.push(Threat {
+        id: 9,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        loads: None,
+        at: Tick(3_000),
+    });
+    steps.push(raid);
+    let o = run(mill(1_000, 0.0), &steps, 0, 20_000, true);
+    assert_same(&o, 1, "a raid at G = 3,000");
+}
