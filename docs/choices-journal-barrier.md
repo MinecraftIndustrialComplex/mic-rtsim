@@ -174,6 +174,12 @@ the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes 
     would be applied again. A PENDING entry whose op is never resent stays until the cap pushes it out; it
     can only refuse that op. UR-1: CDG loads `cdg_oil_chunks` with the extra key and drops it at its next
     save.
+    Hole (a), found by slice T's implementer: the trim by the journal's file mark drops an entry the engine
+    may still re-decide under the same op id after a replay consumed its answer. A normal restart re-decides
+    it in the same step, while the journal's applied index and the ring still hold it; a restart with the
+    industry module off, switched on after a world save, applies it again (replay-gate 9.6 residual 7). The
+    follow-on is T2's rule (prune by the engine's durable page ack, settle at the session start by the
+    journal's newest gen), taken for both ring classes at the merge with T2.
 - **RP-205, a hold has no limit; only notes no save can clear are given up (supersedes JB4's second
   limit and JB6 in part; the coordinator's decision).**
   - *Chosen.*

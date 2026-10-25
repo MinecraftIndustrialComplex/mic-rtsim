@@ -1821,6 +1821,18 @@ its files on disk, the rest from the save before. Two directions:
    256-op ring before the journal's file holds it, which a hold lasting hours makes possible (§6.1,
    "Slice U and the ring's bound"), and the journal's index as the train's fallback when the ring's
    mixin did not apply.
+7. **A re-decided op after its answer was consumed** (hole (a), found by slice T's implementer for train
+   ops; RP-204). Industry ids are derived from the command (W3), so a rolled-back engine re-deciding a
+   deposit delta or a package write gives the op id it gave before. `industry::journaled` consumes a
+   COMMAND_RESULT without firing the wakes and breakpoints due before it, so the answer can be consumed
+   (nothing in the outbox) and the op re-decided after it, in that step's `simulate`. Java refuses it then:
+   the restored journal's applied index holds it until the engine's pages pass its answer, and the store's
+   ring holds it until the store's first save. The hole is a re-decision after both: the industry module
+   off at the restart and switched on after a world save (the link ignores the journaled records, the
+   engine acknowledges them, the ring trims by the journal's file mark): a dupe. The port's rings have no
+   trim (only residual 6). Follow-on, at the merge with T2's settled ring: one ring class pruned by the
+   engine's durable page ack against each entry's latest answer, settled at the session start by the
+   journal's newest gen (T2's rule).
 
 **JB9** in docs/choices-journal-barrier.md (what the barrier does not cover) points here.
 
