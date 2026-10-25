@@ -117,6 +117,10 @@ pub mod node_flags {
     /// depot or belt): goods no recipe of it matches pass through unchanged, sharing its capacity
     /// only as the line's own.
     pub const PASS_THROUGH: u32 = 64;
+    /// A package store's frogport (SECTIONS.md §2.5, slice S4): a store whose chain side is a
+    /// port. While its district is away no package crosses it, so the replay puts nothing into it
+    /// (it has no room) and its reconcile writes nothing into the frogport.
+    pub const CHAIN_PORT: u32 = 128;
 }
 
 /// Edge flags (IND_GRAPH_EDGE at 44).
@@ -352,15 +356,104 @@ pub struct GraphRecipe {
     pub name: u32,
 }
 
-/// One kinetic speed level of a domain (Level24): the root source's speed and the domain's
-/// capacity in SU at that level. `selector` is the value of the domain's driver that selects the
-/// level (a boiler's level, 0 to 18), or 0 when the domain has no driver.
+/// One row (Level24). A domain's speed row is a speed of its reference (the frame of its
+/// members' ratios) that its sources can give, with `selector` and `capacity` 0. A source's row
+/// is one of its states: `selector` the boiler level that selects it (0 to 18) for a driven
+/// source, or [`DomainLevel::PASSIVE`] for its passive row, 0 for a fixed one; `speed` its own
+/// generated speed, signed; `capacity` its capacity in SU at that speed.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct DomainLevel {
     pub selector: u32,
     pub speed_num: i32,
     pub speed_den: u32,
     pub capacity: f64,
+}
+
+impl DomainLevel {
+    /// The selector of a driven source's passive row: its boiler has passive heat and no active
+    /// heat, and water and size enough for a level (Create's `BoilerData.isPassive`: the engines
+    /// run at an eighth of their efficiency; choice SC154).
+    pub const PASSIVE: u32 = 19;
+
+    pub fn speed(&self) -> f64 {
+        f64::from(self.speed_num) / f64::from(self.speed_den.max(1))
+    }
+}
+
+/// One source of a domain (Source32): a Create source block entity (an engine's powered shaft,
+/// a water wheel, a motor). A driven source has a row per level of the boiler that drives it; a
+/// fixed one has one row.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DomainSource {
+    /// The boiler node that selects its row, if any.
+    pub driver: Option<u32>,
+    pub levels: Vec<DomainLevel>,
+    /// Its row at compile (state, not build), if known.
+    pub current: Option<u32>,
+    /// Its speed over the reference's; `ratio_den` 0 when unknown.
+    pub ratio_num: i32,
+    pub ratio_den: u32,
+    /// `BlockPos.asLong` of the source block entity.
+    pub pos: i64,
+}
+
+impl DomainSource {
+    /// Its speed over the reference's, if known.
+    pub fn ratio(&self) -> Option<f64> {
+        (self.ratio_den != 0).then(|| f64::from(self.ratio_num) / f64::from(self.ratio_den))
+    }
+}
+
+impl DomainLevel {
+    /// A domain's speed row at `speed` RPM.
+    pub fn speed_row(speed: i32) -> DomainLevel {
+        DomainLevel {
+            selector: 0,
+            speed_num: speed,
+            speed_den: 1,
+            capacity: 0.0,
+        }
+    }
+}
+
+impl DomainSource {
+    /// A fixed source at `pos` turning at `speed` RPM (ratio 1) with `capacity` SU.
+    pub fn fixed(pos: i64, speed: i32, capacity: f64) -> DomainSource {
+        DomainSource {
+            driver: None,
+            levels: vec![DomainLevel {
+                selector: 0,
+                speed_num: speed,
+                speed_den: 1,
+                capacity,
+            }],
+            current: Some(0),
+            ratio_num: 1,
+            ratio_den: 1,
+            pos,
+        }
+    }
+
+    /// A source `driver` drives at `pos` (ratio 1): rows (selector, speed, capacity), at row
+    /// `current`.
+    pub fn driven(driver: u32, pos: i64, rows: &[(u32, i32, f64)], current: u32) -> DomainSource {
+        DomainSource {
+            driver: Some(driver),
+            levels: rows
+                .iter()
+                .map(|&(selector, speed_num, capacity)| DomainLevel {
+                    selector,
+                    speed_num,
+                    speed_den: 1,
+                    capacity,
+                })
+                .collect(),
+            current: Some(current),
+            ratio_num: 1,
+            ratio_den: 1,
+            pos,
+        }
+    }
 }
 
 /// One member of a domain (Member24): `count` blocks of the same impact and ratio, optionally a
@@ -379,19 +472,46 @@ pub struct Member {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GraphDomain {
     pub head: GraphHead,
-    /// Create's network id (`KineticBlockEntity.network`).
+    /// Create's network id (`KineticBlockEntity.network`): a hint only, it changes when another
+    /// source takes the network over.
     pub network: u64,
-    /// The level in force at compile.
-    pub current: u32,
-    /// The node that selects the level (a boiler), if any.
-    pub driver: Option<u32>,
+    /// The speed row Create ran at at compile (state, not build), if any row is its speed.
+    pub current: Option<u32>,
     /// [`domain_flags`].
     pub flags: u32,
     /// Create's own stress and capacity at compile (`KineticNetwork`), for the compile check.
     pub live_stress: f64,
     pub live_capacity: f64,
+    /// The speed rows, sorted by |speed| (a negative first). A domain without a driven source has
+    /// one: the reference's speed at compile. Node rates index these rows.
     pub levels: Vec<DomainLevel>,
+    /// Sorted by position.
+    pub sources: Vec<DomainSource>,
+    /// The last `foreign` members lie in chunks of no district (a shared network's part, SEC-1 S5):
+    /// the tail one part of the network counts.
+    pub foreign: u32,
     pub members: Vec<Member>,
+    /// A shared part's peers: the other districts whose chunks hold a listed member or source of
+    /// the network, or a chunk it reaches. Ascending, distinct, never the own; empty unless
+    /// [`domain_flags::SHARED`].
+    pub peers: Vec<DistrictId>,
+}
+
+impl GraphDomain {
+    /// The boiler nodes driving its sources, in source order (one may repeat).
+    pub fn drivers(&self) -> impl Iterator<Item = u32> + '_ {
+        self.sources.iter().filter_map(|s| s.driver)
+    }
+
+    /// Whether a boiler drives a source of it: else its speed is its one row's, fixed.
+    pub fn driven(&self) -> bool {
+        self.sources.iter().any(|s| s.driver.is_some())
+    }
+
+    /// Whether it is a part of a network that spans districts ([`domain_flags::SHARED`]).
+    pub fn shared(&self) -> bool {
+        self.flags & domain_flags::SHARED != 0
+    }
 }
 
 pub mod domain_flags {
@@ -399,6 +519,10 @@ pub mod domain_flags {
     pub const OVERSTRESSED: u32 = 1;
     /// Stress is disabled in the server config (never overstressed).
     pub const STRESS_DISABLED: u32 = 2;
+    /// A part of a network that spans districts (SEC-1 S5-2): its sources are every source Create
+    /// lists (a foreign one, in another district's chunks, with no rows), its members its own and
+    /// the tail in no district's chunks, its peers the other districts on it.
+    pub const SHARED: u32 = 4;
 }
 
 /// IND_GRAPH_END (0x004C): closes a compile. The engine uses the compile only if it received
@@ -466,6 +590,42 @@ pub struct ProbeSample {
     pub goods: GoodVec,
 }
 
+/// IND_COUNT_SAMPLE (0x004F): what Java counted at the count set's pairs in a sweep (SECTIONS.md
+/// §4.2, slice S3), each pair's counters read with its store's stock. Not counted in the sweep's
+/// records, as a probe sample is not: a unit missing a pair's entries skips that sweep's sample.
+/// A large sample comes in several records of one sweep; each entry says how many entries its
+/// pair has in all ([`Count::entries`]), so a pair split over records, one of them lost, is seen
+/// to be incomplete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CountSample {
+    pub district: DistrictId,
+    pub sweep: u32,
+    pub compile: u32,
+    pub counts: Vec<Count>,
+}
+
+/// One (mover, store, good) counter of an IND_COUNT_SAMPLE (Count40): the goods the mover put
+/// into the store and took from it since `since`, cumulative. A pair that counted nothing yet
+/// comes with no good, for its `since`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Count {
+    /// The mover's node in the sample's compile.
+    pub mover: u32,
+    /// The store's node.
+    pub store: u32,
+    pub good: Option<Good>,
+    /// The game time the pair's counters started at: they restart when Java forgets the pair (a
+    /// count set without it, a restart).
+    pub since: i64,
+    pub moved_in: i64,
+    pub moved_out: i64,
+    /// How many entries (one per good, or the one with no good) the sample holds for this entry's
+    /// (mover, store) pair in all, over every record of the sweep: the reserved u32 of the wire
+    /// entry. A pair the records of the sweep hold fewer entries of than this lost a part; its
+    /// counters are partial and the pair gives no cover (a lost good would read as not moved).
+    pub entries: u32,
+}
+
 /// IND_CHUNK_TICKING (0x040B, journaled): a chunk of a district started or stopped block-ticking
 /// (§6.1, I7). Ticking is not the same as loaded: a loaded chunk outside the simulation distance
 /// does not tick.
@@ -485,6 +645,7 @@ pub enum GlassObs {
     Domain(GraphDomain),
     End(GraphEnd),
     ProbeSample(ProbeSample),
+    CountSample(CountSample),
     ChunkTicking(ChunkTicking),
 }
 
@@ -501,6 +662,7 @@ impl GlassObs {
             GlassObs::Domain(d) => d.head.district,
             GlassObs::End(e) => e.district,
             GlassObs::ProbeSample(p) => p.district,
+            GlassObs::CountSample(c) => c.district,
             GlassObs::ChunkTicking(c) => c.district,
         }
     }
@@ -513,4 +675,18 @@ pub struct ProbeSet {
     pub district: DistrictId,
     pub compile: u32,
     pub nodes: Vec<u32>,
+}
+
+/// IND_COUNT_SET (0x8408): the (mover, store) node pairs whose moves Java counts for a district
+/// (SECTIONS.md §4.2, slice S3), in the numbers of the compile it names: every edge between a
+/// counted store between units and its mover. Sent when the district's units change and the set
+/// differs from the one Java holds (after an ignored resend, again), and empty when nothing is
+/// counted now. Java keys each pair's counters by its mover's and store's positions, so a pair a
+/// later set names again keeps its counters and `since`; an empty set drops the district's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CountSet {
+    pub district: DistrictId,
+    pub compile: u32,
+    /// (mover node, store node), ascending.
+    pub pairs: Vec<(u32, u32)>,
 }

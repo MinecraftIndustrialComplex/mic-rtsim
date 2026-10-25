@@ -71,6 +71,8 @@ public final class Reconciler {
     // counters
     long applied;
     long duplicates;
+    /** Epoch entries of an earlier engine life dropped as their chunks loaded (RG13). */
+    long staleEpochs;
     long heldCount;
     long blocksBroken;
     long blocksSkipped;
@@ -78,6 +80,15 @@ public final class Reconciler {
 
     Reconciler(Industry ind) {
         this.ind = ind;
+    }
+
+    /** Commands answered DUPLICATE_OP. */
+    public long duplicates() {
+        return duplicates;
+    }
+
+    public long staleEpochs() {
+        return staleEpochs;
     }
 
     public int held() {
@@ -122,15 +133,28 @@ public final class Reconciler {
     void chunkLoaded(ServerLevel level, LevelChunk chunk, District d, long now) {
         if (chunk == null)
             return;
+        long life = ind.engineLife();
         IndustryAttachments.Epochs epochs = chunk.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
+        if (epochs != null && epochs.hasStale(life)) {
+            // Epochs an earlier engine life applied (RG13): this engine numbers its epochs from 1 again and
+            // never had their results, so they and their unacknowledged results go.
+            IndustryAttachments.Epochs kept = epochs.ofLife(life);
+            staleEpochs += epochs.entries().size() - kept.entries().size();
+            if (kept.isEmpty())
+                chunk.removeData(IndustryAttachments.RECONCILE.get());
+            else
+                chunk.setData(IndustryAttachments.RECONCILE.get(), kept);
+            chunk.setUnsaved(true);
+            epochs = kept.isEmpty() ? null : kept;
+        }
         if (epochs != null) {
             for (IndustryAttachments.EpochEntry e : epochs.entries()) {
-                // A result saved with the chunk but maybe not with the journal (a crash): journaled
-                // again (same bytes, same op id, a new sequence); the engine skips it by op id.
+                // A result saved with the chunk but maybe not with the journal (a crash): a copy of it
+                // journaled (REASSERT, docs/boundary.md §3.2), which the engine applies only if it lacks it.
                 if (e.pendingResult().isPresent()) {
                     String key = level.dimension().location() + "/" + chunk.getPos().toLong() + "/" + e.district() + "/" + e.epoch();
                     if (recommitted.add(key)) {
-                        long seq = ind.boundary.recommit(e.pendingResult().get());
+                        long seq = ind.boundary.reassert(e.gen(), e.pendingResult().get());
                         dropResultWhenAcked(level, chunk.getPos(), e.district(), e.epoch(), seq);
                     }
                 }
@@ -144,7 +168,7 @@ public final class Reconciler {
                 apply(level, chunk, ByteBuffer.wrap(h.bytes).order(Layout.ORDER), h.cmdSeq, now, true);
             epochs = chunk.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
         }
-        int applied = epochs == null ? 0 : epochs.epoch(d.id);
+        int applied = epochs == null ? 0 : epochs.epoch(d.id, life);
         ByteBuffer r = ind.journal(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.SIZE, 0);
         r.putLong(IndRecords.ChunkLoaded.DISTRICT, d.id);
         r.putInt(IndRecords.ChunkLoaded.DIM, ind.dimId(level.dimension()));
@@ -237,7 +261,8 @@ public final class Reconciler {
         int m = r.getInt(IndRecords.ChunkReconcile.DESTROY_COUNT);
 
         IndustryAttachments.Epochs epochs = chunk.getData(IndustryAttachments.RECONCILE.get());
-        if (epochs.epoch(districtId) >= epoch || ind.opApplied(opId)) {
+        long life = ind.engineLife();
+        if (epochs.epoch(districtId, life) >= epoch || ind.opApplied(opId)) {
             duplicates++;
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
             return true;
@@ -355,7 +380,7 @@ public final class Reconciler {
             res.putInt(p0 + i * IndRecords.POS16 + 8, broken.get(i).getZ());
         }
         long seq = ind.commit(res);
-        chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()))));
+        chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()), life, ind.boundary.gen())));
         chunk.setUnsaved(true);
         ind.journalDependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
@@ -416,11 +441,11 @@ public final class Reconciler {
             ServerLevel l = ind.level(dim);
             LevelChunk c = l == null ? null : l.getChunkSource().getChunkNow(cp.x, cp.z);
             if (c == null)
-                return; // unloaded: the result is journaled again at its next load, and skipped by op id
+                return; // unloaded: a copy of the result is journaled at its next load, and dropped if the engine has it
             IndustryAttachments.Epochs ep = c.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
             IndustryAttachments.EpochEntry e = ep == null ? null : ep.get(district);
-            if (e != null && e.epoch() == epoch && e.pendingResult().isPresent()) {
-                c.setData(IndustryAttachments.RECONCILE.get(), ep.with(new IndustryAttachments.EpochEntry(district, epoch, Optional.empty())));
+            if (e != null && e.epoch() == epoch && e.life() == ind.engineLife() && e.pendingResult().isPresent()) {
+                c.setData(IndustryAttachments.RECONCILE.get(), ep.with(new IndustryAttachments.EpochEntry(district, epoch, e.life())));
                 c.setUnsaved(true);
             }
         });

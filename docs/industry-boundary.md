@@ -76,6 +76,7 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 | 0x0043 | (retired: IND_CHANNEL_SAMPLE) | | read as an unknown kind (I13 as corrected, IR13) | |
 | 0x0044 | (retired: IND_LEDGER_REQUEST) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
 | 0x0045 | IND_WATCHED | 1 a player is near enough to fight for real, 0 not | 8 i64 gameTime, 16 u64 district | 24 |
+| 0x0051 | IND_STORE_CENSUS | n goods | 8 i64 gameTime, 16 u64 store, 24 u32 m, 28 u32 zero, 32 m × (u32 destination, u32 packages), then n × (u32 good, u32 destination, i64 amount); a destination is a frogport index of the store's last IND_PACKAGE_STORE, 0xFFFFFFFF for packages with no route; every 200 ticks while every chunk of the store ticks (SECTIONS.md §2.5, choice SC99) | 32 + 8m + 16n |
 
 **Sweeps.** The sampler reads a district's boundary inventories round-robin, K per tick (INDUSTRY.md
 §3.2), numbering each full pass a sweep. Each inventory's contents go in one IND_STOCK_SAMPLE, or in
@@ -103,7 +104,7 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0402 | IND_INVENTORY | kind flags | 24 u64 district, 32 u32 revision, 36 u32 index, 40 i32 x, 44 i32 y, 48 i32 z, 52 u32 itemSlots, 56 i64 fluidCapacity, 64 i64 energyCapacity | 72 |
 | 0x0403 | IND_DISTRICT_REMOVED | 0 | 24 u64 district | 32 |
 | 0x0404 | IND_EDIT | 1 placed, 2 broken, 3 configured, 4 command | 24 u64 district, 32 u64 playerMost, 40 u64 playerLeast, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved | 64 |
-| 0x0405 | IND_DISCARD | 1 unattributed session, 2 creative block, 3 overstressed, 4 progressive contraption, 5 other | 24 u64 district | 32 |
+| 0x0405 | IND_DISCARD | 1 unattributed session, 2 creative block, 3 overstressed, 4 progressive contraption, 5 other | 24 u64 district, 32 u64 station (the station whose call made an `other` discard, 0 for none; SECTIONS.md SC76) | 40 |
 | 0x0406 | IND_LOAD_STATE | 0 unloaded, 1 partial, 2 live | 24 u64 district, 32 u32 tickingChunks, 36 u32 totalChunks | 40 |
 | 0x0407 | IND_CHUNK_LOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 appliedEpoch | 48 |
 | 0x040A | IND_CHUNK_UNLOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 reserved (0); at `ChunkEvent.Unload` (I7, IR6) | 48 |
@@ -116,6 +117,9 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0414 | IND_PACKAGE | n entries | 24 u64 district, 32 u32 inventory, 36 u32 direction (1 in, 2 out), 40 u32 address (NAME), 44 u32 packages, 48 u64 opId (0 none), 56 n × Entry16 | 56 + 16n |
 | 0x0415 | IND_STATION_PORTS | n inventories | 24 u64 station, 32 u64 district, 40 n × u32 inventory (indices of the district's current revision); at a loaded call's departure, when the set changed (choice SG32) | (40 + 4n) rounded up to 8 |
 | 0x0416 | IND_TRAIN_UNWATCHED | 0 | 24 u64 train, 32 u64 station; a watched train called at a station outside every district: the engine ends its leg (choice SG50) | 40 |
+| 0x0418 | IND_PACKAGE_STORE | n frogports | 24 u64 store, 32 u32 dim, 36 u32 epoch (the frontier's, nonzero; choice SC136), 40 u64 into (0 none), 48 n × Frogport48 in position order, then the hops between their conveyors as the upper triangle row by row ((0,1), (0,2) .. (1,2) ..), u16 each, 0xFFFF where the walk did not reach; padded to 8. n = 0: the store is gone and what it held joins `into` (SECTIONS.md §2.5) | 48 + 48n + 2·n(n-1)/2, rounded up to 8 |
+| 0x0419 | IND_CHAIN_PACKAGE | n entries | 24 u64 store, 32 u64 district (0 none), 40 u32 inventory (0xFFFFFFFF none), 44 u32 direction (3 chain out, 4 chain in, 5 chain held: the frontier holds the package on a boundary conveyor, its frogport and destination the far frogport's index and its position the conveyor, told again when it moves and once per session, slice S4c; 6 chain released: Java no longer holds the key, struck wherever the engine holds it, frogport and destination 0xFFFFFFFF, no packages, no goods, choice SC137; 7 chain drawn: Java marked a held key drawn at the engine's IND_HELD_DRAW, the same key-only layout as a release, its position the boundary conveyor, slice S4c2, choice SC141), 48 u32 frogport (index in the store's last IND_PACKAGE_STORE), 52 u32 destination (a frogport index, 0xFFFFFFFF no route; chain in: the frogport itself), 56 u32 packages, 60 u32 address (NAME), 64 u64 opId (0 none; a chain in that an IND_WRITE_CHAIN wrote: that command's op id, SC113), 72 i32 x, 76 i32 y, 80 i32 z (the frogport's position, SC113), 84 u32 epoch, 88 u64 serial (the frontier's key: chain held, chain released, chain drawn, and a chain in of a package Java held; epoch 0 is no key, choice SC136), 96 n × Entry16; a package store's frogport put packages on its chain or took them off (choice SC97) | 96 + 16n |
+| 0x041B | IND_HELD_LIST | n serials | 24 u32 epoch (the frontier's), 28 u32 m (m <= n: the last m serials are drawn, slice S4c2), 32 n × u64 serial (the held keys Java holds in that epoch: the held ones ascending, then the drawn ones ascending); once per session, before the session's other chain records: the engine strikes from each store of that epoch every held key not listed (choice SC140; 0x041A is left free) and puts the drawn marks as Java has them (choice SC143) | 32 + 8n |
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
@@ -128,6 +132,9 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
   20 u32 reserved, 24 entryCount × Entry16`; 24 + 16n bytes.
 - **Result24:** `0 u32 inventory (or carriage), 4 u32 good, 8 i64 requested, 16 i64 applied`.
 - **Pos16:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 reserved`.
+- **Frogport48** (IND_PACKAGE_STORE): `0 u64 district (0 none), 8 u32 inventory (0xFFFFFFFF none),
+  12 u32 flags (1 its address filter is "*"), 16 i32 x, 20 i32 y, 24 i32 z (the frogport), 28 i32 x,
+  32 i32 y, 36 i32 z (its conveyor), 40 u64 from (the store it came from, 0 none)`.
 - **Block24:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 state (BLOCK_STATE), 16 u32 flags (1 perimeter,
   2 roofless, 4 machine, 8 boundary inventory, 16 roof: the top block over a roofed machine within
   roofReachBlocks, OGB-7, 32 subterranean: a machine or inventory under at least 5 blocks of cover,
@@ -158,7 +165,11 @@ revision replaces the old lists. Detection (I2) is the Java side's.
 
 **Edits and staleness.** IND_EDIT (a `BlockEvent` with a player inside the district) makes a learned
 district Stale (I5: stale freezes) and discards the open window. IND_DISCARD discards the open window
-only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
+only; a station's `other` discard also the glass windows of what its ports reach (SECTIONS.md §3.6).
+A network part (a kinetic block entity, a chain conveyor among them) a player places or breaks in a
+chunk of no district is an IND_EDIT of every district whose last compile's networks reach that chunk
+(SECTIONS.md SC77): it stales no unit, but drops their open windows and makes them stale as any edit.
+Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
 district keeps the players of its last edits (placed, broken, configured; not commands): the last 8
 distinct players with the tick of each one's latest edit, saved with it, so the dragons can name a
 well's builders (docs/choices-oilgate.md OGC54).
@@ -183,6 +194,11 @@ sends IND_CHUNK_UNLOADED is read the old way: when no chunk ticks, every chunk c
 **Ports** (INDUSTRY.md §3.3). Everything that crosses the boundary while loaded:
 - train cargo diffs at `Train.arriveAt` and `leaveStation`;
 - train mail at postboxes, as IND_PACKAGE;
+- packages a package store's frogport puts on its chain or takes off it, as IND_CHAIN_PACKAGE
+  (SECTIONS.md §2.5): the engine books each into the store, in the pool of its destination (choice
+  SC100: Java resolves it as Create would route the package), and as a port of the district's window,
+  never as a link. IND_PACKAGE_STORE says which frogports a store has, in which districts; a store's
+  IND_STORE_CENSUS sets its pools to what is on the chain, and the difference is the store's residue;
 - player container sessions (`PlayerContainerEvent.Open` to `Close`, the session's diff);
 - tosses, pickups, and stock blocks broken by players.
 
@@ -206,7 +222,9 @@ port.
 - **Station ports** (IND_STATION_PORTS, choice SG32): at a loaded call's departure the bridge walks
   from each interface that docked, through chutes, funnels, hoppers, pipes, pumps and valves (up to
   8 blocks, loaded chunks only, no belts), and sends the district inventories it reaches when the
-  set changed. The engine keeps them per station until the district's next revision.
+  set changed, journaled before the departure's TRAIN_CARGO. The engine keeps them per station until
+  the district's next revision, and a set of two inventories or more joins the glass units holding
+  them into one (SECTIONS.md SC75); a loaded call's cargo is then booked as that unit's port.
 - At a **simulated** station (`simulated` set: the district is unloaded and the carriage has no entity
   in that dimension), the engine decides the exchange from the learned station pattern (I15) and
   answers with IND_CARRIAGE_DELTA. It books the exchange on the station's ports only, never on the
@@ -261,6 +279,8 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
 | 0x8403 | IND_DEPOSIT_DELTA | plugin | 16 u64 opId, 24 u32 dim, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 good, 40 i64 delta | 48 |
 | 0x8404 | IND_WRITE_PACKAGE | n entries | 16 u64 opId, 24 u64 district, 32 u32 inventory, 36 i32 x, 40 i32 y, 44 i32 z, 48 u32 address (NAME), 52 u32 count, 56 n × Entry16 (one package's contents) | 56 + 16n |
 | 0x8405 | (retired: IND_LEDGER) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
+| 0x8409 | IND_WRITE_CHAIN | n entries | 16 u64 opId, 24 u64 store, 32 u64 district, 40 u32 inventory, 44 u32 frogport (index in the store's last IND_PACKAGE_STORE), 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 count, 64 n × Entry16 (one package's contents); packages replays sent along a package store's chain, written into its loaded frogport (SECTIONS.md §2.5, SC113) | 64 + 16n |
+| 0x840B | IND_HELD_DRAW | n serials | 16 u64 store, 24 u32 epoch (the frontier's), 28 u32 action (0 draw, 1 remove, 2 return), 32 n × u64 serial (ascending; at most (0xFFF8 - 32) / 8 a record); no op id and no COMMAND_RESULT: Java answers each key with a record, draw with a chain drawn (none while the far frogport ticks), remove with a chain released once its package is off the chain, return with nothing (the key held again and told again); a key of this epoch Java does not hold is released, one of another epoch skipped (SECTIONS.md §2.5, slice S4c2, SC141 to SC143; 0x840A is left free) | 32 + 8n |
 
 - **Delta32:** `0 u32 inventory, 4 u32 good, 8 i32 x, 12 i32 y, 16 i32 z, 20 u32 reserved,
   24 i64 delta`.
@@ -311,6 +331,21 @@ disk too. A chunk on disk ahead of the journal journals its pending result again
   delta by good first (IR11): Destroy's level-wide pollution (greenhouse, ozone depletion, acid rain)
   goes as IND_DEPOSIT_DELTA every `live_pollution_ticks` while its district replays (I14: "level-wide
   types apply live while unloaded"), the rest at the reconcile; chunk types ride the chunk's reconcile.
+- **IND_WRITE_CHAIN** (SECTIONS.md §2.5, SC113): whole packages into the frogport's inventory while
+  its chunk is loaded, addressed to its filter, as many as fit with one slot kept free (a package
+  Create is catching lands there). Java journals one IND_CHAIN_PACKAGE `CHAIN_IN` with the command's
+  op id at 64 for what it wrote, then the COMMAND_RESULT; the chunk carries both until the engine
+  acknowledges them, and the engine takes the `CHAIN_IN` once: by op id while Replay remembers it,
+  as the answer to a write it still waits for (at that write's frogport), and else by the store's
+  mark of the last written record at the frogport's position (72 to 80). Nothing written (the frogport is
+  not loaded, has no slot to spare, or takes no packages) is FAILED, with no record; the engine still
+  owes it and writes again later.
+- **IND_HELD_DRAW** (SECTIONS.md §2.5, SC141 to SC143): no op id, nothing kept in the outbox. Draw
+  marks each held key drawn in the frontier's saved state (its package then circles its boundary
+  conveyor, every hand-off refused) and journals a `CHAIN_DRAWN`. Remove takes the package off its
+  conveyor while the conveyor's chunk is loaded, else at that conveyor's first tick once it loads, and
+  journals a `CHAIN_RELEASED` whose journal file waits for the chunk (R21). Return clears the mark;
+  the key is told again (`CHAIN_HELD`) where it is held next.
 
 ## 5. What the sampler must never do
 
@@ -398,13 +433,14 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   by name, as for every command.
 - **Op ids** are derived from the command's identity (W3): the same decision made again after a
   crash carries the same id, and a different one never takes an id an earlier one had.
-- **Answers.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are
+- **Answers.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and IND_WRITE_CHAIN are
   kept from the moment they are written until their answer (IND_CARRIAGE_RESULT, or COMMAND_RESULT
   applied, duplicate or failed) is admitted, and written again first after a restart with their
   original sequences and op ids (W4). IND_CHUNK_RECONCILE is resent at the chunk's next
   IND_CHUNK_LOADED instead (F27). A failed IND_CARRIAGE_DELTA counts as nothing applied, taken back
   from the engine's exchange record; a failed deposit or package command is logged and the
-  engine keeps its books as if applied (W10). A command waits a while for a dictionary name Java
+  engine keeps its books as if applied (W10); a failed IND_WRITE_CHAIN moved nothing, and the store
+  still owes it. A command waits a while for a dictionary name Java
   has not sent yet (W21).
 - **The switch (U10, replacing W8).** With `Module.INDUSTRY` off the engine ignores every industry
   record, journaled ones included (counted), runs nothing and writes nothing; its queue, outbox and
@@ -437,8 +473,10 @@ argument). Choices are GB# in `docs/choices-glassbox-g1.md`.
 | 0x004B | IND_GRAPH_DOMAIN | latest-wins | Java to engine |
 | 0x004C | IND_GRAPH_END | latest-wins | Java to engine |
 | 0x004D | IND_PROBE_SAMPLE | latest-wins, not counted in a sweep | Java to engine |
+| 0x004F | IND_COUNT_SAMPLE | latest-wins, not counted in a sweep (SECTIONS.md §4.2) | Java to engine |
 | 0x040B | IND_CHUNK_TICKING | journaled | Java to engine |
 | 0x8406 | IND_PROBE_SET | command | engine to Java |
+| 0x8408 | IND_COUNT_SET | command, no op id (SECTIONS.md §4.2) | engine to Java |
 
 **A compile** is a district's graph: NODE, EDGE, RECIPE and DOMAIN records carrying the district's
 compile number (Java's counter, from 1), then IND_GRAPH_END saying how many records it sent. **The
@@ -456,11 +494,13 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
 | IND_GRAPH_NODE | node kind | 32 u32 model, 36 u32 domain (NONE), 40 u32 inventory (NONE), 44 u32 flags, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved, 64 u32 rule, 68 u32 n rates, 72 i64 capacity, 80 i64 param0, 88 i64 param1, 96 i64 param2, 104 i64 param3, 112 n × Rate24 | 112 + 24n |
 | IND_GRAPH_EDGE | edge kind | 32 u32 from, 36 u32 to, 40 u32 order, 44 u32 flags, 48 u32 capNum, 52 u32 capDen (0/0 unlimited; units per tick), 56 u32 latency, 60 u32 n filter, 64 i64 param, 72 n × u32 good | 72 + 4n, padded to 8 |
 | IND_GRAPH_RECIPE | inputs + outputs | 32 u32 recipeType, 36 u32 heat (at least), 40 u32 n inputs, 44 u32 n outputs, 48 u32 duration, 52 u32 name (NAME, 0 none), 56 n × Term24 (inputs first) | 56 + 24n |
-| IND_GRAPH_DOMAIN | n members | 32 u64 network, 40 u32 n levels, 44 u32 current level, 48 u32 driver node (NONE), 52 u32 flags (1 overstressed now, 2 stress disabled), 56 f64 live stress, 64 f64 live capacity, 72 L × Level24, then n × Member24 | 72 + 24L + 24n |
+| IND_GRAPH_DOMAIN | n members | 32 u64 network (Create's id, a hint only), 40 u32 n speed rows L, 44 u32 current speed row (NONE), 48 reserved, 52 u32 flags (1 overstressed now, 2 stress disabled, 4 shared), 56 f64 live stress, 64 f64 live capacity, 72 u32 n sources S, 76 u32 n source rows R, 80 u32 n foreign (the last members: the tail in no district's chunks), 84 u32 n peers P, 88 L × Level24 (speed rows), S × Source32, R × Level24 (source rows), n × Member24, then P × u64 peer district | 88 + 24L + 32S + 24R + 24n + 8P |
 | IND_GRAPH_END | flags: 1 complete, 2 not compilable, 4 black box, 8 resend | 16 u64 district, 24 u32 compile, 28 u32 window (checksum window ticks; 0 the engine's `glass.checksumWindowMin`), 32 u32 records, 36 u32 nodes, 40 u32 edges, 44 u32 recipes, 48 u32 domains, 52 u32 reason, 56 u64 fingerprint, 64 u64 frame (0 the level; else a Sable sub-level id), 72 u32 revision, 76 u32 compileTicks | 80 |
 | IND_PROBE_SAMPLE | n entries | 16 u64 district, 24 u32 sweep, 28 u32 node, 32 u32 compile, 36 reserved, 40 n × Entry16 | 40 + 16n |
 | IND_CHUNK_TICKING | 1 ticking, 0 not | (journaled prefix) 24 u64 district, 32 u32 dim, 36 i32 chunkX, 40 i32 chunkZ, 44 reserved | 48 |
 | IND_PROBE_SET | n nodes | (cmdSeq at 8) 16 u64 district, 24 u32 compile, 28 reserved, 32 n × u32 node | 32 + 4n, padded to 8 |
+| IND_COUNT_SAMPLE | n counts | 16 u64 district, 24 u32 sweep, 28 u32 compile, 32 n × Count40 | 32 + 40n |
+| IND_COUNT_SET | n pairs | (cmdSeq at 8) 16 u64 district, 24 u32 compile, 28 reserved, 32 n × Pair8 | 32 + 8n |
 
 **Sub-records:**
 - **Rate24:** `0 u32 level, 4 u32 recipe (NONE: the transfer, or the only recipe), 8 u32 batch,
@@ -469,11 +509,45 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
   ticks. Java ran the machine's own countdown for these numbers (G-B5).
 - **Term24:** `0 u32 good, 4 u32 flags (1 catalyst, 2 chance), 8 i64 num, 16 i64 den`: `num/den` of
   the good per craft; chance outputs at their expectation (G-B11).
-- **Level24:** `0 u32 selector, 4 i32 speedNum, 8 u32 speedDen, 12 reserved, 16 f64 capacity`: the
-  root source's RPM as a rational and the domain's capacity in SU at that level; `selector` is the
-  driver's value that picks the level (a boiler's level, 0 to 18), 0 without a driver.
+- **Level24:** `0 u32 selector, 4 i32 speedNum, 8 u32 speedDen, 12 reserved, 16 f64 capacity`.
+  As a domain's **speed row**: one speed the reference (the frame of the members' ratios) can turn
+  at, as a rational; selector and capacity 0. The rows are distinct, nonzero, sorted by |speed|
+  (the negative first), at most 32; Rate24's `level` indexes them. As a **source row**: the
+  source's own generated speed and its capacity in SU at that speed; `selector` is the boiler level
+  (0 to 18) that picks the row for a driven source, or 19 (`PASSIVE_SELECTOR`) for its passive row,
+  0 for a fixed one.
+- **Source32:** `0 u32 driver (the boiler node, NONE), 4 u32 first source row, 8 u32 row count,
+  12 u32 current row (NONE), 16 i32 ratioNum, 20 u32 ratioDen (0: unknown), 24 i64 position`: one
+  per Create source on the network, ascending by `BlockPos.asLong`, its rows contiguous in source
+  order. A driven source (an engine shaft on a tank the compile has a boiler node for) has 20 rows,
+  level 0 to 18 and the passive row (SECTIONS.md SC154), its current row 19 while Create's boiler is
+  passive; any other source, and every source of a domain Java cannot model, has one row,
+  its speed now. `ratio` is the source's speed over the reference's. The fastest source sets the
+  speed, every source adds its row's capacity, and sources that disagree in sign stop the network
+  (SECTIONS.md §2.6, §13 SC144 onward). On a **shared** part (flag 4: a network that crosses the
+  district's border, SEC-1 S5-2) the sources are every source Create lists; one in another
+  district's chunks, or an engine shaft outside the district whose tank is no boiler of the
+  compile, is **foreign**: 0 rows, driver and current NONE, its ratio as known. Its members are
+  its own, then the tail (n foreign) in no district's chunks; members in another district's chunks
+  are that district's part's. The peers are the other districts whose chunks hold a listed member
+  or source, or a chunk the network reaches: ascending, distinct, never the own. Only a shared
+  part has foreign sources, a tail or peers.
 - **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
-  `count` blocks at speed `ratio × root speed` and `impact` SU per RPM each.
+  `count` blocks at speed `ratio × reference speed` and `impact` SU per RPM each.
+- **Count40:** `0 u32 mover, 4 u32 store, 8 u32 good (NONE: the pair counted nothing yet),
+  12 u32 entries, 16 i64 since, 24 i64 in, 32 i64 out`: what the mover put into the store and took
+  from it since game time `since`, cumulative, in the sample's compile's node numbers. One entry
+  per (pair, good). `entries` is how many entries the entry's (mover, store) pair has in all over
+  the sweep's records (at least 1; the same on each of the pair's entries). A large sample comes in
+  several records of one sweep, cut between pairs; only a pair with more goods than one record
+  holds (about 1,600) is split, and the engine gives no cover to a pair it got fewer entries of
+  than `entries` (a lost part would read as goods not moved; SECTIONS.md §13, SC123).
+- **Pair8:** `0 u32 mover, 4 u32 store`: node numbers of the set's compile, ascending by mover
+  then store. Java keys each pair's counters by the two blocks' positions, so a pair a later set
+  names again keeps them and its `since`; a pair no set names any more is dropped, and an empty set
+  drops the district's counters. Java sends each sweep's IND_COUNT_SAMPLE before that sweep's
+  IND_SWEEP_END, in the numbers of the latest compile whose END it sent, leaving out pairs that
+  compile lacks (SECTIONS.md §13, SC89 to SC91).
 
 **Codes** (the Rust `records.rs` modules, mirrored in `GlassRecords`):
 - **Node kinds:** 1 store, 2 buffer, 3 machine, 4 mover, 5 junction, 6 heater, 7 source, 8 sink,
@@ -555,7 +629,11 @@ it does; a machine's recipes are exactly those its entries name (choice GB15).
   water accepted in mB per tick and `activeHeat` the sum of its Heat edges' params over lit heaters. It
   drives its domain: the domain's `driver` is the boiler and each Level24's `selector` is a boiler level
   (Java tabulates every level the engines can see, with each level's speed and capacity); the domain runs
-  at the level with the largest selector at or below the boiler's level. A heater with
+  at the level with the largest selector at or below the boiler's level. A boiler is **passive**
+  (`BoilerData.isPassive`, SECTIONS.md SC154) when no Heat edge is lit, at least one comes from a heater
+  that is out (a blaze burner below FADING gives Create's passive heat), and its water and size each
+  allow a level above 0: its sources then take their passive row (selector 19: 16 RPM, an eighth of the
+  engines' efficiency shared by the engines). A heater with
   duty strictly between 0 and 1 makes the boiler's goods bounded: L counts heaters at duty 1, U every
   heater with duty above 0.
 - **Source:** emits its recipe's outputs (no inputs) at its entries' rate; unlimited without entries

@@ -55,6 +55,12 @@ public final class DenKind implements CampKind {
         return e instanceof EntityFrostmaw;
     }
 
+    /** The crystal is on this Frostmaw (the census's BODY_CRYSTAL, read off each body: review C). */
+    @Override
+    public boolean hasCrystal(Entity e) {
+        return e instanceof EntityFrostmaw f && f.getHasCrystal();
+    }
+
     /** A den keeps one Frostmaw. */
     @Override
     public int slots(Camps.Site site) {

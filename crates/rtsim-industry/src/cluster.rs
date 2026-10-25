@@ -50,7 +50,7 @@ use rtsim_kernel::lazy::LazyModel;
 use rtsim_kernel::rng::SlotRng;
 use serde::Serialize;
 
-use crate::ids::{DistrictId, Good};
+use crate::ids::{BlockPos, DistrictId, Good, StoreId};
 
 /// One unit in 32.32 fixed point.
 const U: i128 = 1 << 32;
@@ -67,18 +67,28 @@ pub enum PoolKey {
     /// index. A district replaying on its compiled graph books per store, never into `Stock`
     /// pools except for events ([`Cluster::add_to_pool`]).
     Store(DistrictId, u32, Good),
+    /// What a package store's replays sent toward one of its frogports (by position) and the
+    /// districts there have not taken yet (SECTIONS.md §2.5, slice S4b). Owned by no district: the
+    /// cluster holds it while a process of any member touches it, so the districts at both ends
+    /// replay as one cluster.
+    Chain(StoreId, BlockPos, Good),
 }
 
 impl PoolKey {
     pub fn good(self) -> Good {
         match self {
-            PoolKey::Stock(_, g) | PoolKey::Mail(_, _, _, g) | PoolKey::Store(_, _, g) => g,
+            PoolKey::Stock(_, g)
+            | PoolKey::Mail(_, _, _, g)
+            | PoolKey::Store(_, _, g)
+            | PoolKey::Chain(_, _, g) => g,
         }
     }
 
-    pub fn district(self) -> DistrictId {
+    /// The district that owns the pool; None for a pool shared between districts.
+    pub fn district(self) -> Option<DistrictId> {
         match self {
-            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) | PoolKey::Store(d, _, _) => d,
+            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) | PoolKey::Store(d, _, _) => Some(d),
+            PoolKey::Chain(..) => None,
         }
     }
 }
@@ -793,7 +803,7 @@ impl Cluster {
     /// The districts with processes or pools here.
     pub fn members(&self) -> BTreeSet<DistrictId> {
         let mut s: BTreeSet<DistrictId> = self.procs.iter().map(|p| p.owner).collect();
-        s.extend(self.pools.iter().map(|p| p.key.district()));
+        s.extend(self.pools.iter().filter_map(|p| p.key.district()));
         s
     }
 
@@ -1305,7 +1315,18 @@ impl Cluster {
         let mut out = Vec::new();
         let mut i = 0;
         while i < self.pools.len() {
-            if self.pools[i].key.district() == d {
+            // A shared pool leaves with the last district whose processes touch it.
+            let leaves = match self.pools[i].key.district() {
+                Some(o) => o == d,
+                None => {
+                    !self.procs.iter().any(|p| touches(p, i as u16))
+                        && !self
+                            .spaces
+                            .iter()
+                            .any(|s| s.weights.iter().any(|w| w.0 == i as u16))
+                }
+            };
+            if leaves {
                 out.push(self.pools.remove(i));
                 self.shift_pool_refs(i as u16 + 1, -1);
             } else {
@@ -2645,6 +2666,12 @@ mod persist_impls {
                     i.put(w);
                     g.put(w);
                 }
+                PoolKey::Chain(s, to, g) => {
+                    w.u8(4);
+                    s.put(w);
+                    to.put(w);
+                    g.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -2657,6 +2684,7 @@ mod persist_impls {
                     Persist::get(r)?,
                 ),
                 3 => PoolKey::Store(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
+                4 => PoolKey::Chain(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
                 _ => return invalid("pool key"),
             })
         }

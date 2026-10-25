@@ -4,16 +4,22 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +33,11 @@ import java.util.Objects;
  * <p><b>Stores</b> are the core's: every boundary inventory of the district's current revision is a STORE
  * node with its IND_INVENTORY index, made the first time a plugin asks for it ({@link #storeAt}) and at
  * the end for the rest, unless a plugin claimed the block as something else ({@link #claimStore}: a fluid
- * tank that is a boiler). <b>The residual</b> (G-B13) is one BLACK_BOX node for every block entity with a
- * capability that no extractor claimed; {@link #residualAt} joins a plugin's edge to it.
+ * tank that is a boiler). <b>The residual</b> (G-B13) is every block entity with a capability that no
+ * extractor claimed, in <b>groups</b> (SECTIONS.md §3.1, choice SC14): the residual blocks that touch by a
+ * face, or that a plugin links (an Ender channel's ends, {@link IndustryPlugin#links}), are one group, and
+ * each group is one BLACK_BOX node at its lowest corner, made on first use. {@link #residualAt} joins a
+ * plugin's edge to the group that holds a block, so an unknown block glues only the lines that touch it.
  *
  * <p>Units are the graph's (§9.3): items in items, fluids in millibuckets, rates per tick.
  */
@@ -53,8 +62,16 @@ public final class GraphBuilder {
     private final Long2IntOpenHashMap stores = new Long2IntOpenHashMap();
     private final LongOpenHashSet claimedStores = new LongOpenHashSet();
     private final LongOpenHashSet residualPositions = new LongOpenHashSet();
+    /** Plugin links from residual block entities, as position pairs: one group when both ends are residual. */
+    private final LongArrayList residualLinks = new LongArrayList();
+    /** Each residual position's group, once {@link #groupResiduals} ran (after every visit); null before. */
+    private Long2IntOpenHashMap residualGroup;
+    /** Per group: lowest corner x, y, z, the extent dx, dy, dz, and the FNV-1a hash of its sorted positions. */
+    private long[][] groupShape;
+    /** Per group: its BLACK_BOX node, or NONE until a plugin's edge first reaches it. */
+    private int[] groupNode;
+    private int residualNodes;
     private final Map<Long, District.Inventory> inventoryByPos = new HashMap<>();
-    private int residual = NONE;
     /** Why the district is not compilable (a REASON code), or 0. */
     int notCompilable;
     String notCompilableWhy;
@@ -63,6 +80,12 @@ public final class GraphBuilder {
      * slice S1): shown by {@code /rtsim district graph}.
      */
     public int unloadedStops;
+    /**
+     * Chunks outside the district's that a kinetic network of the compile reaches (SECTIONS.md §3.6, choice
+     * SC77): a player's edit in one that no district holds is sent to this district as well. Set by an
+     * extractor.
+     */
+    public final LongOpenHashSet reachedChunks = new LongOpenHashSet();
 
     GraphBuilder(Industry ind, ServerLevel level, District district) {
         this.ind = ind;
@@ -259,25 +282,126 @@ public final class GraphBuilder {
         return residualPositions.contains(pos.asLong());
     }
 
-    /** The residual BLACK_BOX node if {@code pos} is one of its blocks, else NONE. */
+    /**
+     * The BLACK_BOX node of the residual group that holds {@code pos}, made on first use; NONE when {@code pos}
+     * is no residual block. For the extractors' {@code finish}: the groups are made after every visit.
+     */
     public int residualAt(BlockPos pos) {
-        if (!residualPositions.contains(pos.asLong()))
+        long key = pos.asLong();
+        if (!residualPositions.contains(key))
             return NONE;
-        return residual();
-    }
-
-    /** The district's one residual node (G-B13), made on first use. */
-    public int residual() {
-        if (residual == NONE) {
-            Node n = node(GlassRecords.Node.BLACK_BOX, GlassRecords.Model.BLACK_BOX, district.watch.isEmpty() ? BlockPos.ZERO : district.watch.get(0));
+        groupResiduals();
+        int gi = residualGroup.get(key);
+        if (groupNode[gi] == NONE) {
+            long[] sh = groupShape[gi];
+            Node n = node(GlassRecords.Node.BLACK_BOX, GlassRecords.Model.BLACK_BOX, new BlockPos((int) sh[0], (int) sh[1], (int) sh[2]));
+            n.params(sh[3], sh[4], sh[5], sh[6]);
             n.flags |= GlassRecords.Node.BOUNDED;
-            residual = n.index;
+            groupNode[gi] = n.index;
+            residualNodes++;
         }
-        return residual;
+        return groupNode[gi];
     }
 
-    void addResidualPosition(BlockPos pos) {
-        residualPositions.add(pos.asLong());
+    /**
+     * A block entity no extractor claimed, with a capability: a residual block, with the positions the
+     * plugins link it to (read without loading a chunk, as the district detection reads them).
+     */
+    void addResidual(BlockEntity be) {
+        if (residualGroup != null)
+            throw new IllegalStateException("a residual block after the residual groups were made");
+        BlockPos pos = be.getBlockPos().immutable();
+        long key = pos.asLong();
+        residualPositions.add(key);
+        for (IndustryPlugin plugin : IndustryApi.plugins())
+            plugin.links(be, t -> {
+                residualLinks.add(key);
+                residualLinks.add(t.asLong());
+            });
+    }
+
+    /**
+     * Makes the residual groups once: a union of the residual positions by their faces and by the plugins'
+     * links, each group numbered by its lowest position (the order the positions sort in), so a compile of
+     * the same blocks makes the same groups.
+     */
+    void groupResiduals() {
+        if (residualGroup != null)
+            return;
+        long[] sorted = residualPositions.toLongArray();
+        Arrays.sort(sorted);
+        Long2IntOpenHashMap index = new Long2IntOpenHashMap(sorted.length);
+        index.defaultReturnValue(-1);
+        for (int i = 0; i < sorted.length; i++)
+            index.put(sorted[i], i);
+        int[] parent = new int[sorted.length];
+        for (int i = 0; i < parent.length; i++)
+            parent[i] = i;
+        for (int i = 0; i < sorted.length; i++)
+            for (Direction d : Direction.values()) {
+                int j = index.get(BlockPos.offset(sorted[i], d));
+                if (j >= 0)
+                    union(parent, i, j);
+            }
+        for (int k = 0; k + 1 < residualLinks.size(); k += 2) {
+            int a = index.get(residualLinks.getLong(k)), b = index.get(residualLinks.getLong(k + 1));
+            if (a >= 0 && b >= 0)
+                union(parent, a, b);
+        }
+        // Groups in the order of their lowest position; a group's positions in sorted order.
+        int[] groupOfRoot = new int[sorted.length];
+        Arrays.fill(groupOfRoot, -1);
+        List<long[]> shapes = new ArrayList<>();
+        residualGroup = new Long2IntOpenHashMap(sorted.length);
+        for (int i = 0; i < sorted.length; i++) {
+            int r = find(parent, i);
+            if (groupOfRoot[r] < 0) {
+                groupOfRoot[r] = shapes.size();
+                shapes.add(new long[] {Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE,
+                        0xcbf29ce484222325L});
+            }
+            int gi = groupOfRoot[r];
+            residualGroup.put(sorted[i], gi);
+            long[] sh = shapes.get(gi);
+            long x = BlockPos.getX(sorted[i]), y = BlockPos.getY(sorted[i]), z = BlockPos.getZ(sorted[i]);
+            sh[0] = Math.min(sh[0], x);
+            sh[1] = Math.min(sh[1], y);
+            sh[2] = Math.min(sh[2], z);
+            sh[3] = Math.max(sh[3], x);
+            sh[4] = Math.max(sh[4], y);
+            sh[5] = Math.max(sh[5], z);
+            for (int b = 0; b < 8; b++) {
+                sh[6] ^= (sorted[i] >>> (8 * b)) & 0xff;
+                sh[6] *= 0x100000001b3L;
+            }
+        }
+        groupShape = new long[shapes.size()][];
+        for (int gi = 0; gi < groupShape.length; gi++) {
+            long[] sh = shapes.get(gi);
+            // lowest corner, extent from it, hash
+            groupShape[gi] = new long[] {sh[0], sh[1], sh[2], sh[3] - sh[0], sh[4] - sh[1], sh[5] - sh[2], sh[6]};
+        }
+        groupNode = new int[groupShape.length];
+        Arrays.fill(groupNode, NONE);
+    }
+
+    private static int find(int[] parent, int x) {
+        while (parent[x] != x) {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        return x;
+    }
+
+    private static void union(int[] parent, int a, int b) {
+        int ra = find(parent, a), rb = find(parent, b);
+        if (ra != rb)
+            parent[Math.max(ra, rb)] = Math.min(ra, rb);
+    }
+
+    /** The residual groups made (0 before {@link #groupResiduals}). */
+    int residualGroups() {
+        return groupShape == null ? 0 : groupShape.length;
     }
 
     int residualPositions() {
@@ -305,8 +429,9 @@ public final class GraphBuilder {
                 .collect(java.util.stream.Collectors.joining(", "));
     }
 
+    /** True when a plugin's edge reached a residual group: the compile is then a BLACK_BOX one. */
     boolean hasResidual() {
-        return residual != NONE;
+        return residualNodes > 0;
     }
 
     /** Every boundary inventory gets its STORE node (unless claimed), referenced or not. */
@@ -502,39 +627,94 @@ public final class GraphBuilder {
 
     // ---- kinetic domains ------------------------------------------------------------------------
 
-    /** Level24: the root source's speed (RPM, signed) and the domain's capacity in SU at that level. */
+    /**
+     * Level24. A domain's speed row: the reference's speed (RPM, signed), selector 0, capacity 0. A source's row:
+     * the boiler level (0 for a fixed source), the source's own signed speed and its capacity at that speed in SU.
+     */
     public record Level(int selector, Rat speed, double capacity) {}
 
-    /** Member24: {@code count} blocks at {@code ratio × root speed}, {@code impact} SU per RPM each. */
+    /** Member24: {@code count} blocks at {@code ratio × reference speed}, {@code impact} SU per RPM each. */
     public record Member(int node, int count, Rat ratio, double impact) {}
+
+    /**
+     * Source32: one Create source of a domain. A driven source (an engine's shaft) has a row per boiler level and
+     * the boiler node as its driver; a fixed one has one row. {@code ratio} is its speed over the reference's
+     * (null: unknown), {@code current} the row now (NONE: unknown).
+     */
+    public static final class Source {
+        public int driver = NONE;
+        public final List<Level> levels = new ArrayList<>();
+        public int current;
+        public Rat ratio;
+        public final long pos;
+
+        public Source(long pos) {
+            this.pos = pos;
+        }
+    }
 
     public static final class Domain {
         public final int index;
         public final long network;
+        /** The speed row the reference turns at now, NONE when none is. */
         public int current;
-        public int driver = NONE;
         public int flags;
         public double liveStress, liveCapacity;
+        /** The speed rows. */
         public final List<Level> levels = new ArrayList<>();
+        public final List<Source> sources = new ArrayList<>();
         public final List<Member> members = new ArrayList<>();
+        /**
+         * A shared part's members in no district's chunks (the tail, one part of the network counts it): sent after
+         * {@link #members} as one list, N_FOREIGN of them.
+         */
+        public final List<Member> tail = new ArrayList<>();
+        /**
+         * A shared part's peers: the other districts holding a listed member or source of the network or a chunk it
+         * reaches, ascending (as unsigned ids, the engine's order), never the compile's own. Empty unless
+         * {@link GlassRecords.Domain#SHARED}.
+         */
+        public final LongArrayList peers = new LongArrayList();
 
         Domain(int index, long network) {
             this.index = index;
             this.network = network;
         }
 
+        /** The sources' rows in all. */
+        public int sourceLevels() {
+            int n = 0;
+            for (Source s : sources)
+                n += s.levels.size();
+            return n;
+        }
+
         /** Adds a member, merging it into an equal one without a node (same ratio and impact). */
         public void member(int node, Rat ratio, double impact) {
+            add(members, node, ratio, impact);
+        }
+
+        /** Adds a tail member (in no district's chunks), merged as {@link #member} does, apart from the members. */
+        public void tail(int node, Rat ratio, double impact) {
+            add(tail, node, ratio, impact);
+        }
+
+        /** The members the record carries: the district's own, then the tail. */
+        public int memberRecords() {
+            return members.size() + tail.size();
+        }
+
+        private static void add(List<Member> list, int node, Rat ratio, double impact) {
             if (node == NONE) {
-                for (int i = 0; i < members.size(); i++) {
-                    Member m = members.get(i);
+                for (int i = 0; i < list.size(); i++) {
+                    Member m = list.get(i);
                     if (m.node() == NONE && m.ratio().equals(ratio) && m.impact() == impact) {
-                        members.set(i, new Member(NONE, m.count() + 1, ratio, impact));
+                        list.set(i, new Member(NONE, m.count() + 1, ratio, impact));
                         return;
                     }
                 }
             }
-            members.add(new Member(node, 1, ratio, impact));
+            list.add(new Member(node, 1, ratio, impact));
         }
     }
 
@@ -597,15 +777,37 @@ public final class GraphBuilder {
             if (GlassRecords.Recipe.size(x.inputs.size() + x.outputs.size()) > MAX_RECORD)
                 return "a recipe has " + (x.inputs.size() + x.outputs.size()) + " terms";
         for (Domain d : domains) {
-            if (d.driver != NONE && (d.driver < 0 || d.driver >= n))
-                return "domain " + d.index + " driver " + d.driver;
-            if (!d.levels.isEmpty() && (d.current < 0 || d.current >= d.levels.size()))
-                return "domain " + d.index + " current level " + d.current + " of " + d.levels.size();
+            if (!d.levels.isEmpty() && d.current != NONE && (d.current < 0 || d.current >= d.levels.size()))
+                return "domain " + d.index + " current speed row " + d.current + " of " + d.levels.size();
+            if (d.levels.size() > GlassRecords.Domain.MAX_SPEED_ROWS)
+                return "domain " + d.index + " has " + d.levels.size() + " speed rows";
+            boolean shared = (d.flags & GlassRecords.Domain.SHARED) != 0;
+            for (Source s : d.sources) {
+                if (s.driver != NONE && (s.driver < 0 || s.driver >= n))
+                    return "domain " + d.index + " source driver " + s.driver;
+                if (s.current != NONE && (s.current < 0 || s.current >= s.levels.size()))
+                    return "domain " + d.index + " source current row " + s.current + " of " + s.levels.size();
+                // A foreign source (no rows) is a shared part's alone, and has neither a boiler nor a row now.
+                if (s.levels.isEmpty() && (!shared || s.driver != NONE || s.current != NONE))
+                    return "domain " + d.index + " has a source with no rows" + (shared ? " but a driver or a current row" : " and is not shared");
+            }
             for (Member m : d.members)
                 if (m.node() != NONE && (m.node() < 0 || m.node() >= n))
                     return "domain " + d.index + " member node " + m.node();
-            if (GlassRecords.Domain.size(d.levels.size(), d.members.size()) > MAX_RECORD)
-                return "domain " + d.index + " has " + d.levels.size() + " levels and " + d.members.size() + " members";
+            for (Member m : d.tail)
+                if (m.node() != NONE)
+                    return "domain " + d.index + " tail member names node " + m.node();
+            if (!shared && (!d.tail.isEmpty() || !d.peers.isEmpty()))
+                return "domain " + d.index + " is not shared but has " + d.tail.size() + " tail members and " + d.peers.size() + " peers";
+            for (int i = 0; i < d.peers.size(); i++) {
+                if (d.peers.getLong(i) == district.id)
+                    return "domain " + d.index + " names its own district as a peer";
+                if (i > 0 && Long.compareUnsigned(d.peers.getLong(i - 1), d.peers.getLong(i)) >= 0)
+                    return "domain " + d.index + " peers are not ascending and distinct";
+            }
+            if (GlassRecords.Domain.size(d.levels.size(), d.sources.size(), d.sourceLevels(), d.memberRecords(), d.peers.size()) > MAX_RECORD)
+                return "domain " + d.index + " has " + d.levels.size() + " speed rows, " + d.sources.size() + " sources with "
+                        + d.sourceLevels() + " rows, " + d.memberRecords() + " members and " + d.peers.size() + " peers";
         }
         return null;
     }
@@ -685,27 +887,42 @@ public final class GraphBuilder {
             out.add(new Encoded(GlassRecords.IND_GRAPH_RECIPE, terms, b.array()));
         }
         for (Domain d : domains) {
-            ByteBuffer b = buf(GlassRecords.Domain.size(d.levels.size(), d.members.size()));
+            int nsl = d.sourceLevels();
+            int nm = d.memberRecords();
+            ByteBuffer b = buf(GlassRecords.Domain.size(d.levels.size(), d.sources.size(), nsl, nm, d.peers.size()));
             head(b, districtId, compile, d.index);
             b.putLong(GlassRecords.Domain.NETWORK, d.network);
             b.putInt(GlassRecords.Domain.N_LEVELS, d.levels.size());
             b.putInt(GlassRecords.Domain.CURRENT, d.current);
-            b.putInt(GlassRecords.Domain.DRIVER, d.driver);
             b.putInt(GlassRecords.Domain.FLAGS, d.flags);
             b.putDouble(GlassRecords.Domain.LIVE_STRESS, d.liveStress);
             b.putDouble(GlassRecords.Domain.LIVE_CAPACITY, d.liveCapacity);
-            for (int i = 0; i < d.levels.size(); i++) {
-                Level l = d.levels.get(i);
-                Rat s = l.speed().fitSigned();
-                int at = GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL;
-                b.putInt(at + GlassRecords.Domain.L_SELECTOR, l.selector());
-                b.putInt(at + GlassRecords.Domain.L_SPEED_NUM, (int) s.num());
-                b.putInt(at + GlassRecords.Domain.L_SPEED_DEN, (int) s.den());
-                b.putDouble(at + GlassRecords.Domain.L_CAPACITY, l.capacity());
+            b.putInt(GlassRecords.Domain.N_SOURCES, d.sources.size());
+            b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
+            b.putInt(GlassRecords.Domain.N_FOREIGN, d.tail.size());
+            b.putInt(GlassRecords.Domain.N_PEERS, d.peers.size());
+            for (int i = 0; i < d.levels.size(); i++)
+                putLevel(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, d.levels.get(i));
+            int s0 = GlassRecords.Domain.sources(d.levels.size());
+            int r0 = GlassRecords.Domain.sourceLevels(d.levels.size(), d.sources.size());
+            int first = 0;
+            for (int i = 0; i < d.sources.size(); i++) {
+                Source src = d.sources.get(i);
+                int at = s0 + i * GlassRecords.Domain.SOURCE;
+                Rat q = src.ratio == null ? null : src.ratio.fitSigned();
+                b.putInt(at + GlassRecords.Domain.S_DRIVER, src.driver);
+                b.putInt(at + GlassRecords.Domain.S_FIRST, first);
+                b.putInt(at + GlassRecords.Domain.S_ROWS, src.levels.size());
+                b.putInt(at + GlassRecords.Domain.S_CURRENT, src.current);
+                b.putInt(at + GlassRecords.Domain.S_RATIO_NUM, q == null ? 0 : (int) q.num());
+                b.putInt(at + GlassRecords.Domain.S_RATIO_DEN, q == null ? 0 : (int) q.den());
+                b.putLong(at + GlassRecords.Domain.S_POS, src.pos);
+                for (Level l : src.levels)
+                    putLevel(b, r0 + (first++) * GlassRecords.Domain.LEVEL, l);
             }
-            int m0 = GlassRecords.Domain.members(d.levels.size());
-            for (int i = 0; i < d.members.size(); i++) {
-                Member m = d.members.get(i);
+            int m0 = GlassRecords.Domain.members(d.levels.size(), d.sources.size(), nsl);
+            for (int i = 0; i < nm; i++) {
+                Member m = i < d.members.size() ? d.members.get(i) : d.tail.get(i - d.members.size());
                 Rat q = m.ratio().fitSigned();
                 int at = m0 + i * GlassRecords.Domain.MEMBER;
                 b.putInt(at + GlassRecords.Domain.M_NODE, m.node());
@@ -714,9 +931,20 @@ public final class GraphBuilder {
                 b.putInt(at + GlassRecords.Domain.M_RATIO_DEN, (int) q.den());
                 b.putDouble(at + GlassRecords.Domain.M_IMPACT, m.impact());
             }
-            out.add(new Encoded(GlassRecords.IND_GRAPH_DOMAIN, d.members.size(), b.array()));
+            int p0 = GlassRecords.Domain.peers(d.levels.size(), d.sources.size(), nsl, nm);
+            for (int i = 0; i < d.peers.size(); i++)
+                b.putLong(p0 + i * GlassRecords.Domain.PEER, d.peers.getLong(i));
+            out.add(new Encoded(GlassRecords.IND_GRAPH_DOMAIN, nm, b.array()));
         }
         return out;
+    }
+
+    private static void putLevel(ByteBuffer b, int at, Level l) {
+        Rat s = l.speed().fitSigned();
+        b.putInt(at + GlassRecords.Domain.L_SELECTOR, l.selector());
+        b.putInt(at + GlassRecords.Domain.L_SPEED_NUM, (int) s.num());
+        b.putInt(at + GlassRecords.Domain.L_SPEED_DEN, (int) s.den());
+        b.putDouble(at + GlassRecords.Domain.L_CAPACITY, l.capacity());
     }
 
     private static ByteBuffer buf(int size) {

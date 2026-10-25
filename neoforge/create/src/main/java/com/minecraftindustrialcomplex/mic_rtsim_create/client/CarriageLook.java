@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.client;
 
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarFeedClient;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarLook;
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarLookReset;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarModel;
 import com.minecraftindustrialcomplex.mic_rtsim.far.CarriageShape;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
@@ -13,6 +14,7 @@ import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexFormatElement;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
@@ -33,6 +35,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.client.model.data.ModelData;
+import org.lwjgl.system.MemoryUtil;
 
 /**
  * Far carriages as the blocks their players built (docs/choices-dh-feed.md DHT64): a carriage's shape (its
@@ -55,6 +58,12 @@ public final class CarriageLook implements FarLook {
     static final int MAX_MESHES = 512;
     /** Blocks that throw while drawn are left out of their carriage; past this many the carriage stays a box. */
     static final int MAX_BAD_BLOCKS = 8;
+    /**
+     * How far past its blocks a carriage mesh's vertices may reach (a block model sticking out of its block), and
+     * how far about each bogey's block (Create's bogey model, {@link BogeyMeshes#REACH}); a vertex past that, or not
+     * finite, keeps the carriage a box (DHT73).
+     */
+    static final float BLOCK_SLACK = 3f, BOGEY_SLACK = BogeyMeshes.REACH + 0.5f;
 
     /** A baked carriage: its parts and how they sit about the bogeys' midpoint. */
     private static final class Mesh {
@@ -127,9 +136,11 @@ public final class CarriageLook implements FarLook {
     /** Shapes that would not decode or bake: drawn as boxes until the client leaves the world. */
     private final LongOpenHashSet failed = new LongOpenHashSet();
     private Job job;
+    /** The far feed's last RESET, until what nobody asked for again since is freed (DHT70). */
+    private final FarLookReset resets = new FarLookReset();
     private long clock, lastSweep;
     private int errors;
-    private long bakes, bakeNanos, uploadNanos, bakeFrames, badBlocks;
+    private long bakes, bakeNanos, uploadNanos, bakeFrames, badBlocks, badMeshes;
     private double maxStepMs, maxPieceMs;
     /** What {@link #maxPieceMs} was: a block, a bogey or the upload. */
     private String maxPieceWhat = "none";
@@ -180,6 +191,8 @@ public final class CarriageLook implements FarLook {
             lastSweep = now;
             sweep(now);
         }
+        if (resets.due(now))
+            freeUnasked();
         long t0 = System.nanoTime();
         while (System.nanoTime() < deadline) {
             if (job == null && (job = next()) == null)
@@ -339,11 +352,17 @@ public final class CarriageLook implements FarLook {
         }
         long t1 = System.nanoTime();
         List<FarModel.Part> parts = new ArrayList<>(LAYERS.length);
+        float[] own = bounds(shape);
+        String bad = null;
         try {
-            for (int i = 0; i < LAYERS.length; i++) {
+            for (int i = 0; i < LAYERS.length && bad == null; i++) {
                 if (j.builders[i] == null)
                     continue;
                 MeshData md = j.builders[i].build();
+                if (md != null && (bad = outside(md, own)) != null) {
+                    md.close();
+                    break;
+                }
                 if (md != null) {
                     int n = md.drawState().vertexCount();
                     VertexBuffer vb = new VertexBuffer(VertexBuffer.Usage.STATIC);
@@ -368,6 +387,18 @@ public final class CarriageLook implements FarLook {
         }
         uploadNanos += System.nanoTime() - t1;
         piece(t1, "upload");
+        if (bad != null) {
+            // A vertex outside the carriage's own bounds: drawn, it would be a sliver across the sky (DHT73)
+            for (FarModel.Part part : parts)
+                part.buffer().close();
+            failed.add(j.hash);
+            wanted.remove(j.hash);
+            badMeshes++;
+            if (badMeshes <= 10)
+                MicRtsimCreate.LOGGER.warn("[mic_rtsim_create] far carriage {} baked a vertex outside its own bounds"
+                        + " ({}); it stays a box ({} so far)", Long.toHexString(j.hash), bad, badMeshes);
+            return;
+        }
         if (parts.isEmpty()) {
             // Nothing drew (its blocks all drawn by block entities, its bogeys a style with no mesh): a box (DHT63)
             failed.add(j.hash);
@@ -380,6 +411,44 @@ public final class CarriageLook implements FarLook {
         bakes++;
         bakeNanos += j.nanos;
         bakeFrames += j.frames;
+    }
+
+    /**
+     * The carriage's own bounds, {min x, y, z, max x, y, z} in its block coordinates: its blocks with
+     * {@link #BLOCK_SLACK}, and each bogey's block with {@link #BOGEY_SLACK}.
+     */
+    static float[] bounds(CarriageShape shape) {
+        float[] b = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE,
+                -Float.MAX_VALUE};
+        for (CarriageShape.Block k : shape.blocks())
+            grow(b, k.x(), k.y(), k.z(), BLOCK_SLACK);
+        for (CarriageShape.Bogey g : shape.bogeys())
+            grow(b, g.x(), g.y(), g.z(), BOGEY_SLACK);
+        return b;
+    }
+
+    private static void grow(float[] b, int x, int y, int z, float slack) {
+        b[0] = Math.min(b[0], x - slack);
+        b[1] = Math.min(b[1], y - slack);
+        b[2] = Math.min(b[2], z - slack);
+        b[3] = Math.max(b[3], x + 1 + slack);
+        b[4] = Math.max(b[4], y + 1 + slack);
+        b[5] = Math.max(b[5], z + 1 + slack);
+    }
+
+    /** The first vertex of {@code md} outside {@code b} or not finite, said in words; null when there is none. */
+    static String outside(MeshData md, float[] b) {
+        VertexFormat format = md.drawState().format();
+        int stride = format.getVertexSize(), n = md.drawState().vertexCount();
+        long at = MemoryUtil.memAddress(md.vertexBuffer()) + format.getOffset(VertexFormatElement.POSITION);
+        for (int k = 0; k < n; k++, at += stride) {
+            float x = MemoryUtil.memGetFloat(at), y = MemoryUtil.memGetFloat(at + 4), z = MemoryUtil.memGetFloat(at + 8);
+            // Written so that NaN fails too
+            if (!(x >= b[0] && x <= b[3] && y >= b[1] && y <= b[4] && z >= b[2] && z <= b[5]))
+                return String.format(Locale.ROOT, "vertex %d of %d at %s %s %s, bounds %.1f %.1f %.1f to %.1f %.1f %.1f",
+                        k, n, x, y, z, b[0], b[1], b[2], b[3], b[4], b[5]);
+        }
+        return null;
     }
 
     /** Frees meshes nobody drew for {@link #KEEP_NANOS} and forgets shapes nobody asked for in {@link #WANT_NANOS}. */
@@ -404,8 +473,32 @@ public final class CarriageLook implements FarLook {
             m.close();
         meshes.clear();
         wanted.clear();
+        resets.clear();
         failed.clear();
         BogeyMeshes.clear();
+    }
+
+    /**
+     * The far feed started over (docs/choices-dh-feed.md DHT70): the meshes and asks of carriages no mover asks for
+     * again within {@link FarLookReset#GRACE_NANOS} go then ({@link #freeUnasked}); the bogeys' meshes the prewarm
+     * drew stay, so the next bake pays no cold first draw, as do the shapes that would not bake (a hash names its
+     * blocks, so they would not bake again).
+     */
+    @Override
+    public void reset() {
+        resets.reset(clock);
+    }
+
+    /** A RESET's grace is over: frees the meshes and forgets the asks no mover asked for since. */
+    private void freeUnasked() {
+        for (var it = meshes.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
+            Long2ObjectMap.Entry<Mesh> e = it.next();
+            if (resets.stale(e.getValue().used)) {
+                e.getValue().close();
+                it.remove();
+            }
+        }
+        wanted.long2LongEntrySet().removeIf(e -> resets.stale(e.getLongValue()));
     }
 
     @Override
@@ -421,11 +514,12 @@ public final class CarriageLook implements FarLook {
         String s = String.format(Locale.ROOT,
                 "carriages: %d meshes (%d vertices, %.1f MiB), %d wanted, %d failed; %d bakes, %.2f ms each over %.1f frames, "
                         + "upload %.2f ms each, longest frame's bake %.2f ms, longest piece %.2f ms (%s); %d blocks left "
-                        + "out; bogeys %d drawn in %.1f ms",
+                        + "out; %d meshes outside their bounds; bogeys %d drawn in %.1f ms (%d outside their bounds)",
                 meshes.size(), vertices, vertices * (double) DefaultVertexFormat.BLOCK.getVertexSize() / (1 << 20),
                 wanted.size(), failed.size(), bakes, bakes == 0 ? 0.0 : bakeNanos / 1e6 / bakes,
                 bakes == 0 ? 0.0 : bakeFrames / (double) bakes, bakes == 0 ? 0.0 : uploadNanos / 1e6 / bakes, maxStepMs,
-                maxPieceMs, maxPieceWhat, badBlocks, BogeyMeshes.drawn, BogeyMeshes.drawNanos / 1e6);
+                maxPieceMs, maxPieceWhat, badBlocks, badMeshes, BogeyMeshes.drawn, BogeyMeshes.drawNanos / 1e6,
+                BogeyMeshes.outside);
         maxStepMs = 0;
         maxPieceMs = 0;
         maxPieceWhat = "none";

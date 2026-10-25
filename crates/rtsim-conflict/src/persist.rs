@@ -63,9 +63,10 @@ use crate::tunables::ConflictTunables;
 /// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
 /// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
-/// arrival (M6, MZB-271). RTC8: a camp's ledger goes on with its heir, its chief's trade memory,
-/// the tribute it owes and is placing and the heir's pair in flight, a faction ends with its owed
-/// hunts, and the wheel's events may be a camp heir (M9, MZB-437).
+/// arrival (M6, MZB-271); a party ends with the op ids of the casualties it counted (MZB-589).
+/// RTC8: a camp's ledger goes on with its heir, its chief's trade memory, the tribute it owes
+/// and is placing and the heir's pair in flight, a faction ends with its owed hunts, and the
+/// wheel's events may be a camp heir (M9, MZB-437).
 const MAGIC: u32 = u32::from_le_bytes(*b"RTC8");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -770,6 +771,10 @@ fn put_party(w: &mut Writer, x: &Party) {
     w.bool(x.chief);
     put_opt(w, &x.breaker, |w, a| w.u64(a.to_bits()));
     w.f64(x.fight_strength);
+    put_usize(w, x.casualty_ops.len());
+    for op in &x.casualty_ops {
+        w.u64(*op);
+    }
 }
 
 fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
@@ -826,6 +831,10 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
         chief: r.bool()?,
         breaker: get_opt(r, handle)?,
         fight_strength: r.f64()?,
+        casualty_ops: {
+            let n = r.len_prefix(8)?;
+            (0..n).map(|_| r.u64()).collect::<codec::Result<Vec<_>>>()?
+        },
     })
 }
 
@@ -1294,7 +1303,7 @@ impl Conflict {
         put_usize(w, st.len());
         st.iter().for_each(|v| w.var_u64(*v));
         put_usize(w, self.outbox.len());
-        for c in &self.outbox {
+        for c in self.outbox.iter() {
             let mut b = Vec::new();
             boundary::encode_cmd(0, c, &mut b);
             w.bytes(&b);
@@ -1355,7 +1364,7 @@ impl Conflict {
             let b = r.bytes()?;
             let (_, cmd, _) = boundary::decode_cmd(b)
                 .map_err(|e| CodecError::Invalid(format!("a queued command: {e:?}")))?;
-            c.outbox.push(cmd);
+            c.outbox.restore(cmd);
         }
         get_presence(r, &mut c.presence)?;
         c.peaceful = r.u8()? != 0;
