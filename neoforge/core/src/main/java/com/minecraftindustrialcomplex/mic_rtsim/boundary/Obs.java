@@ -47,6 +47,12 @@ public final class Obs {
     public static final int BASE = 0x0125;
     public static final int HOUSE_PLACED = 0x0126;
 
+    // Generations and copies (docs/boundary.md §3.2). Journaled.
+    /** A session's generation: the first record each session journals. */
+    public static final int JOURNAL_GEN = 0x0130;
+    /** A copy of a record a chunk or entity carried, journaled again when its holder loads. */
+    public static final int REASSERT = 0x0131;
+
     public static boolean isJournaled(int kind) {
         return kind >= 0x0100 && kind < 0x8000;
     }
@@ -281,6 +287,29 @@ public final class Obs {
         public static final int SIZE = 64;
 
         public static final int GENERIC = 1;
+    }
+
+    /**
+     * JOURNAL_GEN (journaled), aux 0. The session's generation: a random nonzero nonce, journaled right
+     * after the journal moved past the engine's pages, so before anything else the session journals. A
+     * holder keeps each record it carries with the nonce of the session that journaled it.
+     */
+    public static final class JournalGen {
+        public static final int GEN = 24; // u64, never 0
+        public static final int SIZE = 32;
+    }
+
+    /**
+     * REASSERT (journaled), aux 0, game time the inner record's. A copy of a record a chunk or entity
+     * carried, journaled again when its holder loads: the generation it was first journaled in, then the
+     * record whole as first journaled (its own sequence and op id). The engine applies the inner record,
+     * under this record's sequence, only when its state lacks it: it judges the copy by the generation's
+     * last sequence, never by an op id it may have forgotten.
+     */
+    public static final class Reassert {
+        public static final int GEN = 24;   // u64, the inner record's generation (0: none, always new)
+        public static final int INNER = 32; // the record as first journaled, to the end
+        public static final int SIZE = 32;  // the smallest; the inner record makes it larger
     }
 
     /** COMMAND_RESULT (journaled), aux = status. The outcome of a command that carries an op id. */

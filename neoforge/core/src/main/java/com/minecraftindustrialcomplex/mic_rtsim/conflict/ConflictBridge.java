@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
@@ -354,6 +355,8 @@ public final class ConflictBridge implements SessionPlugin {
         public final String body;
         final int javaBody;
         final EntityType<?> type;
+        /** Its stack's units have no crystal on them (STACK_BARE): its body is made bare, and made so again if it is refilled. */
+        boolean bare;
         /** Its place behind the anchor: {@code lat} to the right, {@code back} behind (blocks). */
         final double lat, back;
         UUID uuid;
@@ -857,7 +860,7 @@ public final class ConflictBridge implements SessionPlugin {
         p.lastState = now;
         byAgent.put(agent, p);
         int n = tryPlace(st, level, now) ? st.slots.size() : 0;
-        journalMaterialized(p, 0, n, now);
+        journalMaterialized(p, 0, 0, n, now);
         ConflictNews.post(ConflictNews.Event.DEMAND_MADE, faction, p.player);
     }
 
@@ -986,6 +989,9 @@ public final class ConflictBridge implements SessionPlugin {
                 // stack's kind at its rear (MZB-109).
                 st.slots.add(new Slot(st, true, false, k.body(), k.javaBody(), k.type(), 0.0, ROW * ((counts[i] + 1) / 2)));
             }
+            if ((sflags[i] & ConflictRecords.Materialize.STACK_BARE) != 0)
+                for (Slot sl : st.slots)
+                    sl.bare = true;
             st.walk(tx + st.offX, tz + st.offZ, p.speed, 0L, now);
             if (lurk != null)
                 anchorAtSpot(st, lurk, now); // a lurking agent's stack stands at the spot, not on the arc (MZB-360)
@@ -997,16 +1003,18 @@ public final class ConflictBridge implements SessionPlugin {
             if (tryPlace(st, level, now))
                 n += st.alive();
         }
-        journalMaterialized(p, wave, n, now);
+        journalMaterialized(p, wave, pflags, n, now);
     }
 
-    private void journalMaterialized(Party p, int wave, int spawned, long now) {
+    /** {@code flags}: the command's, echoed (docs/boundary.md §9.3): a replay tells a fight from a sighting by them. */
+    private void journalMaterialized(Party p, int wave, int flags, int spawned, long now) {
         int dim = session.dimId(p.dimension);
         ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.BAND_MATERIALIZED, ConflictRecords.Materialized.SIZE, spawned, now);
         r.putLong(ConflictRecords.Materialized.AGENT, p.agent);
         r.putInt(ConflictRecords.Materialized.EPOCH, p.epoch);
         r.putInt(ConflictRecords.Materialized.DIM, dim);
         r.putInt(ConflictRecords.Materialized.WAVE, wave);
+        r.putInt(ConflictRecords.Materialized.FLAGS, flags);
         session.boundary().commit(r);
         materialized++;
     }
@@ -1221,6 +1229,9 @@ public final class ConflictBridge implements SessionPlugin {
             Mob m;
             try {
                 m = ConflictBodies.create(level, sl.type, x, y, z, yw);
+                // A bare unit's body is made without its crystal, then a camp body's own state is copied over it.
+                if (m != null && sl.bare)
+                    BodyKinds.makeBare(sl.body, m);
                 if (m != null && from != null)
                     so.site.kind.copy(from, m);
             } catch (RuntimeException ex) {
@@ -1841,7 +1852,7 @@ public final class ConflictBridge implements SessionPlugin {
         forget(sl);
     }
 
-    /** CHIEF_KILLED (with a Java op id) for the chief, else BAND_CASUALTIES of one member. */
+    /** CHIEF_KILLED for the chief, else BAND_CASUALTIES of one member, each with a Java op id (MZB-589 for the latter). */
     private ByteBuffer journalLoss(Slot sl, int by, UUID killer, long now) {
         Party p = sl.stack.party;
         ByteBuffer r;
@@ -1866,7 +1877,7 @@ public final class ConflictBridge implements SessionPlugin {
                 r.putLong(ConflictRecords.Casualties.KILLER_MOST, killer.getMostSignificantBits());
                 r.putLong(ConflictRecords.Casualties.KILLER_LEAST, killer.getLeastSignificantBits());
             }
-            session.boundary().commit(r);
+            session.boundary().commitWithOpId(r, ConflictRecords.Casualties.OP_ID);
             casualties++;
         }
         return r;

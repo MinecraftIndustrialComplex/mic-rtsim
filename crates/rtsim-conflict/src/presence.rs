@@ -95,6 +95,12 @@ impl Presence {
         self.last.remove(&player);
     }
 
+    /// Every player's span ends (a session's replay is over): each one's next report starts
+    /// afresh.
+    pub fn every_player_left(&mut self) {
+        self.last.clear();
+    }
+
     /// A stay the caller knows in one piece (a scripted player): `ticks` in `chunk` up to `at`.
     pub fn credit(
         &mut self,

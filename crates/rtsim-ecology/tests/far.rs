@@ -7,9 +7,9 @@ use rtsim_ecology::far::{FarLeg, FarState};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_ecology::synth;
 use rtsim_ecology::tunables::DragonTunables;
-use rtsim_kernel::clock::Tick;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
-fn matches_row(d: &rtsim_ecology::Dragons, r: &FarLeg) {
+fn matches_row(d: &rtsim_ecology::Dragons, r: &FarLeg, at: Tick) {
     let id = dragon_of(r.agent).expect("a dragon's agent");
     let Some(x) = d.dragon(id) else {
         assert_eq!(r.state, FarState::Gone, "{r:?}: no row, so gone");
@@ -18,6 +18,7 @@ fn matches_row(d: &rtsim_ecology::Dragons, r: &FarLeg) {
     assert_eq!(r.species, x.species);
     assert_eq!(r.variant, x.variant);
     assert!((1..=5).contains(&r.stage), "{r:?}");
+    assert_eq!(u64::from(r.age_days), x.age(at) / TICKS_PER_DAY, "{r:?}: the age in whole days, as Ice and Fire's");
     match (r.state, x.state, x.leg) {
         (FarState::Fly, State::Flying(_), Some(l)) | (FarState::Hunt, State::Hunting { .. }, Some(l)) => {
             assert_eq!((r.x0, r.z0, r.x1, r.z1), (l.path.x0, l.path.z0, l.path.x1, l.path.z1));
@@ -43,8 +44,9 @@ fn a_session_sends_every_dragon_then_only_changes() {
     let all = d.take_far(Tick::ZERO);
     assert_eq!(all.len(), d.dragons.len(), "a session start sends every dragon");
     for r in &all {
-        matches_row(&d, r);
+        matches_row(&d, r, Tick::ZERO);
     }
+    assert!(all.iter().any(|r| r.age_days > 0), "some dragon is a day old or more");
     assert!(d.take_far(Tick::ZERO).is_empty(), "nothing changed since");
 
     let mut flights = 0;
@@ -55,7 +57,7 @@ fn a_session_sends_every_dragon_then_only_changes() {
         let due = d.take_far(at);
         steps += usize::from(!due.is_empty());
         for r in &due {
-            matches_row(&d, r);
+            matches_row(&d, r, at);
             flights += usize::from(r.state == FarState::Fly);
         }
     }

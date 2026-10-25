@@ -521,17 +521,22 @@ public final class WorldGameTests {
                         item.discard(); // the world before the crash is gone; what loads is the saved chunk
                     level.addLegacyChunkEntities(back.stream());
                 })
-                .thenWaitUntil(() -> check("the reloaded drops journaled the DIED again", stub.eventOpCount(op[0]) >= 2))
+                .thenWaitUntil(() -> check("the reloaded drops journaled copies of the DIED",
+                        !RtsimTests.copiesFor(stub, Obs.DIED, agent).isEmpty()))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> died = RtsimTests.recordsFor(stub, Obs.DIED, agent);
+                    List<ScriptedEngine.Received> copies = RtsimTests.copiesFor(stub, Obs.DIED, agent);
                     for (ScriptedEngine.Received d : died)
                         check("every DIED has the same op id", d.view().getLong(Obs.Died.OP_ID) == op[0]);
+                    for (ScriptedEngine.Received c : copies)
+                        check("every copy is that DIED, dropped", c.view().getLong(Obs.Died.OP_ID) == op[0] && c.skipped());
+                    check("the death counts once", stub.eventOpCount(op[0]) == 1);
                     check("the cargo is in the world exactly once: 30 wheat", RtsimTests.itemsAround(helper, Items.WHEAT, 10) == 30);
                     check("and 12 emeralds", RtsimTests.itemsAround(helper, Items.EMERALD, 10) == 12);
                     PuppetGroup g = RtsimTests.group(agent);
                     check("the rest of the caravan stays one group, the dead llama is not back", g != null && g.liveMembers() == 2);
-                    record("llamaCargo", "DIED", died.size() + " records, one op id, engine counts " + stub.eventOpCount(op[0])
-                            + " arrivals of it (applied once)");
+                    record("llamaCargo", "DIED", died.size() + " records and " + copies.size() + " copies, one op id, engine counts "
+                            + stub.eventOpCount(op[0]) + " arrivals of it (applied once)");
                     for (ItemEntity item : level.getEntitiesOfClass(ItemEntity.class, new AABB(BlockPos.containing(RtsimTests.centre(helper))).inflate(10)))
                         item.discard();
                     stub.despawnGroup(agent, 1);

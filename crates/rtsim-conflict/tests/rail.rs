@@ -1712,3 +1712,135 @@ fn a_world_with_no_rail_keeps_base_layout_but_for_pointers() {
     assert_eq!(size_of::<rtsim_conflict::engine::Feud>(), 296 + 16);
     assert_eq!(size_of::<rtsim_conflict::tables::FactionRow>(), 200 + 8);
 }
+
+// ---- the session's replay (docs/replay-gate.md §4.4, §6.1; RP-102) ------------------------------
+
+use rtsim_conflict::boundary::Cmd;
+
+/// RP-102: the rail decides nothing of its own while the session's replay runs. Its records,
+/// replayed into an engine whose replay is open, climb the owner's feud exactly as they did live
+/// (the same meter, step and kept notice); the climb's FACTION_NOTICE is dropped by the gate, no
+/// kind the gate calls "never" is decided, and the kept notice goes once at the replay end.
+#[test]
+fn a_replayed_rail_climb_decides_as_live_and_its_notice_waits_for_the_replay_end() {
+    let run = |replay: bool| {
+        let (mut w, mut c, f, player) = dens(61);
+        let mut probe = Probe::default();
+        if replay {
+            c.begin_replay(true);
+        }
+        let _ = c.take_commands();
+        for k in 0..60u64 {
+            c.ingest(
+                &mut w,
+                &mut probe,
+                &pass(7, PLAYER, 1_000 + k),
+                Tick(1_000 + k),
+            );
+        }
+        c.run_until(&mut w, &mut probe, Tick::from_days(1));
+        let cmds = c.take_commands();
+        (c, f, player, cmds)
+    };
+    let notices = |cmds: &[Cmd]| -> Vec<Cmd> {
+        cmds.iter()
+            .filter(|c| matches!(c, Cmd::Notice(_)))
+            .cloned()
+            .collect()
+    };
+    let (live, f, player, live_cmds) = run(false);
+    let (mut rep, _, _, rep_cmds) = run(true);
+    let step = live.feud(f, player).expect("a feud").step;
+    assert!(step >= Step::Notice, "the rail climbed the feud: {step:?}");
+    assert_eq!(rep.feud(f, player).map(|x| x.step), Some(step));
+    assert_eq!(meter_of(&rep, f, player), meter_of(&live, f, player));
+    assert_eq!(rep.stats.rail_pushes, live.stats.rail_pushes);
+    assert_eq!(rep.kept_notices(), live.kept_notices());
+    let sent = notices(&live_cmds);
+    assert_eq!(sent.len(), 1, "live, the notice is sent: {live_cmds:?}");
+    assert!(notices(&rep_cmds).is_empty(), "replaying: {rep_cmds:?}");
+    let g = rep.replay_gate_counts();
+    assert_eq!(g.never, 0, "{:?}", g.last_never);
+    assert!(g.dropped >= 1, "the notice, dropped");
+    // The replay end sends what the feud keeps: the notice live sent.
+    rep.resend_notices();
+    assert!(!rep.replaying());
+    assert_eq!(notices(&rep.take_commands()), sent);
+}
+
+/// RP-102: a band bound for a track asks no watcher when it arrives (nobody to fight, nothing to
+/// raid), so its arrival while the session's replay runs is not held (§6.1) and does what it did
+/// live: it waits out its patience at the spot. Nothing is deferred, raided or looked for.
+#[test]
+fn a_track_raids_arrival_while_replaying_is_not_held_and_waits_as_live() {
+    let rail = Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z);
+    let run = |replay: bool| {
+        let (mut w, mut c, f, player) = dens(35);
+        c.set_emission_for(&mut w, f, player, 14.0, rail, track(66), Tick(10));
+        let mut probe = Probe::default();
+        let raid = |c: &Conflict| {
+            c.parties
+                .iter()
+                .find(|(_, p)| p.kind == rtsim_conflict::culture::PartyKind::Raid)
+                .map(|(h, p)| (h, p.phase))
+        };
+        let mut t = Tick(10);
+        while raid(&c).is_none_or(|r| r.1 != Phase::Out) {
+            t = Tick(t.0 + 100);
+            c.run_until(&mut w, &mut probe, t);
+            assert!(t < Tick::from_days(12), "no raid set out");
+        }
+        let (p, _) = raid(&c).expect("the raid");
+        let Target::Track { spot, .. } = c.parties[p].target else {
+            panic!("{:?}", c.parties[p].target);
+        };
+        if replay {
+            c.begin_replay(true);
+        }
+        let deferred = c.replay_gate_counts().deferred;
+        while c.parties[p].phase == Phase::Out {
+            t = Tick(t.0 + 100);
+            c.run_until(&mut w, &mut probe, t);
+            assert!(t < Tick::from_days(12), "the raid never arrived");
+        }
+        let x = &c.parties[p];
+        let arrived = (
+            x.phase,
+            x.until,
+            x.bored_at,
+            *x.route.last().expect("a route"),
+            x.seg,
+        );
+        let deferred = c.replay_gate_counts().deferred - deferred;
+        (
+            arrived,
+            spot,
+            deferred,
+            probe.districts_near + probe.raids,
+            c.stats.bored,
+        )
+    };
+    let (live, spot, _, _, _) = run(false);
+    let (rep, _, deferred, asked, bored) = run(true);
+    assert_eq!(live.0, Phase::Waiting, "live, it waits at the track");
+    assert_eq!(live.1, live.2, "until its patience runs out");
+    assert_eq!(live.3, (spot.x, spot.z), "at the spot");
+    assert_eq!(rep, live, "replaying, as live: not held");
+    assert_eq!(deferred, 0, "no watcher asked, nothing deferred");
+    assert_eq!((asked, bored), (0, 0), "nothing raided or looked for yet");
+}
+
+#[test]
+fn a_copy_of_a_rail_pass_counts_nothing() {
+    // Java never copies a RAIL_PASS (no op id, journaled once): a copy, were one sent, is dropped,
+    // where the same record live counts its leg (RP-104).
+    let (mut w, mut c, f, player) = dens(50);
+    let mut probe = Probe::default();
+    c.ingest_copy(&mut w, &mut probe, &pass(9, PLAYER, 1_000), Tick(1_000));
+    assert_eq!(c.stats.rail_passes, 0);
+    assert!(!c.holds_train(9) && c.factions.row(f).rail_meter(player).is_none());
+    // The control: the same pass live is counted and held.
+    c.ingest(&mut w, &mut probe, &pass(9, PLAYER, 1_100), Tick(1_100));
+    assert_eq!(c.stats.rail_passes, 1);
+    assert!(c.holds_train(9) && meter_of(&c, f, player).n == 1.0);
+}

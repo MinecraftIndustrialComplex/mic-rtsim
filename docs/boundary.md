@@ -194,6 +194,8 @@ an operation id at most once.
 | 0x0105 | DIED | member index | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0110 | TRANSFER | transfer kind | 24 u64 opId, 32 u64 from, 40 u64 to, 48 u32 item, 52 reserved, 56 i64 amount | 64 |
 | 0x0111 | COMMAND_RESULT | status | 24 u64 cmdSeq, 32 u64 opId | 40 |
+| 0x0130 | JOURNAL_GEN | 0 | 24 u64 gen: the session's generation, random, never 0. A session's first journaled record (§3.2) | 32 |
+| 0x0131 | REASSERT | 0 | 24 u64 gen (the inner record's; 0: none), 32 the record a holder carried, whole as first journaled. gameTime the inner record's (§3.2) | 32 + record |
 | 0x0020 to 0x0022, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
 
 **MEMBER_STATE** (what a body adapter captured):
@@ -245,11 +247,13 @@ smaller of that value and the last sequence the journal's file on disk actually 
 (`JournalSavedData.writtenThrough`): a write the chunk barrier held, or one that failed, does not
 count (docs/choices-journal-barrier.md JB1). The next hand-over carries the value; the engine may then
 forget op ids applied at or before it, and a camp ledger forgets the CAMP_BODIES answers it booked from
-records at or before it (MOWZIE.md §4.9, MZB-177).
+records at or before it (MOWZIE.md §4.9, MZB-177), from the conflict's replay end on (RP-68).
 
-**Idempotent events.** TAKEN, DIED and COMMAND_RESULT may arrive more than once (§3.1). The engine
-applies each at most once: by op id while it remembers it, and by state after that (a member that
-is already gone, an op that is already done).
+**Idempotent events.** A record a chunk or entity carries arrives again as a copy (REASSERT, §3.1,
+§3.2), which the engine judges by the generation the record was journaled in, not by op id. The
+engine still applies an op id at most once while it remembers it, and by state after that (a member
+that is already gone, an op that is already done): a record too large to copy is journaled again
+plainly, and an engine that a crash rolled back resends commands Java may have applied.
 
 **Deaths are journaled at the end of the tick** they happen in, once they are certain: another mod
 can still cancel a death after the bridge saw LivingDeathEvent.
@@ -258,6 +262,16 @@ can still cancel a death after the bridge saw LivingDeathEvent.
 from before this session, flagged `REPLAY`) never makes an agent embodied again. At SESSION_START every agent the
 engine thought embodied is abstract again, with the last state it knew. The DEMATERIALIZED records
 of a clean shutdown come later, as journal replay.
+
+That is phase 1's rule. The four modules (conflict, dragons, herds, ships) follow the replay gate instead
+(docs/replay-gate.md, choices RP-1 onward): from SESSION_START until the replay end (the first record at
+or past `session_first`) they keep the bodies their pages hold embodied, honour a replayed *_MATERIALIZED
+that is not a copy (an engine started from pages only), decide nothing that embodies or moves a body,
+hold a war party's arrival at a watched target, run their clock and phase 1's world only as far as the
+replayed records (industry's clock is not held), and drop or hold each command kind as their gate says;
+at the replay end every body still embodied becomes abstract. A record is replayed when its own OBS_SEQ
+(a copy's own, for a REASSERT) is below `session_first`. Pages hold no module command for the new
+session: the gate drops a restored body command at the session start.
 
 ### 2.4 Commands (the engine to Java)
 
@@ -308,12 +322,13 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
 disk. It holds:
 - `lastAppliedCmdSeq`;
 - every journaled observation the engine has not acknowledged, as the exact record bytes;
+- the newest JOURNAL_GEN the engine acknowledged, kept past the trim (`pinnedGen`, §3.2);
 - `nextObsSeq`;
 - Java's dictionary.
 
 **Replay is the normal path.** Journaled observations always reach the engine from the journal: at
 each hand-over Java copies the entries it has not sent yet this session. At a session start it has
-sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The engine acknowledges
+sent none, so everything unacknowledged goes out again, flagged `REPLAY`, after the kept JOURNAL_GEN. The engine acknowledges
 (`ackedObsSeq`) only what pages on disk include, and Java then trims.
 
 **Op ids, both ways:**
@@ -339,11 +354,19 @@ acknowledges them **in the same session**:
 - a taken creature carries its MEMBER_STATE and TAKEN;
 - each item a dying member dropped carries its MEMBER_STATE and DIED.
 
-When the holder loads in a later session (a chunk load, an entity read from disk), Java journals the
-records again: the same bytes and op ids, new sequences. It drops them from the holder once the engine
-acknowledges a sequence at or past them in this session; within one session sequences are never
-reused, so that comparison is exact. A known gap: an item picked up before the acknowledgement takes
+Each record is kept with the generation it was journaled in (§3.2), and so is a reconcile epoch's
+pending IND_RECONCILE_RESULT (`mic_rtsim:reconcile`). When the holder loads (a chunk load, an entity
+read from disk), Java journals a copy of each record (REASSERT), which the engine applies only when its
+own state lacks the record. It drops them from the holder once the engine acknowledges a sequence at or
+past the copies in this session; within one session sequences are never reused, so that comparison is
+exact. The holder keeps the record as first journaled, never the copy, so a holder that loads again
+before the acknowledgement journals the same copy again. A known gap: an item picked up before the acknowledgement takes
 its record into a player's inventory, where nothing carries it.
+
+The records carry the engine life they were written in (docs/choices-reinstall-guard.md RG14). A
+holder that loads into another life, after a sim reset, drops them without journaling them: the new
+engine took the world's state from the world, so the old records could only apply something twice. An
+op id of another life is not looked up for DUPLICATE either.
 
 **The other way round** (the journal ahead of a chunk): vanilla writes the journal in `saveLevelData`,
 before it serializes any chunk, and skips a chunk saved in the last 10 s, so a journal could say applied
@@ -358,6 +381,69 @@ R21 to R24). Entities that carry records are not covered.
 **Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29). A held or
 failed journal write widens that window to the next world save; WORLD_SAVED no longer reports it, so P29's
 `confirm_through` will keep the older page generation (docs/choices-journal-barrier.md JB1, JB6).
+
+### 3.2 Generations and copies (SEC-1 S4p, DECISIONS.md)
+
+**Why.** A holder's records used to be journaled again as themselves, and the engine refused a repeat
+by op id. But it forgets op ids at each WORLD_SAVED, while Java drops the holder's records only at the
+acknowledgement of their new sequences, which comes with a later page save. A holder that unloads and
+loads again in between, or stays unloaded across sessions, journaled a record the engine had applied
+and no longer recognised; a record with no op id at all (a TRANSFER without one, an industry record
+only its sequence names) was never recognised. So a copy is judged by something the engine never
+forgets: the generation that journaled the record.
+
+**Generations.** Each session journals JOURNAL_GEN first, a random nonzero 64-bit nonce, right after
+Java moves past the pages, so its sequence is the session's first (`max(worldNextObsSeq, pagesObsSeq
++ 1)`). The engine opens that generation there and closes the one before; every record it admits after
+moves the open generation's last sequence. A session whose first record is not a JOURNAL_GEN (a bridge
+from before generations) gets an unnamed generation, so the generation before it still closes where it
+ended.
+
+**Copies.** A holder keeps each record with its generation. At the holder's load Java journals
+REASSERT: the generation, then the record whole as first journaled, under a new sequence. The engine
+admits the REASSERT by its own sequence like any record, then judges the copy by (gen, s), s the inner
+record's own sequence, in this order:
+1. gen 0 (no generation named it): new;
+2. a copy of (gen, s) applied before: dropped;
+3. gen is the open generation: new only past its last sequence (in practice never: the open generation
+   is the session's own, which admitted s before the copy);
+4. gen is closed: new when s is past the last sequence it admitted;
+5. gen unknown (no page holds it: a crash lost the session's pages with its journal, or a sim reset):
+   new.
+
+A new copy applies as its record under the copy's sequence (its op id checked as any record's) and
+joins the applied copies, for an unknown generation too, so a second copy of it is dropped. A dropped
+copy is answered as a record whose op id was already heard (an industry or dragons record gets its
+answer again). Java's journal is drained in sequence order, so a generation that admitted a sequence
+past s was offered s before it; a crash that lost the pages lost the generation's last sequence with
+the record, and the copy applies. A record too large to wrap (32 bytes plus the record above
+MAX_RECORD) is journaled again plainly, as before generations, and counted (`/rtsim status`).
+
+**Where the engine keeps them.** The kernel's `Replay`: the open generation (nonce, last sequence, the
+copies applied in it) in the meta page (version 2). A closed generation never changes again, so the
+closed ones are written once, in blocks of 256 at page table 2 (magic `RTJG`): a save writes the blocks
+that gained one, or all of them after a failed save. Nothing falls off: a holder unloaded for a thousand
+sessions is still judged by its own generation, at about 14 bytes a session on disk, plus 12 for each
+applied copy (copies apply only after a crash or a reset).
+
+**The journal keeps its newest acknowledged JOURNAL_GEN.** A trim drops the entries the engine
+acknowledged, except the newest JOURNAL_GEN among them (`Journal.pinnedGen`, saved with the journal
+as `pinnedGen`), which is sent first at each session start like an entry; pages that include it skip
+it. The entries after it, up to the next JOURNAL_GEN among them, are that generation's. Without it,
+pages older than the journal's first entry (restored from a backup, say) would admit those entries
+under the pages' own open generation, and a copy of one of them would find its generation unknown and
+apply a second time. It is not an entry: the journal's first sequence (`SESSION_START`'s
+`JOURNAL_FIRST_OBS_SEQ`) is the first entry after it.
+
+**Known limit.** When the pages are older than the journal's first entry (a journal trimmed past the
+pages, §3), the engine skips the gaps and admits the rest: the kept JOURNAL_GEN opens its generation,
+and the entries after it move that generation's last sequence past the trimmed stretch, so a copy of
+a record from that stretch is dropped. It is part of what that case loses anyway; the bridge announces
+again what it remembers (`BoundarySession.observationsLost`).
+
+**After a reset** (the reinstall guard's choice RG14): an engine that started over took its state
+from the world. The guard drops the old engine's records in Java before they are journaled; without
+it, a copy applies unless the generation the journal kept admitted that sequence or a later one.
 
 ## 4. Phase 1: caravans and markets (PLAN.md §8)
 
@@ -560,13 +646,16 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    §1.2; its release store of `published` is its last act on the buffers.
 4. **Journaled observations** go through `Replay::admit` (TRANSFER, TAKEN, DIED and
    COMMAND_RESULT applied or duplicate with their op ids); a gap is logged and skipped
-   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every agent abstract;
-   WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
+   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every phase 1 agent
+   abstract (the four modules make theirs abstract at the replay end instead, §2.3 and
+   docs/replay-gate.md); WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
 5. **Saves**: the pages are snapshotted at a step boundary (before the first journaled record past
    the requested `through`) and written on the IO lane; `ackedObsSeq` names only pages on disk.
 6. **Commands**: transfers go through the `Outbox`, leave it when their COMMAND_RESULT is admitted,
    and are resent after a restart with their original sequences and op ids, before anything new;
-   puppet commands are per session. DICT records come before their first use in the same buffer.
+   puppet commands are per session (the four modules' pass a gate per engine that sends none of them
+   while the journal replays, docs/replay-gate.md §4). DICT records come before their first use in
+   the same buffer.
    What does not fit waits (`MORE`).
 7. **Op ids**: Java's have the top bit set; the engine's leave it clear. Ordered transfers take 55
    random bits (§2.2); the sim's own commands derive theirs from their identity (industry, phase 1).
@@ -780,6 +869,22 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      1 link snapshots at every save, in the same commit. Pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
    - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
+     - **A residual, not built** (the coordinator's ruling; fixes6 item 6; RP-57). Switched off,
+       the conflict ignores its journaled records without folding their epochs (rtsim-jni
+       `engine/conflict.rs:565`, `journaled`), so this sequence can issue an epoch twice (against
+       docs/replay-gate.md §5.3):
+       1. A session crashes with the conflict on, after Java journaled records of epochs it issued
+          since its last save.
+       2. The next start has the conflict off: its replay ignores those records, and it saves past
+          the crashed session's window, so the journal is trimmed of them.
+       3. A later start turns the conflict on. Its pages never saw that window's epochs and its
+          journal no longer holds them, so no floor is raised (RP-57).
+       4. That session can issue the crashed window's epochs again.
+
+       Not the old-life case of RG5 and RG6: that life is Java's, covers the whole directory, and
+       is drawn only when the pages include no observation. The option not taken, with no format
+       change: the jni conflict module detects the gap at switch-on (its pages' `now` older than
+       the journal's start) and raises every party's epoch past the window before it ingests.
    - **Tests.** Order 29 (`CONFLICT_COMMAND`, TEST mode) queues a conflict command record with
      Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
      `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
@@ -1427,9 +1532,10 @@ body mod is verified: it is the contract a plugin would have to meet.
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
 plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
-CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178); that of the
-rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
-deferred and drops them, and sends none of their commands.
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178), and so is
+CHIEF_STATE's (slice M6, the Frostmaw, MZB-250 to MZB-299); that of the rest comes with a later
+slice (§9.6), and until then the engine decodes them, counts them as deferred and drops them, and
+sends none of their commands.
 
 ### 9.1 Kind ranges (reserved)
 
@@ -1499,10 +1605,10 @@ are untouched.
 | 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved | 56 |
 | 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
 | 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
-| 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 reserved | 48 |
-| 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq | 48 |
+| 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 u32 flags (the BAND_MATERIALIZE's flags, echoed: 8 a fight's wave; without 8 a sighting's; 0 an envoy's; a replay tells a held fight from a sighting by them, docs/replay-gate.md §6.1, RP-56) | 48 |
+| 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq. No free bytes, so unlike BAND_MATERIALIZED it does not echo the command's flags (8 a fight's wave): a replay reads a sighting refused inside a held fight's slack as the fight's refusal, which loses that fight's live parity, not its books (accepted residual, docs/replay-gate.md §6.1, RP-54). For whoever next changes this layout, the option not taken: `wave` is a u32 here and BAND_MATERIALIZE's a u16, so its high half (bytes 38 and 39) could carry the echoed flags | 48 |
 | 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
-| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
+| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId (a Java op id: the top bit set, committed with `commitWithOpId`, MZB-589) | 72 |
 | 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0808 | ENVOY_ANSWER | 1 accepted, 2 refused, 3 attacked | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast | 56 |
 | 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
@@ -1511,7 +1617,7 @@ are untouched.
 | 0x080C | RAIL_PASS | 0 | 24 u64 faction, 32 u64 train, 40 u64 ownerMost, 48 u64 ownerLeast ((0, 0): none), 56 u32 dimension, 60 reserved, 64 f64 x, 72 y, 80 z (the train's own sample nearest the camp's centre: a point on the track), 88 i64 entryTick, 96 i64 exitTick (both game time) | 104 |
 | 0x080D | TRAIN_PASSED | flags: 1 watched | 24 u64 agent, 32 u32 epoch, 36 u32 carriage (the nearest the track point, from 0), 40 u64 train | 48 |
 | 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
-| 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief; u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
+| 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief, 8 the crystal is on this body (a chief body only); u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
 | 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
@@ -1520,9 +1626,9 @@ are untouched.
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
 All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN and the camp records
-(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the rest are deferred
-(§9.6).
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, CHIEF_STATE (0x0091) and
+the camp records (0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the
+rest are deferred (§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1554,6 +1660,25 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   when the engine's `Replay` has applied every record before the session's first live one, however
   many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
   counts off the bodies kept for its epoch live and replayed alike (MZB-142).
+- **BAND_CASUALTIES carries an op id (OP_ID at 64, size 72; MZB-589) and the engine counts a copy
+  once.** The entity's death listener commits it on the dead body's entity, and the reassert of a
+  record journaled on an unloaded chunk or entity commits it again under a new OBS_SEQ with the same
+  bytes; the engine's replay forgets the op at WORLD_SAVED, so without an op the second copy took
+  another member of the band. Java commits it with `commitWithOpId`, so every record has its own
+  random op and a copy has the same one. The engine skips a copy **per party** and not through the
+  world's applied ops (`Obs::op()`, which holds every op of the world's life and is saved at every
+  save: one entry per member death would never shrink): `Party.casualty_ops` lists the op of each
+  record the party counted, saved with the party (RTC7, a length-prefixed list at the end of the
+  party record), and `casualties()` returns at once for an op in it, whether the band is in view
+  or a recalled stack of its epoch is being counted off. Only a record that took a unit is listed,
+  so the list holds at most `start_units` ops, and it is counted in the party's memory estimate. It
+  goes with the party: a copy that comes after the band has ended carries the old agent id and finds
+  no party (`party_of` checks the handle's generation and the epoch; `handle.rs` retires a slot
+  before its u16 generation would wrap, so an old agent id never names a later party), and a copy
+  after the despawn took the epoch's stack is no death as before. A crash is covered by the
+  journal and not by the list: the pages that survive predate the casualty, so the replay applies
+  it once and the reasserted copy is skipped. Two records for the same body with two ops are two
+  deaths.
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
   that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
   flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
@@ -1562,6 +1687,32 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   MZB-146); the plugin still journals it when that body dies (nothing else comes of it on the Java
   side: the death and its drops are the mob's own, and the in-world news is a no-op until it lands:
   MZB-147).
+  **A boss's chief is the band's one unit.** Of the cultures with a boss renewal (`renewal.boss`, the
+  Frostmaw), the chief is the band's only body, and CHIEF_KILLED takes that unit off the band and
+  counts one casualty, with no second bump of the pressure (MZB-295, amended at review). BAND_MATERIALIZE
+  therefore sends a boss's chief stack with `count` one less than its unit count, so one Frostmaw
+  makes a stack of count 0 with MEMBER_CHIEF (MZB-127: the chief alone), and Java makes exactly one
+  body, the den's own. Another culture's chief is an extra body outside the units (MZB-109): its
+  stack is the units' count, Java makes that many unit slots and one more for the chief, and its
+  death takes no unit. BAND_DEMATERIALIZED never counts the chief among the survivors, so for a boss
+  band the engine adds the living chief back into the first unit's survivors (MZB-295, amended at
+  review C).
+  **A robbed Frostmaw's raid** has no crystal to give. A stack whose units fight as their bare row
+  (the culture's `without_crystal` row, taken when the faction's crystal is gone) carries
+  MEMBER_BARE (flag 2); Java makes each body of the stack without its crystal, after it makes it
+  and before a den body's own state is copied over it, so a body handed off from its den keeps its
+  own. The flag is a bit of the stack, not a body id of its own, so that a body's identity never
+  depends on the crystal's state: the claim, the hand-back, the casualties and a member's death all
+  go by the body id (MZB-250 to MZB-299, amended at review C). The core knows only the generic
+  flag; the plugin registers the bare form of a body kind (`BodyKinds.registerBare`).
+  **The killer.** CHIEF_KILLED's and CAMP_DEATH's killer kind come from vanilla's kill credit
+  (`getKillCredit`: a player's hit or a pet's within 100 ticks, else the last mob that hurt it), not
+  from the damage source alone (MZB-261, corrected at review C). A real player's credit is
+  BY_PLAYER with its UUID. A machine (a NeoForge FakePlayer) that strikes the killing blow replaces
+  vanilla's `lastHurtByPlayer`, so its kill is BY_OTHER with no killer (a zero UUID in the record),
+  not the credit of a player whose hit came earlier. BY_OTHER and BY_NONE count as the player's loss
+  for a boss's camp (EQUILIBRIUM.md §2.2), so a machine's kill of a Frostmaw still bumps the
+  pressure.
   Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
@@ -1583,10 +1734,24 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   acknowledged, and journaled again at load. One reconcile can therefore have several CAMP_BODIES
   records (a holder's, journaled again, and held lines answered later), each with its lines'
   indexes: the engine books each (op, line) once.
-- **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5);
-  **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`), with that body's
-  slot and generation; **TRADED** a masked trade with the grove's minions; **HAVEN_CHEST** a grove
-  chest tribute can go into.
+  **The crystal in a census.** The engine reads a camp's crystal off the chief body's own BODY_CRYSTAL
+  bit, not off the record's flags (flag 2, crystal held, which Java still sets from the chief body
+  nearest the spot). It looks only at a body flagged BODY_CHIEF that its own books keep (a matched
+  Body or Left slot, or an adopted stray) and only when the record's flag 1 says a chief is present.
+  A chief-kind body that no slot keeps (the leftover of a Dead slot, such as a robbed Frostmaw that
+  died away) says nothing, so it cannot flip a new Frostmaw's crystal; with no kept chief body the
+  engine keeps the crystal its books have (MZB-269, amended at review C). FACTION_FOUND's census byte
+  (flag 2) is still the byte of the first chief body found, since discovery keeps no chief: a
+  residue (MZB-289).
+- **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5). The
+  plugin sends it with flags 0 when the steal takes the crystal (flag 1, crystal held, is for a body
+  that has it); it is latest-wins, so a crash can lose it, and the next CAMP_CENSUS corrects the
+  engine's crystal from the kept chief body's own BODY_CRYSTAL bit (MZB-269, MZB-298). The engine
+  ignores one for a faction it does not know or a culture with no camp bodies, and notes only a change
+  of the crystal. One that comes while the engine replays waits for the replay end, the latest for each
+  faction (docs/replay-gate.md §5.6, RP-100). **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`),
+  with that body's slot and generation; **TRADED** a masked trade with the grove's minions;
+  **HAVEN_CHEST** a grove chest tribute can go into.
 - **RAIL_PASS** is one Create train's pass through a camp's range, a TERRITORY circle whose mask
   has the rail's bit (6) (MOWZIE.md §4.3, MZB-320 to MZB-326, MZB-333). Its point is a sample on the
   track, the one nearest the circle's centre among the train's samples in the pass (a sample is the
@@ -1617,7 +1782,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
 | 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
-| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
@@ -1845,7 +2010,7 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
 - **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud holds on Envoy to the old
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
-- **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
+- **Deferred kinds.** The engine halves of HAVEN_CHEST, TRADED and CHIEF_PAID
   (M9) come later, as do their commands, which the engine does
   not send yet. RAIL_PASS is built (M7): the engine counts it and the train sampler sends it.
   TRAIN_PASSED is built (M8): the sampler sends it, the engine rolls it, and AMBUSH_SPOT and
@@ -2083,7 +2248,7 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 | 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
 | 56, 64 | i64 | t0, t1, game time |
 | 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
-| 76 | u32 | reserved |
+| 76 | u32 | age: whole days at the record's time, as Ice and Fire's `getAgeInDays` counts them (24,000 ticks a day); 0 in a GONE record (DECISIONS.md DH-7) |
 
 | aux | State | Meaning |
 |---|---|---|
@@ -2106,6 +2271,9 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
   table and drops any record still on its way (the engine drops its own queue, GONE records included);
   the engine resends every dragon when the module comes back. A changed dragon whose page will not load
   is skipped and counted (`far_read_failed`): Java draws its last leg until it next changes.
+- **The age** sizes the far model between stages as Ice and Fire sizes the body (DH-7): the far feed's
+  INTRO carries it (§12.2). It is the age when the record was made, so a dragon that sends nothing for
+  days keeps its last age until its next record; at a hand-over the last record is the leg it arrived on.
 
 ### 12.2 The payloads and the far feed's message
 
@@ -2135,7 +2303,7 @@ GONE   5: handle
 
 - **Looks** (version 2, DHT60): an INTRO's `shape` is the content hash of what the object looks like (0:
   none, drawn as a box), its `age` the object's age in days (a dragon's, for its size between stages; -1:
-  the source does not say, as the engine's legs do not). `style`, `variant` and `size` are a dragon's
+  the source does not say). The engine's legs say it since DH-7 (FAR_LEG's age, §12.1). `style`, `variant` and `size` are a dragon's
   species, colour and stage.
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
   use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE

@@ -78,8 +78,14 @@ pub const DEMAND_STOP: u32 = 2;
 pub const BAND_HOSTILE: u8 = 1;
 pub const BAND_CHIEF: u8 = 2;
 pub const BAND_SURFACE: u8 = 4;
+/// A fight's wave (`start_fight`'s and `wave`'s, which spawn on an arc), not a sighting's: Java
+/// echoes the flags in BAND_MATERIALIZED, so that a replay tells a held decision's fight from a
+/// sighting (docs/replay-gate.md §6.1, RP-56).
+pub const BAND_FIGHT: u8 = 8;
 /// BAND_MATERIALIZE member flags.
 pub const MEMBER_CHIEF: u32 = 1;
+/// The stack's units have no crystal on them (the unit fights as its `without_crystal` row).
+pub const MEMBER_BARE: u32 = 2;
 /// BAND_STEER flags.
 pub const STEER_ATTACK: u32 = 1;
 
@@ -125,6 +131,8 @@ pub const CENSUS_THRONE: u32 = 4;
 pub const BODY_STRAY: u32 = 1;
 pub const BODY_ELSEWHERE: u32 = 2;
 pub const BODY_CHIEF: u32 = 4;
+/// The crystal is on this body (a chief body only; MZB-269, amended at review C).
+pub const BODY_CRYSTAL: u32 = 8;
 /// CAMP_BODIES outcomes, per line.
 pub const LINE_DONE: u8 = 1;
 pub const LINE_NOTHING: u8 = 2;
@@ -239,6 +247,8 @@ pub struct BandMaterialized {
     pub dimension: u32,
     pub wave: u32,
     pub spawned: u32,
+    /// The BAND_MATERIALIZE's flags, echoed ([`BAND_FIGHT`] among them); 0 for an envoy's.
+    pub flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,6 +278,10 @@ pub struct BandCasualties {
     pub body: u32,
     pub count: u32,
     pub killer: Uuid,
+    /// The plugin's op id (MZB-589). A record journaled on an entity can be committed again (the
+    /// reassert: the same bytes under a new sequence), so the engine counts one op once per party
+    /// (`Party::casualty_ops`), not in the world's `applied_ops`.
+    pub op: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -387,7 +401,7 @@ pub struct CampDeath {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CensusBody {
     pub body: u32,
-    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`.
+    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`, `BODY_CRYSTAL`.
     pub flags: u32,
     pub slot: u32,
     pub generation: u32,
@@ -541,9 +555,12 @@ impl Obs {
         self.kind() >= 0x0100
     }
 
-    /// The plugin's op id, for the records that move items or trade (applied once). The camp's
-    /// records have none to skip by: CAMP_DEATH is idempotent by its slot and generation, and
-    /// CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
+    /// The plugin's op id, for the records that move items or trade (applied once, in the world's
+    /// set). The camp's records have none to skip by: CAMP_DEATH is idempotent by its slot and
+    /// generation, and CAMP_BODIES by its (op, line), kept per epoch (docs/boundary.md §9.6).
+    /// BAND_CASUALTIES carries an op id too and is not here: there is one for every member death in
+    /// the world's life, and the world's set never shrinks (D1), so the engine skips a copy by the
+    /// party's own list (`Party::casualty_ops`, which goes with the party; MZB-589).
     pub fn op(&self) -> Option<u64> {
         match self {
             Obs::ChiefKilled(c) => Some(c.op),
@@ -554,6 +571,42 @@ impl Obs {
             Obs::ChiefPaid(c) => Some(c.op),
             _ => None,
         }
+    }
+
+    /// The party epoch the record names, as (agent, epoch): the engine's own numbering, which a
+    /// replayed record or a copy folds into the agent's epoch floor, so that no epoch is used
+    /// twice (docs/replay-gate.md §5.3, RP-7, RP-57). None for a kind that names none (the camp
+    /// records' epoch is a camp's, Java's op id, which the engine never allocates) and for agent
+    /// 0 (a tribute paid at the camp). Every kind is listed, so a new one must say.
+    pub fn party_epoch(&self) -> Option<(u64, u32)> {
+        let (agent, epoch) = match self {
+            Obs::State(s) => (s.agent, s.epoch),
+            Obs::Materialized(m) => (m.agent, m.epoch),
+            Obs::SpawnRejected(r) => (r.agent, r.epoch),
+            Obs::Dematerialized(d) => (d.agent, d.epoch),
+            Obs::Casualties(c) => (c.agent, c.epoch),
+            Obs::ChiefKilled(c) => (c.agent, c.epoch),
+            Obs::EnvoyAnswer(a) => (a.agent, a.epoch),
+            Obs::TributePaid(t) => (t.agent, t.epoch),
+            Obs::Looted(l) => (l.agent, l.epoch),
+            Obs::TrainPassed(t) => (t.agent, t.epoch),
+            Obs::FactionFound(_)
+            | Obs::Signal(_)
+            | Obs::Pollution(_)
+            | Obs::GiftGiven(_)
+            | Obs::ChiefState(_)
+            | Obs::HavenChest(_)
+            | Obs::Difficulty(_)
+            | Obs::RailPass(_)
+            | Obs::CampDeath(_)
+            | Obs::CampCensus(_)
+            | Obs::Traded(_)
+            | Obs::NoticeShown(_)
+            | Obs::CampBodies(_)
+            | Obs::CampOut(_)
+            | Obs::ChiefPaid(_) => return None,
+        };
+        (agent != 0).then_some((agent, epoch))
     }
 }
 
@@ -1034,6 +1087,7 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(32, m.epoch);
             w.u32(36, m.dimension);
             w.u32(40, m.wave);
+            w.u32(44, m.flags);
             w.finish(BAND_MATERIALIZED, m.spawned, 48);
         }
         Obs::SpawnRejected(r) => {
@@ -1057,7 +1111,8 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(36, c.body);
             w.u32(40, c.count);
             w.uuid(48, c.killer);
-            w.finish(BAND_CASUALTIES, c.by, 64);
+            w.u64(64, c.op);
+            w.finish(BAND_CASUALTIES, c.by, 72);
         }
         Obs::ChiefKilled(c) => {
             w.u64(24, c.agent);
@@ -1273,6 +1328,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             dimension: r.u32(36)?,
             wave: r.u32(40)?,
             spawned: aux,
+            flags: r.u32(44)?,
         }),
         BAND_SPAWN_REJECTED => Obs::SpawnRejected(BandSpawnRejected {
             agent: r.u64(24)?,
@@ -1297,6 +1353,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             body: r.u32(36)?,
             count: r.u32(40)?,
             killer: r.uuid(48)?,
+            op: r.u64(64)?,
         }),
         CHIEF_KILLED => Obs::ChiefKilled(ChiefKilled {
             agent: r.u64(24)?,
@@ -1800,7 +1857,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
@@ -1848,6 +1905,7 @@ mod tests {
                 dimension: 1,
                 wave: 2,
                 spawned: 8,
+                flags: u32::from(BAND_HOSTILE | BAND_FIGHT),
             }),
             Obs::SpawnRejected(BandSpawnRejected {
                 agent: 5,
@@ -1869,6 +1927,7 @@ mod tests {
                 body: 1,
                 count: 3,
                 killer: (11, 22),
+                op: 1 << 63 | 3,
             }),
             Obs::ChiefKilled(ChiefKilled {
                 agent: 5,
@@ -2025,7 +2084,8 @@ mod tests {
         ]
     }
 
-    fn cmds() -> Vec<Cmd> {
+    /// One command of each kind (the replay gate's table test reads them too, `outbox.rs`).
+    pub(crate) fn cmds() -> Vec<Cmd> {
         vec![
             Cmd::Territory(Territory {
                 faction: 77,
@@ -2080,7 +2140,7 @@ mod tests {
                     Stack {
                         body: 1,
                         count: 8,
-                        flags: MEMBER_CHIEF,
+                        flags: MEMBER_CHIEF | MEMBER_BARE,
                     },
                     Stack {
                         body: 2,
@@ -2201,7 +2261,8 @@ mod tests {
             POLLUTION => 64,
             BAND_MATERIALIZED | BAND_SPAWN_REJECTED => 48,
             BAND_DEMATERIALIZED => 40 + 8 * u32_at(36),
-            BAND_CASUALTIES | CHIEF_KILLED => 64,
+            BAND_CASUALTIES => 72,
+            CHIEF_KILLED => 64,
             ENVOY_ANSWER => 56,
             TRIBUTE_PAID => 72 + 16 * n,
             GIFT_GIVEN => 56 + 16 * n,

@@ -1644,8 +1644,13 @@ carries its own. A taken, handed-off, removed or killed body leaves a `minecraft
 stood, holding the record: never sent to a client (`EntityType.java:496-498`, `Marker.java:39`) and
 with no tick (`Marker.java:21`). The camp's chunk would not do: its record could be on disk while the
 entity change was not, or the other way round. Whenever a holder loads with its record, Java journals
-the record again with the same op id and line indexes, which the engine skips by (op, line) if it has
-them; on the engine's
+a copy of it (REASSERT, `docs/boundary.md` §3.2) under a new sequence, naming the generation that first
+journaled the record: a holder keeps each record with its generation, and a marker that takes a body's
+records over keeps theirs (MZB-652). The engine judges the copy by that generation, not by the record's
+op id: a copy of a record it applied is dropped, and one from a generation it never heard, or past what
+it admitted of a closed generation, is applied as the record under the copy's sequence. Only an applied
+copy reaches the camp's own rules, the (op, line) skip of a CAMP_BODIES line (kept per epoch) and the
+slot's generation of a CAMP_DEATH; on the engine's
 acknowledgement Java drops the record, at once or when the holder next loads, and discards the marker.
 And the `ChunkWriteBarrier` (ledger 22) learns entity chunks: the journal's write waits until the
 entity chunks that a camp record speaks for are on disk, or is held to the next world save, so the
@@ -1663,7 +1668,7 @@ are saved; (6) the engine acknowledges and Java drops the records. A death start
 | before (2), or between (2) and (3) | nothing changed | the order is void; the camp's next census orders again whatever is still needed |
 | between (3) and (4) | the entity change and its record; no answer in the journal | the holder's record is journaled again when its chunk loads, and the camp's census waits until every holder in the footprint has done so; booked by the action it carries. A holder outside the footprint is booked when it loads if no census of a later epoch came first; otherwise that census booked the missing body by its table (left becomes gone; a body at home is missed, and written off at the third miss over two days: a member lost) |
 | between (4) and (5) | the answer in the journal | replayed, and booked by the action it carries |
-| between (5) and (6) | the answer in the pages too | skipped by its (op, line); a holder's record journaled again is a no-op, and after a census of a later epoch books nothing |
+| between (5) and (6) | the answer in the pages too | the answer itself is skipped by its (op, line). A holder's record journaled again is a copy judged by its generation: the engine applied the original, so the copy is dropped. Only a copy the engine applies (one whose original a crash lost) reaches the (op, line) skip, which books nothing for a line it has, and after a census of a later epoch books nothing |
 | the journal ahead of an entity chunk | nothing, while the barrier holds the journal's write (it gives up after 3 held saves in a row, logged, `GIVE_UP_ROUNDS`) | without it, or after it gives up: a spawn booked but not on disk is missed three times and written off (a member lost); a take booked whose body is on disk is found, so away, left, then as that row; a death booked whose body is on disk has a generation retired at a death, so the census removes it |
 | the engine's pages ahead of the world save (P29, still open) | a line or death booked that the world lost | as the row above, without the barrier's help |
 | an order in flight at a shutdown | | void; the next census orders it again, so it is never answered late or applied twice |

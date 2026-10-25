@@ -50,6 +50,7 @@ use serde::Serialize;
 use crate::boundary::{self, Cmd, Obs, Uuid};
 use crate::culture::{Culture, Cultures, PartyKind, SignalKind, Step, days_to_ticks};
 use crate::grievance::{Grievance, KB};
+use crate::outbox::Outbox;
 use crate::presence::{ChunkKey, Presence, chunk_of};
 use crate::tables::{FactionTable, PlaceIndex, SourceTable};
 use crate::tunables::ConflictTunables;
@@ -66,6 +67,21 @@ const SYS_PEACE: SystemId = SystemId::named("conflict.peace");
 /// The most a market price may raise a demand above the culture's fallback per coin (MZB-57): a
 /// good whose price has collapsed would otherwise be asked by the million.
 pub const TRIBUTE_PRICE_CAP: f64 = 4.0;
+
+/// How often a held arrival's poll comes again while the session's replay runs
+/// (docs/replay-gate.md §6.1, RP-23). PLACEHOLDER: 20 world ticks, one second of game time.
+pub const REPLAY_HOLD_TICKS: u64 = 20;
+/// How long a held arrival or siege round waits, while the session's replay runs, for a
+/// replayed BAND_MATERIALIZED to show that the last session fought it (docs/replay-gate.md
+/// §6.1, RP-48). Past it no fight answered the hold, and it resolves unwatched as the last
+/// session did. No hard bound exists on the delay from a watched decision to its record: it is
+/// normally 1 to 2 ticks, but a spawn group held by Java's spawn quota (8 a tick by default,
+/// which holds every later command), a full command buffer or a lagging engine stretches it.
+/// 600 world ticks covers 30 s of stall, and is a fortieth of the shortest siege interval (a
+/// day). A fight recorded later than that is resolved unwatched by the replay, and its late
+/// record then embodies the band: a double. `ConflictStats::fight_record_gap_max` measures the
+/// delay live, so the value can be set from data (RP-51).
+pub const REPLAY_HOLD_SLACK_TICKS: u64 = 600;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
@@ -73,7 +89,7 @@ pub mod camp;
 pub mod rail;
 
 pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
-pub use rail::{Held, LineCount, Pin, RailCall, RailMeter, StationEnd, TrackFocus};
+pub use rail::{HeldPass, LineCount, Pin, RailCall, RailMeter, StationEnd, TrackFocus};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
 /// event is booked for it, and `Conflict::unblock` plans it again when one comes.
@@ -355,6 +371,13 @@ pub struct Party {
     /// The player who killed the most of it, for rescue reports.
     pub breaker: Option<ActorId>,
     pub fight_strength: f64,
+    /// The op ids of the BAND_CASUALTIES it has counted, so that a copy of one (the reassert of a
+    /// record journaled on an entity: the same bytes under a new sequence, after the replay forgot
+    /// the op at a world save) counts nothing more (MZB-589). Only a record that took a unit is
+    /// listed, so it holds at most `start_units` ops, and it goes with the party; a copy that comes
+    /// after the party has ended finds no party (`party_of` checks the handle's generation and the
+    /// epoch). Saved with the party.
+    pub casualty_ops: Vec<u64>,
 }
 
 impl Party {
@@ -363,7 +386,7 @@ impl Party {
     }
 
     /// Moves the bodies in Minecraft (`spawned`) into the recalled stack of the current epoch,
-    /// merging with the one it has (MZB-131, MZB-138). Nothing moves when none is spawned.
+    /// merging with the one it has (MZB-131). Nothing moves when none is spawned.
     fn fold_spawned_into_recalled(&mut self) {
         let s = std::mem::take(&mut self.spawned);
         if s.is_empty() {
@@ -493,6 +516,18 @@ pub struct ConflictStats {
     /// War parties sent again on the same rung, `repeat_days` after the last came home (MOWZIE.md
     /// ledger 3).
     pub repeats: u64,
+    /// The largest gap, in ticks, between a live watched fight's decision (`start_fight`) and
+    /// its first record (a BAND_MATERIALIZED, or its first wave's BAND_SPAWN_REJECTED: RP-62),
+    /// which a replay's hold waits for up to
+    /// [`REPLAY_HOLD_SLACK_TICKS`] (docs/replay-gate.md §6.1, RP-48, RP-51). Not saved: this
+    /// process's, so the slack can be set from data (rtsim-jni logs each new largest).
+    pub fight_record_gap_max: u64,
+    /// Replayed fight records ([`boundary::BAND_FIGHT`]) of a newer epoch that found no hold:
+    /// a fight recorded at or past its hold's slack, which the replay resolved unwatched there
+    /// (docs/replay-gate.md §6.1, RP-56). Honoured as the epoch floor only, so it counts once.
+    /// A BAND_SPAWN_REJECTED of a newer epoch's wave 0 counts too (RP-63), a refused
+    /// sighting's among them (the record has no flags). rtsim-jni logs each.
+    pub fights_unheld: u64,
     /// Camp ledgers (MOWZIE.md §4.9): censuses booked, CAMP_RECONCILEs and the lines in them
     /// sent, answers and deaths booked, and members written off after three misses.
     pub camp_censuses: u64,
@@ -762,6 +797,19 @@ fn party_severity(kind: PartyKind) -> Severity {
     }
 }
 
+/// A held decision (docs/replay-gate.md §6.1, RP-23): a war party's arrival, or a siege's next
+/// round, waiting while the session's replay runs.
+#[derive(Clone, Debug)]
+pub(crate) struct Held {
+    /// When the decision came: the arrival's tick, or the round's.
+    pub(crate) since: Tick,
+    /// The plan of its poll: a party that moved since is no longer held.
+    pub(crate) plan: u32,
+    /// The party's members then, which the decision resolves with (RP-60): records replayed
+    /// inside the hold (a despawn's survivors, a death) may take some before it resolves.
+    pub(crate) units: Vec<(u8, u32)>,
+}
+
 pub struct Conflict {
     pub seed: u64,
     pub tun: ConflictTunables,
@@ -796,7 +844,9 @@ pub struct Conflict {
     pub(crate) java_dict: BTreeMap<(u8, u32), String>,
     pub ledger: ConflictLedger,
     pub stats: ConflictStats,
-    pub(crate) outbox: Vec<Cmd>,
+    /// The commands not yet taken, behind the replay gate (docs/replay-gate.md §4): every push
+    /// goes through it.
+    pub(crate) outbox: Outbox,
     pub(crate) now: Tick,
     pub log: Vec<LogEntry>,
     pub log_enabled: bool,
@@ -816,26 +866,59 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
-    /// Between a session's start and the replay having caught up (`replay_done`): the bodies the
-    /// pages held in Minecraft are kept as recalled stacks for the replayed records to count
-    /// (MZB-138), and a CAMP_CENSUS then only marks its camp out, its bodies not being the world
-    /// as it is now (MOWZIE.md §4.9). Not state: a session sets it.
-    pub replaying: bool,
+    /// Whether the session's replay runs on an engine that came back from its pages (RP-31):
+    /// only then is a replayed BAND_MATERIALIZED the last session's answer to this engine's
+    /// decision (docs/replay-gate.md §5.2). Set by [`Conflict::begin_replay`]; in memory only.
+    pub(crate) replay_from_pages: bool,
+    /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30): agent to the highest epoch the
+    /// engine has seen for it that its party's own `epoch` does not hold (any replayed record or
+    /// copy that names one, RP-57). A party's next body takes an epoch above both.
+    /// Not the epoch itself: a party embodied at an older epoch keeps it, so that its records
+    /// still find it. Folded into the epochs at the replay end; in memory only.
+    pub(crate) floors: BTreeMap<u64, u32>,
+    /// The fill's deaths (docs/replay-gate.md §5.2, RP-22): per party, the bodies of its
+    /// embodied epoch that died in view while replaying, since its previous honoured record.
+    /// The next honoured record of that epoch counts them as placed. In memory only.
+    pub(crate) fill_deaths: BTreeMap<Handle<Party>, u32>,
+    /// The war parties whose arrival (or a siege's next round) waits for the replay end
+    /// (docs/replay-gate.md §6.1, RP-23): per party, its [`Held`]. In memory only: a restart
+    /// from pages saved mid-replay arrives again at the poll.
+    pub(crate) held: BTreeMap<Handle<Party>, Held>,
+    /// Set while [`Conflict::end_hold`] runs a held decision's `party_event`: `arrive` and
+    /// `wait_over` decide it then, unwatched, inside the hold's slack too (RP-59). In memory
+    /// only.
+    pub(crate) hold_ending: bool,
+    /// The replayed fights that found no hold (RP-56): per party, the epoch of its fight
+    /// recorded at or past its hold's slack, counted once in `ConflictStats::fights_unheld`;
+    /// its loot counts against nothing, as its bodies. In memory only, cleared at the replay end.
+    pub(crate) unheld_fights: BTreeMap<Handle<Party>, u32>,
+    /// Live watched fights whose first BAND_MATERIALIZED has not come yet (RP-51): per party,
+    /// the fight's epoch and the tick `start_fight` decided it, for
+    /// `ConflictStats::fight_record_gap_max`. In memory only.
+    pub(crate) fights_unanswered: BTreeMap<Handle<Party>, (u32, Tick)>,
     /// The journal sequence of the record being ingested (0 where the host has none, as in the
     /// simulations, whose answers are then kept to the end of their epoch): a CAMP_BODIES answer is
     /// kept with it. Set by the host; not state.
     pub obs_seq: u64,
     /// The highest journal sequence the host has reported durable in a world save (WORLD_SAVED):
     /// answers booked from records at or before it are forgotten, as `Replay` forgets op ids
-    /// (docs/boundary.md §2.3, MZB-177). Set by the host, which never lowers it; not state.
+    /// (docs/boundary.md §2.3, MZB-177). Raised by the host through [`Conflict::world_saved`],
+    /// never lowered; not state.
     pub durable_obs_seq: u64,
     /// Rail passes waiting for their train's next arrival to name the line, by train, each train's
-    /// oldest first (resident, saved at the end of `put_resident`, MZB-308).
-    pub(crate) held: BTreeMap<u64, Vec<rail::Held>>,
+    /// oldest first (resident, saved at the end of `put_resident`, MZB-308). Named apart from
+    /// slice C's held arrivals (`held`, RP-56) since the M7 merge.
+    pub(crate) rail_held: BTreeMap<u64, Vec<rail::HeldPass>>,
     /// Each train that holds a pass, by the exit of its oldest (derived: rebuilt at load).
-    pub(crate) held_oldest: BTreeSet<(Tick, u64)>,
+    pub(crate) rail_held_oldest: BTreeSet<(Tick, u64)>,
     /// Passes held in all (derived: counted at load).
-    pub(crate) held_n: usize,
+    pub(crate) rail_held_n: usize,
+    /// A world save reported while replaying (RP-68): the highest such sequence, raised into
+    /// `durable_obs_seq` at the replay end. Not state.
+    pub(crate) durable_held: u64,
+    /// The CHIEF_STATE records ingested while replaying (RP-100), the latest for each faction key:
+    /// applied at the replay end, after every replayed record. Not state.
+    pub(crate) chief_states_held: BTreeMap<u64, boundary::ChiefState>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -907,7 +990,7 @@ impl Conflict {
             java_dict: BTreeMap::new(),
             ledger: ConflictLedger::default(),
             stats: ConflictStats::default(),
-            outbox: Vec::new(),
+            outbox: Outbox::default(),
             now,
             log: Vec::new(),
             log_enabled: false,
@@ -918,12 +1001,20 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
-            replaying: false,
+            replay_from_pages: false,
+            floors: BTreeMap::new(),
+            fill_deaths: BTreeMap::new(),
+            held: BTreeMap::new(),
+            hold_ending: false,
+            unheld_fights: BTreeMap::new(),
+            fights_unanswered: BTreeMap::new(),
             obs_seq: 0,
             durable_obs_seq: 0,
-            held: BTreeMap::new(),
-            held_oldest: BTreeSet::new(),
-            held_n: 0,
+            rail_held: BTreeMap::new(),
+            rail_held_oldest: BTreeSet::new(),
+            rail_held_n: 0,
+            durable_held: 0,
+            chief_states_held: BTreeMap::new(),
         }
     }
 
@@ -1018,7 +1109,21 @@ impl Conflict {
     }
 
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.take()
+    }
+
+    /// Between [`Conflict::begin_replay`] and [`Conflict::replay_done`]: the session's replay
+    /// runs, and the outbox gates every command (docs/replay-gate.md §3.3, §4). Not state: a
+    /// session sets it.
+    pub fn replaying(&self) -> bool {
+        self.outbox.replaying()
+    }
+
+    /// The replay gate's counts since this engine was built or loaded (docs/replay-gate.md
+    /// §4.3): commands dropped while replaying, commands of a "never" kind decided while
+    /// replaying (a bug) and the last such kind, and the decisions that embody deferred.
+    pub fn replay_gate_counts(&self) -> crate::GateCounts {
+        self.outbox.counts()
     }
 
     /// A name in Java's dictionary (kind 2 items, 3 bodies, 4 structures, 0x20 pollution types).
@@ -2923,6 +3028,7 @@ impl Conflict {
             chief,
             breaker: None,
             fight_strength: 0.0,
+            casualty_ops: Vec::new(),
         });
         self.stats.parties[kind.index()] += 1;
         if kind.is_war() {
@@ -3443,10 +3549,16 @@ impl Conflict {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let kind = self.parties[p].kind;
-        let bend = self.temper(f).bend(Trait::Bold, 1000, 50);
-        let patience =
-            (days_to_ticks(c.def.patience_days) as f64 * f64::from(bend) / 1000.0) as u64;
-        self.parties[p].bored_at = at + patience.max(1);
+        let patience = self.patience(f);
+        // A war party's arrival held while replaying arrives again at a poll after the replay
+        // end, or after a restart that lost the map (§6.1, RP-23): it keeps the arrival it had,
+        // its route's last time, and its patience runs from there (RP-45). Live, that is `at`.
+        let arrival = if kind.is_war() {
+            self.parties[p].times.last().map_or(at, |&t| t.min(at))
+        } else {
+            at
+        };
+        self.parties[p].bored_at = arrival + patience;
         let target = self.parties[p].target;
         let tpos = self.target_pos(w, target);
         match kind {
@@ -3492,7 +3604,20 @@ impl Conflict {
                 self.wait(w, p, bored, at);
             }
             _ => {
-                if let Some(player) = self.watcher(w, tpos, at) {
+                // While replaying no player is routed, so `watcher` would say no one watches:
+                // the arrival waits for its replayed fight or for the replay end (§6.1, RP-23),
+                // up to the hold's slack. Past it no fight answered the hold, and it resolves
+                // unwatched, as the last session did (RP-48).
+                let watcher = if self.outbox.defer() {
+                    if !self.hold_ending && at < arrival + REPLAY_HOLD_SLACK_TICKS {
+                        self.hold(p, arrival, at, true);
+                        return;
+                    }
+                    None
+                } else {
+                    self.watcher(w, tpos, at)
+                };
+                if let Some(player) = watcher {
                     self.start_fight(w, p, player, at);
                 } else {
                     if self.parties[p].embodied {
@@ -3500,9 +3625,11 @@ impl Conflict {
                         self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
                     }
                     self.resolve(w, infra, p, at);
+                    // A siege's next round runs from its arrival, as in the session that went on
+                    // (RP-48).
                     let alive = self.parties[p].alive();
-                    if kind == PartyKind::Siege && alive > 0 && at < self.parties[p].bored_at {
-                        let next = at + days_to_ticks(c.def.siege_interval_days);
+                    if kind == PartyKind::Siege && alive > 0 && arrival < self.parties[p].bored_at {
+                        let next = arrival + days_to_ticks(c.def.siege_interval_days);
                         self.wait(w, p, next, at);
                     } else {
                         self.go_home(w, p, boundary::RECALL_DONE, at);
@@ -3523,6 +3650,187 @@ impl Conflict {
         self.schedule(until, Ev::Party { party: p, plan });
     }
 
+    /// A war party's arrival (`arrived`) or a siege's next round, held while the session's
+    /// replay runs (docs/replay-gate.md §6.1, RP-23): neither fought nor resolved. Its Ev::Party
+    /// comes again every [`REPLAY_HOLD_TICKS`] with the same plan, answered in the wheel's arm
+    /// while held, so that the hold always has an event, and once at `since` +
+    /// [`REPLAY_HOLD_SLACK_TICKS`], where the hold ends (RP-48): that poll reaches
+    /// `party_event` before any record at or past it, as the replay clock follows the records.
+    /// An arrival's `seg` goes back to the last segment, so that a poll that reaches
+    /// `party_event` (at the slack, after the replay end, or after a restart that lost the map)
+    /// arrives again; `bored_at` stays as `arrive` set it. A siege's round touches neither.
+    /// The event also kept the hold in pages saved mid-replay, but since RP-42 the host takes
+    /// no page while replaying: only engine-level tests save the engine mid-replay and restart
+    /// from it, and the restart case stays as a defence.
+    fn hold(&mut self, p: Handle<Party>, since: Tick, at: Tick, arrived: bool) {
+        let x = &mut self.parties[p];
+        if arrived {
+            x.seg = x.seg.saturating_sub(1);
+        }
+        let plan = x.plan;
+        let units = x.units.clone();
+        self.held.insert(p, Held { since, plan, units });
+        self.schedule(Self::held_poll(since, at), Ev::Party { party: p, plan });
+    }
+
+    /// A held party's next poll after `at` (§6.1): [`REPLAY_HOLD_TICKS`] on, or the hold's end
+    /// if that comes first (RP-48).
+    fn held_poll(since: Tick, at: Tick) -> Tick {
+        (at + REPLAY_HOLD_TICKS).min(since + REPLAY_HOLD_SLACK_TICKS)
+    }
+
+    /// Ends party `p`'s hold `h` (taken off the map) at `at`, at its slack's poll or before a
+    /// record that would move the party (RP-59): `party_event` decides it unwatched, as the
+    /// session that went on did at `h.since`, with the members the party had then (RP-60). Records
+    /// replayed inside the hold may have taken some since (a despawn's survivors, a death), which
+    /// that session counted after its decision; what the decision itself cost (its raid's dead)
+    /// comes off the members left.
+    fn end_hold(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        h: Held,
+        at: Tick,
+    ) {
+        let left = std::mem::replace(&mut self.parties[p].units, h.units.clone());
+        self.hold_ending = true;
+        self.party_event(w, infra, p, at);
+        self.hold_ending = false;
+        let x = &mut self.parties[p];
+        let after = std::mem::replace(&mut x.units, left);
+        let count = |v: &[(u8, u32)], u: u8| v.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
+        for e in &mut x.units {
+            let cost = count(&h.units, e.0).saturating_sub(count(&after, e.0));
+            e.1 = e.1.saturating_sub(cost);
+        }
+    }
+
+    /// Ends the holds a replayed record would move (RP-59), before it is applied: a
+    /// BAND_CASUALTIES or CHIEF_KILLED for a held party at its epoch or an older one (a wipe-out
+    /// or a rout sends it home), or any copy of a BAND_CASUALTIES (`copy`: it counts at any
+    /// epoch), and a DIFFICULTY that makes the world Peaceful, for every held party
+    /// (`stop_war_parties`). The session that went on decided the hold at its tick, before the
+    /// record; applied on the hold, the record moved the party and left the poll stale, so the
+    /// decision's abstract raid was lost. A record of a newer epoch is the held decision's own
+    /// fight, which its paths answer (a BAND_MATERIALIZED, a BAND_SPAWN_REJECTED). A
+    /// BAND_DEMATERIALIZED moves no party, and ends nothing: Java ends a band's older epoch with
+    /// one just before its fight's BAND_MATERIALIZED (`ConflictBridge.materialize`), which would
+    /// end the hold of a fight about to be honoured. The members a hold's end decides with are
+    /// the hold's, whatever such a record took since (`Held`, RP-60).
+    fn release_before(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        o: &Obs,
+        copy: bool,
+        at: Tick,
+    ) {
+        if self.held.is_empty() {
+            return;
+        }
+        let by_epoch = |agent: u64, epoch: u32| {
+            Party::of_agent(agent)
+                .filter(|&p| {
+                    self.parties
+                        .get(p)
+                        .is_some_and(|x| copy || epoch <= x.epoch)
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let parties: Vec<Handle<Party>> = match o {
+            Obs::Casualties(cs) => by_epoch(cs.agent, cs.epoch),
+            Obs::ChiefKilled(ck) if !copy => by_epoch(ck.agent, ck.epoch),
+            Obs::Difficulty(d)
+                if !copy && !self.peaceful && d.difficulty == boundary::DIFFICULTY_PEACEFUL =>
+            {
+                self.held.keys().copied().collect()
+            }
+            _ => return,
+        };
+        for p in parties {
+            let Some(h) = self.held.remove(&p) else {
+                continue;
+            };
+            if self.parties[p].plan == h.plan && at < h.since + REPLAY_HOLD_SLACK_TICKS {
+                self.end_hold(w, infra, p, h, at);
+            }
+        }
+    }
+
+    /// When a party's held arrival (or siege round) came, while replaying (§6.1, RP-23): by the
+    /// map, or, when a restart from pages saved mid-replay lost it and a record comes before
+    /// the poll arrives again, by what the pages hold: a war party out on its last segment past
+    /// its route's last time (the hold put `seg` back), or a siege waiting past a round before
+    /// its boredom, as `wait_over` holds it (the round's tick, not the record's: RP-53). Its
+    /// patience runs from then, as `arrive` sets it. Only inside the hold's slack (RP-48): a
+    /// record at or past it is no fight of the hold's, which its poll there has resolved.
+    /// Since RP-42 the host takes no page while replaying, so the inference from the pages is
+    /// reached only from engine-level tests that save the engine mid-replay (mowzie_records'
+    /// `a_held_arrival_survives_a_restart_from_pages_saved_mid_replay`); it stays as a defence,
+    /// should pages saved mid-replay ever reach a start again (the re-review's item 4).
+    fn held_since(&mut self, p: Handle<Party>, at: Tick) -> Option<Tick> {
+        let x = &self.parties[p];
+        let inside = |since: Tick| at < since + REPLAY_HOLD_SLACK_TICKS;
+        if let Some(h) = self.held.get(&p) {
+            return (h.plan == x.plan && inside(h.since)).then_some(h.since);
+        }
+        if self.peaceful || !self.outbox.replaying() {
+            return None;
+        }
+        let since = match x.phase {
+            Phase::Out if x.kind.is_war() && x.seg as usize + 2 == x.route.len() => {
+                let arrival = x.times.last().copied().filter(|&t| t <= at && inside(t))?;
+                let bored_at = arrival + self.patience(x.faction);
+                self.parties[p].bored_at = bored_at;
+                arrival
+            }
+            Phase::Waiting
+                if x.kind == PartyKind::Siege
+                    && x.until <= at
+                    && inside(x.until)
+                    && x.until < x.bored_at
+                    && x.alive() > 0 =>
+            {
+                x.until
+            }
+            _ => return None,
+        };
+        Some(since)
+    }
+
+    /// How long a party of faction `f` waits at its target before it gets bored (`arrive`).
+    fn patience(&self, f: u32) -> u64 {
+        let days = self.culture(f).def.patience_days;
+        let bend = self.temper(f).bend(Trait::Bold, 1000, 50);
+        ((days_to_ticks(days) as f64 * f64::from(bend) / 1000.0) as u64).max(1)
+    }
+
+    /// A held party's honoured BAND_MATERIALIZED (§6.1, RP-23): the last session's watched
+    /// fight, so the state `start_fight` leaves, without its commands. Its end is the one
+    /// `start_fight` would have set at the arrival, after the record at the earliest; its leg is
+    /// booked from the record's time; the poll is voided by the bumped plan.
+    fn fight_held(&mut self, w: &mut World, p: Handle<Party>, arrival: Tick, at: Tick) {
+        let strength = self.strength(p);
+        let watched = self.tun.watched_fight_ticks;
+        let x = &mut self.parties[p];
+        let until = (arrival + watched)
+            .min(x.bored_at.max(arrival + 1))
+            .max(at + 1);
+        x.phase = Phase::Fighting;
+        x.until = until;
+        x.fight_strength = strength;
+        x.seen_by = None;
+        // Where the arrival left it, past the last segment.
+        x.seg = u32::try_from(x.route.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        self.stats.raids_watched += 1;
+        let here = *self.parties[p].route.last().expect("route");
+        self.book_leg(w, p, here, here, at, until);
+        let plan = self.bump(p);
+        self.schedule(until, Ev::Party { party: p, plan });
+    }
+
     fn wait_over(
         &mut self,
         w: &mut World,
@@ -3532,20 +3840,33 @@ impl Conflict {
     ) {
         let x = &self.parties[p];
         let (kind, f) = (x.kind, x.faction);
-        if kind == PartyKind::Siege && at < x.bored_at && x.alive() > 0 && !self.peaceful {
-            let tpos = self.target_pos(w, x.target);
-            if let Some(player) = self.watcher(w, tpos, at) {
+        // The round's tick: `at` live; a held round's poll comes after it (§6.1, RP-48).
+        let round = x.until.min(at);
+        if kind == PartyKind::Siege && round < x.bored_at && x.alive() > 0 && !self.peaceful {
+            // As `arrive`'s (§6.1, RP-23, RP-48).
+            let watcher = if self.outbox.defer() {
+                if !self.hold_ending && at < round + REPLAY_HOLD_SLACK_TICKS {
+                    self.hold(p, round, at, false);
+                    return;
+                }
+                None
+            } else {
+                let tpos = self.target_pos(w, self.parties[p].target);
+                self.watcher(w, tpos, at)
+            };
+            if let Some(player) = watcher {
                 self.start_fight(w, p, player, at);
                 return;
             }
             self.resolve(w, infra, p, at);
-            if self.parties[p].alive() > 0 && at < self.parties[p].bored_at {
-                let next = at + days_to_ticks(self.culture(f).def.siege_interval_days);
+            if self.parties[p].alive() > 0 && round < self.parties[p].bored_at {
+                let next = round + days_to_ticks(self.culture(f).def.siege_interval_days);
                 self.wait(w, p, next, at);
                 return;
             }
         }
-        let reason = if at >= self.parties[p].bored_at {
+        // Bored as of the round, not of a held round's poll (fixes4 item 3, RP-52).
+        let reason = if round >= self.parties[p].bored_at {
             self.stats.bored += 1;
             if kind.is_war() {
                 self.note(
@@ -4048,6 +4369,7 @@ impl Conflict {
         }
         if self.parties[p].loot.is_empty() {
             self.parties.remove(p);
+            self.fights_unanswered.remove(&p);
         } else {
             // A haven with no storehouse (never, by construction): keep the row so the goods
             // stay accounted for. A kept row never reads as a lurk (MZB-354).
@@ -4140,6 +4462,11 @@ impl Conflict {
     /// A band arrives where a player watches: it materializes in waves on an arc at the edge of
     /// the entity-ticking area, on the side it came from, under the spawn quota.
     fn start_fight(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
+        // A backstop (docs/replay-gate.md §6, RP-28): reached only from the branches that ask
+        // `watcher`, which a replay holds (§6.1).
+        if self.outbox.defer() {
+            return;
+        }
         let f = self.parties[p].faction;
         self.stats.raids_watched += 1;
         let ppos = w.players.get(&player).and_then(|s| s.pos).map(|e| e.0);
@@ -4164,17 +4491,19 @@ impl Conflict {
         let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
         let ends = (at + self.tun.watched_fight_ticks).min(x.bored_at.max(at + 1));
         let strength = self.strength(p);
+        let epoch = self.next_epoch(p);
         {
             let x = &mut self.parties[p];
             x.phase = Phase::Fighting;
             x.until = ends;
             x.fight_strength = strength;
-            x.epoch += 1;
+            x.epoch = epoch;
             x.embodied = true;
             x.seen_by = Some(player);
             x.wave = 0;
             x.spawned.clear();
         }
+        self.fights_unanswered.insert(p, (epoch, at));
         let here = *self.parties[p].route.last().expect("route");
         self.book_leg(w, p, here, here, at, ends);
         let plan = self.bump(p);
@@ -4206,33 +4535,38 @@ impl Conflict {
         arc: Option<((i32, i32), f32)>,
         at: Tick,
     ) {
-        let f = self.parties[p].faction;
-        let c = self.culture(f).clone();
-        let x = &self.parties[p];
-        let in_mc: u32 = x.spawned.iter().map(|e| e.1).sum();
-        let mut room = self.tun.spawn_quota.saturating_sub(in_mc);
-        let mut stacks = Vec::new();
-        let mut add_spawned = Vec::new();
-        for &(u, n) in &x.units {
-            let already = x.spawned.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
-            let t = n.saturating_sub(already).min(room);
-            if t > 0 {
-                room -= t;
-                stacks.push(boundary::Stack {
-                    body: body_id(&self.cultures, &c.unit(u).body),
-                    count: t,
-                    flags: if x.chief && stacks.is_empty() && x.wave == 0 {
-                        boundary::MEMBER_CHIEF
-                    } else {
-                        0
-                    },
-                });
-                add_spawned.push((u, t));
-            }
-        }
-        if stacks.is_empty() {
+        // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-11).
+        if self.outbox.defer() {
             return;
         }
+        let f = self.parties[p].faction;
+        let c = self.culture(f).clone();
+        let fill = self.wave_fill(p, 0);
+        if fill.is_empty() {
+            return;
+        }
+        let x = &self.parties[p];
+        let boss = c.renewal.is_some_and(|r| r.boss);
+        let crystal = self.factions[f as usize].crystal;
+        let stacks: Vec<boundary::Stack> = fill
+            .iter()
+            .enumerate()
+            .map(|(i, &(u, t))| {
+                let chief = x.chief && i == 0 && x.wave == 0;
+                let bare = c.bare[usize::from(u)] != u && !crystal;
+                boundary::Stack {
+                    body: body_id(&self.cultures, &c.unit(u).body),
+                    // A boss is its band's one unit, so its chief is that unit's body: Java
+                    // makes the chief of a stack as an extra body (MZB-109), which for a boss
+                    // must be the whole stack, not one body more (MZB-127's chief alone).
+                    count: if chief && boss { t - 1 } else { t },
+                    flags: (if chief { boundary::MEMBER_CHIEF } else { 0 })
+                        // A unit that fights as its bare row has no crystal on it: Java makes
+                        // the body without one (review C; a fresh Frostmaw comes with its own).
+                        | (if bare { boundary::MEMBER_BARE } else { 0 }),
+                }
+            })
+            .collect();
         let here = self.party_pos(p, at);
         // Seen on the march: at the image on the player's side (TP11).
         let here = match w.players.get(&player).and_then(|s| s.pos) {
@@ -4267,7 +4601,12 @@ impl Conflict {
             } else {
                 0
             }) | boundary::BAND_SURFACE
-                | if x.chief { boundary::BAND_CHIEF } else { 0 },
+                | if x.chief { boundary::BAND_CHIEF } else { 0 }
+                | if arc.is_some() {
+                    boundary::BAND_FIGHT
+                } else {
+                    0
+                },
             wave: x.wave,
             arc_centre: (f64::from(centre.0), f64::from(centre.1)),
             bearing_deg: bearing,
@@ -4279,19 +4618,53 @@ impl Conflict {
             members: stacks,
         });
         self.outbox.push(cmd);
+        self.place(p, &fill);
+        self.parties[p].wave += 1;
+        self.stats.waves += 1;
+        self.stats.materialized += 1;
+    }
+
+    /// A wave's members (`spawn_wave`'s, and the honour's, docs/replay-gate.md §5.2): the units
+    /// in order, each up to its alive members not placed yet, within the room the quota leaves
+    /// after the bodies in Minecraft by the books (`spawned`) and `dead`, bodies counted as
+    /// placed besides them (the honour's, RP-22; 0 for a live wave).
+    fn wave_fill(&self, p: Handle<Party>, dead: u32) -> Vec<(u8, u32)> {
+        let x = &self.parties[p];
+        let in_mc: u32 = x.spawned.iter().map(|e| e.1).sum();
+        let mut room = self
+            .tun
+            .spawn_quota
+            .saturating_sub(in_mc)
+            .saturating_sub(dead);
+        let mut fill = Vec::new();
+        for &(u, n) in &x.units {
+            let already = x.spawned.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
+            let t = n.saturating_sub(already).min(room);
+            if t > 0 {
+                room -= t;
+                fill.push((u, t));
+            }
+        }
+        fill
+    }
+
+    /// A wave's members are in Minecraft by the books.
+    fn place(&mut self, p: Handle<Party>, fill: &[(u8, u32)]) {
         let x = &mut self.parties[p];
-        for (u, t) in add_spawned {
+        for &(u, t) in fill {
             match x.spawned.iter_mut().find(|e| e.0 == u) {
                 Some(e) => e.1 += t,
                 None => x.spawned.push((u, t)),
             }
         }
-        x.wave += 1;
-        self.stats.waves += 1;
-        self.stats.materialized += 1;
     }
 
     fn wave(&mut self, w: &World, p: Handle<Party>, at: Tick) {
+        // A backstop (docs/replay-gate.md §6, RP-28): a kept band's next wave waits for nothing,
+        // and none is scheduled after it; its fight becomes Waiting at the replay end anyway.
+        if self.outbox.defer() {
+            return;
+        }
         let x = &self.parties[p];
         // On Peaceful no war body spawns (MZB-15).
         if x.phase != Phase::Fighting || (self.peaceful && x.kind.is_war()) {
@@ -4318,7 +4691,14 @@ impl Conflict {
                 (i64::from(from.0), i64::from(from.1)),
             );
             let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
+            let wave = self.parties[p].wave;
             self.spawn_wave(w, p, player, Some((centre, bearing)), at);
+            // A wave commanded is in Minecraft by the books, also after Java refused the first
+            // one and left the band unembodied: its bodies' records find the band again, and the
+            // fight's end recalls them.
+            if self.parties[p].wave != wave {
+                self.parties[p].embodied = true;
+            }
         }
         let plan = self.parties[p].plan;
         self.schedule(
@@ -4653,6 +5033,11 @@ impl Conflict {
     // ---- seen on the march -----------------------------------------------------------------
 
     fn seen(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, m: Meeting, at: Tick) {
+        // Sightings wait for the replay end (docs/replay-gate.md §6, RP-11): a meeting the pages'
+        // wheel held is the last session's; the players are routed again after the replay.
+        if self.outbox.defer() {
+            return;
+        }
         if !w.legs.is_meeting_live(&m) || !self.parties.contains(p) {
             self.stats.stale += 1;
             return;
@@ -4666,9 +5051,10 @@ impl Conflict {
         }
         self.stats.seen += 1;
         let f = x.faction;
+        let epoch = self.next_epoch(p);
         {
             let x = &mut self.parties[p];
-            x.epoch += 1;
+            x.epoch = epoch;
             x.embodied = true;
             x.seen_by = Some(player);
             x.spawned.clear();
@@ -4707,6 +5093,10 @@ impl Conflict {
     }
 
     fn materialize_envoy(&mut self, w: &World, p: Handle<Party>, player: ActorId, at: Tick) {
+        // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-11).
+        if self.outbox.defer() {
+            return;
+        }
         let x = &self.parties[p];
         let f = x.faction;
         let c = self.culture(f).clone();
@@ -4747,6 +5137,36 @@ impl Conflict {
             members,
         }));
         self.stats.materialized += 1;
+    }
+
+    /// The epoch of a party's next body (docs/replay-gate.md §5.3, RP-7, RP-30): above its own
+    /// and above its floor, which it spends.
+    fn next_epoch(&mut self, p: Handle<Party>) -> u32 {
+        let floor = self.floors.remove(&Party::agent(p)).unwrap_or(0);
+        self.parties[p].epoch.max(floor) + 1
+    }
+
+    /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a party's
+    /// epoch ([`Obs::party_epoch`]) raises the agent's floor, whatever its kind and whatever the
+    /// record does after (a refusal, a stale despawn, a record of a party not held or not in the
+    /// pages yet), before any check that drops it. Live records name this session's epochs, which
+    /// the party holds. rtsim-jni calls it for a copy it refuses (RP-21), whose epoch counts all
+    /// the same.
+    pub fn fold_epoch(&mut self, o: &Obs) {
+        if let Some((agent, epoch)) = o.party_epoch() {
+            self.raise_floor(agent, epoch);
+        }
+    }
+
+    /// An epoch the engine has seen for `agent` that its party may not hold (§5.3).
+    fn raise_floor(&mut self, agent: u64, epoch: u32) {
+        let held = Party::of_agent(agent)
+            .and_then(|p| self.parties.get(p))
+            .is_some_and(|x| x.epoch >= epoch);
+        if !held {
+            let f = self.floors.entry(agent).or_insert(0);
+            *f = (*f).max(epoch);
+        }
     }
 
     fn unseen(&mut self, p: Handle<Party>, epoch: u32, at: Tick) {
@@ -4802,7 +5222,21 @@ impl Conflict {
                     self.stats.stale += 1;
                     return;
                 }
-                self.party_event(w, infra, party, at);
+                // A held arrival's poll, while the replay runs (§6.1, RP-23). At the hold's slack
+                // it ends: `party_event` resolves it unwatched (RP-48), with the members it had
+                // (RP-60).
+                if let Some(h) = self.held.get(&party)
+                    && h.plan == plan
+                    && at < h.since + REPLAY_HOLD_SLACK_TICKS
+                {
+                    let next = Self::held_poll(h.since, at);
+                    self.schedule(next, Ev::Party { party, plan });
+                    return;
+                }
+                match self.held.remove(&party) {
+                    Some(h) if h.plan == plan => self.end_hold(w, infra, party, h, at),
+                    _ => self.party_event(w, infra, party, at),
+                }
             }
             Ev::Seen {
                 party,
@@ -4857,38 +5291,23 @@ impl Conflict {
         w.leave_area(p, &mut [self]);
     }
 
-    /// A session ended: every puppet is gone (they never outlive a session, S11), a watched
-    /// fight with nobody watching goes on abstractly at its next event (as when its player
-    /// leaves), and the plugin hears every faction's territory again (docs/boundary.md §9.4).
-    /// The kept notices go again later, from [`Conflict::resend_notices`], once the session's
-    /// replay has caught up (MZB-31).
+    /// A session's replay begins (docs/replay-gate.md §5.1, RP-5): no party changes. What the
+    /// pages hold embodied stays embodied, at its epoch, with its stacks, so that the journal's
+    /// records of the last session's bodies (their casualties, their despawn, the waves Java
+    /// placed) count against the bodies they were. What is still queued takes its verdict, every
+    /// push is gated until [`Conflict::replay_done`], and the plugin hears every faction's
+    /// territory again (docs/boundary.md §9.4). The bodies become abstract at the replay end,
+    /// and the kept notices go then ([`Conflict::resend_notices`], MZB-31).
     ///
-    /// The journal's replay follows, and it may hold what the last session's bodies did after the
-    /// pages were written: their casualties and their despawn. So the bodies the pages held in
-    /// Minecraft become a recalled stack of their epoch, beside the stacks already walking off,
-    /// for those records to count; whatever no record counted is dropped when the replay has
-    /// caught up ([`Conflict::replay_done`], MZB-138).
-    pub fn session_start(&mut self) {
-        let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
-        for p in ids {
-            let x = &mut self.parties[p];
-            if x.embodied {
-                x.fold_spawned_into_recalled();
-            }
-            x.embodied = false;
-            x.seen_by = None;
-            x.spawned.clear();
-            if x.phase == Phase::Fighting {
-                x.phase = Phase::Waiting;
-            }
-        }
-        self.replaying = true;
-        // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
-        // again from what is kept, after the replay (`resend_notices`).
-        self.outbox.retain(|c| {
-            c.agent().is_none()
-                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_))
-        });
+    /// `from_pages`: whether this engine came back from its pages (RP-31): only then is a
+    /// replayed BAND_MATERIALIZED honoured (§5.2).
+    pub fn begin_replay(&mut self, from_pages: bool) {
+        self.replay_from_pages = from_pages;
+        // What is still queued takes its verdict (docs/replay-gate.md §4.4): a party's commands
+        // are derived again, a camp's reconcile in flight is void (MOWZIE.md §4.9), and the
+        // notices go again from what is kept, after the replay (`resend_notices`). Every push is
+        // gated from here to `replay_done`.
+        self.outbox.begin_replay();
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
@@ -4902,17 +5321,62 @@ impl Conflict {
         self.enforce_budget();
     }
 
-    /// The session's replay has caught up: the bodies no replayed record counted are gone with
-    /// the last session (nothing will report them), so the stacks the session start kept for the
-    /// replay are dropped, and their members count as alive, as they always did (MZB-138).
+    /// The session's replay has caught up (docs/replay-gate.md §5.6): every puppet of the last
+    /// session is gone (they never outlive a session, S11). Every party is abstract with what the
+    /// replay left: not embodied, nobody watching, nothing in Minecraft, a watched fight with
+    /// nobody watching goes on abstractly at its next event (as when its player leaves), and the
+    /// stacks still walking off are dropped, their members alive, as they always were (nothing of
+    /// an ended session reports again, MZB-138, RP-10). Every player's presence span ends (P14:
+    /// the replay's gap is no time spent). Then pushes are queued as usual. A no-op unless a
+    /// replay runs.
     pub fn replay_done(&mut self) {
-        if !self.replaying {
+        if !self.outbox.replaying() {
             return;
         }
-        self.replaying = false;
+        self.outbox.replay_done();
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
-            self.parties[p].recalled.clear();
+            let x = &mut self.parties[p];
+            x.embodied = false;
+            x.seen_by = None;
+            x.spawned.clear();
+            x.recalled.clear();
+            if x.phase == Phase::Fighting {
+                x.phase = Phase::Waiting;
+            }
+        }
+        self.fill_deaths.clear();
+        // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
+        self.held.clear();
+        self.unheld_fights.clear();
+        // The world saves reported meanwhile make their answers forgettable now (RP-68).
+        self.durable_obs_seq = self
+            .durable_obs_seq
+            .max(std::mem::take(&mut self.durable_held));
+        // Every party is abstract now: the floors become the epochs, for the pages (§5.3).
+        for (agent, floor) in std::mem::take(&mut self.floors) {
+            if let Some(p) = Party::of_agent(agent).filter(|p| self.parties.contains(*p)) {
+                let x = &mut self.parties[p];
+                x.epoch = x.epoch.max(floor);
+            }
+        }
+        // The chiefs' crystals reported meanwhile are newer than every replayed record (RP-100).
+        let now = self.now;
+        for c in std::mem::take(&mut self.chief_states_held).into_values() {
+            self.chief_state(&c, now);
+        }
+        self.presence.every_player_left();
+    }
+
+    /// A world save made the records through journal sequence `durable` durable (WORLD_SAVED):
+    /// the camps may forget the answers booked from them (MZB-177). While replaying it waits for
+    /// the replay end (RP-68): an answer booked from a replayed record is kept until then, so
+    /// that a holder's copy of that record, journaled again in the replay, is not booked twice.
+    pub fn world_saved(&mut self, durable: u64) {
+        if self.outbox.replaying() {
+            self.durable_held = self.durable_held.max(durable);
+        } else {
+            self.durable_obs_seq = self.durable_obs_seq.max(durable);
         }
     }
 
@@ -4931,7 +5395,9 @@ impl Conflict {
                 .iter()
                 .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
                 .collect();
-            self.outbox.extend(kept);
+            for n in kept {
+                self.outbox.push(n);
+            }
             if (f + 1) % per == 0 {
                 self.enforce_budget();
             }
@@ -5218,6 +5684,9 @@ impl Conflict {
     pub fn ingest(&mut self, w: &mut World, infra: &mut dyn Infrastructure, o: &Obs, at: Tick) {
         let at = at.max(self.now);
         self.run_until(w, infra, at);
+        if self.outbox.replaying() {
+            self.fold_epoch(o);
+        }
         if let Some(op) = o.op()
             && !self.first_time(op)
         {
@@ -5228,8 +5697,10 @@ impl Conflict {
             // id spent as rtsim-jni spends it (MZB-23).
             return;
         }
+        self.release_before(w, infra, o, false, at);
         match o {
-            Obs::State(_) | Obs::Materialized(_) => {}
+            Obs::State(_) => {}
+            Obs::Materialized(m) => self.materialized(w, m, at),
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
             Obs::HavenChest(_) | Obs::Traded(_) | Obs::ChiefPaid(_) => {}
@@ -5305,12 +5776,41 @@ impl Conflict {
                 self.set_emission(w, key, kind, pos, district, per_day, at);
             }
             Obs::SpawnRejected(r) => {
+                if r.wave == 0 {
+                    self.fight_answered(r.agent, r.epoch, at);
+                }
                 if let Some(p) = self.party_of(r.agent, r.epoch)
                     && r.wave == 0
                 {
                     let x = &mut self.parties[p];
                     x.embodied = false;
                     x.spawned.clear();
+                } else if r.wave == 0
+                    && self.outbox.replaying()
+                    && self.replay_from_pages
+                    && let Some(p) = Party::of_agent(r.agent).filter(|p| self.parties.contains(*p))
+                    && r.epoch > self.parties[p].epoch
+                {
+                    if let Some(arrival) = self.held_since(p, at) {
+                        // A held arrival's (or round's) fight whose first wave Java refused: live
+                        // `start_fight` took the epoch and the refusal left it fighting
+                        // unembodied, so it ends the hold as an honoured BAND_MATERIALIZED does
+                        // (fixes4 item 5, RP-54). `wave` as `spawn_wave` left it.
+                        self.held.remove(&p);
+                        let x = &mut self.parties[p];
+                        x.epoch = r.epoch;
+                        x.embodied = false;
+                        x.spawned.clear();
+                        x.wave = 1;
+                        self.fight_held(w, p, arrival, at);
+                    } else if self.unheld_fights.insert(p, r.epoch) != Some(r.epoch) {
+                        // No hold: as `honour`'s fight record that found none (RP-56), the
+                        // epoch floor only, and the epoch's later records count against nothing,
+                        // counted once with the fight's later waves (fixes6 item 4, RP-63). The
+                        // record carries no flags, so a refused sighting's counts too: its epoch
+                        // has no bodies, so only the stat.
+                        self.stats.fights_unheld += 1;
+                    }
                 }
             }
             Obs::Dematerialized(d) => {
@@ -5341,10 +5841,23 @@ impl Conflict {
                             .sum()
                     };
                 let units: Vec<u8> = self.parties[p].units.iter().map(|e| e.0).collect();
-                let backs: Vec<u32> = units
+                let mut backs: Vec<u32> = units
                     .iter()
                     .map(|&u| back_of(u, &self.java_dict, &self.cultures))
                     .collect();
+                // A boss's chief is its band's one unit, yet Java's survivors never hold a chief
+                // (an extra body there, MZB-109): while the books have it alive, it is back.
+                // Keyed on the band's present flag, not on the stack it went out with: a boss band
+                // loses the flag only at its chief's death, which takes the unit too
+                // (`chief_unit_lost`), or by an age succession, which no boss reaches (the
+                // Frostmaw's `chief_lifespan_days` is 1e6). A boss with a mortal chief must key
+                // this on the materialized MEMBER_CHIEF stack instead (M6 re-review, P3-3).
+                if self.parties[p].chief
+                    && self.culture(f).renewal.is_some_and(|r| r.boss)
+                    && let Some(k) = self.parties[p].units.iter().position(|e| e.1 > 0)
+                {
+                    backs[k] += 1;
+                }
                 let before = self.parties[p].alive();
                 let x = &mut self.parties[p];
                 if live {
@@ -5374,7 +5887,7 @@ impl Conflict {
                 let lost = before.saturating_sub(x.alive());
                 self.party_lost(p, lost, at);
             }
-            Obs::Casualties(cs) => self.casualties(w, cs, at),
+            Obs::Casualties(cs) => self.casualties(w, cs, at, false),
             Obs::ChiefKilled(ck) => {
                 let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
                 else {
@@ -5446,12 +5959,163 @@ impl Conflict {
                 let Some(p) = Party::of_agent(l.agent).filter(|p| self.parties.contains(*p)) else {
                     return;
                 };
+                // A replayed fight that found no hold was resolved unwatched, its loot with it
+                // (RP-56).
+                if self.unheld_fights.get(&p) == Some(&l.epoch) {
+                    return;
+                }
                 // Items real mobs carried off from containers: they left the player's world.
                 let goods = self.goods_of(w, &l.items);
                 for (g, a) in goods {
                     self.took_from_players(p, g, a);
                 }
             }
+        }
+    }
+
+    /// A BAND_MATERIALIZED (docs/replay-gate.md §5.2, §5.3). Live, Java's answer to a command of
+    /// this session, which embodied the party when it was decided: nothing to do but measure a
+    /// watched fight's first (RP-51). While replaying, Java's answer to a decision of the last
+    /// session: on an engine that came back from its pages it is honoured (§5.2); on a fresh
+    /// engine (RP-31) its epoch only raises the party's floor.
+    fn materialized(&mut self, w: &mut World, m: &boundary::BandMaterialized, at: Tick) {
+        self.fight_answered(m.agent, m.epoch, at);
+        if !self.outbox.replaying() {
+            return;
+        }
+        // A fresh engine: `ingest` raised the floor (RP-57), all a fresh engine does (RP-31).
+        if !self.replay_from_pages {
+            return;
+        }
+        if let Some(p) = Party::of_agent(m.agent).filter(|p| self.parties.contains(*p)) {
+            self.honour(w, p, m, at);
+        }
+    }
+
+    /// A live watched fight's first record, Java's answer to its first wave (a BAND_MATERIALIZED,
+    /// or a BAND_SPAWN_REJECTED of wave 0): how long it took from `start_fight`'s decision
+    /// (RP-51). A refused first wave is the answer too, the one a replay's hold reads (RP-54), not
+    /// the next wave's BAND_MATERIALIZED a wave interval later (RP-62).
+    fn fight_answered(&mut self, agent: u64, epoch: u32, at: Tick) {
+        if let Some(p) = Party::of_agent(agent)
+            && self.fights_unanswered.get(&p).is_some_and(|e| e.0 == epoch)
+            && let Some((_, decided)) = self.fights_unanswered.remove(&p)
+        {
+            let gap = at.0.saturating_sub(decided.0);
+            self.stats.fight_record_gap_max = self.stats.fight_record_gap_max.max(gap);
+        }
+    }
+
+    /// A replayed BAND_MATERIALIZED on an engine from its pages (docs/replay-gate.md §5.2, RP-6,
+    /// RP-22): the party is embodied as the last session had it, without the command, so that
+    /// the records of that body that follow count against it.
+    ///
+    /// - A newer epoch: the record's epoch, embodied, nothing placed, wave 0, and the record's
+    ///   waves are filled. An older embodied epoch's bodies leave the books as `start_fight`'s
+    ///   and `seen`'s new epoch drops them live, not folded into a recalled stack (RP-46): that
+    ///   epoch's later records count against nothing, as they did live. A held party's fight
+    ///   record ([`boundary::BAND_FIGHT`]) also ends the hold in `fight_held`; one that finds
+    ///   no hold raises the floor only, and its later records count against nothing (RP-56).
+    /// - The same epoch, embodied, at or above the party's `wave`: the waves from the party's
+    ///   to the record's are filled. Below it, or not embodied: nothing (the pages hold that
+    ///   fill, or the body is gone). But a fighting band's, not embodied: the fight's later wave
+    ///   after Java refused its first (RP-54), which live `wave` embodied the band again when it
+    ///   commanded it (RP-58, RP-61): embodied again and filled.
+    /// - An older epoch: nothing.
+    ///
+    /// The fill is `spawn_wave`'s ([`Conflict::wave_fill`]), with the deaths in view since the
+    /// party's previous honoured record counted as placed, so that it never places more than
+    /// Java was commanded: the live engine decided the wave before it read those deaths. One
+    /// fill places what the waves from the party's to the record's would: each takes the room
+    /// or the members left, so a second finds neither. Not every alive member: Java's despawn
+    /// counts only the members it was commanded. Then `wave` = the record's + 1.
+    fn honour(
+        &mut self,
+        w: &mut World,
+        p: Handle<Party>,
+        m: &boundary::BandMaterialized,
+        at: Tick,
+    ) {
+        let x = &self.parties[p];
+        let newer = m.epoch > x.epoch;
+        let again = m.epoch == x.epoch && !x.embodied && x.phase == Phase::Fighting;
+        let same = m.epoch == x.epoch && (x.embodied || again) && u32::from(x.wave) <= m.wave;
+        if !newer && !same {
+            return;
+        }
+        if again {
+            self.parties[p].embodied = true;
+        }
+        // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command,
+        // and `start_fight` always takes a new epoch, so a record of the same one, or a
+        // sighting's, is no fight. A sighting only embodies and keeps the hold.
+        let fight = newer && m.flags & u32::from(boundary::BAND_FIGHT) != 0;
+        let held = if fight { self.held_since(p, at) } else { None };
+        if fight && held.is_none() {
+            // Recorded at or past its hold's slack, whose poll resolves the round unwatched as
+            // of the hold: the epoch floor only (raised in `ingest`, RP-57), so that its bodies
+            // and loot count against nothing (no double).
+            if self.unheld_fights.insert(p, m.epoch) != Some(m.epoch) {
+                self.stats.fights_unheld += 1;
+            }
+            return;
+        }
+        let x = &self.parties[p];
+        let envoy = x.kind == PartyKind::Envoy;
+        // This epoch's deaths since its previous honoured record (none yet for a newer one).
+        let dead = self.fill_deaths.remove(&p).unwrap_or(0);
+        let dead = if newer { 0 } else { dead };
+        if newer {
+            let x = &mut self.parties[p];
+            x.epoch = m.epoch;
+            x.embodied = true;
+            x.seen_by = None;
+            x.spawned.clear();
+            x.wave = 0;
+        }
+        // An envoy places nothing by the books, as `materialize_envoy` (decided by the
+        // coordinator, 2026-10-24).
+        if !envoy {
+            let fill = self.wave_fill(p, dead);
+            self.place(p, &fill);
+        }
+        self.parties[p].wave = u16::try_from(m.wave).unwrap_or(u16::MAX).saturating_add(1);
+        if let Some(arrival) = held {
+            self.held.remove(&p);
+            self.fight_held(w, p, arrival, at);
+        }
+    }
+
+    /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
+    /// RP-8, RP-9), called by the host instead of [`Conflict::ingest`] while it applies one. Its
+    /// body is gone, so a copy embodies nothing and is applied by identity. Every copy that names
+    /// a party's epoch raises the agent's epoch floor to it, live or replayed (RP-57). Then a
+    /// BAND_CASUALTIES against the party's alive units of that body kind, at any epoch, from no
+    /// stack, with the killer's signal and the rout as for a live one; a BAND_MATERIALIZED
+    /// nothing more. Every other kind (CHIEF_KILLED by party and op id among them) as
+    /// [`Conflict::ingest`]. The host refuses a BAND_CASUALTIES copy of generation 0 before it
+    /// gets here (RP-21).
+    pub fn ingest_copy(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        o: &Obs,
+        at: Tick,
+    ) {
+        let at = at.max(self.now);
+        self.run_until(w, infra, at);
+        // Every kind's epoch, a live copy's too (RP-57).
+        self.fold_epoch(o);
+        match o {
+            Obs::Casualties(cs) => {
+                self.release_before(w, infra, o, true, at);
+                self.casualties(w, cs, at, true);
+            }
+            Obs::Materialized(_) => {}
+            // A RAIL_PASS has no op id and Java never copies one (docs/replay-gate.md §4.4): a
+            // copy, were one ever sent, would count its leg twice, so it is dropped (RP-104).
+            Obs::RailPass(_) => {}
+            _ => self.ingest(w, infra, o, at),
         }
     }
 
@@ -5472,17 +6136,28 @@ impl Conflict {
         }
     }
 
-    fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick) {
-        let Some(p) = self.party_of(cs.agent, cs.epoch) else {
+    /// A BAND_CASUALTIES. `copy`: a copy of an ended session's record (§5.7, RP-9), whose body
+    /// is gone: it needs no stack.
+    fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick, copy: bool) {
+        // The party by agent alone, as the despawn finds it, then the stack by the record's epoch
+        // (docs/replay-gate.md §5.9, RP-27): `spawned` when it is embodied at that epoch, else the
+        // recalled stack of that epoch, the walk-off's deaths of a band the player left (counted
+        // the same whether replaying or live, MZB-142), also while the band is embodied again at
+        // a newer epoch (MZB-131). The despawn removes the stack, so a straggler after it is no
+        // death. A copy takes from no stack, whatever its epoch.
+        let Some(p) = Party::of_agent(cs.agent).filter(|&p| self.parties.get(p).is_some()) else {
             return;
         };
-        // A casualty of bodies kept as a recalled stack of their epoch: the walk-off's deaths of a
-        // band the player left, and a replay's, whose session start kept the last session's
-        // bodies the same way (MZB-138). Both are counted off that stack, whether replaying or
-        // live (MZB-142). The despawn removes the stack, so a straggler after it is no death.
-        let replayed =
-            !self.parties[p].embodied && self.parties[p].recalled.iter().any(|e| e.0 == cs.epoch);
-        if !self.parties[p].embodied && !replayed {
+        // A casualty the party counted already: the reassert of a record journaled on an entity,
+        // or a copy of one (MZB-589). By the party's own list, not the world's `applied_ops`,
+        // which never shrinks and would hold an op for every member death of the world's life.
+        if self.parties[p].casualty_ops.contains(&cs.op) {
+            return;
+        }
+        let x = &self.parties[p];
+        let in_view = !copy && x.embodied && x.epoch == cs.epoch;
+        let walk_off = !copy && !in_view && x.recalled.iter().any(|e| e.0 == cs.epoch);
+        if !copy && !in_view && !walk_off {
             // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
             return;
         }
@@ -5499,8 +6174,18 @@ impl Conflict {
         let x = &mut self.parties[p];
         let t = x.units[k].1.min(cs.count);
         x.units[k].1 -= t;
+        if t > 0 {
+            x.casualty_ops.push(cs.op);
+        }
         let u = x.units[k].0;
-        let stacks = if replayed {
+        if in_view && self.outbox.replaying() {
+            // Room the next honoured record of this epoch counts as placed (§5.2, RP-22).
+            *self.fill_deaths.entry(p).or_insert(0) += t;
+        }
+        let x = &mut self.parties[p];
+        let stacks = if copy {
+            None
+        } else if walk_off {
             x.recalled
                 .iter_mut()
                 .find(|e| e.0 == cs.epoch)
@@ -5510,6 +6195,18 @@ impl Conflict {
         };
         if let Some(s) = stacks.and_then(|v| v.iter_mut().find(|s| s.0 == u)) {
             s.1 = s.1.saturating_sub(t);
+        }
+        if copy || walk_off {
+            // A copy takes from no stack, and a walk-off death from its own epoch's alone, so
+            // every stack of that unit is capped at the units left alive, as the recalled-entry
+            // despawn caps `spawned`: else the next despawn counts Java's survivors above them
+            // and the death is undone (§5.7, RP-25; a walk-off death with the newer epoch
+            // despawned first, §5.9, RP-27).
+            let alive = x.units[k].1;
+            let recalled = x.recalled.iter_mut().flat_map(|e| e.1.iter_mut());
+            for s in x.spawned.iter_mut().chain(recalled).filter(|s| s.0 == u) {
+                s.1 = s.1.min(alive);
+            }
         }
         self.stats.casualties += u64::from(t);
         self.party_lost(p, t, at);
@@ -5941,8 +6638,12 @@ impl Conflict {
     /// [`Conflict::heap_bytes`] by part, in bytes (as `World::memory`): what a bench reports to
     /// say where the resident bytes per faction go.
     pub fn memory(&self) -> BTreeMap<&'static str, usize> {
-        let party =
-            |x: &Party| std::mem::size_of::<Party>() + x.route.len() * 16 + x.units.len() * 8;
+        let party = |x: &Party| {
+            std::mem::size_of::<Party>()
+                + x.route.len() * 16
+                + x.units.len() * 8
+                + x.casualty_ops.len() * 8
+        };
         BTreeMap::from([
             ("factions", self.factions.rows.heap_bytes()),
             ("sources", self.sources.rows.heap_bytes()),
