@@ -6,6 +6,7 @@ M1 1 to 49, M2 50 to 99, M3 100 to 149, M4 150 to 199, M5 200 to 249, M6 250 to 
 M8 350 to 399, M9 400 to 449, M10 450 to 499, M11 500 to 549, M12 550 to 599. Each slice writes only
 under its own heading. MZB-589 is lent from M12's range to M6 (the BAND_CASUALTIES op id, which rides with
 M6's branch); M12 skips it. MZB-700 to 719 are M10's review fixes (its range was full).
+MZB-720 to 749 are M10b's and M10c's.
 
 ## M1 Records
 
@@ -8307,6 +8308,171 @@ MZB-499) is full.
   - **Sims:** sim-mowzie.json moves in its hash details alone (the party row gained a field: the first seed
     state of runs, the audit's lines "state ... against ...", 7 lines); sim-conflict.json moves in `wall_ms`
     alone (its state hash, the restore check's two agree) and is left as committed.
+
+### M10b build records (MZB-720 to MZB-739)
+
+What the Java half of the march (M10b) decided, one commit per design step. The design's records are MZB-450 to
+MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; the plugin adds one method
+(`Maker.pack()`). The pure parts are plain classes (`MarchPath`, `MarchTable`, `MarchColumn`, `StopSquare`,
+`MarchTrim`) so JUnit runs them without a server; the bridge's own paths need a server and are M10c's GameTests.
+
+- **MZB-720** (`ConflictRecords.March` and `MarchPath`; step 1):
+  - The decode is `MarchPath.decode(buffer, at, size, waypoints, names)`. It returns null (the bridge counts
+    `malformed`) when the record is shorter than its own counts say (`72 + 8k + 16w`, computed in longs so a
+    hostile count cannot wrap), or when the phase is outside 1 to 5. A unit entry of a body the dictionary
+    does not name is left out, since no held body can carry that name; a dimension or culture the dictionary
+    does not name reads as null.
+  - Units are a `Map<String, Integer>` summed by body name, not fastutil: core's test classpath has no fastutil.
+  - `chartAt(t)` is MZB-454's rule and `at(t, topo)` folds the block centre (MZB-477). The interpolation runs in
+    doubles so a long segment cannot overflow an int difference; the result truncates toward zero as the
+    engine's `as i32` does.
+  - **MZB-479 as built:** the bridge uses `chartAt` as its frame (the head, the stop's distance tests) and
+    never maps through TP11's image. The frames agree away from a seam; across one the design's own trap
+    ("the seam gap") applies and M10c's moving test stays on a flat world.
+  - Pinned by `MarchPathTest` (10): the engine's bytes (`SAMPLE_MARCH_HEX` in `boundary.rs`, which has its own
+    Rust test), MZB-477's vectors, every phase's position, truncation, short records and bad phases.
+- **MZB-721** (the march map; step 2):
+  - `MarchTable` keeps the latest record per agent by unsigned revision; an equal or lower one is `STALE`; an
+    ENDED record drops the path, remembers the agent, and every later record of that agent is dropped (`ENDED`
+    outcome, `marchEnds`).
+  - It is cleared at a session start, at a session's end and while the conflict module is off. **The clear
+    on switch-off is not gated on `held`:** a march is kept with no party (the engine may say it before the
+    materialize that embodies the band), so a party-less table must still go. **Fork (recorded, not
+    built):** after a switch-off and on again the engine is not known to send every party again, so a band
+    still marching may have no map until its next change. It follows the lurks' and the design's convention
+    (nothing is saved); the cost is a column that does not turn and a stop that is not held until the next
+    record, and the trim's next run.
+  - Reads for GameTests: `march(agent)` and `marchEnded(agent)`, whether or not the party is embodied.
+  - Counters `marchRecords`, `marchStale`, `marchEnds`, `trimmed`, `walkIns`, `clamps`, reset at a session start.
+- **MZB-722** (the column; step 3):
+  - `MarchColumn.plan` splits each entry into stacks of at most two (a row), `ConflictBridge.ROW` (1.5) behind the
+    row before. A body whose maker says `pack()` (the raptor) gets one stack per member, a pair abreast at
+    plus and minus `PACK_SIDE` (3.0) and each pair `PACK_ROW` (6.0) behind the last. Both are PLACEHOLDERS.
+  - Met on the march (radius 0) the entries line up one behind the other in record order from the head, and the
+    war chief rides alone at the rear of all. The chief's stack flag is on the first entry of wave 0 only
+    (engine.rs); a later wave's entries never make a chief. On an arc each entry keeps its own column from its
+    arc point with its side the entry's spread, and its chief at the rear of its own rows.
+  - A stack's offset from the band's target is `-h * back + r * side`, `r = (-hz, hx)`. The heading at radius 0
+    is the record's bearing (MZB-457); on an arc it runs from the centroid of the arc points to the target.
+  - **A lurk keeps its rows' `back` and ignores their sides** (MZB-360 stands the stack at the spot). The steer
+    that follows a lurk's end is slightly imprecise (the offsets were zeroed while it held); accepted, since
+    the next steer lays the column out whole.
+  - `ConflictBodies.Maker.pack()` defaults to false (the interface stays functional) and `RaptorMaker` returns
+    true. `ConflictBodies.pack(body)` reads it. D4 holds: the plugin only says which body is a pack.
+  - Existing GameTests that count a band's stacks (ConflictGameTests, TalkNewsGameTests) see more stacks now;
+    fixing those assertions is M10c's.
+- **MZB-723** (the turns in `steer`; step 4): a steer takes the column's head as the front stack's anchor less
+  its offset (`frontStack`: the stack in play with the least `back`, the lower index on a tie), sets the
+  heading from the head to the new point (the old heading when the head is on the point), and gives every stack in
+  play its place in the turned column. `frontStack` is package-private so `Camps` can use it (MZB-726).
+- **MZB-724** (the stop; step 5): a band is stopped while the bridge holds a march of it in phase 3 or 4 in its own
+  level. On the 20-tick beat (`STOP_BEAT`, PLACEHOLDER) or at once when a record has just put it in the stop
+  (and when the band is first materialized):
+  - **The square** is one chunk inside the nearest player's entity-ticking edge (`StopSquare.square`), from the
+    server's simulation distance. **The nearest player** is the nearest non-spectator player in the level
+    within `STOP_REACH` (256) of the head. With no such player nothing is moved.
+  - **Walk-in** (pending stacks): a stack whose anchor is outside the square comes in where its line to the head
+    crosses it (Liang and Barsky; the head clamped into the square when the line never does), pulled half a
+    block inside, then walks on toward its old end clamped into the square. It is marked dirty for a test;
+    the square only picks the point, and it is placed only if the chunks it needs tick (MZB-471).
+  - **Clamp** (placed stacks): a stack whose walk end is outside its player's square has the end clamped into it
+    and walks on from where it stands, so it never walks out of the ticking area to be taken back to pending.
+  - A walk keeps the stack's arrival tick when it is still ahead (`st.t1`), else walks at the band's speed.
+  - Nothing is journaled (MZB-467). `StopSquareTest` (6) pins the geometry.
+- **MZB-725** (the trim; step 6; MZB-473 as built):
+  - A record that is not ENDED and not stale marks a held band `trimNow`. The trim runs at the end of that
+    tick, and on the 20-tick beat while the band is `trimDue`. `MarchTrim.pick` (pure, `MarchTrimTest` 6)
+    chooses the member.
+  - **Per body** (the war chief apart): `living` is the band's members that are alive, not dying, not removed,
+    over its stacks in play; `want` is the record's count for that body (0 when it lists none). The trim
+    cuts `living - want`, one at a time. Then the chief if the record lacks the chief flag.
+  - **Order of cuts:** a pending member first (it was never in the world), the rearmost stack's (by `back`,
+    then stack index, then slot index, each highest first); then, among placed stacks, the rearmost member
+    that no non-spectator player in the level is within `OUT_OF_VIEW` (64) of. A placed member with no body
+    (waiting for its refill) is unseen. When every member left to cut is in sight the band stays `trimDue`
+    and the trim tries again on the beat: nothing vanishes in front of a player.
+  - **A cut** is `despawn` (body, goals, lurk, extras), `alive` false, `trimmed` up by one; a stack left with
+    no member is unwatched and gone. It books nothing, is no survivor in a later BAND_DEMATERIALIZED, and
+    journals nothing.
+  - **Fork (conservative): the trim runs before the stop's walk-in and the placing, not after,** so a pending
+    member the books have lost is cut before it is placed, not placed in sight and then uncuttable.
+  - **Fork (conservative): a record whose dimension is not the band's, or is unnamed, trims nothing.**
+  - **A band cut to no member stays held** until the engine ends it, as a band whose members all died does:
+    `pass` marks its stacks gone, and no BAND_DEMATERIALIZED is sent by the trim (the engine sent the
+    record, so the engine knows).
+  - The trim is per member only on a record's arrival or on the beat while due (D1).
+- **MZB-726** (the homecoming; step 7; MZB-464 as built, and MZB-466's Java half):
+  - `Camps.reconcile` registers, before any line is played, every party a HAND_BACK line names whose party the
+    bridge holds at the line's epoch, whatever the line's outcome and whether the camp is in or declared at all.
+    The final `homeAt` loop no longer dereferences the site: with no site the band walks off from its front
+    stack's anchor, and a band with no stack in play (nothing to walk) is simply ended through `recallStep`.
+  - This closes a strand and a double: a band handed back to a camp that is not in answered every line stale,
+    and its puppets stood where they were for good (the engine had ended the party) beside the camp's body
+    the reconciler spawns when the camp comes in.
+  - **MZB-466's Java half:** `unbookedHomeDeaths` counts, and a debug log line names the body, party and epoch of,
+    each loss (casualty, chief, take) of a member of a band whose march the engine has ended while the bridge
+    still holds it and has not begun its homecoming. It books nothing more (the engine drops it).
+  - Needs a server to show; M10c's test list below covers it.
+- **MZB-727** (`ConflictKit` for M10c; step 8): `march(MarchSpec)` scripts a BAND_MARCH (agent, revision, dimension,
+  faction, kind, phase, flags, muster end, units by body name, waypoints as `{x, z, tick}`); `trimmed()`,
+  `walkIns()`, `clamps()` and `unbookedHomeDeaths()` read the counters. It works on the stub and on the native engine.
+- **MZB-728** (the empty flagged BAND_MATERIALIZE; MZB-700's requirement): a BAND_FIGHT (8) record with m = 0 is
+  valid (`Materialize.emptyFight`, `MaterializeRecordTest` 4). The bridge places nothing, takes the wave as had on
+  a party at that epoch, ends no epoch (a new epoch's empty record does not capture the old party), and answers
+  BAND_MATERIALIZED with the command's flags and `spawned` 0. An empty record without the fight flag, or with
+  a negative count, is still BAND_SPAWN_REJECTED BAD_RECORD. **Fork (conservative):** the other refusals still
+  apply to an empty record (unknown dimension; a wave the party already had, a recalling party, or another
+  dimension: ALREADY_EMBODIED), since a repeat is a genuine repeat. The echo counts in `materialized`, the
+  bridge's own count of echoes.
+- **MZB-729** (the bodies at load; the question MZB-705 left to M10b): **nothing doubles or strands a puppet,
+  and M10 changes nothing there. No code was needed.**
+  - A puppet is persistence-required (`ConflictBodies.hold`) and carries an `AgentTag` (agent, epoch) that
+    is saved with it. The world can therefore hold puppets on disk: after a crash, or in a chunk that
+    unloaded while the session lived.
+  - Every tagged entity that joins a level is checked first (`BridgeEvents.onJoin`, highest priority,
+    "puppets never outlive a session"). With no session it is stale; with one, `ConflictBridge.admit` takes only
+    the exact live object of a live slot of a live party at that epoch (or an extra of one). Anything else is
+    cancelled, ejected and discarded, and counted in `staleDiscarded`. After a restart `byUuid` is empty, so
+    every saved puppet and every saved raptor follower is discarded as it loads. A saved copy of a puppet
+    the session despawned, requeued, trimmed or handed home (its `byUuid` entry is gone) is discarded the same way;
+    a saved copy of a puppet still in `byUuid` whose object was unloaded is not that object either.
+  - So the engine's book is the only account: a unit of a band the engine holds abstract is alive in the book and
+    has no body, and if the band is embodied again its bodies are new. A clean stop also leaves none (`capture`
+    despawns every puppet at `sessionStopping`).
+  - **The camp bodies are the other store, and are not puppets:** a camp's own bodies carry `CAMP_MEMBER`,
+    not `AgentTag`, are indexed on join (`Camps.onJoin`) and are reconciled by the census against the
+    ledger (M5, MZB-660, MZB-661). A slot set out whose body sat in an unloaded chunk is found by the next
+    census and taken by the ledger's TAKE or REMOVE line. M10's march sends no new line and creates no
+    new body, and the trim and the homecoming touch puppets only.
+  - **What M10 does touch, walked through** (a band killed or walked home while its puppets sat in an unloaded
+    chunk): the engine's HAND_BACK finds no live puppet (`puppetOf` wants a body that is in the world) and
+    plays the line as a spawn at the camp's edge (MZB-213); the party's remaining slots walk home or vanish
+    through `homeAt` and `recallStep` (despawning a removed body is guarded); the saved copy is discarded when
+    its chunk loads. One body of the unit results. A trimmed slot's saved copy is discarded the same way.
+  - **For M10c (not tested here):** a GameTest that builds a copy of a placed puppet from its saved NBT
+    (tag included) before (a) a trim cuts that slot, (b) a homecoming sends its band away, (c) the engine
+    ends its band, and then adds the copy to the level: it must be discarded (`staleDiscarded` up by one, no
+    entity with its UUID, the unit's count unchanged). `PuppetJoinGameTests` does this for a phase 1 group.
+- **MZB-730** (D1, D3, UR-1 and notices, audited): no per-member work was added to a tick handler. The march map costs a
+  decode and a put per record; the stop runs on the beat; the trim runs on a record and on the beat while due.
+  Two per-member loops exist from M3 and M5 and are not M10b's: `checkPlaced` visits a placed stack's members
+  each tick, and `pass` calls `watch` for each pending stack each tick (cheap while no member crosses a
+  chunk edge, one read per member). The column makes more stacks per band (nine members are about six
+  stacks), so the pending tests are per stack and per changed chunk, as before. No entity type and no
+  mixin was added (D3, MZB-474). Nothing new is saved anywhere (UR-1): the map and the counters are memory. No
+  chat, action-bar or title line is sent for any of it.
+- **MZB-731** (what M10c's GameTests must cover that M10b could not): tests 22 and 33 of the design, and:
+  - The column in the world: rows of two, a pack's pairs, the chief at the rear when met, the turns after a
+    steer (positions, not counters), placed only in ticking chunks and not flickering at a chunk edge.
+  - The stop: walk-in, clamp and a stack held inside the square for a player who stands still; the band's head
+    on the march's chart at a seam (kept on a flat world).
+  - The trim: nothing cut in sight, the cut on the beat once the hearer goes, pending first, a chief cut when the
+    record lacks one, an ENDED record trimming nothing, a record for another dimension trimming nothing.
+  - The homecoming: a HAND_BACK to a camp that is not in; a failed `addFreshEntity`; no site.
+  - The empty flagged BAND_MATERIALIZE: the echo (one BAND_MATERIALIZED, flags 8, aux 0, no BAND_SPAWN_REJECTED), then a
+    wave with the next number is accepted.
+  - MZB-729's saved-copy test, and MZB-466's counter in a GameTest.
+  - The existing stack-count assertions the column changes.
 
 ## M11 Aloft
 

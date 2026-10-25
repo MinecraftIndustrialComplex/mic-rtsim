@@ -1943,6 +1943,15 @@ joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16). 
   §4.4, RP-170) drops a BAND_MARCH pushed or queued then. The first take after the replay's end sends
   every party's record, with what the replay left (a fighting band is waiting by then), so Java's map is
   never given a replay's mid-state and never hears of a band that ended in the replay.
+- **What Java does with it (M10b, MZB-720 to MZB-731).** Java keeps the latest record per agent and sends
+  nothing back for it. It lays a materialized band out as a column (rows of two, a raptor pack's pairs
+  abreast, the war chief at the rear), turns the column at each BAND_STEER, and trims what it holds beyond
+  the record's counts. A band in phase 3 or 4 is held in the square one chunk inside its nearest player's
+  entity-ticking edge, checked every 20 ticks. The trim cuts pending members first, then placed members no
+  player is within 64 blocks of, never one in sight; it books nothing and journals nothing, and an ENDED
+  record trims nothing. The walk-in, the clamp and the trim are Java's alone: the engine learns of them from
+  the next records and from the bodies' own casualties. A HAND_BACK line sends its band home whatever the
+  line's outcome, the camp not in included (MZB-726).
 
 ### 9.5 How Java would apply them
 
@@ -2002,7 +2011,7 @@ BAND_MATERIALIZE at `arcRadius` 0, MZB-457), steered along the rest of its route
 walk leaves the view. Java's walk-in places the stacks as the arrival of a band on the march does
 (MZB-469 to MZB-472).
 
-**A walked-in fight sends an empty record (MZB-700; M10b's Java owes it).** A band that walked in in
+**A walked-in fight sends an empty record (MZB-700; Java echoes it, MZB-728).** A band that walked in in
 its bodies (MZB-461) fights in them: the engine steers it (BAND_STEER with the attack flag, `arrive`
 0) and then sends, in the same step, a BAND_MATERIALIZE flagged BAND_FIGHT (8) for the members not in
 Minecraft yet. When every member is placed already (a band met on its road with the quota's room full,
