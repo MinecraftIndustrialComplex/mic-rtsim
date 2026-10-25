@@ -5803,6 +5803,10 @@ impl Conflict {
             || x.alive() == 0
             || matches!(x.phase, Phase::Mustering | Phase::Fighting)
             || (self.peaceful && (x.kind.is_war() || x.kind == PartyKind::Envoy))
+            // An envoy goes home recalled, never in bodies (MZB-456), and `go_home` has cleared
+            // the feud it came for: met again, it would show a demand of nothing to nobody
+            // (MZB-702).
+            || (x.kind == PartyKind::Envoy && x.phase == Phase::Home)
         {
             return;
         }

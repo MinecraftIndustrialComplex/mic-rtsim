@@ -8133,6 +8133,18 @@ MZB-499) is full.
   - **Not done:** a binary search on the first outside tick (the predicate is not monotone near a tangent, the
     truncated position can step back inside), and a separate cap on the steps (the segment's end is the cap).
 
+- **MZB-702** (`seen` skips an envoy on its way home; amends MZB-457 and MZB-490): the second P2 of the review.
+  MZB-490 made `seen` meet a band on its way home as one on its way out, skipping only a band with nobody alive.
+  An envoy refused in view of its player goes home recalled (MZB-456: an envoy never walks home in bodies) with
+  `go_home` clearing the feud it came for; the same player, still watching, met it again on that way, and
+  `materialize_envoy` then sent a demand of nothing to player (0, 0), which Java shows as a settlers' "<Culture>
+  Envoy" with the "other" line, recalled again (reason 4) where it walked off. Repro
+  (`a_refused_envoy_is_not_met_again_on_its_way_home`, tests/mowzie_records.rs): before the fix an ENVOY_MATERIALIZE
+  with epoch 2, player (0, 0), no flags and a count of 0 at tick 18616, and a second RECALL at 20004; after it
+  neither. The fix is the reviewer's sketch (5abaf42): `seen` returns for an Envoy whose phase is Home. A war band
+  on its way home is still met (MZB-482, MZB-490). The committed `sim-conflict.json` carried this envoy
+  (MZB-704).
+
 ## M11 Aloft
 
 (none yet)

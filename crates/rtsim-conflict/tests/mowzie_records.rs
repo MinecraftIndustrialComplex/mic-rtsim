@@ -6890,3 +6890,44 @@ fn a_walked_in_fight_in_the_replayed_window_is_resolved_once() {
     assert_eq!(crash.watched, live.watched);
     assert_eq!(crash.casualties, live.casualties);
 }
+
+/// MZB-702 (MZB-457 on envoys): an envoy refused in view of its player goes home recalled
+/// (MZB-456: an envoy never walks home in bodies), and the same player, still watching, met it
+/// again on its way home: `seen` no longer skipped Home, and `materialize_envoy` then sent a
+/// demand of nothing to nobody (the feud was cleared by `go_home`), which Java reads as a
+/// settlers' demand. An envoy on its way home is not met.
+#[test]
+fn a_refused_envoy_is_not_met_again_on_its_way_home() {
+    let mut r = Run::new(36, quiet_goblins());
+    let e = envoy_met(&mut r);
+    let at = r.c.now() + 5;
+    answer_from(
+        &mut r,
+        e.agent,
+        e.epoch,
+        boundary::ANSWER_REFUSED,
+        synth::PLAYER,
+        at,
+    );
+    let from = r.cmds.len();
+    r.run(at + TICKS_PER_DAY / 4);
+    let after: Vec<String> = r.cmds[from..]
+        .iter()
+        .filter_map(|(t, c)| match c {
+            Cmd::Envoy(x) if x.agent == e.agent => Some(format!(
+                "{}: envoy epoch {} player {:?} flags {} count {}",
+                t.0, x.epoch, x.player, x.demand_flags, x.tribute_count
+            )),
+            Cmd::Recall(x) if x.agent == e.agent => Some(format!(
+                "{}: recall epoch {} reason {}",
+                t.0, x.epoch, x.reason
+            )),
+            _ => None,
+        })
+        .collect();
+    eprintln!("{after:#?}");
+    assert!(
+        !after.iter().any(|l| l.contains(": envoy ")),
+        "met again on its way home: {after:#?}"
+    );
+}
