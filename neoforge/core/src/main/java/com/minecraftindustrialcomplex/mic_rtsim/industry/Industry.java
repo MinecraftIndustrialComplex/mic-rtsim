@@ -486,6 +486,11 @@ public final class Industry {
         session.journal().chunks().dependsOn(chunk);
     }
 
+    /** Puts {@code chunks} on disk now; true once they are there (ChunkWriteBarrier.writeNow, RP-213). */
+    java.util.concurrent.CompletableFuture<Boolean> writeNow(ServerLevel level, java.util.Collection<net.minecraft.world.level.chunk.LevelChunk> chunks) {
+        return session.journal().chunks().writeNow(level, chunks);
+    }
+
     /** True when {@code chunk} still carries the COMMAND_RESULT of this op id (applied into it, not yet acknowledged). */
     public boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
         return RtsimSession.chunkCarriesOp(chunk, opId);
