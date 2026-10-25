@@ -157,11 +157,22 @@ fn bars(j: &Java, ids: &Ids) -> i64 {
         .sum()
 }
 
-/// Ticks the world, a lockstep each, until the pages hold every observation through `through`
-/// (a save asked for with `request_save`). Panics after 60 s of wall clock instead of spinning
-/// for ever: a hung test binary holds the shared cargo lock.
+/// Ticks the world, a lockstep each, until the engine has taken the save asked for through
+/// `through` (`request_save`), then waits for its pages to be durable without ticking (P3-1 of
+/// the slice R review, RP-259). The save is taken in the step that applies `through`: right before
+/// the first journaled record past it, or at the step's end. Ticking until it was durable ran as
+/// many world ticks as the IO lane took (1 to 67 measured, more alone than under parallel load),
+/// so the crash tests' worlds, journals and replays moved with the load. Panics after 60 s of
+/// wall clock instead of spinning for ever: a hung test binary holds the shared cargo lock.
 fn mc_tick_until_durable(j: &mut Java, through: u64) {
+    use std::sync::atomic::Ordering::Acquire;
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        j.mc_tick();
+        if j.e.stats.applied_through.load(Acquire) >= through {
+            break;
+        }
+    }
     while j.e.durable_obs_seq() < through {
         assert!(
             std::time::Instant::now() < deadline,
@@ -169,7 +180,7 @@ fn mc_tick_until_durable(j: &mut Java, through: u64) {
              requested save; durable_obs_seq {}, requested through {through}",
             j.e.durable_obs_seq()
         );
-        j.mc_tick();
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -380,13 +391,25 @@ fn restart(e: std::sync::Arc<Engine>, jsave: WorldSave, mc: FakeWorld, modules: 
     j
 }
 
-/// The hand-overs the session's replay took, which must be several (RP-276).
+/// The hand-overs the session's replay took, which must be several (RP-276). A failure names its
+/// path (RP-259): 0 hand-overs with a replay end is a replay that ended at SESSION_START (the
+/// pages or Java's journal reached the world save); with none and an engine error, the restarted
+/// engine stopped before its first step published its counters.
 fn replayed_over_several(j: &Java) -> u64 {
-    let n =
-        j.e.stats
-            .replay_handovers
-            .load(std::sync::atomic::Ordering::Acquire);
-    assert!(n >= 2, "the replay spans hand-overs: {n}");
+    use std::sync::atomic::Ordering::Acquire;
+    let s = &j.e.stats;
+    let n = s.replay_handovers.load(Acquire);
+    assert!(
+        n >= 2,
+        "the replay spans hand-overs: {n} ({} replay ends, {} records replayed, pages through {}, \
+         journal from {} to {}, engine error {:?})",
+        s.replays_ended.load(Acquire),
+        s.replay_records.load(Acquire),
+        j.pages_obs,
+        j.journal_first_at_start,
+        j.world_next_at_start,
+        j.e.protocol_error()
+    );
     n
 }
 
