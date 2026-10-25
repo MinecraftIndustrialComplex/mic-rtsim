@@ -7972,6 +7972,20 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   the engine after `home`, and the books (slots, parties, pool, stats less the counter) equal the same run
   without them, the camp's audit agreeing.
 
+- **MZB-496** (the two rtsim-jni conflict tests that relied on arc waves for a band met on the road; forks):
+  `factions_take_notice_send_envoys_take_tribute_once_and_raid_in_waves_across_a_crash` and
+  `a_held_arrivals_replayed_fight_counts_its_casualties_once` assumed the old arrival: a band whose wave
+  came on an arc from the first record. After the sighting (MZB-461) the whole band under the quota is
+  placed in a column on its road and the arrival walks it in (STEER_ATTACK, the same epoch), so a fully
+  placed raid sends no arc wave at all. The first test now waits for the attack steer for the raid, for the
+  invasion's sighting plus its first arc wave (a day, since the wave comes after the arrival and the wave
+  interval), and checks the rout as a walk home (a steer with `arrive` > 0, no RECALL_ROUTED). The second
+  test's replay is the walked-in fight resolved unwatched: its sighting's BAND_MATERIALIZE is the one record
+  after the pages, no fight record exists to honour (MZB-492's gap, which M10b or the review may close with
+  an echo of the attack steer), and the casualties count once at the sighting's epoch; the band is Home,
+  abstract, at the replay end. Taken the conservative way: the tests pin what the engine does now and say
+  where it is a gap, rather than building a fight record the engine does not have.
+
 ## M11 Aloft
 
 (none yet)
