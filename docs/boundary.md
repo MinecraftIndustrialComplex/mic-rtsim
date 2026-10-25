@@ -868,6 +868,22 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      1 link snapshots at every save, in the same commit. Pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
    - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
+     - **A residual, not built** (the coordinator's ruling; fixes6 item 6; RP-57). Switched off,
+       the conflict ignores its journaled records without folding their epochs (rtsim-jni
+       `engine/conflict.rs:565`, `journaled`), so this sequence can issue an epoch twice (against
+       docs/replay-gate.md §5.3):
+       1. A session crashes with the conflict on, after Java journaled records of epochs it issued
+          since its last save.
+       2. The next start has the conflict off: its replay ignores those records, and it saves past
+          the crashed session's window, so the journal is trimmed of them.
+       3. A later start turns the conflict on. Its pages never saw that window's epochs and its
+          journal no longer holds them, so no floor is raised (RP-57).
+       4. That session can issue the crashed window's epochs again.
+
+       Not the old-life case of RG5 and RG6: that life is Java's, covers the whole directory, and
+       is drawn only when the pages include no observation. The option not taken, with no format
+       change: the jni conflict module detects the gap at switch-on (its pages' `now` older than
+       the journal's start) and raises every party's epoch past the window before it ingests.
    - **Tests.** Order 29 (`CONFLICT_COMMAND`, TEST mode) queues a conflict command record with
      Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
      `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
