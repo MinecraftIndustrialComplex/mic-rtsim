@@ -1790,8 +1790,8 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   spot's, so an earlier epoch still counts. The record is stamped with the game time it is sent at, and the
   engine takes it at that time (`Conflict::ingest` runs to it), so one stamped inside the lurk's wait
   meets a live lurk and one stamped after its removal is stale. It has no op id and no holder carries it
-  (ConflictBridge journals it at once): a replayed one rolls as live, against industry's present
-  (docs/replay-gate.md §4.4), and a copy, were one ever sent, only raises the party's epoch floor and is
+  (ConflictBridge journals it at once): a replayed one is counted and rolls nothing (RP-154,
+  docs/replay-gate.md §4.4), and a copy, were one ever sent, only raises the party's epoch floor and is
   dropped (RP-150).
 
 ### 9.4 Commands

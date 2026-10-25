@@ -668,9 +668,9 @@ party, reaches `train_passed` and counts stale).
   lurk_robberies). Save and load read the same fields in the same order. No migration.
 - **The eight points:** the gate covers every M8 push (§4.4's M8 paragraph); M8 adds no `Cmd` kind,
   so the verdict test's sample already has both of its kinds. RP-57's table has TRAIN_PASSED read
-  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass rolls as
-  live against industry's present (RP-151); after two crashes one can be stale while replaying
-  (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
+  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass is counted
+  and rolls nothing (RP-151, RP-154); after two crashes every pass of the second session up to
+  its world save can be stale while replaying (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
   the arrive order, M7's `rail_held` and the FactionRow pin need no change (RP-153).
 - **GameTests:** M8's (FrostmawGameTests from `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` on,
   RailFrostmawGameTests, RailDirectionsGameTests and MowzieGameTests'
@@ -1029,11 +1029,13 @@ through `push` and the gate:
   standing once, at the party's epoch after the floors are lifted. `resend_lurks` drops any
   AMBUSH_SPOT still in the outbox first, as `resend_notices` drops a NOTICE; with the gate's drops
   there is none (rtsim-jni's `replay_end` asserts the same of its queue).
-- **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything. Queued "keep" and
-  "drop" while replaying: it is the station's roar (RP-12), lost for a pass replayed.
+- **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything, which a live session
+  alone makes (a replayed pass rolls nothing, RP-154). Queued "keep" and "drop" while replaying: it
+  is the station's roar (RP-12), and none is decided then.
 - **A robbery's goods** are no `Cmd`: `train_passed` calls `ambush`, whose `infra.raid_train` takes
   them from industry at industry's present, as M7's `Ev::Ambush` does (industry is not held). A
-  replayed pass rolls as live (RP-151).
+  replayed pass is counted and never calls it (RP-154): the live session may have robbed the
+  train, and the replay's attack would be another op that Java applies again.
 - **The swipe and the roar** are Java's: the swipe is a held lurk puppet's strike when a carriage
   comes in its reach (`ConflictBridge`'s strike through the `Lurker`), and the roar plays at the
   station of a train TRAIN_ROBBED names. Neither sends a record the engine acts on.
@@ -1042,8 +1044,8 @@ through `push` and the gate:
   AMBUSH_SPOT. A camp body is handed to a puppet only from this hand-over's SET_OUT lines, which no
   lurk meets (RP-153).
 - **TRAIN_PASSED** is an observation with no op id and no holder (ConflictBridge journals it at
-  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` reads it as live; a
-  copy is folded and dropped (RP-150).
+  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, while
+  replaying, rolls nothing (RP-154); a copy is folded and dropped (RP-150).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
