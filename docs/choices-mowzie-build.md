@@ -7149,7 +7149,7 @@ only (the create plugin, one core test helper); no Rust, wire, page or record ch
 already modelled the ring, `Dedup::Ring`, RP-184). Create facts are from cfr on Create 6.0.10, the jar
 neoforge/create compiles and runs against (`create_packMods`: deep-time/smoke/mic/server/mods/
 create-1.21.1-6.0.10.jar). Tests: create `AppliedOpRingTest` (3 unit tests) and `TrainRingGameTests`
-(8 GameTests). The second review (review2, at 7d00b265) and its fixes (RP-199, RP-250 to RP-257) bring
+(8 GameTests). The second review (review2, at 7d00b265) and its fixes (RP-199, RP-250 to RP-258) bring
 them to 14 unit tests and 14 GameTests and add rtsim-jni host tests; since RP-250 the ring is bounded by
 the engine's acknowledgement of each op's answer, not by a count.
 
@@ -7578,7 +7578,60 @@ the engine's acknowledgement of each op's answer, not by a count.
   the module off held the op, its answers and its generation beside every key of Create's (the keys a
   read and write of the same file without the ring's give). Then, with the module off again and the
   prunes released, the DUPLICATE's answer is acknowledged and the op leaves the ring (the prune counter
-  rises) and a save writes none of the ring's keys. Failure before the fix: see the end of this record.
+  rises) and a save writes none of the ring's keys. Failure before the fix: the test, compiled against
+  e702b3fe (the branch before RP-257) in a scratch copy as a one-test namespace on the stub engine,
+  failed "the op is not applied again: answered APPLIED": the save with the module off held Create's
+  20 keys and no ring key, and the raid sent again was applied, 12 iron left on the train (train and
+  raider 22 of 32, a double).
+- **RP-258** (the train ring across rollbacks of the engine's pages; T2's half of the coordinator's
+  split with the SEC-1 lead, which takes the crash points of industry ops answered live): rtsim-jni
+  host tests, on the real engine, of the property the ring's prune rests on: once the engine has
+  acknowledged an op's answer at sequence s (H_WORD_A is `durable_obs_seq`), it never sends that op
+  again, so the prune at `whenAcked(s)` is safe. A train raid is applied and answered APPLIED at s
+  (`raid_a_laden_train`, the two-files tests' setup: the iron line, train 1 under way laden, the
+  pages durable before the raid). Then:
+  (1) The pages past s are lost, and the server crashes with Java's two files from that moment (J1),
+  in `a_train_raid_and_a_rolled_back_save`: `a_save_crashed_before_its_page_commit_never_acknowledges_a_train_raid_answer`
+  (a save Java asks for past s writes its events, the archive's serial moves, and stops before its
+  page commit, `crash_before_next_page_commit`; Java asks again 200 ticks on);
+  `a_failed_save_never_acknowledges_a_train_raid_answer` (the save's commit fails, `Fault::TornLog`,
+  and the store recovers its last durable generation, `recover_store`);
+  `a_budget_save_never_acknowledges_a_train_raid_answer` (herds founded once the engine has read s
+  outgrow a 4 KiB row budget, which takes a save of its own; after the crash the store's newest
+  pending generation holds s and its confirmed one does not); and
+  `a_save_made_after_a_failed_one_acknowledges_only_what_the_restart_finds` (the failed save, then a
+  save made and acknowledged past s, then the crash). Each checks that every acknowledgement Java
+  applied (`Java::acks`, after the bridge's `min(ack, max(sent, pages))`) is at or below the durable
+  pages and the pages the restart finds, and in the first three that none reaches s; models Java's
+  ring (`RingOp`: the op stays until an acknowledgement of s in its own session, and the restart's
+  settle, RingView's rule, keeps it with its answer unknown when the pages lack s); and plays on.
+  With the pages from before the raid (the first three) the raid decided again carries the live op
+  and the ring answers DUPLICATE; with the pages holding s (the fourth) the ring dropped the op at
+  the acknowledgement and the engine never sends it again. The world conserves, and the books hold
+  the live raid's 22 once, in all four.
+  (2) A sequence reused after a rollback (P29), in `a_train_raid_answer_whose_sequence_is_reused`:
+  `a_ring_op_whose_answers_sequence_the_restart_reuses_is_taken_once` is J3 (the trains and their ring
+  from after the raid, the journal from before it, the pages from before both). The restart journals
+  from below the lost answer's s (`next_obs` is max(the save's, the pages' + 1)), another record takes
+  s, and a save through it is acknowledged. The settle made the op's answer unknown in the new
+  generation, so nothing waits on s and the op stays: the raid decided again is answered DUPLICATE and
+  taken once. `a_ring_keyed_by_sequence_alone_takes_a_raid_twice_when_its_answers_sequence_is_reused`
+  is a ring keyed by sequence alone: it takes that acknowledgement of another record for the answer's,
+  drops the op, and the raid is applied a second time. It pins why the ring keeps a generation.
+  None of T2's earlier tests drives these: the two-files tests (RP-252) reuse sequences in J3, but no
+  acknowledgement of a reused sequence comes before the raid is decided again. The engine's side has
+  its own tests: protocol.rs `a_save_failing_partway_costs_that_save_not_the_engine` (a failed save is
+  not acknowledged, the next one is) and archive.rs
+  `a_crash_before_the_page_commit_cuts_the_saves_chunks_and_the_replay_records_them_once` and
+  `a_rolled_back_pressure_save_takes_its_chunks_with_it` (the archive's side of the same rollbacks).
+  `RingOp` is a model of the Java rule, which `AppliedOpRingTest` and `train_ring_11` to `train_ring_13`
+  (RP-254) test on Java's own code. Results at 733b647a, all six passing: with the pages at 385 and s
+  387, the crashed commit and the failed save left the durable pages and every acknowledgement Java
+  applied at 385, and the restart found 385; the budget's run (s 399) left them at 385 with a pending
+  generation at 399 on disk, which the restart rolled back to 385; the save made after the failed one
+  reached 387, was acknowledged at 387, and the restart found 387 and never sent the op; in the reuse
+  case the restart journaled from 386, a record of kind 0x407 took 387 and was acknowledged at 388,
+  and the ring keyed by sequence alone left the world 22 crushed raw iron short of the books.
 
 ### Slice D (dragons)
 
