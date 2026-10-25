@@ -60,35 +60,57 @@ pub fn cli(args: &[&str]) -> ExitCode {
     }
 }
 
+/// The most unreadable store pages the listing names; the rest are counted.
+const UNREAD_NAMED: usize = 32;
+
 fn report(world: &Path) -> Result<Value, String> {
     let saved = load_world(world, Limits::default())?;
+    let name = saved.scrub(&world.display().to_string());
     let Some(iv) = saved.industry.as_ref() else {
-        return Err(format!("{} has no industry pages", world.display()));
+        // A world that never ran the industry engine has no package stores: not an error.
+        return Ok(json!({
+            "world": name,
+            "industry": false,
+            "now": Value::Null,
+            "stores": [],
+            "unread": [],
+            "unread_more": 0,
+        }));
     };
     let ids = saved
         .source
         .table_ids(STORE_TABLE)
         .map_err(|e| format!("cannot list the store pages: {e}"))?;
+    let names = SavedNames {
+        iv,
+        names: &saved.names,
+    };
     let mut stores = Vec::new();
+    let mut unread = Vec::new();
+    let mut more = 0u64;
     for id in ids {
-        let b = saved
+        // One bad page does not hide the others: it is named, up to a count.
+        let page = saved
             .source
             .read(PageKey::new(STORE_TABLE, id))
-            .map_err(|e| format!("store page {id}: {e}"))?
-            .ok_or_else(|| format!("store page {id} is listed and missing"))?;
-        let s = read_store_page(id, &b).map_err(|e| format!("store page {id}: {e}"))?;
-        stores.push(store(
-            &SavedNames {
-                iv,
-                names: &saved.names,
-            },
-            &s,
-        ));
+            .map_err(|e| e.to_string())
+            .and_then(|b| b.ok_or_else(|| "listed and missing".to_string()))
+            .and_then(|b| read_store_page(id, &b).map_err(|e| e.to_string()));
+        match page {
+            Ok(s) => stores.push(store(&names, &s)),
+            Err(e) if unread.len() < UNREAD_NAMED => {
+                unread.push(json!({"page": id, "why": e}));
+            }
+            Err(_) => more += 1,
+        }
     }
     Ok(json!({
-        "world": saved.scrub(&world.display().to_string()),
+        "world": name,
+        "industry": true,
         "now": iv.now,
         "stores": stores,
+        "unread": unread,
+        "unread_more": more,
     }))
 }
 
@@ -179,20 +201,46 @@ fn store(n: &dyn Namer, s: &PackageStore) -> Value {
         })
         .collect::<Vec<_>>();
     let c = &s.counts;
+    // Held and drawn packages at positions the store no longer lists (a frogport that was
+    // dropped keeps them until they land or are removed).
+    let listed = |p: &rtsim_industry::ids::BlockPos| s.frogports.iter().any(|f| f.pos == *p);
+    let dropped = s
+        .on_hold
+        .keys()
+        .chain(s.drawn.keys())
+        .filter(|p| !listed(p))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|p| {
+            let at = |m: &std::collections::BTreeMap<_, Vec<Held>>| {
+                m.get(p).map_or_else(|| held(&[]), |h| held(h))
+            };
+            json!({"pos": pos(*p), "held": at(&s.on_hold), "drawn": at(&s.drawn)})
+        })
+        .collect::<Vec<_>>();
     json!({
         "store": s.id.0,
         "dimension": n.dimension(s.dim),
         "epoch": s.epoch,
         "frogports": ports,
         "hops": s.hops,
+        "dropped": dropped,
         "no_route": pool(n, &s.no_route),
-        "left": s.left.iter().map(|(p, l)| json!({"pos": pos(*p), "pool": pool(n, l)})).collect::<Vec<_>>(),
+        "left": s
+            .left
+            .iter()
+            .map(|(p, l)| json!({"pos": pos(*p), "pool": pool(n, l)}))
+            .collect::<Vec<_>>(),
         "residue": {
             "packages": s.residue_packages,
             "goods": goods(n, &s.residue),
             "census_at": s.census_at.map(|t| t.0),
         },
-        "owed": s.owed.iter().map(|(p, g)| json!({"pos": pos(*p), "goods": goods(n, g)})).collect::<Vec<_>>(),
+        "owed": s
+            .owed
+            .iter()
+            .map(|(p, g)| json!({"pos": pos(*p), "goods": goods(n, g)}))
+            .collect::<Vec<_>>(),
         "counts": {
             "packages_out": c.packages_out,
             "packages_in": c.packages_in,
@@ -237,7 +285,30 @@ fn keys_text(h: &Value) -> String {
         .join(" ")
 }
 
+fn pos_text(p: &Value) -> String {
+    format!("({} {} {})", p[0], p[1], p[2])
+}
+
 fn print_text(v: &Value) {
+    print!("{}", text(v));
+}
+
+/// The listing as text, one block a store.
+fn text(v: &Value) -> String {
+    let mut o = String::new();
+    macro_rules! println {
+        ($($a:tt)*) => {{
+            use std::fmt::Write as _;
+            let _ = writeln!(o, $($a)*);
+        }};
+    }
+    if v["industry"].as_bool() == Some(false) {
+        println!(
+            "{}: no industry pages, so no package stores",
+            v["world"].as_str().unwrap_or("?")
+        );
+        return o;
+    }
     let ss = v["stores"].as_array().cloned().unwrap_or_default();
     println!(
         "{}: industry at tick {}; {} package stores",
@@ -292,6 +363,16 @@ fn print_text(v: &Value) {
                 }
             }
         }
+        for d in s["dropped"].as_array().into_iter().flatten() {
+            println!(
+                "    dropped position {}: held {} packages (keys {}), drawn {} packages (keys {})",
+                pos_text(&d["pos"]),
+                d["held"]["count"],
+                keys_text(&d["held"]),
+                d["drawn"]["count"],
+                keys_text(&d["drawn"])
+            );
+        }
         println!(
             "    no-route pool: {} packages ({})",
             s["no_route"]["packages"],
@@ -308,9 +389,25 @@ fn print_text(v: &Value) {
                 format!(", census at {}", r["census_at"])
             }
         );
+        for l in s["left"].as_array().into_iter().flatten() {
+            println!(
+                "    left at {}: {} packages ({})",
+                pos_text(&l["pos"]),
+                l["pool"]["packages"],
+                goods_text(&l["pool"]["goods"])
+            );
+        }
+        for o in s["owed"].as_array().into_iter().flatten() {
+            println!(
+                "    owed toward {}: {}",
+                pos_text(&o["pos"]),
+                goods_text(&o["goods"])
+            );
+        }
         let c = &s["counts"];
         println!(
-            "    counts: {} out, {} in, {} unrouted, {} in beyond the pool, {} censuses, {} declarations, {} held, {} landed, {} drawn, {} removed, {} drawn back",
+            "    counts: {} out, {} in, {} unrouted, {} in beyond the pool, {} censuses, \
+             {} declarations, {} held, {} landed, {} drawn, {} removed, {} drawn back",
             c["packages_out"],
             c["packages_in"],
             c["unrouted"],
@@ -324,6 +421,17 @@ fn print_text(v: &Value) {
             c["drawn_back"],
         );
     }
+    for u in v["unread"].as_array().into_iter().flatten() {
+        println!(
+            "  store page {} unreadable: {}",
+            u["page"],
+            u["why"].as_str().unwrap_or("?")
+        );
+    }
+    if v["unread_more"].as_u64().unwrap_or(0) > 0 {
+        println!("  and {} more unreadable store pages", v["unread_more"]);
+    }
+    o
 }
 
 #[cfg(test)]
@@ -416,7 +524,8 @@ mod tests {
         assert_eq!(v["residue"]["packages"], -1);
         assert_eq!(v["residue"]["goods"][0]["amount"], -4);
         assert_eq!(v["residue"]["census_at"], 800);
-        // the held packages are toward the first frogport, with their keys, the drawn toward the second
+        // the held packages are toward the first frogport, with their keys; the drawn toward
+        // the second
         assert_eq!(ports[0]["held"]["count"], 2);
         let keys = ports[0]["held"]["keys"].as_array().unwrap();
         assert_eq!(keys.len(), 2);
@@ -437,5 +546,59 @@ mod tests {
         let b = rtsim_industry::stores::store_page(&s);
         let back = read_store_page(3, &b).unwrap();
         assert_eq!(store(&Plain, &back), store(&Plain, &s));
+    }
+
+    #[test]
+    fn held_and_drawn_at_dropped_positions_are_listed_and_left_and_owed_print() {
+        let mut s = sample();
+        // A frogport that was dropped (redeclare keeps its held and drawn packages).
+        s.on_hold
+            .insert(BlockPos::new(99, 64, 0), vec![held(21, 98, None)]);
+        s.drawn
+            .insert(BlockPos::new(99, 64, 0), vec![held(22, 97, Some(7))]);
+        s.left.insert(BlockPos::new(77, 64, 0), {
+            let mut p = Pool::default();
+            p.add(3, &GoodVec::from_pairs([(Good(1), 24)]));
+            p
+        });
+        s.owed.insert(
+            BlockPos::new(10, 64, 0),
+            GoodVec::from_pairs([(Good(2), 5)]),
+        );
+        let v = store(&Plain, &s);
+        let dropped = v["dropped"].as_array().unwrap();
+        assert_eq!(dropped.len(), 1, "{v}");
+        assert_eq!(dropped[0]["pos"], json!([99, 64, 0]));
+        assert_eq!(dropped[0]["held"]["keys"][0]["serial"], 21);
+        assert_eq!(dropped[0]["drawn"]["keys"][0]["serial"], 22);
+        // The listed positions are not repeated there.
+        let out = text(
+            &json!({"world": "w", "industry": true, "now": 1, "stores": [v],
+            "unread": [], "unread_more": 0}),
+        );
+        assert!(
+            out.contains("dropped position (99 64 0): held 1 packages (keys 5:21)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("left at (77 64 0): 3 packages (24 good1)"),
+            "{out}"
+        );
+        assert!(out.contains("owed toward (10 64 0): 5 good2"), "{out}");
+    }
+
+    #[test]
+    fn unreadable_pages_are_named_and_a_world_without_industry_says_so() {
+        let out = text(
+            &json!({"world": "w", "industry": true, "now": 1, "stores": [],
+            "unread": [{"page": 4, "why": "bad magic"}], "unread_more": 2}),
+        );
+        assert!(out.contains("store page 4 unreadable: bad magic"), "{out}");
+        assert!(out.contains("and 2 more unreadable store pages"), "{out}");
+        let none = text(
+            &json!({"world": "w", "industry": false, "now": null, "stores": [],
+            "unread": [], "unread_more": 0}),
+        );
+        assert!(none.contains("no package stores"), "{none}");
     }
 }
