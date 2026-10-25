@@ -5029,7 +5029,10 @@ impl Conflict {
         if self.parties[p].loot.is_empty() {
             // The band's end goes to Java after camp_home's hand-back lines and any recall, in
             // the outbox's order (MZB-451, MZB-463). A replay's session has no map of it to end
-            // (MZB-484): the row goes, and nothing is sent.
+            // (MZB-484): the row goes, and nothing is sent. The gate's Drop of BAND_MARCH
+            // (docs/replay-gate.md §4.4) covers the send as well, so this guard changes no
+            // behaviour (the review's mutation of it passed): it is kept so that a replay builds
+            // no record for a row that goes (MZB-703).
             if !self.outbox.replaying() {
                 let x = &mut self.parties[p];
                 x.march_rev = x.march_rev.saturating_add(1);

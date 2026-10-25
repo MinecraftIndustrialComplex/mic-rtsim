@@ -8145,6 +8145,19 @@ MZB-499) is full.
   on its way home is still met (MZB-482, MZB-490). The committed `sim-conflict.json` carried this envoy
   (MZB-704).
 
+- **MZB-703** (the review's P3s; no behaviour change):
+  - **MZB-491's `held` rule is tested.** At 16f853cc a mutation of it (`held` read only for a newer epoch) failed
+    nothing. The P1 repro (MZB-700) is its test: with `held` mutated to `flagged && newer`, both
+    `a_walked_in_fight_in_the_replayed_window_is_resolved_once` (tests/mowzie_records.rs) and
+    `conflict::a_held_arrivals_replayed_fight_counts_its_casualties_once` (rtsim-jni) fail, since a walk-in's
+    fight record is of the band's own epoch and only the hold makes it the fight. In `honour` it is `held`,
+    not `fight`, that decides: mutating `fight` (`flagged && newer`) still passes, because `fight` only
+    routes a flagged record with no hold to `unheld_fights`, and `held` is read after it.
+  - **The `!replaying` guard on `home`'s BAND_MARCH ENDED push stays,** with a comment: the gate's Drop of
+    BAND_MARCH (docs/replay-gate.md §4.4) covers the send too (the review's mutation of the guard passed). The
+    guard keeps a replay from building a record for a row that goes, and from bumping `march_rev` on it.
+  - **The sims' explanation is corrected in MZB-704** (the re-met envoy and the `unseen` loop).
+
 ## M11 Aloft
 
 (none yet)
