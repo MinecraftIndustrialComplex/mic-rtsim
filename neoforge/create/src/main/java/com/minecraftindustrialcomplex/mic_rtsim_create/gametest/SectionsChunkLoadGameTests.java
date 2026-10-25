@@ -1222,8 +1222,10 @@ public final class SectionsChunkLoadGameTests {
                         GlassReport r = GlassExitKit.report(ids[i], rec);
                         check(which + ": a report", r != null);
                         check(which + ": eligible: " + r.replay().summary(), r.replay().eligible());
+                        // a district of one line has no units: its own window is the line's, and eligible above
                         List<GlassReport.Unit> u = r.unitsAt(mills[i].getX(), mills[i].getY(), mills[i].getZ());
-                        check(which + ": the millstone's unit may replay: " + unitLines(r), !u.isEmpty() && u.stream().allMatch(GlassReport.Unit::mayReplay));
+                        check(which + ": the millstone's unit may replay: " + unitLines(r),
+                                r.units().isEmpty() || !u.isEmpty() && u.stream().allMatch(GlassReport.Unit::mayReplay));
                     }
                 })
                 .thenExecute(() -> {
