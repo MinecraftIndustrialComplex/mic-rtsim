@@ -423,6 +423,10 @@ fn reset_if_due(st: &mut State) {
 /// cleared its notice by now. A notice a replayed record made again is dropped from the queue
 /// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
 pub(super) fn replay_end(st: &mut State) {
+    if !running(st) {
+        // The host's replay is over and no camp came back: nothing the held chiefs' states name.
+        st.conflict.engine.discard_held_chief_states();
+    }
     if !st.conflict.replay_end_due || !running(st) {
         return;
     }
@@ -472,8 +476,16 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 // the conflict's own time, so no module catches up for it, through the hand-over
                 // the journaled records use. Latest wins and nothing journals it: a lost one is
                 // mended by the den's next census.
-                Obs::ChiefState(_) => {
+                Obs::ChiefState(c) => {
                     st.conflict.chief_states += 1;
+                    if st.replaying {
+                        // The host's replay, not the engine's: the engine's begins once the conflict
+                        // is in the world, after a replayed FACTION_FOUND, and a state arriving before
+                        // it finds its faction unknown. Held for the replay end, where the engine
+                        // applies it over the census bytes the replay brings back (RP-100).
+                        st.conflict.engine.hold_chief_state(&c);
+                        return;
+                    }
                     with_infra(st, |c, w, infra| {
                         let now = c.now();
                         c.ingest(w, infra, &o, now);
