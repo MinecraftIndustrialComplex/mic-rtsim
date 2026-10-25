@@ -30,7 +30,14 @@ The script refuses a method that would break under NO_TICK_TIMEOUT:
   - `helper.onEachTick`, which schedules one task for each tick up to the timeout (ten million);
     use `waits.eachTick` (or a server-tick listener such as MowzieKit.everyTick);
   - `succeedWhen` / `succeedIf`, which wait for the test's own timeout;
-  - a two-argument `thenWaitUntil(delay, ...)`.
+  - a two-argument `thenWaitUntil(delay, ...)`;
+  - a wait that reads a test's state when the sequence is built: an array element (`id[0]`) or a holder's
+    `.get()` outside every lambda in its argument, such as `gone(level, id[0])`. A sequence's arguments are
+    evaluated when it is built, before its `thenExecute` steps fill the test's arrays, so such a wait reads
+    the array's first value (a null UUID: `getEntity(null)` is null, and the wait passes at once). Pass a
+    supplier (`gone(level, () -> w[0])`) or a lambda. Every wait of a method the script touches is checked,
+    wrapped already or not. `--allow-build-time NAME` turns the refusal into a warning for one method, for
+    a file whose fix is on another branch.
 
 Usage (from the repository root, `python3 -I` so nothing beside the script shadows the stdlib):
   python3 -I neoforge/tools/chunk_waits.py FILE.java [FILE.java ...]
@@ -38,8 +45,9 @@ Usage (from the repository root, `python3 -I` so nothing beside the script shado
   python3 -I neoforge/tools/chunk_waits.py --only aTestName FILE.java
   python3 -I neoforge/tools/chunk_waits.py --chunk '^kit\\.loaded\\(' FILE.java
   python3 -I neoforge/tools/chunk_waits.py --budget aTestName=1500 --budgets old-timeouts.txt FILE.java
-Exit 0 when every method was converted or skipped, 1 when one was refused or a budget named no method
-(nothing is written then, in any file).
+  python3 -I neoforge/tools/chunk_waits.py --allow-build-time aTestName FILE.java
+Exit 0 when every method was converted or skipped, 1 when one was refused or a budget or an
+--allow-build-time named no method (nothing is written then, in any file).
 """
 import argparse
 import re
@@ -118,9 +126,44 @@ def top_level_commas(s):
     return n
 
 
-def convert_body(body, chunks, name):
-    """The body with every wait not yet wrapped wrapped; (body, chunk count, logic count, refusals)."""
-    out, k, nc, nl, refused = [], 0, 0, 0, []
+def outside_lambdas(s):
+    """s with every literal, comment and lambda body blanked (same length): what runs when s is evaluated."""
+    out, depth, ends, j = [], 0, [], 0
+    while j < len(s):
+        k = skip(s, j)
+        if k != j:
+            out.append(" " * (k - j))
+            j = k
+            continue
+        c = s[j]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            while ends and depth < ends[-1]:
+                ends.pop()
+        elif c == "," and ends and depth == ends[-1]:
+            ends.pop()
+        elif s.startswith("->", j):
+            ends.append(depth)  # the body runs to the end of the lambda's own argument
+        out.append(" " if ends else c)
+        j += 1
+    return "".join(out)
+
+
+BUILD_TIME = re.compile(r"(?<!\w)(?<!new )([A-Za-z_]\w*)\s*\[(?!\s*\])|(\w+)\.get\(\s*\)")
+
+
+def build_time_reads(arg):
+    """The array elements and holder reads in a wait's argument that run when the sequence is built."""
+    return [m.group(1) + "[...]" if m.group(1) else m.group(2) + ".get()" for m in BUILD_TIME.finditer(outside_lambdas(arg))
+            if m.group(1) or BUILD_TIME.fullmatch(arg, m.start(), m.end())]  # not a get("literal")
+
+
+def convert_body(body, chunks, name, line0=1, allow=False):
+    """The body with every wait not yet wrapped wrapped; (body, chunk count, logic count, refusals, warnings).
+    line0 is the body's first line in its file."""
+    out, k, nc, nl, refused, warned = [], 0, 0, 0, [], []
     for m in WAIT.finditer(body):
         if m.start() < k:
             continue
@@ -131,6 +174,12 @@ def convert_body(body, chunks, name):
         if top_level_commas(arg):
             refused.append(f"{name}: a two-argument thenWaitUntil: {text[:70]!r}")
             continue
+        reads = build_time_reads(arg)
+        if reads:
+            line = line0 + body.count("\n", 0, m.start())
+            what = (f"{name}: line {line}: the wait reads {', '.join(dict.fromkeys(reads))} when the sequence is built,"
+                    f" not at each poll (pass a supplier): {' '.join(text.split())[:90]!r}")
+            (warned if allow else refused).append(what)
         if text.startswith("waits."):
             continue
         kind = "chunks" if any(re.search(p, text) for p in chunks) else "logic"
@@ -141,11 +190,12 @@ def convert_body(body, chunks, name):
         out.append(body[k:o + 1] + f"waits.{kind}(" + arg + ")")
         k = c
     out.append(body[k:])
-    return "".join(out), nc, nl, refused
+    return "".join(out), nc, nl, refused, warned
 
 
-def convert_file(path, chunks, only, budgets, seen):
-    """(refusals, report lines, the new text or None when unchanged); every method name goes in seen."""
+def convert_file(path, chunks, only, budgets, seen, allow=frozenset()):
+    """(refusals, report lines, the new text or None when unchanged); every method name goes in seen.
+    The methods in allow have their build-time reads reported as warnings, not refused."""
     s = open(path, encoding="utf-8").read()
     pieces, k, refused, report, changed = [], 0, [], [], False
     for h in HEAD.finditer(s):
@@ -169,7 +219,8 @@ def convert_file(path, chunks, only, budgets, seen):
         if bad:
             refused.append(f"{name}: {', '.join(helper + '.' + w + ')' for w in bad)} under NO_TICK_TIMEOUT")
             continue
-        new_body, nc, nl, r = convert_body(body, chunks, name)
+        new_body, nc, nl, r, w = convert_body(body, chunks, name, s.count("\n", 0, o + 1) + 1, name in allow)
+        report.extend("  WARNING " + x for x in w)
         if r:
             refused.extend(r)
             continue
@@ -230,6 +281,8 @@ def main():
                     help="this method's logic budget, in place of its timeoutTicks (repeatable)")
     ap.add_argument("--budgets", action="append", default=[], metavar="FILE",
                     help="a file of NAME=TICKS lines (# starts a comment), as --budget")
+    ap.add_argument("--allow-build-time", action="append", default=[], metavar="NAME",
+                    help="warn, not refuse, when this method's waits read state when the sequence is built (repeatable)")
     a = ap.parse_args()
     chunks = ([] if a.no_default_chunks else DEFAULT_CHUNKS) + a.chunk
     entries = list(a.budget)
@@ -246,7 +299,7 @@ def main():
         budgets[m.group(1)] = m.group(2)
     seen, outs = set(), []
     for f in a.files:
-        refused, report, out = convert_file(f, chunks, set(a.only), budgets, seen)
+        refused, report, out = convert_file(f, chunks, set(a.only), budgets, seen, frozenset(a.allow_build_time))
         print(f"{f}: {'refused' if refused else ('unchanged' if out is None else ('would change' if a.dry_run else 'changed'))}")
         for line in report:
             print(line)
@@ -257,6 +310,9 @@ def main():
             outs.append((f, out))
     for name in sorted(set(budgets) - seen):
         print(f"REFUSED --budget {name}: no @GameTest method of that name in the files")
+        failed = True
+    for name in sorted(set(a.allow_build_time) - seen):
+        print(f"REFUSED --allow-build-time {name}: no @GameTest method of that name in the files")
         failed = True
     if failed:
         print("nothing written")
