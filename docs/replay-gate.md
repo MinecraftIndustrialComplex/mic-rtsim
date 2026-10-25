@@ -615,6 +615,12 @@ live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mo
   build reads 8"), `every_gametest_save_carries_and_matches_each_modules_hash` and
   `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
   `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
+- **The check's fixes** (RP-133, RP-134, MZB-672 amended, MZB-673). A raid held while replaying
+  owes its hunt under the op the session that went on sent, and a replayed HUNT_APPLIED for its
+  district ends the hold first, so the hunt kills once (RP-133, §6.1, §7.4). A tribute stack
+  answered after the pages' save is booked from its replayed answer, so the census does not put
+  it down again (RP-134, §4.4). The faction row boxes M9's hunts (216 bytes, MZB-672). No format
+  change: RTC9 / META 8.
 
 **The M8 merge** (feat/mowzie-m8 at 959ada91, M8 on M7's pre-merge 2a80b4f0, merging M7 at 39c819f1,
 then M9 at 7153b7fe, then main at 5a45b9e6, each its own merge commit, a64599d6, 74dd20ae and
@@ -1006,9 +1012,17 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   "never" holds.
 - **Tribute stacks** are no conflict `Cmd`: `place_tribute` books a TRANSFER_TO_CONTAINER that
   rtsim-jni writes through the core outbox (`placings`, `push_with_op`) under a deterministic op
-  (`tribute_op`), only for a camp that is in. So none is decided while replaying; the census that
-  brings the camp in after the replay places the stack, and a stack decided again after a crash is
-  the same op and amount, which Java answers DUPLICATE_OP (MZB-446).
+  (`tribute_op`, of the camp, the stack's index, the good and the amount), only for a camp that is
+  in. So none is decided while replaying; the census that brings the camp in after the replay
+  places the next stack. A stack the session that went on decided and had answered after the
+  pages' save is booked from its replayed COMMAND_RESULT: no placing holds it, so `tribute_placed`
+  (or `tribute_failed`) looks the op up among the camps that owe tribute in the replay, at the
+  indexes from the camp's count, and books it as that session did (RP-134). The census then
+  decides the next index, not that stack again from a stock that has moved. A stack in flight at
+  the crash, whose answer the journal does not hold, is decided again at its index: the same op
+  when the stock and what is owed have not moved, which Java answers DUPLICATE_OP if it put it
+  down (MZB-446); another op when they have, which Java puts down, a gift of at most that one
+  stack per camp (RP-134's residual).
 - **Raptors and the envoy party** use main's BAND_MATERIALIZE and ENVOY_MATERIALIZE sites, with
   §6's early returns; M9 adds no site of either.
 - **Observations, not commands:** HAVEN_CHEST, TRADED, CHIEF_PAID and HUNT_APPLIED come from Java.
@@ -1451,7 +1465,10 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
 - **Moved inside the slack** (RP-59). A replayed record that would move a held party ends its hold
   first, before it is applied: a BAND_CASUALTIES or CHIEF_KILLED for it at its epoch or an older
   one (a wipe-out or a rout sends it home), a copy of a BAND_CASUALTIES at any epoch (it counts at
-  any), and a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`).
+  any), a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`), and
+  a HUNT_APPLIED for a district a held party of its faction raids (its target, or a district within
+  64 blocks of a position target), oldest hold first (RP-133): the held raid owes its hunt before
+  the answer that spends it.
   The hold's end runs `party_event` at the record's tick with the hold bypassed inside the slack
   too (`hold_ending`), so the decision resolves unwatched as the session that went on resolved it
   at the hold's tick, and the record then applies to the band as it did there. Before, the record
@@ -1567,6 +1584,13 @@ re-send in `resend_notices` is kept, behind main's NOTICE filter only. M9 had de
 OwedHunt filters at its re-check (MZB-449 R1), so none was left to delete. The gate's queued "drop"
 differs from M9's `session_start`, which kept a queued OWED_HUNT: the replay end sends every hunt
 held, so a queued one would only have gone twice.
+
+A raid held while replaying (§6.1) owes its hunt when its hold ends, at the slack, before a record
+or at the replay end, later than the session that went on decided it. The hunt's op hashes the
+decision's tick, so `owe_hunt` takes the hold's tick (`hold_ending`), and a replayed HUNT_APPLIED for
+a held raid's district ends that hold first (RP-133): the hunt is owed under the op that session
+sent and its replayed answer spends it, where before the answer found no hunt and the hunt went
+again under a new op at the replay end, killing twice. Live ops are M9's.
 
 ## 8. Formats
 
