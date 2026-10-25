@@ -936,7 +936,7 @@ The counts live in the module's JNI stats, not saved.
 | Reconcile | drop | never | answers a CAMP_CENSUS of this session with spawn, adopt and take lines (MOWZIE.md §4.9); M5's `send_lines` orders only a camp that is in (`is_in`), false all through a replay: `begin_replay`'s `camp_session_start` makes every camp out and a census replayed only marks its camp out (RP-64) |
 | TrainRobbed | keep | drop | a roar (RP-12) |
 | ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
-| March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
+| March (M10) | drop | drop | a party's march (MOWZIE.md §4.16): latest wins per agent, built from the party by `take_commands` at the first take after the replay end, and by `home` for a band's end, neither while replaying; Java's map is a session's (RP-170) |
 | OwedHunt (M9) | drop | drop | the faction's hunts are state: a raid replayed owes its hunt again, which the plugin had; every hunt still held goes at the replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (§7.4, MZB-449, RP-131) |
 
 The queued column is the old `session_start` filter exactly (agent kinds, Territory, Notice and
@@ -1031,6 +1031,28 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   the faction's hunts: a second answer finds no hunt (MZB-449). HAVEN_CHEST has no op id and no
   holder carries one (GroveChests journals it at once); it is the chest's state, latest wins, so
   `ingest_copy` drops a copy, as it drops RAIL_PASS (RP-130).
+
+**M10's march (M10a, slice C's gate; RP-170).** BAND_MARCH (`Cmd::March`) had a row from the
+slice's table with the verdicts "drop" and "send", before it had a push site. M10 gives it the
+verdicts "drop" and "drop", because nothing pushes it while replaying and Java's map of marches is
+a session's:
+
+- **Built from the party, never from the replay.** `take_commands` builds a march record for each
+  party whose `march_due` flag is set, and only when `replaying` is false: while the replay runs it
+  builds none and leaves every flag and revision as they are. `begin_replay` marks every party, so
+  the first take after `replay_done` sends each one once, with what the replay left (a Fighting
+  band is Waiting by then). A record queued at the session start is dropped (the queued verdict), as
+  the flag was set again at that start.
+- **The band's end.** `home` pushes the ENDED record (revision plus one, after `camp_home`'s
+  hand-back lines and any recall) only when not replaying. A party that ends in the replay is gone
+  from the pages the session saves, and Java's map never held it.
+- **The gate backs the guards.** A push made while replaying anyway is dropped and counted in
+  `GateCounts::dropped`, never sent with a stale revision. The verdict test's sample line
+  (`every_command_kind_has_its_replay_verdicts`) holds the row: of the pushes made while
+  replaying, only TERRITORY is sent, and nine kinds are counted dropped.
+- **Orders that follow a band's body** (`steer_segment` toward home, a re-bind, the walk into a
+  fight) gate on `!replaying` where they act on an embodied party (MZB-484), so a replayed record
+  never makes the pages' bodies walk.
 
 **M8's lurk (the M8 merge, §2.7; RP-150 to RP-153).** M8 adds no `Cmd` kind: AMBUSH_SPOT and
 TRAIN_ROBBED had their rows above, and the verdict test's sample has both. Its push sites, all

@@ -4866,6 +4866,16 @@ impl Conflict {
             self.plan_feud(f, a, at, false);
         }
         if self.parties[p].loot.is_empty() {
+            // The band's end goes to Java after camp_home's hand-back lines and any recall, in
+            // the outbox's order (MZB-451, MZB-463). A replay's session has no map of it to end
+            // (MZB-484): the row goes, and nothing is sent.
+            if !self.outbox.replaying() {
+                let x = &mut self.parties[p];
+                x.march_rev = x.march_rev.saturating_add(1);
+                let record = self.march_record(p, true);
+                self.outbox.push(Cmd::March(record));
+            }
+            self.parties[p].march_due = false;
             self.parties.remove(p);
             self.fights_unanswered.remove(&p);
         } else {

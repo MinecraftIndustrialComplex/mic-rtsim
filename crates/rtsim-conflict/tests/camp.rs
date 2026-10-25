@@ -1023,6 +1023,30 @@ fn a_party_home_with_its_puppets_has_them_handed_back_not_spawned() {
         !r.cmds.iter().any(|(_, c)| matches!(c, Cmd::Recall(_))),
         "no recall: the camp is in"
     );
+    // MZB-451: the band's end goes after the hand-back lines, once, in the outbox's order.
+    let agent = rtsim_conflict::engine::Party::agent(p);
+    let ended: Vec<usize> = r
+        .cmds
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, c))| match c {
+            Cmd::March(m) if m.agent == agent && m.flags & boundary::MARCH_ENDED != 0 => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ended.len(), 1, "one ENDED record for the band");
+    let last_hand_back = r
+        .cmds
+        .iter()
+        .rposition(|(_, c)| match c {
+            Cmd::Reconcile(x) => x
+                .lines
+                .iter()
+                .any(|l| l.action == boundary::ACTION_HAND_BACK && l.a == agent),
+            _ => false,
+        })
+        .expect("the hand-back lines");
+    assert!(last_hand_back < ended[0], "the end follows the hand-back");
     ok(&mut r);
 }
 
