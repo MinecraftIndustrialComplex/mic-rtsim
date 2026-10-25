@@ -3648,3 +3648,13 @@ conservative option at its fork.
   every camp out at the window's start, and only a live census brings one in. It stays as a
   defence. The option not taken: a window opened without `camp_session_start`, which no host
   opens.
+- **RP-66** (a test's conflict command waits for the replay end; §4.4; §3.6; RP-33; the M5 merge
+  check's item 2): rtsim-jni's `order_command` puts a TEST order's command straight into the
+  host's queue, around the gate, so a test could send a BAND_MATERIALIZE (a "never" kind) while
+  the replay runs. The conservative option, as the lead asked: such a unit is held with RP-33's
+  (`waits_for_the_replay_end`: the four that run the clock, and `Order::ConflictCommand`). It
+  runs no clock, but holding it lets it take the units after it too, so order is kept. The option
+  not taken: list it in §4.4 as a route with its own verdict per kind. Failing first, protocol's
+  `a_conflict_command_ordered_while_replaying_waits_for_the_replay_end` (eight hand-overs of
+  fillers): "not written while the replay runs". `Order::HerdCommand` is the same kind of route
+  for the herds; it is not this slice's.

@@ -356,9 +356,9 @@ struct State {
     /// Order units not yet written, oldest first.
     units: VecDeque<Vec<Order>>,
     /// Order units taken while the session's replay runs that hold an order which runs the clock
-    /// to the hand-over's time, and every unit after one (docs/replay-gate.md §3.6, RP-33):
-    /// taken at the first step after the replay end, oldest first. Not saved; a SESSION_START
-    /// drops them (the re-review's item 5).
+    /// to the hand-over's time or a conflict command (RP-66), and every unit after one
+    /// (docs/replay-gate.md §3.6, RP-33): taken at the first step after the replay end, oldest
+    /// first. Not saved; a SESSION_START drops them (the re-review's item 5).
     held_units: VecDeque<Vec<Order>>,
     /// Outbox commands to resend at the start of the session, before anything new.
     resend: VecDeque<(u64, OpId, TransferCmd)>,
@@ -609,6 +609,13 @@ fn runs_the_clock(o: &Order) -> bool {
             | Order::TributeStart { .. }
             | Order::HerdFound { .. }
     )
+}
+
+/// A test's order that waits for the replay end, with every unit after it (RP-33): one that runs
+/// the clock, and a conflict command (RP-66), which joins the conflict's queue around its gate
+/// (docs/replay-gate.md §4.4) and so must not go while the replay runs.
+fn waits_for_the_replay_end(o: &Order) -> bool {
+    runs_the_clock(o) || matches!(o, Order::ConflictCommand { .. })
 }
 
 fn spawn_size(members: &[crate::orders::MemberOrder]) -> usize {
@@ -1378,13 +1385,16 @@ impl Engine {
         // A test's order that runs the clock to the hand-over's time, Java's present, waits for
         // the replay end, and so does every unit after it, in order (docs/replay-gate.md §3.6,
         // RP-33): taken now it would carry the modules past the replayed records still to come.
+        // A conflict command waits too, as it bypasses the gate (RP-66).
         if !st.replaying {
             for unit in std::mem::take(&mut st.held_units) {
                 self.take_unit(&mut st, unit);
             }
         }
         for unit in st.orders_rx.try_iter().collect::<Vec<_>>() {
-            if st.replaying && (!st.held_units.is_empty() || unit.iter().any(runs_the_clock)) {
+            if st.replaying
+                && (!st.held_units.is_empty() || unit.iter().any(waits_for_the_replay_end))
+            {
                 st.held_units.push_back(unit);
             } else {
                 self.take_unit(&mut st, unit);
