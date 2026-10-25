@@ -595,8 +595,12 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         l.begin_session();
     }
     let at = tick(wire::i64_at(rec.bytes, obs::GAME_TIME));
-    // The deferred latest-wins records are this session's, stamped at its present, past every
-    // replayed record: they wait for the replay end with the rest of the held step (RP-274).
+    // The deferred latest-wins records are this session's, stamped at its present: they wait for
+    // the replay end with the rest of the held step (RP-274). The present is past every replayed
+    // record unless the world's journal was saved and its level.dat was not (vanilla saves each
+    // level's data before level.dat, MinecraftServer `saveAllChunks`), and then `flush` would run
+    // the session start in the middle of the replay (P3-2 of the slice R review, RP-259; the test
+    // `a_session_record_stamped_below_a_replayed_one_waits_for_the_replay_end`).
     if !replaying {
         l.flush(Some(at));
     }
@@ -863,7 +867,10 @@ pub(super) fn simulate(st: &mut State) {
 /// answer's game time, which is at or before the world save's, so at or before this session's
 /// present; the held step runs the clock to the present before this drain (RP-274), so every
 /// decision the replay or the held step could make again is in the queue now. A decision of this
-/// session has a later tick, so another op.
+/// session has a later tick, so another op. A package's op is its number's, not its tick's
+/// (RP-259): one numbered as a package Java answered FAILED may be decided later and is written.
+/// That is no double: the engine never takes a package back (`command_failed` has no correction
+/// for one), so its booking and the package the world writes agree.
 fn unsent_answered(l: &mut Link) {
     if l.heard.is_empty() {
         return;
@@ -1497,6 +1504,68 @@ mod tests {
         assert!(
             l.heard.is_empty(),
             "memory only, emptied at the first drain"
+        );
+    }
+
+    /// P3-2 of the slice R review: the flush gate in [`journaled`]. Vanilla writes each level's
+    /// saved data (the journal) before level.dat (the game time), MinecraftServer
+    /// `saveAllChunks`: a crash between the two restarts the world at a game time below records
+    /// its journal replays. A latest-wins record of the new session is then stamped below a
+    /// replayed one, and `flush` would hand it to the engine, and run the engine's session start,
+    /// in the middle of the replay (RP-263's shape, which the hold removed, RP-274). The gate
+    /// keeps both for the replay end. No crash test reaches it (the fake Java saves its journal and
+    /// its game time at once): without the gate this test fails, the 26 industry tests pass.
+    #[test]
+    fn a_session_record_stamped_below_a_replayed_one_waits_for_the_replay_end() {
+        use rtsim_industry::ids::GoodVec;
+        use rtsim_industry::obs::LoadState;
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut st = State::new(rx, None);
+        st.session_first = 100;
+        st.replaying = true;
+        let present = Tick(10_000);
+        let l = &mut st.industry;
+        l.enabled = true;
+        l.session_start_at = Some(present);
+        // This session's stock sample, at the world's present (its level.dat's game time).
+        l.deferred.push_back(Timed {
+            at: present + 5,
+            obs: Obs::StockSample {
+                district: DistrictId(3),
+                inventory: 0,
+                sweep: 1,
+                goods: GoodVec::new(),
+            },
+        });
+        let record = |seq: u64, at: Tick| {
+            let mut b = Vec::new();
+            let t = Timed {
+                at,
+                obs: Obs::LoadState {
+                    district: DistrictId(3),
+                    state: LoadState::Unloaded,
+                    ticking_chunks: 0,
+                    total_chunks: 1,
+                },
+            };
+            iw::encode_obs(seq, &t, &mut b).unwrap();
+            b
+        };
+        // A replayed record past the present: its journal was saved after the game time.
+        let replayed = record(40, present + 1_000);
+        journaled(&mut st, &wire::Records::new(&replayed).next().unwrap());
+        assert_eq!(
+            (st.industry.session_start_at, st.industry.deferred.len()),
+            (Some(present), 1),
+            "no session start and no latest-wins record of the session while replaying"
+        );
+        // The control: past the replay end, the session starts, then the sample goes in.
+        st.replaying = false;
+        let this_session = record(100, present + 2_000);
+        journaled(&mut st, &wire::Records::new(&this_session).next().unwrap());
+        assert_eq!(
+            (st.industry.session_start_at, st.industry.deferred.len()),
+            (None, 0)
         );
     }
 }
