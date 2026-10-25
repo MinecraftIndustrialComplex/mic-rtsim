@@ -5919,7 +5919,6 @@ mod conflict {
         });
         let at = j.game_time;
         assert_eq!(demand(&e), Some(d0), "off: nothing comes due");
-        let from = j.conflict.len();
         wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         assert_eq!(
@@ -5932,12 +5931,6 @@ mod conflict {
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let log = e.conflict_log(false);
-        for l in &log {
-            eprintln!("  {:9} {:7.2} {:9} {}", l.tick, l.day, l.kind, l.what);
-        }
-        for (s, c) in &j.conflict[from..] {
-            eprintln!("  cmd {s}: {}", c.name());
-        }
         let (st, _) = e.conflict_stats();
         let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
         assert_eq!(demand(&e), None, "settled one way or the other");

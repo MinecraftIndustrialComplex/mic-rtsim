@@ -100,3 +100,220 @@ no longer grows with the backlog.
 4. **The fsync of noted region files when DSYNC is off (JB3).** It only matters for a power cut or an OS
    crash, not a JVM crash. Options: (a) keep it (recommended: one to four files per autosave, on an IO
    thread); (b) skip it and accept that a power cut can leave the journal ahead of a chunk under C2ME.
+
+## RP-290: the switch as a journaled record, in its own slice U-e (slice U-c's design point)
+
+Ben's decision, through the SEC-1 lead, on the question U-c's brief opened: should MODULES be journaled?
+
+- *Chosen.* Yes, as its own slice, U-e, after U-c and U-d land. U-c leaves Java's MODULES path, the
+  preamble and SESSION_START's mask semantics as they are, builds its fixes on keep-and-book (RP-291,
+  RP-292, RP-294), and tests the order property instead of A/B equality. U-e's scope:
+  - a new journaled kind, MODULE_SWITCH (0x0132, beside JOURNAL_GEN 0x0130 and REASSERT 0x0131): the
+    journaled prefix (OBS_SEQ, GAME_TIME) and a u32 mask;
+  - Java journals it at the switch's real place among the records (`BoundarySession.setModuleMask`),
+    not in the preamble, and again with the session's mask right after each session's JOURNAL_GEN;
+  - the engine applies it in the journaled dispatch, live and in replay, and the pages hold the mask as
+    of their sequence, in the meta pages;
+  - SESSION_START no longer sets `enabled` before the replay: the replay starts from the pages' mask,
+    and a restart whose config differs from the journal's last mask is that session's own switch;
+  - replay-gate.md 9.7's preamble note, U-d's off-path entry and RP-285's test shape are brought to it
+    (one A/B determinism test: a restart that replays an off window against one that never had it);
+  - no compat work (nothing is released).
+- *Why.* MODULES (0x0004) is a latest-wins record: `wire::is_journaled` and `Obs.isJournaled` take
+  0x0100 to 0x7FFF only. So a crash and a restart replay a switched-off window as if the module had
+  never been off: no switch-off, no records kept, no switch-on reset. The live path and the crash path
+  cannot be equal by construction, and RP-285's A/B equality does not hold for the shared-world modules.
+  The preamble also writes MODULES ahead of the journal's backlog (`flushPreamble`), so a switch-off
+  can reach the engine before answers Java gave while the module was still on. Journaled at its real
+  place, a replay reproduces the window exactly. But that is a protocol change (a new journaled kind, a
+  Java journal and preamble change, a page format), and doing it inside U-c would have held up the
+  fixes, which both options need.
+- *Also decided.* No capture of the embodied dragons at the switch-off: it would change what players
+  see, and keep-and-book does not need it (RP-292).
+- *Cost until U-e.* A restart replays an off window as if the module had been on. The switch still
+  jumps the backlog.
+
+## RP-291: a tribute stack's answer heard with the dragons off (slice U-c, part 1)
+
+- *Chosen.* The dragons take a tribute stack's COMMAND_RESULT whatever the switch, at once
+  (`dragons::after_core`, `answered_again`).
+  - APPLIED or DUPLICATE_OP: the stack leaves `placing` and its coin counts as placed
+    (`tribute_placed`).
+  - FAILED: the coin goes back to its lair's unplaced coin (`tribute_failed`).
+  - Off, the dragons' pager is marked `save_due`, so the pages hold the change at the next save.
+  - MSC55 in docs/choices-money-sink.md is amended.
+- *Why.* The core takes the stack out of the outbox at its answer whatever the switch, and Java forgets
+  the op at the engine's acknowledgement (the journal's op index and the chest's chunk carry). Ignored
+  while off (MSC55's first form), the stack stayed `placing`. `write_tribute` wrote it again at the
+  switch-on under the same op, and Java, which no longer knew the op, put the coin in the chest a
+  second time. MSC55's premise, that Java would answer DUPLICATE_OP, no longer held.
+  - Applied at once, not kept for the switch-on (RP-292): neither `tribute_placed` nor
+    `tribute_failed` reads the clock (a failed stack's next op comes from the lair's own counter,
+    MSC47), and no decision reads a lair's `placed`.
+  - A restart needs nothing at `begin_replay`. A stack in `placing` whose answer the journal holds is
+    answered by the replay. One written again before that answer is replayed is refused DUPLICATE_OP
+    by the journal it is still in.
+- *Cost.* None.
+- *Tests.* rtsim-jni `tests/protocol.rs`, module `dragons`,
+  `a_tribute_stack_answered_with_the_dragons_off_is_placed_once`. ECOLOGY goes off in the tick Java
+  applies a lair's 8 tribute stacks, and Java forgets the ops at an ack past their APPLIED, as main's
+  journal op index does. Failing first at 9d440b77: 16 writes, 998 coins in the chest for 499. Passes
+  at 4fa1173b: 8 writes, 499 coins.
+
+## RP-292: the dragons, the herds and the conflict keep what they hear while off (slice U-c, part 2)
+
+docs/replay-gate.md 9.7 (on U-a): "The switch gates only new decisions; every record of what already
+happened is heard; a record applied while off goes in at its own tick, never at the frozen clock."
+This record amends U10's rule (docs/overnight-choices-integrate2.md) for the three viewers of the
+shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and industry is RP-285.
+
+- *Chosen.*
+  - **Kept.** Each journaled record that `Replay` admits for a module while it is switched off is kept
+    whole, with the copy bit it came under (`st.applying_copy`), in the order it came
+    (`paging::Kept`). It is still counted in `ignored`. Latest-wins state records are still dropped
+    (the dragons' 0x0060 to 0x006F, the herds' 0x0080 to 0x008F, the conflict's 0x0090 to 0x009F):
+    the next one replaces them.
+  - **Saved.** The kept records are a page of their own, two past the module's meta page, after the
+    TEST hash (`paging::kept_key`: 0x4400, 0x4800 and 0x4300, id 2), magic RTKP. The page is written
+    at every save while there are any, whether or not the save writes the module (a switched-off
+    module's other pages stay as they were, U10). It is read at load whatever the switch. A module
+    switched off before its first save may hold that page alone (`holds_pages_besides_kept`).
+  - **Applied at the switch-on,** in the module's reset: after its engine's `begin_replay` and before
+    its replay end, where a restart's replay would apply the same records.
+    - Oldest first, each as it came. A copy goes in as a copy, so a generation-0 casualty copy is
+      still refused.
+    - Each after its own catch-up (`shared::catch_up`), so the module's events due before the record
+      fire first.
+    - Kept records make the reset due with no dragon, herd or camp too.
+  - **At a session start.** Records an earlier session kept and saved are applied at the reset after
+    Java's DICTs, since they name Java's ids. `State::dict_wait` is set at SESSION_START and cleared by
+    the first record that is not a DICT, and the module does not run meanwhile (`kept_waiting`).
+  - **Epochs.** The dragons (RP-57, RP-75) and the herds (RP-81) still fold a kept record's epoch at
+    once while off. The conflict folds it when the record is applied (RP-293).
+- *The own tick, and the deviation.* The herds book a kept record at its own tick on their clock:
+  `ingest` holds it no later than their present, not the world's, and their clock froze at the
+  switch-off, before every kept record. The dragons and the conflict cannot always do that. They share
+  the phase 1 world, which ran on while they were off if phase 1 or another viewer ran, and their
+  `ingest` books no earlier than the world's present (`max(at, engine.now(), world.now())`). So a kept
+  record is booked at the later of its own tick and the world's present, in the order it came. Their
+  own events due before it still fire first. It lands at its own tick when the world did not run
+  ahead, and never at the frozen clock.
+- *The replay gate during the reset.* The kept records, and the catch-ups between them, run inside the
+  module's replay, so its outbox gate (docs/replay-gate.md §4) holds what those catch-ups decide.
+  - The conflict drops Notice, Steer, Recall, Settled and AmbushSpot, sends Territory and March, and
+    never embodies.
+  - So a DEMAND_SETTLED for a demand that comes due in the window, before the last kept record, is
+    dropped, as at a restart's replay (RP-12: news only; the envoy it would name is gone with the
+    reset). With nothing kept, the replay ends at once and the catch-up runs live, as on main, and
+    sends it.
+  - The gate is needed: a live catch-up could embody a party before its kept death is heard.
+- *Changed on the way.* DIFFICULTY heard while the conflict is off was ignored, and the conflict ran on
+  the old difficulty until the plugin's next session start sent it again (MZB-30). It is now kept and
+  applied at the switch-on, before the conflict decides anything.
+- *Why.* Java goes on reporting what happens to the bodies already in the world after a switch-off.
+  - The herds settle the switch's tick's deaths before their capture (`HerdBridge.endOfTick`).
+  - The conflict settles its deaths at its switch-off (`ConflictBridge.switchedOff`).
+  - The dragons have no switch hook at all, so a dragon body lives until Java's own capture.
+
+  Ignored (U10), those deaths were lost at the switch-on's reset. A dragon killed or tamed in the
+  window came back alive, and was materialized again beside its corpse. A sheep killed in the switch's
+  tick was picked for the next group. A band wiped out in the switch's tick kept its units and came
+  into view again. Applied in the reset before the replay end, a death is booked before the end makes
+  the bodies abstract, as a restart's replay would book it.
+- *Cost.* One page per module while it holds kept records, rewritten at each save. The kept list is
+  bounded by what Java still reports while the module is off. The conflict's and herds' bridges stop
+  at the switch-off, once the tick's deaths are settled. The dragons' bodies report until Java captures
+  them.
+- *Tests.* rtsim-jni `tests/protocol.rs`.
+  - Each case runs in the session, and again after a save and a clean restart while off, which
+    carries the kept page across the restart:
+    - `a_dragon_killed_while_switched_off_stays_dead` (module `dragons`);
+    - `a_dragon_tamed_while_switched_off_does_not_come_back` (`dragons`);
+    - `a_herd_animal_killed_in_the_switchs_tick_is_not_picked_again` (`herds`);
+    - `a_band_wiped_out_in_the_switchs_tick_does_not_return` (`conflict`);
+    - and each one's `_after_a_restart`.
+  - Failing first at 3c8b54e7: the dragon alive and materialized again, the sheep alive and picked for
+    the next group, the band's units kept and its envoy in view again. All pass at 951276bc.
+  - The order property, in module `conflict` (42332592). In both, an envoy is on its road with its
+    demand's deadline d0 ahead, the conflict goes off, a mob wipes the band out while it is off (a
+    kept record), and the conflict goes on again.
+    - `a_kept_wipe_comes_after_the_envoys_arrival_in_the_switch_off_window` (the wipe a day before
+      d0): the envoy's arrival at its spot is logged before the withdrawal, the band was not home
+      first, and the withdrawal is booked at the wipe's tick or later.
+    - `a_deadline_in_the_switch_off_window_comes_due_before_a_kept_wipe` (the wipe after d0): the
+      demand expires once, before the wipe's tick; the wipe then finds the band home, a straggler:
+      nothing withdrawn, no casualty.
+    - Both were written against the fix: before it the wipe was never heard.
+  - `on_peaceful_no_war_party_leaves_and_on_normal_the_raid_follows` (`conflict`) now expects the
+    DIFFICULTY heard while off to apply at the switch-on.
+- *Left.*
+  - No order test for the dragons or the herds. Neither has an event log a test can read (the herds'
+    `log_enabled` is false and has no accessor). Their order rests on the same `shared::catch_up`
+    before each kept record that the conflict's tests exercise.
+  - The ships (`Module.SHIPS`) still ignore their records while off (U10).
+  - No GameTest: no Java changed.
+  - A restart still replays an off window as if the module had been on (RP-290, U-e).
+
+## RP-293: the conflict's epoch floors with the module off (RP-57; slice U-c)
+
+- *Chosen.* No fold while off, and nothing built for it. The conflict keeps its records while off
+  (RP-292), saved with its pages, and applies each at the switch-on, epoch and all: `ingest` raises the
+  floor to the epoch a record names, live or replayed (RP-57). That happens in the reset, before the
+  replay end, so before the conflict decides anything. The residual that docs/boundary.md recorded
+  under the conflict's switch (fixes6 item 6) is closed.
+- *Why.* The residual's sequence ran like this. (1) A session crashes with the conflict on, after Java
+  journaled records of epochs issued since the last save. (2) The next start has the conflict off: its
+  replay ignored those records and saved past the window, so the journal was trimmed of them. (3) A
+  later start turns the conflict on, with pages that never saw those epochs. (4) It can issue them
+  again. With RP-292, step 2's replay keeps the records on the conflict's kept page, and every save
+  writes that page, so a save past the window holds the very records the journal is then trimmed of.
+  Step 3's reset applies them and raises the floors before any decision. While off the conflict
+  decides nothing, so no epoch is issued between the keeping and the folding.
+- *Cost.* None.
+- *Tests.* None of its own. The band cases after a restart
+  (`a_band_wiped_out_in_the_switchs_tick_does_not_return_after_a_restart`) carry a kept record across a
+  save and a restart while off, and apply it at the switch-on. No test plays the whole crash, off start
+  and later switch-on sequence.
+
+## RP-294: a chain write held while industry is off is handed on again at the session start (slice U-c, part 3)
+
+- *Chosen.* At the industry engine's own session start (`Link::begin_session`), every IND_WRITE_CHAIN
+  in the link's queue or outbox is handed on again at the session start's tick
+  (`Engine::hand_on_again`, through `PackageStore::write_handed_on_again`). Its ten periods
+  (`WRITE_ANSWER_PERIODS`, SC113) then run from there.
+  - Both ways the module comes back on run that session start: the switch-on in a session
+    (`set_enabled` moves the outbox to the front of the queue), and a start with the module on after a
+    stop with it off (`resume` resends the outbox).
+  - An ordinary restart's resends get their ten periods from the restart too. They go to Java again
+    there, so their answers are awaited from then.
+  - `hand_on_again` touches only the write's own store. A write already answered, or replaced by a
+    newer one, is left as it is.
+- *Why.* `drain_commands` marks a write handed on (`at` = now) when it leaves the engine. A write the
+  link still held at the switch-off (queued, or written and unanswered in the outbox) waited with the
+  module off. At the switch-on, the session start's catch-up ran past its ten periods, took its answer
+  as lost, and wrote the store's frogport again under a new op, while the held write went to Java too.
+  That is the same goods in two sets of packages, since the pool is lowered only at CHAIN_IN
+  (`chain_written`). Under 9.7 the held write is not a new decision: it goes, and its answer is
+  awaited from when it goes. No keyed ops (slice T) are needed.
+- *Cost.* At each session start, one store lookup per chain write the link holds.
+- *Tests.* rtsim-jni `src/engine/industry.rs`, unit tests on a mine and a mill linked by a learned
+  chain (adapted from rtsim-industry's chain_replay pair). The engine hands a write W of the mine's
+  iron on at 20,100, the module goes off, and it comes back thirty periods later.
+  - `a_chain_write_queued_at_the_switch_off_is_not_written_again_at_the_switch_on`: W still queued.
+  - `a_chain_write_unanswered_at_the_switch_off_is_not_written_again_at_the_switch_on`: W written and
+    unanswered.
+  - `a_chain_write_unanswered_at_a_stop_with_industry_off_is_not_written_again_at_a_restart_with_it_on`:
+    W unanswered in the outbox at a stop with the module off, then a start with it on.
+  - Each checks that W alone goes after the switch-on's step, that W still holds the frogport nine
+    periods later, and that eleven periods later the frogport is written once under a new op.
+  - Failing first: the two switch cases at bf020e42 and the restart case at 9f8df8fd, each sending
+    [W, a new op]. All pass at ff0f31ec (the switch cases at 50dfa88d, its first form, which handed on
+    again in `set_enabled` and so missed the restart).
+- *Overlap with slice A (RP-285).*
+  - RP-285's *Left* named this finding; it is closed here.
+  - On main (before slice A), a restart with industry off runs the engine's session start at once,
+    ahead of the switch gate. That catch-up now hands the held writes on again at the restart, and the
+    switch-on hands them on again at its own time. Slice A stops that early session start, so the
+    switch-on's covers the writes.
+  - Slice A's `begin_session` and `set_enabled` change the same functions: the merge is textual.
+  - A write Java applied while off, whose CHAIN_IN came while off, is RP-285's case, not this one.

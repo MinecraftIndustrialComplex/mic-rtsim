@@ -25,9 +25,13 @@
 //!   at 0x4410 to 0x4416, a save writing the pages changed since the last one. The
 //!   dragons share the phase 1 world, so while there is any dragon or lair the phase 1 link takes a
 //!   snapshot at every save (S4), and both are written in one commit.
-//! - **The switch** (C25, U10): `Module.ECOLOGY` (bit 4). Off, the dragons ignore their records,
-//!   run nothing, write nothing and keep the page they had; on again, the bodies of before are
-//!   gone (their session reset) and they run on from where they stopped.
+//! - **The switch** (C25, U10 as RP-292 amends it): `Module.ECOLOGY` (bit 4). Off, the dragons
+//!   run nothing, write nothing and keep the page they had; the journaled records they hear are
+//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in their
+//!   session reset before its replay end, each after its own catch-up (docs/replay-gate.md 9.7:
+//!   the switch gates only new decisions). A tribute stack's answer is taken at once whatever the
+//!   switch (RP-291). On again, the bodies of before are gone and they run on from where they
+//!   stopped.
 //!
 //! **The Ice and Fire plugin** (`mic_rtsim_iceandfire`, `neoforge/iceandfire`, docs/boundary.md
 //! §6.5 and §6.6) sends these records and applies these commands; its GameTests order dragon
@@ -60,7 +64,8 @@ pub const TABLE: u16 = 0x4400;
 pub const KEY_DRAGONS: PageKey = PageKey::new(TABLE, 0);
 
 /// Java's module bit the dragons run under (`config/Module.java`: ECOLOGY is ordinal 4). With it
-/// off the dragons are frozen (U10): no records, no runs, no commands, their page kept.
+/// off the dragons are frozen (U10): no runs, no commands, their page kept, the records they hear
+/// kept for the switch-on (RP-292).
 pub const MODULE_ECOLOGY: u32 = 1 << 4;
 
 /// The dragons' seed. PLACEHOLDER: the bridge does not send the Minecraft world's (as phase 1's).
@@ -1001,7 +1006,8 @@ impl super::Engine {
         )
     }
 
-    /// How many dragon records the link ignored while the dragons were switched off (U10).
+    /// How many dragon records the link heard while the dragons were switched off: not applied
+    /// then, the journaled ones kept for the switch-on (RP-292).
     pub fn dragons_ignored(&self) -> u64 {
         super::lock(&self.state).dragons.ignored
     }
