@@ -788,7 +788,11 @@ the agent is embodied as the last session had it:
   abstract leg cancelled, `by_entity` and the embodied index updated, as `materialize` does
   without the command. Only a dragon the pages hold is honoured (RP-70): `begin_replay` records the
   arena's next index, and an agent at or above it names a dragon the last session allocated after
-  the pages, or a different one the replay allocated at that index; its record is a floor only.
+  the pages, or a different one the replay allocated at that index; its record is a floor only, and
+  it contests the agent unless it answers an adoption the replay made (the plugin answers an ADOPT
+  with a MATERIALIZED that carries the adopted entity): no record of it finds a body of the
+  replay's own (an adoption) until the replay end. A copy (§5.7) names a body that
+  is gone, so after the replay end, and for an index the replay owns, it folds the floor only.
 - **Herds** (HERD_MATERIALIZED: agent, epoch, spawned): `epoch` = the record's; `embodied` with every
   alive member and no player (the puppets count is reset at the replay end anyway).
 - **Ships** (SHIP_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; `set_embodied(id, true)`.
@@ -892,7 +896,9 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
 - **Dragons:** `Dragons::ingest_copy(w, obs, at)`, called by rtsim-jni when `st.applying_copy` is
   `Some` (RP-78). Nothing is carried: a copy embodies nothing, and every copy that names an epoch
   raises the floor to it first, live or replayed (RP-57, RP-75: the floor folds into the dragon's
-  epoch at the next materialize or the replay end).
+  epoch at the next materialize or the replay end). A copy that names an epoch finds no body after
+  the replay end, nor of an index the replay owns while it runs (§5.2, RP-70): it folds the floor
+  only. During the replay it finds the bodies the pages hold, kept embodied (§5.1).
 - **Ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
 
 ### 5.8 The DEPART trap (RP-16)

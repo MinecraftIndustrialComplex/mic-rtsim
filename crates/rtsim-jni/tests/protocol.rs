@@ -2361,6 +2361,49 @@ mod dragons {
         e.close(false, Duration::from_secs(5)).unwrap();
     }
 
+    /// RP-75: a record dropped while the dragons are switched off names an epoch all the same, so
+    /// the dragon it names takes it when they are switched on (the switch-on's replay end folds
+    /// the floor). Before: the record raised no floor, and the dragon's epoch stayed where it was.
+    #[test]
+    fn a_record_ignored_while_switched_off_still_raises_the_epoch_floor() {
+        let dir = tmpdir("dragons-off-floor");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD2, 0x1), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        let epoch_of = |e: &Engine| e.with_dragons(|d, _| d.dragons.iter().next().unwrap().1.epoch);
+        // Off: a capture at epoch 7, the engine never decided, is ignored.
+        j.modules(0b1111);
+        j.idle();
+        j.dragon_obs(&captured(a.agent, 7, dim, 400.0));
+        j.idle();
+        assert!(e.dragons_ignored() >= 1, "the capture was ignored");
+        // On again: the switch-on's replay end folds the floor into the dragon's epoch.
+        j.modules(MODULES);
+        j.idle();
+        assert_eq!(epoch_of(&e), 7, "the ignored record's epoch is taken");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// A lair's own dragon, adopted (embodied) and saved, then killed by a player. The session
     /// ends in a crash (the journal holds the death the pages lack, and the next session replays
     /// it) or, for the control, in a clean close (the pages hold it). The dragons after the
