@@ -483,7 +483,7 @@ fn a_band_home_in_minecraft_with_no_hand_back_is_recalled_before_its_end() {
         r.flush(Tick(21));
         let mut t = r.c.now();
         while r.c.parties[band].phase != Phase::Home {
-            t = t + 200;
+            t += 200;
             r.run(t);
             assert!(t < Tick(20 * 24_000), "the band never walked home");
         }
@@ -654,7 +654,7 @@ fn a_bored_siege_in_bodies_walks_home() {
     r.flush(Tick(21));
     let mut t = r.c.now();
     while r.c.parties[band].phase != Phase::Waiting {
-        t = t + 600;
+        t += 600;
         r.run(t);
         assert!(t < Tick(20 * 24_000), "the siege never reached its target");
     }
@@ -663,7 +663,7 @@ fn a_bored_siege_in_bodies_walks_home() {
     let mark = r.cmds.len();
     let bored = r.c.parties[band].bored_at;
     while r.c.parties.contains(band) && r.c.parties[band].phase == Phase::Waiting {
-        t = t + 100;
+        t += 100;
         r.run(t);
         assert!(t < bored + 20_000, "the siege never grew bored");
     }
@@ -722,7 +722,7 @@ fn a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered() {
         let mut t = r.c.now();
         let want = if home { Phase::Home } else { Phase::Out };
         while r.c.parties[band].phase != want {
-            t = t + 200;
+            t += 200;
             r.run(t);
             assert!(t < Tick(20 * 24_000), "the band never reached {want:?}");
         }
@@ -734,7 +734,7 @@ fn a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered() {
         let at_the_end = Pos::new(0, ahead.0, ahead.1);
         while r.c.stats.seen == 0 {
             r.c.observe_player(&mut r.w, synth::PLAYER, at_the_end, t);
-            t = t + 600;
+            t += 600;
             r.run(t);
             assert!(
                 r.c.parties.contains(band),
@@ -784,7 +784,7 @@ fn a_band_met_waiting_faces_the_way_it_came() {
     r.flush(Tick(21));
     let mut t = r.c.now();
     while r.c.parties[band].phase != Phase::Waiting {
-        t = t + 600;
+        t += 600;
         r.run(t);
         assert!(t < Tick(20 * 24_000), "the siege never reached its target");
     }
@@ -794,7 +794,7 @@ fn a_band_met_waiting_faces_the_way_it_came() {
     let there = Pos::new(0, target.0, target.1);
     while r.c.stats.seen == 0 {
         r.c.observe_player(&mut r.w, synth::PLAYER, there, t);
-        t = t + 600;
+        t += 600;
         r.run(t);
         assert!(t < Tick(20 * 24_000), "the waiting band was never met");
     }
@@ -829,7 +829,7 @@ fn a_band_that_walks_home_with_none_alive_is_not_met() {
     r.flush(Tick(21));
     let mut t = r.c.now();
     while r.c.parties[band].phase != Phase::Home {
-        t = t + 200;
+        t += 200;
         r.run(t);
         assert!(t < Tick(20 * 24_000), "the band never walked home");
     }
@@ -841,7 +841,7 @@ fn a_band_that_walks_home_with_none_alive_is_not_met() {
     let there = Pos::new(0, ahead.0, ahead.1);
     while r.c.parties.contains(band) {
         r.c.observe_player(&mut r.w, synth::PLAYER, there, t);
-        t = t + 600;
+        t += 600;
         r.run(t);
         assert_eq!(r.c.stats.seen, 0, "nobody to meet");
         assert!(t < Tick(20 * 24_000));
@@ -864,7 +864,7 @@ fn met_leaving_its_camp(r: &mut Run) -> (Handle<Party>, Tick) {
     let mut t = r.c.now();
     while r.c.stats.seen == 0 {
         r.c.observe_player(&mut r.w, synth::PLAYER, synth::CAMP_POS, t);
-        t = t + 100;
+        t += 100;
         r.run(t);
         assert!(t < Tick(20 * 24_000), "the band was never met");
     }
@@ -910,7 +910,7 @@ fn a_band_walking_out_of_its_watchers_view_passes_to_a_player_near_it() {
                     "{case}: kept: {recalls:?}"
                 );
                 assert_eq!(x.seen_by, Some(player), "{case}");
-                assert!(x.unseen_due >= exit + 1, "{case}: booked a tick on");
+                assert!(x.unseen_due > exit, "{case}: booked a tick on");
             }
             None => {
                 assert!(!x.embodied, "{case}: recalled");
@@ -972,7 +972,7 @@ fn a_watcher_logging_out_leaves_a_fight_to_a_player_near_it() {
         r.flush(Tick(21));
         let mut t = r.c.now();
         while r.c.parties[band].phase != Phase::Waiting && r.c.parties[band].phase != Phase::Out {
-            t = t + 600;
+            t += 600;
             r.run(t);
         }
         let agent = Party::agent(band);
