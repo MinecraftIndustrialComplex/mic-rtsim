@@ -156,6 +156,11 @@ public final class PollutionLedger extends SavedData {
     /** Bookings of an op this file already held (a crash kept it and lost the pollution): not booked again. */
     static long rebooksRefused;
 
+    /** {@link #rebooksRefused}, for the GameTests. */
+    public static long rebooksRefused() {
+        return rebooksRefused;
+    }
+
     // ---- NBT ------------------------------------------------------------------------------------
 
     @Override
