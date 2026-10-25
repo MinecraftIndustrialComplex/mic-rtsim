@@ -68,10 +68,12 @@ public final class FrostmawLurker implements Lurker {
     }
 
     @Override
-    public boolean strike(Mob mob, Vec3 at) {
+    public boolean strike(Mob mob, Vec3 at, Vec3 motion) {
         if (!(mob instanceof EntityFrostmaw f) || !f.isAlive() || f.getAnimation() != IAnimatedEntity.NO_ANIMATION)
             return false;
-        float yaw = (float) (Math.atan2(at.z - f.getZ(), at.x - f.getX()) * 57.29577951308232 - 90.0);
+        // The swing lands SWIPE_HIT_TICK ticks from now, and a carriage moves meanwhile: aim where the point will be
+        Vec3 aim = at.add(motion.scale(SWIPE_HIT_TICK));
+        float yaw = (float) (Math.atan2(aim.z - f.getZ(), aim.x - f.getX()) * 57.29577951308232 - 90.0);
         bearings.put(f, yaw);
         f.yBodyRot = yaw;
         f.setYRot(yaw);

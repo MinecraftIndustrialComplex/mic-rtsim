@@ -17,8 +17,12 @@ public interface Lurker {
     /** Each server tick while it lurks: keep the body at {@code spot}. */
     void hold(Mob mob, Vec3 spot);
 
-    /** Starts a strike at a carriage point; false if the body is busy. */
-    boolean strike(Mob mob, Vec3 at);
+    /**
+     * Starts a strike at a carriage point; false if the body is busy. {@code motion} is how far the point moves in
+     * one tick (zero for a stopped train): a strike that lands some ticks after it starts aims at where the point
+     * will be, not where it is.
+     */
+    boolean strike(Mob mob, Vec3 at, Vec3 motion);
 
     /** The lurk ended or the body left it: undo what {@link #hold} set. */
     void release(Mob mob);

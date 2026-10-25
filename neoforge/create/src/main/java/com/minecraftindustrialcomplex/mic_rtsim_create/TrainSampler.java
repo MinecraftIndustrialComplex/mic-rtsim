@@ -474,16 +474,34 @@ public final class TrainSampler {
             Approach a = approach(s, l);
             if (a != null && a.struck(c))
                 continue;
-            Vec3 hit = within(cs.get(c).getLeadingPoint(), t.graph, body);
-            if (hit == null)
-                hit = within(cs.get(c).getTrailingPoint(), t.graph, body);
-            if (hit == null || !RtsimApi.strike(l.agent(), hit))
+            TravellingPoint point = cs.get(c).getLeadingPoint();
+            Vec3 hit = within(point, t.graph, body);
+            if (hit == null) {
+                point = cs.get(c).getTrailingPoint();
+                hit = within(point, t.graph, body);
+            }
+            if (hit == null || !RtsimApi.strike(l.agent(), hit, motionOf(point, t)))
                 continue;
             if (a == null)
                 a = openApproach(s, l);
             a.mark(c);
             strikes++;
         }
+    }
+
+    /**
+     * How far the point moves in one tick: the train's speed (signed, blocks a tick) along the rail's direction at
+     * the point (a positive offset on an edge goes toward its second node, which a positive speed travels). Zero for
+     * a stopped train or an unreadable point.
+     */
+    static Vec3 motionOf(TravellingPoint p, Train t) {
+        Vec3 here = positionOf(p, t.graph);
+        if (here == null || t.speed == 0.0)
+            return Vec3.ZERO;
+        // A step along the edge (back from its end, where a curve clamps), as a rate per block of travel
+        double step = p.position + 0.25 <= p.edge.getLength() ? 0.25 : -0.25;
+        Vec3 along = p.getPositionWithOffset(t.graph, step, false).subtract(p.getPositionWithOffset(t.graph, 0.0, false)).scale(1.0 / step);
+        return along.scale(t.speed);
     }
 
     /** The point's position when it is within {@link #STRIKE_REACH} blocks (horizontal) of the body, else null. */

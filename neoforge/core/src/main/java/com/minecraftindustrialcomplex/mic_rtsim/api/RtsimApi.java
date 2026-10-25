@@ -310,10 +310,11 @@ public final class RtsimApi {
 
     /**
      * A train's carriage point came within a lurk puppet's reach: its {@code Lurker} starts a strike at it.
+     * {@code motion} is the point's displacement in one tick, so a strike that lands later aims ahead of it.
      * True when one started (a puppet busy with a strike answers false).
      */
-    public static boolean strike(long agent, net.minecraft.world.phys.Vec3 at) {
-        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.strike(agent, at);
+    public static boolean strike(long agent, net.minecraft.world.phys.Vec3 at, net.minecraft.world.phys.Vec3 motion) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.strike(agent, at, motion);
     }
 
     /**
