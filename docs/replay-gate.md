@@ -872,7 +872,10 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   names an epoch raises the floor to it first, live or replayed (RP-57).
 - **Herds:** HERD_KILLED and HERD_TAKEN go by member key and op id already; a copied
   HERD_MATERIALIZED raises the floor only.
-- **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.
+- **Dragons:** nothing is carried; a copied DRAGON_MATERIALIZED would raise the floor only.
+- **Ships:** nothing is carried, and every copy, whatever its kind, raises the floor only
+  (`Ships::ingest_copy`, RP-97): the handle a copy names may be another ship than the earlier
+  session's, so a copy of a sinking or of loot is lost rather than booked to a stranger (§10).
 
 ### 5.8 The DEPART trap (RP-16)
 
@@ -1385,7 +1388,7 @@ GameTests: none (no ships plugin in Java); rtsim-host's ships runs.
 Opus review checks: as slice C's; a kept ship's NextLeg events while replaying drop their commands
 and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
 
-**As built (slice S, RP-90 to RP-99).** The records are in docs/choices-mowzie-build.md, "Slice S
+**As built (slice S, RP-90 to RP-102).** The records are in docs/choices-mowzie-build.md, "Slice S
 (ships)".
 
 - **The gate** (§4.7, RP-90): rtsim-ships `outbox.rs`; one "never" kind (Materialize), the rest drop.
@@ -1397,19 +1400,29 @@ and keep the voyage's times; `lay_up_if_waiting` runs at the replay end.
   SpawnRejected, Dematerialized, Damaged, Sunk, Boarded, Captured, CargoLooted); Fight, PortFound
   and HavenFound name none. `Obs::ship_epoch` is an exhaustive match, so a new kind does not
   compile until it says. A floor for a ship the engine does not have yet is kept past the replay end
-  (a port or haven that joins after, or a ship the replay allocated later).
-- **The honour** (§5.2, RP-93): only on a ship that existed when the replay began (`replay_next`).
+  (a port or haven that joins after, or a ship the replay allocated later). The fold comes before
+  every drop (RP-102): a module switched off for the session, ships with no dock yet and an
+  engine that has not begun its replay all fold, keyed on the session's replay.
+- **The honour and every by-agent lookup** (§5.2, RP-93, RP-100): only on a ship that existed when
+  the session began (`replay_next`, taken once by `Ships::begin_session` from `ships::session_start`;
+  `begin_replay` keeps the smaller bound and the first call's `from_pages`). The bound is not the
+  honour's alone: `ship_of`, `ship_of_op`, both ships of a Fight, the capturing ship and the doer
+  all go through `named_ship`, because the arena's handles are allocated in order and the replay
+  allocates in its own (the network built, ports and havens joined, inside the replayed window).
+  A record about a handle at or above the bound only raises the floor.
 - **Early returns** (§6, RP-94): `seen`, the `SeenPirate` event, `materialize_timetabled`,
   `materialize_pirate`.
-- **Pirate coast raids** (§6.1, RP-95): `coast_raid` is deferred whole while replaying; the answer
-  and its reasons are in the record.
+- **Pirate coast raids** (§6.1, RP-95): `coast_raid` is skipped whole while replaying (not held:
+  nothing retries it); the answer, its reasons and the residual are in the record.
 - **The blind watcher** (§6.1, RP-95): no player is routed to the ships until the replay end, so
   `point_in_view` and `relaunch_in_view` answer true while replaying (every dock is watched). A
-  relaunch then waits for the slot's next stay, a shut haven's refound and a navy's assault look
-  again a period later, and a direct `port_raid` is not made; each is judged by the players routed
-  after the replay end.
+  relaunch then waits for the slot's next stay, a shut haven's refound reschedules at
+  + `base_days` and bumps the haven's epoch, a navy's assault waits for its next period, and a
+  direct `port_raid` is not made; none is held to the replay end, each looks again at its own next
+  time and the first look after the end is judged by the players routed by then.
 - **Test orders** (§3.6, §4.4, RP-96): `Order::ShipCommand` waits for the replay end.
-- **Copies** (§5.7, RP-97): rtsim-jni routes a REASSERT to `Ships::ingest_copy`.
+- **Copies** (§5.7, RP-97): rtsim-jni routes a REASSERT to `Ships::ingest_copy`, which folds the
+  epoch and does nothing more for every kind.
 - **The link** (§3.2, RP-98): `replay_end` logs the counts; the ships' pages, the outbox and
   every other format are unchanged.
 
@@ -1418,12 +1431,12 @@ The paths that hand the ships engine a command or a decision, each with its verd
 | Path | Verdict |
 |---|---|
 | The engine's own events (`run_until`, from `shared::run_to` and from each ingest) | commands go through the gate; decisions that embody return early (RP-94) |
-| `Ships::ingest` of a journaled record (rtsim-jni `journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57) |
-| A copy (REASSERT) | `ingest_copy` (RP-97) |
-| `ships::simulate`'s network build, `add_port`, `add_haven`, `add_navy`, `connect` (from journaled PORT_FOUND and HAVEN_FOUND, and from the step) | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 |
+| `Ships::ingest` of a journaled record (rtsim-jni `journaled`, `observe_state`) | commands through the gate; the epoch is folded first (RP-57), before the module's switch is asked (RP-102) |
+| A copy (REASSERT) | `ingest_copy`: the floor only (RP-97) |
+| `ships::simulate`'s network build, `add_port`, `add_haven`, `add_navy`, `connect` (from journaled PORT_FOUND and HAVEN_FOUND, and from the step) | run while replaying, as live; they decide no body; the handle-allocation limit is RP-93 and RP-100 |
 | `reject` (the host's own SPAWN_REJECTED for a command it cannot write) | only after a queued Materialize, which the gate never lets through while replaying |
 | `Order::ShipCommand` | held to the replay end with the units after it (RP-96) |
-| `Order::Phase1Advance` and the other clock orders | already held (RP-33) |
+| `Order::Phase1Advance` and the other clock orders | held by slice D (RP-74), not in S's `matches!`; the merge takes the union |
 | `lift_closures` (a switch-off) | unchanged: it queues no command |
 | `with_ships_mut` | a test accessor, not a route in the game |
 | The `Viewer` impl's `player_left` | not overridden for ships, so the arm's leave is a no-op for them (U8) |
