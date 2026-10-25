@@ -3953,6 +3953,11 @@ impl Engine {
         true
     }
 
+    /// Whether the engine still waits on the IND_CARRIAGE_RESULT of a carriage delta `op`.
+    pub fn exchange_pending(&self, op: rtsim_kernel::journal::OpId) -> bool {
+        self.exchanges.contains_key(&op)
+    }
+
     fn carriage_result(&mut self, at: Tick, r: &CarriageResult) {
         let Some(ex) = self.exchanges.remove(&r.op) else {
             return;
