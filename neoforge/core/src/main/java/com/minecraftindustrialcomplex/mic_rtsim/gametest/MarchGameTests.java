@@ -7,16 +7,22 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.MarchPath;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -1183,6 +1189,372 @@ public final class MarchGameTests {
             }
         }
         record(test, "turn " + leg, log.toString());
+    }
+
+    // ---- the homecoming (MZB-464, MZB-211), core's half ------------------------------------------------
+
+    /** A band that stands still ({@code speed} 0) at (x, z), heading west with its column behind it to the east. */
+    private static ConflictKit.Band heldBand(long agent, long faction, String dim, double x, double z, int flags) {
+        ConflictKit.Band band = ConflictKit.band(agent, faction, dim);
+        band.arcX = x;
+        band.arcZ = z;
+        band.bearing = 180f;
+        band.targetX = x;
+        band.targetZ = z;
+        band.speed = 0f;
+        band.flags = flags;
+        return band;
+    }
+
+    /** The loaded mobs of the agent that carry its tag, within 64 blocks of (x, z). */
+    private static int tagged(ServerLevel level, long agent, double x, double z) {
+        int n = 0;
+        for (Mob m : level.getEntitiesOfClass(Mob.class, new AABB(x - 64, level.getMinBuildHeight(), z - 64, x + 64, level.getMaxBuildHeight(), z + 64))) {
+            AgentTag t = RtsimAttachments.tag(m);
+            if (t != null && t.agent() == agent && !m.isRemoved())
+                n++;
+        }
+        return n;
+    }
+
+    /**
+     * The homecoming of a band the engine handed back (MOWZIE.md §4.9, MZB-464, MZB-211), with a camp that is not in: HAND_BACK
+     * lines of a faction that has no site (core has none without a camp kind; the lines of a camp that is in are
+     * {@code MarchMowzieGameTests}'). Three bands of two warriors and their chief stand placed:
+     * <ul>
+     * <li>A, named by a line at its own epoch with no player near: every line is answered STALE (the camp is not in), and A still
+     * goes home and goes in the tick the line is read (BAND_DEMATERIALIZED, reason 1, its two warriors as survivors);</li>
+     * <li>C, named by a line of another epoch: untouched, not recalling, 40 ticks on;</li>
+     * <li>B, named by a line with a player 20 blocks off: B is recalling and stays (no BAND_DEMATERIALIZED) while the player is in
+     * view, 60 ticks, then goes the beat after the player does, with its two warriors as survivors.</li>
+     * </ul>
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_home")
+    public static void aBandHandedBackToACampThatIsNotInStillWalksHome(GameTestHelper helper) {
+        String test = "aBandHandedBackToACampThatIsNotInStillWalksHome";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 1);
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction(), camp = ConflictKit.newFaction(); // the camp has no site: it is not in
+        long a = ConflictKit.newAgent(), b = ConflictKit.newAgent(), c = ConflictKit.newAgent();
+        long[] agents = {a, b, c};
+        double[] zs = {at.z() - 12, at.z(), at.z() + 12};
+        ServerPlayer[] player = new ServerPlayer[1];
+        long[] n = new long[3];
+        List<ConflictKit.StackSpec> two = List.of(new ConflictKit.StackSpec(WARRIOR, 2, true));
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 1)))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++)
+                        ConflictKit.materialize(heldBand(agents[i], faction, dim, at.x() - 8, zs[i], HOSTILE | CHIEF), two);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (long agent : agents)
+                        check("a band appeared", bridge().party(agent) != null);
+                    for (long agent : agents)
+                        allStacks(party(agent), PLACED, "a band is placed");
+                }))
+                .thenExecute(() -> {
+                    n[0] = level.getGameTime();
+                    ConflictKit.reconcile(camp, 1, 101, List.of(
+                            ConflictKit.CampLine.party(0, 1, WARRIOR, ConflictRecords.CampReconcile.HAND_BACK, 0, a, 1),
+                            ConflictKit.CampLine.party(1, 1, WARRIOR, ConflictRecords.CampReconcile.HAND_BACK, 0, c, 99)));
+                })
+                .thenWaitUntil(waits.logic(() -> check("A went home", !about(ConflictRecords.BAND_DEMATERIALIZED, a).isEmpty())))
+                .thenExecute(() -> {
+                    long took = level.getGameTime() - n[0];
+                    var done = about(ConflictRecords.BAND_DEMATERIALIZED, a).get(0);
+                    Map<String, Integer> left = ConflictKit.survivors(done);
+                    Map<Integer, Integer> outcomes = ConflictKit.outcomes(camp, 101);
+                    record(test, "no camp", "A went home in " + took + " ticks, reason " + done.aux() + ", survivors " + left + ", outcomes " + outcomes);
+                    check("the lines of a camp that is not in are answered stale, both of them: " + outcomes, outcomes.size() == 2
+                            && outcomes.get(0) == ConflictRecords.CampBodies.STALE && outcomes.get(1) == ConflictRecords.CampBodies.STALE);
+                    check("A went in the line's own tick or the next (" + took + " ticks)", took <= 3);
+                    check("the reason is the command's, 1 (" + done.aux() + ")", done.aux() == ConflictRecords.Dematerialized.COMMAND);
+                    check("its two warriors are its survivors: " + left, left.equals(Map.of(WARRIOR, 2)));
+                    check("none of A's bodies is in the world (" + tagged(level, a, at.x(), at.z()) + ")", tagged(level, a, at.x(), at.z()) == 0);
+                    check("no casualty was booked for A", about(ConflictRecords.BAND_CASUALTIES, a).isEmpty());
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    ConflictBridge.Party pc = party(c);
+                    check("C, named at another epoch, is untouched: recalling " + pc.recalling(), !pc.recalling());
+                    check("and was not dematerialized", about(ConflictRecords.BAND_DEMATERIALIZED, c).isEmpty());
+                    check("C still has its three bodies (" + bridge().bodies(c).size() + ")", bridge().bodies(c).size() == 3);
+                    // B, with a player in view.
+                    double px = at.x() + 12;
+                    player[0] = FakePlayers.add(level, new Vec3(px, f.ground(px, at.z()), at.z()), "conflict_march_home_watcher");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    n[1] = level.getGameTime();
+                    ConflictKit.reconcile(camp, 1, 102, List.of(ConflictKit.CampLine.party(0, 1, WARRIOR, ConflictRecords.CampReconcile.HAND_BACK, 0, b, 1)));
+                })
+                .thenWaitUntil(waits.logic(() -> check("B is recalling", party(b).recalling())))
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    check("B stays while a player sees it: recalling " + party(b).recalling(), party(b).recalling());
+                    check("and has not gone", about(ConflictRecords.BAND_DEMATERIALIZED, b).isEmpty());
+                    check("its bodies are still in the world (" + bridge().bodies(b).size() + ")", bridge().bodies(b).size() == 3);
+                    Map<Integer, Integer> outcomes = ConflictKit.outcomes(camp, 102);
+                    check("its line was answered stale: " + outcomes, outcomes.size() == 1 && outcomes.get(0) == ConflictRecords.CampBodies.STALE);
+                    n[2] = level.getGameTime();
+                    FakePlayers.remove(player[0]);
+                })
+                .thenWaitUntil(waits.logic(() -> check("B went once the player did", !about(ConflictRecords.BAND_DEMATERIALIZED, b).isEmpty())))
+                .thenExecute(() -> {
+                    long took = level.getGameTime() - n[2];
+                    Map<String, Integer> left = ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, b).get(0));
+                    record(test, "in view", "B stayed 60 ticks in view and went " + took + " ticks after the player did, survivors " + left);
+                    check("B went within " + took + " ticks (a few at most) of the player's going", took <= 5);
+                    check("its two warriors are its survivors: " + left, left.equals(Map.of(WARRIOR, 2)));
+                    ConflictKit.recall(c, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("C recalled", !about(ConflictRecords.BAND_DEMATERIALIZED, c).isEmpty())))
+                .thenSucceed();
+    }
+
+    // ---- the empty flagged BAND_MATERIALIZE (MZB-728) ---------------------------------------------------
+
+    /**
+     * An empty BAND_MATERIALIZE with the fight flag (a band that walked in with every member placed already, MZB-728) is echoed and
+     * the wave taken as had; the wave that comes next is accepted:
+     * <ul>
+     * <li>wave 1, empty, flags 8, on a placed band: BAND_MATERIALIZED with aux 0, wave 1, flags 8, epoch 1; no BAND_SPAWN_REJECTED;
+     * the band's stacks unchanged;</li>
+     * <li>wave 1 again: one BAND_SPAWN_REJECTED, ALREADY_EMBODIED (4), and no second echo;</li>
+     * <li>wave 2 with a stack of two: accepted, BAND_MATERIALIZED aux 2 with its flags, two more bodies;</li>
+     * <li>an empty fight wave of an agent that has no party: echoed all the same (aux 0), and no party is made;</li>
+     * <li>an empty fight wave of a band that is recalling (a player holds it in view): one rejection, ALREADY_EMBODIED, no echo and
+     * nothing placed.</li>
+     * </ul>
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_empty")
+    public static void anEmptyFightWaveIsEchoedAndTheNextWaveComes(GameTestHelper helper) {
+        String test = "anEmptyFightWaveIsEchoedAndTheNextWaveComes";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 1);
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction();
+        long agent = ConflictKit.newAgent(), nobody = ConflictKit.newAgent();
+        int fight = ConflictRecords.Materialize.FLAG_FIGHT;
+        ServerPlayer[] player = new ServerPlayer[1];
+        int[] n = new int[4];
+        ConflictKit.Band first = heldBand(agent, faction, dim, at.x() - 8, at.z() - 10, HOSTILE);
+        ConflictKit.Band empty = heldBand(agent, faction, dim, at.x() - 8, at.z() - 10, fight);
+        empty.wave = 1;
+        ConflictKit.Band next = heldBand(agent, faction, dim, at.x() - 8, at.z() + 10, HOSTILE);
+        next.wave = 2;
+        ConflictKit.Band orphan = heldBand(nobody, faction, dim, at.x(), at.z(), fight);
+        orphan.wave = 1;
+        ConflictKit.Band late = heldBand(agent, faction, dim, at.x() - 8, at.z() - 10, fight);
+        late.wave = 3;
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 1)))
+                .thenExecute(() -> ConflictKit.materialize(first, List.of(new ConflictKit.StackSpec(WARRIOR, 2, false))))
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the band appeared", bridge().party(agent) != null);
+                    allStacks(party(agent), PLACED, "the first wave is placed");
+                }))
+                .thenExecute(() -> {
+                    n[0] = party(agent).stacks().size();
+                    check("one stack of two to begin with: " + states(party(agent)), n[0] == 1 && bridge().bodies(agent).size() == 2);
+                    ConflictKit.materialize(empty, List.of());
+                })
+                .thenWaitUntil(waits.logic(() -> check("two BAND_MATERIALIZED about the band (" + about(ConflictRecords.BAND_MATERIALIZED, agent).size() + ")",
+                        about(ConflictRecords.BAND_MATERIALIZED, agent).size() == 2)))
+                .thenExecute(() -> {
+                    var echo = about(ConflictRecords.BAND_MATERIALIZED, agent).get(1);
+                    int wave = echo.view().getInt(ConflictRecords.Materialized.WAVE), flags = echo.view().getInt(ConflictRecords.Materialized.FLAGS),
+                            epoch = echo.view().getInt(ConflictRecords.Materialized.EPOCH);
+                    record(test, "echo", "aux " + echo.aux() + ", wave " + wave + ", flags " + flags + ", epoch " + epoch);
+                    check("the echo places no member: aux " + echo.aux(), echo.aux() == 0);
+                    check("it says the wave and the flags it was sent: wave " + wave + ", flags " + flags + ", epoch " + epoch,
+                            wave == 1 && flags == fight && epoch == 1);
+                    check("nothing was rejected (" + about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() + ")", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    check("the stacks are as they were: " + states(party(agent)), party(agent).stacks().size() == n[0] && bridge().bodies(agent).size() == 2);
+                    // The same wave again: refused once.
+                    ConflictKit.materialize(empty, List.of());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the wave was refused (" + about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() + ")",
+                        about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() == 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    var rejected = about(ConflictRecords.BAND_SPAWN_REJECTED, agent);
+                    check("one refusal, ALREADY_EMBODIED (4): " + rejected.size() + ", aux " + rejected.get(0).aux(),
+                            rejected.size() == 1 && rejected.get(0).aux() == ConflictRecords.SpawnRejected.ALREADY_EMBODIED);
+                    check("and wave 1: " + rejected.get(0).view().getInt(ConflictRecords.SpawnRejected.WAVE), rejected.get(0).view().getInt(ConflictRecords.SpawnRejected.WAVE) == 1);
+                    check("no second echo (" + about(ConflictRecords.BAND_MATERIALIZED, agent).size() + ")", about(ConflictRecords.BAND_MATERIALIZED, agent).size() == 2);
+                    // The next wave, with a stack.
+                    ConflictKit.materialize(next, List.of(new ConflictKit.StackSpec(WARRIOR, 2, false)));
+                })
+                .thenWaitUntil(waits.logic(() -> check("three BAND_MATERIALIZED (" + about(ConflictRecords.BAND_MATERIALIZED, agent).size() + ")",
+                        about(ConflictRecords.BAND_MATERIALIZED, agent).size() == 3)))
+                .thenExecute(() -> {
+                    var third = about(ConflictRecords.BAND_MATERIALIZED, agent).get(2);
+                    int wave = third.view().getInt(ConflictRecords.Materialized.WAVE);
+                    record(test, "next wave", "aux " + third.aux() + ", wave " + wave + ", stacks " + states(party(agent)));
+                    check("the next wave places its two: aux " + third.aux() + ", wave " + wave, third.aux() == 2 && wave == 2);
+                    check("the band has its four bodies in two stacks: " + states(party(agent)) + ", bodies " + bridge().bodies(agent).size(),
+                            party(agent).stacks().size() == 2 && bridge().bodies(agent).size() == 4);
+                    check("still never rejected but the once", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() == 1);
+                    // An empty fight wave of an agent that has no party.
+                    ConflictKit.materialize(orphan, List.of());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the orphan's wave was echoed", about(ConflictRecords.BAND_MATERIALIZED, nobody).size() == 1)))
+                .thenExecute(() -> {
+                    var echo = about(ConflictRecords.BAND_MATERIALIZED, nobody).get(0);
+                    check("echoed with aux 0 and flags 8: aux " + echo.aux() + ", flags " + echo.view().getInt(ConflictRecords.Materialized.FLAGS),
+                            echo.aux() == 0 && echo.view().getInt(ConflictRecords.Materialized.FLAGS) == fight);
+                    check("no party was made for it", bridge().party(nobody) == null);
+                    check("and no refusal", about(ConflictRecords.BAND_SPAWN_REJECTED, nobody).isEmpty());
+                    // A band that is recalling (held by a player in view) refuses an empty wave once.
+                    double px = at.x() + 12;
+                    player[0] = FakePlayers.add(level, new Vec3(px, f.ground(px, at.z()), at.z()), "conflict_march_empty_watcher");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
+                    n[1] = about(ConflictRecords.BAND_MATERIALIZED, agent).size();
+                    n[2] = about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size();
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 600, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band is recalling", party(agent).recalling())))
+                .thenExecute(() -> ConflictKit.materialize(late, List.of()))
+                .thenWaitUntil(waits.logic(() -> check("the late wave was refused (" + (about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() - n[2]) + ")",
+                        about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() == n[2] + 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    var rejected = about(ConflictRecords.BAND_SPAWN_REJECTED, agent);
+                    var last = rejected.get(rejected.size() - 1);
+                    record(test, "recalling", "refusals " + rejected.size() + ", last aux " + last.aux() + ", wave " + last.view().getInt(ConflictRecords.SpawnRejected.WAVE));
+                    check("one refusal for the recalling band, ALREADY_EMBODIED, wave 3: aux " + last.aux() + ", wave " + last.view().getInt(ConflictRecords.SpawnRejected.WAVE),
+                            rejected.size() == n[2] + 1 && last.aux() == ConflictRecords.SpawnRejected.ALREADY_EMBODIED
+                                    && last.view().getInt(ConflictRecords.SpawnRejected.WAVE) == 3);
+                    check("and no echo (" + (about(ConflictRecords.BAND_MATERIALIZED, agent).size() - n[1]) + " more)", about(ConflictRecords.BAND_MATERIALIZED, agent).size() == n[1]);
+                    check("nothing was placed: " + states(party(agent)), party(agent).stacks().size() == 2);
+                    FakePlayers.remove(player[0]);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band went", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty())))
+                .thenSucceed();
+    }
+
+    // ---- MZB-729: a saved copy of a puppet that left -----------------------------------------------------
+
+    private static Entity copyOf(Mob puppet, ServerLevel level) {
+        CompoundTag nbt = new CompoundTag();
+        puppet.saveWithoutId(nbt);
+        nbt.putString("id", EntityType.getKey(puppet.getType()).toString());
+        Entity copy = EntityType.loadEntityRecursive(nbt, level, e -> e);
+        check("the copy is rebuilt from the puppet's NBT", copy != null);
+        check("the copy carries the puppet's tag and uuid", RtsimAttachments.isTagged(copy) && copy.getUUID().equals(puppet.getUUID()));
+        return copy;
+    }
+
+    /**
+     * MZB-729: a chunk saved with a placed puppet comes back with a copy of it, tag and UUID and all. When the band has left
+     * since (its member cut by the trim, the band sent home, its epoch ended by a new one) the copy must not join: it is discarded
+     * on join, {@code staleDiscarded} rises by one, and the unit's count and the tagged bodies in the world do not change.
+     * <ol>
+     * <li>The trim: a march of three warriors says one fewer than the four placed; the rearmost is cut, and its saved copy,
+     * the one that was in the world at the time, is refused;</li>
+     * <li>sent home: the band is recalled and goes; the copy of one of its warriors is refused;</li>
+     * <li>a new epoch: a second band's materialize at epoch 2 ends its epoch 1; a copy of an epoch 1 body is refused, and the epoch 2
+     * band's bodies are the same two.</li>
+     * </ol>
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_copy")
+    public static void aSavedCopyOfAPuppetThatLeftIsDiscardedOnJoin(GameTestHelper helper) {
+        String test = "aSavedCopyOfAPuppetThatLeftIsDiscardedOnJoin";
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Forced f = new Forced(helper);
+        ServerLevel level = f.level;
+        Spot at = spot();
+        f.square(at.cx(), at.cz(), 1);
+        String dim = RtsimTests.dimension(helper);
+        long faction = ConflictKit.newFaction();
+        long a = ConflictKit.newAgent(), b = ConflictKit.newAgent();
+        ConflictKit.Band bandA = heldBand(a, faction, dim, at.x() - 8, at.z() - 10, HOSTILE | CHIEF);
+        ConflictKit.Band bandB = heldBand(b, faction, dim, at.x() - 8, at.z() + 10, HOSTILE);
+        ConflictKit.Band bandB2 = heldBand(b, faction, dim, at.x() - 8, at.z() + 10, HOSTILE);
+        bandB2.epoch = 2;
+        Entity[] copies = new Entity[3];
+        long[] n = new long[4];
+        Map<String, Integer> three = Map.of(WARRIOR, 3), four = Map.of(WARRIOR, 4);
+
+        helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), 1)))
+                .thenExecute(() -> {
+                    ConflictKit.materialize(bandA, List.of(new ConflictKit.StackSpec(WARRIOR, 4, true)));
+                    ConflictKit.materialize(bandB, List.of(new ConflictKit.StackSpec(WARRIOR, 2, false)));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("both bands appeared", bridge().party(a) != null && bridge().party(b) != null);
+                    allStacks(party(a), PLACED, "A is placed");
+                    allStacks(party(b), PLACED, "B is placed");
+                }))
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    // The saved copies: the rearmost warrior (to be cut), one of the front row (to go home with the band), and one of B's epoch 1.
+                    copies[0] = copyOf(party(a).stacks().get(1).slots().get(1).entity(), level);
+                    copies[1] = copyOf(party(a).stacks().get(0).slots().get(0).entity(), level);
+                    copies[2] = copyOf(party(b).stacks().get(0).slots().get(0).entity(), level);
+                    say(a, 1, dim, faction, OUT, MARCH_CHIEF, four, wp(at.x(), at.z(), now), wp(at.x() - 200, at.z(), now + 10_000));
+                    n[0] = ConflictKit.trimmed();
+                    n[1] = RtsimTests.session().staleDiscarded();
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("a march that matches cuts nothing (" + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0]);
+                    say(a, 2, dim, faction, OUT, MARCH_CHIEF, three, wp(at.x(), at.z(), level.getGameTime()), wp(at.x() - 200, at.z(), level.getGameTime() + 10_000));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the rearmost warrior was cut (" + (ConflictKit.trimmed() - n[0]) + ")", ConflictKit.trimmed() == n[0] + 1)))
+                .thenExecute(() -> {
+                    int bodies = bridge().bodies(a).size(), tagged = tagged(level, a, at.x(), at.z());
+                    check("the cut member's stack still has its other warrior: bodies " + bodies + ", tagged " + tagged, bodies == 4 && tagged == 4);
+                    boolean joined = level.addFreshEntity(copies[0]);
+                    long discarded = RtsimTests.session().staleDiscarded() - n[1];
+                    record(test, "trimmed", "joined " + joined + ", discarded " + discarded);
+                    check("the copy of the cut member does not join", !joined && level.getEntity(copies[0].getUUID()) == null);
+                    check("one stale copy was counted (" + discarded + ")", discarded == 1);
+                    check("the unit's count is the march's: bodies " + bridge().bodies(a).size() + ", tagged " + tagged(level, a, at.x(), at.z()),
+                            bridge().bodies(a).size() == 4 && tagged(level, a, at.x(), at.z()) == 4);
+                    ConflictKit.recall(a, 1, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("A went home", !about(ConflictRecords.BAND_DEMATERIALIZED, a).isEmpty())))
+                .thenExecute(() -> {
+                    boolean joined = level.addFreshEntity(copies[1]);
+                    long discarded = RtsimTests.session().staleDiscarded() - n[1];
+                    record(test, "sent home", "joined " + joined + ", discarded " + discarded);
+                    check("the copy of a warrior of the band that went home does not join", !joined && level.getEntity(copies[1].getUUID()) == null);
+                    check("two stale copies counted (" + discarded + ")", discarded == 2);
+                    check("no body of A is in the world (bodies " + bridge().bodies(a).size() + ", tagged " + tagged(level, a, at.x(), at.z()) + ")",
+                            bridge().bodies(a).isEmpty() && tagged(level, a, at.x(), at.z()) == 0);
+                    // A new epoch of B ends the old one.
+                    ConflictKit.materialize(bandB2, List.of(new ConflictKit.StackSpec(WARRIOR, 2, false)));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("B's epoch 1 ended", !about(ConflictRecords.BAND_DEMATERIALIZED, b).isEmpty());
+                    check("B's epoch 2 appeared", bridge().party(b) != null && bridge().party(b).epoch == 2);
+                    allStacks(party(b), PLACED, "B's epoch 2 is placed");
+                }))
+                .thenExecute(() -> {
+                    int bodies = bridge().bodies(b).size(), tagged = tagged(level, b, at.x(), at.z());
+                    check("epoch 2 has its two warriors before the copy: bodies " + bodies + ", tagged " + tagged, bodies == 2 && tagged == 2);
+                    boolean joined = level.addFreshEntity(copies[2]);
+                    long discarded = RtsimTests.session().staleDiscarded() - n[1];
+                    record(test, "new epoch", "joined " + joined + ", discarded " + discarded);
+                    check("the copy of an epoch 1 body does not join", !joined && level.getEntity(copies[2].getUUID()) == null);
+                    check("three stale copies counted (" + discarded + ")", discarded == 3);
+                    check("epoch 2's unit count is unchanged: bodies " + bridge().bodies(b).size() + ", tagged " + tagged(level, b, at.x(), at.z()),
+                            bridge().bodies(b).size() == 2 && tagged(level, b, at.x(), at.z()) == 2);
+                    ConflictKit.recall(b, 2, ConflictRecords.RECALL_DONE, 1, at.x() - 100, at.z());
+                })
+                .thenWaitUntil(waits.logic(() -> check("B went", about(ConflictRecords.BAND_DEMATERIALIZED, b).size() == 2)))
+                .thenSucceed();
     }
 
     // @@END@@
