@@ -176,6 +176,23 @@ impl Graph {
             if d.sources.windows(2).any(|w| w[0].pos >= w[1].pos) {
                 return Err(Invalid::Source(di as u32));
             }
+            // The tail lies in no district's chunks, so no member of it is a node of the graph.
+            let tail = d.members.len() - d.foreign as usize;
+            if d.members[tail..].iter().any(|m| m.node.is_some()) {
+                return Err(Invalid::Member(di as u32));
+            }
+            // Only a shared network's part lists foreign sources (no rows), a tail and peers
+            // (ascending, never its own district).
+            if !d.shared()
+                && (d.foreign > 0
+                    || !d.peers.is_empty()
+                    || d.sources.iter().any(|s| s.levels.is_empty()))
+            {
+                return Err(Invalid::Source(di as u32));
+            }
+            if d.peers.windows(2).any(|w| w[0] >= w[1]) || d.peers.contains(&d.head.district) {
+                return Err(Invalid::Source(di as u32));
+            }
             for s in &d.sources {
                 if s.current.is_some_and(|c| c as usize >= s.levels.len()) {
                     return Err(Invalid::Level(di as u32));
@@ -198,7 +215,7 @@ impl Graph {
         // A driven domain has a speed row for each speed a source gives, in the reference's frame
         // (Java builds the rows from those speeds), so a solve always finds the row it runs at.
         for (di, d) in domains.iter().enumerate() {
-            if !d.driven() {
+            if !d.driven() && !d.shared() {
                 continue;
             }
             for s in &d.sources {

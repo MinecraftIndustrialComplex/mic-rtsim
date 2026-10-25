@@ -210,8 +210,14 @@ final class CreateCompile implements GlassExtractor.Compile {
         }
     }
 
-    /** A kinetic block entity's place in a domain. */
-    private record Kin(int domain, Rat ratio, float rpm, boolean ratioKnown) {}
+    /**
+     * A kinetic block entity's place in a domain. {@code tail}: it lies in no district's chunks, in a shared part
+     * (SEC-1 S5-2), so the domain carries it in its tail rather than its members.
+     */
+    private record Kin(int domain, Rat ratio, float rpm, boolean ratioKnown, boolean tail) {}
+
+    /** Where a block lies, by its chunk: in the district's, in another district's, or in none's. */
+    private enum Place { OWN, OTHER, UNHELD }
 
     /** An edge's filter, applied to prototypes during propagation and written as GOOD lists at the end. */
     private record EdgeTest(Predicate<ItemStack> items, Predicate<FluidStack> fluids) {}
@@ -541,12 +547,15 @@ final class CreateCompile implements GlassExtractor.Compile {
                 rootSpeed = root.getTheoreticalSpeed();
             boolean overstressed = false;
             // a network whose members lie outside the district's chunks (another district's, or no
-            // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
-            // every other district on it (choice SC11), the boiler's district included. Members whose chunk
-            // has not loaded this session are not listed, so the test is structural (choice SC44): a listed
-            // member outside, or a link out of the district from a listed member inside (reachesOut). The
-            // chunks outside it reaches are kept for edits there (choice SC77).
+            // district's) is a shared part (SEC-1 slice S5-2, choice SC153): modelled with the other
+            // districts on it, every one of them a peer, unless it cannot be (the unstable cases below:
+            // the current speed only, members bounded, as in every district on it since choice SC11).
+            // Members whose chunk has not loaded this session are not listed, so the test is structural
+            // (choice SC44): a listed member outside, or a link out of the district from a listed member
+            // inside (reachesOut). The chunks outside it reaches are kept for edits there (choice SC77),
+            // and name the peers.
             boolean crossing = false;
+            networkReached = new LongOpenHashSet();
             float capacity = 0, stress = 0;
             List<KineticBlockEntity> sources = new ArrayList<>();
             for (var e : net.sources.entrySet()) {
@@ -566,6 +575,8 @@ final class CreateCompile implements GlassExtractor.Compile {
                 }
             }
             crossing |= reachesOut(id, net);
+            LongOpenHashSet reachedHere = networkReached;
+            networkReached = null;
             d.liveCapacity = capacity;
             d.liveStress = stress;
             if (overstressed)
@@ -580,19 +591,29 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (a.getBlockPos().equals(b.getBlockPos()))
                     sources.remove(blockAt(b.getBlockPos()) == b ? i - 1 : i);
             }
-            boolean unstable = crossing || splitNetworks.contains(id);
+            boolean unstable = splitNetworks.contains(id);
             Rat reference = Rat.ofFloat(rootSpeed);
             Rat[] ratios = new Rat[sources.size()];
             FluidTankBlockEntity[] tanks = new FluidTankBlockEntity[sources.size()];
-            boolean forward = false, backward = false;
+            // a source the part cannot tabulate (SEC-1 S5-2): another district's, or an engine's shaft in no
+            // district's chunks whose boiler this compile does not hold; its owner's part gives the rows
+            boolean[] foreign = new boolean[sources.size()];
+            boolean forward = false, backward = false, anyRatio = false;
             for (int i = 0; i < ratios.length; i++) {
                 KineticBlockEntity s = sources.get(i);
                 ratios[i] = sourceRatio(s, reference, rootSpeed);
-                if (s instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null) {
+                anyRatio |= ratios[i] != null;
+                boolean engineShaft = s instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null;
+                if (engineShaft)
                     tanks[i] = tankOfShaft.get(s.getBlockPos().asLong());
+                Place where = crossing ? placeOf(s.getBlockPos()) : Place.OWN;
+                if (where == Place.OTHER || (where == Place.UNHELD && engineShaft && tanks[i] == null)) {
+                    foreign[i] = true;
+                    tanks[i] = null;
+                } else {
                     // an engine's shaft whose tank or engine this district does not model (outside it, or not
                     // loaded): its speed follows a boiler the solve cannot see
-                    unstable |= tanks[i] == null;
+                    unstable |= engineShaft && tanks[i] == null;
                 }
                 // a driven source whose speed is not related to the reference cannot be tabulated
                 unstable |= tanks[i] != null && ratios[i] == null;
@@ -606,17 +627,29 @@ final class CreateCompile implements GlassExtractor.Compile {
                 }
             }
             unstable |= forward && backward;
+            // a crossing network no listed source of which relates to the reference has nothing to share
+            unstable |= crossing && !anyRatio;
             List<GraphBuilder.Source> built = new ArrayList<>();
             List<Rat> speeds = null;
             if (!unstable) {
                 boolean anyDriven = false;
+                // the sources as the speed rows see them: a foreign one with the speeds it can give
+                List<GraphBuilder.Source> candidates = new ArrayList<>();
                 for (int i = 0; i < ratios.length; i++) {
                     anyDriven |= tanks[i] != null;
-                    built.add(tanks[i] == null ? fixedSource(net, sources.get(i), ratios[i])
-                            : drivenSource((PoweredShaftBlockEntity) sources.get(i), tanks[i], ratios[i]));
+                    GraphBuilder.Source b;
+                    if (foreign[i]) {
+                        b = foreignSource(sources.get(i), ratios[i]);
+                        candidates.add(foreignCandidates(sources.get(i), ratios[i]));
+                    } else {
+                        b = tanks[i] == null ? fixedSource(net, sources.get(i), ratios[i])
+                                : drivenSource((PoweredShaftBlockEntity) sources.get(i), tanks[i], ratios[i]);
+                        candidates.add(b);
+                    }
+                    built.add(b);
                 }
-                if (anyDriven) {
-                    speeds = speedRows(built);
+                if (anyDriven || crossing) {
+                    speeds = speedRows(candidates);
                     unstable = speeds == null || speeds.isEmpty();
                 }
             }
@@ -625,8 +658,10 @@ final class CreateCompile implements GlassExtractor.Compile {
                 for (int i = 0; i < ratios.length; i++)
                     built.add(fixedSource(net, sources.get(i), ratios[i]));
                 speeds = null;
-                unstableDomains.add(d.index); // a shared network, or sources that do not add up: the current speed only
+                crossing = false; // every member listed, none in a tail, no peers: the part is not shared
+                unstableDomains.add(d.index); // sources that do not add up, or no source to share: the current speed only
             }
+            boolean shared = crossing;
             // the row the reference turns at now (none: stopped, or a speed no source gives); with no driven
             // source the one row is the reference's own speed
             int current = 0;
@@ -638,6 +673,11 @@ final class CreateCompile implements GlassExtractor.Compile {
                 d.levels.add(new GraphBuilder.Level(0, speed, 0));
             d.sources.addAll(built);
             d.current = current;
+            if (shared) {
+                d.flags |= GlassRecords.Domain.SHARED;
+                for (long peer : peersOf(reachedHere))
+                    d.peers.add(peer);
+            }
             if (!unstable)
                 for (int i = 0; i < tanks.length; i++)
                     if (tanks[i] != null)
@@ -648,11 +688,18 @@ final class CreateCompile implements GlassExtractor.Compile {
                 KineticBlockEntity m = e.getKey();
                 if (!listed(net, m))
                     continue; // replaced in a loaded chunk by a part that joined, or by another block: Create's next recount drops it
+                // a shared part counts its own members and, in its tail, those in no district's chunks; a
+                // member in another district's chunks is that district's part's. A block entity this compile
+                // claims is its own wherever its chunk lies: its node needs the domain.
+                Place where = shared && !claimedPos.contains(m.getBlockPos().asLong()) ? placeOf(m.getBlockPos()) : Place.OWN;
+                if (where == Place.OTHER)
+                    continue;
+                boolean tail = where == Place.UNHELD;
                 float sp = m.getTheoreticalSpeed();
                 // a stopped network (a cold boiler) gives every member speed 0: the ratio is unknown then
                 boolean known = rootSpeed != 0 && sp != 0;
                 Rat ratio = known ? Rat.ofFloat(sp).div(Rat.ofFloat(rootSpeed)).fitSigned() : Rat.ONE;
-                kin.put(m.getBlockPos().asLong(), new Kin(d.index, ratio, Math.abs(m.getSpeed()), known));
+                kin.put(m.getBlockPos().asLong(), new Kin(d.index, ratio, Math.abs(m.getSpeed()), known, tail));
                 memberImpact.put(m.getBlockPos().asLong(), (double) e.getValue());
             }
         }
@@ -675,6 +722,67 @@ final class CreateCompile implements GlassExtractor.Compile {
         }
     }
 
+    /** Where the block at {@code p} lies: in the district's chunks, in another district's, or in none's. */
+    private Place placeOf(BlockPos p) {
+        long chunk = net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4);
+        if (g.district.chunks.contains(chunk))
+            return Place.OWN;
+        com.minecraftindustrialcomplex.mic_rtsim.industry.District other = g.ind.districts().at(level.dimension(), chunk);
+        return other != null && other.id != g.district.id ? Place.OTHER : Place.UNHELD;
+    }
+
+    /**
+     * The other districts a shared part names: those whose chunks hold one of {@code chunks} (the chunks outside
+     * the district that the network lists a member or source in or reaches), ascending as the engine's unsigned
+     * ids, never the compile's own.
+     */
+    private long[] peersOf(LongOpenHashSet chunks) {
+        LongOpenHashSet ids = new LongOpenHashSet();
+        for (long c : chunks) {
+            com.minecraftindustrialcomplex.mic_rtsim.industry.District other = g.ind.districts().at(level.dimension(), c);
+            if (other != null && other.id != g.district.id)
+                ids.add(other.id);
+        }
+        // sorted as unsigned: flip the sign bit, sort, flip back
+        long[] out = ids.toLongArray();
+        for (int i = 0; i < out.length; i++)
+            out[i] ^= Long.MIN_VALUE;
+        java.util.Arrays.sort(out);
+        for (int i = 0; i < out.length; i++)
+            out[i] ^= Long.MIN_VALUE;
+        return out;
+    }
+
+    /**
+     * A source this part cannot tabulate (SEC-1 S5-2): no rows, no boiler, no row now; its owner's part gives them.
+     * Only its ratio to the reference is kept.
+     */
+    private static GraphBuilder.Source foreignSource(KineticBlockEntity s, Rat ratio) {
+        GraphBuilder.Source out = new GraphBuilder.Source(s.getBlockPos().asLong());
+        out.ratio = ratio;
+        out.current = NONE;
+        return out;
+    }
+
+    /**
+     * What a foreign source adds to the part's speed rows, as rows of a scratch source ({@link #speedRows}): an
+     * engine's shaft turns at each speed a steam engine has, 16 x m for m = 1 to 4, in its direction; any other
+     * source at the speed it has now, when it turns. Nothing for a source whose ratio is unknown.
+     */
+    private static GraphBuilder.Source foreignCandidates(KineticBlockEntity s, Rat ratio) {
+        GraphBuilder.Source out = new GraphBuilder.Source(s.getBlockPos().asLong());
+        out.ratio = ratio;
+        if (ratio == null)
+            return out;
+        if (s instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null) {
+            for (int m = 1; m <= 4; m++)
+                out.levels.add(new GraphBuilder.Level(0, Rat.ofFloat(ps.movementDirection * 16 * m), 0));
+        } else if (s.getGeneratedSpeed() != 0) {
+            out.levels.add(new GraphBuilder.Level(0, Rat.ofFloat(s.getGeneratedSpeed()), 0));
+        }
+        return out;
+    }
+
     /** A source that gives the speed it has now and nothing else (SEC-1 S5-1): one row, capacity as Create sums it. */
     private GraphBuilder.Source fixedSource(com.simibubi.create.content.kinetics.KineticNetwork net, KineticBlockEntity s, Rat ratio) {
         GraphBuilder.Source out = new GraphBuilder.Source(s.getBlockPos().asLong());
@@ -687,21 +795,24 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /**
      * An engine's shaft on a boiler (SEC-1 S5-1): a row per boiler level 0 to 18 with the speed and capacity the
-     * engines give there (G-B5, §9.3 "Boiler"); the boiler node becomes its driver in step 1.
+     * engines give there (G-B5, §9.3 "Boiler"), then the passive row (choice SC154: passive heat and no active
+     * heat, as under a burner that has gone out, runs the engines at an eighth of their efficiency); the boiler
+     * node becomes its driver in step 1.
      */
     private GraphBuilder.Source drivenSource(PoweredShaftBlockEntity shaft, FluidTankBlockEntity tank, Rat ratio) {
         GraphBuilder.Source out = new GraphBuilder.Source(shaft.getBlockPos().asLong());
         out.ratio = ratio;
         int engines = tank.boiler.attachedEngines;
         double perRpm = com.simibubi.create.api.stress.BlockStressValues.getCapacity(shaft.capacityKey);
-        for (int l = 0; l <= 18; l++) {
-            float eff = Cycles.boilerEfficiency(l, engines, false);
+        for (int l = 0; l <= 19; l++) {
+            boolean passive = l == GlassRecords.Domain.PASSIVE_SELECTOR;
+            float eff = Cycles.boilerEfficiency(passive ? 0 : l, engines, passive);
             // Create's getGeneratedSpeed: no speed without capacity (a capacity of 0 in the config too)
             float sp = (float) (eff * perRpm) > 0 ? shaft.movementDirection * Cycles.engineSpeed(eff) : 0;
             out.levels.add(new GraphBuilder.Level(l, Rat.ofFloat(sp), Cycles.engineCapacityPerRpm(eff, perRpm) * Math.abs(sp)));
         }
         int level = Cycles.boilerLevel(tank.boiler.activeHeat, tank.getTotalTankSize(), tank.boiler.waterSupply);
-        out.current = Math.max(0, Math.min(18, level));
+        out.current = tank.boiler.isPassive(tank.getTotalTankSize()) ? GlassRecords.Domain.PASSIVE_SELECTOR : Math.max(0, Math.min(18, level));
         return out;
     }
 
@@ -811,6 +922,12 @@ final class CreateCompile implements GlassExtractor.Compile {
     }
 
     /**
+     * The chunks outside the district the network being compiled lists a member or source in or reaches
+     * ({@link #reached}), for its peers; null between networks.
+     */
+    private LongOpenHashSet networkReached;
+
+    /**
      * Whether {@code p} lies outside the district's chunks; if so its chunk is kept as one a network of the
      * compile reaches (choice SC77: a player's edit there, in no district, is this district's too).
      */
@@ -819,6 +936,8 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (g.district.chunks.contains(c))
             return false;
         g.reachedChunks.add(c);
+        if (networkReached != null)
+            networkReached.add(c);
         return true;
     }
 
@@ -902,7 +1021,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                     continue;
                 Rat ratio = kk.ratio().mul(Rat.ofFloat(m)).fitSigned();
                 float speed = (float) (ratio.toDouble() * domainRoot.get(kk.domain()));
-                kin.put(qp, new Kin(kk.domain(), ratio, Math.abs(speed), kk.ratioKnown()));
+                kin.put(qp, new Kin(kk.domain(), ratio, Math.abs(speed), kk.ratioKnown(), false));
                 walkedSpeed.put(qp, speed);
                 walkSource.put(qp, KineticWalk.sideToward(q, k.getBlockPos()));
                 memberImpact.put(qp, com.simibubi.create.api.stress.BlockStressValues.getImpact(n.getBlockState().getBlock()));
@@ -3278,7 +3397,10 @@ final class CreateCompile implements GlassExtractor.Compile {
         for (long pos : keys) {
             Kin k = kin.get(pos);
             GraphBuilder.Domain d = g.domains().get(k.domain());
-            d.member(nodeAtPos.get(pos), k.ratio(), memberImpact.get(pos));
+            if (k.tail())
+                d.tail(NONE, k.ratio(), memberImpact.get(pos));
+            else
+                d.member(nodeAtPos.get(pos), k.ratio(), memberImpact.get(pos));
         }
         for (int b : orphanBuffers)
             g.node(b).flag(GlassRecords.Node.BOUNDED);
