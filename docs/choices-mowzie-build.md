@@ -3798,6 +3798,56 @@ changed; the lead runs `gametest.sh iceandfire`.
   `a_never_kind_decided_while_replaying_is_counted_and_not_queued` (run once with `--release`).
   The outbox the pages hold is unchanged; a queued command restored from a page takes its queued
   verdict at `begin_replay`.
+
+  **Routes around the gate (the follow-up audit; amends RP-74, since the range's ten ids are
+  used).** Every `Cmd` the engine decides goes through `Outbox::push` (above). What else hands the
+  dragons or the nests a command or a decision, each with its answer:
+  - `Order::DragonCommand` (rtsim-jni dragons.rs `order_command`, TEST mode): puts a command of
+    any kind straight into the host's queue, as `Order::ConflictCommand` did until RP-66 and
+    `Order::HerdCommand` until RP-85. Answer: wait. It joins `waits_for_the_replay_end`
+    (engine.rs), so a unit holding one, and every unit after it, is held to the replay end with
+    RP-33's orders; a "never" kind ordered in a replay is no longer written. Failing first:
+    `a_dragon_command_ordered_while_replaying_waits_for_the_replay_end` (a lair saved, 8,000
+    records behind it, a crash, a minimum-size buffer; a STEER ordered after the first hand-over):
+    "not written while the replay runs" on cd2e1ca6, which wrote it; after, it is written once
+    the replay has ended. Control `a_dragon_command_ordered_without_a_replay_is_written_at_once`
+    passes on both.
+  - `Order::NestDay` (`dragons::nest_day`, TEST mode): not a command, but a decision input:
+    `set_nest_day` books the nests' next watch from the engine's own clock, which in a replay is
+    the replay clock in the past, so the replayed window would be watched at the new cadence (its
+    sorties and renewals decided on a past world). Answer: wait, with the same units. Failing
+    first: `a_nest_day_ordered_while_replaying_waits_for_the_replay_end`: the nests' day 1234
+    against the tunable's 24000 while the replay runs, on cd2e1ca6; after, 24000 until the end and
+    1234 after it. Control `a_nest_day_ordered_without_a_replay_is_set_at_once`.
+  - `Order::TributeStart`: starts a tribute row and runs the clock to the hand-over's time. It
+    waits already (RP-33). The coin leaves through `write_tribute`, below.
+  - World orders: `WorksGrant` and `WorksRaid` (inputs to the phase 1 world that run the clock)
+    and `HerdFound` wait already (RP-33). `ScriptVillage` and `Phase1SpawnNear` reach neither
+    engine (the second is skipped while replaying, RP-44). `Phase1Advance` moves the offset every
+    module's record times add (`phase1::world_tick`), so one taken in a replay would put the
+    replayed records after it an offset later; it hands the dragons no command or decision, it is
+    phase 1's order (slice C) and no test orders it during a replay, so it is not held here. A
+    fork, reported: add `Order::Phase1Advance(_)` to `waits_for_the_replay_end` if the lead wants
+    it. `IndustryThreat` and `IndustryCommand` go to the industry engine, which is not held during
+    the replay (the coordinator's decision of 2026-10-24); `TalkReport` reaches no dragon.
+  - Founding paths, inside the engine, all state and none a command: LAIR_FOUND (a journaled
+    record, replayed in order) makes a lair; a clutch's young (`Breed`), a newcomer after a
+    death (the respawn) and a field visitor (`draw_visitor`) make an abstract dragon, which
+    embodies only through `materialize` (gated, RP-71); an UNTAGGED makes a dragon and its ADOPT or
+    DISCARD goes through the gate (drop, RP-74, RP-79). The visitor's roll waits for
+    `player_at`, which waits for the replay end (RP-72).
+  - Lair and nest placement: PLACE_LAIR and PLACE_NEST are `Cmd`s through the gate (send; Java
+    places once per field and idempotently). `write_queue` adds no command of its own: the only
+    record the host makes itself is the SPAWN_REJECTED answer for a materialization in a dimension
+    Java never named, and a Materialize is not written (not decided) while replaying.
+  - Oil: OIL_SURVEY is a query through the gate (send), answered by a journaled OIL_CHUNKS.
+    OIL_CONFIG and OIL_CHUNKS are records in. No `Order` reaches the oil gate.
+  - Tribute coin: `write_tribute` sends TRANSFER_TO_CONTAINER from the engine's `placing`, with op
+    ids drawn from the lair's key and a per-lair counter (`place_tribute`), so a stack decided
+    again in the replayed window is the same op, and Java answers a duplicate. It is not a puppet
+    command; sent while replaying, as the core's transfers are.
+  - Reads: `with_dragons` takes `&Dragons`; rtsim-host and the sims run engines of their own with
+    no session, and read this one.
 - **RP-75** (no epoch is used twice; §5.3; RP-7, RP-30, RP-37, RP-57): the floor is an in-memory
   map, agent to the highest epoch seen that the dragon's own `epoch` does not hold. A dragon's
   next epoch is `max(epoch, floor) + 1` (`next_epoch`; `materialize` computes it without spending
