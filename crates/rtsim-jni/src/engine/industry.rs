@@ -711,10 +711,10 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 }
 
 /// Java's answer to an industry command. A kept command leaves the outbox, or the queue the switch
-/// moved it back to ([`Link::unqueue`], RP-285). A failed carriage
-/// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
-/// the result, so this works whether or not the outbox still had the command: a restart trims the
-/// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+/// moved it back to ([`Link::unqueue`], RP-285). A failed carriage delta moved nothing: the engine
+/// takes it back from its own exchange record (it holds one until the result, so this works
+/// whether or not the outbox still had the command: a restart trims the outbox by the world
+/// save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
 /// A duplicate carriage delta was decided again after a crash under the op Java applied before
 /// (a train's loot, or a station exchange the replay derived again) and the journal that would
 /// have carried that application's answers was lost (J3): its goods moved once, so the engine
