@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Slice R, step 1 (RP-260 to RP-269): are the industry engine's derived op ids the same live and
-//! replayed? Every `IndustryOps::derive` call in the reconcile paths passes `self.now`, which
-//! depends on the history of calls, and that history differs between a live run and a replay after
-//! a crash (docs/replay-gate.md, overnight choice W3).
+//! replayed? On bc669502 every `IndustryOps::derive` call in the reconcile paths passed
+//! `self.now`, which depends on the history of calls, and that history differs between a live run
+//! and a replay after a crash (docs/replay-gate.md, overnight choice W3). Step 2 (RP-270 to RP-279)
+//! derives with the decision's own tick and holds industry while replaying, as the replay below
+//! does: the step 1 tests it turned green lost their `#[ignore]`.
 //!
 //! The harness follows rtsim-jni's engine/industry.rs:
 //! - **Live**: one hand-over is its journaled records, each preceded by the deferred latest-wins
@@ -130,6 +132,11 @@ fn replay_step(e: &mut Engine, s: &Step, out: &mut Vec<Cmd>) {
 /// The mill in a fresh engine: a district of one vault and one frogport, live, with `stock` iron and
 /// a learned model that makes `rate` iron a tick while it is away.
 fn mill(stock: i64, rate: f64) -> Engine {
+    mill_with(stock, 0, rate)
+}
+
+/// [`mill`] with `frog` iron in the frogport.
+fn mill_with(stock: i64, frog: i64, rate: f64) -> Engine {
     let mut e = Engine::new(SEED, Tunables::default(), Tick(0));
     e.define_good(IRON, GoodInfo::item("iron", 64));
     let send = |e: &mut Engine, rec: Timed| e.ingest(&rec);
@@ -171,7 +178,7 @@ fn mill(stock: i64, rate: f64) -> Engine {
     send(&mut e, chunk_loaded(0, 0));
     send(&mut e, chunk_loaded(0, 1));
     send(&mut e, load_state(0, LoadState::Live, 2));
-    for (inventory, n) in [(VAULT, stock), (1, 0)] {
+    for (inventory, n) in [(VAULT, stock), (1, frog)] {
         send(
             &mut e,
             t(
@@ -528,6 +535,79 @@ fn a_stale_records_round_decided_again_meets_the_live_reconciles_epoch() {
             .all(|c| matches!(c, Cmd::ChunkReconcile(_))),
         "{:?}",
         o.replayed
+    );
+}
+
+/// Stale records of two ticks: the mill's chunks load at 8,000 and 8,100 and it is live at 8,200,
+/// all after G = 9,000. Away, the mill used up the vault's 300 iron and then the frogport's 600,
+/// so each chunk has a change. The replay takes the records at their own ticks and settles the
+/// vault's chunk before the frogport's record: two rounds, epochs 1 and 2. Live, the clock was at
+/// 9,000 for all three; settled only when the clock moved (bc669502, and step 2 before RP-271's
+/// trigger), both chunks went in one round at epoch 1, and the replay's frogport reconcile
+/// (epoch 2, -600) carried an epoch past the one the world applied, which Java's chunk epoch guard
+/// lets through: the frogport emptied twice. Settled at each record past the last decision's tick
+/// (RP-271), both runs make the same rounds, at the same epochs, under the same op ids.
+#[test]
+fn stale_records_of_two_ticks_settle_in_the_same_rounds_live_and_replayed() {
+    // A raid while the mill is away takes iron from both its inventories, the vault's chunk and
+    // the frogport's; the theft is owed until each chunk loads.
+    let mut away = Step::new(5_000);
+    away.journaled.push(load_state(100, LoadState::Unloaded, 0));
+    away.threats.push(Threat {
+        id: 9,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        loads: None,
+        at: Tick(4_000),
+    });
+    let mut steps = vec![away];
+    let mut quiet = Step::new(9_000);
+    quiet.journaled.push(harmless(5_100));
+    steps.push(quiet);
+    let mut load = Step::new(9_500);
+    load.journaled = vec![
+        chunk_loaded(8_000, 0),
+        chunk_loaded(8_100, 1),
+        load_state(8_200, LoadState::Live, 2),
+    ];
+    steps.push(load);
+    let o = run(mill_with(300, 600, -0.2), &steps, 0, 20_000, false);
+    let (live, replayed) = (reconciles(&o.live), reconciles(&o.replayed));
+    let pairs = |v: &[&ChunkReconcile]| {
+        v.iter()
+            .map(|r| (r.chunk, r.epoch, r.op.0))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        chunks()
+            .iter()
+            .all(|c| live.iter().any(|r| r.chunk == *c && !r.deltas.is_empty())),
+        "both chunks reconciled live: {:?}",
+        pairs(&live)
+    );
+    for l in &live {
+        assert!(
+            replayed
+                .iter()
+                .any(|r| r.chunk == l.chunk && r.epoch == l.epoch),
+            "the live reconcile of {:?} at epoch {} has a replayed twin at that epoch: live {:?}, \
+             replayed {:?}",
+            l.chunk,
+            l.epoch,
+            pairs(&live),
+            pairs(&replayed)
+        );
+    }
+    let epochs = |v: &[&ChunkReconcile]| v.iter().map(|r| r.epoch).max();
+    assert_eq!(
+        epochs(&live),
+        epochs(&replayed),
+        "as many rounds: live {:?}, replayed {:?}",
+        pairs(&live),
+        pairs(&replayed)
     );
 }
 

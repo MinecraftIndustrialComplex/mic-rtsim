@@ -902,8 +902,12 @@ impl Engine {
 
     fn ingest_obs(&mut self, t: &Timed) {
         let at = t.at.max(self.now);
-        // Coverage changed by this tick's records settles before the next tick's (I7).
-        if at > self.now {
+        // Coverage changed by this tick's records settles before the next tick's (I7). The next
+        // tick is the record's own, past the last decision's (which never passes `now`, so this
+        // holds whenever the clock moves): a live run that took several records late, at the
+        // step's time, settles between them as their replay does, each round at the tick of the
+        // record that marked it (docs/choices-mowzie-build.md RP-271).
+        if t.at > self.decided {
             let now = self.now;
             self.flush_dirty(now);
             self.drain_networks(now);
