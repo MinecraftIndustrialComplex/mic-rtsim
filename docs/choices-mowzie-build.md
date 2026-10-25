@@ -3842,6 +3842,33 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     1.5). The slack is the worst case; Create's rails put the body at exactly 5.0 (XO, ZO) or 4.95 (PD, ND), so
     the real far side is 5.5 (5.45). A lurk on a curve keeps the engine's spot (no axis there) and so only the
     engine's own geometry.
+  - Amendment (the re-check's P2, a standing rider was ignored; compiled, the GameTests not run): `aimAt` took
+    only the carriage's seated passengers (`getPassengers()`) as riders, so a living entity standing at the middle
+    or the rear of a long carriage was no rider: with no seated one the carriage was struck at its leading bogey's
+    point, up to a carriage length ahead of the entity, and the swing missed it. Now `TrainSampler.ridersOf(entity,
+    body)` returns, in order, the seated passengers; the living entities in the carriage's `collidingEntities`
+    (Create's server collision registers mobs and the like that stand on it, each for three ticks); and the living
+    entities found by a search about the carriage whose feet stand on a block of it, by Create's own test (the
+    position 0.2 below the feet, in the carriage's frame, is a key of `getContraption().getBlocks()`;
+    `ContraptionCollider.worldToLocalPos`, which its client mixin uses). `aimAt` tries them in that order and takes
+    the first that will be in reach when the swing lands; a carriage with any rider that will not be is still not
+    struck, and one with none is struck at a bogey point as before.
+    - Why a search and not `collidingEntities` alone (the brief's mechanism): a real player standing on a carriage
+      is never in it on the server. `ContraptionCollider.collideEntities` reaches `registerColliding` only after
+      `if (playerType == PlayerType.SERVER) continue;`, and the only other caller is a mixin in
+      `foundation/mixin/client`. Read in Create's sources, not run; the riders GameTest records whether the player
+      is in the set. Mobs are in it, so they are covered either way.
+    - The search box is a circle about the contraption's anchor (`Contraption.bounds` is in the carriage's frame;
+      the entity's own bounding box is not turned with it, so it is not used) of the bounds' largest horizontal
+      reach plus `RIDER_MARGIN` (3.0), and as high as its largest vertical reach plus 3.0. Who counts is Create's
+      `AbstractContraptionEntity.canCollideWith` (no spectator, no `noPhysics`, nothing already riding, no hanging
+      entity, seat or projectile). The aim moves as the bogey nearer to the rider does, as for a seated one.
+    - Cost: one entity search per carriage per tick while it is in the cheap range of a lurk's puppet and
+      unstruck (about twenty ticks a pass at one block a tick), against a box a few blocks across. Not measured.
+    - Known gap: a player standing at the edge of a platform beside a carriage is not a rider (his feet are over no
+      block of it); one standing on a carriage that Create has not yet told the server of is, as the server
+      sees his position. A bystander mob that stands on the carriage (a villager in it) is a rider and the carriage
+      waits for it.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -4022,6 +4049,33 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       of the rail, `away()`). Two new tests for the oblique den (`rail_frostmaw_lurk_oblique`, speed 1.0, and
       `_oblique_far`, 1.4 with the body pinned at the far side of its stand) and one for the den on the line
       (`_online`, 1.0); they skip the bait, hold and hearer as the other short runs do.
+    - Amendment (the re-check's P2, a standing rider; written and compiled, not run): test 9 takes a `Rider`
+      (`SEATED`, the earlier tests; `MIDDLE` and `REAR`), and `Line` a `longCar` flag. A long carriage
+      (`longCars`) is one carriage of two small bogeys `LONG_SPAN` (8) blocks apart on the station's track, a
+      floor of seven oak planks on the blocks between them, controls on the first bogey, all glued, and no
+      second carriage: a second one behind it would be struck at its own bogey point, which the old code could
+      also land on a rider at the rear (it passes 5 blocks behind the zombie), and the test would not tell the
+      old code from the new. Create's assembler needs the first bogey at the first block past the station, bogeys
+      at least 3 apart, and the second in the first's glue group; read from `StationBlockEntity.assemble`, not run.
+      - `Line.stand` puts a zombie on the plank in the middle (`MIDDLE`) or the one next to the rear bogey (`REAR`),
+        planks ordered along the way the train goes, at the plank's top plus 0.01, and checks that Create's own
+        standing test finds a block of the carriage under it. The zombie is a mob because Create's server
+        collision carries mobs and does not carry a player. The drive ramps up to the speed over ten ticks from
+        the tick the zombie is put on, so a jolt from rest does not leave it behind; if it still slips, the first
+        failure is the hit check, not a setup check, which is a defect of the test.
+      - `aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage` (`rail_frostmaw_lurk_standing_middle`)
+        and `...AtTheRearOfALongCarriage` (`rail_frostmaw_lurk_standing_rear`), speed 1.0, the engine's own spot,
+        pass only (no bait, hold or hearer): the same assertions as the seated pass (a strike, the zombie hurt,
+        the bearing within 30 degrees, no carriage box touching the puppet's, the block counts unchanged, one
+        TRAIN_PASSED). On the code before the fix the strike is aimed at the leading bogey's point, 5 (middle) or
+        8 (rear) blocks ahead of the zombie, so the zombie's landing is about 9.7 or 12.4 blocks from the
+        puppet when the gate opens (the point's is 6.0): out of the swipe's 6.5, and the carriage is marked struck, so the expected failure is "the zombie was hurt
+        at 1.0 (health 1000.0 of 1000.0)".
+      - `aStandingPlayerAndAStandingMobAreRidersOfACarriageAndABystanderIsNot` (`rail_frostmaw_riders`): a mock
+        player (a plain `Player`, the kind Create's server skips) and a zombie stand on the stopped long
+        carriage's floor, a second mock player 3 blocks beside it; `TrainSampler.ridersOf` returns the first two
+        and not the third. A player is not carried by Create, so the train does not move in this test; the
+        moving tests use a mob.
     - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
       on a failure; the train, its glue, the track, the stations and the box are put back as they were
       (`TrainWatch.forget` too).

@@ -1674,8 +1674,8 @@ engine puts the spot `SPOT_BLOCKS` (rail.rs, 5.0) from the track point toward th
 plus 0.5 as a double); Java stands the body `SPOT_BLOCKS` from the rail's centre line (the hold point above), and
 the contract is about that distance. `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it
 is not how far the body can strike. A strike is the plugin's call, gated on a smaller number: the create plugin's
-sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider (else its bogey point) will be
-within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks on, at the train's
+sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider, seated or standing on it (else its
+bogey point), will be within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks on, at the train's
 present speed. The Frostmaw's swipe hits a target whose horizontal centre distance less its half-width is at most
 6.5 and whose 3D feet-to-feet distance is at most 6.5 plus its half-width (about 6.8 for a player), so the gate
 leaves about 0.8 for the prediction's error. The fourth number is the Lurker's `stand()` (the Frostmaw's `STAND`,

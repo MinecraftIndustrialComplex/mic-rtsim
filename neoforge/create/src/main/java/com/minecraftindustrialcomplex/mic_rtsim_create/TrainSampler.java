@@ -5,6 +5,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurk;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories;
 import com.simibubi.create.Create;
+import com.simibubi.create.content.contraptions.Contraption;
+import com.simibubi.create.content.contraptions.ContraptionCollider;
 import com.simibubi.create.content.trains.entity.Carriage;
 import com.simibubi.create.content.trains.entity.CarriageContraptionEntity;
 import com.simibubi.create.content.trains.entity.Train;
@@ -19,6 +21,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
@@ -121,6 +124,8 @@ public final class TrainSampler {
     public static final int SWING_TICKS = 9;
     /** How far a carriage's riders and body can lie beyond the span of its two bogeys (blocks, a bound for the cheap first test). */
     private static final double BODY_SLACK = 4.0;
+    /** Blocks beyond a carriage's local bounds that {@link #ridersOf} looks for a standing rider (the bounds are in the carriage's local frame, half a block off the anchor point). */
+    private static final double RIDER_MARGIN = 3.0;
     private static final int SIGNAL = ConflictRecords.SIGNAL_RAIL;
 
     /** A pass in progress: the circle's faction and the sample nearest its centre so far. */
@@ -538,9 +543,10 @@ public final class TrainSampler {
     /**
      * Where to strike a carriage and how that target moves a tick (the mean over the swing, so the plugin's aim at
      * {@code at + motion * SWING_TICKS} is where it will be when the blow lands): the first living rider that will
-     * be in reach then; the swipe hits living entities only, and a bogey point misses a rider at the middle or
-     * the rear of a long carriage. A carriage with no living rider is struck at its leading bogey's point, else
-     * its trailing one's. A carriage with a rider that will not be in reach is not struck. Null for none.
+     * be in reach then, seated or standing ({@link #ridersOf}); the swipe hits living entities only, and a bogey
+     * point misses a rider at the middle or the rear of a long carriage. A carriage with no living rider is struck
+     * at its leading bogey's point, else its trailing one's. A carriage with a rider that will not be in reach is
+     * not struck. Null for none.
      */
     private static Vec3[] aimAt(Carriage car, Train t, Vec3 lead, Vec3 trail, Mob body) {
         TravellingPoint lp = car.getLeadingPoint(), tp = car.getTrailingPoint();
@@ -549,9 +555,7 @@ public final class TrainSampler {
         boolean riders = false;
         CarriageContraptionEntity e = car.anyAvailableEntity();
         if (e != null)
-            for (Entity p : e.getPassengers()) {
-                if (!(p instanceof LivingEntity) || !p.isAlive())
-                    continue;
+            for (LivingEntity p : ridersOf(e, body)) {
                 riders = true;
                 // A rider moves as the bogey nearer to it does
                 Vec3 at = p.position();
@@ -567,6 +571,43 @@ public final class TrainSampler {
         if (trail != null && reaches(trail.add(trailMove), body))
             return new Vec3[] {trail, trailMove.scale(1.0 / SWING_TICKS)};
         return null;
+    }
+
+    /**
+     * The living entities on a carriage that a swipe can hit, in the order they are tried: the ones seated
+     * ({@code getPassengers()}); the ones Create's server collision has registered as standing on it
+     * ({@code collidingEntities}: mobs, items and the like, each for three ticks after the tick it was on); and the
+     * ones found by the contraption's own test of the client, a block of the carriage under the feet (the position
+     * 0.2 lower, in the carriage's frame, is one of {@code getContraption().getBlocks()}), among the living entities
+     * about the carriage. A real player standing on a carriage is in neither of the first two: Create's server skips
+     * a {@code ServerPlayer} before it registers a collision ({@code ContraptionCollider.collideEntities}, player
+     * type SERVER), and the client mixin that registers one never runs on a server; so the third is the only way to
+     * see a player who stands. The search box is the carriage's local bounds about its anchor, as a circle that
+     * holds any yaw, a few blocks more, and a few blocks of height (the bounding box of a contraption entity is not
+     * turned with the carriage). {@code AbstractContraptionEntity.canCollideWith} is Create's own filter for who
+     * counts (no spectator, no noPhysics, nothing with a vehicle, no hanging entity, seat or projectile). The
+     * {@code body} itself is never one. Public for the GameTests.
+     */
+    public static List<LivingEntity> ridersOf(CarriageContraptionEntity e, Mob body) {
+        List<LivingEntity> out = new ArrayList<>(4);
+        for (Entity p : e.getPassengers())
+            if (p instanceof LivingEntity l && l.isAlive() && l != body)
+                out.add(l);
+        for (Entity p : new ArrayList<>(e.collidingEntities.keySet()))
+            if (p instanceof LivingEntity l && l.isAlive() && l != body && !out.contains(l))
+                out.add(l);
+        Contraption c = e.getContraption();
+        if (c == null || c.bounds == null)
+            return out;
+        AABB b = c.bounds;
+        double r = Math.max(Math.max(Math.abs(b.minX), Math.abs(b.maxX)), Math.max(Math.abs(b.minZ), Math.abs(b.maxZ))) + RIDER_MARGIN;
+        double h = Math.max(Math.abs(b.minY), Math.abs(b.maxY)) + RIDER_MARGIN;
+        Vec3 a = e.getAnchorVec();
+        AABB zone = new AABB(a.x - r, a.y - h, a.z - r, a.x + r, a.y + h, a.z + r);
+        for (LivingEntity l : e.level().getEntitiesOfClass(LivingEntity.class, zone, x -> x.isAlive() && x != body && e.canCollideWith(x)))
+            if (!out.contains(l) && c.getBlocks().containsKey(BlockPos.containing(ContraptionCollider.worldToLocalPos(l.position().add(0.0, -0.2, 0.0), e))))
+                out.add(l);
+        return out;
     }
 
     /**
