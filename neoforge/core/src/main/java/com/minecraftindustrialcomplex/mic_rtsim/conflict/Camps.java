@@ -119,6 +119,12 @@ public final class Camps {
         boolean waiting, recount, reported;
         /** A body of the kind joined beyond the footprint: the next census looks wide for strays (MZB-232). */
         boolean strayWatch;
+        /**
+         * The strays the last census listed, by UUID (MZB-661): a REMOVE or ADOPT of a stray whose chunk went
+         * hidden after the census finds it here, as the index finds a tagged body. Rebuilt by each census,
+         * emptied when the camp goes out; at most the census cap.
+         */
+        final Map<UUID, Entity> strayBodies = new HashMap<>();
         final boolean late;
         public int censuses, outs;
 
@@ -689,10 +695,35 @@ public final class Camps {
                 return true;
             }
         }
+        if ((!c.in() || c.recount) && strayChunkHidden(level, c)) {
+            // A chunk inside the stray radius is hidden with its entities loaded (MZB-660): a census now would
+            // not list a stray there, clear the watch, and the engine would SPAWN a second body beside it. The
+            // census waits for the chunk to show (or to unload); a camp that is in stays in meanwhile.
+            c.waiting = !c.in();
+            return true;
+        }
         c.waiting = false;
         if (!c.in() || c.recount)
             census(level, c, now);
         c.recount = false;
+        return false;
+    }
+
+    /**
+     * Whether the next census would look wide for strays and a chunk in that radius has its entities loaded
+     * but is not accessible (MZB-660). A chunk with no entities loaded cannot hold a stray the census could
+     * list, and one that is accessible is seen by {@code getEntities}.
+     */
+    private boolean strayChunkHidden(ServerLevel level, Site c) {
+        double r = c.kind.strayRadius(c);
+        if (r <= 0 || !(c.strayWatch || c.late && !c.reported) || freeSlots(c) <= 0)
+            return false;
+        int x0 = Mth.floor(c.spot.x - r) >> 4, x1 = Mth.floor(c.spot.x + r) >> 4;
+        int z0 = Mth.floor(c.spot.z - r) >> 4, z1 = Mth.floor(c.spot.z + r) >> 4;
+        for (int x = x0; x <= x1; x++)
+            for (int z = z0; z <= z1; z++)
+                if (!entitiesIn(level, ChunkPos.asLong(x, z)) && level.areEntitiesLoaded(ChunkPos.asLong(x, z)))
+                    return true;
         return false;
     }
 
@@ -703,6 +734,7 @@ public final class Camps {
         r.putLong(ConflictRecords.CampOut.EPOCH, c.epoch);
         s.boundary().commit(r);
         staleHeld(c, now);
+        c.strayBodies.clear();
         c.epoch = 0;
         c.outs++;
         outs++;
@@ -774,6 +806,7 @@ public final class Camps {
             }
         }
         List<CensusBody> bodies = new ArrayList<>();
+        c.strayBodies.clear();
         int home = 0, strayHome = 0;
         for (Entity e : inside) {
             if (bodies.size() >= CENSUS_CAP)
@@ -785,8 +818,10 @@ public final class Camps {
                 continue; // another camp's body that walked in: its own camp counts it elsewhere (MZB-208)
             if (m != null)
                 indexAdd(e, c.faction); // a tagged body standing here is indexed whatever its visibility did (MZB-231)
-            else
+            else {
                 strayHome++;
+                c.strayBodies.put(e.getUUID(), e);
+            }
             int flags = (m == null ? ConflictRecords.CampCensus.BODY_STRAY : 0) | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m == null ? 0 : m.slot(),
                     m == null ? 0 : m.generation(), e.getUUID()));
@@ -817,6 +852,7 @@ public final class Camps {
             int flags = ConflictRecords.CampCensus.BODY_STRAY | chiefBits(c, e);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, 0, 0, e.getUUID()));
             view.add(e);
+            c.strayBodies.put(e.getUUID(), e);
             home++;
             strays++;
         }
@@ -1005,7 +1041,7 @@ public final class Camps {
 
     /** ADOPT: the stray named by UUID becomes the slot's body where it stands. */
     private int adopt(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
-        Entity e = byUuid(level, c.faction, ln.a(), ln.b());
+        Entity e = byUuid(level, c, ln.a(), ln.b());
         if (!(e instanceof Mob mob) || !e.isAlive() || !c.kind.isBody(e) || RtsimAttachments.isTagged(e))
             return ConflictRecords.CampBodies.NOTHING;
         CampMember was = RtsimAttachments.campMember(e);
@@ -1026,7 +1062,7 @@ public final class Camps {
     private int takeLine(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
         Entity e;
         if (ln.a() != 0 || ln.b() != 0) {
-            e = byUuid(level, c.faction, ln.a(), ln.b());
+            e = byUuid(level, c, ln.a(), ln.b());
             if (e != null && (!c.kind.isBody(e) || RtsimAttachments.isTagged(e)))
                 e = null;
             CampMember m = e == null ? null : RtsimAttachments.campMember(e);
@@ -1098,19 +1134,21 @@ public final class Camps {
      * tagged body of the camp's own is looked for in the index too (MZB-661): without it a REMOVE of a hidden
      * ELSEWHERE body is answered NOTHING and the stray lives on.
      */
-    private Entity byUuid(ServerLevel level, long faction, long most, long least) {
+    private Entity byUuid(ServerLevel level, Site c, long most, long least) {
         if (most == 0 && least == 0)
             return null;
         UUID id = new UUID(most, least);
         Entity e = level.getEntity(id);
         if (e != null)
             return e;
-        Set<Entity> mine = live(faction);
+        Set<Entity> mine = live(c.faction);
         if (mine != null)
             for (Entity m : mine)
                 if (m.getUUID().equals(id) && m.level() == level)
                     return m;
-        return null;
+        // An untagged stray the last census listed, whose chunk went hidden since.
+        Entity stray = c.strayBodies.get(id);
+        return stray != null && !stray.isRemoved() && stray.level() == level ? stray : null;
     }
 
     /**
