@@ -410,8 +410,9 @@ pub(super) fn dict_ready(st: &mut State) {
 /// after `begin_replay` and before the replay end, where a restart's replay of the same records
 /// applies them: oldest first, each as it came (a copy as a copy), each after its own catch-up
 /// (`shared::catch_up`), so the herds' events due before it fire first, and at its own tick on the
-/// herds' clock (`ingest` holds it no later than their present, not the world's). A sheep a player
-/// killed or took in the switch's tick is dead before the replay end makes its group abstract.
+/// herds' clock (`ingest` books it no earlier than their own present, not the world's). A sheep
+/// a player killed or took in the switch's tick is dead before the replay end makes its group
+/// abstract.
 fn apply_kept(st: &mut State) {
     let kept = st.herds.kept.take();
     if kept.is_empty() {

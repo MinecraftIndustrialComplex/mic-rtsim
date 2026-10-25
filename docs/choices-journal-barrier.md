@@ -191,8 +191,8 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
   - **Epochs.** The dragons (RP-57, RP-75) and the herds (RP-81) still fold a kept record's epoch at
     once while off. The conflict folds it when the record is applied (RP-293).
 - *The own tick, and the deviation.* The herds book a kept record at its own tick on their clock:
-  `ingest` holds it no later than their present, not the world's, and their clock froze at the
-  switch-off, before every kept record. The dragons and the conflict cannot always do that. They share
+  `ingest` books it no earlier than their own present (`max(at, engine.now())`), not the world's,
+  and their clock froze at the switch-off, before every kept record. The dragons and the conflict cannot always do that. They share
   the phase 1 world, which ran on while they were off if phase 1 or another viewer ran, and their
   `ingest` books no earlier than the world's present (`max(at, engine.now(), world.now())`). So a kept
   record is booked at the later of its own tick and the world's present, in the order it came. Their
