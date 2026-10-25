@@ -7956,6 +7956,21 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   The siege's `Then::Fight` is unrouted, since a waiting siege met first sits at the quota (MZB-492). The
   scenario test (tests/scenario.rs) accepts the director's arc waves or the walked-in attack steer as the
   fight.
+- **MZB-495** (MZB-466's counter, as built; forks): `ConflictStats::unbooked_home_deaths` counts a
+  BAND_CASUALTIES or CHIEF_KILLED that names a party that is gone, at an epoch `home` sent HAND_BACK lines
+  for that Java has not answered. The open lines are `Conflict::home_open`, per party agent: the faction, the
+  epoch, the slots of the lines (for the log), when they went, and the ops already counted. In memory only;
+  a restart starts empty, and an entry older than a day is dropped when the next is made. `camp_home` makes
+  it when a HAND_BACK line goes (not for a recall or a spawn line, and nothing is made during a replay,
+  where nothing embodies). The band's BAND_DEMATERIALIZED at that epoch is the answer and clears it, whatever
+  came of the line (MZB-464). Each op counts once, so a copy, a reassert and a second ingest change nothing.
+  Booked nowhere: no casualty, no signal, no party, slot, pool or camp ledger touched; the log line (kind
+  `unbooked`, when the log is on) names the party's agent, the epoch and the camp slots of its lines. The
+  record names a body, not a slot, so the slots are the lines'. Java's matching log is M10b's. The no-cascade
+  test sits in tests/camp.rs (`a_puppet_killed_between_the_end_and_its_hand_back_is_counted_and_costs_nothing_else`),
+  where the grove harness is: a band walks home embodied, a casualty, a chief record and their copies reach
+  the engine after `home`, and the books (slots, parties, pool, stats less the counter) equal the same run
+  without them, the camp's audit agreeing.
 
 ## M11 Aloft
 

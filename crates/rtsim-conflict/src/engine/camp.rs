@@ -1265,6 +1265,26 @@ impl Conflict {
         lines.extend(more);
         if is_in {
             let handed = lines.iter().any(|l| l.action == ACTION_HAND_BACK);
+            if handed {
+                // The lines are open until Java answers with the band's end (MZB-466): a death
+                // before then is counted, not booked.
+                let slots = lines
+                    .iter()
+                    .filter(|l| l.action == ACTION_HAND_BACK)
+                    .map(|l| l.slot)
+                    .collect();
+                self.home_open.retain(|_, e| at.0 < e.at.0 + TICKS_PER_DAY);
+                self.home_open.insert(
+                    agent,
+                    HomeOpen {
+                        faction: f,
+                        epoch,
+                        slots,
+                        at,
+                        counted: Vec::new(),
+                    },
+                );
+            }
             self.send_lines(f, lines, at);
             handed
         } else if embodied {

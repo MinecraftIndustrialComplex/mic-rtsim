@@ -1050,6 +1050,137 @@ fn a_party_home_with_its_puppets_has_them_handed_back_not_spawned() {
     ok(&mut r);
 }
 
+/// The books a homecoming leaves, for a run to compare with its control: every slot's state, the
+/// parties still out, the pool and the stats (the unbooked deaths' own counter aside).
+type HomeBooks = (
+    Vec<(u32, u32, usize)>,
+    usize,
+    u64,
+    rtsim_conflict::engine::ConflictStats,
+);
+
+fn home_books(r: &CampRun) -> HomeBooks {
+    let slots = r.c.camp(r.f).expect("a ledger").slots.iter();
+    let mut stats = r.c.stats;
+    stats.unbooked_home_deaths = 0;
+    (
+        slots
+            .map(|s| (s.id, s.generation, s.state as usize))
+            .collect(),
+        r.c.parties.iter().count(),
+        r.c.factions[r.f as usize].pool.to_bits(),
+        stats,
+    )
+}
+
+/// MZB-466 (the race at home): a band walks home in its bodies, and a puppet dies, or its chief,
+/// after the engine's `home` ended the band and before Java answered the HAND_BACK lines. The
+/// record names a party that is gone, so it books nothing: no casualty, no signal, no party or slot
+/// touched, no later band changed. It is counted once, whether the record comes again as a copy or
+/// a reassert, and logged. The books and the camp's audit agree after it, and equal the same run
+/// without the death. Once the band's end is answered, a straggler counts for nothing.
+#[test]
+fn a_puppet_killed_between_the_end_and_its_hand_back_is_counted_and_costs_nothing_else() {
+    let play = |die: bool| -> CampRun {
+        let mut r = grove(131, 9);
+        r.c.log_enabled = true;
+        come_in(&mut r);
+        let p = r.raid().unwrap();
+        let mut t = r.c.now();
+        while r.c.parties[p].phase != Phase::Home {
+            t += 200;
+            r.run(t);
+            assert!(t < day(20.0), "the party never walked home");
+        }
+        let units = r.c.parties[p].units.clone();
+        r.c.parties[p].embodied = true;
+        r.c.parties[p].spawned = units;
+        let (agent, epoch) = (
+            rtsim_conflict::engine::Party::agent(p),
+            r.c.parties[p].epoch,
+        );
+        let end = r.c.parties[p].times.last().copied().expect("a route");
+        r.run(end + 1);
+        assert!(!r.c.parties.contains(p), "home");
+        assert!(
+            r.c.home_open.get(&agent).is_some_and(|e| e.epoch == epoch),
+            "the HAND_BACK lines are open"
+        );
+        let at = r.c.now();
+        let casualty = Obs::Casualties(boundary::BandCasualties {
+            agent,
+            epoch,
+            by: boundary::BY_PLAYER,
+            body: r.body,
+            count: 1,
+            killer: (7, 7),
+            op: next_op(),
+        });
+        let chief = Obs::ChiefKilled(boundary::ChiefKilled {
+            agent,
+            epoch,
+            by: boundary::BY_PLAYER,
+            killer: (7, 7),
+            op: next_op(),
+        });
+        if die {
+            for o in [&casualty, &casualty, &chief, &chief] {
+                r.c.ingest(&mut r.w, &mut *r.infra, o, at);
+            }
+            r.c.ingest_copy(&mut r.w, &mut *r.infra, &casualty, at);
+            assert_eq!(r.c.stats.unbooked_home_deaths, 2, "the two records, once");
+            let line =
+                r.c.log
+                    .iter()
+                    .find(|l| l.kind == "unbooked")
+                    .expect("logged");
+            assert!(
+                line.what.contains("slots [") && line.what.contains(&format!("{agent:#x}")),
+                "{}",
+                line.what
+            );
+            assert_eq!(
+                r.c.log.iter().filter(|l| l.kind == "unbooked").count(),
+                2,
+                "one line for each"
+            );
+        }
+        // Java answers the lines: the band's end, with nobody left of it.
+        let answer = Obs::Dematerialized(boundary::BandDematerialized {
+            agent,
+            epoch,
+            reason: 1,
+            survivors: Vec::new(),
+        });
+        r.c.ingest(&mut r.w, &mut *r.infra, &answer, at + 1);
+        assert!(r.c.home_open.is_empty(), "answered");
+        // A straggler after it is no unbooked death.
+        let late = Obs::Casualties(boundary::BandCasualties {
+            op: next_op(),
+            ..match casualty {
+                Obs::Casualties(c) => c,
+                _ => unreachable!(),
+            }
+        });
+        r.c.ingest(&mut r.w, &mut *r.infra, &late, at + 2);
+        assert_eq!(r.c.stats.unbooked_home_deaths, if die { 2 } else { 0 });
+        let to = r.c.now() + days(3.0);
+        r.run(to);
+        ok(&mut r);
+        r
+    };
+    let (control, died) = (play(false), play(true));
+    assert_eq!(
+        home_books(&died),
+        home_books(&control),
+        "nothing else moved"
+    );
+    assert_eq!(control.c.stats.unbooked_home_deaths, 0);
+    assert_eq!(died.c.stats.unbooked_home_deaths, 2);
+    assert_eq!(counts(&died), counts(&control));
+    assert!(war_parties(&died).is_empty(), "no band, no slot left out");
+}
+
 /// RP-69 (the M5 merge check's item 5): the same homecoming while the session's replay runs (the
 /// party kept embodied from the pages). The replay's start made the camp out, so its puppets are
 /// recalled as at any out camp (`camp_home`), and the gate drops the recall: no body of this

@@ -539,6 +539,19 @@ pub(crate) enum Ev {
     },
 }
 
+/// A band `home` ended whose HAND_BACK lines Java has not answered (MZB-466).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeOpen {
+    pub faction: u32,
+    pub epoch: u32,
+    /// The camp slots of the lines sent, for the log line.
+    pub slots: Vec<u32>,
+    /// When the lines went.
+    pub at: Tick,
+    /// The ops of the records counted against it, so a copy or a reassert counts once.
+    pub counted: Vec<u64>,
+}
+
 /// Counters for the CLI, tests and the bench.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ConflictStats {
@@ -597,6 +610,12 @@ pub struct ConflictStats {
     /// A BAND_SPAWN_REJECTED of a newer epoch's wave 0 counts too (RP-63), a refused
     /// sighting's among them (the record has no flags). rtsim-jni logs each.
     pub fights_unheld: u64,
+    /// BAND_CASUALTIES and CHIEF_KILLED records that named a party `home` had ended while its
+    /// HAND_BACK lines were still unanswered, each op once: a puppet killed in the tick or two
+    /// between the end and the line (MZB-466). Booked nowhere (no casualty, no signal): its
+    /// slot's line finds no puppet and the body spawns at the edge. A stat; the open lines
+    /// are in memory only.
+    pub unbooked_home_deaths: u64,
     /// Camp ledgers (MOWZIE.md §4.9): censuses booked, CAMP_RECONCILEs and the lines in them
     /// sent, answers and deaths booked, and members written off after three misses.
     pub camp_censuses: u64,
@@ -979,6 +998,11 @@ pub struct Conflict {
     /// the fight's epoch and the tick `start_fight` decided it, for
     /// `ConflictStats::fight_record_gap_max`. In memory only.
     pub(crate) fights_unanswered: BTreeMap<Handle<Party>, (u32, Tick)>,
+    /// The parties `home` ended with HAND_BACK lines sent and not yet answered (MZB-466): per
+    /// party agent, what a puppet's death before the answer is counted against
+    /// ([`Conflict::unbooked_home_death`]). Cleared by the band's BAND_DEMATERIALIZED (the
+    /// answer) and aged out after a day. In memory only.
+    pub home_open: BTreeMap<u64, HomeOpen>,
     /// The journal sequence of the record being ingested (0 where the host has none, as in the
     /// simulations, whose answers are then kept to the end of their epoch): a CAMP_BODIES answer is
     /// kept with it. Set by the host; not state.
@@ -1112,6 +1136,7 @@ impl Conflict {
             hold_ending: None,
             unheld_fights: BTreeMap::new(),
             fights_unanswered: BTreeMap::new(),
+            home_open: BTreeMap::new(),
             obs_seq: 0,
             durable_obs_seq: 0,
             rail_held: BTreeMap::new(),
@@ -6552,6 +6577,15 @@ impl Conflict {
                 }
             }
             Obs::Dematerialized(d) => {
+                // The answer to a homecoming's HAND_BACK lines (MZB-466): no death is unbooked
+                // from here on.
+                if self
+                    .home_open
+                    .get(&d.agent)
+                    .is_some_and(|e| e.epoch == d.epoch)
+                {
+                    self.home_open.remove(&d.agent);
+                }
                 // By the party, not through `party_of`: a band recalled at one epoch and seen
                 // again at the next has its old epoch's despawn still to come (MZB-131).
                 let Some(p) = Party::of_agent(d.agent).filter(|p| self.parties.contains(*p)) else {
@@ -6629,6 +6663,7 @@ impl Conflict {
             Obs::ChiefKilled(ck) => {
                 let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
                 else {
+                    self.unbooked_home_death(ck.agent, ck.epoch, ck.op, None, at);
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
@@ -6892,6 +6927,43 @@ impl Conflict {
         }
     }
 
+    /// A death naming a party that is gone (MZB-466): when `home` ended it with HAND_BACK lines
+    /// still unanswered at that epoch, a puppet died in the tick or two before its line. It books
+    /// nothing, and nothing else is touched: its slot's line finds no puppet and the body spawns
+    /// at the edge. Counted once for each op, whichever copy of the record comes, and logged with
+    /// the party and the slots its lines name. A record for any other ended party is a straggler
+    /// and counts for nothing.
+    fn unbooked_home_death(
+        &mut self,
+        agent: u64,
+        epoch: u32,
+        op: u64,
+        unit: Option<(u32, u32)>,
+        at: Tick,
+    ) {
+        let Some(e) = self.home_open.get_mut(&agent) else {
+            return;
+        };
+        if e.epoch != epoch || e.counted.contains(&op) {
+            return;
+        }
+        e.counted.push(op);
+        let (f, slots) = (e.faction, e.slots.clone());
+        self.stats.unbooked_home_deaths += 1;
+        let what = match unit {
+            Some((body, count)) => format!("{count} of body {body}"),
+            None => "the chief".to_string(),
+        };
+        self.note(
+            at,
+            Some(f),
+            "unbooked",
+            format!(
+                "{what} of party {agent:#x} (epoch {epoch}) died after the band's end, its HAND_BACK lines for camp slots {slots:?} not answered"
+            ),
+        );
+    }
+
     /// A BAND_CASUALTIES. `copy`: a copy of an ended session's record (§5.7, RP-9), whose body
     /// is gone: it needs no stack.
     fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick, copy: bool) {
@@ -6902,6 +6974,7 @@ impl Conflict {
         // a newer epoch (MZB-131). The despawn removes the stack, so a straggler after it is no
         // death. A copy takes from no stack, whatever its epoch.
         let Some(p) = Party::of_agent(cs.agent).filter(|&p| self.parties.get(p).is_some()) else {
+            self.unbooked_home_death(cs.agent, cs.epoch, cs.op, Some((cs.body, cs.count)), at);
             return;
         };
         // A casualty the party counted already: the reassert of a record journaled on an entity,
