@@ -69,6 +69,7 @@ use crate::index::PreyIndex;
 use crate::infra::{DistrictSite, Infrastructure};
 use crate::nest::Nests;
 use crate::oil::{OilIndex, Roll};
+use crate::outbox::Outbox;
 use crate::prey::{Item, PreyClass, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
@@ -400,7 +401,31 @@ pub struct Dragons {
     pub prey_by_season: [[u64; PreyKind::COUNT]; 4],
     /// Fullness gained, per [season][prey kind].
     pub food_by_season: [[i64; PreyKind::COUNT]; 4],
-    pub(crate) outbox: Vec<Cmd>,
+    pub(crate) outbox: Outbox,
+    /// Whether the session's replay runs on an engine that came back from its pages (RP-31): only
+    /// then is a replayed DRAGON_MATERIALIZED the last session's answer to this engine's decision
+    /// (docs/replay-gate.md §5.2). Set by [`Dragons::begin_replay`]; in memory only.
+    pub(crate) replay_from_pages: bool,
+    /// The arena's next index when this session's replay began (RP-70): only a dragon below it is
+    /// in the pages, so only its replayed DRAGON_MATERIALIZED is the last session's answer to this
+    /// engine's decision. A dragon at or above it was allocated by the replay itself (or after
+    /// it): a different dragon than the last session's at that index. Set by
+    /// [`Dragons::begin_replay`]; in memory only.
+    pub(crate) replay_next: u32,
+    /// The agents at an index the replay owns (at or above `replay_next`, RP-70) whose body the
+    /// replay has confirmed: a replayed DRAGON_MATERIALIZED that answers an adoption the replay
+    /// made (its entity is the adopted one). Until then no record of an owned agent finds a body,
+    /// so the last session's body at the same index and epoch (a visitor's, a page-era dragon's,
+    /// one whose MATERIALIZED never reached the engine) cannot wound the replay's own dragon.
+    /// Cleared by [`Dragons::replay_done`]; in memory only.
+    pub(crate) confirmed: BTreeSet<u64>,
+    /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30): agent to the highest epoch the
+    /// engine has seen for it that its dragon's own `epoch` does not hold (any replayed record or
+    /// copy that names one, RP-57). A dragon's next body takes an epoch above both. Not the epoch
+    /// itself: a dragon embodied at an older one keeps it, so that its records still find it.
+    /// Folded into the epochs at the replay end, or when the agent's dragon is allocated (RP-75):
+    /// a floor of an agent nothing has allocated yet stays; in memory only.
+    pub(crate) floors: BTreeMap<u64, u32>,
     pub(crate) players: BTreeMap<ActorId, PlayerView>,
     pub(crate) index: PreyIndex,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
@@ -571,7 +596,11 @@ impl Dragons {
             hunts: Vec::new(),
             prey_by_season: [[0; PreyKind::COUNT]; 4],
             food_by_season: [[0; PreyKind::COUNT]; 4],
-            outbox: Vec::new(),
+            outbox: Outbox::default(),
+            replay_from_pages: false,
+            replay_next: 0,
+            confirmed: BTreeSet::new(),
+            floors: BTreeMap::new(),
             players: BTreeMap::new(),
             index: PreyIndex::default(),
             topo: rtsim_space::topology::all_flat(),
@@ -650,7 +679,7 @@ impl Dragons {
 
     /// Commands for the plugin, oldest first.
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.take()
     }
 
     /// Maps a plugin item dictionary id to a ledger item (for HOARD_ROBBED).
@@ -975,6 +1004,11 @@ impl Dragons {
             sensed: Vec::new(),
         };
         let d = self.dragons.insert(row);
+        // The floor of an agent that had none to hold it (a replayed record of the last session's
+        // dragon at this index, RP-75): its first body is above it.
+        if let Some(floor) = self.floors.remove(&agent_of(d)) {
+            self.dragons.get_mut(d).expect("live").epoch = floor;
+        }
         self.far.mark(d);
         self.schedule(at + left, Ev::Death { d });
         if let Some(l) = n.lair {
@@ -1374,6 +1408,10 @@ impl Dragons {
                 });
                 if !home || !w.legs.is_live(interest) {
                     self.stats.seen_stale += 1;
+                    return;
+                }
+                // As `seen`: the area booked again at the replay end sees the lair again.
+                if self.outbox.defer() {
                     return;
                 }
                 self.stats.seen += 1;
@@ -2691,6 +2729,13 @@ impl Dragons {
                 self.feed(d, at, r.food, &[]);
                 self.record_hunt(at, d, quarry(site.pos), r.food, r.taken);
             }
+            // While the session's replay runs no real fight is placed (docs/replay-gate.md §6,
+            // RP-72): the raid on the district stands (`raid_sites` did it, watched or not),
+            // and the dragon goes home as after a fight that ended.
+            if self.outbox.defer() {
+                self.fly(w, d, Purpose::Home, at);
+                return;
+            }
             let cruise = self.tun.species(self.dragons[d].species).cruise_y;
             self.materialize(w, d, player, true, false, Some((site.pos, cruise)), at);
             return;
@@ -2900,6 +2945,12 @@ impl Dragons {
         if self.dragons[d].is_embodied() {
             return;
         }
+        // Sightings wait for the replay end (docs/replay-gate.md §6, RP-71): the dragon goes on
+        // abstractly, and the player's area, routed again at the replay end, books the meetings
+        // that still stand.
+        if self.outbox.defer() {
+            return;
+        }
         self.stats.seen += 1;
         let grudge =
             w.knowledge.sentiment(self.dragons[d].actor, player, at) <= self.tun.grudge_below;
@@ -2944,6 +2995,12 @@ impl Dragons {
         at_pos: Option<(Pos, i32)>,
         at: Tick,
     ) {
+        // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-71): the
+        // callers return before this (each says what the dragon does instead), so this is a
+        // backstop that keeps the dragon abstract and consistent.
+        if self.outbox.defer() {
+            return;
+        }
         let gated = self.oil_gated(d);
         let (pos, y) =
             at_pos.unwrap_or_else(|| self.dragons[d].position(&self.topo, &self.lairs, at));
@@ -2982,6 +3039,7 @@ impl Dragons {
             );
             return;
         };
+        let epoch = self.epoch_after(d);
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species).clone();
         let purpose = match x.state {
@@ -3008,7 +3066,6 @@ impl Dragons {
         } else {
             at + flight::flight_ticks(f64::from(2 * self.tun.view_radius), sp.speed)
         };
-        let epoch = x.epoch + 1;
         let lair = x.lair.map(|l| &self.lairs[l as usize]);
         // The body's own frame: where it heads and where its home is, the short way from where
         // it appears and never through a stopped seam.
@@ -3065,6 +3122,7 @@ impl Dragons {
             oil,
         };
         self.outbox.push(Cmd::Materialize(cmd));
+        self.floors.remove(&agent_of(d));
         self.stats.materialized += 1;
         let health = x.health_at(&sp, at);
         let plan = self.bump(d);
@@ -3186,6 +3244,9 @@ impl Dragons {
     }
 
     pub(crate) fn embodied(&self, agent: u64, epoch: u32) -> Option<DragonId> {
+        if self.replay_owns(agent) && !self.confirmed.contains(&agent) {
+            return None;
+        }
         let d = dragon_of(agent)?;
         let x = self.dragons.get(d)?;
         match x.state {
@@ -3196,21 +3257,190 @@ impl Dragons {
         }
     }
 
-    /// A session starts: puppets never outlive one (docs/boundary.md §2.3), so every dragon the
-    /// engine thought embodied is abstract again where it was last seen, and carries on.
-    pub fn session_start(&mut self, w: &mut World, at: Tick) {
+    /// Whether `agent` is one the replay owns (RP-70): a replay runs, and its index is at or above
+    /// the arena's next index when the replay began, so the dragon there, if any, was allocated by
+    /// the replay (or will be), and is not the one the last session had.
+    fn replay_owns(&self, agent: u64) -> bool {
+        self.outbox.replaying() && dragon_of(agent).is_some_and(|d| d.index() >= self.replay_next)
+    }
+
+    /// The epoch of a dragon's next body (docs/replay-gate.md §5.3, RP-7, RP-30): above its own and
+    /// above its floor, which it spends.
+    pub(crate) fn next_epoch(&mut self, d: DragonId) -> u32 {
+        let epoch = self.epoch_after(d);
+        self.floors.remove(&agent_of(d));
+        epoch
+    }
+
+    /// [`Dragons::next_epoch`] without spending the floor: for a decision that may still return
+    /// before it embodies (`materialize` across a stopped seam), which spends it when it does.
+    fn epoch_after(&self, d: DragonId) -> u32 {
+        let floor = self.floors.get(&agent_of(d)).copied().unwrap_or(0);
+        // Epochs come from a plugin record too: a wrap is back to 1, never 0 (0 is no body).
+        self.dragons[d].epoch.max(floor).wrapping_add(1).max(1)
+    }
+
+    /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a
+    /// dragon's epoch ([`Obs::agent_epoch`]) raises the agent's floor, whatever its kind and
+    /// whatever the record does after (a refusal, a stale despawn, a record of a body not held, a
+    /// dragon not in the pages yet), before any check that drops it. Live records name this
+    /// session's epochs, which the dragon holds.
+    pub fn fold_epoch(&mut self, o: &Obs) {
+        if let Some((agent, epoch)) = o.agent_epoch() {
+            self.raise_floor(agent, epoch);
+        }
+    }
+
+    /// An epoch the engine has seen for `agent` that its dragon may not hold (§5.3).
+    fn raise_floor(&mut self, agent: u64, epoch: u32) {
+        let held = dragon_of(agent)
+            .and_then(|d| self.dragons.get(d))
+            .is_some_and(|x| x.epoch >= epoch);
+        if !held {
+            let f = self.floors.entry(agent).or_insert(0);
+            *f = (*f).max(epoch);
+        }
+    }
+
+    /// Whether the session's replay runs (docs/replay-gate.md §3).
+    pub fn replaying(&self) -> bool {
+        self.outbox.replaying()
+    }
+
+    /// The replay gate's counts since this engine was built or loaded (docs/replay-gate.md §4.3):
+    /// commands dropped while replaying, commands of a "never" kind decided while replaying (a
+    /// bug) and the last such kind, and the decisions that embody, deferred (§6).
+    pub fn replay_gate_counts(&self) -> crate::GateCounts {
+        self.outbox.counts()
+    }
+
+    /// A session's replay begins (docs/replay-gate.md §5.1, RP-5): no dragon changes. What the
+    /// pages hold embodied stays embodied, at its epoch, so that the journal's records of the last
+    /// session's bodies (their wounds, their death, their capture) count against the bodies they
+    /// were. What is still queued takes its verdict, and every push is gated until
+    /// [`Dragons::replay_done`]. The lair chests the plugin reported are its session's: reported
+    /// again as the chests load, and by the replayed records.
+    ///
+    /// `from_pages`: whether this engine came back from its pages (RP-31): only then is a replayed
+    /// DRAGON_MATERIALIZED honoured (§5.2).
+    pub fn begin_replay(&mut self, from_pages: bool) {
+        self.replay_from_pages = from_pages;
+        // The bound is the pages' and taken once: a switch off and on inside the replay begins it
+        // again (rtsim-jni's `reset`), when the arena holds the replay's own dragons too (RP-77).
+        if !self.outbox.replaying() {
+            self.replay_next = self.dragons.next_index();
+        }
+        self.outbox.begin_replay();
+        self.chests.clear();
+    }
+
+    /// The session's replay has caught up (docs/replay-gate.md §5.6): puppets never outlive a
+    /// session (docs/boundary.md §2.3), so every dragon the engine thought embodied is abstract
+    /// again where it was last seen, and carries on, at `at` (the replay clock, §3.6). No entity
+    /// is a body of this session's, and no player's own interest area stands (the host routes
+    /// the positions again). The floors fold into the epochs (§5.3): every dragon is abstract,
+    /// so the pages carry them. Then pushes are queued as usual. A no-op unless a replay runs.
+    pub fn replay_done(&mut self, w: &mut World, at: Tick) {
+        if !self.outbox.replaying() {
+            return;
+        }
+        let at = at.max(self.now);
         let embodied: Vec<DragonId> = self.embodied.iter().copied().collect();
         for d in embodied {
             self.resume(w, d, at, true);
         }
         self.by_entity.clear();
-        self.chests.clear();
+        let players: Vec<ActorId> = self.players.keys().copied().collect();
+        for p in players {
+            self.player_left(w, p);
+        }
+        self.outbox.replay_done();
+        self.confirmed.clear();
+        // A floor of an agent nothing has allocated stays (RP-75): a dragon born there later
+        // folds it in when it is allocated ([`Dragons::add_dragon`]).
+        for agent in self.floors.keys().copied().collect::<Vec<u64>>() {
+            if let Some(d) = dragon_of(agent).filter(|d| self.dragons.contains(*d)) {
+                let floor = self.floors.remove(&agent).unwrap_or(0);
+                let x = self.dragons.get_mut(d).expect("live");
+                x.epoch = x.epoch.max(floor);
+            }
+        }
+    }
+
+    /// A replayed DRAGON_MATERIALIZED on an engine from its pages (docs/replay-gate.md §5.2, RP-6,
+    /// RP-70): Java's answer to a materialize the last session decided after the pages were
+    /// taken. The dragon is embodied as that session had it, without the command, so that the
+    /// records of that body that follow count against it: `epoch` = the record's, Embodied (since
+    /// the record's time, never departing, home, not harassing), its abstract leg cancelled, its
+    /// health and place fixed as `materialize` fixes them. An epoch at or below the dragon's own
+    /// changes nothing. Nor does the record of an index at or above the arena's next index when
+    /// the replay began (RP-70): the dragon there, if any, was allocated by the replay, and is not
+    /// the one the last session had.
+    fn honour(&mut self, w: &mut World, m: &boundary::Materialized, at: Tick) {
+        let Some(d) = dragon_of(m.agent).filter(|d| self.dragons.contains(*d)) else {
+            return;
+        };
+        if d.index() >= self.replay_next || m.epoch <= self.dragons[d].epoch {
+            return;
+        }
+        let (pos, y) = self.dragons[d].position(&self.topo, &self.lairs, at);
+        let sp = self.tun.species(self.dragons[d].species).clone();
+        let health = self.dragons[d].health_at(&sp, at);
+        self.bump(d);
+        self.cancel_leg(w, d);
+        let x = self.dragons.get_mut(d).expect("live");
+        x.epoch = m.epoch;
+        x.set_health(health, at);
+        x.rest = Some((pos, y));
+        x.state = State::Embodied {
+            epoch: m.epoch,
+            since: at,
+            depart_at: Tick(u64::MAX),
+            purpose: Purpose::Home,
+            harass: false,
+        };
+        self.by_entity.insert(m.entity, d);
+        self.track(d);
+        self.note(
+            at,
+            "materialize",
+            Some(d),
+            "was embodied at the last session's epoch (replayed)".into(),
+        );
+    }
+
+    /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
+    /// RP-8, RP-9, RP-57), called by the host instead of [`Dragons::ingest`] while it applies one.
+    /// Its body is gone, so a copy embodies nothing and finds no body. Every copy that names a
+    /// dragon's epoch raises the agent's floor to it, live or replayed, and does no more, whatever
+    /// its kind; the kinds that name none (a lair, a hoard, a nest) are as [`Dragons::ingest`]
+    /// (no dragon record is sent as a copy today).
+    pub fn ingest_copy(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        o: &Obs,
+        at: Tick,
+    ) {
+        self.run_until(w, infra, at);
+        self.fold_epoch(o);
+        // A copy names a body of a session before the last, which is gone: it finds none, of this
+        // session's, of the replay's own adoptions, or of the pages' (RP-8, RP-70).
+        let finds_no_body = o.agent_epoch().is_some();
+        match o {
+            Obs::Materialized(_) => {}
+            _ if finds_no_body => {}
+            _ => self.ingest(w, infra, o, at),
+        }
     }
 
     /// An observation from the plugin, at `at`.
     pub fn ingest(&mut self, w: &mut World, infra: &mut dyn Infrastructure, o: &Obs, at: Tick) {
         let _ = infra;
         self.run_until(w, infra, at);
+        if self.outbox.replaying() {
+            self.fold_epoch(o);
+        }
         match o {
             Obs::LairFound(l) => {
                 let pos = self.canon(l.dimension, f64::from(l.home.0), f64::from(l.home.2));
@@ -3228,8 +3458,24 @@ impl Dragons {
             }
             Obs::Untagged(u) => self.untagged(w, u, at),
             Obs::Materialized(m) => {
+                // The plugin answers an ADOPT with a MATERIALIZED that carries the adopted entity:
+                // the answer to the replay's own adoption names its entity (RP-70).
+                let answers_adoption = self
+                    .adopted
+                    .get(&m.entity)
+                    .is_some_and(|d| agent_of(*d) == m.agent);
+                if self.replay_owns(m.agent) && answers_adoption {
+                    // The one body of an index the replay allocates itself that the replay may
+                    // match: its own adoption's answer (a visitor it drew after the save, a
+                    // clutch's young, may share the agent and the epoch, but not the entity).
+                    self.confirmed.insert(m.agent);
+                }
                 if let Some(d) = self.embodied(m.agent, m.epoch) {
                     self.by_entity.insert(m.entity, d);
+                } else if self.outbox.replaying() && self.replay_from_pages {
+                    // The last session's answer to a decision after the pages (§5.2); a fresh
+                    // engine's only raised the floor above (RP-31).
+                    self.honour(w, m, at);
                 }
             }
             Obs::SpawnRejected(r) => {
@@ -3275,6 +3521,18 @@ impl Dragons {
                 let Some(d) = self.embodied(m.agent, m.epoch) else {
                     return;
                 };
+                if m.reason == boundary::DEMAT_NOT_EMBODIED {
+                    // The plugin's answer to a DRAGON_DEPART for a dragon it holds no body of
+                    // (docs/boundary.md §2.3): it carries the agent and the epoch and nothing
+                    // else, so there is no health, hunger or place to take (docs/replay-gate.md
+                    // §5.8, RP-16, RP-73). The dragon goes on from where the engine had it, as a
+                    // refused spawn does, the visit over if it was leaving. Its adoption stands.
+                    self.by_entity.retain(|_, v| *v != d);
+                    let leaving = matches!(self.dragons[d].state, State::Leaving { .. });
+                    self.note(at, "capture", Some(d), "was not embodied".into());
+                    self.resume(w, d, at, leaving);
+                    return;
+                }
                 {
                     let full = self.tun.full;
                     let here = self.canon(m.dimension, m.pos.0, m.pos.2);
@@ -4361,7 +4619,7 @@ impl Dragons {
         self.stats.adopted += 1;
         // It is a live entity now: adopt it as embodied, so the plugin keeps it until it leaves
         // view and then hands it back.
-        let epoch = 1;
+        let epoch = self.next_epoch(d);
         let home = lair.map_or((0, 0, 0), |l| {
             let l = &self.lairs[l as usize];
             (l.pos.x, l.y, l.pos.z)
@@ -4398,8 +4656,8 @@ impl Dragons {
         self.bump(d);
         self.cancel_leg(w, d);
         let here = self.canon(u.dimension, u.pos.0, u.pos.2);
+        let epoch = self.next_epoch(d);
         let x = self.dragons.get_mut(d).expect("live");
-        let epoch = x.epoch + 1;
         x.epoch = epoch;
         x.rest = Some((here, u.pos.1 as i32));
         x.state = State::Embodied {

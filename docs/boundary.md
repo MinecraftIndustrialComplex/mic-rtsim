@@ -226,7 +226,11 @@ captured member before it), TAKEN or DIED.
   chest holds; cargo is never dropped silently).
 - DEMATERIALIZED reasons: 1 command, 2 a member stopped entity-ticking, 3 a member left tracking or
   unloaded, 4 session end, 5 no members left (all taken or dead), 6 not embodied: the answer to a
-  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits.
+  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits. A
+  dragon's DEMATERIALIZED (0x0502) uses the same codes, and DragonBridge answers a DRAGON_DEPART for
+  a dragon it does not hold with reason 6 too; that record carries only the agent and the epoch
+  (the rest is zero and means nothing), and the engine takes no position, health or hunger from it
+  (docs/replay-gate.md §5.8, RP-73).
 - TAKEN how: 1 lead, 2 taming, 3 pickup (Carry On, later plugin), 4 removed by vanilla or another mod,
   5 a plugin.
 - TRANSFER kinds: 1 generic (the only one so far).
@@ -1081,7 +1085,10 @@ Write its NBT before it ticks (verified keys and types, `DragonBaseEntity.addAdd
 **Depart.** Steer the dragon to the target and, when it is outside every player's entity-ticking
 range (or `timeoutTicks` pass), capture it and despawn it: DRAGON_DEMATERIALIZED with its health,
 hunger, age and position. Any other loss of the body (its chunk unloads, the session ends) is
-captured the same way with §2.3's reasons.
+captured the same way with §2.3's reasons. A Depart for a dragon the plugin does not hold (no
+puppet for the agent, or one of another epoch) is answered with DRAGON_DEMATERIALIZED of reason 6
+(not embodied), agent and epoch only; the engine leaves the dragon's health, hunger and rest as it
+had them and lets it go on from there.
 
 **Adopt** tags an untagged entity with the agent and epoch, makes it persistent, and sets its home
 when flag 1 is set; from then on it is an embodied puppet like a materialized one, and leaves view

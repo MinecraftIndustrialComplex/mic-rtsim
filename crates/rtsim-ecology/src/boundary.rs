@@ -78,6 +78,11 @@ pub const MAT_HOSTILE: u32 = 8;
 /// cancels fire at zero (OILGATE.md §4.3, OG-4, OG-13). Without it the body breathes freely.
 pub const MAT_OIL: u32 = 16;
 
+/// DRAGON_DEMATERIALIZED reasons the engine reads (docs/boundary.md §2.3's codes): the answer to a
+/// DRAGON_DEPART for a dragon the plugin holds no body of. It carries the agent and the epoch and
+/// nothing else (docs/replay-gate.md §5.8, RP-16).
+pub const DEMAT_NOT_EMBODIED: u32 = 6;
+
 /// OIL_CHUNKS sources.
 pub const OIL_SOURCE_DEEP_TIME: u32 = 1;
 pub const OIL_SOURCE_CDG: u32 = 2;
@@ -409,6 +414,35 @@ impl Obs {
     pub fn is_journaled(&self) -> bool {
         self.kind() >= 0x0100
     }
+
+    /// The (agent, epoch) a record names, for the epoch floors: an epoch a record used is never
+    /// decided again (docs/replay-gate.md §5.3, RP-7, RP-57). None for a kind that names none
+    /// (the lair, hoard, oil and nest records are keyed by structure, entity or nest id, never an
+    /// epoch; an untagged dragon's epoch is the engine's own, decided when it adopts) and for a
+    /// record naming no dragon. Every kind is listed, so a new one must say.
+    pub fn agent_epoch(&self) -> Option<(u64, u32)> {
+        let (agent, epoch) = match self {
+            Obs::State(s) => (s.agent, s.epoch),
+            Obs::Materialized(m) => (m.agent, m.epoch),
+            Obs::SpawnRejected(r) => (r.agent, r.epoch),
+            Obs::Dematerialized(d) => (d.agent, d.epoch),
+            Obs::Hurt(h) => (h.agent, h.epoch),
+            Obs::Died(d) => (d.agent, d.epoch),
+            Obs::Ate(a) => (a.agent, a.epoch),
+            Obs::Breaths(b) => (b.agent, b.epoch),
+            Obs::LairChest(_)
+            | Obs::LairFound(_)
+            | Obs::HoardRobbed(_)
+            | Obs::Untagged(_)
+            | Obs::OilChunks(_)
+            | Obs::OilConfig(_)
+            | Obs::NestFound(_)
+            | Obs::NestCensus(_)
+            | Obs::NestLoss(_)
+            | Obs::NestHeart(_) => return None,
+        };
+        crate::dragon::dragon_of(agent).map(|_| (agent, epoch))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -561,6 +595,22 @@ impl Cmd {
             Cmd::PlaceNest(_) => PLACE_NEST,
             Cmd::NestRenew(_) => NEST_RENEW,
             Cmd::NestSortie(_) => NEST_SORTIE,
+        }
+    }
+
+    /// The record's name, for the log (docs/boundary.md §6.1).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Cmd::Materialize(_) => "DRAGON_MATERIALIZE",
+            Cmd::Steer(_) => "DRAGON_STEER",
+            Cmd::Depart(_) => "DRAGON_DEPART",
+            Cmd::Adopt(_) => "DRAGON_ADOPT",
+            Cmd::Discard(_) => "DRAGON_DISCARD",
+            Cmd::PlaceLair(_) => "PLACE_LAIR",
+            Cmd::OilSurvey(_) => "OIL_SURVEY",
+            Cmd::PlaceNest(_) => "PLACE_NEST",
+            Cmd::NestRenew(_) => "NEST_RENEW",
+            Cmd::NestSortie(_) => "NEST_SORTIE",
         }
     }
 
