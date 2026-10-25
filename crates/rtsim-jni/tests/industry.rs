@@ -2906,14 +2906,14 @@ mod ack_never_resends {
         to_the_end(r, x, 1, |_| false);
     }
 
-    /// RP-285, DUPLICATE heard while off, across a crash while still off. First a J3 crash (slice
-    /// T's shape, as `a_station_exchange_derived_again_after_a_crash_that_lost_its_result_is_dropped`):
-    /// the pages stop before a station exchange X, the journal is saved with X's arrival and a long
-    /// run of records the engine ignores, and the trains, their ring and the world's applied set
-    /// after Java applied X. The replay (several hand-overs) derives X again under the same op and
-    /// the world refuses it DUPLICATE live at S, in the tick industry goes off (MODULES ahead of S).
-    /// Off, the engine hears S: X leaves the outbox at once, and S is kept for the switch, which
-    /// books it at S's tick as `command_result` does with the module on. Then
+    /// RP-285, DUPLICATE heard while off, across a crash while still off. First a J3 crash (the
+    /// shape of slice T's RP-199 case, which main lacks): the pages stop before a station exchange
+    /// X, the journal is saved with X's arrival and a long run of records the engine ignores, and
+    /// the trains, their ring and the world's applied set after Java applied X. The replay
+    /// (several hand-overs) derives X again under the same op and the world refuses it DUPLICATE
+    /// live at S, in the tick industry goes off (MODULES ahead of S). Off, the engine hears S: X
+    /// leaves the outbox at once, and S is kept for the switch, which books it at S's tick as
+    /// `command_result` does with the module on. Then
     /// [`crash_while_off_after_the_ack`] (S kept in the link page) and on again: X is never sent in
     /// the third session. On main a DUPLICATE only takes its command, so the exchange derived again
     /// still waits after the switch, as it would with the module on; slice T's RP-199 drops it.
