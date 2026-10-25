@@ -487,9 +487,13 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             st.ships.ignored += 1;
             return;
         }
-        Obs::HavenFound(h) if st.phase1.world.node_of_key(h.haven).is_none() => {
+        Obs::HavenFound(h)
+            if st.applying_copy.is_none() && st.phase1.world.node_of_key(h.haven).is_none() =>
+        {
             // A haven is a world node whose market sells what its pirates take (C24): it joins
-            // the world here (U13), outside the phase 1 log, so the world is tainted below.
+            // the world here (U13), outside the phase 1 log, so the world is tainted below. A
+            // copy (REASSERT) joins nothing: `ingest_copy` only folds its epoch (RP-97), and a
+            // node no haven of the engine stands behind would be a market with no pirates.
             let at = at.max(st.phase1.world.now());
             st.phase1.world.join(
                 NodeData {

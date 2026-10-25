@@ -978,3 +978,60 @@ fn a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour() {
         assert_eq!(next, 4, "haven first {haven_first}");
     }
 }
+
+/// RP-97 (review P3.4): a copy (REASSERT) of a HAVEN_FOUND joins no haven node to the world,
+/// since `Ships::ingest_copy` only folds the epoch: a node no haven of the engine stands behind
+/// would be a market with no pirates. The control: the session's own HAVEN_FOUND, the same
+/// bytes, joins it.
+#[test]
+fn a_copy_of_a_haven_found_joins_no_node_to_the_world() {
+    for copy in [false, true] {
+        let dir = tmpdir(if copy {
+            "ships-haven-copy"
+        } else {
+            "ships-haven-own"
+        });
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        for (v, structure, x, z) in VILLAGES {
+            j.adopt(v, structure, "human", 90, x, z);
+        }
+        j.idle();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        for (v, _, x, z) in VILLAGES {
+            j.ship_obs(&O::PortFound(sb::PortFound {
+                village: v,
+                medium: rtsim_travel::Medium::Sea,
+                dimension: dim,
+                structure: 0,
+                dock: (x + 8, 63, z + 8),
+                berths: 4,
+            }));
+        }
+        let o = O::HavenFound(sb::HavenFound {
+            haven: HAVEN,
+            media: 1,
+            dimension: dim,
+            structure: 0,
+            dock: (200, 63, 200),
+        });
+        if copy {
+            let mut b = Vec::new();
+            sb::encode_obs(0, j.game_time, &o, &mut b);
+            wire::put_u64(&mut b, wire::obs::OBS_SEQ, 7);
+            j.reassert(EARLIER_GEN, &b);
+        } else {
+            j.ship_obs(&o);
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let joined = e.with_ships(|_, w| w.node_of_key(HAVEN).is_some());
+        assert_eq!(
+            joined, !copy,
+            "copy {copy}: the haven node is in the world only when the record was the session's"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}
