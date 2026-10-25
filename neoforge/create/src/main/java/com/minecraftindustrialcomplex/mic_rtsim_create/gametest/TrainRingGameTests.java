@@ -41,7 +41,7 @@ import java.util.Set;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
 /**
- * The train op ring (docs/choices-mowzie-build.md RP-190 to RP-196): IND_CARRIAGE_DELTA's dedup across a
+ * The train op ring (docs/choices-mowzie-build.md RP-190 to RP-198): IND_CARRIAGE_DELTA's dedup across a
  * crash that kept one of Java's two SavedData files and not the other.
  *
  * <p>A crash is emulated on one synthetic train. Its tracks file is what RailwaySavedData.save writes for
@@ -50,6 +50,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * is its op index: {@link Journal#forgetAppliedForTest} for a journal saved before the op was applied,
  * {@link Journal#rememberAppliedForTest} for one saved while its COMMAND_RESULT was unacknowledged. The
  * engine then re-decides the raid under the same op (slice T's key, RP-180) and sends it again.
+ *
+ * <p>The crash is at the data level: each file is taken (or not) on its own, so no test runs a real save
+ * or depends on the order the server writes its SavedData in. Slice U moves the journal's write after
+ * every dimension's SavedData, after which a real crash gives J3 and never J4; J4 stays pinned here.
  *
  * <p>Each raid takes 10 iron from a train of 32, and the raider is credited 10 by the decision that
  * survives the crash, so the goods are conserved when the train and the raider hold 32 between them.
@@ -242,6 +246,50 @@ public final class TrainRingGameTests {
                     TrainWatch.forget(train[0]);
                 })
                 .thenSucceed();
+    }
+
+    // ---- the reusable ring's NBT form (RP-198) ----------------------------------------------------
+
+    /**
+     * AppliedOpRing in any compound (the API slice U reuses for GlobalPackagePort): one long array under a
+     * namespaced key beside the owner's keys, oldest first, read back under a smaller cap keeping the newest;
+     * an empty ring removes its key, a missing or foreign key reads as no ring, and an unnamespaced key is
+     * refused. Here because the unit tests' classpath has no Minecraft.
+     */
+    @GameTest(template = YARD, batch = "train_ring_8")
+    public static void anAppliedOpRingSavesUnderItsKeyBesideTheOwnersKeys(GameTestHelper helper) {
+        String key = "mic_rtsim:test_ops";
+        CompoundTag tag = new CompoundTag();
+        tag.putString("Owner", "kept");
+        AppliedOpRing ring = new AppliedOpRing(4);
+        for (long op = 1; op <= 5; op++)
+            ring.add(op);
+        check("a resend is not added", !ring.add(5));
+        ring.writeTo(tag, key);
+        check("saved oldest first, the oldest past the cap gone: " + Arrays.toString(tag.getLongArray(key)),
+                Arrays.equals(tag.getLongArray(key), new long[] {2, 3, 4, 5}));
+        check("beside the owner's keys", tag.getString("Owner").equals("kept") && tag.size() == 2);
+        check("savedIn finds it", AppliedOpRing.savedIn(tag, key));
+
+        AppliedOpRing back = new AppliedOpRing(2);
+        check("read back", back.readFrom(tag, key));
+        check("a smaller cap keeps the newest", Arrays.equals(back.toArray(), new long[] {4, 5}) && back.capacity() == 2);
+        check("no ring saved reads as none", !back.readFrom(new CompoundTag(), key) && back.isEmpty());
+        tag.putString("mic_rtsim:other", "not a ring");
+        check("a foreign tag under a key is not a ring", !AppliedOpRing.savedIn(tag, "mic_rtsim:other"));
+
+        ring.clear();
+        ring.writeTo(tag, key);
+        check("an empty ring removes its key", !tag.contains(key));
+        for (String bad : new String[] {"applied_ops", ":x", "x:"}) {
+            try {
+                ring.writeTo(tag, bad);
+                throw new GameTestAssertException("an unnamespaced key was taken: " + bad);
+            } catch (IllegalArgumentException expected) {
+                // refused
+            }
+        }
+        helper.succeed();
     }
 
     // ---- the emulation --------------------------------------------------------------------------

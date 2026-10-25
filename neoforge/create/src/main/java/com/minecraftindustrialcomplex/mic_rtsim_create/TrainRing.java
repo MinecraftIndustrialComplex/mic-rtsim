@@ -7,7 +7,6 @@ import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.graph.DimensionPalette;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
 
 import java.util.ArrayList;
@@ -15,8 +14,9 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * A Create train's ring of applied IND_CARRIAGE_DELTA op ids in the train's own NBT (RP-190 to RP-194): the
- * key, the save and load hooks {@code ringmixin.TrainRingMixin} calls, and whether that mixin applied.
+ * A Create train's ring of applied IND_CARRIAGE_DELTA op ids in the train's own NBT (RP-190 to RP-194): an
+ * {@link AppliedOpRing} of {@link #CAPACITY} under {@link #KEY}, the save and load hooks
+ * {@code ringmixin.TrainRingMixin} calls, and whether that mixin applied.
  *
  * <p>The ring is the dedup of {@link TrainWatch#carriageDelta} for a train that exists (RP-191). The goods
  * and the ring are written by the same {@code Train.write} into create_tracks.dat, so a crash keeps both or
@@ -32,6 +32,14 @@ public final class TrainRing {
 
     /** The NBT key in a Train's compound: a long array of op ids, oldest first. */
     public static final String KEY = "mic_rtsim:applied_ops";
+    /**
+     * A train ring's bound (RP-192): one train takes at most one station exchange per simulated arrival
+     * and a few loot ops per raid cooldown, and the ring must cover what it takes between the engine's
+     * last durable save and Create's (one autosave, up to four while the chunk barrier holds the journal
+     * back: 24,000 ticks). 256 covers an arrival every 94 ticks over that window, at most 2 KiB of NBT a
+     * train.
+     */
+    public static final int CAPACITY = 256;
     /** The op the probe writes and reads back: an engine op id no engine hands out (top bit set, F4). */
     private static final long PROBE_OP = 0xFFFF_FFFF_FFFF_FFF1L;
 
@@ -79,14 +87,14 @@ public final class TrainRing {
             return;
         if (!probing && !RtsimConfig.on(Module.INDUSTRY))
             return;
-        tag.putLongArray(KEY, ring.toArray());
+        ring.writeTo(tag, KEY);
     }
 
     /** {@code Train.read}'s hook: the saved ring onto the train Create made. */
     public static void read(Object train, CompoundTag tag) {
-        if (!(train instanceof AppliedOpsHolder h) || tag == null || !tag.contains(KEY, Tag.TAG_LONG_ARRAY))
+        if (!(train instanceof AppliedOpsHolder h) || tag == null || !AppliedOpRing.savedIn(tag, KEY))
             return;
-        h.mic_rtsim$appliedOps().load(tag.getLongArray(KEY));
+        h.mic_rtsim$appliedOps().readFrom(tag, KEY);
     }
 
     /** Null when the round trip works, else what broke. */

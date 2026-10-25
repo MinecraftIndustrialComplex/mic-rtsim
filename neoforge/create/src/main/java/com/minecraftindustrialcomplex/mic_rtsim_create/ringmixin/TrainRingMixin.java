@@ -35,7 +35,7 @@ public abstract class TrainRingMixin implements AppliedOpsHolder {
     @Override
     public AppliedOpRing mic_rtsim$appliedOps() {
         if (mic_rtsim$ring == null)
-            mic_rtsim$ring = new AppliedOpRing();
+            mic_rtsim$ring = new AppliedOpRing(TrainRing.CAPACITY);
         return mic_rtsim$ring;
     }
 
