@@ -461,7 +461,10 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   has not sent yet (W21).
 - **The switch (U10, replacing W8).** With `Module.INDUSTRY` off the engine ignores every industry
   record, journaled ones included (counted), runs nothing and writes nothing; its queue, outbox and
-  pages wait as they are. Switched on in a session, its own session start runs at that game time, so it
+  pages wait as they are. Java's answers to its commands are the exception (RP-285): a COMMAND_RESULT
+  heard while off (behind the MODULES that switched it off, or a loaded chunk's carried answer journaled
+  again) takes its command out of the outbox or the queue and books its effect at once, at the
+  engine's frozen time, since Java prunes its rings at the acknowledgement whatever the switch. Switched on in a session, its own session start runs at that game time, so it
   catches up over the time it was off; Java then announces its districts and load states again, as at
   a session start (IR15; `Industry.endOfTick` and `IndustryPlugin.announce`).
 - **Mode.** The native engine applies. Read-only (phase I-A, F25) is retired with the ledger (I18,
