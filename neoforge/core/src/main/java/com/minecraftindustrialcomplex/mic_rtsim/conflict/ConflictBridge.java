@@ -530,6 +530,11 @@ public final class ConflictBridge implements SessionPlugin {
     private final Map<Long, Lurk> lurksView = Collections.unmodifiableMap(lurks);
     /** M8 (MZB-366): trains a lurk robbed whose station has not roared yet, train to faction, oldest first. */
     private final Map<Long, Long> pendingRoars = new LinkedHashMap<>();
+    /**
+     * M10 (MZB-468): the march the engine last said for each party agent, whether or not the party is embodied.
+     * A record replaces its agent's path only with a newer revision; nothing here is saved (UR-1). Per session.
+     */
+    private final MarchTable marches = new MarchTable();
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, placed, requeued, pendingTests, watchFlips, placeMoves, casualties, chiefsKilled,
@@ -538,6 +543,11 @@ public final class ConflictBridge implements SessionPlugin {
             strays, refills, demandsShown, paymentsRefused, noticeHearers, railPasses;
     /** M8's (this session): AMBUSH_SPOTs kept and removed, TRAIN_PASSEDs written, strikes started, roars told and heard. */
     public long lurksKept, lurksRemoved, trainPasses, lurkStrikes, roarsTold, roarsPlayed, roarHearers, lurksRefused;
+    /**
+     * M10's (this session): BAND_MARCH records kept, dropped as older than the held one or as an ended agent's, and
+     * ended; stacks cut by the trim, walked into the square and clamped on it (MZB-472, MZB-473).
+     */
+    public long marchRecords, marchStale, marchEnds, trimmed, walkIns, clamps;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -580,9 +590,11 @@ public final class ConflictBridge implements SessionPlugin {
         noticesPlayed = territoryCommands = settledCommands = campsReported = looted = malformed = unknownCommands = 0;
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
+        marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
+        clearMarches();
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
         reconciler.sessionStarted();
@@ -599,6 +611,7 @@ public final class ConflictBridge implements SessionPlugin {
         for (Party p : List.copyOf(byAgent.values()))
             capture(p, ConflictRecords.Dematerialized.SESSION_END, now);
         clearLurks();
+        clearMarches();
     }
 
     @Override
@@ -615,6 +628,7 @@ public final class ConflictBridge implements SessionPlugin {
         notices.clear();
         owedHunts.clear();
         clearLurks();
+        clearMarches();
         reconciler.sessionFailed();
     }
 
@@ -634,6 +648,7 @@ public final class ConflictBridge implements SessionPlugin {
         signals.clear();
         watches.clear();
         clearLurks();
+        clearMarches();
         held = false;
         difficulty = null;
         session = null;
@@ -643,6 +658,11 @@ public final class ConflictBridge implements SessionPlugin {
     private void clearLurks() {
         lurks.clear();
         pendingRoars.clear();
+    }
+
+    /** The march map is per session (MZB-468): the engine says each march again when it changes. */
+    private void clearMarches() {
+        marches.clear();
     }
 
     /** Removes a party's bodies and forgets it, journaling nothing (the session failed). */
@@ -741,6 +761,7 @@ public final class ConflictBridge implements SessionPlugin {
             case ConflictRecords.BAND_RECALL -> recall(b, at, aux, now);
             case ConflictRecords.DEMAND_SETTLED -> settled(b, at, aux);
             case ConflictRecords.AMBUSH_SPOT -> ambushSpot(b, at, aux, names, now);
+            case ConflictRecords.BAND_MARCH -> march(b, at, size, aux, names);
             case ConflictRecords.TRAIN_ROBBED -> trainRobbed(b, at);
             case ConflictRecords.CAMP_RECONCILE -> {
                 if (RtsimConfig.on(Module.CONFLICT))
@@ -1138,6 +1159,39 @@ public final class ConflictBridge implements SessionPlugin {
         recallStep(p, now);
     }
 
+    /**
+     * BAND_MARCH (M10, MZB-468): the agent's march, kept for the column, the turns, the stop and the trim. A record
+     * replaces the held path only with a newer revision; ENDED drops the path, remembers the agent and trims
+     * nothing; an ended agent's later records are dropped. Nothing is journaled and nothing is saved.
+     */
+    private void march(ByteBuffer b, int at, int size, int waypoints, EngineNames names) {
+        MarchPath m = MarchPath.decode(b, at, size, waypoints, names);
+        if (m == null || !ConflictRecords.isConflictAgent(m.agent())) {
+            malformed++;
+            return;
+        }
+        marchRecords++;
+        switch (marches.offer(m)) {
+            case STALE -> marchStale++;
+            case ENDED -> marchEnds++;
+            case KEPT -> {
+            }
+        }
+    }
+
+    /**
+     * The march the engine last said for a party agent, or null: none said, ended, or a session that restarted.
+     * It is the engine's word whether or not the party is embodied (GameTests, and M11's aloft).
+     */
+    public MarchPath march(long agent) {
+        return marches.get(agent);
+    }
+
+    /** True when the engine ended this agent's march this session (GameTests). */
+    public boolean marchEnded(long agent) {
+        return marches.ended(agent);
+    }
+
     /** DEMAND_SETTLED: the envoy's demand is closed; its name goes. */
     private void settled(ByteBuffer b, int at, int outcome) {
         settledCommands++;
@@ -1511,6 +1565,7 @@ public final class ConflictBridge implements SessionPlugin {
                 switchedOff(now);
             reconciler.switchedOff(now);
             owedHunts.clear();
+            clearMarches(); // not gated on `held`: a march is kept with no party (MZB-468)
             return;
         }
         Difficulty d = s.server().getWorldData().getDifficulty();
