@@ -425,8 +425,15 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.herds.records += 1;
     reset_if_due(st);
     let at = at.max(st.herds.engine.now());
+    // A copy (REASSERT) of an ended session's record is applied by identity, never against a
+    // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9, RP-84).
+    let copy = st.applying_copy.is_some();
     let (w, h) = (&mut st.phase1.world, &mut st.herds.engine);
-    h.ingest(&mut w.legs, o, at);
+    if copy {
+        h.ingest_copy(&mut w.legs, o, at);
+    } else {
+        h.ingest(&mut w.legs, o, at);
+    }
     st.phase1.taint();
     take_commands(st);
 }

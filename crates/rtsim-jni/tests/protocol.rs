@@ -3968,6 +3968,77 @@ mod herds {
         an_epoch_that_ended("herds-rp83-pages", Group::InPages);
     }
 
+    /// A generation no engine heard: the one a crash lost with its journal.
+    const EARLIER_GEN: u64 = 0x0E41_11E4_0000_0001;
+
+    /// A REASSERT of `rec` under generation `nonce`, at the record's own sequence: what
+    /// `Java::reassert` journals, in place of the original.
+    fn as_copy(rec: &[u8], nonce: u64) -> Vec<u8> {
+        let len = obs::reassert::INNER + rec.len();
+        let mut r = vec![0u8; len];
+        wire::put_u16(&mut r, wire::R_KIND, obs::REASSERT);
+        wire::put_u16(&mut r, wire::R_SIZE, len as u16);
+        wire::put_i64(&mut r, obs::GAME_TIME, wire::i64_at(rec, obs::GAME_TIME));
+        wire::put_u64(&mut r, obs::reassert::GEN, nonce);
+        r[obs::reassert::INNER..].copy_from_slice(rec);
+        wire::put_u64(&mut r, obs::OBS_SEQ, wire::u64_at(rec, obs::OBS_SEQ));
+        r
+    }
+
+    /// RP-84: a group decided after the save and answered in the journal, the answer replayed as
+    /// the record itself (`copy` false: honoured) or as a holder's copy of it (REASSERT, from a
+    /// generation no engine heard: not honoured, only its epoch counted). Returns (groups
+    /// honoured, copies applied, the epoch the group had, the epoch of the one the player sees
+    /// after the replay).
+    fn a_replayed_materialization(name: &str, copy: bool) -> (u64, u64, u32, u32) {
+        use std::sync::atomic::Ordering::Acquire;
+        let mut old = the_old_session(
+            name,
+            Script {
+                group: Group::AfterSave,
+                ..Script::QUIET
+            },
+        );
+        let before = old.group.as_ref().expect("a group").epoch;
+        if copy {
+            let mut made = 0;
+            for (_, r) in old.saved.journal.iter_mut() {
+                if wire::u16_at(r, wire::R_KIND) == hb::HERD_MATERIALIZED {
+                    *r = as_copy(r, EARLIER_GEN);
+                    made += 1;
+                }
+            }
+            assert_eq!(made, 1, "one materialization in the journal");
+        }
+        let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
+        replay_quietly(&e, &mut j);
+        let honoured = e.with_herds(|h, _| h.replay_honoured());
+        let copies = e.stats.copies_applied.load(Acquire);
+        let after = the_group_again(&mut j).epoch;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (honoured, copies, before, after)
+    }
+
+    /// RP-84 (the host routes a copy to `ingest_copy`, never to `ingest`): a materialization
+    /// carried by a holder and replayed embodies nothing, and its epoch is not decided again.
+    /// Before, the host applied the copy as the record itself, and the replay honoured it.
+    #[test]
+    fn a_replayed_copy_of_a_materialization_is_not_honoured_but_its_epoch_is_counted() {
+        let (honoured, copies, before, after) = a_replayed_materialization("herds-rp84", true);
+        assert_eq!((honoured, copies), (0, 1), "a copy honours no group");
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
+    /// Control: the record itself, replayed, is honoured.
+    #[test]
+    fn a_replayed_materialization_the_journal_holds_is_honoured() {
+        let (honoured, copies, before, after) = a_replayed_materialization("herds-rp84-own", false);
+        assert_eq!((honoured, copies), (1, 0), "the record's group is honoured");
+        assert!(after > before, "epoch {after} after {before}");
+    }
+
     /// RP-66's twin for the herds: a test's herd command joins the engine's queue around the
     /// gate, so one ordered while the replay runs waits for the replay end. A STEER is a kind
     /// the gate drops while replaying; the command is Java's, though, not the engine's.
