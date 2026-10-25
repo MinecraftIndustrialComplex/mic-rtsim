@@ -177,4 +177,68 @@ class MarchColumnTest {
         double[] t = MarchColumn.offset(Math.cos(a), Math.sin(a), 6, 3);
         assertEquals(Math.hypot(6, 3), Math.hypot(t[0], t[1]), 1e-9);
     }
+
+    /** The least and the greatest {@code back} of a plan. */
+    private static double[] span(List<Plan> plan) {
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (Plan p : plan) {
+            lo = Math.min(lo, p.back());
+            hi = Math.max(hi, p.back());
+        }
+        return new double[] {lo, hi};
+    }
+
+    @Test
+    void theNextRowIsOneRowBehindAGruntsStackAndOnePackRowBehindARaptors() {
+        assertEquals(10.0 + ConflictBridge.ROW, MarchColumn.after(10.0, false), EPS);
+        assertEquals(10.0 + MarchColumn.PACK_ROW, MarchColumn.after(10.0, true), EPS);
+    }
+
+    @Test
+    void aLaterWaveStartsBehindTheRowsAlreadyOutNotOnThem() {
+        // MZB-747: wave 1 is 5 grunts and the chief; wave 2 is 4 more grunts, planned from the rear of wave 1.
+        List<Plan> first = met(new int[] {5}, flags(1), flags(1, 0));
+        double rear = span(first)[1];
+        List<Plan> second = MarchColumn.plan(new int[] {4}, flags(1), flags(1), true, MarchColumn.after(rear, false));
+        assertEquals(2, second.size());
+        assertPlan(second.get(0), 0, 2, false, false, rear + ConflictBridge.ROW, 0.0);
+        assertPlan(second.get(1), 0, 2, false, false, rear + 2 * ConflictBridge.ROW, 0.0);
+        // Every row of the later wave is at least a row behind every row of the earlier.
+        assertTrue(span(second)[0] >= span(first)[1] + ConflictBridge.ROW - EPS);
+    }
+
+    @Test
+    void aLaterWaveBehindARaptorPairClearsThePair() {
+        List<Plan> first = met(new int[] {3}, flags(1, 0), flags(1));
+        Plan last = first.get(first.size() - 1);
+        assertTrue(last.pack());
+        List<Plan> second = MarchColumn.plan(new int[] {2}, flags(1), flags(1), true, MarchColumn.after(last.back(), last.pack()));
+        // The third raptor stands alone at 6.0; the next wave's first row is a pack row behind it.
+        assertPlan(second.get(0), 0, 2, false, false, 12.0, 0.0);
+    }
+
+    @Test
+    void aStartOfNothingIsTheFirstWaveAndAnArcIgnoresTheStart() {
+        List<Plan> plain = met(new int[] {4, 3}, flags(2, 1), flags(2, 0));
+        List<Plan> zero = MarchColumn.plan(new int[] {4, 3}, flags(2, 1), flags(2, 0), true, 0.0);
+        assertEquals(plain, zero);
+        assertEquals(plain, MarchColumn.plan(new int[] {4, 3}, flags(2, 1), flags(2, 0), true, -5.0));
+        // On an arc each entry's column is its own, from its arc point: the start does not move it.
+        List<Plan> arc = MarchColumn.plan(new int[] {4, 2}, flags(2), flags(2, 0), false);
+        assertEquals(arc, MarchColumn.plan(new int[] {4, 2}, flags(2), flags(2, 0), false, 40.0));
+    }
+
+    @Test
+    void aLaterWaveKeepsEveryUnitAndOnlyMovesTheRows() {
+        List<Plan> first = met(new int[] {3, 2}, flags(2), flags(2, 1));
+        List<Plan> second = MarchColumn.plan(new int[] {3, 2}, flags(2), flags(2, 1), true, 20.0);
+        assertEquals(first.size(), second.size());
+        for (int i = 0; i < first.size(); i++) {
+            assertEquals(first.get(i).entry(), second.get(i).entry());
+            assertEquals(first.get(i).slots(), second.get(i).slots());
+            assertEquals(first.get(i).chief(), second.get(i).chief());
+            assertEquals(first.get(i).side(), second.get(i).side(), EPS);
+            assertEquals(first.get(i).back() + 20.0, second.get(i).back(), EPS);
+        }
+    }
 }
