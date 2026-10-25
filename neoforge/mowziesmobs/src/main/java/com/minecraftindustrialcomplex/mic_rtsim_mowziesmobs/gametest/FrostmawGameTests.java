@@ -609,7 +609,8 @@ public final class FrostmawGameTests {
      * ordinary Frostmaw and nothing holds either of them again.
      * <p>On the code before the fix (forget cleared the hold without asking the Lurker) the body keeps
      * {@code restrictTo(spot, 2)} (hasRestriction true) and writes {@code alwaysActive true} to its NBT, so the first
-     * check after the take fails: "the taken body has no restriction (true)". Not run.
+     * check after the take fails. The first check to trip is the saved NBT's, the uninstall check proper: "the taken
+     * body, before the engine has the casualty,: alwaysActive false in its saved NBT" (it was true). Not run.
      */
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_taken", skyAccess = true)
     public static void aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw(GameTestHelper helper) {
@@ -618,8 +619,8 @@ public final class FrostmawGameTests {
 
     /**
      * The same for a puppet taken by something that is not a player ({@code TakeReason.PLUGIN}, no player): the
-     * casualty is by other, and the body is let go the same way. On the code before the fix: "the taken body has no
-     * restriction (true)". Not run.
+     * casualty is by other, and the body is let go the same way. On the code before the fix: "the taken body, before
+     * the engine has the casualty,: alwaysActive false in its saved NBT". Not run.
      */
     @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_taken_other", skyAccess = true)
     public static void aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw(GameTestHelper helper) {
@@ -636,14 +637,16 @@ public final class FrostmawGameTests {
                     taker[0] = byPlayer ? helper.makeMockPlayer(GameType.SURVIVAL) : null;
                     check("the take works", RtsimApi.takeFromSim(f, byPlayer ? TakeReason.PICKUP : TakeReason.PLUGIN, taker[0]));
                     check("it is no puppet now", !RtsimApi.isPuppet(f));
-                    check("the taken body has no restriction (" + f.hasRestriction() + ")", !f.hasRestriction());
-                    check("the taken body is not always-active (" + f.isAlwaysActive() + ")", !f.isAlwaysActive());
-                    // The record it carries (mic_rtsim:pending) is the one thing of mic_rtsim on it, until the engine has it
+                    // The saved NBT first, the uninstall check proper: a world without the mod reads this and nothing else, and
+                    // a restriction is never in NBT. The record the body carries (mic_rtsim:pending) is the one thing of
+                    // mic_rtsim on it, until the engine has it.
                     h.saveOrdinary("the taken body, before the engine has the casualty,", f);
                     Entity again = EntityType.create(h.saved[0], h.level).orElse(null);
                     check("a body made from that NBT is a Frostmaw", again instanceof EntityFrostmaw);
                     check("and is not always-active (" + ((EntityFrostmaw) again).isAlwaysActive() + ")", !((EntityFrostmaw) again).isAlwaysActive());
-                    check("and has no restriction (" + ((EntityFrostmaw) again).hasRestriction() + ")", !((EntityFrostmaw) again).hasRestriction());
+                    // Then the live body
+                    check("the taken body has no restriction (" + f.hasRestriction() + ")", !f.hasRestriction());
+                    check("the taken body is not always-active (" + f.isAlwaysActive() + ")", !f.isAlwaysActive());
                     check("the lurk is still in the table", RtsimApi.lurks().containsKey(h.agent));
                 })
                 .thenWaitUntil(io(() -> {
