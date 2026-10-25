@@ -3841,13 +3841,25 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       copy of the saved NBT, with a new UUID, added as a chunk would add it: after 60 ticks both bodies are
       ordinary Frostmaws, nothing is held by the lurk (`lurkBody` null), and the lurk is ended and leaves the
       table. The mock player (`PICKUP`) is not a `FakePlayer`, so the casualty is by a player.
-    - Expected on the unfixed code, both: the first check after the take fails, "the taken body has no
-      restriction (true)"; the next would read "not always-active (true)", and the saved `alwaysActive` true.
+    - Expected on the unfixed code, both: the first check to trip is the saved NBT's, "the taken body, before the
+      engine has the casualty,: alwaysActive false in its saved NBT" (it is true there). This replaces the first
+      draft's "the taken body has no restriction (true)", which was the first to trip on the unfixed code and so
+      stood in front of the UR-1 check (the re-check's condition 2; see the amendment below).
     - `aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld` (batch `frostmaw_lurk_off`) is the other end
       of the uninstall, a puppet still held when the module goes off: the body is discarded, the lurk has no body,
       and 60 ticks after the module is on again no Frostmaw stands within 24 blocks of the spot. It passes on the
       unfixed code too (a guard that the release does not change what the switch-off does, which discards the
       body). The test restores the switch when it ends, passed or failed.
+  - Amendment (the re-check's condition 2; the test is rewritten and compiled, not run): the take test's checks
+    run in the order of the claim they make. A body made from the saved NBT is what a world without the mod
+    reads, so the saved NBT is saved and read first (`h.saveOrdinary`, then the copy's `alwaysActive`), then
+    the live body's (no restriction, not always-active). The copy's "has no restriction" check is dropped: a
+    restriction is never in NBT, so it was true on any code and checked nothing. The expected failing value on
+    the code before the fix is the saved NBT's `alwaysActive` ("the taken body, before the engine has the
+    casualty,: alwaysActive false in its saved NBT"). The fail-first run is a worktree at 875ac2bd (the head before
+    review C) with only the test file changed, on the throwaway branch `test/m8-ur1-failfirst`, for the lead to run
+    with `gametest.sh mowziesmobs`; the two take tests are the ones expected to fail there, the
+    `..._LeavesNothingInTheWorld` one to pass.
 - **MZB-370** (test choices):
   - Test 8's rider is `helper.makeMockPlayer(GameType.SURVIVAL)` added with `addFreshEntity`, as M6's thief
     (MZB-281), so the ice ball's `getEntitiesOfClass` sees it. It is seated with `addSittingPassenger`.
