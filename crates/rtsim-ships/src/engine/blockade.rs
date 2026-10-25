@@ -1671,4 +1671,61 @@ mod tests {
             "after the end"
         );
     }
+
+    /// A laid-up or relaunched slot's new epoch is above the epochs a replayed record named
+    /// (RP-101): a floor of 7 for its last body makes the epoch 8, not 1, so a late report of that
+    /// body cannot match the slot's next one (the exact-epoch arms). The floor is spent. Control:
+    /// with no floor the bump is the plain +1.
+    #[test]
+    fn a_blockade_bump_goes_above_the_epochs_a_replayed_record_named() {
+        let named = |id: ShipId, epoch: u32| {
+            crate::boundary::Obs::Dematerialized(crate::boundary::Dematerialized {
+                agent: Ship::agent(id),
+                epoch,
+                reason: 3,
+                dimension: 0,
+                hull_milli: 1000,
+                crew: 3,
+                pos: (0.0, 64.0, 0.0),
+            })
+        };
+        // (the epoch before, after the lay-up, after the relaunch's bump; floors left)
+        let run_it = |floor: Option<u32>| {
+            let mut c = quiet_coast(1);
+            let (v, a, _) = two_port_service(&c);
+            let t1 = Tick::from_days(10);
+            run(&mut c, t1);
+            let slots: Vec<ShipId> = c.ships.service_ships[v as usize].ids().collect();
+            let before: Vec<u32> = slots.iter().map(|&id| c.ships.ships[id].epoch).collect();
+            if let Some(e) = floor {
+                for &id in &slots {
+                    c.ships.fold_epoch(&named(id, e));
+                }
+            }
+            close(&mut c, a, t1);
+            let s = slots
+                .iter()
+                .copied()
+                .find(|&id| c.ships.ships[id].is_laid_up())
+                .expect("a laid-up slot");
+            let at = slots.iter().position(|&id| id == s).unwrap();
+            let laid = c.ships.ships[s].epoch;
+            let spent = !c.ships.floors.contains_key(&Ship::agent(s));
+            // A later record names a higher epoch of the laid-up slot's last body.
+            let top = laid + 10;
+            c.ships.fold_epoch(&named(s, top));
+            let now = c.ships.now();
+            c.ships.relaunch_laid_up(s, now);
+            (before[at], laid, spent, c.ships.ships[s].epoch, top)
+        };
+        let (before, laid, spent, relaunched, top) = run_it(Some(7));
+        assert!(before < 7);
+        assert_eq!(laid, 8, "above the floor of 7");
+        assert!(spent, "and the floor is spent");
+        assert_eq!(relaunched, top + 1, "the relaunch is above the floor it met");
+        let (before, laid, spent, relaunched, top) = run_it(None);
+        assert_eq!(laid, before + 1, "control: no floor, the plain bump");
+        assert!(spent);
+        assert_eq!(relaunched, top + 1);
+    }
 }
