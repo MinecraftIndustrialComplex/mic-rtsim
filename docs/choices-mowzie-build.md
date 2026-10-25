@@ -7738,7 +7738,18 @@ audit's D rows, so it is not edited; the rows are named here.
   `EntityType.loadEntityRecursive` and add it with `addFreshEntity`, which fires the same cancellable
   join event a load does. The D4 test needs a nest id whose spot list has a spot exactly six above or
   below the first (it draws ids until it has one) and asserts that the second chamber fits, so it fails
-  without the fix.
+  without the fix. The lead's first round of these (core 123 passed) hung in iceandfire for 33 minutes on
+  the batch after `anAdoptOfAGoneDragonReleasesTheOlderPuppetAndFails`: `nestWormDeathsFollowTheBossRule`
+  never started, the server ticking unthrottled with nothing to do. The two new adopt tests undid
+  `DragonKit.forceAround` from a test listener (`DragonKit.onEnd`). GameTest runs the batch tracker's
+  listener first, and that one ends the batch, unforces every forced chunk, places the next batch's
+  structure 16 blocks along (the GameTest server's grid keeps going across batches) and forces its
+  chunks; the adopt test's listener then unforced its 7 by 7 ring, the next structure's chunks
+  included, and `GameTestInfo.tick` waits for those to be entity-ticking before the test's clock starts,
+  so no timeout ever came. Fixed in the two tests, the undo is the sequence's last step and the listener
+  only discards bodies (GameTest unforces every forced chunk at a batch's end, which covers a failure),
+  and `forceAround`'s comment says so. The other forcing tests already undo inside the sequence, or
+  force a far site.
 - **RP-249** (formats, and the whole of what changed for a world with the module off): the Nests
   SavedData gains `spawned` and `holes` per nest and the placed lairs' SavedData gains `start` per lair;
   an older file loads `spawned` 0, no holes and `start` absent, which are the "no ordinal yet", "nothing
