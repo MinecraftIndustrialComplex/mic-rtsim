@@ -52,6 +52,10 @@ struct Run {
     /// The player stands at the refinery (observed every 1,200 ticks) while this is set.
     watch: bool,
     next_obs: Tick,
+    /// With [`Run::watch`], the player's area is routed too (a band is met on its march, as
+    /// `Conflict::observe_player` does). Clear, only the player's report is made: a band that
+    /// arrives finds a watcher it was never met by, so its fight starts from an abstract band.
+    sight: bool,
     /// Java refuses this band's fights: in [`run_journaled`], each BAND_MATERIALIZED the plugin
     /// answers at the epoch the band fights at is a BAND_SPAWN_REJECTED (1, not ticking).
     refuse: Option<Handle<Party>>,
@@ -77,6 +81,7 @@ impl Run {
             cmds: Vec::new(),
             watch: false,
             next_obs: Tick::ZERO,
+            sight: true,
             refuse: None,
             refuse_wave0_only: false,
         }
@@ -123,6 +128,24 @@ impl Run {
         self.c.ingest(&mut self.w, &mut NoInfrastructure, &o, at);
     }
 
+    /// The player's report from the refinery at `at` (and, with [`Run::sight`], the sightings
+    /// it routes).
+    fn observe(&mut self, at: Tick) {
+        if self.sight {
+            self.c
+                .observe_player(&mut self.w, synth::PLAYER, synth::REFINERY_POS, at);
+        } else {
+            self.c
+                .observe_presence(&mut self.w, synth::PLAYER, synth::REFINERY_POS, at);
+            self.w.observe_area(
+                synth::PLAYER,
+                synth::REFINERY_POS,
+                at,
+                self.c.tun.view_radius,
+            );
+        }
+    }
+
     /// The engine, the plugin and the player to `to`.
     fn run(&mut self, to: Tick) {
         let mut t = self.c.now();
@@ -142,8 +165,7 @@ impl Run {
             }
             self.c.run_until(&mut self.w, &mut NoInfrastructure, next);
             if self.watch && next >= self.next_obs {
-                self.c
-                    .observe_player(&mut self.w, synth::PLAYER, synth::REFINERY_POS, next);
+                self.observe(next);
                 self.next_obs = next + 1_200;
             }
             self.flush(next);
@@ -1691,8 +1713,11 @@ fn a_blow_from_another_player_is_their_insult_and_leaves_the_demand_alone() {
     );
 }
 
-/// A raid band on the way, ordered at `Tick(20)` after two killings.
+/// A raid band on the way, ordered at `Tick(20)` after two killings. The run's player is not
+/// routed ([`Run::sight`]): its raid is never met on its march, and starts its fight from an
+/// abstract band at the arrival, as the replay-gate tests below read it.
 fn raid_band(r: &mut Run) -> Handle<Party> {
+    r.sight = false;
     r.kill(2.0, Tick(10));
     r.c.order_party(
         &mut r.w,
@@ -1754,7 +1779,7 @@ fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
         }
         r.c.run_until(&mut r.w, &mut NoInfrastructure, next);
         if r.watch && next >= r.next_obs {
-            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.observe(next);
             r.next_obs = next + 1_200;
         }
         let mut to_plugin = Vec::new();
@@ -1808,9 +1833,10 @@ fn a_fight_whose_first_wave_was_refused_counts_its_later_waves_deaths() {
         (counted, reported),
         "every death the plugin reported is counted against the band"
     );
+    // The band is not met on its march ([`raid_band`]), so the fight is its first epoch.
     assert_eq!(
         recalled,
-        vec![2],
+        vec![1],
         "the fight's end recalls the later waves' bodies"
     );
 }
@@ -3229,7 +3255,7 @@ fn run_journaled(
         }
         r.c.run_until(&mut r.w, infra, next);
         if r.watch && next >= r.next_obs {
-            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.observe(next);
             r.next_obs = next + 1_200;
         }
         r.flush(next);
@@ -3290,6 +3316,23 @@ fn a_raid_arriving_after_the_save(
     journal.clear();
     r.watch = watched;
     r.next_obs = r.c.now();
+    if straggler {
+        // The band is met on its march (epoch 1), and the player logs out: its bodies are
+        // recalled, and the player back at the arrival, the band fights at the next epoch, with
+        // the bodies of the first as the older epoch's.
+        let from = r.c.now();
+        r.sight = true;
+        run_journaled(&mut r, &mut walls, from + 600, &mut journal);
+        assert!(r.c.parties[band].embodied, "met on its march");
+        r.watch = false;
+        r.w.forget_player_pos(r.p);
+        r.c.player_left(&mut r.w, r.p);
+        r.flush(from + 600);
+        assert!(!r.c.parties[band].embodied, "recalled");
+        r.sight = false;
+        r.watch = true;
+        r.next_obs = from + 1_200;
+    }
     let mut end = arrival;
     let mut straggled = !straggler;
     while r.c.parties.get(band).is_some() {
@@ -3452,9 +3495,6 @@ enum Records {
     /// Java's journal stalls at the fight's first record: it and every record after it come
     /// later than the session that went on had them, the fight's at the held arrival + this.
     FightAt(u64),
-    /// The band's sighting, decided the tick before its arrival, journaled in the fight's step:
-    /// its record at the fight's tick, just before it (RP-56's case B).
-    SightingWithTheFight,
     /// Java refuses the fight's first wave (`every_wave`: and every later one; else they are
     /// placed), and its journal stalls at that refusal: it and every record after it come later
     /// than the session that went on had them, the refusal at the held arrival + `at`.
@@ -3590,23 +3630,6 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
                 *t += late;
             }
         }
-        Records::SightingWithTheFight => {
-            let (seen, (at, o)) = journal[..fight]
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, (_, o))| matches!(o, Obs::Materialized(m) if m.agent == Party::agent(band)))
-                .expect("seen on its road");
-            assert!(
-                matches!(o, Obs::Materialized(m) if m.flags & u32::from(boundary::BAND_FIGHT) == 0),
-                "a sighting's record"
-            );
-            assert!(
-                *at >= arrival && seen + 1 == fight,
-                "seen the tick before the arrival: {at:?}, the arrival {arrival:?}"
-            );
-            journal[seen].0 = journal[fight].0;
-        }
     }
     journal.push((end + late, fillers_casualty()));
     let mut w = world_from(36, &world);
@@ -3731,22 +3754,6 @@ fn a_held_arrivals_fight_refused_whole_and_recorded_after_the_slack_counts_as_un
     assert_resolved_at_the_slack(&h);
 }
 
-/// fixes4 item 2 (RP-56, the lead's case B): the band seen the tick before its arrival, the
-/// arrival watched, both journaled in one step, so the sighting's record and the fight's come
-/// at the same tick inside the hold, the sighting's first. The sighting only embodies and keeps
-/// the hold; the fight's record ends it: one fight, its casualties and loot counted once, as in
-/// the session that went on, and no abstract raid. Ending the hold at the sighting (resolving
-/// the arrival unwatched there) would have raided as well as fought.
-#[test]
-fn a_sighting_journaled_with_a_held_arrivals_fight_is_no_double() {
-    let h = a_held_arrivals_fight(1, Records::SightingWithTheFight);
-    assert!(
-        h.live.raids.is_empty() && h.live.watched == 1 && h.live.casualties > 0 && h.live_loot > 0,
-        "{h:?}"
-    );
-    h.assert_as_live();
-}
-
 /// Whether `band` fights, its fight's BAND_MATERIALIZED journaled.
 fn fight_materialized(r: &Run, band: Handle<Party>, journal: &[(Tick, Obs)]) -> bool {
     let x = &r.c.parties[band];
@@ -3801,9 +3808,9 @@ fn fillers_casualty() -> Obs {
 /// fixes4 item 1 (RP-51): the largest gap between a live watched fight's decision
 /// (`start_fight`) and its first BAND_MATERIALIZED, the data RP-48's slack is set from
 /// (`ConflictStats::fight_record_gap_max`). A raid on the refinery, the player there from 3,000
-/// ticks before its arrival: the band is seen on its road (a sighting, not measured) and fought
-/// at its arrival, and the plugin answers each command a tick after it. A later record of the
-/// fight's epoch measures nothing: only the first answers the decision.
+/// ticks before its arrival: the band is fought at its arrival, and the plugin answers each
+/// command a tick after it. A later record of the fight's epoch measures nothing: only the first
+/// answers the decision.
 #[test]
 fn a_watched_fights_record_gap_is_measured_from_its_decision() {
     let mut r = Run::new(36, quiet_goblins());
@@ -3842,12 +3849,13 @@ fn a_watched_fights_record_gap_is_measured_from_its_decision() {
             _ => None,
         })
         .collect();
-    assert!(records[0].0 < epoch, "seen on its road first: {records:?}");
-    let fought = records
-        .iter()
-        .find(|(e, _)| *e == epoch)
-        .expect("the fight's record")
-        .1;
+    // Not met on its march ([`raid_band`]): the fight's record is the band's first, and it
+    // answers the decision.
+    assert_eq!(
+        records[0].0, epoch,
+        "the fight is the first record: {records:?}"
+    );
+    let fought = records[0].1;
     assert!(fought > decided, "{records:?}, decided at {decided}");
     assert_eq!(r.c.stats.fight_record_gap_max, fought - decided);
     r.ingest(materialized(band, epoch, 1, 0), Tick(decided + 5_000));
@@ -4170,6 +4178,7 @@ fn a_held_raids_hunt(gaps: &[u64], answer: Option<u64>, save_after: bool, end: H
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        sight: r.sight,
         refuse: None,
         refuse_wave0_only: false,
     };
@@ -4430,8 +4439,8 @@ enum Then {
     Sighting,
     /// The same 300 ticks after the decision: its record inside the hold's slack (RP-56).
     SightingInSlack,
-    /// A player stands at the refinery from 600 ticks before the band's next round on: seen
-    /// there, and the round fought.
+    /// A player stands at the refinery from 600 ticks before the band's next round on, not
+    /// routed ([`Run::sight`]): the round is fought from the waiting band.
     Fight,
 }
 
@@ -4513,6 +4522,9 @@ fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
         }
         Then::Fight => {
             assert!(next + 6_000 < r.c.parties[band].bored_at, "a next round");
+            // Not routed: the band waits at its quota, so a sighting would place all of it and
+            // the fight would send no wave to record (MZB-492).
+            r.sight = false;
             r.watch = true;
             r.next_obs = Tick(next.0 - 600);
             run_journaled(&mut r, &mut walls, next + 600, &mut journal);
@@ -5468,6 +5480,7 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        sight: a.sight,
         refuse: None,
         refuse_wave0_only: false,
     };

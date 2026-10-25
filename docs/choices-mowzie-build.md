@@ -7917,6 +7917,45 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   after the fight. Before this step Home was skipped whole, so this guard did not exist; Out and Waiting bands
   always have a member alive. `march_bearing` is MZB-457 as designed (Out and Home toward the segment's end, or
   along the segment when standing on it; Waiting the way it came; else 0).
+- **MZB-491** (the replay reads a walked-in band's fight; amends RP-56's flag rule): a band that walked in
+  fights at the epoch it was met at (MZB-461), so its fight record is of its own epoch. `honour` takes a
+  BAND_MATERIALIZED flagged BAND_FIGHT as the fight when it is of a newer epoch (as before) or of the party's
+  own epoch with the party's arrival held (`held_since`); a flagged record of the own epoch with no hold is a
+  later wave of a fight in progress, and counts nothing new. A sighting's record (unflagged) only embodies
+  and keeps the hold, as RP-56 has it.
+- **MZB-492** (a walked-in fight may send no wave, so the fight leaves no record; open for the review): the arc
+  of `start_fight` on an embodied band sends only the members not placed yet (MZB-461), and a band met on
+  the road has all of them placed up to the quota already (`wave_fill`'s room is the quota less `spawned`,
+  and the sighting filled it; a band under the quota has everyone out). The arc wave is then empty and
+  `spawn_wave` sends nothing, so the fight's first BAND_MATERIALIZED, the record a replay's hold waits for
+  (RP-23, RP-48), comes only with a later wave after a death. Consequences, all kept as they fall: a restart
+  during such a held arrival resolves it unwatched at the slack (RP-48) while the session that went on fought
+  it, and the fight's casualties of that epoch count against the stacks the sighting's record rebuilt; and
+  `fights_unanswered` is not set for a walked-in band, since no first wave answers its decision (the stat
+  would otherwise take a wave interval). Conservative fork: the wire is left as designed. Two ways to close
+  it, both Java-side and so M10b's to design: a BAND_MATERIALIZE with no members flagged BAND_FIGHT that Java
+  echoes at once, or a record echoed for an attack steer. Tests that stood on a sighting's record followed
+  by the fight's in one step (RP-56's case B, `a_sighting_journaled_with_a_held_arrivals_fight_is_no_double`
+  and its `Records::SightingWithTheFight`) were removed with the gap. A walk-in with members left to send is
+  tested at the engine in tests/mowzie_march.rs (`spawned` set short by hand); no replay test covers it.
+- **MZB-493** (FakeConflict plays a walked-in fight; amends MZB-476's "steers stay ignored"): a BAND_STEER with
+  STEER_ATTACK and `arrive` 0 (the walk-in's attack order; a segment's own attack steer has an arrival time)
+  for a hostile body it holds at that epoch plays the scripted `fight` on what it holds, as it plays a wave.
+  The wave's fight and the steer's share `play_fight`, which also kills the chief once whenever a fight finds
+  one standing (a walked-in band placed it with its sighting, and `m.wave == 0` and BAND_CHIEF on the wave no
+  longer gate it). The command log's steer line adds ", attack" for an attack steer. MZB-476's march record
+  (latest revision per party, dropped on ENDED, the held body clamped to the record's counts) and a HAND_BACK
+  line ending the held body at its epoch (BAND_DEMATERIALIZED reason 1 after `leave_ticks`, its survivors)
+  are built as designed.
+- **MZB-494** (the test harness after the walk-in; forks): mowzie_records.rs's `Run` gains `sight` (default
+  true) and `observe`, which with `sight` clear makes the player's report and its area but routes no sighting.
+  `raid_band` clears it, so the replay-gate tests keep abstract arrivals (a band never met on its march fights
+  from the arrival at its own first epoch): the first-wave-refused test expects the recall of epoch 1, not 2,
+  and the record-gap test reads the fight's record as the band's first. The straggler variant now builds its
+  older epoch by meeting the band, logging the player out (the recall) and watching again at the arrival.
+  The siege's `Then::Fight` is unrouted, since a waiting siege met first sits at the quota (MZB-492). The
+  scenario test (tests/scenario.rs) accepts the director's arc waves or the walked-in attack steer as the
+  fight.
 
 ## M11 Aloft
 

@@ -249,6 +249,8 @@ struct Body {
     /// the band (MZB-109), so it is never a survivor, and its death is a CHIEF_KILLED alone. Its
     /// value is the body id.
     chief: Option<u32>,
+    /// A band that fights a player: its materialize carried BAND_HOSTILE.
+    hostile: bool,
 }
 
 /// A body in a camp's world: the jar's own entity, tagged with its slot and generation, or a stray
@@ -350,6 +352,10 @@ pub struct FakeConflict {
     pub player: Uuid,
     pub answer: Answer,
     pub fight: Option<Fight>,
+    /// The latest BAND_MARCH of each party that has not ended (MZB-476), as Java's `MarchPath`
+    /// keeps it: a record replaces an earlier one, an older revision is dropped, an ENDED one
+    /// removes the party's.
+    pub marches: BTreeMap<u64, boundary::BandMarch>,
     bodies: BTreeMap<u64, Body>,
     queue: Vec<(Tick, u64, Obs)>,
     seq: u64,
@@ -439,6 +445,7 @@ impl FakeConflict {
             player,
             answer: Answer::Ignore,
             fight: None,
+            marches: BTreeMap::new(),
             bodies: BTreeMap::new(),
             queue: Vec::new(),
             seq: 0,
@@ -565,7 +572,17 @@ impl FakeConflict {
                 m.arc_radius,
                 m.bearing_deg
             ),
-            Cmd::Steer(s) => format!("steer {:x} to ({:.0}, {:.0})", s.agent, s.pos.0, s.pos.2),
+            Cmd::Steer(s) => format!(
+                "steer {:x} to ({:.0}, {:.0}){}",
+                s.agent,
+                s.pos.0,
+                s.pos.2,
+                if s.flags & boundary::STEER_ATTACK != 0 {
+                    ", attack"
+                } else {
+                    ""
+                }
+            ),
             Cmd::Recall(r) => format!("recall {:x}, reason {}", r.agent, r.reason),
             Cmd::Settled(s) => format!("demand of {:x} settled, outcome {}", s.faction, s.outcome),
             Cmd::AmbushSpot(a) => format!(
@@ -605,6 +622,7 @@ impl FakeConflict {
                         faction: e.faction,
                         members: e.members.iter().copied().collect(),
                         chief: None,
+                        hostile: false,
                     },
                 );
                 self.push(
@@ -660,12 +678,14 @@ impl FakeConflict {
                     faction: m.faction,
                     members: BTreeMap::new(),
                     chief: None,
+                    hostile: false,
                 });
                 if b.epoch != m.epoch {
                     b.epoch = m.epoch;
                     b.members.clear();
                     b.chief = None;
                 }
+                b.hostile = m.flags & boundary::BAND_HOSTILE != 0;
                 // As Java makes a stack: its count in units, and for the band's chief stack one
                 // body more, the chief (MZB-109; a count of 0 is the chief alone, MZB-127).
                 for s in &m.members {
@@ -698,53 +718,29 @@ impl FakeConflict {
                 if let Some(f) = self.fight.filter(|f| {
                     m.flags & boundary::BAND_HOSTILE != 0 && (!f.only_at_base || m.arc_radius > 0)
                 }) {
-                    for s in &m.members {
-                        let k = (f64::from(s.count) * f.kill_share).floor() as u32;
-                        if k > 0 {
-                            if let Some(b) = self.bodies.get_mut(&m.agent)
-                                && let Some(n) = b.members.get_mut(&s.body)
-                            {
-                                *n = n.saturating_sub(k);
-                            }
-                            // Its own op id, as Java commits each (MZB-589): the engine counts a
-                            // repeated op once. A counter, so the sims stay deterministic.
-                            let op = self.op();
-                            self.push(
-                                at + f.after,
-                                Obs::Casualties(boundary::BandCasualties {
-                                    agent: m.agent,
-                                    epoch: m.epoch,
-                                    by: boundary::BY_PLAYER,
-                                    body: s.body,
-                                    count: k,
-                                    killer: self.player,
-                                    op,
-                                }),
-                            );
-                        }
-                    }
-                    // The chief's body dies: an extra body, no unit of the band (MZB-109), so no
-                    // survivor is lost with it; Java sends CHIEF_KILLED alone (MZB-272).
-                    if f.kill_chief
-                        && m.flags & boundary::BAND_CHIEF != 0
-                        && m.wave == 0
-                        && self
-                            .bodies
-                            .get_mut(&m.agent)
-                            .is_some_and(|b| b.chief.take().is_some())
-                    {
-                        let op = self.op();
-                        self.push(
-                            at + f.after + 20,
-                            Obs::ChiefKilled(boundary::ChiefKilled {
-                                agent: m.agent,
-                                epoch: m.epoch,
-                                by: boundary::BY_PLAYER,
-                                killer: self.player,
-                                op,
-                            }),
-                        );
-                    }
+                    let stacks: Vec<(u32, u32)> =
+                        m.members.iter().map(|s| (s.body, s.count)).collect();
+                    self.play_fight(f, m.agent, m.epoch, &stacks, at);
+                }
+            }
+            // A walked-in fight (MZB-461): the band is told to attack where it stands, with no
+            // wave to send. The scripted player fights what it holds, as it fights a wave
+            // (MZB-493). A segment's own attack steer has an arrival time; this one has none.
+            Cmd::Steer(s)
+                if s.flags & boundary::STEER_ATTACK != 0
+                    && s.arrive == 0
+                    && self
+                        .bodies
+                        .get(&s.agent)
+                        .is_some_and(|b| b.epoch == s.epoch && b.hostile) =>
+            {
+                if let Some(f) = self.fight {
+                    let stacks: Vec<(u32, u32)> = self.bodies[&s.agent]
+                        .members
+                        .iter()
+                        .map(|(&k, &v)| (k, v))
+                        .collect();
+                    self.play_fight(f, s.agent, s.epoch, &stacks, at);
                 }
             }
             Cmd::Recall(r) => {
@@ -805,8 +801,81 @@ impl FakeConflict {
             | Cmd::Settled(_)
             | Cmd::AmbushSpot(_)
             | Cmd::TrainRobbed(_)
-            | Cmd::ChiefBody(_)
-            | Cmd::March(_) => {}
+            | Cmd::ChiefBody(_) => {}
+            // The march record (MZB-476): the latest revision of a party's is kept, an ENDED one
+            // drops it, and the held body is trimmed to its counts (MZB-473; keyed by body id,
+            // as the record's units are).
+            Cmd::March(m) => {
+                if m.flags & boundary::MARCH_ENDED != 0 {
+                    self.marches.remove(&m.agent);
+                } else if self
+                    .marches
+                    .get(&m.agent)
+                    .is_none_or(|old| old.revision < m.revision)
+                {
+                    if let Some(b) = self.bodies.get_mut(&m.agent) {
+                        for &(body, count) in &m.units {
+                            if let Some(n) = b.members.get_mut(&body) {
+                                *n = (*n).min(count);
+                            }
+                        }
+                    }
+                    self.marches.insert(m.agent, m);
+                }
+            }
+        }
+    }
+
+    /// The scripted player's fight on a band: `kill_share` of each stack falls `after` ticks
+    /// later, each a BAND_CASUALTIES of its own op id, as Java commits each (MZB-589), and the
+    /// chief's body dies once, if one stands, as CHIEF_KILLED alone.
+    fn play_fight(&mut self, f: Fight, agent: u64, epoch: u32, stacks: &[(u32, u32)], at: Tick) {
+        for &(body, count) in stacks {
+            let k = (f64::from(count) * f.kill_share).floor() as u32;
+            if k > 0 {
+                if let Some(b) = self.bodies.get_mut(&agent)
+                    && let Some(n) = b.members.get_mut(&body)
+                {
+                    *n = n.saturating_sub(k);
+                }
+                // Its own op id, as Java commits each (MZB-589): the engine counts a repeated op
+                // once. A counter, so the sims stay deterministic.
+                let op = self.op();
+                self.push(
+                    at + f.after,
+                    Obs::Casualties(boundary::BandCasualties {
+                        agent,
+                        epoch,
+                        by: boundary::BY_PLAYER,
+                        body,
+                        count: k,
+                        killer: self.player,
+                        op,
+                    }),
+                );
+            }
+        }
+        // The chief's body dies: an extra body, no unit of the band (MZB-109), so no survivor is
+        // lost with it; Java sends CHIEF_KILLED alone (MZB-272). Any fight of a band kills the
+        // chief once, if a body holds one: a band that walked in (MZB-461) placed it with its
+        // sighting (MZB-491).
+        if f.kill_chief
+            && self
+                .bodies
+                .get_mut(&agent)
+                .is_some_and(|b| b.chief.take().is_some())
+        {
+            let op = self.op();
+            self.push(
+                at + f.after + 20,
+                Obs::ChiefKilled(boundary::ChiefKilled {
+                    agent,
+                    epoch,
+                    by: boundary::BY_PLAYER,
+                    killer: self.player,
+                    op,
+                }),
+            );
         }
     }
 
@@ -1223,6 +1292,37 @@ impl FakeConflict {
     /// (§4.9, *Orders and answers*). With a player near, the lines Rule U holds wait (MZB-433):
     /// see [`Hold`] and `waits`; they are answered when they go.
     fn reconcile(&mut self, r: &boundary::CampReconcile, at: Tick) {
+        // Java's homecoming (MZB-464): each HAND_BACK line names a party (`a`) and its epoch
+        // (`b`), and one the plugin holds at that epoch is ended whatever the line's outcome:
+        // its body is gone, and BAND_DEMATERIALIZED (reason 1) names its survivors.
+        for l in r
+            .lines
+            .iter()
+            .filter(|l| l.action == boundary::ACTION_HAND_BACK)
+        {
+            if self
+                .bodies
+                .get(&l.a)
+                .is_some_and(|b| u64::from(b.epoch) == l.b)
+                && let Some(b) = self.bodies.remove(&l.a)
+            {
+                let survivors = b
+                    .members
+                    .iter()
+                    .map(|(&k, &v)| (k, v))
+                    .filter(|e| e.1 > 0)
+                    .collect();
+                self.push(
+                    at + self.leave_ticks,
+                    Obs::Dematerialized(boundary::BandDematerialized {
+                        agent: l.a,
+                        epoch: b.epoch,
+                        reason: 1,
+                        survivors,
+                    }),
+                );
+            }
+        }
         let live = self
             .camps
             .get(&r.faction)
