@@ -200,7 +200,11 @@ mod tests {
         }
         assert_eq!(o.len(), cmds.len(), "restored, not gated");
         o.begin_replay();
-        assert_eq!(o.len(), 0, "every queued ship command is dropped at the start");
+        assert_eq!(
+            o.len(),
+            0,
+            "every queued ship command is dropped at the start"
+        );
         for c in cmds
             .iter()
             .filter(|c| gate(c).replaying != Replaying::Never)
