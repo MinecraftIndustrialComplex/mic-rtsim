@@ -7880,6 +7880,16 @@ above; the replay gate's are RP-170 and up in docs/replay-gate.md.
   Fork taken: this changes an existing row, which the lead's brief did not name, and the conservative option
   is the stricter one (nothing sent while replaying); the first take after the replay end sends every party
   once (MZB-451), so nothing is lost.
+- **MZB-487** (the saved form of a party's march; MZB-453 built): `put_party` and `get_party` end with
+  `march_rev` (var u64), `march_due` (a bool) and `unseen_due` (a u64 tick), after `casualty_ops`. The magic is
+  `RTCB`, META_VERSION 10, with the history comments extended. `march_due` is saved, so a mark made before a
+  save survives it; `Conflict::rebuild_march_due` builds the unsaved list from the flags in handle order, at
+  the end of `load` and of `open_paged` (the parties are resident in both). `begin_replay` marks every party
+  again, so a saved flag and a replay's mark meet at one entry (`march_changed` pushes only a clear flag). The
+  revision is saved with the party: Java's per-session map takes any revision a session's first record
+  carries, and a restart's first record is one past the pages' last. Fork: a state hash now moves with a
+  take's flags, so two engines that took commands at different steps differ by hash; no existing test
+  compares such a pair.
 
 ## M11 Aloft
 

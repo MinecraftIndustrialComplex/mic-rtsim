@@ -75,17 +75,21 @@ use crate::tunables::ConflictTunables;
 /// heir, and the resident state ends with the tribute stacks being placed after the held passes
 /// (M9, MZB-437, MZB-448). RTC10, whose four magic bytes are `RTCA` (A for ten): the stats end
 /// with the lurk's five (lurks, lurks_ended, passes, passes_watched, lurk_robberies), after M9's
-/// three and M7's seven (M8, MZB-690).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCA");
+/// three and M7's seven (M8, MZB-690). RTC11, `RTCB`: a party ends with its march record's
+/// revision, whether one is due, and the tick its watcher's unseen check is booked for (M10,
+/// MZB-453, MZB-458); the list of the parties whose record is due is not saved, and a load builds
+/// it from the flags.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCB");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
 /// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7). 8: a
 /// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448). 9: the
-/// resident state's stats end with the lurk's five (M8, MZB-690).
+/// resident state's stats end with the lurk's five (M8, MZB-690). 10: a party's row ends with its
+/// march revision, its due flag and its unseen tick (M10, MZB-453).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 9;
+const META_VERSION: u16 = 10;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -873,6 +877,9 @@ fn put_party(w: &mut Writer, x: &Party) {
     for op in &x.casualty_ops {
         w.u64(*op);
     }
+    w.var_u64(u64::from(x.march_rev));
+    w.bool(x.march_due);
+    w.u64(x.unseen_due.0);
 }
 
 fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
@@ -933,9 +940,9 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
             let n = r.len_prefix(8)?;
             (0..n).map(|_| r.u64()).collect::<codec::Result<Vec<_>>>()?
         },
-        march_rev: 0,
-        march_due: false,
-        unseen_due: Tick::ZERO,
+        march_rev: get_u32(r)?,
+        march_due: r.bool()?,
+        unseen_due: Tick(r.u64()?),
     })
 }
 
@@ -1748,6 +1755,7 @@ impl Conflict {
         }
         let mut c = Self::get_resident(r, tun, cultures)?;
         c.get_structures(r)?;
+        c.rebuild_march_due();
         c.factions.rows = PagedRows::decode_all(FACTION_TABLE, FACTIONS_PER_PAGE, r)?;
         c.sources.rows = PagedRows::decode_all(SOURCE_TABLE, SOURCES_PER_PAGE, r)?;
         c.places.rows = PagedRows::decode_all(PLACE_TABLE, PLACES_PER_PAGE, r)?;
@@ -1973,6 +1981,7 @@ impl Conflict {
         })()
         .map_err(fmt)?;
         r.finish_check().map_err(fmt)?;
+        c.rebuild_march_due();
         let (bf, bs, bp) = split(budget);
         c.factions.rows = PagedRows::open(FACTION_TABLE, FACTIONS_PER_PAGE, source.clone(), bf, nf);
         c.sources.rows = PagedRows::open(SOURCE_TABLE, SOURCES_PER_PAGE, source.clone(), bs, ns);

@@ -396,3 +396,72 @@ fn a_band_that_ends_while_replaying_sends_no_end() {
         "and nothing for what is gone"
     );
 }
+
+// ---- the saved state (MZB-453, RTC11 / META 10) ------------------------------------------------
+
+/// MZB-453: a party's march revision, its due flag and its unseen tick survive a save and a paged
+/// save, and the load builds the list of due parties from the flags, so the first take after a
+/// restart sends exactly the parties whose record was due, one revision on.
+#[test]
+fn the_march_fields_survive_a_save_and_a_paged_save() {
+    use rtsim_conflict::scenario::META_KEY;
+    use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+    use std::sync::{Arc, RwLock};
+
+    let mut r = Run::new(48);
+    let a = r.raid();
+    let b = r.raid();
+    r.flush(Tick(21));
+    let muster = r.c.parties[a].until.max(r.c.parties[b].until);
+    r.run(muster);
+    // `a` has a record due (a unit lost in a step that was not taken); `b`'s was sent.
+    let epoch = embody(&mut r, a);
+    let o = casualty(&r, a, epoch);
+    r.ingest(o, muster + 1);
+    r.c.parties[a].unseen_due = Tick(777);
+    assert!(r.c.parties[a].march_due && !r.c.parties[b].march_due);
+    assert_eq!(r.c.parties[a].march_rev, 2, "mustering, then out");
+    assert_eq!(r.c.parties[b].march_rev, 2);
+    let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(back.state_hash(), r.c.state_hash());
+    for p in [a, b] {
+        assert_eq!(back.parties[p].march_rev, r.c.parties[p].march_rev);
+        assert_eq!(back.parties[p].march_due, r.c.parties[p].march_due);
+        assert_eq!(back.parties[p].unseen_due, r.c.parties[p].unseen_due);
+    }
+    assert_eq!(back.parties[a].unseen_due, Tick(777));
+    // The paged save reads back the same, one dir, nothing resident but the parties.
+    let dir = std::env::temp_dir().join(format!("rtsim-march-persist-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = Arc::new(RwLock::new(
+        PageStore::open(&dir, Durability::NoSync).unwrap(),
+    ));
+    r.c.attach_store(store.clone(), 8 << 10);
+    let mut batch = SaveBatch::new();
+    let tickets = r.c.save_paged(&mut batch, META_KEY);
+    store.write().unwrap().commit(batch, 0).unwrap();
+    r.c.saved(tickets);
+    let mut paged = Conflict::open_paged(
+        store.clone(),
+        8 << 10,
+        META_KEY,
+        r.c.tun.clone(),
+        r.c.cultures.clone(),
+    )
+    .unwrap()
+    .expect("a meta page");
+    for p in [a, b] {
+        assert_eq!(paged.parties[p].march_rev, r.c.parties[p].march_rev);
+        assert_eq!(paged.parties[p].march_due, r.c.parties[p].march_due);
+    }
+    // Both loads send only what was due, each one revision on.
+    let rev = r.c.parties[a].march_rev;
+    for c in [&mut paged, &mut { back }] {
+        let got = marches_of(&c.take_commands());
+        assert_eq!(got.len(), 1, "only the party whose record was due");
+        assert_eq!(got[0].agent, Party::agent(a));
+        assert_eq!(got[0].revision, rev + 1);
+        assert!(marches_of(&c.take_commands()).is_empty());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
