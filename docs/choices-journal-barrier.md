@@ -143,6 +143,19 @@ record applied while off goes in at its own tick, never at the frozen clock.
 - WORK_CATALOG is left alone: it is latest state (the whole catalogue), sent once a session and
   not journaled, so a replay never brings it back at another tick. It is still taken while off, at
   the frozen clock.
+- **The cap.** The list is bounded by count: `KEPT_CAP` is 24,576 inputs (`Link::kept_cap`, which
+  a test lowers). Over it, `Link::keep` drops the oldest drop-eligible input, repeatedly, until the
+  list fits or none is left. Drop-eligible are the inputs whose loss costs a sentiment or
+  reputation nudge and nothing else: a caravan or resident hurt, killed (the village report) or
+  rescued, and a talk (`CaravanReport`, `VillageReport`, `Talked`). A new report over a list of
+  loss records is the oldest there is and goes itself. Never dropped: trade, caravan trade, robbery
+  and goods in, a taken or killed member (goods that left the sim's row), an adoption (a village for
+  good, with its type), a base mark or unmark, a house placed, a work's answer (a resident or a work
+  for good). `UnmarkBase` is in the kept class although it only removes a base: a base unmarked and
+  never heard stays in the world for good. If loss records and structure alone pass the cap, all are
+  kept over it. Each drop adds to `kept_dropped`, each insert that leaves the list over the cap adds
+  to `kept_over` (both this session's, not saved), and a WARN line is logged at the first and then at
+  each power of two of the counter, so a day of overflow is a dozen lines.
 
 **Why.** The engine acknowledges every journaled record it admits, whatever a module's switch
 (`Replay`), and Java drops what it saw acknowledged and does not send it again. Phase 1 used to
@@ -150,6 +163,35 @@ ignore its records while off (U10, PR13), so a caravan robbed or traded with bet
 and its despawn kept in the sim's row the goods the player now has, and a dupe followed at the
 switch-on. Booking at the frozen clock instead would be wrong too: tick-derived op ids and events
 differ between the live run and a replay (J3).
+
+**The cap's estimate** (synthetic, no real server's data). A busy day of switch-off, 40 players
+online on average for 24 hours, 960 player-hours, with these rates per player-hour: resident trades
+10, caravan trades 0.5, robbery stacks taken 1, members taken or killed 0.25, caravan or resident
+hurts 3, rescues 0.25, talks 5; per day 150 villages adopted (an adoption is a Join and, for a typed
+village, its style: 290 inputs), 160 houses placed, 160 work answers and 40 bases marked. That is
+9,600 + 480 + 960 + 240 + 2,880 + 240 + 4,800 + 290 + 160 + 160 + 40 = 19,850 inputs, of which 11,930
+are loss records or structure (never dropped) and 7,920 are reports. The cap, 24,576, holds that day
+with 24 percent to spare; the reports are what the cap trims. Loss records and structure alone pass
+the cap after about 2.06 days of switch-off at this load (24,576 / 11,930), or after about 25
+hours at twice the players (80 on average, 23,860 of them in a day): **that is the residual**, the list then grows past the cap, one
+WARN line at the first and at each power of two, with every loss record kept and applied at the
+switch-on. At about 32 bytes an entry, ten days of this load would be about 119,000 entries (loss
+records and structure only) and about 3.8 MB in the meta page, rewritten at every save.
+
+**The cap against the page.** The page store has no limit on a page below 4 GiB (the length is a
+`u32`), so the budget is mine: the meta page is rewritten at each save, goes through the store's log
+(which folds at 4 MiB), and I held it under 1 MiB. Measured in the unit bench
+`a_list_filled_to_the_cap_saves_loads_and_drains` with the mix above at the cap: 24,576 entries,
+773,339 bytes (31.5 per entry), save and load 6 to 12 ms, and a whole drain at the switch-on 7 ms
+for the inputs themselves (the 49 bases in the bench's mix cost about 25 ms each on top, 1.2 s, which
+is the world adding a node as it would live). The worst case, every entry a robbery of ten goods, is
+1.68 MB, which no mix reaches: a robbery is a stack, mostly one to four goods. So one meta page holds
+the cap and the list is not paged. If a server's switch-off regularly passes the residual above,
+paging the list (a page per few thousand entries) is the next step, not a higher cap.
+
+The drop also means arm A and arm B of D1 are equal only under the cap. Over it, A (a restart with
+phase 1 off) has dropped reports that B (a restart with it on, applying each record as it comes)
+applied. A crash while off keeps the list as saved, so a drop already made is not made again.
 
 **Cost.** One list in the meta page (empty on, a few bytes), a second path through the records
 (`book` and `apply_booked`, which the on path takes too), a drain at four call sites, and one more
@@ -199,6 +241,23 @@ to now.
   no test sends a RESIDENT_HURT, a resident RESCUE or a base UNMARK while off. A quiet-window control
   (no records: nothing changes, the capture matches) keeps the comparison honest.
 
+**Tests of the cap** (`engine/phase1.rs`; the first four failed on the uncapped list, which kept
+every entry):
+
+- `an_overflowing_kept_list_drops_the_oldest_report_and_never_a_loss_record`: with a cap of 5 and a
+  robbery, a hurt, a trade, a talk and a join kept, a sixth input drops the hurt at 20 (printed on
+  the uncapped list: ticks [10, 20, 30, 40, 50, 60], wanted [10, 30, 40, 50, 60]), a seventh the
+  talk; over a list of loss records one more is kept over the cap and a new report goes itself.
+- `the_cap_counts_and_warns_on_the_first_drop_and_at_powers_of_two`: nine drops count 9 (printed
+  on the uncapped list: 0) and warn at the 1st, 2nd, 4th and 8th; five loss records over the cap
+  count 5 and warn at the 1st, 2nd and 4th.
+- `loss_records_over_the_cap_are_all_kept_and_applied_at_the_switch_on`: a cap of 3, three villages
+  and 40 trades heard with 40 hurts among them: 43 kept (83 on the uncapped list), 40 hurts dropped,
+  and at the switch-on every village is adopted and all 40 trades are heard by the world.
+- `a_capped_list_survives_a_save_and_load`: a list over its cap of 6 with 7 loss records (14 on the
+  uncapped list) reads back equal, and after the load a further report is the one that goes.
+- `a_list_filled_to_the_cap_saves_loads_and_drains`: the size bench above.
+
 **Left.**
 
 - The census stays ignored while off (latest state; the next one after the switch-on lands).
@@ -206,4 +265,7 @@ to now.
   engine's reply to a catalogue is not tick-derived.
 - `docs/deploy-rehearsal-omegasrv.md` still describes phase 1 ignoring its records while off, as it
   was when the rehearsal ran.
-- The kept list has no cap: a window of hours with many players trading is a few thousand inputs.
+- The residual of the cap: loss records and structure alone past 24,576 inputs (about two days of
+  the synthetic busy load) are kept over it, with a WARN. A report dropped for the cap is a
+  sentiment or reputation nudge lost for good; the engine acknowledged it and Java will not send it
+  again.

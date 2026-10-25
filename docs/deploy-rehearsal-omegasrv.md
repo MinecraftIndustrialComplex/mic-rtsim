@@ -670,10 +670,13 @@ found by the first reset and checked by the second (6.7).
 7. **A reset forgets the houses the sim built.** The registry keeps them and the village is adopted
    again with its grown box, but the engine no longer knows which houses it built, nor a build in
    flight at the stop. No house was built in the rehearsal: this is from the code.
-8. **Phase 1 switched off and on loses the villages first seen while it was off.** The engine ignores
-   phase 1's records while it is off (U10), Java registers the village as adopted all the same, and
-   unlike the industry module nothing announces it again when phase 1 comes back. From the code; the
-   rehearsal never switched a module.
+8. **Phase 1 switched off and on keeps the villages first seen while it was off** (RP-300, docs/choices-journal-barrier.md).
+   The engine hears phase 1's journaled records while it is off: an adoption, a trade, a robbery and
+   the rest are kept at their own ticks in the meta page, so a crash keeps them too, and applied in
+   time order when phase 1 comes back; only censuses are ignored. The list has a cap (`KEPT_CAP`): over
+   it the oldest hurt, rescue and talk reports are dropped (a sentiment nudge lost) with a WARN, and
+   adoptions and every loss record are never dropped, so a very long switch-off can pass the cap with
+   those alone. From the code; the rehearsal never switched a module.
 
 ## 7. What a migration would need
 
