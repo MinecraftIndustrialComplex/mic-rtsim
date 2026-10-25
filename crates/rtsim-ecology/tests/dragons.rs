@@ -525,7 +525,21 @@ fn grudge_raid(
     turrets: f32,
     observed: Option<(u32, u32)>,
 ) -> (Dragons, rtsim_industry::fake::FakeWorld, World) {
+    grudge_raid_in(watched, turrets, observed, false)
+}
+
+/// [`grudge_raid`], the whole run inside a session's replay when `replaying` (docs/replay-gate.md
+/// §6.1): the replay has not ended when it returns.
+fn grudge_raid_in(
+    watched: bool,
+    turrets: f32,
+    observed: Option<(u32, u32)>,
+    replaying: bool,
+) -> (Dragons, rtsim_industry::fake::FakeWorld, World) {
     let (mut w, mut d) = world(13);
+    if replaying {
+        d.begin_replay(true);
+    }
     // Watched: someone stays at the farm all along (the fake world loads it, and a loaded
     // district with a player near is watched).
     let visits = if watched {
@@ -670,6 +684,50 @@ fn a_watched_district_gets_a_real_fight_and_the_same_bounded_damage() {
     assert_eq!(seen.outcome, unseen.outcome);
     assert_eq!(seen.destroyed, unseen.destroyed);
     assert!(seen.destroyed > 0, "blocks are lost: {seen:?}");
+    d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
+}
+
+/// docs/replay-gate.md §6.1, RP-75: a grudge raid on a district that is watched while a session's
+/// replay runs (the player at the farm is the last session's, so the dragon is not to come in
+/// person) is the abstract raid: the same bounded damage booked on the district, the same hunt
+/// booked for the dragon, and the dragon flies on, abstract. Today (the base): it materializes in
+/// the middle of the replay.
+#[test]
+fn a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract() {
+    let raid = |f: &rtsim_industry::fake::FakeWorld| {
+        f.engine
+            .district(synth::FARM)
+            .unwrap()
+            .attacks
+            .iter()
+            .find(|a| a.source == rtsim_industry::threat::ThreatSource::Dragon)
+            .cloned()
+            .expect("a dragon raid is booked")
+    };
+    let (mut d, fake, mut w) = grudge_raid_in(true, 0.0, None, true);
+    assert!(fake.engine.district(synth::FARM).unwrap().watched);
+    assert_eq!(d.stats.materialized, 0, "it never came in person");
+    assert!(d.stats.district_raids >= 1, "{:?}", d.stats);
+    assert!(d.replay_gate_counts().deferred >= 1);
+    assert_eq!(d.replay_gate_counts().never, 0);
+    let held = raid(&fake);
+    assert_eq!(held.skipped, None, "{held:?}");
+    assert!(held.destroyed > 0, "blocks are lost: {held:?}");
+    // The books are what a live run's are: the same raid, outcome and damage.
+    let (live, live_fake, _) = grudge_raid_in(true, 0.0, None, false);
+    assert!(live.stats.materialized >= 1, "the live run came in person");
+    let seen = raid(&live_fake);
+    assert_eq!((held.at, held.count), (seen.at, seen.count));
+    assert_eq!(held.outcome, seen.outcome);
+    assert_eq!(held.destroyed, seen.destroyed);
+    assert_eq!(d.stats.district_raids, live.stats.district_raids);
+    d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
+    // The replay ends with the dragon abstract, and the books still check.
+    d.replay_done(&mut w, Tick(80_000));
+    assert!(d.take_commands().iter().all(|c| !matches!(
+        c,
+        Cmd::Materialize(_) | Cmd::Depart(_) | Cmd::Steer(_)
+    )));
     d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 

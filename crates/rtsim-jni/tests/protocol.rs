@@ -2360,6 +2360,93 @@ mod dragons {
         assert_eq!(e.dragons_restore_check(), (None, false));
         e.close(false, Duration::from_secs(5)).unwrap();
     }
+
+    /// A lair's own dragon, adopted (embodied) and saved, then killed by a player. The session
+    /// ends in a crash (the journal holds the death the pages lack, and the next session replays
+    /// it) or, for the control, in a clean close (the pages hold it). The dragons after the
+    /// restart and its replay.
+    fn dragons_after_a_death(tag: &str, crash: bool) -> usize {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        let first = adoptions(&j);
+        assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
+        let (agent, epoch) = (first[0].agent, first[0].epoch);
+        save_durable(&e, &mut j);
+        assert_eq!(summary(&e).0, 1, "one dragon at the save");
+
+        j.dragon_obs(&O::Died(db::Died {
+            agent,
+            epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(summary(&e).0, 0, "the session that went on: the dragon is dead");
+        let saved = if crash {
+            let saved = j.crash();
+            assert!(
+                saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == db::DRAGON_DIED),
+                "the journal holds the death the pages lack"
+            );
+            saved
+        } else {
+            let saved = j.world_save();
+            e.close(true, Duration::from_secs(5)).unwrap();
+            saved
+        };
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let alive = summary(&e).0;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        alive
+    }
+
+    /// docs/replay-gate.md §5.1 (RP-70): the bodies the pages hold embodied stay embodied through
+    /// the replay, so the journal's DRAGON_DIED of the last session's body finds it. Today (the
+    /// base): the session start made every dragon abstract first, the death found nothing, and
+    /// the dead dragon was back (1 alive, 0 expected).
+    #[test]
+    fn a_dragon_killed_after_a_save_stays_dead_after_a_crash() {
+        assert_eq!(
+            dragons_after_a_death("dragon-died-crash", true),
+            0,
+            "the replayed death counts: the dragon stays dead"
+        );
+    }
+
+    /// The control: without the crash the pages hold the death.
+    #[test]
+    fn a_dragon_killed_after_a_save_stays_dead_after_a_clean_restart() {
+        assert_eq!(dragons_after_a_death("dragon-died-clean", false), 0);
+    }
 }
 
 // ---- ships (docs/boundary.md §7) ------------------------------------------------------------------
