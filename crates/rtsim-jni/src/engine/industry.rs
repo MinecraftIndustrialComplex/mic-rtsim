@@ -1587,13 +1587,33 @@ mod tests {
             .collect()
     }
 
+    /// The chain writes the link sends next, in order: its resends, then its queue.
+    fn writes_to_send(st: &State) -> Vec<OpId> {
+        let resent = st.industry.resend.iter().filter_map(|(_, c)| match c {
+            Cmd::WriteChain(w) => Some(w.op),
+            _ => None,
+        });
+        resent.chain(queued_writes(st)).collect()
+    }
+
+    /// How the module comes back on in [`writes_after_a_held_write`].
+    #[derive(Clone, Copy, PartialEq)]
+    enum Back {
+        /// MODULES in the session, W still in the link's queue (the buffer was full).
+        SwitchQueued,
+        /// MODULES in the session, W written before the switch-off and not answered.
+        SwitchWritten,
+        /// A stop with the module off and a restart whose config has it on, W written and not
+        /// answered: the restart resends it from the outbox.
+        Restart,
+    }
+
     /// U-c part 3 (RP-294): a chain write the switch held. The engine hands a write W of the
     /// mine's iron on at 20,100 (the link's queue takes it); W is still the link's when industry
-    /// goes off: in its queue (the buffer was full), or written and in its outbox, unanswered
-    /// (`written`). The switch on comes thirty periods later. Returns (W, the chain writes in the
-    /// link's queue after the switch-on's step), then checks that an answer still unheard ten
-    /// periods past the switch-on frees the frogport for the next write (SC113).
-    fn writes_after_a_held_write(written: bool) -> (Vec<OpId>, Vec<OpId>) {
+    /// goes off (`back` says where). The module comes back on thirty periods later. Returns (W,
+    /// the chain writes the link sends after the switch-on's step), then checks that an answer
+    /// still unheard ten periods past the switch-on frees the frogport for the next write (SC113).
+    fn writes_after_a_held_write(back: Back) -> (Vec<OpId>, Vec<OpId>) {
         let (_tx, rx) = std::sync::mpsc::channel();
         let mut st = State::new(rx, None);
         st.industry.engine = chain_pair();
@@ -1602,7 +1622,7 @@ mod tests {
         simulate(&mut st);
         let held = queued_writes(&st);
         assert_eq!(held.len(), 1, "one write a step");
-        if written {
+        if back != Back::SwitchQueued {
             let i = st
                 .industry
                 .queue
@@ -1617,9 +1637,16 @@ mod tests {
         let period = Tunables::default().replay.chain_write_ticks;
         let on = 20_100 + 30 * period;
         st.game_time = on as i64;
-        set_enabled(&mut st, true);
+        if back == Back::Restart {
+            // The engine and the link as the pages saved at the stop hold them: frozen at the
+            // switch-off, W in the outbox. Java applied nothing past sequence 40.
+            st.industry.resume(40);
+            session_start(&mut st, on as i64, MODULE_INDUSTRY);
+        } else {
+            set_enabled(&mut st, true);
+        }
         simulate(&mut st);
-        let after = queued_writes(&st);
+        let after = writes_to_send(&st);
         // W goes to Java now; unanswered ten periods after that, the frogport is written again.
         st.industry.queue.clear();
         live(&mut st.industry.engine, MILL, on);
@@ -1640,7 +1667,7 @@ mod tests {
     /// mine's iron again under a new op, with W still queued: Java wrote the iron twice.
     #[test]
     fn a_chain_write_queued_at_the_switch_off_is_not_written_again_at_the_switch_on() {
-        let (held, after) = writes_after_a_held_write(false);
+        let (held, after) = writes_after_a_held_write(Back::SwitchQueued);
         assert_eq!(after, held, "W alone goes");
     }
 
@@ -1648,7 +1675,17 @@ mod tests {
     /// again under a new sequence (Java skips it by op if it applied it), and nothing else.
     #[test]
     fn a_chain_write_unanswered_at_the_switch_off_is_not_written_again_at_the_switch_on() {
-        let (held, after) = writes_after_a_held_write(true);
+        let (held, after) = writes_after_a_held_write(Back::SwitchWritten);
+        assert_eq!(after, held, "W alone goes");
+    }
+
+    /// The switch-on is a restart: the server stopped with industry off, and starts with it on.
+    /// The restart resends W from the outbox under its sequence, and the session start's catch-up
+    /// of the thirty periods writes the frogport no second time.
+    #[test]
+    fn a_chain_write_unanswered_at_a_stop_with_industry_off_is_not_written_again_at_a_restart_with_it_on()
+     {
+        let (held, after) = writes_after_a_held_write(Back::Restart);
         assert_eq!(after, held, "W alone goes");
     }
 }
