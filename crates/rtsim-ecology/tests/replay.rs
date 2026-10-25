@@ -165,13 +165,7 @@ fn materialized(agent: u64, epoch: u32) -> Obs {
     })
 }
 
-fn dematerialized(
-    agent: u64,
-    epoch: u32,
-    reason: u32,
-    health: f32,
-    pos: (f64, f64, f64),
-) -> Obs {
+fn dematerialized(agent: u64, epoch: u32, reason: u32, health: f32, pos: (f64, f64, f64)) -> Obs {
     Obs::Dematerialized(boundary::Dematerialized {
         agent,
         epoch,
@@ -239,7 +233,12 @@ fn alive_after_a_death(crash: bool) -> usize {
         .expect("the spawn-egg dragon is adopted");
     assert_eq!(d.dragons.len(), 1);
     let at_the_save = (w.save(), d.save());
-    d.ingest(&mut w, &mut NoInfrastructure, &died(a.agent, a.epoch), Tick(900));
+    d.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &died(a.agent, a.epoch),
+        Tick(900),
+    );
     assert_eq!(d.dragons.len(), 0, "the session that went on: it is dead");
     if crash {
         let (mut w2, mut d2) = from_pages(&at_the_save.0, &at_the_save.1);
@@ -317,7 +316,8 @@ fn a_replayed_body_on_a_fresh_engine_only_raises_the_floor() {
 #[test]
 fn an_epoch_that_ended_in_the_replayed_window_is_never_reused() {
     let at = (4000.0, 100.0, 4000.0);
-    let endings: Vec<(&str, Box<dyn Fn(u64) -> Obs>)> = vec![
+    type Ending = Box<dyn Fn(u64) -> Obs>;
+    let endings: Vec<(&str, Ending)> = vec![
         (
             "captured",
             Box::new(move |a| dematerialized(a, 1, 3, 400.0, at)),
@@ -606,12 +606,11 @@ fn leaving() -> (Rig, u64, u32) {
         }),
         Tick(200),
     );
-    let departs: Vec<_> = r
-        .d
-        .take_commands()
-        .into_iter()
-        .filter(|c| matches!(c, Cmd::Depart(_)))
-        .collect();
+    let departs: Vec<_> =
+        r.d.take_commands()
+            .into_iter()
+            .filter(|c| matches!(c, Cmd::Depart(_)))
+            .collect();
     assert_eq!(departs.len(), 1, "a starving dragon is told to leave");
     assert!(matches!(
         r.d.dragon(r.x).unwrap().state,
@@ -632,7 +631,13 @@ fn near(r: &Rig, at: Tick, x: i32, z: i32) -> bool {
 fn a_depart_answered_not_embodied_keeps_the_dragon_where_it_was() {
     let (mut r, agent, epoch) = leaving();
     let at = Tick(300);
-    let zeros = dematerialized(agent, epoch, boundary::DEMAT_NOT_EMBODIED, 0.0, (0.0, 0.0, 0.0));
+    let zeros = dematerialized(
+        agent,
+        epoch,
+        boundary::DEMAT_NOT_EMBODIED,
+        0.0,
+        (0.0, 0.0, 0.0),
+    );
     ingest(&mut r, &zeros, at);
     let x = r.d.dragon(r.x).unwrap();
     assert_eq!(x.health, 350.0, "health as the engine had it");
@@ -661,7 +666,11 @@ fn a_dematerialized_of_a_held_dragon_takes_its_health_and_position() {
     );
     let x = r.d.dragon(r.x).unwrap();
     assert_eq!(x.health, 275.0);
-    assert!(near(&r, at, 4200, 4300), "{:?}", x.position(&r.d.topo, &r.d.lairs, at));
+    assert!(
+        near(&r, at, 4200, 4300),
+        "{:?}",
+        x.position(&r.d.topo, &r.d.lairs, at)
+    );
 }
 
 // ---- test 4: the dragon adopted in the replayed window (RP-13) --------------------------------------

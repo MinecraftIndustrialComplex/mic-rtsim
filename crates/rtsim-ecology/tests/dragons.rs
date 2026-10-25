@@ -724,10 +724,11 @@ fn a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract
     d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
     // The replay ends with the dragon abstract, and the books still check.
     d.replay_done(&mut w, Tick(80_000));
-    assert!(d.take_commands().iter().all(|c| !matches!(
-        c,
-        Cmd::Materialize(_) | Cmd::Depart(_) | Cmd::Steer(_)
-    )));
+    assert!(
+        d.take_commands()
+            .iter()
+            .all(|c| !matches!(c, Cmd::Materialize(_) | Cmd::Depart(_) | Cmd::Steer(_)))
+    );
     d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 

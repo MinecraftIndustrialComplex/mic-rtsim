@@ -2400,7 +2400,11 @@ mod dragons {
         }));
         j.idle();
         j.idle();
-        assert_eq!(summary(&e).0, 0, "the session that went on: the dragon is dead");
+        assert_eq!(
+            summary(&e).0,
+            0,
+            "the session that went on: the dragon is dead"
+        );
         let saved = if crash {
             let saved = j.crash();
             assert!(
