@@ -10402,6 +10402,70 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// RP-134 (the M9 check, P3-1): stacks decided and answered after the last save are booked
+    /// from their replayed COMMAND_RESULTs. A gold block (81 nuggets) is paid and its two stacks
+    /// (64 and 17) land and are answered APPLIED, then a second block and its two; the pages are
+    /// not saved after them, and the server dies. The replay books the four answers by their ops,
+    /// so nothing is owed and the camp's count is 4; once the camp is in, its census sends no
+    /// stack: the 162 nuggets are in the chest once. Without the booking the replay owed 162 and
+    /// the census sent them again (its first stack of 64 the op of before, answered DUPLICATE_OP,
+    /// the rest new ops, put down a second time).
+    #[test]
+    fn stacks_answered_after_a_save_are_booked_from_their_replayed_answers() {
+        let (dir, e, mut j) = grove("grove-tribute-answered", 3);
+        camp_in(&mut j);
+        save(&e, &mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        chest_report(&mut j, chest);
+        for (k, op) in [0x6011u64, 0x6012].into_iter().enumerate() {
+            j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+                faction: CAMP,
+                slot: 0,
+                generation: 0,
+                flags: cb::PAID_STRAY,
+                player: PLAYER,
+                op: (1 << 63) | op,
+                items: vec![cb::Item {
+                    item: block,
+                    count: 1,
+                }],
+            }));
+            let want = (0, 0, 2 * (k as u32 + 1));
+            for _ in 0..16 {
+                if owed_tribute(&e) == want {
+                    break;
+                }
+                j.idle();
+            }
+            assert_eq!(owed_tribute(&e), want, "both stacks of block {k} answered");
+        }
+        assert_eq!(j.containers.get(&chest).copied(), Some(162));
+        assert_eq!(tribute_ops(&j).len(), 4);
+        let saved = j.world_save();
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (e, mut j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            owed_tribute(&e),
+            (0, 0, 4),
+            "the four answers are booked by their ops"
+        );
+        camp_in(&mut j);
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert!(
+            tribute_ops(&j).is_empty(),
+            "no stack goes again: {:?}",
+            tribute_ops(&j)
+        );
+        assert_eq!(owed_tribute(&e), (0, 0, 4));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// M9 (review P3-6, and the rule that a HUNT_APPLIED clears a hunt by its op id alone): the
     /// first hunt is answered and booked, a raid a day later makes another the held hunt, and a
     /// late copy of the first's answer, live and again after a save and a reopen, leaves it with
