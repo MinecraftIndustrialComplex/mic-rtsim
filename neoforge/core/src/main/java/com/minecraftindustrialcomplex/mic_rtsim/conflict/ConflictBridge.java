@@ -1177,41 +1177,45 @@ public final class ConflictBridge implements SessionPlugin {
         Map<Slot, Vec3> holds = new HashMap<>();
         // A camp body this party set out with in this hand-over is handed to its puppet where it stands (§4.9).
         List<Camps.SetOut> handOffs = new ArrayList<>();
+        Lurk lk = lurks.get(p.agent);
         for (Slot sl : todo) {
+            // M8: the hold point first, on the rail's normal at the spot distance, not at the engine's rounded spot (the
+            // re-check's P2). None standable refuses the lurk: the stack is tried again after RETRY_FAILED ticks. It is
+            // decided before a camp body is claimed (the second re-check's P3): a refusal after the claim left the hand-off
+            // claimed for the tick, or handed a body a player can see to a puppet that holdLurks then discarded; before it,
+            // the SET_OUT is unclaimed and the tick's end resolves it as a take, with the body's records on a marker.
+            Vec3 at = lk == null ? null : holdPoint(level, lk, sl);
+            if (lk != null && at == null) {
+                lurksRefused++;
+                for (Mob q2 : made)
+                    q2.discard();
+                for (Camps.SetOut h : handOffs)
+                    reconciler.unclaim(h);
+                return false;
+            }
             Camps.SetOut so = reconciler.claim(p.agent, p.epoch, sl.body);
             Mob from = so == null ? null : reconciler.claimed(so);
             double x, y, z;
             float yw = yaw;
             if (from != null) {
+                // handed to its puppet where it stands; the hold walks the puppet to the hold point
                 x = from.getX();
                 y = from.getY();
                 z = from.getZ();
                 yw = from.getYRot();
+                if (at != null)
+                    holds.put(sl, at);
+            } else if (at != null) {
+                x = at.x;
+                y = at.y;
+                z = at.z;
+                yw = (float) (Mth.atan2(lk.track().z - z, lk.track().x - x) * (180.0 / Math.PI)) - 90.0f;
+                holds.put(sl, at);
             } else {
                 double[] q = sl.placeXZ(now);
                 x = q[0];
                 z = q[1];
-                Lurk lk = lurks.get(p.agent);
-                if (lk != null) {
-                    // M8: on the rail's normal at the spot distance, not at the engine's rounded spot (the re-check's P2); none
-                    // standable refuses the lurk: the stack is tried again after RETRY_FAILED ticks
-                    Vec3 at = holdPoint(level, lk, sl);
-                    if (at == null) {
-                        lurksRefused++;
-                        for (Mob q2 : made)
-                            q2.discard();
-                        for (Camps.SetOut h : handOffs)
-                            reconciler.unclaim(h);
-                        return false;
-                    }
-                    x = at.x;
-                    y = at.y;
-                    z = at.z;
-                    yw = (float) (Mth.atan2(lk.track().z - z, lk.track().x - x) * (180.0 / Math.PI)) - 90.0f;
-                    holds.put(sl, at);
-                } else {
-                    y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
-                }
+                y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
             }
             Mob m;
             try {
@@ -2514,7 +2518,9 @@ public final class ConflictBridge implements SessionPlugin {
                         Vec3 at = holdPoint(level, l, sl);
                         if (at == null) {
                             // No standable point on either side of the rail: the body is taken out of the world and made again
-                            // after the requeue cooldown (and refused again if the world is the same)
+                            // after the requeue cooldown (and refused again if the world is the same). Only a body that stood
+                            // before its lurk was known, or whose spot moved, gets here: a stack placed by `spawn` has its hold point (or was refused
+                            // there, before a camp body was claimed), the second re-check's P3
                             lurksRefused++;
                             despawn(sl);
                             st.retryAt = Math.max(st.retryAt, now + REQUEUE_COOLDOWN);
