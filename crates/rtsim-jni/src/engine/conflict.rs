@@ -19,6 +19,9 @@
 //!   party leaves on Peaceful, MZB-17). The Mowzie kinds whose engine half comes with a later
 //!   slice (`Conflict::later`) are decoded, counted as deferred and given to the conflict at its
 //!   present, before the clock runs, so that it spends their op ids as `Replay` does (MZB-23).
+//!   RAIL_PASS is live (M7): its times are translated to world ticks and the conflict holds it
+//!   until its train's arrival; the industry module's journaled TRAIN_ARRIVED and TRAIN_UNWATCHED
+//!   then call [`rail_call`] with the line the train ran (MZB-312).
 //!   Java's ids are translated to the conflict's own first (C2-4): items to
 //!   the phase 1 catalogue's goods, bodies to the culture data's, structures and pollution types
 //!   to the conflict's own dictionary; dimensions are Java's ids (the conflict's frames).
@@ -58,7 +61,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use rtsim_conflict::boundary::{self, Cmd, Item, Obs};
-use rtsim_conflict::engine::{REPLAY_HOLD_SLACK_TICKS, body_id, body_names, item_of};
+use rtsim_conflict::engine::{
+    REPLAY_HOLD_SLACK_TICKS, RailCall, StationEnd, body_id, body_names, item_of,
+};
 use rtsim_conflict::presence::ChunkKey;
 use rtsim_conflict::{
     Conflict, ConflictStats, ConflictTickets, ConflictTunables, Cultures, SignalKind,
@@ -581,6 +586,11 @@ fn translate(st: &State, o: &mut Obs) {
                 b.body = own_body(st, b.body);
             }
         }
+        Obs::RailPass(p) => {
+            // The pass's entry and exit are game time (docs/boundary.md §9.3): the engine's clock.
+            p.entry = phase1::world_tick(st, p.entry) as i64;
+            p.exit = phase1::world_tick(st, p.exit) as i64;
+        }
         Obs::ChiefPaid(p) => p.items = own_items(st, &p.items),
         Obs::TributePaid(t) => t.items = own_items(st, &t.items),
         Obs::GiftGiven(g) => g.items = own_items(st, &g.items),
@@ -648,6 +658,29 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
     ingest(st, &o, at);
+}
+
+/// A train arrived (or stopped outside every district) at the record's time, and the conflict
+/// holds rail passes of it: they are credited to the line it ran, or let go when it names none
+/// (M7, MZB-312). The other modules and the conflict's own events run to the record's time first.
+pub(super) fn rail_call(
+    st: &mut State,
+    rec: &Rec<'_>,
+    train: u64,
+    line: Option<(StationEnd, StationEnd)>,
+) {
+    // This session's first live record ended the replay already, at the top of the engine's
+    // `journaled` (docs/replay-gate.md §2.2, trigger 1), before the catch-up that may make a feud
+    // escalate (MZB-375, since the M7 merge).
+    shared::catch_up(st, rec);
+    let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
+    let at = Tick(phase1::world_tick(st, gt))
+        .max(st.conflict.engine.now())
+        .max(st.phase1.world.now());
+    let call = RailCall { train, line };
+    with_infra(st, |c, w, _| c.rail_call(w, &call, at));
+    st.phase1.taint();
+    take_commands(st);
 }
 
 /// Applies one record at `at` (the modules were run to its time by the caller: the shared clock).
