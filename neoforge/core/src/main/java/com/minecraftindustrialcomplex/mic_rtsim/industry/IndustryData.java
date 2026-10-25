@@ -112,7 +112,8 @@ public final class IndustryData extends SavedData {
         return mergeLinks.computeIfAbsent(dim, d -> new ArrayList<>());
     }
 
-    Long2LongOpenHashMap stationJoins(ResourceKey<Level> dim) {
+    /** J6's saved pairs (SECTIONS.md §2.1, choice SC156): each station chunk to the chunk it last served. Public for GameTests. */
+    public Long2LongOpenHashMap stationJoins(ResourceKey<Level> dim) {
         return stationJoins.computeIfAbsent(dim, d -> new Long2LongOpenHashMap());
     }
 
