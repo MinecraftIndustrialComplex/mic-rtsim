@@ -6526,6 +6526,39 @@ mod replay_path {
             deltas(&cmds)
         }
 
+        /// The report's sections follow the running replay: the unit that replays shows replaying,
+        /// the one gated off keeps its failed verdict, and a unit the fallback froze shows frozen.
+        #[test]
+        fn the_report_names_the_units_a_running_replay_runs() {
+            use crate::glass::report::section_state as ss;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+            let c = comp(&e.glass, D);
+            let (sa, sb) = (
+                c.sections.section_of[p0 as usize] as usize,
+                c.sections.section_of[p1 as usize] as usize,
+            );
+            // Before the replay starts nothing replays, whatever may.
+            let r = c.report(&e.glass.districts[&D]);
+            assert_eq!((r.sections[sa].state, r.sections[sb].state), (ss::PASSED, ss::FAILED));
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let dg = &e.glass.districts[&D];
+            let r = comp(&e.glass, D).report(dg);
+            assert_eq!(r.sections[sa].state, ss::REPLAYING, "{:?}", r.sections[sa]);
+            assert_eq!(r.sections[sb].state, ss::FAILED, "{:?}", r.sections[sb]);
+            assert!(r.sections[sa].may_replay && !r.sections[sb].may_replay);
+            // The slow line passes a later window: it may replay now, but the running replay left
+            // it gated off, so it is not replaying.
+            judge(&mut e, &[(p1, verdict::PASS)]);
+            let r = comp(&e.glass, D).report(&e.glass.districts[&D]);
+            assert!(r.sections[sb].may_replay);
+            assert_eq!(r.sections[sb].state, ss::PASSED, "{:?}", r.sections[sb]);
+            assert_eq!(r.sections[sa].state, ss::REPLAYING);
+        }
+
         /// A unit that may not replay is gated off while the other replays (§3.5): its press runs
         /// nothing, and its stores are pools only the world's own changes touch (a package into
         /// one stays there). Before S2c the district window's failure froze the whole district.
