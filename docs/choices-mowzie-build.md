@@ -2841,7 +2841,8 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
     `processUnloads` stores it (HIDDEN and LOADED), so the first version of the two tests collapsed one tick later
     and answered alike on fixed and unfixed builds; C2ME's real state differs from the hidden one only in not being
     queued. Each test checks `areEntitiesLoaded` at its answer step, so a periodic save (every 6,000 ticks) landing in
-    the window fails with its own message, and its `onEnd` discards the body so no reloaded body is left.
+    the window fails with its own message, and its `onEnd` discards the body, so no reloaded body is left unless an autosave landed in the hide window (that
+    run fails at the loaded check first, and the saved body can come back with the chunk).
     `aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded` hides the den's chunk and sends a TAKE by tag:
     STALE, the Frostmaw stays; tracked again, the same line is DONE. The `playable` gate is what that test shows.
     Not run, so not shown failing; on the unfixed `playable` the TAKE is answered DONE through the index.
