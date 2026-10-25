@@ -612,10 +612,13 @@ fn runs_the_clock(o: &Order) -> bool {
 }
 
 /// A test's order that waits for the replay end, with every unit after it (RP-33): one that runs
-/// the clock, and a conflict command (RP-66), which joins the conflict's queue around its gate
-/// (docs/replay-gate.md §4.4) and so must not go while the replay runs.
+/// the clock, a conflict command (RP-66) and a ship command (RP-96), which join their module's
+/// queue around its gate (docs/replay-gate.md §4.4, §4.7) and so must not go while the replay
+/// runs.
 fn waits_for_the_replay_end(o: &Order) -> bool {
-    runs_the_clock(o) || matches!(o, Order::ConflictCommand { .. })
+    runs_the_clock(o)
+        || matches!(o, Order::ConflictCommand { .. })
+        || matches!(o, Order::ShipCommand { .. })
 }
 
 fn spawn_size(members: &[crate::orders::MemberOrder]) -> usize {
@@ -1385,7 +1388,7 @@ impl Engine {
         // A test's order that runs the clock to the hand-over's time, Java's present, waits for
         // the replay end, and so does every unit after it, in order (docs/replay-gate.md §3.6,
         // RP-33): taken now it would carry the modules past the replayed records still to come.
-        // A conflict command waits too, as it bypasses the gate (RP-66).
+        // A conflict command and a ship command wait too, as they bypass the gate (RP-66, RP-96).
         if !st.replaying {
             for unit in std::mem::take(&mut st.held_units) {
                 self.take_unit(&mut st, unit);

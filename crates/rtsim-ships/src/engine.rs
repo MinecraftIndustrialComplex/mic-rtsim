@@ -71,6 +71,7 @@ use crate::boundary::{self, By, Cmd, Item, Member, Obs, Role as WireRole, Uuid};
 use crate::fight::{self, Observed, Pairing};
 use crate::geom::{Polyline, dist};
 use crate::network::{self, Dock, Lane, Loop, NetworkLints};
+use crate::outbox::{GateCounts, Outbox};
 use crate::timetable::{self, Phase, Service, ServiceKind, VoyageTimes};
 use crate::tunables::ShipTunables;
 use crate::water::{self, WaterMask};
@@ -707,7 +708,17 @@ pub struct Ships {
     pub lints: NetworkLints,
     /// Docks with more (service, stop) pairs than berths.
     pub over_berths: Vec<(u32, u32)>,
-    pub(crate) outbox: Vec<Cmd>,
+    /// The commands not yet taken, behind the replay gate (docs/replay-gate.md §4.7, RP-90).
+    pub(crate) outbox: Outbox,
+    /// Whether this engine came back from its pages (docs/replay-gate.md §5.2, RP-31): set by
+    /// [`Ships::begin_replay`]; only then is a replayed SHIP_MATERIALIZED honoured. In memory only.
+    pub(crate) replay_from_pages: bool,
+    /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30, RP-57): agent to the highest epoch
+    /// a replayed or copied record named that the ship does not hold. The ship's next body takes
+    /// `max(epoch, floor) + 1` ([`Ships::next_epoch`]); [`Ships::replay_done`] folds each into its
+    /// ship's epoch. A floor for a ship the engine does not have yet is kept until the ship's
+    /// first body (RP-92). In memory only.
+    pub(crate) floors: BTreeMap<u64, u32>,
     pub log_enabled: bool,
     pub log: Vec<LogEntry>,
     /// The event archive's recorder (VIEWER.md §10.1): off until the host turns it on; not state.
@@ -851,7 +862,9 @@ impl Ships {
             stats: ShipStats::default(),
             lints: NetworkLints::default(),
             over_berths: Vec::new(),
-            outbox: Vec::new(),
+            outbox: Outbox::default(),
+            replay_from_pages: false,
+            floors: BTreeMap::new(),
             log_enabled: false,
             log: Vec::new(),
             tape: Tape::new(),
@@ -1031,7 +1044,20 @@ impl Ships {
     }
 
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.take()
+    }
+
+    /// Between [`Ships::begin_replay`] and [`Ships::replay_done`]: the session's replay runs
+    /// (docs/replay-gate.md §3.3).
+    pub fn replaying(&self) -> bool {
+        self.outbox.replaying()
+    }
+
+    /// The replay gate's counts since this engine was built or loaded (docs/replay-gate.md
+    /// §4.3): commands dropped while replaying, commands of a "never" kind decided while
+    /// replaying (a bug) and the last such kind, and the decisions that embody deferred.
+    pub fn replay_gate_counts(&self) -> GateCounts {
+        self.outbox.counts()
     }
 
     fn schedule(&mut self, at: Tick, ev: Ev) {
@@ -2339,11 +2365,33 @@ impl Ships {
         }
     }
 
-    /// A session started (docs/boundary.md §2.3: puppets never outlive a session): every ship
-    /// the engine thought embodied is abstract again with the last state it knew, and every
-    /// voyage may enter a player's view again (its body is gone). For the native link; the
-    /// engine's own runs have no sessions.
-    pub fn session_start(&mut self) {
+    /// A session's replay begins (docs/replay-gate.md §5.1, RP-5, RP-91): no ship changes. What
+    /// the pages hold embodied stays embodied, at its epoch, so that the journal's records of the
+    /// last session's bodies (their damage, their loss, the cargo players took) count against the
+    /// bodies they were. What is still queued takes its verdict (every ships command is dropped:
+    /// the bodies of an earlier session are gone), and every push is gated until
+    /// [`Ships::replay_done`]. The bodies become abstract at the replay end.
+    ///
+    /// `from_pages`: whether this engine came back from its pages (RP-31): only then is a
+    /// replayed SHIP_MATERIALIZED honoured (§5.2). For the native link; the engine's own runs
+    /// have no sessions.
+    pub fn begin_replay(&mut self, from_pages: bool) {
+        self.replay_from_pages = from_pages;
+        self.outbox.begin_replay();
+    }
+
+    /// The session's replay has caught up (docs/replay-gate.md §5.6; docs/boundary.md §2.3:
+    /// puppets never outlive a session): every ship the engine thought embodied is abstract
+    /// again with the last state it knew, and every voyage may enter a player's view again (its
+    /// body is gone). A ship kept sailing only because it was in view lays up now (§2.4.6a
+    /// rule 7, PC23). Every player's own interest area ends (a no-op under the native link,
+    /// where the ships keep none: U8). The epoch floors become the ships' epochs, for the pages
+    /// (§5.3). Then pushes are queued as usual. A no-op unless a replay runs.
+    pub fn replay_done(&mut self, w: &mut World) {
+        if !self.outbox.replaying() {
+            return;
+        }
+        self.outbox.replay_done();
         let was = std::mem::take(&mut self.embodied);
         for &id in &was {
             if let Some(x) = self.ships.get_mut(id) {
@@ -2351,10 +2399,65 @@ impl Ships {
             }
         }
         self.seen_by.clear();
-        // A ship kept sailing only because it was in view lays up now (§2.4.6a rule 7, PC23).
+        for v in self.players.values_mut() {
+            if let Some(s) = v.interest.take() {
+                w.legs.cancel(s.leg);
+            }
+        }
+        // Every ship is abstract now: a floor becomes its ship's epoch. A floor for a ship the
+        // engine does not have stays, for the ship's first body (RP-92).
+        let floors = std::mem::take(&mut self.floors);
+        for (agent, floor) in floors {
+            match Ship::id_of_agent(agent).filter(|&s| self.ships.get(s).is_some()) {
+                Some(s) => {
+                    let x = &mut self.ships[s];
+                    x.epoch = x.epoch.max(floor);
+                }
+                None => {
+                    self.floors.insert(agent, floor);
+                }
+            }
+        }
         let now = self.now;
         for id in was {
             self.lay_up_if_waiting(id, now);
+        }
+    }
+
+    /// The epoch of a ship's next body (docs/replay-gate.md §5.3, RP-7, RP-30): above its own and
+    /// above its floor. The decision spends the floor with [`Ships::set_epoch`] once it embodies
+    /// (a body that stays abstract after all, across a seam, keeps it).
+    fn next_epoch(&self, id: ShipId) -> u32 {
+        let floor = self.floors.get(&Ship::agent(id)).copied().unwrap_or(0);
+        self.ships[id].epoch.max(floor).wrapping_add(1)
+    }
+
+    /// A ship's epoch becomes `epoch`, which its floor is at or below: the floor is spent.
+    fn set_epoch(&mut self, id: ShipId, epoch: u32) {
+        self.ships[id].epoch = epoch;
+        self.floors.remove(&Ship::agent(id));
+    }
+
+    /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a
+    /// ship's epoch ([`Obs::ship_epoch`]) raises the agent's floor, whatever its kind and
+    /// whatever the record does after (a refusal, a stale report, a record of a ship not held or
+    /// not in the pages yet), before any check that drops it. Live records name this session's
+    /// epochs, which the ship holds. rtsim-jni calls [`Ships::ingest_copy`] for a copy, which
+    /// does it first.
+    pub fn fold_epoch(&mut self, o: &Obs) {
+        if let Some((agent, epoch)) = o.ship_epoch() {
+            self.raise_floor(agent, epoch);
+        }
+    }
+
+    /// An epoch the engine has seen for `agent` that its ship may not hold (§5.3).
+    fn raise_floor(&mut self, agent: u64, epoch: u32) {
+        let held = Ship::id_of_agent(agent)
+            .and_then(|s| self.ships.get(s))
+            .is_some_and(|x| x.epoch >= epoch);
+        if !held {
+            let f = self.floors.entry(agent).or_insert(0);
+            *f = (*f).max(epoch);
         }
     }
 
@@ -2517,6 +2620,10 @@ impl Ships {
                 player,
                 meeting,
             } => {
+                // As `seen` (RP-94): not seen yet while the replay runs.
+                if self.outbox.defer() {
+                    return;
+                }
                 let ok = w.legs.is_meeting_live(&meeting)
                     && self
                         .ships
@@ -2684,6 +2791,11 @@ impl Ships {
         meeting: Meeting,
         at: Tick,
     ) {
+        // Nothing embodies while the last session's journal replays (docs/replay-gate.md §6,
+        // RP-94): a sighting from the pages' wheel is not seen yet, and not booked as seen.
+        if self.outbox.defer() {
+            return;
+        }
         let ok = w.legs.is_meeting_live(&meeting)
             && self
                 .ships
@@ -2757,6 +2869,10 @@ impl Ships {
         player: ActorId,
         at: Tick,
     ) {
+        // The backstop behind `seen` (RP-94): this decision embodies.
+        if self.outbox.defer() {
+            return;
+        }
         let x = &self.ships[id];
         let s = x.service.expect("timetabled");
         let sv = &self.services[s as usize];
@@ -2799,7 +2915,7 @@ impl Ships {
                 flags: u32::from(k == 0),
             });
         }
-        let epoch = x.epoch + 1;
+        let epoch = self.next_epoch(id);
         let mut flags = boundary::MAT_CLAMP_ABOVE_SURFACE;
         if fix.phase == Phase::Dock {
             flags |= boundary::MAT_DOCKED;
@@ -2832,7 +2948,7 @@ impl Ships {
         });
         self.outbox.push(cmd);
         let arrive = tick_of(fix.times.arrive);
-        self.ships[id].epoch = epoch;
+        self.set_epoch(id, epoch);
         self.set_embodied(id, true);
         self.stats.materialized += 1;
         let uuid = self.uuid_of(player);
@@ -3428,6 +3544,12 @@ impl Ships {
 
     /// A hunt may begin with a raid on a player district by the coast, or on a player's booked leg
     /// crossing the lane (C16 to C18), through the industry threat interface.
+    ///
+    /// Not while the last session's journal replays (docs/replay-gate.md §6.1, RP-95): industry
+    /// is not held, so its district or train would book the raid at industry's present, a state
+    /// the replayed window has not reached, and the port village's raid asks a watcher that no
+    /// replayed record settles. The hunt goes on, without its raid: a raid decided after the
+    /// last save is lost with the session that took it, never made twice or made worse.
     fn coast_raid(
         &mut self,
         w: &mut World,
@@ -3437,6 +3559,9 @@ impl Ships {
         at: Tick,
         until: Tick,
     ) {
+        if self.outbox.defer() {
+            return;
+        }
         let tm = self.temperament(s);
         let chance = tm.bend(Trait::Aggressive, self.tun.coast_raid_milli as i32, 50);
         let roll = StreamKey::new(self.seed, SYS_RAID, self.ships[s].seed)
@@ -3958,6 +4083,11 @@ impl Ships {
         viewer: Option<(i64, i64)>,
         at: Tick,
     ) {
+        // Nothing embodies while the replay runs (RP-94): the pirates stay abstract, and the
+        // raid that asked goes on with its books (the watched branch's, as live).
+        if self.outbox.defer() {
+            return;
+        }
         let x = &self.ships[s];
         // The image on the player's side (TP11); never across an edge_stop seam (TP12). The
         // player's position is its interest area's centre, kept in the shared leg index.
@@ -3980,7 +4110,7 @@ impl Ships {
                 flags: u32::from(k == 0),
             });
         }
-        let epoch = x.epoch + 1;
+        let epoch = self.next_epoch(s);
         let phase = match x.pirate.as_ref().map(|p| p.state) {
             Some(PState::Hunting { .. }) => 4,
             _ => 5,
@@ -4011,7 +4141,7 @@ impl Ships {
             cargo: Self::items(&x.cargo),
             members,
         }));
-        self.ships[s].epoch = epoch;
+        self.set_epoch(s, epoch);
         self.set_embodied(s, true);
         self.stats.materialized += 1;
         let uuid = self.uuid_of(player);
@@ -5318,6 +5448,12 @@ impl Ships {
 
     /// Whether a player's interest centre is within `view_radius` of `dock` on `frame` at `at`.
     fn point_in_view(&self, w: &World, frame: u16, dock: (i32, i32), at: Tick) -> bool {
+        // Every dock is watched while the last session's journal replays (docs/replay-gate.md
+        // §6.1, RP-95): what a decision that asks would do in view it does not do, and the
+        // ones that decide only unwatched wait for the replay end. No player is routed yet.
+        if self.outbox.replaying() {
+            return true;
+        }
         self.view_areas(w).any(|r| {
             r.path.frame == frame
                 && r.path.t0 <= at
@@ -5350,6 +5486,50 @@ impl Ships {
     }
 
     // ---- observations --------------------------------------------------------------------------
+
+    /// A SHIP_MATERIALIZED (docs/replay-gate.md §5.2, §5.3). Live, Java's answer to a command of
+    /// this session, which embodied the ship when it was decided: nothing to do. While
+    /// replaying, Java's answer to a decision of the last session: on an engine that came back
+    /// from its pages it is honoured (RP-93); on a fresh engine (RP-31) its epoch only raised the
+    /// ship's floor ([`Ships::fold_epoch`]).
+    ///
+    /// Honoured: the ship takes the record's epoch, embodied, as the last session had it, without
+    /// the command, so that the records of that body that follow (its damage, its loss, its
+    /// cargo, its dematerialization) count against it. Only an active ship, and only a newer
+    /// epoch: an older or the same one is what the pages hold already, and a lost or laid-up
+    /// ship has no body to count against (its late reports change nothing). The ship's voyage
+    /// and books are the pages' (the replay end makes it abstract again).
+    fn materialized(&mut self, m: &boundary::Materialized) {
+        if !self.outbox.replaying() || !self.replay_from_pages {
+            return;
+        }
+        let Some(s) = Ship::id_of_agent(m.agent) else {
+            return;
+        };
+        let Some(x) = self.ships.get(s) else {
+            return;
+        };
+        if !x.is_active() || m.epoch <= x.epoch {
+            return;
+        }
+        self.set_epoch(s, m.epoch);
+        self.set_embodied(s, true);
+        self.stats.materialized += 1;
+    }
+
+    /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
+    /// RP-8, RP-9, RP-97), called by the host instead of [`Ships::ingest`] while it applies one.
+    /// Its body is gone, so a copy embodies nothing: every copy that names a ship's epoch
+    /// raises the agent's epoch floor to it, live or replayed (RP-57), and a SHIP_MATERIALIZED
+    /// copy does nothing more. Every other kind as [`Ships::ingest`]: by the ship's epoch as
+    /// held, or by op id, so a copy of a body this engine never had changes nothing.
+    pub fn ingest_copy(&mut self, w: &mut World, o: &Obs, mask: &dyn WaterMask, at: Tick) {
+        self.fold_epoch(o);
+        match o {
+            Obs::Materialized(_) => {}
+            _ => self.ingest(w, o, mask, at),
+        }
+    }
 
     fn ship_of(&self, agent: u64, epoch: u32) -> Option<ShipId> {
         let s = Ship::id_of_agent(agent)?;
@@ -5387,6 +5567,10 @@ impl Ships {
     /// What the plugin reported (docs/boundary.md §7.3). Applied at `at`, after the world and the
     /// ships have run to it. A record whose op id was applied before is skipped.
     pub fn ingest(&mut self, w: &mut World, o: &Obs, mask: &dyn WaterMask, at: Tick) {
+        // Before any check that drops the record (RP-57).
+        if self.outbox.replaying() {
+            self.fold_epoch(o);
+        }
         let op = match o {
             Obs::Sunk(k) => k.op,
             Obs::Captured(c) => c.op,
@@ -5397,7 +5581,8 @@ impl Ships {
             return;
         }
         match o {
-            Obs::State(_) | Obs::Materialized(_) => {}
+            Obs::State(_) => {}
+            Obs::Materialized(m) => self.materialized(m),
             Obs::SpawnRejected(r) => {
                 if let Some(s) = self.ship_of(r.agent, r.epoch) {
                     self.set_embodied(s, false);

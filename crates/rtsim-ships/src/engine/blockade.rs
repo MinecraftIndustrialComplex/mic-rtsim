@@ -662,6 +662,12 @@ impl Ships {
     /// (its timetable's place then, its home dock's berth): the view radius and a body's radius,
     /// as a meeting counts it, on the same frame.
     fn relaunch_in_view(&self, w: &World, s: ShipId, at: Tick) -> bool {
+        // Watched while the last session's journal replays, as `point_in_view` (RP-95): the
+        // relaunch waits for the slot's next stay, and the first one after the replay end is
+        // judged by the players routed then.
+        if self.outbox.replaying() {
+            return true;
+        }
         let frame = self.ships[s].frame;
         let here = self.position(w, s, at);
         let reach = u64::from(self.tun.view_radius) + u64::from(self.tun.body_radius);
