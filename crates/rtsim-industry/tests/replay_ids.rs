@@ -1186,7 +1186,7 @@ fn two_districts_on_one_well_write_back_at_one_tick_and_both_apply() {
     assert_eq!(applied.len(), 2, "two ops: {wells:?}");
 }
 
-// ---- RP-57's floors for the chunk epochs (P2-1 of the review, RP-259) -----------------------
+// ---- no floor for the chunk epochs (P2-1 of the review, RP-259) ---------------------------
 
 /// The chunks load with the epochs their attachments hold, and the mill is live again.
 fn reload(at: u64, epochs: [u32; 2]) -> Vec<Timed> {
@@ -1221,16 +1221,18 @@ fn epochs_by_chunk(cmds: &[Cmd]) -> [Vec<u32>; 2] {
     out
 }
 
-/// Rule 5 for the industry (an ending epoch is never reused): a round decided after the pages,
-/// applied by the world on the vault's chunk at epoch 1, which Minecraft then saved with the chunk;
-/// the crash lost the journal's tail (review finding 13: the chunk's save came before the
-/// journal's), so the replay has none of its records. After the session start the chunks load
-/// with the vault's at epoch 1 in its attachment, and the round the engine decides again has other
-/// content (the iron of a longer span). It must take epoch 2: at epoch 1 Java answers DUPLICATE,
-/// and the next load's done path (applied epoch at or above the round's) books it as applied,
-/// which the world never did. On 2a975cc3 it took epoch 1 again: ChunkLoaded raised nothing.
+/// A round decided after the pages, applied by the world on the vault's chunk at epoch 1, which
+/// Minecraft then saved with the chunk; the crash lost the journal's tail (review finding 13: the
+/// chunk's save came before the journal's), so the replay has none of its records. After the
+/// session start the chunks load with the vault's at epoch 1 in its attachment, and the engine
+/// decides the same absence's round again, with other content (the iron of a longer span). It
+/// takes epoch 1 again, so Java refuses it: the difference is lost, never applied twice (RP-272).
+/// The review's P2-1 floor (IND_CHUNK_LOADED's applied epoch raising the chunk's counter) gave it
+/// epoch 2, which Java applies: in rtsim-jni's
+/// `a_reconcile_in_a_chunk_saved_ahead_of_the_journal_is_never_applied_twice` the world then made
+/// 3,840 bars from 3,841 ore a second time. The same on 2a975cc3: a control, not a regression test.
 #[test]
-fn an_epoch_the_chunks_saved_before_the_crash_hold_is_never_decided_again() {
+fn a_round_decided_again_after_a_crash_meets_the_epoch_its_chunk_holds() {
     let mut steps = base_steps();
     let mut load = Step::new(9_500);
     load.journaled = reload(9_200, [0, 0]);
@@ -1268,26 +1270,25 @@ fn an_epoch_the_chunks_saved_before_the_crash_hold_is_never_decided_again() {
     );
     assert_eq!(
         epochs_by_chunk(&again),
-        [vec![2], vec![]],
-        "the vault chunk's round after the crash takes one past the epoch its attachment holds: {:?}",
+        [vec![1], vec![]],
+        "the round decided again meets the epoch its chunk holds, which Java refuses: {:?}",
         chunk_rounds(&again)
     );
 }
 
-/// RP-57's floor from IND_RECONCILE_RESULT: a result names an epoch the world applied on a chunk,
-/// whether the engine still waits for it or not (a round the replay decided otherwise, so under
-/// another op: `duplicate_results`). The chunk's next round takes one past it. On 2a975cc3 the
-/// next round took the district's epoch 1: the result raised nothing, and Java would answer the
-/// round DUPLICATE.
+/// An IND_RECONCILE_RESULT for a round the engine does not wait for (`duplicate_results`: the
+/// replay decides that round after the result's record, from a latest-wins record or in the held
+/// step) raises no floor either: the round decided again meets the result's epoch, and Java
+/// refuses it. A floor would give it epoch 2, applied a second time. The same on 2a975cc3.
 #[test]
-fn a_result_the_engine_does_not_wait_for_raises_its_chunks_next_epoch() {
+fn a_result_the_engine_does_not_wait_for_raises_no_epoch() {
     let mut e = mill(1_000, 0.05);
     e.ingest(&t(
         60,
         Obs::ReconcileResult(rtsim_industry::obs::ReconcileResult {
             op: rtsim_kernel::journal::OpId(0x5eed),
             district: MILL,
-            epoch: 4,
+            epoch: 1,
             chunk: chunks()[0],
             entries: vec![],
             destroyed: vec![],
@@ -1301,15 +1302,15 @@ fn a_result_the_engine_does_not_wait_for_raises_its_chunks_next_epoch() {
     e.ingest(&load_state(100, LoadState::Unloaded, 0));
     e.advance_to(Tick(5_000));
     let _ = e.drain_commands();
-    for rec in reload(5_000, [4, 0]) {
+    for rec in reload(5_000, [1, 0]) {
         e.ingest(&rec);
     }
     e.advance_to(Tick(5_100));
     let out = e.drain_commands();
     assert_eq!(
         epochs_by_chunk(&out),
-        [vec![5], vec![]],
-        "the vault's chunk one past the result's epoch: {:?}",
+        [vec![1], vec![]],
+        "the vault's chunk at its own next epoch, the result's: {:?}",
         chunk_rounds(&out)
     );
 }

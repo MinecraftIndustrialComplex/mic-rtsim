@@ -996,14 +996,15 @@ fn pages_behind_the_world_save_rederive_the_same_reconcile() {
         Some(0),
         "the replayed results answered the re-derived reconcile"
     );
-    // The replay re-derived them under the live op ids, which Java answered before its save: they
-    // are not written again (RP-259). A reconcile re-derived under another op would be.
-    assert!(ops(&j).is_empty(), "nothing sent under another op id");
-    let unsent = j.e.with_industry(|_, s| s.answered_unsent);
-    assert!(
-        unsent >= first_ops.len() as u64,
-        "the re-derived reconciles were known answered: {unsent} of {first_ops:x?}"
+    assert_eq!(
+        ops(&j),
+        first_ops,
+        "the same reconciles under the same op ids"
     );
+    // The replay heard them answered APPLIED, and writes them again all the same: Java answers
+    // DUPLICATE (RP-259 drops only an op answered FAILED, the lead's narrowing).
+    let unsent = j.e.with_industry(|_, s| s.answered_unsent);
+    assert_eq!(unsent, 0, "an op answered APPLIED is written again");
     conserves(&j);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
@@ -1626,7 +1627,7 @@ struct Behind {
     applied_again: usize,
     /// The district's reconciles still waiting for an answer after the replay.
     pending: Option<usize>,
-    /// Commands the replay decided again under an op Java answered, not written (RP-259).
+    /// Commands the replay decided again under an op Java answered FAILED, not written (RP-259).
     unsent: u64,
 }
 
@@ -1685,7 +1686,7 @@ fn behind_the_save(tag: &str, filler: usize, capacity: usize, present: Tick) -> 
     let after = ops(&j);
     let unsent = j.e.with_industry(|_, s| s.answered_unsent);
     eprintln!(
-        "{tag}: {replay_handovers} replay hand-overs; first ops {before:x?}, sent after the restart {after:x?}, {unsent} known answered and not sent; applied again {applied_again}, pending {pending:?}"
+        "{tag}: {replay_handovers} replay hand-overs; first ops {before:x?}, sent after the restart {after:x?}, {unsent} known failed and not sent; applied again {applied_again}, pending {pending:?}"
     );
     j.e.close(true, Duration::from_secs(5)).unwrap();
     Behind {
@@ -1707,13 +1708,9 @@ fn a_one_hand_over_replay_rederives_the_same_op_ids() {
     let b = behind_the_save("ind-ids-one", 0, 256 * 1024, day(3.0) + 101);
     assert!(!b.before.is_empty(), "the reconcile ran before the crash");
     assert_eq!(b.replay_handovers, 1, "a replay of one hand-over");
-    // The same reconciles under the same op ids, which Java answered: not written again (RP-259).
-    assert!(b.after.is_empty(), "nothing sent under another op id");
-    assert!(
-        b.unsent >= b.before.len() as u64,
-        "known answered: {}",
-        b.unsent
-    );
+    assert_eq!(b.after, b.before, "the same reconciles, the same op ids");
+    // Heard answered APPLIED while replaying and written again: Java answers DUPLICATE (RP-259).
+    assert_eq!(b.unsent, 0, "an op answered APPLIED is written again");
     assert_eq!(b.applied_again, 0, "nothing applied again");
     assert_eq!(b.pending, Some(0), "the replayed results answer them");
 }
@@ -1740,17 +1737,12 @@ fn a_replay_of_several_hand_overs_rederives_the_same_op_ids() {
         "the replay spans nine hand-overs: {}",
         b.replay_handovers
     );
-    // The same reconciles under the same op ids, which Java answered: not written again (RP-259).
-    assert!(
-        b.after.is_empty(),
-        "nothing sent under another op id (replay hand-overs {})",
+    assert_eq!(
+        b.after, b.before,
+        "the same reconciles under the same op ids (replay hand-overs {})",
         b.replay_handovers
     );
-    assert!(
-        b.unsent >= b.before.len() as u64,
-        "known answered: {}",
-        b.unsent
-    );
+    assert_eq!(b.unsent, 0, "an op answered APPLIED is written again");
     assert_eq!(b.applied_again, 0, "nothing applied again");
     assert_eq!(b.pending, Some(0), "the replayed results answer them");
 }
@@ -1768,7 +1760,7 @@ struct ExchangeBehind {
     /// Every train's cargo at the crash, live and again after the restart.
     cargo_live: Vec<Vec<GoodVec>>,
     cargo_again: Vec<Vec<GoodVec>>,
-    /// Commands the replay decided again under an op Java answered, not written (RP-259).
+    /// Commands the replay decided again under an op Java answered FAILED, not written (RP-259).
     unsent: u64,
 }
 
@@ -1851,7 +1843,7 @@ fn exchange_behind_the_save(tag: &str, filler: usize, capacity: usize) -> Exchan
     let unsent = j.e.with_industry(|_, s| s.answered_unsent);
     eprintln!(
         "{tag}: {replay_handovers} replay hand-overs; exchanges before the save {before:x?}, \
-         sent after the restart {after:x?} ({unsent} known answered, not sent); applied again \
+         sent after the restart {after:x?} ({unsent} known failed, not sent); applied again \
          {applied_again}; cargo at the crash {cargo_live:?}, again {cargo_again:?}"
     );
     j.e.close(true, Duration::from_secs(5)).unwrap();
@@ -1964,7 +1956,7 @@ fn stale_exchange_behind_the_save(tag: &str) -> (ExchangeBehind, i64, i64) {
     eprintln!(
         "{tag}: the call stamped {stamped}, taken live at {taken}; {replay_handovers} replay \
          hand-overs; exchanges before the save {before:x?}, sent after the restart {after:x?} \
-         ({unsent} known answered, not sent); applied again {applied_again}; cargo at the crash \
+         ({unsent} known failed, not sent); applied again {applied_again}; cargo at the crash \
          {cargo_live:?}, again {cargo_again:?}"
     );
     j.e.close(true, Duration::from_secs(5)).unwrap();
@@ -1987,7 +1979,8 @@ fn stale_exchange_behind_the_save(tag: &str) -> (ExchangeBehind, i64, i64) {
 /// past its own; replayed in one hand-over, at its own. On bc669502 the exchange's op derived
 /// from the engine's clock, so the replay sent another op and the world loaded the train twice.
 /// Derived from the call's own tick and named by the train (RP-270, RP-272), it is the live op,
-/// which the replay hears answered: not written again (RP-259).
+/// answered DUPLICATE. The replay heard it answered APPLIED and writes it all the same (RP-259
+/// drops only a FAILED one).
 #[test]
 fn a_station_exchange_taken_late_live_is_applied_once_after_a_crash() {
     let (b, stamped, taken) = stale_exchange_behind_the_save("ind-exch-stale");
@@ -2006,24 +1999,20 @@ fn a_station_exchange_taken_late_live_is_applied_once_after_a_crash() {
         b.cargo_again, b.cargo_live,
         "the trains hold what they held"
     );
-    // Re-derived under its op id, which Java answered: not written again (RP-259). Re-derived
-    // under another op, it would be.
-    assert!(b.after.is_empty(), "nothing sent under another op id");
-    assert!(b.unsent >= 1, "known answered: {}", b.unsent);
+    assert_eq!(b.after, b.before, "re-derived under its op id");
+    assert_eq!(b.unsent, 0, "an op answered APPLIED is written again");
 }
 
 /// The control: the replay of one hand-over takes the train's call at its own tick, re-derives
-/// the exchange under its op id, and the world answers it DUPLICATE. Holds on bc669502. Since
-/// RP-259 the copy is not written: the replay heard the op answered.
+/// the exchange under its op id, and the world answers it DUPLICATE. Holds on bc669502. The
+/// replay heard the op answered APPLIED, and writes the copy all the same (RP-259).
 #[test]
 fn a_station_exchange_replayed_in_one_hand_over_is_applied_once() {
     let b = exchange_behind_the_save("ind-exch-one", 0, 256 * 1024);
     assert_eq!(b.before.len(), 1, "one exchange before the save");
     assert_eq!(b.replay_handovers, 1, "a replay of one hand-over");
-    // Re-derived under its op id, which Java answered: not written again (RP-259). Re-derived
-    // under another op, it would be.
-    assert!(b.after.is_empty(), "nothing sent under another op id");
-    assert!(b.unsent >= 1, "known answered: {}", b.unsent);
+    assert_eq!(b.after, b.before, "re-derived under its op id");
+    assert_eq!(b.unsent, 0, "an op answered APPLIED is written again");
     assert_eq!(b.applied_again, 0, "never applied twice");
     assert_eq!(
         b.cargo_again, b.cargo_live,
@@ -2036,8 +2025,7 @@ fn a_station_exchange_replayed_in_one_hand_over_is_applied_once() {
 /// exchange re-derived under a new op id, which Java's op-id guard (the only guard a carriage
 /// delta has) does not know: the world loads the train a second time (on bc669502: 224 ore live,
 /// 448 after the restart). Held while replaying (RP-274), with the exchange named by its train
-/// and its call's tick (RP-270, RP-272): the same op, heard answered and not written again
-/// (RP-259), loaded once.
+/// and its call's tick (RP-270, RP-272): the same op, answered DUPLICATE, loaded once.
 #[test]
 fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
     let b = exchange_behind_the_save("ind-exch-many", 8_000, rtsim_jni::wire::MIN_CAPACITY);
@@ -2052,10 +2040,8 @@ fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
         b.cargo_again, b.cargo_live,
         "the trains hold what they held"
     );
-    // Re-derived under its op id, which Java answered: not written again (RP-259). Re-derived
-    // under another op, it would be.
-    assert!(b.after.is_empty(), "nothing sent under another op id");
-    assert!(b.unsent >= 1, "known answered: {}", b.unsent);
+    assert_eq!(b.after, b.before, "re-derived under its op id");
+    assert_eq!(b.unsent, 0, "an op answered APPLIED is written again");
 }
 
 /// Iron in the fake world: (in its stores, on its trains, minted, burned).
