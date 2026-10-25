@@ -948,7 +948,7 @@ Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4
 5127; engine/camp.rs about 629, `send_lines`, which M5 wrote as a `Vec` extend around the gate and
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
 table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
-March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
+March have no push site as this table was first written; M7, M9 and M10 bring them (M10's two are in RP-170's note below), and their merges meet the exhaustive match.
 M7 (the M7 merge, §2.7) brings none of them and no other push site (below); M8 (the M8 merge)
 brings AmbushSpot's and TrainRobbed's (below).
 M6 (the M6 merge, §2.7) adds no `Cmd` kind and no push site either. Its routes reach main's:

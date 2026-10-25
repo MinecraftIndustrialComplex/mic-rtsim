@@ -1801,7 +1801,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
 | 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
-| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z; at arcRadius 0 the way the band on the march faces, MZB-457, MZB-482), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
@@ -1827,7 +1827,8 @@ again, would reach the plugin of the next session, which had forgotten what it a
 would die twice. A replay only changes the books; `resend_notices` sends every hunt still held, once,
 when the replay has caught up (MZB-449, amended at the re-check; the guard is temporary, until
 fix/replay-push's one choke point for the outbox declares OWED_HUNT not-while-replaying). BAND_MARCH goes again for
-every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
+every party at a session start, once the replay has caught up (MOWZIE.md §4.16, MZB-484; the outbox's gate drops it
+until then). A CAMP_RECONCILE not answered by a
 session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
 (refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
 (C2-12). DEMAND_SETTLED 5 (withdrawn) follows the last member of an envoy party falling when no
@@ -1914,7 +1915,29 @@ for the next one. No chat, action-bar or title line, and nothing goes back to th
 **BAND_MARCH** replaces the agent's earlier ones (the higher revision wins). The engine's ticks in it
 (musterEndTick, each waypoint's) are game time, as ENVOY_MATERIALIZE's deadline; its waypoints are the
 party's route from the segment it is on (`route[seg]` and `times[seg]`), in chart coordinates. Its
-joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16).
+joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16). Amended for M10
+(MZB-482, MZB-451, MZB-484):
+
+- **musterEndTick is 0 once the band has set out.** It is the muster's end only in phase 1 (mustering);
+  in every later phase it is 0.
+- **The revision is per session.** Java's map of marches is a session's and starts empty; the engine's revision for a party counts up from the saved one, so a
+  restart's first record is one past the pages' last and Java takes whatever revision a session's
+  first record carries. The higher revision replaces the lower; a lower one is dropped.
+- **When a record goes.** The engine sends one when what it says has changed: a new party (mustering),
+  the muster's end, a change of phase or of route (a wait, a fight, the walk home), a loss of units
+  (every kind of loss, a unit left at the camp that dies, the chief's fall or succession turning the
+  chief flag off), and a long route's new segment (MZB-455). It sends nothing for a segment's
+  advance, because the waypoints carry their times and Java reads the position from them with
+  the shared rule (`BandMarch.chartPos`, truncating toward zero). Several changes in one step make
+  one record. A census (a camp coming in or going out) sends none and ends no party. A record
+  with the ended flag (2) goes when the band is home and its row removed (and also when no unit of
+  a band without a chief is left alive); Java drops the agent from its map. Every party goes again
+  at a session start, once the replay has caught up.
+- **None goes while the session's replay catches up.** The engine builds no march record while it
+  replays (`take_commands` and `home` guard on it, MZB-484), and the outbox's `gate` (docs/replay-gate.md
+  §4.4, RP-170) drops a BAND_MARCH pushed or queued then. The first take after the replay's end sends
+  every party's record, with what the replay left (a fighting band is waiting by then), so Java's map is
+  never given a replay's mid-state and never hears of a band that ended in the replay.
 
 ### 9.5 How Java would apply them
 
@@ -1968,7 +1991,11 @@ abstract raids there.
 **A band seen on the march** (its leg crosses a player's interest area) is materialized at its
 place (`arcRadius` 0) and steered along its road (BAND_STEER, one per waypoint, with the tick it
 should get there); it is recalled (reason 4) where its walk leaves the view. Bands on their way home
-are not materialized.
+are materialized too (M10, MZB-482): a routed or finished band walking home in the interest area is met
+as any band on the march is, at its place on the way, facing the way it walks (the bearing of a
+BAND_MATERIALIZE at `arcRadius` 0, MZB-457), steered along the rest of its route, and recalled where the
+walk leaves the view. Java's walk-in places the stacks as the arrival of a band on the march does
+(MZB-469 to MZB-472).
 
 **Mowzie's later records** (MOWZIE.md §4; the Java half of each comes with the slice that builds its
 engine half, §9.6). The train sampler (M7, built; `mic_rtsim_create.TrainSampler`) samples each Create
