@@ -309,8 +309,9 @@ fn place_of(topo: &rtsim_space::Topologies, d: &District, at: Tick) -> Option<At
 /// live run took it at the step's (RP-262). So the amounts are left out, and what it changes (the
 /// train, the deposit, the postbox's good, the frogport's good) and the tick name it: decided
 /// again, it meets the op Java applied and is answered DUPLICATE, so the live change stands,
-/// applied once (lose, never double). A chunk reconcile keeps its whole content: Java's chunk
-/// epoch guards it whatever its op, and its epoch and deltas tell two rounds apart.
+/// applied once (lose, never double). A deposit delta names its district too, outside the
+/// command ([`IndustryOps::derive_with`], RP-275). A chunk reconcile keeps its whole content:
+/// Java's chunk epoch guards it whatever its op, and its epoch and deltas tell two rounds apart.
 fn op_key(c: &Cmd) -> Cmd {
     let marks = |g: &GoodVec| GoodVec::from_pairs(g.goods().map(|g| (g, 1)));
     match c {
@@ -3392,9 +3393,15 @@ impl Engine {
             unplaced: rest,
             ..ReconcileReport::default()
         };
-        // With the round's own tick, never `now` (RP-270), and keyed by the deposit (RP-272).
+        // With the round's own tick, never `now` (RP-270), and keyed by the deposit and the
+        // district (RP-272, RP-275: two districts on one oil chunk write back at one tick).
         for mut c in immediate {
-            c.set_op(self.ops.derive(self.world_seed, self.decided, &op_key(&c)));
+            c.set_op(self.ops.derive_with(
+                self.world_seed,
+                self.decided,
+                &op_key(&c),
+                &d.0.to_le_bytes(),
+            ));
             self.out.push(c);
         }
         let chunks: BTreeSet<ChunkPos> = by_chunk.keys().chain(destroys.keys()).copied().collect();
@@ -4860,7 +4867,10 @@ impl Engine {
                 good: g,
                 delta,
             });
-            c.set_op(self.ops.derive(self.world_seed, at, &op_key(&c)));
+            c.set_op(
+                self.ops
+                    .derive_with(self.world_seed, at, &op_key(&c), &d.0.to_le_bytes()),
+            );
             self.out.push(c);
             self.stats.pollution_pushes += 1;
         }
