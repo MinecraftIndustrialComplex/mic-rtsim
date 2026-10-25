@@ -514,6 +514,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.ships.records += 1;
     let at = at.max(st.ships.engine.now()).max(st.phase1.world.now());
+    // Phase 1's kept inputs up to the tick the world is about to be run to (RP-300).
+    phase1::drain_kept(st, Some(at));
+    let at = at.max(st.phase1.world.now());
     run_engine_at(st, at);
     let m = mask(st);
     // A copy (REASSERT) of an ended session's record is applied by identity, never against a body
