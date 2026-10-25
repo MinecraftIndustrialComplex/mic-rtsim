@@ -636,8 +636,9 @@ ahead:
   its end when the replay clock stopped short of it, RP-188). That holds while Java's two saves
   agree (RP-184): the train's goods (`create_tracks.dat`) and the journal's op index
   (`mic_rtsim_journal.dat`) are separate files and can part. Goods on disk without the journal
-  is still a double, the journal without the goods a loss; §6.1 lists both, and RP-185 proposes
-  the Java change that closes the double. **Decided by the coordinator,
+  is still a double, and the journal without the goods a dupe (Java remembers the op, so the
+  restored train keeps its goods while the raider is credited again; the review's P1-1); §6.1
+  lists both, and RP-185 (a) closes both. **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
   industry's own replay); the long-replay tests run with industry on and off.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
@@ -1228,11 +1229,6 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
 - An M7 track-target party held at a track Java has removed since (§4.4's note).
-- A train raid re-decided after a crash whose op the journal on disk remembers while the train's
-  goods on disk are from before the raid (docs/choices-mowzie-build.md RP-184's J4: the journal's
-  file landed and the tracks' did not). Java answers DUPLICATE and the goods stay on the train,
-  while industry's books and the raider's ledger hold them taken. A window of milliseconds between
-  two writes of one world save.
 - A pirate coast raid the live session made inside what becomes the replayed window: `coast_raid`
   is deferred while replaying and never retried (RP-95, RP-188). The goods left the train once,
   live; the pirates' ledger misses the raid.
@@ -1240,11 +1236,14 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   (RP-183): booked once, and the raider is credited nothing. Unreachable with the host's one save
   batch; the op window's guard is for the tests' hand-built case and any later change to it.
 
-**The one double left** (RP-184's J3): the train's goods on disk after the raid, the journal on
-disk from before it (the tracks file written first and the server dead before the journal's, or
-the journal held by the chunk barrier for up to `GIVE_UP_ROUNDS` saves). The re-decided raid's op
-is one Java forgot, and it is applied again. RP-185 proposes the Java change that makes it exact
-(the applied ops saved with the train) or a loss (the tracks file never ahead of the journal).
+**What slice T alone leaves** (RP-184): J3, a double: the train's goods on disk after the raid,
+the journal on disk from before it (the tracks file written first and the server dead before the
+journal's, or the journal held by the chunk barrier for up to `GIVE_UP_ROUNDS` saves); the
+re-decided raid's op is one Java forgot, and it is applied again. J4, a dupe: the journal on disk
+after the raid, the train's goods from before it (the journal's file written first and the server
+dead before the tracks', a window of milliseconds); Java remembers the op and answers DUPLICATE,
+so the restored train keeps its goods while the re-decided raid credits the raider again. RP-185
+(a), the applied ops saved with the train, makes both exact.
 
 **More than one crash** (the fix round's item 8). A held arrival stays held until its slack or the
 replay end of the first session that reaches one, whichever comes first. A session that crashes or

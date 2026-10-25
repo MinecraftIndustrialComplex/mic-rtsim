@@ -16,7 +16,10 @@ use rtsim_industry::ids::{GoodVec, TrainId};
 use rtsim_industry::threat::{Threat, ThreatSource};
 use rtsim_kernel::clock::Tick;
 use rtsim_world::World;
-use train_raid::{Landed, Order, Raider, Rails, across_a_crash, industry, industry_newer};
+use train_raid::{
+    Dedup, Landed, Order, Raider, Rails, across_a_crash, across_a_crash_on, industry,
+    industry_newer,
+};
 
 const SEED: u64 = 29;
 const TRAIN: TrainId = TrainId(9);
@@ -176,4 +179,37 @@ fn a_bands_ambush_held_by_industry_is_booked_once() {
     );
     assert_eq!((after.applied, after.duplicates), (2, 0));
     assert_eq!(e.books.stolen.total(), live.taken() as i128);
+}
+
+/// J4, the journal landed and `create_tracks.dat` did not (RP-184, the review's P1-1): the band's
+/// pages lost the ambush and it ambushes again in its replay, while the restarted train holds its
+/// goods. What the band carries off into the world (`items_from_districts`) must be what leaves
+/// the train. By T2's ring (saved with the goods, so it forgot the op with them) Java applies the
+/// re-decided threats and the goods leave once. By the journal's index alone (slice T, and T2's
+/// fallback when the ring's mixin did not apply) Java remembers the ops and answers DUPLICATE:
+/// the train keeps its goods and the band carries them off again, a dupe of the live take. On
+/// main the re-decided threats were new ops Java applied, so J4 conserved.
+#[test]
+fn a_bands_ambush_after_a_crash_carries_what_left_the_train() {
+    let c = first_ambush() + 1;
+    for dedup in [Dedup::Ring, Dedup::Journal] {
+        let (b, e) = band();
+        let x = across_a_crash_on(dedup, b, e, TRAIN, S, c, Landed::J4, Order::ResultFirst);
+        let live = x.java.taken() as u64;
+        assert!(live > 0);
+        assert_eq!(
+            x.raider.c.stats.items_from_districts, live,
+            "{dedup:?}: live control"
+        );
+        assert_eq!(
+            x.again.c.stats.items_from_districts, live,
+            "{dedup:?}: the band carries the ambush's goods again"
+        );
+        let left = if dedup == Dedup::Ring { live } else { 0 };
+        assert_eq!(
+            x.java_again.taken() as u64,
+            left,
+            "{dedup:?}: what left the restarted train"
+        );
+    }
 }

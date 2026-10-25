@@ -5486,12 +5486,12 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   build the case by hand. The case table (the raider's pages older than the raid, Java as RP-184
   names its saves):
 
-  | Industry's pages | Java's op index | Java's goods | Main | With A |
+  | Industry's pages | Java's op index | Java's goods | Main | With A (slice T alone) |
   | --- | --- | --- | --- | --- |
   | older than the raid (one batch) | remembered | gone (J1) | twice | once (DUPLICATE, the exchange dropped) |
   | older | forgotten | restored (J2) | once | once |
-  | older | forgotten | gone (J3) | twice | twice (RP-185 would make it once, or a loss) |
-  | older | remembered | restored (J4) | once | never: a loss, the books hold it stolen |
+  | older | forgotten | gone (J3) | twice | twice |
+  | older | remembered | restored (J4) | once | a dupe: never off the train, while the raider is credited again (review P1-1, RP-184) |
   | newer (holds the raid) | either | either | twice past the cooldown (a new op), skipped inside it | nothing booked or sent (`knows_key`) |
 
 - **RP-184** (Java's durability; the coordinator's condition 2; H17 was wrong): the train's goods
@@ -5510,13 +5510,22 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   tracks file is first in the chain and the server dies before the journal's write (milliseconds,
   up to the 10 s wait), or when the barrier holds the journal (up to three autosaves); the journal
   without the goods (J4) when the journal is first and the server dies between the two writes
-  (milliseconds). What A guarantees: once when both landed (J1, the common case: any save between
-  the raid and the crash) or neither (J2); twice in J3, as on main; never in J4, a loss (the goods
-  stay on the train, while industry's books and the raider's ledger hold them taken), which the
-  coordinator's "lose, never double" accepts. Main was once in J2 and J4 and twice in J1 and J3.
-  The trim forgets no op a raider can re-decide: the engine acks after the host's one-batch save,
-  which moved the raider's pages past the raid too. Test:
-  `which_of_javas_saves_landed_decides_once_twice_or_never` (dragons).
+  (milliseconds; the journal is first at the storage map's capacity 64, 256 or 512, and at 16 and
+  32 the two share a bucket and insertion order decides: the review's count). What A alone
+  guarantees: once when both landed (J1, the common case: any save between the raid and the crash)
+  or neither (J2); twice in J3, as on main; and in J4 a dupe, not the loss this record first said
+  (review P1-1): Java remembers the op and answers DUPLICATE, so the restored goods stay on the
+  train, while the re-decided raid credits the raider again (a band's `took_from_players`, the
+  pirates' `district_loot` into haven stock, a dragon's hoard), and the goods exist twice. Main was
+  once in J2 and J4 (in J4 the re-decision was a new op, applied to the restored goods: conserved)
+  and twice in J1 and J3. The trim forgets no op a raider can re-decide: the engine acks after the
+  host's one-batch save, which moved the raider's pages past the raid too. Tests:
+  `which_of_javas_saves_landed_by_the_ring_and_by_the_journal` (dragons, the journal's rows) and
+  `a_bands_ambush_after_a_crash_carries_what_left_the_train` (conflict, J4: the review's repro
+  `rev_j4_the_band_carries_goods_that_never_left_the_train`, which counts the goods across the
+  train and the band together). The harness (`JavaTrain`) dedups by `Dedup::Journal` for slice T
+  alone and by `Dedup::Ring` for RP-185 (a), so the Rust tests pin both: the J4 dupe is T's
+  residual alone, and (a) closes it.
 - **RP-185** (the Java change, proposed, not built): (a), recommended: TrainWatch keeps for each
   train a bounded ring (about 64) of the carriage delta ops it applied, saved with the train in
   `create_tracks.dat` (a mixin on `Train.write` and `Train.read`, one long array tag), and
@@ -5525,8 +5534,11 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   restored goods (once): exact in every case. 64 ops a train is far more than a raider's window
   between two page saves can re-decide. (b), smaller: never let `create_tracks.dat` reach disk
   ahead of the journal (a mixin on `RailwaySavedData`'s save that waits on the journal's round, as
-  the barrier waits on chunks), which turns J3 into J4: a loss, never a double, and J4 stays a
-  loss. The lead and Ben choose; nothing is built.
+  the barrier waits on chunks), which turns J3 into J4. This record called that "a loss, never a
+  double"; it is backwards (review P1-1): J4 is a dupe under A, so (b) would make the dupe the only
+  failure. The review's other way: write the journal's file last on the SavedData IO chain, after
+  every level's `saveLevelData`, so a journal on disk means the tracks (and oil) files are too: no
+  J4, and J3 stays a double. The coordinator chose (a), as slice T2 on this branch (RP-190 on).
 - **RP-186** (the tests and their controls): each raider's crash test runs the raid live, saves the
   raider and industry at `s` before it (one batch), crashes at `c` after Java applied it, brings
   both back from `s` with industry moved on to `c` (not held), feeds the journal's carriage
@@ -5540,7 +5552,8 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   against OpId(5275023983707477257)); dragons
   `a_dragons_train_raid_replayed_after_a_crash_takes_the_goods_once` 128 against 64 at :137,
   `a_dragons_train_raid_held_by_industry_is_booked_once` 121 against 64 at :161,
-  `which_of_javas_saves_landed_decides_once_twice_or_never` 128 against 64 at :189; conflict
+  `which_of_javas_saves_landed_decides_once_twice_or_never` (since renamed
+  `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`) 128 against 64 at :189; conflict
   `a_bands_ambush_replayed_after_a_crash_takes_the_goods_once` 64 against 32 at :148,
   `a_bands_ambush_held_by_industry_is_booked_once` 64 against 32 at :171; ships
   `a_coast_raid_after_the_replay_takes_the_goods_once` 128 against 64 at :145,
@@ -5572,8 +5585,8 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   `a_coast_raid_inside_the_replay_is_deferred` (R-a). Conflict's and dragons' raids can fall past
   the replay's end the same way; A covers them alike.
 - **RP-189** (the docs): docs/replay-gate.md §3.6's industry bullet no longer calls train raids
-  "lose, never double"; §6.1's losses list J4 and the pirates' R-a, and names J3 as the one double
-  left. TrainWatch's comment at the carriage delta's dedup said "Train cargo and the journal reach
+  "lose, never double"; §6.1's losses list the pirates' R-a, and §6.1 names what A alone leaves,
+  J3 (a double) and J4 (a dupe; first listed as a loss, corrected after the review's P1-1). TrainWatch's comment at the carriage delta's dedup said "Train cargo and the journal reach
   disk at the same save" (H17, docs/overnight-choices-industrymc.md); it now says what RP-184
   found. Not changed, outside the slice: core Industry.java's `depositDelta` comment and Q22
   (docs/overnight-choices-indplugins.md) make the same claim for IND_DEPOSIT_DELTA ("as H17"),
