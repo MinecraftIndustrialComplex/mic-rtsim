@@ -555,7 +555,8 @@ ahead:
   four that run the clock there (the works grants and raids, TRIBUTE_START, HERD_FOUND) wait for
   the replay end (RP-33, the fix round's item 3): a unit given while replaying that holds one is
   queued, with every unit after it, and taken at the first step after the end. A conflict command
-  waits the same way, as it goes around the gate (§4.4, RP-66). The rest run no clock.
+  waits the same way, as it goes around the gate (§4.4, RP-66), and so do a dragon command and
+  NEST_DAY (§4.5, RP-74). The rest run no clock.
 
 **The rule.** rtsim-jni keeps `st.replay_clock: Tick` (not saved): set at the SESSION_START arm to
 the world's present, and raised by `shared::catch_up` to each replayed record's world tick before it
@@ -692,6 +693,14 @@ As built (slice D, RP-74): `rtsim-ecology/src/outbox.rs`, `gate` an exhaustive `
 with no `_` arm, every push of nest.rs, oil.rs and engine.rs through `Outbox::push`. "Never"
 (Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew drops while
 replaying until slice N makes it send. The tests are the module's own (§4.2).
+
+Two routes go around the gate, and both are tests': rtsim-jni engine/dragons.rs `order_command`
+(`Order::DragonCommand`, TEST mode only) puts a command of any kind straight into the host's queue,
+and `Order::NestDay` books the nests' next watch from the engine's own clock. Their verdict is
+"wait", as conflict's (§4.4, RP-66) and the herds': a unit holding one, and every unit after it, is
+held to the replay end with RP-33's orders (`waits_for_the_replay_end`, RP-74). The audit of the
+other routes (world orders, founding, lair and nest placement, oil, tribute coin) is in RP-74; none
+else goes around.
 
 ### 4.6 Herds (rtsim-ecology herds/boundary.rs `Cmd`)
 
@@ -1342,6 +1351,9 @@ Tests: `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (rtsim-jni protoc
 `a_dragon_materializes_when_no_replay_runs_with_a_player_near`; and for step 6,
 `a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract` (tests/dragons.rs)
 and `a_watched_tank_in_the_replayed_window_is_raided_without_the_dragon_coming` (tests/oilgate.rs).
+The bypass of the test orders (RP-74's audit), in rtsim-jni protocol, each with a control that has
+no replay: `a_dragon_command_ordered_while_replaying_waits_for_the_replay_end` and
+`a_nest_day_ordered_while_replaying_waits_for_the_replay_end`.
 
 GameTests: `neoforge/gametest.sh iceandfire`.
 
