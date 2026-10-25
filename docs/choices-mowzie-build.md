@@ -5459,6 +5459,22 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   their hashes are of 32 and 16 bytes): a 64-bit collision on the same train and class, about
   2^-64 a pair; accepted. `the_key_parts_the_attacks_it_should` pins what parts two keys (id,
   source, class) and what does not (the tick).
+  The train in the key is stable only if the replayed scan finds the train the live one found, and
+  industry, not held, has moved its leg index on (review P2-B): a train that departed after the
+  live scan, its departure replayed before the raider, was found first, under a new key and op,
+  and two trains lost goods for one raid. `trains_crossed` (rtsim-ecology infra.rs) now reads the
+  legs as booked at `from`: `IndustryLink` skips a leg whose `depart` is after `from`. No signature
+  changes: every caller passes its decision tick as `from` (dragons' `train_scan` the flight's
+  `p.t0`, the fly time; ships' `coast_raid` its `at`; conflict's ambush `t0.max(at)`, which is `at`,
+  since a band's segment starts at its scheduled `t0` or later). Live, it drops only a leg that
+  departed after the decision inside one step, which the decision could not have seen. The train
+  stays in the key (the review's other way, taking it out, was not taken: the brief keeps it
+  minimal). The dragons, ships, conflict, mowzie, herds and industry sims give the same output
+  before and after (timings aside), but none of them makes a train raid, coast raid or ambush, so
+  they do not exercise the path. Test: dragons
+  `a_replayed_scan_does_not_see_a_train_that_left_after_the_live_one` (the review's
+  `rev_a_replayed_scan_finds_a_train_that_left_after_the_live_one`); without the filter the replay
+  raids train 8 where the live run raided train 7.
 - **RP-182** (DUPLICATE drops a loot exchange; the brief's item 2): `Engine::command_duplicate(op)`
   removes the pending exchange of `op` when it is loot, and rtsim-jni's `command_result` calls it
   on DUPLICATE_OP (after `complete`, as before). The goods left the train once, at the first
