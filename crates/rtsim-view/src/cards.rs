@@ -91,6 +91,21 @@ pub fn card(cx: &Ctx, layer: &str, id: &str) -> Option<Card> {
             line(cx, a.parse().ok()?, b.parse().ok()?)
         }
         "industry.trains" => train(cx, id.parse().ok()?),
+        "industry.sections" => {
+            let (d, i) = id.split_once('.')?;
+            let v = cx.saved.industry.as_ref()?;
+            section(&cx.saved.names, v, d.parse().ok()?, i.parse().ok()?)
+        }
+        "industry.stores" => store(
+            &cx.saved.names,
+            cx.saved.industry.as_ref()?,
+            id.parse().ok()?,
+        ),
+        "industry.networks" => network(
+            &cx.saved.names,
+            cx.saved.industry.as_ref()?,
+            id.parse().ok()?,
+        ),
         _ => None,
     }
 }
@@ -802,9 +817,9 @@ fn train(cx: &Ctx, id: u64) -> Option<Card> {
 }
 
 /// A district's name from Java's dictionary, or its number.
-fn district_name(saved: &Saved, v: &IndustryView, id: u64) -> String {
+fn district_name(names: &crate::journal::Names, v: &IndustryView, id: u64) -> String {
     v.district(id)
-        .and_then(|d| saved.names.get(crate::keys::DICT_NAME, d.name))
+        .and_then(|d| names.get(crate::keys::DICT_NAME, d.name))
         .map_or_else(|| format!("District {id}"), str::to_owned)
 }
 
@@ -830,11 +845,336 @@ fn process_label(saved: &Saved, v: &IndustryView, p: &ProcessPeek) -> String {
     }
 }
 
+/// A section's one line: its state and what it holds.
+fn section_line(s: &rtsim_industry::glass::report::SectionReport) -> String {
+    let shared = s.stores.iter().filter(|x| x.1).count();
+    format!(
+        "{}, {} nodes, {} stores{}",
+        rtsim_layers::industry::section_state_words(s.state),
+        s.nodes,
+        s.stores.len(),
+        if shared > 0 {
+            format!(" ({shared} shared)")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// What a district's card says of the glass box (SECTIONS.md §8.3, slice S7): its sections, the
+/// stores they share, the package stores and kinetic networks it is in. A save keeps no join pairs
+/// in the rtsim pages (the game's world data holds them), so the card says which districts it is
+/// joined to through a store or a network instead.
+fn glass_sections(names: &crate::journal::Names, v: &IndustryView, id: u64, mut c: Card) -> Card {
+    if let Ok(i) = v.sections.binary_search_by_key(&id, |(d, _)| *d) {
+        let ds = &v.sections[i].1;
+        let mut sec = Section::new("Sections (glass box)");
+        sec.push(Field::new(
+            "Compile",
+            format!(
+                "{}, {} sections, {} judging units",
+                ds.compile,
+                ds.sections.len(),
+                ds.units
+            ),
+        ));
+        for (n, s) in ds.sections.iter().enumerate().take(ROWS) {
+            sec.push(
+                Field::new(&format!("Section {n}"), section_line(s))
+                    .link("industry.sections", format!("{id}.{n}")),
+            );
+        }
+        c = c.section(sec);
+        if !ds.shared.is_empty() {
+            let mut sec = Section::new("Stores shared by sections");
+            for sh in ds.shared.iter().take(ROWS) {
+                let at = sh.pos.map_or_else(
+                    || format!("node {}", sh.node),
+                    |p| format!("{} {} {}", p.x, p.y, p.z),
+                );
+                let by = sh
+                    .sections
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sec = sec.field(
+                    &format!("Store at {at}"),
+                    format!(
+                        "sections {by}; {}",
+                        if sh.counted {
+                            format!("counted at its movers ({} pairs)", sh.pairs)
+                        } else {
+                            "judged inside one unit".to_owned()
+                        }
+                    ),
+                );
+            }
+            c = c.section(sec);
+        }
+    }
+    let mut stores = Section::new("Package stores");
+    for st in v
+        .stores
+        .iter()
+        .filter(|s| {
+            s.frogports
+                .iter()
+                .any(|f| f.district.is_some_and(|d| d.0 == id))
+        })
+        .take(ROWS)
+    {
+        let others = joined_districts(names, v, st, id);
+        stores.push(
+            Field::new(
+                &format!("Store {}", st.id.0),
+                format!(
+                    "{} frogports, {} packages held{}",
+                    st.frogports.len(),
+                    st.pools.iter().map(|p| p.packages).sum::<u64>() + st.no_route.packages,
+                    if others.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", to {}", others.join(", "))
+                    }
+                ),
+            )
+            .link("industry.stores", st.id.0),
+        );
+    }
+    if !stores.fields.is_empty() {
+        c = c.section(stores);
+    }
+    let mut nets = Section::new("Shared networks");
+    for n in v
+        .nets
+        .iter()
+        .filter(|n| n.parts.iter().any(|p| p.district == id))
+        .take(ROWS)
+    {
+        nets.push(
+            Field::new(
+                &format!("Network {}", n.id),
+                format!("{}, {} districts", n.status, n.parts.len()),
+            )
+            .link("industry.networks", n.id),
+        );
+    }
+    if !nets.fields.is_empty() {
+        c = c.section(nets);
+    }
+    c
+}
+
+/// The names of the other districts that have a frogport of `st`.
+fn joined_districts(
+    names: &crate::journal::Names,
+    v: &IndustryView,
+    st: &rtsim_industry::stores::PackageStore,
+    own: u64,
+) -> Vec<String> {
+    let mut ids: Vec<u64> = st
+        .frogports
+        .iter()
+        .filter_map(|f| f.district.map(|d| d.0))
+        .filter(|&d| d != own)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter()
+        .map(|d| district_name(names, v, d))
+        .collect()
+}
+
+/// A section's card.
+fn section(
+    names: &crate::journal::Names,
+    v: &IndustryView,
+    district: u64,
+    index: usize,
+) -> Option<Card> {
+    let ds = &v.sections[v
+        .sections
+        .binary_search_by_key(&district, |(d, _)| *d)
+        .ok()?]
+    .1;
+    let s = ds.sections.get(index)?;
+    let dname = district_name(names, v, district);
+    let mut c = Card::new(
+        "industry.sections",
+        format!("{district}.{index}"),
+        format!("Section {index} of {dname}"),
+    )
+    .subtitle(rtsim_layers::industry::section_state_words(s.state));
+    if let Some((a, b)) = s.bbox {
+        c = c.at(
+            (f64::from(a.x) + f64::from(b.x) + 1.0) / 2.0,
+            (f64::from(a.z) + f64::from(b.z) + 1.0) / 2.0,
+        );
+    }
+    c = c
+        .link("District", dname, "industry.districts", district)
+        .field(
+            "State",
+            rtsim_layers::industry::section_state_words(s.state),
+        )
+        .field("Kind", if s.working { "Working line" } else { "Storage" })
+        .field(
+            "Judged by",
+            match s.unit {
+                Some(u) => format!("unit {u} (group of section {})", s.group),
+                None => "the district's own window".to_owned(),
+            },
+        )
+        .field("Nodes", s.nodes)
+        .field("Stores", s.stores.len())
+        .field("Kinetic networks", s.domains);
+    if let (Some(low), Some((a, b))) = (s.low, s.bbox) {
+        c = c.field("Lowest block", format!("{} {} {}", low.x, low.y, low.z));
+        c = c.field(
+            "Box",
+            format!("{} {} {} to {} {} {}", a.x, a.y, a.z, b.x, b.y, b.z),
+        );
+    }
+    c = c.field("Fingerprint", format!("{:x}", s.fingerprint));
+    let verdict = match s.verdict {
+        rtsim_industry::glass::report::verdict::PASS => "passed",
+        rtsim_industry::glass::report::verdict::FAIL => "failed",
+        _ => "none yet",
+    };
+    let mut win = Section::new("Its window")
+        .field("Last window", verdict)
+        .field("Windows completed", s.windows_completed)
+        .field_unit("Open window", s.window_ticks, "ticks")
+        .field("Strikes", s.strikes)
+        .field("May replay", s.may_replay);
+    if let Some(w) = &s.worst {
+        win = win.field(
+            "Worst good",
+            format!(
+                "{}: measured {:.3}, predicted {:.3} a tick",
+                v.good_name(rtsim_industry::ids::Good(w.good)),
+                w.measured,
+                w.predicted
+            ),
+        );
+    }
+    c = c.section(win);
+    let mut shared = Section::new("Stores it shares");
+    for sh in ds
+        .shared
+        .iter()
+        .filter(|x| x.sections.contains(&(index as u32)))
+    {
+        let at = sh.pos.map_or_else(
+            || format!("node {}", sh.node),
+            |p| format!("{} {} {}", p.x, p.y, p.z),
+        );
+        let with = sh
+            .sections
+            .iter()
+            .filter(|&&x| x != index as u32)
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        shared = shared.field(&format!("Store at {at}"), format!("with sections {with}"));
+    }
+    if !shared.fields.is_empty() {
+        c = c.section(shared);
+    }
+    Some(c)
+}
+
+/// A package store's card.
+fn store(names: &crate::journal::Names, v: &IndustryView, id: u64) -> Option<Card> {
+    let st = &v.stores[v.stores.binary_search_by_key(&id, |s| s.id.0).ok()?];
+    let mut c = Card::new("industry.stores", id, format!("Package store {id}"))
+        .subtitle(format!("{} frogports", st.frogports.len()));
+    if let Some(f) = st.frogports.first() {
+        c = c.at(f64::from(f.pos.x), f64::from(f.pos.z));
+    }
+    let held: u64 = st.pools.iter().map(|p| p.packages).sum();
+    c = c
+        .field("Packages held for frogports", held)
+        .field("Packages with no route", st.no_route.packages)
+        .field("Residue", format!("{} packages", st.residue_packages))
+        .field(
+            "Packages out and in",
+            format!(
+                "{} out, {} in",
+                st.counts.packages_out, st.counts.packages_in
+            ),
+        );
+    let mut ports = Section::new("Frogports");
+    for (i, (f, p)) in st.frogports.iter().zip(&st.pools).enumerate().take(ROWS) {
+        let owner = f.district.map_or_else(
+            || "no district".to_owned(),
+            |d| district_name(names, v, d.0),
+        );
+        let held = st
+            .on_hold
+            .get(&f.pos)
+            .map_or(0, |h| h.iter().map(|x| x.packages).sum::<u64>());
+        let mut field = Field::new(
+            &format!("Frogport {i} at {} {}", f.pos.x, f.pos.z),
+            format!(
+                "{owner}, {} packages{}",
+                p.packages,
+                if held > 0 {
+                    format!(", {held} on hold")
+                } else {
+                    String::new()
+                }
+            ),
+        );
+        if let Some(d) = f.district {
+            field = field.link("industry.districts", d.0);
+        }
+        ports.push(field);
+    }
+    c = c.section(ports);
+    let mut goods = Section::new("Goods held");
+    let mut all = rtsim_industry::ids::GoodVec::new();
+    for p in &st.pools {
+        all.merge(&p.goods);
+    }
+    all.merge(&st.no_route.goods);
+    for (g, n) in all.iter().take(ROWS) {
+        goods = goods.field(&v.good_title(g), n);
+    }
+    if !goods.fields.is_empty() {
+        c = c.section(goods);
+    }
+    Some(c)
+}
+
+/// A shared kinetic network's card.
+fn network(names: &crate::journal::Names, v: &IndustryView, id: u64) -> Option<Card> {
+    let n = v.nets.get(usize::try_from(id).ok()?)?;
+    let mut c =
+        Card::new("industry.networks", id, format!("Shared network {id}")).subtitle(n.status);
+    if let Some(p) = n.parts.first() {
+        c = c.at(p.x, p.z);
+    }
+    c = c.field("Status", n.status).field("Parts", n.parts.len());
+    let mut parts = Section::new("Parts (one a district)");
+    for p in n.parts.iter().take(ROWS) {
+        parts.push(
+            Field::new(
+                &district_name(names, v, p.district),
+                format!("source at {} {}", p.x, p.z),
+            )
+            .link("industry.districts", p.district),
+        );
+    }
+    Some(c.section(parts))
+}
+
 /// A district's card, and whether its pages read (a card that says they did not is not kept).
 pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
     let v = saved.industry.as_ref()?;
     let d = v.district(id)?;
-    let name = district_name(saved, v, id);
+    let name = district_name(&saved.names, v, id);
     let (x, z) = d.centre();
     let state = rtsim_layers::industry::district_state_words(d.state);
     let mut c = Card::new("industry.districts", id, name)
@@ -847,6 +1187,7 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
         sec.push(Field::new(&v.station_title(&saved.names, *s), "").link("industry.stations", s));
     }
     c = c.section(sec);
+    c = glass_sections(&saved.names, v, id, c);
     match v.inspect(&*saved.source, id) {
         Ok(peek) => {
             let ins = &peek.inspection;
@@ -875,7 +1216,10 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
                 for p in peek.processes.iter().take(ROWS) {
                     let mut state = p.stop.clone().unwrap_or_else(|| "running".into());
                     if let Some(src) = p.requires {
-                        state = format!("{state}, on {}'s power", district_name(saved, v, src.0));
+                        state = format!(
+                            "{state}, on {}'s power",
+                            district_name(&saved.names, v, src.0)
+                        );
                     }
                     sec = sec.field(&process_label(saved, v, p), state);
                 }
@@ -885,7 +1229,8 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
                 let mut sec = Section::new("Replays with (one cluster)");
                 for &m in peek.members.iter().filter(|&&m| m != id).take(ROWS) {
                     sec.push(
-                        Field::new(&district_name(saved, v, m), "").link("industry.districts", m),
+                        Field::new(&district_name(&saved.names, v, m), "")
+                            .link("industry.districts", m),
                     );
                 }
                 c = c.section(sec);
@@ -930,4 +1275,210 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
         }
     }
     Some((c, true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::industry::DistrictSummary;
+    use crate::journal::Names;
+    use rtsim_industry::glass::report::{
+        DistrictSections, SectionReport, SharedReport, section_state,
+    };
+    use rtsim_industry::ids::{BlockPos, DistrictId, StoreId};
+    use rtsim_industry::stores::{Frogport, PackageStore, Pool};
+    use rtsim_layers::industry::{NetMark, NetPart};
+
+    fn summary(id: u64) -> DistrictSummary {
+        DistrictSummary {
+            id,
+            dim: 0,
+            name: 0,
+            chunks: 4,
+            chunk_box: (0, 0, 1, 1),
+            state: "running",
+            stations: Vec::new(),
+            attacks: 0,
+            inventories: 0,
+            watched: false,
+            chunk_list: Vec::new(),
+            outline: Vec::new(),
+        }
+    }
+
+    fn at(x: i32, z: i32) -> BlockPos {
+        BlockPos { x, y: 64, z }
+    }
+
+    fn sec(state: u32, nodes: u32, stores: &[(Option<u32>, bool)]) -> SectionReport {
+        SectionReport {
+            unit: Some(0),
+            nodes,
+            stores: stores.to_vec(),
+            working: true,
+            bbox: Some((at(0, 0), at(9, 9))),
+            low: Some(at(1, 1)),
+            state,
+            ..SectionReport::default()
+        }
+    }
+
+    fn port(x: i32, d: u64) -> Frogport {
+        Frogport {
+            district: Some(DistrictId(d)),
+            inventory: None,
+            star: false,
+            pos: at(x, 0),
+            conveyor: at(x, 1),
+        }
+    }
+
+    fn view() -> IndustryView {
+        let ds = DistrictSections {
+            sections: vec![
+                sec(
+                    section_state::PASSED,
+                    12,
+                    &[(Some(1), true), (Some(2), false)],
+                ),
+                sec(section_state::LEARNING, 5, &[(Some(1), true)]),
+            ],
+            shared: vec![SharedReport {
+                node: 3,
+                pos: Some(at(4, 4)),
+                sections: vec![0, 1],
+                counted: true,
+                pairs: 2,
+                ..SharedReport::default()
+            }],
+            units: 2,
+            compile: 3,
+        };
+        let store = PackageStore {
+            id: StoreId(7),
+            frogports: vec![port(0, 1), port(100, 2)],
+            hops: vec![30],
+            pools: vec![
+                Pool {
+                    packages: 3,
+                    ..Pool::default()
+                },
+                Pool::default(),
+            ],
+            ..PackageStore::default()
+        };
+        let net = NetMark {
+            id: 0,
+            dim: 0,
+            status: "coupled",
+            coupled: true,
+            parts: vec![
+                NetPart {
+                    district: 1,
+                    x: 5.0,
+                    z: 5.0,
+                },
+                NetPart {
+                    district: 2,
+                    x: 105.0,
+                    z: 5.0,
+                },
+            ],
+        };
+        IndustryView::synthetic(
+            vec![summary(1), summary(2)],
+            vec![(1, ds)],
+            vec![store],
+            vec![net],
+        )
+    }
+
+    fn json(c: &Card) -> String {
+        serde_json::to_string(c).expect("a card serializes")
+    }
+
+    /// The district card lists its sections with their states, the stores they share, and the
+    /// package stores and networks that join it to other districts.
+    #[test]
+    fn a_district_card_lists_its_sections_stores_and_networks() {
+        let (v, names) = (view(), Names::default());
+        let c = glass_sections(
+            &names,
+            &v,
+            1,
+            Card::new("industry.districts", 1, "District 1"),
+        );
+        let titles: Vec<&str> = c.sections.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Sections (glass box)",
+                "Stores shared by sections",
+                "Package stores",
+                "Shared networks"
+            ]
+        );
+        let text = json(&c);
+        assert!(text.contains("2 sections, 2 judging units"), "{text}");
+        assert!(
+            text.contains("Passed, 12 nodes, 2 stores (1 shared)"),
+            "{text}"
+        );
+        assert!(text.contains("Learning, 5 nodes"), "{text}");
+        assert!(
+            text.contains("sections 0, 1; counted at its movers (2 pairs)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("to District 2"),
+            "the store names the district it joins: {text}"
+        );
+        assert!(text.contains("coupled, 2 districts"), "{text}");
+        // A district with no compile but a frogport still sees its store.
+        let c = glass_sections(
+            &names,
+            &v,
+            2,
+            Card::new("industry.districts", 2, "District 2"),
+        );
+        let titles: Vec<&str> = c.sections.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["Package stores", "Shared networks"]);
+        // A district in nothing gets nothing added.
+        let c = glass_sections(&names, &v, 9, Card::new("industry.districts", 9, "x"));
+        assert!(c.sections.is_empty());
+    }
+
+    /// The section, store and network cards carry what their marks name, and none for a key the
+    /// save lacks.
+    #[test]
+    fn the_section_store_and_network_cards_say_what_they_are() {
+        let (v, names) = (view(), Names::default());
+        let c = section(&names, &v, 1, 0).expect("section 1.0");
+        let text = json(&c);
+        assert_eq!(c.layer, "industry.sections");
+        assert_eq!(c.id, "1.0");
+        assert_eq!(c.subtitle.as_deref(), Some("Passed"));
+        assert!(text.contains("unit 0"), "{text}");
+        assert!(text.contains("Working line"), "{text}");
+        assert!(text.contains("Stores it shares"), "{text}");
+        assert!(text.contains("with sections 1"), "{text}");
+        assert!(section(&names, &v, 1, 2).is_none(), "no third section");
+        assert!(section(&names, &v, 5, 0).is_none(), "no such district");
+
+        let c = store(&names, &v, 7).expect("store 7");
+        let text = json(&c);
+        assert_eq!(c.subtitle.as_deref(), Some("2 frogports"));
+        assert!(text.contains("District 1, 3 packages"), "{text}");
+        assert!(text.contains("District 2, 0 packages"), "{text}");
+        assert!(store(&names, &v, 8).is_none());
+
+        let c = network(&names, &v, 0).expect("network 0");
+        let text = json(&c);
+        assert_eq!(c.subtitle.as_deref(), Some("coupled"));
+        assert!(
+            text.contains("source at 105 5") || text.contains("source at 105.0 5.0"),
+            "{text}"
+        );
+        assert!(network(&names, &v, 1).is_none());
+    }
 }

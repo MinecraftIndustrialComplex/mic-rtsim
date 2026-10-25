@@ -6,8 +6,9 @@ use std::ops::Range;
 
 use rtsim_industry::district::{District, Phase, Presence};
 use rtsim_industry::engine::{Engine, LineEdge};
-use rtsim_industry::ids::StationId;
+use rtsim_industry::ids::{StationId, StoreId};
 use rtsim_industry::obs::StationDecl;
+use rtsim_industry::stores::PackageStore;
 use rtsim_industry::threat::Leg;
 
 /// What a district's map mark needs.
@@ -194,6 +195,130 @@ pub fn district_mark(d: &District, replays: bool) -> DistrictMark {
     }
 }
 
+/// One section of a district's compile (SECTIONS.md §8.3, slice S7), drawn as its box.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionMark {
+    pub district: u64,
+    pub dim: u32,
+    /// Its index in the compile's sections.
+    pub index: u32,
+    /// [`rtsim_industry::glass::report::section_state`]: also its legend index.
+    pub state: u32,
+    pub working: bool,
+    pub nodes: u32,
+    pub stores: u32,
+    /// Stores it shares with another section.
+    pub shared_stores: u32,
+    /// Its judging unit; None with one unit or none (the district's window judges).
+    pub unit: Option<u32>,
+    /// Its node box grown by a block, in blocks: x0, z0, x1, z1 (z1 and x1 past the last block).
+    pub block_box: [f64; 4],
+}
+
+/// A section state's name, as the card and the key say it.
+pub fn section_state_words(state: u32) -> &'static str {
+    use rtsim_industry::glass::report::section_state as ss;
+    match state {
+        ss::LEARNING => "Learning",
+        ss::PASSED => "Passed",
+        ss::FAILED => "Failed",
+        ss::STALE => "Stale: edited since it was learned",
+        ss::FROZEN => "Frozen: its replay fell back",
+        ss::REPLAYING => "Replaying",
+        _ => "Unknown",
+    }
+}
+
+/// The outline a section state's legend entry draws (`dash` learning, `bad` failed or stale, `dot`
+/// frozen).
+pub fn section_st(state: u32) -> Option<&'static str> {
+    use rtsim_industry::glass::report::section_state as ss;
+    match state {
+        ss::LEARNING => Some("dash"),
+        ss::FAILED | ss::STALE => Some("bad"),
+        ss::FROZEN => Some("dot"),
+        _ => None,
+    }
+}
+
+/// One frogport of a package store.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StorePort {
+    pub x: f64,
+    pub z: f64,
+    pub district: Option<u64>,
+    pub star: bool,
+    /// The packages the store holds for it (booked, the world's: no replay draws them).
+    pub packages: u64,
+}
+
+/// A package store (SECTIONS.md §2.5), drawn as edges between its frogports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreMark {
+    pub id: u64,
+    pub dim: u32,
+    pub ports: Vec<StorePort>,
+    /// Pairs of ports (indices) the chain connects: their conveyors have a known hop count.
+    pub links: Vec<(u16, u16)>,
+    /// The packages the store holds in all, including the no-route pool.
+    pub packages: u64,
+    /// The last census's difference from the books, in packages.
+    pub residue_packages: i64,
+}
+
+/// One part of a shared kinetic network: a district's SHARED domain, at its first source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetPart {
+    pub district: u64,
+    pub x: f64,
+    pub z: f64,
+}
+
+/// A shared kinetic network (SECTIONS.md §2.6): the parts the districts' compiles make, joined at
+/// the sources they list in common.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetMark {
+    /// Its index in the registry (the compiles' order, so stable for one save only).
+    pub id: u64,
+    pub dim: u32,
+    /// [`rtsim_industry::glass::net::Status::words`].
+    pub status: &'static str,
+    pub coupled: bool,
+    pub parts: Vec<NetPart>,
+}
+
+/// A package store's mark: its frogports and the pairs the chain connects.
+pub fn store_mark(s: &PackageStore) -> StoreMark {
+    let ports: Vec<StorePort> = s
+        .frogports
+        .iter()
+        .zip(&s.pools)
+        .map(|(f, p)| StorePort {
+            x: f64::from(f.pos.x),
+            z: f64::from(f.pos.z),
+            district: f.district.map(|d| d.0),
+            star: f.star,
+            packages: p.packages,
+        })
+        .collect();
+    let mut links = Vec::new();
+    for i in 0..ports.len() {
+        for j in i + 1..ports.len() {
+            if s.hops_between(i, j).is_some() {
+                links.push((i as u16, j as u16));
+            }
+        }
+    }
+    StoreMark {
+        id: s.id.0,
+        dim: s.dim,
+        packages: ports.iter().map(|p| p.packages).sum::<u64>() + s.no_route.packages,
+        ports,
+        links,
+        residue_packages: s.residue_packages,
+    }
+}
+
 /// An industry table the layers page through by key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -202,6 +327,12 @@ pub enum Table {
     /// Keyed by the first station's id.
     Lines,
     Legs,
+    /// Keyed by the district's id (its sections).
+    Sections,
+    /// Keyed by the store's id.
+    Stores,
+    /// Keyed by the network's index.
+    Networks,
 }
 
 /// The industry state the layers read.
@@ -215,6 +346,13 @@ pub trait IndustrySource {
     fn lines(&self, ids: Range<u64>, f: &mut dyn FnMut((u64, u64), &LineEdge));
     /// The booked legs with ids in `ids`.
     fn legs(&self, ids: Range<u64>, f: &mut dyn FnMut(u64, &Leg));
+    /// The sections of the districts with ids in `ids` (slice S7): none by default, as only a
+    /// save holds the glass pages.
+    fn sections(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&SectionMark)) {}
+    /// The package stores with ids in `ids`.
+    fn stores(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&StoreMark)) {}
+    /// The shared networks with indices in `ids`.
+    fn networks(&self, _ids: Range<u64>, _f: &mut dyn FnMut(&NetMark)) {}
     /// The first key of `t` at or after `from`.
     fn next_key(&self, t: Table, from: u64) -> Option<u64>;
 }
@@ -252,6 +390,15 @@ impl IndustrySource for Engine {
         }
     }
 
+    fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
+        for (id, s) in self.stores().range(StoreId(ids.start)..) {
+            if id.0 >= ids.end {
+                break;
+            }
+            f(&store_mark(s));
+        }
+    }
+
     fn next_key(&self, t: Table, from: u64) -> Option<u64> {
         match t {
             Table::Districts => self.districts_in(from..u64::MAX).next().map(|d| d.id.0),
@@ -262,6 +409,13 @@ impl IndustrySource for Engine {
                 .next()
                 .map(|((a, _), _)| a.0),
             Table::Legs => self.legs().range(from..u64::MAX).next().map(|(id, _)| id),
+            Table::Stores => self
+                .stores()
+                .range(StoreId(from)..)
+                .next()
+                .map(|(id, _)| id.0),
+            // The glass pages are the save's: the live engine's glass state is not walked here.
+            Table::Sections | Table::Networks => None,
         }
     }
 }

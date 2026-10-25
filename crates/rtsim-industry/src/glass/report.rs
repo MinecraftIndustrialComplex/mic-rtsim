@@ -275,6 +275,32 @@ pub struct SharedReport {
     pub residue: Vec<(u32, i64)>,
 }
 
+/// A district's compile as a saved page shows it (SECTIONS.md §8.3, slice S7): the sections and the
+/// stores they share, as the live report builds them. A save holds no live count sample, so its
+/// shared stores read as not counted this sweep and have no residue. The viewer draws this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DistrictSections {
+    pub sections: Vec<SectionReport>,
+    pub shared: Vec<SharedReport>,
+    /// Its judging units (0 or 1: the district's own window judges).
+    pub units: u32,
+    /// The compile's number.
+    pub compile: u32,
+}
+
+impl DistrictSections {
+    /// The sections of `dg`'s compile; None before its first complete compile.
+    pub fn of(dg: &super::check::DistrictGlass) -> Option<DistrictSections> {
+        let c = dg.compiled.as_ref()?;
+        Some(DistrictSections {
+            sections: c.section_reports(dg),
+            shared: c.shared_reports(),
+            units: c.unit_state.len() as u32,
+            compile: c.graph.end.compile,
+        })
+    }
+}
+
 /// One judging unit in a [`Report`] (choice SC74).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct UnitReport {

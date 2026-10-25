@@ -5404,6 +5404,62 @@ mod replay_path {
             assert_eq!(c.extra_rows(), 0);
         }
 
+        /// A saved page gives the viewer its sections: the district's page written and read back
+        /// (the viewer's path) shows each section's state as the live report does.
+        #[test]
+        fn a_saved_page_gives_the_viewer_the_same_sections() {
+            use crate::glass::page::{PageRead, district_page, read_district_page};
+            use crate::glass::report::{DistrictSections, section_state as ss};
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let (sa, sb) = (
+                c.sections.section_of[p0 as usize] as usize,
+                c.sections.section_of[p1 as usize] as usize,
+            );
+            let mut dg = crate::glass::check::DistrictGlass::default();
+            dg.compiled = Some(c);
+            let live = DistrictSections::of(&dg).expect("a compile");
+            assert_eq!(live.sections.len(), 2);
+            assert_eq!(live.units, 2);
+            let bytes = district_page(&dg);
+            let PageRead::Kept(back) = read_district_page(
+                &bytes,
+                tun.sections_max,
+                tun.counted_stores_max,
+            )
+            .expect("the page reads") else {
+                panic!("the page was dropped");
+            };
+            let saved = DistrictSections::of(&back).expect("a compile in the page");
+            assert_eq!(saved.sections.len(), 2);
+            assert_eq!(saved.units, 2);
+            assert_eq!(saved.compile, live.compile);
+            assert_eq!(saved.sections[sa].state, ss::PASSED);
+            assert_eq!(saved.sections[sb].state, ss::FAILED);
+            for i in 0..2 {
+                let (l, s) = (&live.sections[i], &saved.sections[i]);
+                assert_eq!(
+                    (l.nodes, l.bbox, l.fingerprint, l.state, l.unit),
+                    (s.nodes, s.bbox, s.fingerprint, s.state, s.unit)
+                );
+                assert!(s.bbox.is_some(), "a drawn section has a box");
+            }
+            assert!(saved.shared.is_empty());
+            // no compile, no sections
+            let none = crate::glass::check::DistrictGlass::default();
+            assert!(DistrictSections::of(&none).is_none());
+        }
+
         /// The report's sections follow their unit: the fast line's section passed, the slow one's
         /// failed and names the good it missed by the most; a stale unit shows stale, a replaying
         /// glass district shows its passing section replaying and a frozen unit frozen. Neither
