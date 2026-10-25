@@ -1685,3 +1685,137 @@ fn a_replay_of_several_hand_overs_rederives_the_same_op_ids() {
     assert_eq!(b.applied_again, 0, "nothing applied again");
     assert_eq!(b.pending, Some(0), "the replayed results answer them");
 }
+
+/// What a crash after a station exchange did to the trains.
+struct ExchangeBehind {
+    /// The exchanges' op ids as Java was sent them before the crash, and again after it.
+    before: Vec<u64>,
+    after: Vec<u64>,
+    /// The hand-overs the replay took.
+    replay_handovers: u64,
+    /// Station exchanges the world applied after the restart (it applied every one of them
+    /// before its save already, and no train calls at a replaying station after the save).
+    applied_again: usize,
+    /// Every train's cargo at the crash, live and again after the restart.
+    cargo_live: Vec<Vec<GoodVec>>,
+    cargo_again: Vec<Vec<GoodVec>>,
+}
+
+fn cargo(j: &Java) -> Vec<Vec<GoodVec>> {
+    j.mc()
+        .trains
+        .iter()
+        .map(|t| t.carriages.iter().map(|c| c.cargo.clone()).collect())
+        .collect()
+}
+
+/// The iron line's train 1 loads ore at the replaying ore coast at 72,800 (a station exchange,
+/// IND_CARRIAGE_DELTA). The pages stop at day 3 (72,000); `filler` journaled records follow at
+/// 72,100; the world applies the exchange, journals its result and saves at 72,900; the crash
+/// comes at 73,500, before any other exchange. The engine reopens with `capacity` bytes of record
+/// area and the world, restored to its save, runs to the crash again: the replay re-decides the
+/// exchange, and the world, which applied it before its save, must answer it DUPLICATE.
+fn exchange_behind_the_save(tag: &str, filler: usize, capacity: usize) -> ExchangeBehind {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir(tag);
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let paged = j.ind_commands.len();
+    j.mc_run_until(Tick(72_100));
+    fillers(&mut j, filler);
+    j.mc_run_until(Tick(72_900));
+    let exchanges = |j: &Java, from: usize| -> Vec<u64> {
+        j.ind_commands[from..]
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    let before: Vec<u64> = exchanges(&j, paged)
+        .into_iter()
+        .filter(|op| j.mc().applied_ops().contains(&rtsim_kernel::journal::OpId(*op)))
+        .collect();
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    j.mc_run_until(Tick(73_500));
+    let cargo_live = cargo(&j);
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let saved_ops = mc.applied_ops().clone();
+    let e = engine_with(&dir, capacity, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    j.mc_run_until(Tick(73_500));
+    let cargo_again = cargo(&j);
+    let replay_handovers =
+        j.e.stats
+            .replay_handovers
+            .load(std::sync::atomic::Ordering::Acquire);
+    let after = exchanges(&j, 0);
+    let applied_again = after
+        .iter()
+        .filter(|op| {
+            let op = rtsim_kernel::journal::OpId(**op);
+            j.mc().applied_ops().contains(&op) && !saved_ops.contains(&op)
+        })
+        .count();
+    eprintln!(
+        "{tag}: {replay_handovers} replay hand-overs; exchanges before the save {before:x?}, \
+         sent after the restart {after:x?}; applied again {applied_again}; cargo at the crash \
+         {cargo_live:?}, again {cargo_again:?}"
+    );
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    ExchangeBehind {
+        before,
+        after,
+        replay_handovers,
+        applied_again,
+        cargo_live,
+        cargo_again,
+    }
+}
+
+/// The control: the replay of one hand-over takes the train's call at its own tick, re-derives
+/// the exchange under its op id, and the world answers it DUPLICATE. Holds on bc669502.
+#[test]
+fn a_station_exchange_replayed_in_one_hand_over_is_applied_once() {
+    let b = exchange_behind_the_save("ind-exch-one", 0, 256 * 1024);
+    assert_eq!(b.before.len(), 1, "one exchange before the save");
+    assert_eq!(b.replay_handovers, 1, "a replay of one hand-over");
+    assert_eq!(b.after, b.before, "re-derived under its op id");
+    assert_eq!(b.applied_again, 0, "never applied twice");
+    assert_eq!(b.cargo_again, b.cargo_live, "the trains hold what they held");
+}
+
+/// The double (slice R step 2): over a replay of several hand-overs, the first one's `simulate`
+/// runs the industry engine to the present, the train's call is taken at the present and the
+/// exchange re-derived under a new op id, which Java's op-id guard (the only guard a carriage
+/// delta has) does not know: the world loads the train a second time.
+#[test]
+#[ignore = "slice R: a replay of several hand-overs re-derives a station exchange under a new op id and the world loads the train twice"]
+fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
+    let b = exchange_behind_the_save("ind-exch-many", 8_000, rtsim_jni::wire::MIN_CAPACITY);
+    assert_eq!(b.before.len(), 1, "one exchange before the save");
+    assert!(
+        b.replay_handovers >= 3,
+        "the replay spans hand-overs: {}",
+        b.replay_handovers
+    );
+    assert_eq!(b.applied_again, 0, "never applied twice");
+    assert_eq!(b.cargo_again, b.cargo_live, "the trains hold what they held");
+    assert_eq!(b.after, b.before, "re-derived under its op id");
+}
