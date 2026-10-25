@@ -156,7 +156,7 @@ public final class CreatePlugin implements IndustryPlugin {
         JoinLinks.links(be, out);
     }
 
-    /** An arm before its first tick has not read its points (J2, choice SC4). */
+    /** An arm with saved points it has not read yet (J2, choice SC157, PATCHES.md row 84). */
     @Override
     public boolean linksKnown(BlockEntity be) {
         return JoinLinks.known(be);
