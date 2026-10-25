@@ -5873,6 +5873,13 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
     test is `a_crash_after_several_answered_stacks_gifts_those_stacks_and_loses_nothing` (the re-check's
     repro, renamed for what it asserts now: nothing lost, and the gift equals the stacks answered since
     the save).
+  - Amended by the M9 check (P3-1, RP-134): the stacks answered since the save are no longer a gift. Their
+    COMMAND_RESULTs replay (the journal is in the level save, written before the chunks), and a replayed
+    answer to a stack no placing holds is booked by its op, so the census decides the next stack, not those
+    again. The repro is fed its answers as the host replays them and renamed
+    `a_crash_after_several_answered_stacks_books_them_and_gifts_nothing`. What is left is RP-134's: the
+    stack in flight at the crash (a gift of at most one stack per camp), and a crash inside a world save
+    between the journal and the chest's chunk (a loss, the class of Java's own dedupe).
   - Amended at review, P3-6, memory: `Conflict::memory()` counts `placing` (a Vec of at most one stack for
     each grove with a chest, 40 bytes or so each) as "tribute stacks". HUNT_APPLIED left `applied_ops` (see
     MZB-449). CHIEF_PAID and TRADED stay in it, for correctness first: their op ids are the plugin's, one
@@ -6970,6 +6977,33 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   (a world with no rail pays one pointer for M7) still holds, and the 24 are M9's base. M9 itself
   pinned no size. Not taken: boxing `hunts` as M7 boxed its meters; a design change for M9's owner,
   not the merge's.
+  Amended by the M9 check (P3-4): `hunts` is boxed as M7's meters are (`Option<Box<Vec<Hunt>>>`,
+  `None` while a faction owes none, never an empty list; read through `Faction::hunts`), so the row
+  is 216 and the pin is 200 + 8 + 8: M9's base is one pointer, as M7's is. The encoding is the
+  list's (a length, then the hunts), so no format change; the load makes an empty list `None`, and
+  the heap count adds the Vec's own 24 bytes for a boxed list.
+
+### The M9 check (MZB-673 to MZB-674)
+
+- **MZB-673** (the raptor recall's wait; P3-3): `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers`
+  sent the recall toward `spot.x - 200` and waited on `getEntitiesOfClass(..., grove.area())`, which
+  passes once the raptors and followers have walked out of the area, before the recall removes them.
+  The step before the recall takes the two raptors and their 8 followers into an array the sequence
+  made, and the wait is `MowzieKit.removed` through a new `gone(level, Entity[]...)` overload
+  (suppliers read at each poll, as 6d6c6658 and UmvuthanaWorldGameTests do). After it each object's
+  removal reason must be DISCARDED (`despawn` and `dropExtras` discard): a body stuck in a hidden chunk
+  and unloaded to its chunk by `removed`'s re-queue (MZB-662) fails the test instead of passing it.
+  Compiled, not run.
+- **MZB-674** (P3-1's fork: the fix, not the reword). The brief allowed either: book a replayed answer
+  inside M9's design, or reword docs/replay-gate.md §4.4 to "the same op when the stock has not moved"
+  and record the residual. Taken: the fix (RP-134), since it changes no format, no op and no wire field,
+  and books by the rule Java's dedupe already keeps (a journaled APPLIED is applied). It moves MZB-446
+  R4's accepted bound, which the coordinator settled as a gift: the gift of every stack answered since the
+  save goes, and a crash inside a world save between the journal and the chest's chunk now loses a stack
+  whose re-decided op would have differed (RP-134's residuals). Reverting 98aedab6 and 0ce1f55a and taking
+  the reword is the other branch. The search is bounded by the camps owing tribute in the replay, 8
+  indexes, the goods owed and 64 amounts: about 512 hashes a camp for each COMMAND_RESULT no placing
+  holds while replaying, none live.
 
 ## M10 March
 
@@ -8802,7 +8836,81 @@ MZB-690 to MZB-692 the build records.
     on Peaceful a band at a track goes home without lurking. M7's `rail_held` (RAIL_PASSes held per
     train for a line) and M8's lurk do not meet: the lurk has no held state, it is derived from the
     party's phase, kind and target (MZB-357).
-  - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin (200 + 24 + 8 = 232) stands.
+  - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin stands: 232 (200 + 24 + 8) while
+    M9's `hunts` was an unboxed Vec, 216 (200 + 8 + 8) since the M9 check boxed them (feat/mowzie-m9
+    at 8f104333, merged into M10 at the step 1 merge; MZB-485).
+
+### The M9 check (RP-133 to RP-134)
+
+The Opus check of the M9 merge (feat/mowzie-m9 at 7153b7fe) found one P2 and four P3s; P3-3 and
+P3-4 are MZB-673 and MZB-672 amended, P3-2 a doc comment (rtsim-jni engine/conflict.rs's module
+doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: RTC9 / META 8.
+
+- **RP-133** (a held raid's hunt; P2-1, the merge's: M9 had no hold). Live, an unwatched raid at T
+  owes hunt H1, its op hashed from (district, T, the op held for the district), and Java applies it
+  (HUNT_APPLIED(H1) journaled). After a crash before the pages' save the replay holds the arrival
+  (§6.1); the replayed HUNT_APPLIED(H1) found no hunt and was dropped; the hold ended at its slack
+  (or before a record) and `owe_hunt` hashed that tick, so the hunt was owed under a new op, sent at
+  the replay end, and Java, which forgets its hunts at a session start, killed again. Fixed as the
+  check proposed:
+  - `hold_ending` is the hold's tick (`Option<Tick>`, was a flag) while `end_hold` runs the held
+    decision, and `owe_hunt` hashes it in place of `at`: the op the session that went on sent.
+  - `release_before` lists HUNT_APPLIED: it ends, oldest `since` first (ties by handle), each hold
+    of the record's faction whose party raids its district, the party's district target or a
+    district within 64 blocks of its position target (`RAID_NEAR_BLOCKS`, `resolve`'s own reach).
+    So H1 is owed before the answer that spends it.
+  - Live nothing moves: `hold_ending` is None, so the op is M9's (the sims are unchanged).
+  - The orderings: an answer after the hold's own end finds the hunt owed at the hold's tick; two
+    raids on one district end their holds in order, and each answer spends its own op; a replay
+    that ends before the answer resolves the poll after the replay end at the poll's tick, which
+    no replayed answer names, and the hunt goes once to the next session.
+  - Tests, tests/mowzie_records.rs (119 pass): `a_held_raids_hunt_answered_inside_the_slack_kills_once`,
+    `a_held_raids_hunt_answered_after_the_slack_kills_once`,
+    `two_held_raids_on_a_district_kill_what_the_live_session_killed`,
+    `a_held_raids_hunt_never_answered_goes_once_to_the_next_session` and the control
+    `a_raids_hunt_answered_before_the_save_is_not_sent_again`. Before the fix the first two killed
+    16 for 8 (the next session got the hunt under a new op), the never-answered case sent the next
+    session another op than the live one, and the two raids killed 24 for 16; the control passed.
+  - Residuals: a watched fight whose hold a HUNT_APPLIED for the same district ends in the 1 to 2
+    ticks before its BAND_MATERIALIZED resolves unwatched (RP-59's class, below in §6.1's losses);
+    `resolve`'s industry threat ids still hash the poll's tick (an observation only, never sent).
+- **RP-134** (a tribute stack answered after the save; P3-1). A stack decided and answered
+  APPLIED after the pages' save, then a crash: the replay's camps are out, so it decides no stack,
+  and the replayed APPLIED found no placing and was dropped. The census after the replay decided
+  that stack again from what the replay owed then, and when the stock or the owed amount had moved,
+  the amount and so `tribute_op` differed and Java put down a second stack: every stack answered
+  since the save went twice (MZB-446 R4's gift). Fixed inside M9's design (MZB-674): while
+  replaying, `tribute_placed` and `tribute_failed`, finding no placing, look the op up
+  (`replayed_stack`) in each camp that owes tribute in the replay (`tribute_owing`: those owing at
+  `begin_replay` and those a replayed payment made owe; in memory, emptied at the replay end), at
+  the 8 indexes from the camp's count (`REPLAYED_STACK_WINDOW`: a stack the link fails itself,
+  `fail_tribute`, takes an index and journals nothing), each good owed and each whole-item amount up
+  to a stack and what is owed. A replayed APPLIED or DUPLICATE_OP books it as the session did: the
+  goods leave the stock to the players, the amount is no longer owed, the count passes the index,
+  the chest has a slot less until a HAVEN_CHEST says otherwise (Java sends one after each answer).
+  A replayed FAILED passes the index and forgets the chest. Live nothing changes: every stack in
+  flight is a placing.
+  - Why this is the core's own truth: Java answers a TRANSFER_TO_CONTAINER DUPLICATE_OP while the
+    journal holds its APPLIED (`Journal.commandOpApplied`, `CommandDispatcher.transferToContainer`),
+    and the journal is in the level save, written before the chunks: an APPLIED that replays was
+    saved with the world that holds the stack.
+  - Tests: tests/grove.rs `a_stack_answered_after_the_save_is_booked_from_its_replayed_answer`
+    (before the fix 70 owed after the replay for 40, so the census decided a stack of 64, an op
+    Java never saw), `a_replayed_failure_of_a_stack_after_the_save_passes_its_index` (before: 30
+    owed for 0), and MZB-446 R4's repro fed its answers as the host replays them, renamed
+    `a_crash_after_several_answered_stacks_books_them_and_gifts_nothing` (before: 120 owed for 0);
+    rtsim-jni tests/protocol.rs `stacks_answered_after_a_save_are_booked_from_their_replayed_answers`
+    through `after_core` (before: (162, 0, 0) owed, in flight and sent, for (0, 0, 4)).
+  - Residuals, each bounded: the stack in flight at the crash, whose answer the journal lacks, is
+    decided again at its index, the same op when nothing moved (Java answers DUPLICATE_OP if its
+    chunk kept it) and another when the stock or what is owed moved, a gift of at most that one
+    stack per camp (`a_stack_decided_again_from_more_is_another_op`). A crash inside a world save,
+    after the journal's SavedData and before the chest's chunk, books an answer whose stack the
+    chest lost: a loss of the stacks answered since the chest's last save, the class Java's own
+    dedupe has for a re-sent op; before RP-134 such a stack went down again when its re-decided op
+    differed. The replay holds a stack's goods from its decision to its answer, where the session
+    took them at the decision, so a market draw in that window reads a stock that much higher; the
+    booking takes what is left.
 
 ### Slice H (herds)
 
