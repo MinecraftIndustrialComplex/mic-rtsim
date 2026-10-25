@@ -105,6 +105,15 @@ pub(super) struct Link {
     /// The ships' session reset (bodies of an earlier session or of before a switch-off are
     /// gone) is due the next time they run.
     reset_due: bool,
+    /// The engine came back from its pages ([`Link::load`]): only then does it honour a replayed
+    /// SHIP_MATERIALIZED (docs/replay-gate.md §5.2, RP-31, RP-93). Not saved.
+    from_pages: bool,
+    /// The ships' replay end (`replay_done`) is due: set by their reset, run by [`replay_end`]
+    /// when the shared replay ends (docs/replay-gate.md §3.2). Not saved.
+    replay_end_due: bool,
+    /// The replay gate's "never" count last logged ([`take_commands`], docs/replay-gate.md
+    /// §4.3). Not saved.
+    never_logged: u64,
     /// What the saves owe the ships' pages (a save while switched off, a purge at start).
     pub(super) pager: Pager,
     /// Java item ids already mapped to world goods (`None`: not a good the catalogue trades).
@@ -149,6 +158,9 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
+            from_pages: false,
+            replay_end_due: false,
+            never_logged: 0,
             pager: Pager::default(),
             java_items: BTreeMap::new(),
             dropped_pages: false,
@@ -215,6 +227,7 @@ impl Link {
         let mut l = Link::empty();
         l.engine = engine;
         l.restore_diverged = diverged;
+        l.from_pages = true;
         Ok(l)
     }
 
@@ -270,11 +283,36 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
-/// SESSION_START: Java forgot the engine's dictionary; the ships' bodies are gone (their reset
-/// runs as soon as the ships run, now or when switched on).
+/// The ships' replay end (docs/replay-gate.md §3.2, §5.6), when due and the ships run: the
+/// engine's `replay_done` (the bodies of the last session are gone), then the commands it
+/// decided. Logged with the gate's counts (§4.3). Switched off, it stays due; the reset on
+/// switch-on runs it.
+pub(super) fn replay_end(st: &mut State) {
+    if !st.ships.replay_end_due || !running(st) {
+        return;
+    }
+    st.ships.replay_end_due = false;
+    st.ships.engine.replay_done(&mut st.phase1.world);
+    st.phase1.taint();
+    take_commands(st);
+    let g = st.ships.engine.replay_gate_counts();
+    log_info(&format!(
+        "ships: {} commands dropped while replaying, {} of a kind that embodies (a bug), {} \
+         decisions that embody or book a raid deferred",
+        g.dropped, g.never, g.deferred
+    ));
+}
+
+/// SESSION_START: Java forgot the engine's dictionary; the ships' bodies are gone at the replay
+/// end (their reset runs as soon as the ships run, now or when switched on; it keeps the bodies
+/// the pages hold, which the replayed records count against: docs/replay-gate.md §5.1).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
+    // The ships a record of this session's replay can name are the ones the engine holds now,
+    // whether or not they run, or exist (RP-120): the replay's own begin later and may not be
+    // the live run's.
+    st.ships.engine.begin_session();
     // The first record of the engine's only session: what it holds is its pages as read (the
     // world they live in was read with them), so a switch that is off from the start keeps
     // exactly those (no save writes them), but for a closure the pages still hold (the ships ran
@@ -329,12 +367,21 @@ fn lift_closures(st: &mut State) {
     ));
 }
 
-/// Bodies of an earlier session (or of before a switch-off) are gone: every ship is abstract.
+/// The session's reset, once the ships run (docs/replay-gate.md §3.2): their engine's replay
+/// begins (`begin_replay`, told whether it came back from its pages, RP-31), and its end is due.
+/// The bodies of an earlier session (or of before a switch-off) are gone at that end. With no
+/// replay running (a switch-on mid-session) the end runs at once.
 fn reset_if_due(st: &mut State) {
     if st.ships.reset_due && running(st) {
         st.ships.reset_due = false;
-        st.ships.engine.session_start();
+        let from_pages = st.ships.from_pages;
+        st.ships.engine.begin_replay(from_pages);
+        st.ships.replay_end_due = true;
         st.phase1.taint();
+        take_commands(st);
+        if !st.replaying {
+            replay_end(st);
+        }
     }
 }
 
@@ -348,12 +395,17 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
+            let decoded = boundary::decode_obs(b).ok().map(|(_, _, _, o)| o);
+            if let Some(o) = &decoded {
+                fold_epoch(st, o);
+            }
             if !st.ships.enabled {
                 st.ships.ignored += 1;
                 return;
             }
-            if let Ok((_, _, _, o)) = boundary::decode_obs(b) {
-                let at = Tick(phase1::world_tick(st, st.game_time));
+            if let Some(o) = decoded {
+                // At the hand-over's time, held while replaying (docs/replay-gate.md §3.6).
+                let at = shared::hand_over_target(st);
                 ingest(st, &o, at);
             }
         }
@@ -380,13 +432,27 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
+/// The epoch a replayed record or a copy names raises its ship's floor, before anything drops it
+/// (docs/replay-gate.md §5.3, RP-57, RP-122): a module switched off for the session, the ships
+/// not yet in the world and the engine's replay not yet begun all drop records, and the body
+/// the record named is gone all the same. Keyed on the session's replay, not the engine's.
+fn fold_epoch(st: &mut State, o: &Obs) {
+    if st.replaying || st.applying_copy.is_some() {
+        st.ships.engine.fold_epoch(o);
+    }
+}
+
 /// A ship record `Replay` admitted.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    let decoded = boundary::decode_obs(rec.bytes);
+    if let Ok((_, _, _, o)) = &decoded {
+        fold_epoch(st, o);
+    }
     if !st.ships.enabled {
         st.ships.ignored += 1;
         return;
     }
-    let mut o = match boundary::decode_obs(rec.bytes) {
+    let mut o = match decoded {
         Ok((_, _, _, o)) => o,
         Err(e) => {
             log_warn(&format!(
@@ -407,8 +473,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     }
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
-    // Everything before it happens first: the dragons, the ships and the world, in time order.
-    shared::run_to(st, at);
+    // Everything before it happens first: the dragons, the ships and the world, in time order
+    // (the replay clock rises to it while replaying).
+    shared::catch_up_to(st, at);
     match &o {
         Obs::PortFound(p) if st.phase1.world.node_of_key(p.village).is_none() => {
             // A port names an adopted village (VILLAGE_ADOPTED comes at its structure start,
@@ -420,9 +487,13 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             st.ships.ignored += 1;
             return;
         }
-        Obs::HavenFound(h) if st.phase1.world.node_of_key(h.haven).is_none() => {
+        Obs::HavenFound(h)
+            if st.applying_copy.is_none() && st.phase1.world.node_of_key(h.haven).is_none() =>
+        {
             // A haven is a world node whose market sells what its pirates take (C24): it joins
-            // the world here (U13), outside the phase 1 log, so the world is tainted below.
+            // the world here (U13), outside the phase 1 log, so the world is tainted below. A
+            // copy (REASSERT) joins nothing: `ingest_copy` only folds its epoch (RP-97), and a
+            // node no haven of the engine stands behind would be a market with no pirates.
             let at = at.max(st.phase1.world.now());
             st.phase1.world.join(
                 NodeData {
@@ -445,8 +516,15 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     let at = at.max(st.ships.engine.now()).max(st.phase1.world.now());
     run_engine_at(st, at);
     let m = mask(st);
+    // A copy (REASSERT) of an ended session's record is applied by identity, never against a body
+    // (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9, RP-97).
+    let copy = st.applying_copy.is_some();
     let (w, s) = (&mut st.phase1.world, &mut st.ships.engine);
-    s.ingest(w, o, &m, at);
+    if copy {
+        s.ingest_copy(w, o, &m, at);
+    } else {
+        s.ingest(w, o, &m, at);
+    }
     st.phase1.taint();
     reset_if_due(st);
     take_commands(st);
@@ -501,7 +579,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
     if !st.ships.engine.is_built() {
         let mut groups: BTreeSet<(u16, rtsim_travel::Medium)> = BTreeSet::new();
@@ -527,7 +605,19 @@ pub(super) fn simulate(st: &mut State) {
     }
 }
 
+/// Takes what the ships decided into the link's queue. A rise in the gate's "never" count is
+/// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 fn take_commands(st: &mut State) {
+    let counts = st.ships.engine.replay_gate_counts();
+    if counts.never > st.ships.never_logged {
+        let (code, name) = counts.last_never.unwrap_or((0, "?"));
+        log_error(&format!(
+            "ships decided a {name} ({code:#06x}) while replaying ({} since the last take): \
+             skipped, a bug (docs/replay-gate.md §4)",
+            counts.never - st.ships.never_logged
+        ));
+        st.ships.never_logged = counts.never;
+    }
     let cmds = st.ships.engine.take_commands();
     st.ships
         .queue
@@ -616,7 +706,7 @@ fn reject(st: &mut State, agent: u64, epoch: u32, reason: u32) {
         reason,
         cmd_seq: 0,
     });
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     ingest(st, &o, at);
 }
 
@@ -755,6 +845,13 @@ pub(super) fn save(
 // ---- inspection ---------------------------------------------------------------------------------
 
 impl super::Engine {
+    /// The ships' replay gate counts (docs/replay-gate.md §4.3): commands dropped while replaying,
+    /// of a kind that embodies (a bug), and decisions deferred.
+    pub fn ship_gate_counts(&self) -> rtsim_ships::GateCounts {
+        let st = super::lock(&self.state);
+        st.ships.engine.replay_gate_counts()
+    }
+
     /// Runs `f` on the ships and the phase 1 world they live in, under the state lock. For tests
     /// and debugging, between steps only: a step holds the lock while it runs.
     pub fn with_ships<R>(&self, f: impl FnOnce(&Ships, &rtsim_world::World) -> R) -> R {
