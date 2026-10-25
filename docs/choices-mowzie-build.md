@@ -6073,6 +6073,33 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   indexes, the goods owed and 64 amounts: about 512 hashes a camp for each COMMAND_RESULT no placing
   holds while replaying, none live.
 
+### The M9 GameTest round (MZB-675 to MZB-677)
+
+The first run of M9's Mowzie GameTests on the real engine (86a99d6b, after the ChunkWait conversion): the
+suite died in a class initialiser, and three Umvuthi tests failed at their first poll. None came from the
+conversion or the merge: the tests had been compiled but never run.
+
+- **MZB-675** (core, a real bug: a held heir pair doubled every pass). `Camps.playHeld`'s `HELD_PAIR` case
+  called `pairNow`, whose `holdPair` already puts a still-held pair back on `held`, and then added the
+  entry again on `PAIR_HELD`: each pass doubled the line, and `anUmvuthiHeirTakesTheFarthestFreeWarrior`
+  counted the TAKE and 16 pair copies (17) where it wanted two. The case now answers stale on
+  `PAIR_STALE` and leaves the re-hold to `holdPair`. `heldPairs` counts only `first` holds, which this
+  call never is, so the gauge was right before and stays right.
+- **MZB-676** (the HandlerlessChest of MZB-642): it built a `BlockEntityType` in its class initialiser,
+  which the frozen registries refuse at test time ("Registry is already frozen"), and the throw ended
+  the whole mowziesmobs suite. It is now vanilla's chest type on the enchanting table's block, with
+  `isValidBlockState` widened for it: NeoForge keys item handlers by block, so the table still has
+  none, and `setBlockEntity` skips its type check when the entity's state is the block's own. Nothing is
+  registered, and the test still removes it before its chunk can be saved. Trap: a test-only block
+  entity type built at runtime kills the suite, not the test.
+- **MZB-677** (two Umvuthi test set-ups). A follower made with no leader retracts and discards itself
+  after 30 ticks (`EntityUmvuthanaFollowerToPlayer.tick`), so "so does the follower" saw it gone
+  whatever the devoted kill did: it is made inactive, which `deactivate` leaves alone. An Umvuthi drops
+  its target in its own tick once the target is past its follow range of 40, before the test's
+  `ServerTickEvent.Post` hook sets it again, so a player 170 (or 50) blocks off was never its target at
+  the check: both tests that stand a player that far off raise the follow range to 1000 on their
+  Umvuthi.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
