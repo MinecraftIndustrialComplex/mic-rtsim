@@ -347,6 +347,9 @@ pub struct Stats {
 
 pub const STATS_LEN: usize = 16;
 
+/// The length of [`Engine::clocks`]'s array (Java's `NativeEngine.CLOCKS`).
+pub const CLOCKS: usize = 8;
+
 struct State {
     replay: Replay,
     outbox: Outbox<TransferCmd>,
@@ -927,6 +930,26 @@ impl Engine {
             st.phase1.replay_diverged.is_none(),
             st.phase1.capture_mismatches,
         )
+    }
+
+    /// The modules' clocks, between steps ([`CLOCKS`] values): the last hand-over's game time,
+    /// phase 1's test offset (a world tick is a game time plus it), the world ticks of phase 1's
+    /// world, the dragons, the ships, the herds and the conflict engine, and the industry
+    /// engine's tick (a game time). Each module resumes at its pages' clock and never runs back,
+    /// so a GameTest server, which starts its world's game time again near 0, moves the game time
+    /// up past them first (`GameTestClock`).
+    pub fn clocks(&self) -> [i64; CLOCKS] {
+        let st = lock(&self.state);
+        [
+            st.game_time,
+            st.phase1.offset as i64,
+            st.phase1.world.now().0 as i64,
+            st.dragons.engine.now().0 as i64,
+            st.ships.engine.now().0 as i64,
+            st.herds.engine.now().0 as i64,
+            st.conflict.engine.now().0 as i64,
+            st.industry.engine.now().0 as i64,
+        ]
     }
 
     /// Phase 1's counters as of the last step (`phase1::stat` indexes).

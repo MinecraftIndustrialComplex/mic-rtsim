@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 
@@ -82,7 +83,7 @@ public final class TrainWatch {
     /** One carriage's cargo at a moment. */
     record Cargo(int index, int itemSlots, long fluidCapacity, Industry.GoodsCounter goods) {}
 
-    private record Stop(long station, long district, ResourceKey<Level> dim, boolean simulated, List<Cargo> cargo, long at) {}
+    private record Stop(long station, long district, ResourceKey<Level> dim, BlockPos pos, boolean simulated, List<Cargo> cargo, long at) {}
 
     private record Leaving(WeakReference<Train> train, long station, long district, long at) {}
 
@@ -286,7 +287,7 @@ public final class TrainWatch {
             r.putInt(IndRecords.Train.ARRIVED_FLAGS, (simulated ? IndRecords.Train.FLAG_SIMULATED : 0) | from);
             writeCarriages(r, IndRecords.Train.ARRIVED_CARRIAGES, cargo);
             ind.commit(r);
-            AT_STATION.put(train.id, new Stop(CreateIds.of(station.id), d.id, dim, simulated, cargo, ind.gameTime()));
+            AT_STATION.put(train.id, new Stop(CreateIds.of(station.id), d.id, dim, pos.immutable(), simulated, cargo, ind.gameTime()));
             arrivals++;
             if (simulated)
                 simulatedArrivals++;
@@ -374,7 +375,7 @@ public final class TrainWatch {
                     port.addAll(mail, -1);
                 // The ports first: the engine maps the cargo through the station's latest (§4.4, SC75)
                 if (docked != null && CreateIds.of(docked.station) == stop.station && docked.dim.equals(stop.dim))
-                    ports(ind, d, stop.station, ind.level(stop.dim), docked.psis);
+                    ports(ind, d, stop.station, stop.pos, ind.level(stop.dim), docked.psis);
                 if (!port.isEmpty()) {
                     ind.port(d, IndRecords.Port.TRAIN_CARGO, IndRecords.NO_INVENTORY, CreateIds.of(train.id), 0, port);
                     cargoPorts++;
@@ -458,16 +459,43 @@ public final class TrainWatch {
      * {@link #PORT_DEPTH} steps and {@link #PORT_VISITS} blocks from each, never into an unloaded chunk.
      * A container ends the walk; one touching an interface with nothing between them is not a port.
      * Journaled when the set differs from the last one sent for the station at this revision.
+     *
+     * <p>J6 (SECTIONS.md §2.1 and §2.4, choice SC6): each inventory is resolved by its chunk to whichever
+     * district holds it, not only {@code d}, the district of the station's chunk. The district holding the most
+     * of them (ties to the lowest id) is the one the station serves, and the station's chunk is told to join it
+     * ({@code Districts.stationServed}), so its cargo goes there from the next docking. The record still names
+     * {@code d}'s inventories only (choice SC158): the cargo of this call is booked to {@code d}, where the
+     * engine matches it against the station's ports.
      */
-    static void ports(Industry ind, District d, long station, ServerLevel level, Set<BlockPos> psis) {
+    static void ports(Industry ind, District d, long station, BlockPos stationPos, ServerLevel level, Set<BlockPos> psis) {
         if (level == null || psis.isEmpty())
             return;
-        TreeSet<Integer> found = new TreeSet<>();
+        Map<Long, TreeSet<Integer>> byDistrict = new TreeMap<>();
+        Map<Long, BlockPos> lowest = new HashMap<>();
         for (BlockPos psi : psis)
-            reached(level, d, psi, found);
-        if (found.isEmpty())
+            reached(level, psi, canon -> {
+                District od = ind.districtAt(level.dimension(), ChunkPos.asLong(canon.getX() >> 4, canon.getZ() >> 4));
+                District.Inventory inv = od == null ? null : od.inventoryAt(canon);
+                if (inv == null)
+                    return;
+                byDistrict.computeIfAbsent(od.id, k -> new TreeSet<>()).add(inv.index());
+                lowest.merge(od.id, canon, (x, y) -> x.asLong() <= y.asLong() ? x : y);
+            });
+        long servedId = -1;
+        int most = 0;
+        for (Map.Entry<Long, TreeSet<Integer>> e : byDistrict.entrySet())
+            if (e.getValue().size() > most) {
+                most = e.getValue().size();
+                servedId = e.getKey();
+            }
+        if (servedId >= 0) {
+            BlockPos at = lowest.get(servedId);
+            ind.districts().stationServed(level.dimension(), stationPos, ChunkPos.asLong(at.getX() >> 4, at.getZ() >> 4));
+        }
+        TreeSet<Integer> found = byDistrict.get(d.id);
+        if (found == null)
             return;
-        String key = d.revision + ":" + found;
+        String key = d.id + ":" + d.revision + ":" + found;
         if (Objects.equals(PORTS_SENT.get(station), key))
             return;
         PORTS_SENT.put(station, key);
@@ -486,6 +514,15 @@ public final class TrainWatch {
      * {@code found}.
      */
     static void reached(ServerLevel level, District d, BlockPos psi, Set<Integer> found) {
+        reached(level, psi, canon -> {
+            District.Inventory inv = d.inventoryAt(canon);
+            if (inv != null)
+                found.add(inv.index());
+        });
+    }
+
+    /** The canonical positions of the containers one interface reaches through conveyance (SG32), to {@code out}. */
+    static void reached(ServerLevel level, BlockPos psi, java.util.function.Consumer<BlockPos> out) {
         Map<BlockPos, Integer> depth = new HashMap<>();
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         depth.put(psi, 0);
@@ -511,9 +548,8 @@ public final class TrainWatch {
                 if (be == null || be instanceof PortableStorageInterfaceBlockEntity)
                     continue;
                 BlockPos canon = Districts.canonicalInventory(level, q);
-                District.Inventory inv = canon == null ? null : d.inventoryAt(canon);
-                if (inv != null)
-                    found.add(inv.index());
+                if (canon != null)
+                    out.accept(canon);
             }
         }
     }

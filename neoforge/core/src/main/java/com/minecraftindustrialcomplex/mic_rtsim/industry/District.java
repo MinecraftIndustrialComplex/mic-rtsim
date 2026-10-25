@@ -31,6 +31,18 @@ public final class District {
     /** A Create station (or another plugin's) inside the district. */
     public record Station(long id, BlockPos pos, String name) {}
 
+    /**
+     * A join between two member chunks (SECTIONS.md §2.1 and §2.3, choice SC5), the smaller chunk first: what
+     * the walk saw join them (a face touch, a plugin link, an inventory across the border, rotation that is not
+     * a face). Use {@link #join} to make one.
+     */
+    public record Join(long a, long b) {}
+
+    /** The join of chunks {@code x} and {@code y} ({@code x != y}), the smaller first. */
+    public static Join join(long x, long y) {
+        return x < y ? new Join(x, y) : new Join(y, x);
+    }
+
     public final long id;
     public final ResourceKey<Level> dim;
     public final LongOpenHashSet chunks = new LongOpenHashSet();
@@ -41,6 +53,12 @@ public final class District {
      * a hopper chain, a belt: a member for what it touches, not for what it is).
      */
     public final Long2IntOpenHashMap seedCounts = new Long2IntOpenHashMap();
+    /**
+     * The joins between member chunks detection last saw (SECTIONS.md §2.3, choice SC5), persisted: an
+     * unloaded member keeps the joins its district saw, so a detection that cannot look at it still knows
+     * what holds it to the rest. A detection replaces the joins between chunks it walked and keeps the rest.
+     */
+    public final java.util.Set<Join> joins = new java.util.HashSet<>();
     /** Set by {@code /rtsim district rename}; wins over the station name. */
     public String customName;
     /** The first station's name (lowest position), else null. */

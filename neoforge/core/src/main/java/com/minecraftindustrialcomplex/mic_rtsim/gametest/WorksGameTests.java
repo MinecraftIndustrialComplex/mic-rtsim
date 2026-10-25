@@ -13,8 +13,6 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.TicketType;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
@@ -27,7 +25,6 @@ import net.minecraft.world.phys.AABB;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -45,9 +42,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
  *
  * <p>The live tests are one batch: a work's plot search may leave the arena, and no other batch's
  * arena is then next to it. The scripted test is a batch of its own, so its census sees no other test's
- * golem. Chunks around a test are held by a ticket that is never saved and expires on its own, not
- * forced: a forced chunk is saved with the world, so a failed test would leave chunks loaded next to
- * other tests in the next run (the herd and caravan tests need theirs unloaded).
+ * golem. Chunks around a test are held ({@link ChunkWait}: a ticket, never saved, released when the
+ * test ends), and its waits after them are bounded in ticks from the tick they were ready.
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -57,17 +53,11 @@ public final class WorksGameTests {
     static final String PLAINS_LAMP = "minecraft:village/plains/plains_lamp_1";
     static final String BATCH = "mic_rtsim_works";
     static final String BATCH_SCRIPTED = "mic_rtsim_works_scripted";
-    /** The live tests' tick budget once their chunks are loaded (the in-game waits: the engine's answers,
-     * a built lamp, days passing). A passing test ends as soon as it passes. */
+    /** The live tests' tick budget once their chunks are loaded, for all their in-game waits (the engine's
+     * answers, a built lamp, days passing). A passing test ends as soon as it passes. */
     static final int LIVE_TICKS = 24_000;
     /** The scripted test's tick budget once its chunks are loaded. */
     static final int SCRIPTED_TICKS = 600;
-    /** Wall-clock bound of a test's chunk wait. The GameTest server ticks unthrottled, so under load a
-     * tick bound passes in seconds, before chunk generation (real time, on other threads) is done. */
-    static final long CHUNK_WAIT_NANOS = 120_000_000_000L;
-    /** GameTest's own timeout for these tests: out of reach, because it counts ticks from the test's start
-     * and the chunk wait must not count against it. The wall bound and the tick budget above end a test. */
-    static final int NO_TICK_TIMEOUT = 10_000_000;
     /** Reach of the live tests' held chunks: the works' plot search radius (48) and a lamp's half width. */
     static final int LIVE_REACH = 56;
     /** The vanilla plains village's population guess for 15 pieces: 5 (one lamp, and one golem under threat). */
@@ -116,74 +106,6 @@ public final class WorksGameTests {
         return null;
     }
 
-    /** Held chunks: never saved, and gone 30,000 ticks after a test that failed before releasing them. */
-    private static final TicketType<ChunkPos> HOLD = TicketType.create("mic_rtsim_works_test", Comparator.comparingLong(ChunkPos::toLong), 30_000);
-
-    /** Holds (or releases) every chunk within {@code blocks} of {@code at} loaded. */
-    static void hold(ServerLevel level, BlockPos at, int blocks, boolean on) {
-        ChunkPos c = new ChunkPos(at);
-        int r = (blocks + 15) >> 4;
-        if (on)
-            level.getChunkSource().addRegionTicket(HOLD, c, r, c);
-        else
-            level.getChunkSource().removeRegionTicket(HOLD, c, r, c);
-    }
-
-    /** Whether every chunk within {@code blocks} of {@code at} is loaded (what the plot search needs). */
-    static boolean loaded(ServerLevel level, BlockPos at, int blocks) {
-        for (int cx = (at.getX() - blocks) >> 4; cx <= (at.getX() + blocks) >> 4; cx++)
-            for (int cz = (at.getZ() - blocks) >> 4; cz <= (at.getZ() + blocks) >> 4; cz++)
-                if (level.getChunkSource().getChunkNow(cx, cz) == null)
-                    return false;
-        return true;
-    }
-
-    /**
-     * The two clocks of a works test. The chunk wait is real work on other threads, so it is bounded by
-     * wall-clock time ({@link #CHUNK_WAIT_NANOS}) and counts no ticks. Every wait after it is on in-game
-     * logic, so it is bounded by ticks counted from the moment the chunks were loaded. GameTest's own
-     * tick timeout is set out of reach ({@link #NO_TICK_TIMEOUT}) for these tests, so only these two
-     * clocks end a wait. Either failing reports the wait's own message.
-     */
-    static final class Clock {
-        private final GameTestHelper helper;
-        private final int tickBudget;
-        private final long startNanos = System.nanoTime();
-        private long deadlineTick = -1;
-
-        Clock(GameTestHelper helper, int tickBudget) {
-            this.helper = helper;
-            this.tickBudget = tickBudget;
-        }
-
-        /** The wait for the chunks within {@code blocks} of {@code at}: wall-clock bound. */
-        Runnable chunks(BlockPos at, int blocks) {
-            return () -> {
-                if (deadlineTick < 0) {
-                    if (!loaded(helper.getLevel(), at, blocks)) {
-                        if (System.nanoTime() - startNanos > CHUNK_WAIT_NANOS)
-                            helper.fail("the chunks around are loaded");
-                        check("the chunks around are loaded", false);
-                    }
-                    deadlineTick = helper.getTick() + tickBudget;
-                }
-            };
-        }
-
-        /** A wait on in-game logic: bounded in ticks since the chunks loaded. */
-        Runnable logic(Runnable wait) {
-            return () -> {
-                try {
-                    wait.run();
-                } catch (RuntimeException e) {
-                    if (deadlineTick >= 0 && helper.getTick() > deadlineTick)
-                        helper.fail(String.valueOf(e.getMessage()));
-                    throw e;
-                }
-            };
-        }
-    }
-
     static List<IronGolem> golemsNear(ServerLevel level, BlockPos meeting, double r) {
         return level.getEntitiesOfClass(IronGolem.class, new AABB(meeting).inflate(r), IronGolem::isAlive);
     }
@@ -197,7 +119,7 @@ public final class WorksGameTests {
      * point (flag AT_VILLAGE), standing on the ground beside it, not player made, and the census counts
      * it; a lamp with no free plot in reach is answered NOT_FREE and nothing is built.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = NO_TICK_TIMEOUT, batch = BATCH_SCRIPTED)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = BATCH_SCRIPTED)
     public static void aWorkIsBuiltFromItsTemplateAndAGolemStandsAtTheMeetingPoint(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         ScriptedEngine engine = RtsimTests.engine();
@@ -209,19 +131,19 @@ public final class WorksGameTests {
         int search = Cmd.PlaceHouse.FLAG_SEARCH | Cmd.PlaceHouse.FLAG_Y_FROM_VILLAGE;
         // Under the arena in the flat world's dirt: no plot within reach is free.
         BlockPos under = new BlockPos(meet.getX(), level.getMinBuildHeight() + 1, meet.getZ());
-        Clock clock = new Clock(helper, SCRIPTED_TICKS);
-        hold(level, meet, 24, true);
+        ChunkWait waits = ChunkWait.of(helper, SCRIPTED_TICKS);
+        ChunkWait.Hold around = waits.hold(meet, 24);
 
         helper.startSequence()
                 // The plot search needs the chunks around: ask only once they are loaded.
-                .thenWaitUntil(clock.chunks(meet, 24))
+                .thenWaitUntil(waits.ready(around))
                 .thenExecute(() -> {
                     engine.placeHouse(lamp, v.id, dim, PLAINS_LAMP, null, meet.getX(), 0, meet.getZ(), 1, 0, search, 4, 7, 0);
                     engine.spawnResident(golem, v.id, dim, "minecraft:iron_golem", null, Cmd.SpawnResident.FLAG_AT_VILLAGE, 0, 0, 0, 0);
                     engine.placeHouse(buried, v.id, dim, PLAINS_LAMP, null, under.getX(), under.getY(), under.getZ(), 0, 0,
                             Cmd.PlaceHouse.FLAG_SEARCH, 4, 9, 0);
                 })
-                .thenWaitUntil(clock.logic(() -> check("three answers", result(engine, lamp) != null && result(engine, golem) != null
+                .thenWaitUntil(waits.engine(() -> check("three answers", result(engine, lamp) != null && result(engine, golem) != null
                         && result(engine, buried) != null)))
                 .thenExecute(() -> {
                     check("the lamp was built", result(engine, lamp).aux() == Obs.CommandResult.APPLIED);
@@ -252,14 +174,13 @@ public final class WorksGameTests {
                 // The census sweep (one village every Census.INTERVAL ticks) may have counted this village
                 // before the golem spawned, and that record can reach the engine a hand-over ahead of the
                 // census above: wait for the latest record to count the golem, not for the first record.
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     List<ScriptedEngine.Received> census = RtsimTests.recordsWith(engine, Obs.VILLAGE_CENSUS, Obs.VillageCensus.VILLAGE, v.id);
                     int counted = census.isEmpty() ? -1 : census.get(census.size() - 1).view().getInt(Obs.VillageCensus.GOLEMS);
                     check("the census counts the golem: " + (counted < 0 ? "no census reached the engine" : counted), counted == 1);
                 }))
                 .thenExecute(() -> {
                     golemsNear(level, meet, 6).forEach(net.minecraft.world.entity.Entity::discard);
-                    hold(level, meet, 24, false);
                     RtsimTests.forget(v);
                 })
                 .thenSucceed();
@@ -280,7 +201,7 @@ public final class WorksGameTests {
      * own type's template (a plains village gets {@code plains_lamp_1}) by the meeting point; the cap
      * (one per 3 residents) holds after that, and the purse keeps what it did not spend (MS-9).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = NO_TICK_TIMEOUT, batch = BATCH)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = BATCH)
     public static void aVillageBuysALampFromItsOwnTemplateWhenItsPurseAffordsIt(GameTestHelper helper) {
         NativeEngine e = live(helper, "worksLamp");
         if (e == null)
@@ -290,20 +211,20 @@ public final class WorksGameTests {
         Village v = RtsimTests.adoptArenaLive(helper, "human", "minecraft:village_plains", meet, 5, PIECES);
         long[] base = e.phase1Stats();
         long[] asks = {0};
-        Clock clock = new Clock(helper, LIVE_TICKS);
-        hold(helper.getLevel(), meet, LIVE_REACH, true);
+        ChunkWait waits = ChunkWait.of(helper, LIVE_TICKS);
+        ChunkWait.Hold around = waits.hold(meet, LIVE_REACH);
 
         helper.startSequence()
-                .thenWaitUntil(clock.chunks(meet, LIVE_REACH))
-                .thenWaitUntil(clock.logic(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null)))
+                .thenWaitUntil(waits.ready(around))
+                .thenWaitUntil(waits.engine(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null)))
                 .thenExecute(() -> e.worksGrant(v.id, GRANT))
-                .thenWaitUntil(clock.logic(() -> check("a lamp stands in the village", lampOf(helper, v, bill) != null)))
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> check("a lamp stands in the village", lampOf(helper, v, bill) != null)))
+                .thenWaitUntil(waits.engine(() -> {
                     long[] w = e.phase1Works(v.id);
                     check("the engine heard it was built", e.phase1Stats()[NativeEngine.P1_WORKS_PLACED] > base[NativeEngine.P1_WORKS_PLACED]);
                     check("one work bought", w[NativeEngine.WORKS_BOUGHT] == 1);
                 }))
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     // Two more days: the cap holds.
                     if (asks[0]++ < 2) {
                         e.phase1Advance(24_000);
@@ -325,7 +246,6 @@ public final class WorksGameTests {
                     check("it cost something", w[NativeEngine.WORKS_SPENT] > 0);
                     check("the rest stays in the purse (MS-9)", w[NativeEngine.WORKS_PURSE] >= GRANT - w[NativeEngine.WORKS_SPENT]);
                     check("one lamp in the village", v.houses.stream().filter(x -> itemsIn(helper.getLevel(), x.box()).equals(bill)).count() == 1);
-                    hold(helper.getLevel(), meet, LIVE_REACH, false);
                     RtsimTests.forget(v);
                 })
                 .thenSucceed();
@@ -335,7 +255,7 @@ public final class WorksGameTests {
      * MS-6, MS-8: a raided village buys a golem first; it appears at the meeting point, the census's
      * count of it reaches the engine, and the village's risk to the dragons rises by it.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = NO_TICK_TIMEOUT, batch = BATCH)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = BATCH)
     public static void aRaidedVillageBuysAGolemThatTheCensusCounts(GameTestHelper helper) {
         NativeEngine e = live(helper, "worksGolem");
         if (e == null)
@@ -345,25 +265,25 @@ public final class WorksGameTests {
         Village v = RtsimTests.adoptArenaLive(helper, "human", "minecraft:village_plains", meet, 5, PIECES);
         IronGolem[] golem = {null};
         long[] risk = {-1};
-        Clock clock = new Clock(helper, LIVE_TICKS);
-        hold(level, meet, LIVE_REACH, true);
+        ChunkWait waits = ChunkWait.of(helper, LIVE_TICKS);
+        ChunkWait.Hold around = waits.hold(meet, LIVE_REACH);
 
         helper.startSequence()
-                .thenWaitUntil(clock.chunks(meet, LIVE_REACH))
-                .thenWaitUntil(clock.logic(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null)))
+                .thenWaitUntil(waits.ready(around))
+                .thenWaitUntil(waits.engine(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null)))
                 .thenExecute(() -> {
                     risk[0] = e.dragonsVillageRisk(v.id);
                     check("the dragons know the village (risk " + risk[0] + ")", risk[0] >= 0);
                     e.worksRaid(v.id, false);
                     e.worksGrant(v.id, GRANT);
                 })
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     List<IronGolem> g = golemsNear(level, meet, 8);
                     check("a golem at the meeting point", g.size() == 1);
                     golem[0] = g.get(0);
                 }))
                 .thenExecute(() -> RtsimTests.session().phase1.census.take(level, v, RtsimTests.session().gameTime()))
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     long[] w = e.phase1Works(v.id);
                     check("the engine counts it (census golems " + w[NativeEngine.WORKS_GOLEMS] + ")", w[NativeEngine.WORKS_GOLEMS] == 1);
                     check("the dragons fear the village more (risk " + risk[0] + " to " + e.dragonsVillageRisk(v.id) + ")",
@@ -378,7 +298,6 @@ public final class WorksGameTests {
                     check("not player made", !golem[0].isPlayerCreated());
                     check("on the meeting point's level", golem[0].blockPosition().getY() == meet.getY());
                     golem[0].discard();
-                    hold(level, meet, LIVE_REACH, false);
                     RtsimTests.forget(v);
                 })
                 .thenSucceed();
@@ -390,7 +309,7 @@ public final class WorksGameTests {
      * the flat world's dirt, so every plot the search tries is refused (the chunks around are held,
      * so none is merely unloaded).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = NO_TICK_TIMEOUT, batch = BATCH)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = BATCH)
     public static void noFreePlotMarksTheKindFull(GameTestHelper helper) {
         NativeEngine e = live(helper, "worksFull");
         if (e == null)
@@ -402,20 +321,20 @@ public final class WorksGameTests {
         long[] base = e.phase1Stats();
         long[] spent = {0};
         long[] asks = {0};
-        Clock clock = new Clock(helper, LIVE_TICKS);
-        hold(level, meet, LIVE_REACH, true);
+        ChunkWait waits = ChunkWait.of(helper, LIVE_TICKS);
+        ChunkWait.Hold around = waits.hold(meet, LIVE_REACH);
 
         helper.startSequence()
-                .thenWaitUntil(clock.chunks(meet, LIVE_REACH))
-                .thenWaitUntil(clock.logic(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null)))
+                .thenWaitUntil(waits.ready(around))
+                .thenWaitUntil(waits.engine(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null)))
                 .thenExecute(() -> e.worksGrant(v.id, GRANT))
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     long[] w = e.phase1Works(v.id);
                     check("the lamp is full (full " + w[NativeEngine.WORKS_FULL] + ", bought " + w[NativeEngine.WORKS_BOUGHT] + ")",
                             w[NativeEngine.WORKS_FULL] == 1);
                     spent[0] = w[NativeEngine.WORKS_SPENT];
                 }))
-                .thenWaitUntil(clock.logic(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     if (asks[0]++ < 2) {
                         e.phase1Advance(24_000);
                         check("days pass", false);
@@ -430,7 +349,6 @@ public final class WorksGameTests {
                     check("refused once", s[NativeEngine.P1_WORKS_REFUSED] - base[NativeEngine.P1_WORKS_REFUSED] >= 1);
                     check("no refund: spent " + w[NativeEngine.WORKS_SPENT], w[NativeEngine.WORKS_SPENT] == spent[0] && spent[0] > 0);
                     check("nothing built", v.houses.isEmpty());
-                    hold(level, meet, LIVE_REACH, false);
                     RtsimTests.forget(v);
                 })
                 .thenSucceed();

@@ -632,8 +632,11 @@ public final class GlassReplayGameTests {
         }
         run.copy = run.f.build(run.far);
         seed(run.far, run.copy);
+        // After the split, which reads the control's footprint: each copy is one district, whatever its chunk borders.
+        int joinedControl = GlassCorpus.join(run.helper), joinedFar = GlassCorpus.join(run.far);
         run.builtAt = run.now();
-        GlassCorpusKit.log(run.f.name(), run.rebuilds > 0 ? "replay rebuilt" : "replay built", "control: " + run.control.notes() + "; far: " + run.copy.notes());
+        GlassCorpusKit.log(run.f.name(), run.rebuilds > 0 ? "replay rebuilt" : "replay built", "control: " + run.control.notes() + "; far: " + run.copy.notes()
+                + "; chunk borders joined: control " + joinedControl + ", far " + joinedFar);
         if (run.scenario != null)
             run.scenario.built(run);
         run.stage(Stage.RUN);
