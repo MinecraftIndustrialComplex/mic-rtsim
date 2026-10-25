@@ -1128,7 +1128,11 @@ fn a_record_for_a_live_ship_does_not_land_on_the_ship_the_replay_put_at_its_hand
     let counts = |s: &Ships| (s.stats.sinkings, s.stats.captures);
     for (name, o, want) in [
         ("sunk", sunk(merchant), (1, 0)),
-        ("captured by a player", captured(merchant, By::Player, 0), (0, 1)),
+        (
+            "captured by a player",
+            captured(merchant, By::Player, 0),
+            (0, 1),
+        ),
     ] {
         // The control: the pages hold the merchant.
         let (mut l, mut s) = held(seed, true);
@@ -1204,7 +1208,10 @@ fn a_capture_or_a_loot_credited_to_a_pirate_the_replay_allocated_is_lost() {
         let data = l.data.clone();
         s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
         let (m, p) = (l.merchant, s.havens[0].ships[0]);
-        assert!(p.index() >= pages, "{name}: the replay's pirate is past the pages' ships");
+        assert!(
+            p.index() >= pages,
+            "{name}: the replay's pirate is past the pages' ships"
+        );
         s.ships[m].cargo.insert(good, hold);
         let o = if capture {
             captured(Ship::agent(m), By::Ship, Ship::agent(p))
@@ -1261,7 +1268,12 @@ fn a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody() {
     let (mut l, mut s) = held(seed, true);
     s.tape.set_on(true);
     let (m, p) = (l.merchant, l.pirate.unwrap());
-    s.ingest(&mut l.w, &sunk_by(Ship::agent(m), Ship::agent(p)), &l.mask, Tick::ZERO);
+    s.ingest(
+        &mut l.w,
+        &sunk_by(Ship::agent(m), Ship::agent(p)),
+        &l.mask,
+        Tick::ZERO,
+    );
     assert!(!s.ship(m).unwrap().is_active(), "control");
     assert_eq!(doers(&s), vec![p.to_bits()], "control: the pirate is named");
 
@@ -1275,9 +1287,20 @@ fn a_sinking_credited_to_a_ship_the_replay_allocated_names_nobody() {
     let data = l.data.clone();
     s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
     let (m, p) = (l.merchant, s.havens[0].ships[0]);
-    assert!(p.index() >= pages, "the replay's pirate is past the pages' ships");
-    s.ingest(&mut l.w, &sunk_by(Ship::agent(m), Ship::agent(p)), &l.mask, Tick::ZERO);
-    assert!(!s.ship(m).unwrap().is_active(), "the merchant is lost all the same");
+    assert!(
+        p.index() >= pages,
+        "the replay's pirate is past the pages' ships"
+    );
+    s.ingest(
+        &mut l.w,
+        &sunk_by(Ship::agent(m), Ship::agent(p)),
+        &l.mask,
+        Tick::ZERO,
+    );
+    assert!(
+        !s.ship(m).unwrap().is_active(),
+        "the merchant is lost all the same"
+    );
     assert_eq!(doers(&s), vec![0], "and the row names nobody");
 }
 
@@ -1308,7 +1331,10 @@ fn a_replayed_fight_between_handles_the_replay_allocated_is_lost() {
     for from_pages in [true, false] {
         let (mut w, mut s, mask, pirate) = shifted(seed, from_pages);
         let the_last = Ship::id_of_agent(p).unwrap();
-        assert!(s.ship(the_last).is_some(), "a merchant at the live pirate's handle");
+        assert!(
+            s.ship(the_last).is_some(),
+            "a merchant at the live pirate's handle"
+        );
         let rows = |s: &Ships| {
             let r = |id| s.ship(id).map(|x| (x.crew, x.hull_milli));
             (r(pirate), r(the_last))
@@ -1320,11 +1346,11 @@ fn a_replayed_fight_between_handles_the_replay_allocated_is_lost() {
     }
 }
 
-/// The lookups that carry an epoch are bound too (RP-120): a ship the replay allocated is at
-/// epoch 0 until the replay ends, so no real record (epoch 1 and up) finds it by `ship_of`, and the
-/// bound there is a second wall. The test goes through it with the one record that would pass the
-/// epoch check, a report of epoch 0 at the live merchant's handle. Control: the pages hold the
-/// merchant (epoch 0, never embodied) and take the damage and the return.
+/// The lookups that carry an epoch are bound too (RP-120): the epoch check is no wall, since the
+/// blockade bumps a merchant the replay allocated during the replay (RP-121) and a real record can
+/// name the epoch it then holds. The test goes through the lookup with a report of epoch 0, the
+/// epoch the replay's ship holds at allocation, at the live merchant's handle. Control: the pages
+/// hold the merchant (epoch 0, never embodied) and take the damage and the return.
 #[test]
 fn an_epoch_checked_lookup_finds_only_a_ship_the_pages_held() {
     let seed = 5;
@@ -1495,18 +1521,40 @@ fn the_honour_spends_only_a_floor_it_reaches() {
 }
 
 /// A replay after a replay takes its own bound (RP-120): the reset at the replay end lets a later
-/// `begin_replay` of the same engine (a switch-on after a switch-off, in a live session) cover the
-/// ships it holds then, not the session's first bound. With the first bound kept (the mutation the
-/// records list), the ship that joined since would only raise the floor and stay unembodied.
+/// `begin_replay` of the same engine cover the ships it holds then, not the session's first bound.
+/// With the first bound kept (the mutation the records list), the ship that joined since would only
+/// raise the floor and stay unembodied. The host never reaches this state (it begins one replay per
+/// session, after `begin_session` set the bound anew, review P3.6), so the test guards the engine's
+/// API: a reset at one replay's end must not leave the bound of the last.
+///
+/// The control: the same haven found after the later `begin_replay` is a ship the replay itself
+/// allocated, above the new bound, so the record only raises its floor. A bound that the reset
+/// opened wide (every handle honoured) would embody it.
 #[test]
 fn a_later_replay_takes_its_own_bound() {
-    let seed = 5;
-    let (mut l, mut s) = held(seed, false);
-    s.replay_done(&mut l.w);
-    let data = l.data.clone();
-    s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
-    let p = s.havens[0].ships[0];
-    s.begin_replay(true);
-    s.ingest(&mut l.w, &materialized(p, 3), &l.mask, Tick::ZERO);
-    assert!(s.ship(p).unwrap().embodied, "the ship that joined is in this replay's bound");
+    for during in [false, true] {
+        let seed = 5;
+        let (mut l, mut s) = held(seed, false);
+        s.replay_done(&mut l.w);
+        let data = l.data.clone();
+        if !during {
+            s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
+        }
+        s.begin_replay(true);
+        if during {
+            s.ingest(&mut l.w, &haven_found(&data), &l.mask, Tick::ZERO);
+        }
+        let p = s.havens[0].ships[0];
+        s.ingest(&mut l.w, &materialized(p, 3), &l.mask, Tick::ZERO);
+        assert_eq!(
+            s.ship(p).unwrap().embodied,
+            !during,
+            "joined {}: the honour covers the ships the later replay began with, not the ones it allocates",
+            if during {
+                "during the later replay"
+            } else {
+                "before the later replay"
+            }
+        );
+    }
 }

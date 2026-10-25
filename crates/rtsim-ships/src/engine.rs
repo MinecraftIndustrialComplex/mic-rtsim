@@ -5761,8 +5761,9 @@ impl Ships {
                         }
                     }
                     By::Ship => {
-                        let Some(p) =
-                            self.named_ship(c.ship).filter(|&p| self.haven_of(p).is_some())
+                        let Some(p) = self
+                            .named_ship(c.ship)
+                            .filter(|&p| self.haven_of(p).is_some())
                         else {
                             return;
                         };
@@ -5833,8 +5834,9 @@ impl Ships {
                         }
                     }
                     By::Ship => {
-                        let Some(p) =
-                            self.named_ship(c.ship).filter(|&p| self.haven_of(p).is_some())
+                        let Some(p) = self
+                            .named_ship(c.ship)
+                            .filter(|&p| self.haven_of(p).is_some())
                         else {
                             // Nobody of ours took it: back into the hold.
                             for (g, a) in taken {
@@ -5857,8 +5859,7 @@ impl Ships {
                 }
             }
             Obs::Fight(f) => {
-                let (Some(a), Some(d)) =
-                    (self.named_ship(f.attacker), self.named_ship(f.defender))
+                let (Some(a), Some(d)) = (self.named_ship(f.attacker), self.named_ship(f.defender))
                 else {
                     return;
                 };
