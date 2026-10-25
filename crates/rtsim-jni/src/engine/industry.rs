@@ -625,8 +625,14 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
 /// the result, so this works whether or not the outbox still had the command: a restart trims the
 /// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+/// A duplicate carriage delta of a train's loot was re-decided after a crash under the op Java
+/// applied before: its goods left once, so the engine drops the exchange (RP-182).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
     let kept = l.complete(op);
+    if status == obs::command_result::DUPLICATE_OP {
+        l.engine.command_duplicate(op);
+        return;
+    }
     if status != obs::command_result::FAILED {
         return;
     }

@@ -289,6 +289,27 @@ struct PendingExchange {
 /// on its glass store pool).
 type PortBooking = (u32, Good, i64, bool);
 
+/// What names one train attack for its op (RP-180): the threat's own id, its source and class
+/// (two raiders' ids could meet; one conflict ambush sends a threat per class), and the train.
+/// Never its tick: [`Engine::threat_with`] raises that to industry's present.
+fn attack_key(t: &Threat, train: TrainId) -> [u8; 19] {
+    let source: u8 = match t.source {
+        ThreatSource::Natural => 0,
+        ThreatSource::Dragon => 1,
+        ThreatSource::Bandit => 2,
+        ThreatSource::Boss => 3,
+        ThreatSource::Synthetic => 4,
+        ThreatSource::Nest => 5,
+    };
+    let mut key = [0u8; 19];
+    key[0] = b'T';
+    key[1..9].copy_from_slice(&t.id.to_le_bytes());
+    key[9] = source;
+    key[10] = t.class.index() as u8;
+    key[11..19].copy_from_slice(&train.0.to_le_bytes());
+    key
+}
+
 /// A fraction as an archive magnitude: thousandths.
 fn per_mille(f: f64) -> i64 {
     (f * 1000.0).round() as i64
@@ -3946,6 +3967,19 @@ impl Engine {
         true
     }
 
+    /// Java answered an industry command DUPLICATE_OP: it had applied the op already. A train's
+    /// loot re-decided under the op Java applied (a raider replaying its window after a crash,
+    /// RP-180) took its goods once, at that first application, so its exchange is dropped with
+    /// the books as the re-decision booked them; no IND_CARRIAGE_RESULT will come for it (RP-182).
+    /// A station exchange is left alone, as before. Returns whether an exchange was dropped.
+    pub fn command_duplicate(&mut self, op: rtsim_kernel::journal::OpId) -> bool {
+        if !self.exchanges.get(&op).is_some_and(|ex| ex.loot) {
+            return false;
+        }
+        self.exchanges.remove(&op);
+        true
+    }
+
     fn carriage_result(&mut self, at: Tick, r: &CarriageResult) {
         let Some(ex) = self.exchanges.remove(&r.op) else {
             return;
@@ -5154,6 +5188,12 @@ impl Engine {
     }
 
     fn attack_train(&mut self, t: &Threat, train: TrainId) {
+        // An attack whose key the op window remembers was decided already: a raider whose pages
+        // are older than industry's replays its window and re-decides it. Booked once (RP-183).
+        let key = attack_key(t, train);
+        if self.ops.knows_key(self.world_seed, &key) {
+            return;
+        }
         // Trains get the same per-class pacing as districts (I25).
         let cd = self
             .train_cooldown
@@ -5231,7 +5271,9 @@ impl Engine {
             reason: CarriageReason::Loot,
             entries: entries.clone(),
         });
-        let op = self.ops.derive(self.world_seed, self.now, &cmd);
+        // From the attack's identity, never from `now` or the entries: re-decided after a crash,
+        // it is the op Java applied already, which Java answers DUPLICATE (RP-180).
+        let op = self.ops.derive_keyed(self.world_seed, &key);
         cmd.set_op(op);
         self.exchanges.insert(
             op,
