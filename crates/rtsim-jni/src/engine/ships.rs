@@ -310,7 +310,7 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
     // The ships a record of this session's replay can name are the ones the engine holds now,
-    // whether or not they run, or exist (RP-100): the replay's own begin later and may not be
+    // whether or not they run, or exist (RP-120): the replay's own begin later and may not be
     // the live run's.
     st.ships.engine.begin_session();
     // The first record of the engine's only session: what it holds is its pages as read (the
@@ -433,7 +433,7 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 }
 
 /// The epoch a replayed record or a copy names raises its ship's floor, before anything drops it
-/// (docs/replay-gate.md §5.3, RP-57, RP-102): a module switched off for the session, the ships
+/// (docs/replay-gate.md §5.3, RP-57, RP-122): a module switched off for the session, the ships
 /// not yet in the world and the engine's replay not yet begun all drop records, and the body
 /// the record named is gone all the same. Keyed on the session's replay, not the engine's.
 fn fold_epoch(st: &mut State, o: &Obs) {

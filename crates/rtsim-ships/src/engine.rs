@@ -714,7 +714,7 @@ pub struct Ships {
     /// [`Ships::begin_replay`]; only then is a replayed SHIP_MATERIALIZED honoured. In memory only.
     pub(crate) replay_from_pages: bool,
     /// The ship arena's next index when the session began ([`Ships::begin_session`], RP-93,
-    /// RP-100), lowered only by [`Ships::begin_replay`]: a replayed record names a ship by its
+    /// RP-120), lowered only by [`Ships::begin_replay`]: a replayed record names a ship by its
     /// agent id, and finds it only if it existed then. Ships are allocated in order and never
     /// reused (`PagedArena`), so a ship the replay allocated (a network built or a port or
     /// haven that joined inside the replayed window) may not be the one the live run gave that
@@ -2390,7 +2390,7 @@ impl Ships {
     /// replayed SHIP_MATERIALIZED honoured (§5.2). For the native link; the engine's own runs
     /// have no sessions.
     pub fn begin_replay(&mut self, from_pages: bool) {
-        // The bound and the pages' flag are the session's and taken once (RP-100): a switch off
+        // The bound and the pages' flag are the session's and taken once (RP-120): a switch off
         // and on inside the replay begins it again, when the arena holds the replay's own ships
         // too, and a first dock or haven begins it after the ones that made it active.
         if !self.outbox.replaying() {
@@ -2400,7 +2400,7 @@ impl Ships {
         self.outbox.begin_replay();
     }
 
-    /// A session begins, whether or not the ships run (RP-100): the ships it can name are the
+    /// A session begins, whether or not the ships run (RP-120): the ships it can name are the
     /// ones the engine holds now (its pages). The replay itself begins later (the first dock,
     /// haven or ship, a switch-on) and keeps this bound.
     pub fn begin_session(&mut self) {
@@ -2462,7 +2462,7 @@ impl Ships {
     }
 
     /// A ship's epoch becomes `epoch`: its floor is spent if the epoch reaches it. A floor above
-    /// (a copy folded at the hand-over's time, a later record) stays for the next body (RP-101).
+    /// (a copy folded at the hand-over's time, a later record) stays for the next body (RP-121).
     pub(crate) fn set_epoch(&mut self, id: ShipId, epoch: u32) {
         self.ships[id].epoch = epoch;
         let agent = Ship::agent(id);
@@ -5565,7 +5565,7 @@ impl Ships {
         self.fold_epoch(o);
     }
 
-    /// The ship an agent id names for a record of this session's replay (RP-93, RP-100): while
+    /// The ship an agent id names for a record of this session's replay (RP-93, RP-120): while
     /// replaying only a ship the pages held when the session began, and none at all on an engine
     /// that did not come from its pages. A handle at or above the bound may be another ship than
     /// the one the live run gave that index (the replay builds its network and joins its docks

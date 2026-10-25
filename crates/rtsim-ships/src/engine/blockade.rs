@@ -572,7 +572,7 @@ impl Ships {
             (_, None) => [(at, LAID_UP), NO_SPELL],
         };
         self.idle.insert(s, spells);
-        // Above the epochs a replayed record named too (RP-101): a body that ended on the next
+        // Above the epochs a replayed record named too (RP-121): a body that ended on the next
         // epoch of a ship laid up here must not be taken for this one's.
         let next = self.next_epoch(s);
         let x = &mut self.ships[s];
@@ -1674,7 +1674,7 @@ mod tests {
     }
 
     /// A laid-up or relaunched slot's new epoch is above the epochs a replayed record named
-    /// (RP-101): a floor of 7 for its last body makes the epoch 8, not 1, so a late report of that
+    /// (RP-121): a floor of 7 for its last body makes the epoch 8, not 1, so a late report of that
     /// body cannot match the slot's next one (the exact-epoch arms). The floor is spent. Control:
     /// with no floor the bump is the plain +1.
     #[test]
