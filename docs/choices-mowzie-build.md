@@ -3899,4 +3899,14 @@ changes (RP-89).
   zero in the jni long-replay test (no meeting of the pages fell due in that replay), so the
   `seen` early return is tested at the engine, not at the wire. (d) 3,000 filler records were too
   few for a multi-hand-over replay; 8,000 obstacle reports of a herd the engine never had give
-  a dozen minimum-size hand-overs.
+  a dozen minimum-size hand-overs. (e) A mutation check run while a workspace `cargo test` is
+  still working through its binaries overwrites the one it has not reached yet (the same file
+  name): the first workspace run here reported the mutated copy test as failed; the rerun with
+  nothing touched passed. (f) The first cut of RP-84 had `Herds::ingest_copy` with no caller in the
+  host; only a test through the wire (a REASSERT in the journal) finds that.
+  *Checks:* `cargo test --workspace --no-fail-fast`: 1,593 passed, 0 failed, 25 ignored;
+  `cargo clippy -p rtsim-ecology -p rtsim-jni --all-targets -- -D warnings`: clean; the "never" unit
+  test also under `cargo test --release -p rtsim-ecology a_never_kind`: passes. The sims
+  (`rtsim-cli sim herds` and `sim dragons`, the two the herds engine feeds, run to files in /tmp
+  and compared with `scenario/results` at the base, wall and timing fields left out): no
+  difference.
