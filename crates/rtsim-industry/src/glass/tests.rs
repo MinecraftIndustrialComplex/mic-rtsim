@@ -6561,6 +6561,35 @@ mod replay_path {
             assert_eq!(r.sections[sa].state, ss::REPLAYING);
         }
 
+        /// A report built over a compile the running replay does not run reads none of the
+        /// replay's per-unit flags: nothing replays or froze by it, and the verdicts still show.
+        #[test]
+        fn a_report_over_another_compile_reads_no_running_replay() {
+            use crate::glass::report::section_state as ss;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let dg = &e.glass.districts[&D];
+            let rp = dg.replay.as_ref().expect("replaying");
+            let c = comp(&e.glass, D);
+            let (sa, sb) = (
+                c.sections.section_of[p0 as usize] as usize,
+                c.sections.section_of[p1 as usize] as usize,
+            );
+            assert!(rp.same_layout(c));
+            assert_eq!(c.report(dg).sections[sa].state, ss::REPLAYING);
+            let mut other = c.clone();
+            other.graph.end.compile = other.graph.end.compile.wrapping_add(1);
+            assert!(!rp.same_layout(&other));
+            let r = other.report(dg);
+            assert_eq!(r.sections[sa].state, ss::PASSED, "{:?}", r.sections[sa]);
+            assert_eq!(r.sections[sb].state, ss::FAILED, "{:?}", r.sections[sb]);
+            assert!(r.sections[sa].may_replay && !r.sections[sb].may_replay);
+        }
+
         /// A unit that may not replay is gated off while the other replays (§3.5): its press runs
         /// nothing, and its stores are pools only the world's own changes touch (a package into
         /// one stays there). Before S2c the district window's failure froze the whole district.
