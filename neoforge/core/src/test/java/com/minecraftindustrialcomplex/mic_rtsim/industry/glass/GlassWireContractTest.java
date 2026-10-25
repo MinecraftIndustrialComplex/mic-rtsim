@@ -260,11 +260,11 @@ class GlassWireContractTest {
     @Test
     void graphDomain() {
         Fixture f = fx("IND_GRAPH_DOMAIN");
-        int nl = f.count("n_levels"), ns = f.count("n_sources"), nm = f.count("n_members");
+        int nl = f.count("n_levels"), ns = f.count("n_sources"), nm = f.count("n_members"), np = f.count("n_peers");
         int nsl = 0;
         for (int i = 0; i < ns; i++)
             nsl += f.count("source" + i + ".n_levels");
-        ByteBuffer b = rec(GlassRecords.IND_GRAPH_DOMAIN, GlassRecords.Domain.size(nl, ns, nsl, nm), nm);
+        ByteBuffer b = rec(GlassRecords.IND_GRAPH_DOMAIN, GlassRecords.Domain.size(nl, ns, nsl, nm, np), nm);
         headOf(b, f);
         b.putLong(GlassRecords.Domain.NETWORK, f.u64("network"));
         b.putInt(GlassRecords.Domain.N_LEVELS, nl);
@@ -275,6 +275,7 @@ class GlassWireContractTest {
         b.putInt(GlassRecords.Domain.N_SOURCES, ns);
         b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
         b.putInt(GlassRecords.Domain.N_FOREIGN, (int) f.u32("foreign"));
+        b.putInt(GlassRecords.Domain.N_PEERS, np);
         for (int i = 0; i < nl; i++)
             level(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, f, "level" + i + ".");
         int first = 0;
@@ -301,6 +302,8 @@ class GlassWireContractTest {
             b.putInt(e + GlassRecords.Domain.M_RATIO_DEN, (int) f.u32(p + "ratio_den"));
             b.putDouble(e + GlassRecords.Domain.M_IMPACT, f.f64(p + "impact"));
         }
+        for (int i = 0; i < np; i++)
+            b.putLong(GlassRecords.Domain.peers(nl, ns, nsl, nm) + i * GlassRecords.Domain.PEER, f.u64("peer" + i));
         same("IND_GRAPH_DOMAIN", b, f.bytes());
     }
 
