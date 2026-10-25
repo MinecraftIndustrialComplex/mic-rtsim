@@ -771,7 +771,11 @@ fn an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused() {
         }
         // The first hand-over opens the session and starts the replay.
         j.idle();
-        assert_eq!(replay_counts(&e).0, 0, "the replay runs past its first hand-over");
+        assert_eq!(
+            replay_counts(&e).0,
+            0,
+            "the replay runs past its first hand-over"
+        );
         let mut b = Vec::new();
         sb::encode_obs(
             0,
@@ -789,7 +793,11 @@ fn an_epoch_a_state_record_named_while_the_ships_were_off_is_not_reused() {
         );
         assert!(j.copy(&b), "room for the state record");
         j.idle();
-        assert_eq!(replay_counts(&e).0, 0, "the replay runs past its second hand-over");
+        assert_eq!(
+            replay_counts(&e).0,
+            0,
+            "the replay runs past its second hand-over"
+        );
         let mut rounds = 0;
         while replay_counts(&e).0 == 0 {
             assert!(rounds < 64, "the replay never ended");
@@ -840,9 +848,7 @@ fn an_epoch_named_before_the_ships_had_a_dock_is_not_reused() {
         };
         let (dir, e, mut j, agent) = if coast_first {
             let (dir, e, j, _) = scene(name, wire::MIN_CAPACITY, false);
-            let agent = e.with_ships(|s, _| {
-                Ship::agent(s.ships.iter().next().expect("a ship").0)
-            });
+            let agent = e.with_ships(|s, _| Ship::agent(s.ships.iter().next().expect("a ship").0));
             (dir, e, j, agent)
         } else {
             let dir = tmpdir(name);
@@ -875,7 +881,10 @@ fn an_epoch_named_before_the_ships_had_a_dock_is_not_reused() {
             j.idle();
         }
         let next = e.with_ships(|s, _| s.next_epoch(Ship::id_of_agent(agent).unwrap()));
-        assert_eq!(next, 8, "docks first {coast_first}: above the epoch 7 the journal named");
+        assert_eq!(
+            next, 8,
+            "docks first {coast_first}: above the epoch 7 the journal named"
+        );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 }
@@ -891,7 +900,11 @@ fn pirate_on_empty_pages(switch: bool, haven_first: bool) -> (bool, (bool, u32),
     let name = format!(
         "ships-replay-{}-{}",
         if switch { "switch" } else { "empty-pages" },
-        if haven_first { "haven-first" } else { "ports-first" }
+        if haven_first {
+            "haven-first"
+        } else {
+            "ports-first"
+        }
     );
     let dir = tmpdir(&name);
     let e = engine(&dir, wire::MIN_CAPACITY);
@@ -959,7 +972,11 @@ fn a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate(
             !seen,
             "haven first {haven_first}: the replay's pirate was embodied by a record that named a live ship"
         );
-        assert_eq!(end, (false, 3), "haven first {haven_first}: the floor folds at the replay end");
+        assert_eq!(
+            end,
+            (false, 3),
+            "haven first {haven_first}: the floor folds at the replay end"
+        );
         assert_eq!(next, 4, "haven first {haven_first}");
     }
 }
@@ -974,7 +991,11 @@ fn a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour() {
             !seen,
             "haven first {haven_first}: the replay's pirate was embodied by a record that named a live ship"
         );
-        assert_eq!(end, (false, 3), "haven first {haven_first}: the floor folds at the replay end");
+        assert_eq!(
+            end,
+            (false, 3),
+            "haven first {haven_first}: the floor folds at the replay end"
+        );
         assert_eq!(next, 4, "haven first {haven_first}");
     }
 }

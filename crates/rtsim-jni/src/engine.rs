@@ -619,9 +619,7 @@ fn waits_for_the_replay_end(o: &Order) -> bool {
     runs_the_clock(o)
         || matches!(
             o,
-            Order::ConflictCommand { .. }
-                | Order::HerdCommand { .. }
-                | Order::ShipCommand { .. }
+            Order::ConflictCommand { .. } | Order::HerdCommand { .. } | Order::ShipCommand { .. }
         )
 }
 

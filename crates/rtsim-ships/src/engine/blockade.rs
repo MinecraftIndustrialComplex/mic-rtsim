@@ -1723,7 +1723,11 @@ mod tests {
         assert!(before < 7);
         assert_eq!(laid, 8, "above the floor of 7");
         assert!(spent, "and the floor is spent");
-        assert_eq!(relaunched, top + 1, "the relaunch is above the floor it met");
+        assert_eq!(
+            relaunched,
+            top + 1,
+            "the relaunch is above the floor it met"
+        );
         let (before, laid, spent, relaunched, top) = run_it(None);
         assert_eq!(laid, before + 1, "control: no floor, the plain bump");
         assert!(spent);
