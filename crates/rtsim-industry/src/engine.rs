@@ -725,6 +725,13 @@ impl Engine {
             .map(|(_, s)| &s.decl)
     }
 
+    /// The station `train` last left, if it has a departure on the books (an arrival or an
+    /// unwatched stop clears it). The conflict reads it before it ingests the arrival, to name
+    /// the line a train's rail passes ran (M7, MZB-312).
+    pub fn last_departure_of(&self, train: TrainId) -> Option<StationId> {
+        self.last_departure.get(&train).map(|e| e.0)
+    }
+
     /// One station's declaration.
     pub fn station_decl(&self, id: StationId) -> Option<&StationDecl> {
         self.stations.get(&id).map(|s| &s.decl)

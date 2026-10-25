@@ -9,22 +9,30 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use rtsim_industry::cluster::Cluster;
 use rtsim_industry::district::District;
 use rtsim_industry::engine::{Engine, Inspection, LineEdge, ProcessPeek};
+use rtsim_industry::glass::net::{Nets, PartId};
+use rtsim_industry::glass::page::{PageRead, read_district_page};
+use rtsim_industry::glass::report::DistrictSections;
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::StationDecl;
 use rtsim_industry::persist::{
     self, CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, STORE_TABLE,
 };
+use rtsim_industry::stores::{PackageStore, read_store_page};
 use rtsim_industry::threat::Leg;
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::Reader;
 use rtsim_kernel::page::PageKey;
 use rtsim_kernel::rows::PageSource;
-use rtsim_layers::{DistrictMark, IndustrySource, Table};
+use rtsim_layers::industry::{NetPart, store_mark};
+
+use crate::load::Limits;
+use rtsim_layers::{DistrictMark, IndustrySource, NetMark, SectionMark, StoreMark, Table};
 
 /// What a district's map mark needs, kept for every district.
 #[derive(Clone, Debug)]
@@ -78,12 +86,24 @@ pub struct IndustryView {
     pub cluster_of: BTreeMap<u64, u64>,
     /// A hash of every industry page read (the engine has no state hash of its own).
     pub pages_hash: u64,
+    /// The glass pages' sections per district with a complete compile, by district id (slice S7).
+    pub sections: Vec<(u64, DistrictSections)>,
+    /// The package stores, by id (slice S7).
+    pub stores: Vec<PackageStore>,
+    /// The shared kinetic networks the compiles make, in the registry's order (slice S7).
+    pub nets: Vec<NetMark>,
+    /// Glass pages that did not read, by district (the layers draw without them).
+    pub glass_unread: Unread,
+    /// Store pages that did not read, by store (the layers draw without them).
+    pub stores_unread: Unread,
+    /// Each store's mark, in `stores`' order: its drawn chain links are found once, not per draw.
+    store_marks: Vec<StoreMark>,
     globals: Vec<u8>,
 }
 
 impl IndustryView {
     /// The industry pages, or `None` when the world has none.
-    pub fn load(source: &dyn PageSource) -> Result<Option<IndustryView>, String> {
+    pub fn load(source: &dyn PageSource, limits: &Limits) -> Result<Option<IndustryView>, String> {
         let gkey = PageKey::new(GLOBAL_TABLE, 0);
         let globals = match source.read(gkey) {
             Ok(Some(b)) => b,
@@ -162,6 +182,9 @@ impl IndustryView {
                 };
             }
         }
+        let tun = Tunables::default();
+        let (sections, nets, glass_unread) = read_glass(source, &districts, &tun, limits)?;
+        let (stores, stores_unread) = read_stores(source, limits)?;
         Ok(Some(IndustryView {
             now: e.now().0 as i64,
             goods: e.goods().clone(),
@@ -175,6 +198,12 @@ impl IndustryView {
             districts,
             cluster_of,
             pages_hash: hash.0,
+            sections,
+            store_marks: stores.iter().map(store_mark).collect(),
+            stores,
+            nets,
+            glass_unread,
+            stores_unread,
             globals,
         }))
     }
@@ -209,6 +238,33 @@ impl IndustryView {
             Some(rtsim_industry::ids::GoodClass::Fluid) => "mB",
             Some(rtsim_industry::ids::GoodClass::Item) | None => "items",
             Some(_) => "units",
+        }
+    }
+
+    /// A view over nothing but what the test hands it: the glass and store tables of slice S7.
+    #[cfg(test)]
+    pub(crate) fn synthetic(
+        districts: Vec<DistrictSummary>,
+        sections: Vec<(u64, DistrictSections)>,
+        stores: Vec<PackageStore>,
+        nets: Vec<NetMark>,
+    ) -> IndustryView {
+        IndustryView {
+            now: 0,
+            goods: BTreeMap::new(),
+            stations: Vec::new(),
+            lines: Vec::new(),
+            legs: Vec::new(),
+            districts,
+            cluster_of: BTreeMap::new(),
+            pages_hash: 0,
+            sections,
+            store_marks: stores.iter().map(store_mark).collect(),
+            stores,
+            nets,
+            glass_unread: Unread::default(),
+            stores_unread: Unread::default(),
+            globals: Vec::new(),
         }
     }
 
@@ -253,6 +309,254 @@ impl IndustryView {
                 .map(|m| m.into_iter().map(|m| m.0).collect())
                 .unwrap_or_default(),
             processes: e.processes_peek(d).unwrap_or_default(),
+        })
+    }
+}
+
+/// The glass pages' sections and the networks the compiles make. A page that does not decode or
+/// the save's format dropped is left out and named; only a listing failure fails the load.
+#[allow(clippy::type_complexity)]
+fn read_glass(
+    source: &dyn PageSource,
+    districts: &[DistrictSummary],
+    tun: &Tunables,
+    limits: &Limits,
+) -> Result<(Vec<(u64, DistrictSections)>, Vec<NetMark>, Unread), String> {
+    let ids = source
+        .table_ids(GLASS_TABLE)
+        .map_err(|e| format!("cannot list the glass pages: {e}"))?;
+    let mut sections = Vec::new();
+    let mut unread = Unread::default();
+    let mut parts: Vec<(PartId, u32, rtsim_industry::glass::records::GraphDomain)> = Vec::new();
+    let mut read = 0usize;
+    for id in ids {
+        let Some(dim) = districts
+            .binary_search_by_key(&id, |d| d.id)
+            .ok()
+            .map(|i| districts[i].dim)
+        else {
+            continue;
+        };
+        if read >= limits.glass_pages {
+            unread.cut();
+            continue;
+        }
+        read += 1;
+        let b = match source.read(PageKey::new(GLASS_TABLE, id)) {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                unread.note(id, "listed, not found".into());
+                continue;
+            }
+            Err(e) => {
+                unread.note(id, e.to_string());
+                continue;
+            }
+        };
+        // A page that panics the decoder is left out like one that does not decode.
+        let page = catch_unwind(AssertUnwindSafe(|| {
+            read_district_page(&b, tun.glass.sections_max, tun.glass.counted_stores_max)
+        }));
+        let dg = match page {
+            Ok(Ok(PageRead::Kept(dg))) => dg,
+            Ok(Ok(PageRead::Dropped(why))) => {
+                unread.note(id, why.to_string());
+                continue;
+            }
+            Ok(Err(e)) => {
+                unread.note(id, e.to_string());
+                continue;
+            }
+            Err(p) => {
+                unread.note(
+                    id,
+                    format!("decoding failed ({})", crate::load::panic_text(p)),
+                );
+                continue;
+            }
+        };
+        let Some(c) = dg.compiled.as_ref() else {
+            continue;
+        };
+        for (i, dom) in c.graph.domains.iter().enumerate() {
+            if dom.shared() {
+                parts.push((
+                    PartId {
+                        district: DistrictId(id),
+                        domain: i as u32,
+                    },
+                    dim,
+                    dom.clone(),
+                ));
+            }
+        }
+        if let Some(ds) = DistrictSections::of(&dg) {
+            sections.push((id, ds));
+        }
+    }
+    let refs: Vec<_> = parts.iter().map(|(p, d, g)| (*p, *d, g)).collect();
+    let nets = Nets::build(&refs, tun.replay.cluster_districts_max);
+    let centre = |d: u64| {
+        districts
+            .binary_search_by_key(&d, |x| x.id)
+            .ok()
+            .map_or((0.0, 0.0), |i| districts[i].centre())
+    };
+    let marks = (0..nets.len())
+        .filter_map(|i| nets.get(i).map(|n| (i, n)))
+        .map(|(i, n)| {
+            let mut dim = 0;
+            let parts: Vec<NetPart> = n
+                .parts()
+                .map(|p| {
+                    let (d, source) = parts
+                        .iter()
+                        .find(|(q, _, _)| *q == p)
+                        .map_or((0, None), |(_, dm, g)| {
+                            (*dm, g.sources.first().map(|s| s.pos))
+                        });
+                    dim = d;
+                    let (x, z) = source.map_or_else(
+                        || centre(p.district.0),
+                        |pos| (f64::from(block_x(pos)), f64::from(block_z(pos))),
+                    );
+                    NetPart {
+                        district: p.district.0,
+                        x,
+                        z,
+                    }
+                })
+                .collect();
+            NetMark {
+                id: i as u64,
+                dim,
+                status: n.status.words(),
+                coupled: n.status == rtsim_industry::glass::net::Status::Coupled,
+                parts,
+            }
+        })
+        .collect();
+    Ok((sections, marks, unread))
+}
+
+/// `BlockPos.asLong`'s x: the top 26 bits, signed.
+fn block_x(pos: i64) -> i32 {
+    (pos >> 38) as i32
+}
+
+/// `BlockPos.asLong`'s z: the middle 26 bits, signed.
+fn block_z(pos: i64) -> i32 {
+    ((pos << 26) >> 38) as i32
+}
+
+/// The package stores, by id, and the pages left out. A page that does not decode, or that panics
+/// the decoder, is named and skipped; the pages past `limits.store_pages` fetched are counted, as
+/// `read_glass` counts its pages.
+fn read_stores(
+    source: &dyn PageSource,
+    limits: &Limits,
+) -> Result<(Vec<PackageStore>, Unread), String> {
+    let ids = source
+        .table_ids(STORE_TABLE)
+        .map_err(|e| format!("cannot list the store pages: {e}"))?;
+    let mut out = Vec::new();
+    let mut unread = Unread::default();
+    let mut read = 0usize;
+    for id in ids {
+        if read >= limits.store_pages {
+            unread.cut();
+            continue;
+        }
+        read += 1;
+        let b = match source.read(PageKey::new(STORE_TABLE, id)) {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                unread.note(id, "listed, not found".into());
+                continue;
+            }
+            Err(e) => {
+                unread.note(id, e.to_string());
+                continue;
+            }
+        };
+        match catch_unwind(AssertUnwindSafe(|| read_store_page(id, &b))) {
+            Ok(Ok(s)) => out.push(s),
+            Ok(Err(e)) => unread.note(id, e.to_string()),
+            Err(p) => unread.note(
+                id,
+                format!("decoding failed ({})", crate::load::panic_text(p)),
+            ),
+        }
+    }
+    Ok((out, unread))
+}
+
+/// Pages a reader left out: the first few named with why, the rest counted (slice S7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Unread {
+    /// The first [`Unread::NAMED`] pages that did not read: the page's id, and why.
+    pub named: Vec<(u64, String)>,
+    /// The others that did not read.
+    pub more: usize,
+    /// The pages past the viewer's limit, not read.
+    pub cut: usize,
+}
+
+impl Unread {
+    /// Pages named before the rest are only counted.
+    pub const NAMED: usize = 8;
+
+    fn note(&mut self, id: u64, why: String) {
+        if self.named.len() < Self::NAMED {
+            self.named.push((id, why));
+        } else {
+            self.more += 1;
+        }
+    }
+
+    /// A page past the reader's cap.
+    fn cut(&mut self) {
+        self.cut += 1;
+    }
+
+    /// Every page left out, named, counted or past the limit.
+    pub fn pages(&self) -> usize {
+        self.named.len() + self.more + self.cut
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages() == 0
+    }
+
+    /// One line a named page (`"{unit} {id}: why"`), then the counts, for pages of `what`.
+    pub fn lines(&self, unit: &str, what: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .named
+            .iter()
+            .map(|(id, why)| format!("{unit} {id}: {why}"))
+            .collect();
+        if self.more > 0 {
+            out.push(format!("{} more {what} pages did not read", self.more));
+        }
+        if self.cut > 0 {
+            out.push(format!(
+                "{} {what} pages past the viewer's limit were not read",
+                self.cut
+            ));
+        }
+        out
+    }
+
+    /// The first page left out and how many more pages, for a layer's why.
+    fn first_and_more(&self, unit: &str, what: &str) -> Option<String> {
+        let Some((id, why)) = self.named.first() else {
+            return self.lines(unit, what).into_iter().next();
+        };
+        let more = self.pages() - 1;
+        Some(if more > 0 {
+            format!("{unit} {id}: {why}; and {more} more pages")
+        } else {
+            format!("{unit} {id}: {why}")
         })
     }
 }
@@ -336,8 +640,77 @@ impl IndustrySource for IndustryView {
         }
     }
 
+    fn sections(&self, ids: Range<u64>, f: &mut dyn FnMut(&SectionMark)) {
+        let lo = self.sections.partition_point(|(d, _)| *d < ids.start);
+        for (d, ds) in self.sections[lo..].iter().take_while(|(d, _)| *d < ids.end) {
+            let Some(dim) = self.district(*d).map(|x| x.dim) else {
+                continue;
+            };
+            for (i, s) in ds.sections.iter().enumerate() {
+                let Some((a, b)) = s.bbox else {
+                    continue;
+                };
+                f(&SectionMark {
+                    district: *d,
+                    dim,
+                    index: i as u32,
+                    state: s.state,
+                    working: s.working,
+                    nodes: s.nodes,
+                    stores: s.stores.len() as u32,
+                    shared_stores: s.stores.iter().filter(|x| x.1).count() as u32,
+                    unit: s.unit,
+                    block_box: [
+                        f64::from(a.x),
+                        f64::from(a.z),
+                        f64::from(b.x) + 1.0,
+                        f64::from(b.z) + 1.0,
+                    ],
+                });
+            }
+        }
+    }
+
+    fn glass_why(&self) -> Option<String> {
+        let first = self.glass_unread.first_and_more("district", "glass")?;
+        Some(format!(
+            "glass pages did not read, so their sections and networks are left out ({first})"
+        ))
+    }
+
+    fn stores_why(&self) -> Option<String> {
+        let first = self.stores_unread.first_and_more("store", "store")?;
+        Some(format!(
+            "store pages did not read, so their stores are left out ({first})"
+        ))
+    }
+
+    fn stores(&self, ids: Range<u64>, f: &mut dyn FnMut(&StoreMark)) {
+        let lo = self.store_marks.partition_point(|s| s.id < ids.start);
+        for s in self.store_marks[lo..].iter().take_while(|s| s.id < ids.end) {
+            f(s);
+        }
+    }
+
+    fn networks(&self, ids: Range<u64>, f: &mut dyn FnMut(&NetMark)) {
+        let lo = (ids.start as usize).min(self.nets.len());
+        let hi = (ids.end.min(self.nets.len() as u64)) as usize;
+        for n in &self.nets[lo..hi.max(lo)] {
+            f(n);
+        }
+    }
+
     fn next_key(&self, t: Table, from: u64) -> Option<u64> {
         match t {
+            Table::Sections => {
+                let i = self.sections.partition_point(|(d, _)| *d < from);
+                self.sections.get(i).map(|(d, _)| *d)
+            }
+            Table::Stores => {
+                let i = self.stores.partition_point(|s| s.id.0 < from);
+                self.stores.get(i).map(|s| s.id.0)
+            }
+            Table::Networks => (from < self.nets.len() as u64).then_some(from),
             Table::Districts => {
                 let i = self.districts.partition_point(|d| d.id < from);
                 self.districts.get(i).map(|d| d.id)
@@ -378,5 +751,146 @@ impl Fnv {
         self.bytes(&k.id().to_le_bytes());
         self.bytes(&(b.len() as u64).to_le_bytes());
         self.bytes(b);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtsim_industry::ids::StoreId;
+    use rtsim_industry::stores::store_page;
+
+    /// Pages held in memory.
+    struct Pages(BTreeMap<(u16, u64), Vec<u8>>);
+
+    impl PageSource for Pages {
+        fn read(&self, key: PageKey) -> rtsim_kernel::page::Result<Option<Vec<u8>>> {
+            Ok(self.0.get(&(key.table(), key.id())).cloned())
+        }
+        fn table_ids(&self, table: u16) -> rtsim_kernel::page::Result<Vec<u64>> {
+            Ok(self
+                .0
+                .keys()
+                .filter(|k| k.0 == table)
+                .map(|k| k.1)
+                .collect())
+        }
+    }
+
+    fn store(id: u64) -> PackageStore {
+        PackageStore {
+            id: StoreId(id),
+            ..PackageStore::default()
+        }
+    }
+
+    /// One store page that does not decode is named and skipped; the others still draw, and the
+    /// pages past the limit are counted, not read.
+    #[test]
+    fn a_bad_store_page_is_named_not_fatal_and_the_limit_cuts() {
+        let mut pages = BTreeMap::new();
+        for id in 1..=3 {
+            pages.insert((STORE_TABLE, id), store_page(&store(id)));
+        }
+        pages.insert((STORE_TABLE, 2), b"garbage".to_vec());
+        let src = Pages(pages);
+        let (stores, unread) = read_stores(&src, &Limits::default()).expect("the listing reads");
+        assert_eq!(stores.iter().map(|s| s.id.0).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(unread.pages(), 1, "{unread:?}");
+        assert_eq!(unread.named[0].0, 2, "{unread:?}");
+        assert!(unread.lines("store", "store")[0].starts_with("store 2: "));
+        let few = Limits {
+            store_pages: 1,
+            ..Limits::default()
+        };
+        let (stores, unread) = read_stores(&src, &few).expect("the listing reads");
+        assert_eq!(stores.len(), 1);
+        assert_eq!((unread.named.len(), unread.cut), (0, 2), "{unread:?}");
+        assert!(
+            unread
+                .lines("store", "store")
+                .iter()
+                .any(|u| u == "2 store pages past the viewer's limit were not read"),
+            "{unread:?}"
+        );
+        // The limit counts the pages fetched, read or not: a bad first page uses it up.
+        let few = Limits {
+            store_pages: 2,
+            ..Limits::default()
+        };
+        let (stores, unread) = read_stores(&src, &few).expect("the listing reads");
+        assert_eq!(stores.iter().map(|s| s.id.0).collect::<Vec<_>>(), [1]);
+        assert_eq!((unread.named.len(), unread.cut), (1, 1), "{unread:?}");
+    }
+
+    /// A layer's why names the first page left out and counts every other page, not list lines.
+    #[test]
+    fn the_why_counts_pages_not_lines() {
+        let mut u = Unread::default();
+        for id in 0..10 {
+            u.note(id, "bad".into());
+        }
+        u.cut();
+        assert_eq!((u.pages(), u.named.len(), u.more, u.cut), (11, 8, 2, 1));
+        assert_eq!(
+            u.lines("store", "store").len(),
+            10,
+            "8 named, then two counts"
+        );
+        assert_eq!(
+            u.first_and_more("store", "store").as_deref(),
+            Some("store 0: bad; and 10 more pages")
+        );
+        let mut cut = Unread::default();
+        cut.cut();
+        assert_eq!(
+            cut.first_and_more("store", "store").as_deref(),
+            Some("1 store pages past the viewer's limit were not read")
+        );
+        assert_eq!(Unread::default().first_and_more("store", "store"), None);
+    }
+
+    /// Glass pages that do not decode are named and left out; the view still loads.
+    #[test]
+    fn a_bad_glass_page_is_named_and_the_glass_pages_cap() {
+        let mut pages = BTreeMap::new();
+        for id in 1..=3 {
+            pages.insert((GLASS_TABLE, id), b"not a glass page".to_vec());
+        }
+        let src = Pages(pages);
+        let districts: Vec<DistrictSummary> = (1..=3)
+            .map(|id| DistrictSummary {
+                id,
+                dim: 0,
+                name: 0,
+                chunks: 1,
+                chunk_box: (0, 0, 0, 0),
+                state: "running",
+                stations: Vec::new(),
+                attacks: 0,
+                inventories: 0,
+                watched: false,
+                chunk_list: Vec::new(),
+                outline: Vec::new(),
+            })
+            .collect();
+        let tun = Tunables::default();
+        let (sections, nets, unread) =
+            read_glass(&src, &districts, &tun, &Limits::default()).expect("the listing reads");
+        assert!(sections.is_empty() && nets.is_empty());
+        assert_eq!(unread.named.len(), 3, "{unread:?}");
+        let few = Limits {
+            glass_pages: 1,
+            ..Limits::default()
+        };
+        let (_, _, unread) = read_glass(&src, &districts, &tun, &few).expect("the listing reads");
+        assert_eq!((unread.named.len(), unread.cut), (1, 2), "{unread:?}");
+        assert!(
+            unread
+                .lines("district", "glass")
+                .iter()
+                .any(|u| u.starts_with("2 glass pages past the viewer's limit")),
+            "{unread:?}"
+        );
     }
 }

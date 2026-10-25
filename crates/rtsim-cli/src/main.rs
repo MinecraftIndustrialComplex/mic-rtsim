@@ -8,6 +8,7 @@ mod glass;
 mod lines;
 mod run;
 mod sim;
+mod stores;
 mod sys;
 mod view;
 
@@ -123,7 +124,11 @@ usage:
   rtsim-cli glass <world> [district] [--json | --graph]
       Each district's glass box state (its compile, what replays it, its last and passed
       windows, its ticking chunks) from the confirmed save (read only); --graph adds the
-      compile's records.";
+      compile's records.
+  rtsim-cli stores <world> [--json]
+      Each package store (a chain network whose frogports sit in more than one district): its
+      frogports, the packages it holds for each and with no route, its residue, the packages the
+      frontier holds or has drawn (keys) and its counts, from the confirmed save (read only).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -465,6 +470,7 @@ fn main() -> ExitCode {
         ["view", rest @ ..] => view::cli(rest),
         ["lines", rest @ ..] => lines::cli(rest),
         ["glass", rest @ ..] => glass::cli(rest),
+        ["stores", rest @ ..] => stores::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS
